@@ -1,0 +1,16 @@
+# Allow direct Gradle wrapper commands outside the sandbox without approval.
+# Run ./gradlew directly; shell wrappers and output redirection do not match this prefix.
+prefix_rule(
+    pattern = ["./gradlew"],
+    decision = "allow",
+    justification = "Build and run tests with the project's Gradle wrapper without confirmation",
+    match = [
+        ["./gradlew", "--version"],
+        ["./gradlew", "classes", "check", "--offline", "--console=plain"],
+        ["./gradlew", ":tests:test", "--tests", "com.unciv.logic.battle.AttackRecorderTest"],
+    ],
+    not_match = [
+        ["bash", "-lc", "./gradlew classes check"],
+        ["git", "status"],
+    ],
+)
