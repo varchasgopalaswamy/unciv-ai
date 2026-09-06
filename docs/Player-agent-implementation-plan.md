@@ -25,11 +25,11 @@ Recommended host defaults: one writer/controller per civilization; explicit host
 - Each feature owns its export mapping/registration and contract tests once I01 exists. Earlier feature PRs include the concrete projection/handler tests; their small registration follow-ups are linked child PRs after I01. Keep this work with the feature owner rather than collecting all registrations into the final integration PR.
 - Each owner updates the coverage ledger from A01 and this file when opening/merging a PR: owner, branch/PR link, actual dependencies, checks, acceptance evidence, and any split child steps. Check a box only after its acceptance criteria are met and the implementation is merged.
 
-Use a small concrete service or result type where it suffices; the names below are conceptual boundaries, not a requirement to introduce a new module/interface for every row. Follow the repository's [coding standards](../../Unciv/docs/Developers/Coding-standards.md), particularly avoiding premature abstraction.
+Use a small concrete service or result type where it suffices; the names below are conceptual boundaries, not a requirement to introduce a new module/interface for every row. Follow the repository's [coding standards](../vendor/Unciv/docs/Developers/Coding-standards.md), particularly avoiding premature abstraction.
 
 **Contract and foundational views**
 
-Starting points: [View hierarchy](../../Unciv/core/src/com/unciv/view/View.kt), [GameView](../../Unciv/core/src/com/unciv/view/GameView.kt), [CityButton](../../Unciv/core/src/com/unciv/ui/components/tilegroups/citybutton/CityButton.kt), [CityTable](../../Unciv/core/src/com/unciv/ui/components/tilegroups/citybutton/CityTable.kt), and the other files in `core/src/com/unciv/view`.
+Starting points: [View hierarchy](../vendor/Unciv/core/src/com/unciv/view/View.kt), [GameView](../vendor/Unciv/core/src/com/unciv/view/GameView.kt), [CityButton](../vendor/Unciv/core/src/com/unciv/ui/components/tilegroups/citybutton/CityButton.kt), [CityTable](../vendor/Unciv/core/src/com/unciv/ui/components/tilegroups/citybutton/CityTable.kt), and the other files in `core/src/com/unciv/view`.
 
 | Step | PR boundary | Depends on | Acceptance evidence |
 | --- | --- | --- | --- |
@@ -53,7 +53,7 @@ Starting points: [View hierarchy](../../Unciv/core/src/com/unciv/view/View.kt), 
 
 **Host lifecycle and common execution**
 
-Starting points: [WorldScreen.nextTurn](../../Unciv/core/src/com/unciv/ui/screens/worldscreen/WorldScreen.kt#L594), [GameInfo.nextTurn](../../Unciv/core/src/com/unciv/logic/GameInfo.kt#L382), [NextTurnAction](../../Unciv/core/src/com/unciv/ui/screens/worldscreen/status/NextTurnAction.kt), [UncivGame.loadGame](../../Unciv/core/src/com/unciv/UncivGame.kt), [UndoHandler](../../Unciv/core/src/com/unciv/ui/screens/worldscreen/UndoHandler.kt), [PopupAlert](../../Unciv/core/src/com/unciv/logic/civilization/PopupAlert.kt).
+Starting points: [WorldScreen.nextTurn](../vendor/Unciv/core/src/com/unciv/ui/screens/worldscreen/WorldScreen.kt#L594), [GameInfo.nextTurn](../vendor/Unciv/core/src/com/unciv/logic/GameInfo.kt#L382), [NextTurnAction](../vendor/Unciv/core/src/com/unciv/ui/screens/worldscreen/status/NextTurnAction.kt), [UncivGame.loadGame](../vendor/Unciv/core/src/com/unciv/UncivGame.kt), [UndoHandler](../vendor/Unciv/core/src/com/unciv/ui/screens/worldscreen/UndoHandler.kt), [PopupAlert](../vendor/Unciv/core/src/com/unciv/logic/civilization/PopupAlert.kt).
 
 | Step | PR boundary | Depends on | Acceptance evidence |
 | --- | --- | --- | --- |
@@ -71,7 +71,7 @@ Feature handlers below depend on H01's execution boundary. Their remote availabi
 
 **Unit movement, orders and improvements**
 
-Starting points: [UnitActions](../../Unciv/core/src/com/unciv/ui/screens/worldscreen/unit/actions/UnitActions.kt), [UnitActionsFromUniques](../../Unciv/core/src/com/unciv/ui/screens/worldscreen/unit/actions/UnitActionsFromUniques.kt), [UnitMovement](../../Unciv/core/src/com/unciv/logic/map/mapunit/movement/UnitMovement.kt), [WorldMapHolder](../../Unciv/core/src/com/unciv/ui/screens/worldscreen/worldmap/WorldMapHolder.kt), and the unit/technology/improvement picker screens.
+Starting points: [UnitActions](../vendor/Unciv/core/src/com/unciv/ui/screens/worldscreen/unit/actions/UnitActions.kt), [UnitActionsFromUniques](../vendor/Unciv/core/src/com/unciv/ui/screens/worldscreen/unit/actions/UnitActionsFromUniques.kt), [UnitMovement](../vendor/Unciv/core/src/com/unciv/logic/map/mapunit/movement/UnitMovement.kt), [WorldMapHolder](../vendor/Unciv/core/src/com/unciv/ui/screens/worldscreen/worldmap/WorldMapHolder.kt), and the unit/technology/improvement picker screens.
 
 | Step | PR boundary | Depends on | Acceptance evidence |
 | --- | --- | --- | --- |
@@ -91,7 +91,7 @@ Starting points: [UnitActions](../../Unciv/core/src/com/unciv/ui/screens/worldsc
 
 **Cities and empire development**
 
-Starting points: [CityView](../../Unciv/core/src/com/unciv/view/CityView.kt), [CityConstructionsView](../../Unciv/core/src/com/unciv/view/CityConstructionsView.kt), [CityScreen](../../Unciv/core/src/com/unciv/ui/screens/cityscreen/CityScreen.kt), [CityConstructionsTable](../../Unciv/core/src/com/unciv/ui/screens/cityscreen/CityConstructionsTable.kt), [AlertPopup](../../Unciv/core/src/com/unciv/ui/screens/worldscreen/AlertPopup.kt), [TechPickerScreen](../../Unciv/core/src/com/unciv/ui/screens/pickerscreens/TechPickerScreen.kt), [PolicyPickerScreen](../../Unciv/core/src/com/unciv/ui/screens/pickerscreens/PolicyPickerScreen.kt).
+Starting points: [CityView](../vendor/Unciv/core/src/com/unciv/view/CityView.kt), [CityConstructionsView](../vendor/Unciv/core/src/com/unciv/view/CityConstructionsView.kt), [CityScreen](../vendor/Unciv/core/src/com/unciv/ui/screens/cityscreen/CityScreen.kt), [CityConstructionsTable](../vendor/Unciv/core/src/com/unciv/ui/screens/cityscreen/CityConstructionsTable.kt), [AlertPopup](../vendor/Unciv/core/src/com/unciv/ui/screens/worldscreen/AlertPopup.kt), [TechPickerScreen](../vendor/Unciv/core/src/com/unciv/ui/screens/pickerscreens/TechPickerScreen.kt), [PolicyPickerScreen](../vendor/Unciv/core/src/com/unciv/ui/screens/pickerscreens/PolicyPickerScreen.kt).
 
 | Step | PR boundary | Depends on | Acceptance evidence |
 | --- | --- | --- | --- |
@@ -111,7 +111,7 @@ Starting points: [CityView](../../Unciv/core/src/com/unciv/view/CityView.kt), [C
 
 **Diplomacy, trade and city states**
 
-Starting points: [MajorCivDiplomacyTable](../../Unciv/core/src/com/unciv/ui/screens/diplomacyscreen/MajorCivDiplomacyTable.kt), [CityStateDiplomacyTable](../../Unciv/core/src/com/unciv/ui/screens/diplomacyscreen/CityStateDiplomacyTable.kt), [TradeView](../../Unciv/core/src/com/unciv/view/TradeView.kt), [TradeLogic](../../Unciv/core/src/com/unciv/logic/trade/TradeLogic.kt), [TradePopup](../../Unciv/core/src/com/unciv/ui/screens/worldscreen/TradePopup.kt), and `logic/civilization/diplomacy`.
+Starting points: [MajorCivDiplomacyTable](../vendor/Unciv/core/src/com/unciv/ui/screens/diplomacyscreen/MajorCivDiplomacyTable.kt), [CityStateDiplomacyTable](../vendor/Unciv/core/src/com/unciv/ui/screens/diplomacyscreen/CityStateDiplomacyTable.kt), [TradeView](../vendor/Unciv/core/src/com/unciv/view/TradeView.kt), [TradeLogic](../vendor/Unciv/core/src/com/unciv/logic/trade/TradeLogic.kt), [TradePopup](../vendor/Unciv/core/src/com/unciv/ui/screens/worldscreen/TradePopup.kt), and `logic/civilization/diplomacy`.
 
 | Step | PR boundary | Depends on | Acceptance evidence |
 | --- | --- | --- | --- |
@@ -131,7 +131,7 @@ Starting points: [MajorCivDiplomacyTable](../../Unciv/core/src/com/unciv/ui/scre
 
 **Religion and espionage**
 
-Starting points: [ReligionOverviewTab](../../Unciv/core/src/com/unciv/ui/screens/overviewscreen/ReligionOverviewTab.kt), [PantheonPickerScreen](../../Unciv/core/src/com/unciv/ui/screens/pickerscreens/PantheonPickerScreen.kt), [ReligiousBeliefsPickerScreen](../../Unciv/core/src/com/unciv/ui/screens/pickerscreens/ReligiousBeliefsPickerScreen.kt), [UnitActionsReligion](../../Unciv/core/src/com/unciv/ui/screens/worldscreen/unit/actions/UnitActionsReligion.kt), [EspionageOverviewScreen](../../Unciv/core/src/com/unciv/ui/screens/overviewscreen/EspionageOverviewScreen.kt), [Spy](../../Unciv/core/src/com/unciv/models/Spy.kt).
+Starting points: [ReligionOverviewTab](../vendor/Unciv/core/src/com/unciv/ui/screens/overviewscreen/ReligionOverviewTab.kt), [PantheonPickerScreen](../vendor/Unciv/core/src/com/unciv/ui/screens/pickerscreens/PantheonPickerScreen.kt), [ReligiousBeliefsPickerScreen](../vendor/Unciv/core/src/com/unciv/ui/screens/pickerscreens/ReligiousBeliefsPickerScreen.kt), [UnitActionsReligion](../vendor/Unciv/core/src/com/unciv/ui/screens/worldscreen/unit/actions/UnitActionsReligion.kt), [EspionageOverviewScreen](../vendor/Unciv/core/src/com/unciv/ui/screens/overviewscreen/EspionageOverviewScreen.kt), [Spy](../vendor/Unciv/core/src/com/unciv/models/Spy.kt).
 
 | Step | PR boundary | Depends on | Acceptance evidence |
 | --- | --- | --- | --- |
@@ -144,7 +144,7 @@ Starting points: [ReligionOverviewTab](../../Unciv/core/src/com/unciv/ui/screens
 
 **Combat and observation history**
 
-Starting points: [BattleTable](../../Unciv/core/src/com/unciv/ui/screens/worldscreen/bottombar/BattleTable.kt), [Battle](../../Unciv/core/src/com/unciv/logic/battle/Battle.kt), [Nuke](../../Unciv/core/src/com/unciv/logic/battle/Nuke.kt), [MapVisualization](../../Unciv/core/src/com/unciv/logic/map/MapVisualization.kt), [GameViewMovementHistoryTest](../../Unciv/tests/src/com/unciv/view/GameViewMovementHistoryTest.kt), [Notification](../../Unciv/core/src/com/unciv/logic/civilization/Notification.kt) and [NotificationActions](../../Unciv/core/src/com/unciv/logic/civilization/NotificationActions.kt).
+Starting points: [BattleTable](../vendor/Unciv/core/src/com/unciv/ui/screens/worldscreen/bottombar/BattleTable.kt), [Battle](../vendor/Unciv/core/src/com/unciv/logic/battle/Battle.kt), [Nuke](../vendor/Unciv/core/src/com/unciv/logic/battle/Nuke.kt), [MapVisualization](../vendor/Unciv/core/src/com/unciv/logic/map/MapVisualization.kt), [GameViewMovementHistoryTest](../vendor/Unciv/tests/src/com/unciv/view/GameViewMovementHistoryTest.kt), [Notification](../vendor/Unciv/core/src/com/unciv/logic/civilization/Notification.kt) and [NotificationActions](../vendor/Unciv/core/src/com/unciv/logic/civilization/NotificationActions.kt).
 
 History producers can be introduced without waiting for command extraction: hook the existing engine entry points, so human and AI-generated events have the same observation policy. Producer/storage PRs keep old consumers working; consumer-switch PRs follow in their own linked stack. No external history export is enabled during the intermediate state.
 
@@ -165,7 +165,7 @@ History producers can be introduced without waiting for command extraction: hook
 
 **Overviews, victory and player lifecycle**
 
-Starting points: `ui/screens/overviewscreen`, [VictoryScreen](../../Unciv/core/src/com/unciv/ui/screens/victoryscreen/VictoryScreen.kt), [VictoryScreenDemographics](../../Unciv/core/src/com/unciv/ui/screens/victoryscreen/VictoryScreenDemographics.kt), the diplomatic vote picker/result screens, and existing resignation/game-continuation entry points.
+Starting points: `ui/screens/overviewscreen`, [VictoryScreen](../vendor/Unciv/core/src/com/unciv/ui/screens/victoryscreen/VictoryScreen.kt), [VictoryScreenDemographics](../vendor/Unciv/core/src/com/unciv/ui/screens/victoryscreen/VictoryScreenDemographics.kt), the diplomatic vote picker/result screens, and existing resignation/game-continuation entry points.
 
 | Step | PR boundary | Depends on | Acceptance evidence |
 | --- | --- | --- | --- |
@@ -235,7 +235,7 @@ Once H01/H04 and the relevant observations exist, useful independent contributor
 
 **Validation and review rules**
 
-Each implementation PR should prove its own behavior and permissions before merge. Use existing [TestGame](../../Unciv/tests/src/com/unciv/testing/TestGame.kt)/test-runner support. Run focused tests such as `./gradlew tests:test --tests '<relevant class>'`, then the repository's required compilation, purity, test and platform checks appropriate to the touched modules. Follow actual CI definitions rather than treating a documentation example as the complete check list. Save-schema PRs include old-save, round-trip and clone checks. UI migrations include a reproducible fixture and the specific human controls to exercise.
+Each implementation PR should prove its own behavior and permissions before merge. Use existing [TestGame](../vendor/Unciv/tests/src/com/unciv/testing/TestGame.kt)/test-runner support. Run focused tests such as `./gradlew tests:test --tests '<relevant class>'`, then the repository's required compilation, purity, test and platform checks appropriate to the touched modules. Follow actual CI definitions rather than treating a documentation example as the complete check list. Save-schema PRs include old-save, round-trip and clone checks. UI migrations include a reproducible fixture and the specific human controls to exercise.
 
 For changed player observations, use paired states that differ only in information the player must not know. Compare complete responses, nested fields, IDs/order/counts, preview options, refusal reasons and published tokens. For commands, test successful human/API equivalence and failure without unauthorized mutation; legitimate discovery during a real action may change the observation. For stateful grants, test later fog/invisibility, capture/death, spy departure, revocation, load and perspective changes. Schema and alias checks complement these tests; annotations alone do not prove permission enforcement.
 

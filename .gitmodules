@@ -1,0 +1,4 @@
+[submodule "Unciv"]
+	path = vendor/Unciv
+	url = https://github.com/varchasgopalaswamy/Unciv.git
+	branch = experimental-changes
