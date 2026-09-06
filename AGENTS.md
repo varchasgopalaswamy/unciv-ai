@@ -11,7 +11,9 @@ This is a private, single-maintainer repository. It depends on the separately ma
 
 ## Development
 
+- Read [Session handoff](docs/Session-handoff.md) for the verified setup state and next implementation step.
 - See `docs/Development-workflow.md` for the pinned dependency and local override workflow.
+- Adding third-party libraries is already authorized. Prefer suitable existing libraries over reinventing functionality that is even moderately complex.
 - Use the selected engine checkout for both code and runtime assets. Mod content is out of scope.
 - Keep engine changes atomic and independently reviewable. Host PRs are optional; ordinary private branches and commits are sufficient.
 - Confirm which Git repository a command targets before staging or committing. A host commit records a submodule revision; it does not commit engine edits.

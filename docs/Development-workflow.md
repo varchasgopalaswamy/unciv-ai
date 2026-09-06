@@ -30,7 +30,7 @@ Use JDK 21 or newer and the checked-in Gradle wrapper. The included Unciv build 
 
 `engineInfo` prints the selected checkout, commit and asset directory. The build imports the selected engine's dependency catalog and consumes `:core` through a [Gradle composite build](https://docs.gradle.org/current/userguide/composite_builds.html). Test and Java execution tasks use `android/assets` from that same checkout. The Gradle wrapper is copied from the initial engine revision; review wrapper compatibility when updating the dependency.
 
-The initial smoke test loads Vanilla and Gods & Kings rules with mods disabled and no graphics backend. It checks build/runtime integration; game loading, the player API, privacy enforcement and MCP transport are still pending in the [headless plan](Headless-player-agent-path.md).
+The initial smoke test loads Vanilla and Gods & Kings rules with mods disabled and no graphics backend. The [headless runtime](Headless-runtime.md) adds saved-game loading and shutdown, with separate-process lifecycle scenarios for both rulesets. The player API, privacy enforcement and MCP transport remain pending in the [headless plan](Headless-player-agent-path.md).
 
 ## Work on the engine locally
 

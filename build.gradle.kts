@@ -2,6 +2,7 @@ import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 plugins {
     kotlin("jvm") version uncivLibs.versions.kotlin.get()
+    application
 }
 
 group = "local.uncivai"
@@ -26,13 +27,26 @@ kotlin {
 
 dependencies {
     implementation("local.unciv:core")
-    testImplementation(uncivLibs.gdx)
+    implementation(uncivLibs.gdx)
     testImplementation(uncivLibs.junit)
+}
+
+application {
+    mainClass = "uncivai.MainKt"
+    applicationDefaultJvmArgs = listOf(
+        "-Djava.awt.headless=true",
+        "-Duncivai.assetsDir=${uncivAssets.absolutePath}",
+    )
 }
 
 tasks.test {
     workingDir = uncivAssets
     systemProperty("java.awt.headless", "true")
+    systemProperty("uncivai.assetsDir", uncivAssets.absolutePath)
+    // Resolve the composite dependency only after project configuration is complete.
+    doFirst {
+        systemProperty("uncivai.testClasspath", classpath.asPath)
+    }
     maxParallelForks = 1
     inputs.property("uncivRevision", uncivRevision)
     inputs.dir(uncivAssets.resolve("jsons"))
@@ -43,6 +57,16 @@ tasks.test {
 tasks.withType<JavaExec>().configureEach {
     workingDir = uncivAssets
     systemProperty("java.awt.headless", "true")
+    systemProperty("uncivai.assetsDir", uncivAssets.absolutePath)
+}
+
+tasks.register<JavaExec>("generateS01Scenarios") {
+    group = "verification"
+    description = "Generates the two-Human-player saved scenarios used to verify headless loading."
+    dependsOn(tasks.testClasses)
+    classpath = sourceSets.test.get().runtimeClasspath
+    mainClass = "uncivai.S01ScenarioGenerator"
+    args(layout.buildDirectory.dir("generated/s01-scenarios").get().asFile.absolutePath)
 }
 
 tasks.register("engineInfo") {

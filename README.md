@@ -2,7 +2,7 @@
 
 A private headless host and MCP adapter project for agents playing Unciv, depending on a separately maintained Unciv fork. Agents must eventually have every ordinary human player action and information surface while receiving only information their player is allowed to know. Scope covers the bundled Vanilla and Gods & Kings rulesets; mod content is excluded.
 
-The repository currently contains the development build, a headless engine dependency smoke test, and planning documents. Game hosting and the player/MCP APIs are not implemented yet.
+The repository provides a headless executable that loads a saved game and shuts down without advancing turns, plus integration scenarios for two Human players in both bundled rulesets. The player API, information boundary, and MCP transport are not implemented yet.
 
 Read [AGENTS.md](AGENTS.md) for confidentiality and contribution instructions, and [Development workflow](docs/Development-workflow.md) for engine branches, local overrides and dependency updates.
 
@@ -19,6 +19,15 @@ To develop against a sibling engine checkout:
 ./gradlew -PuncivDir=../Unciv engineInfo build
 ```
 
+To generate and load a lifecycle scenario:
+
+```sh
+./gradlew generateS01Scenarios
+./gradlew run --args="--save $PWD/build/generated/s01-scenarios/vanilla.json --data-dir /tmp/unciv-s01"
+```
+
+- [Headless runtime](docs/Headless-runtime.md): launch commands, scenario generation, settings and runtime ownership.
+- [Session handoff](docs/Session-handoff.md): verified setup state, retained decisions, and the next implementation step.
 - [Headless implementation path](docs/Headless-player-agent-path.md): the recommended approach, repository responsibilities, and initial atomic steps.
 - [Player API review](docs/Player-agent-API-review.md): the action and information inventory and privacy requirements.
 - [Original implementation plan](docs/Player-agent-implementation-plan.md): the broader View-based backlog and linked PR boundaries. The headless path identifies which dependencies can be avoided.
