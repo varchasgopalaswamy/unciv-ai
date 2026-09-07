@@ -2,7 +2,9 @@
 
 A private headless host and MCP adapter project for agents playing Unciv, depending on a separately maintained Unciv fork. Agents must eventually have every ordinary human player action and information surface while receiving only information their player is allowed to know. Scope covers the bundled Vanilla and Gods & Kings rulesets; mod content is excluded.
 
-The repository provides a headless executable and local MCP server for player-bound summaries, owned-city observations, city renaming and free-great-person choices with retry receipts. Independently authenticated clients share one game through the Kotlin facade. Integration scenarios cover both bundled rulesets. Complete action/information coverage remains later work.
+The repository provides a headless executable and authenticated local MCP server. The player interface supports turn decisions, research queues and free technologies, policy adoption, city production, renaming, free Great People, informational alerts, and validated turn advancement. Optional checkpoints persist game state and command receipts together. Integration scenarios cover both bundled rulesets.
+
+**This is an incomplete gameplay implementation.** Map and unit play, combat, diplomacy, full desktop integration, and the Codex runner remain outstanding. Consult the [coverage ledger](docs/Player-api-coverage.md) rather than treating a passing turn-flow test as full parity.
 
 Read [AGENTS.md](AGENTS.md) for confidentiality and contribution instructions, and [Development workflow](docs/Development-workflow.md) for engine branches, local overrides and dependency updates.
 
@@ -26,15 +28,8 @@ To generate and load a lifecycle scenario:
 ./gradlew run --args="--save $PWD/build/generated/s01-scenarios/vanilla.json --data-dir /tmp/unciv-s01"
 ```
 
-- [Headless runtime](docs/Headless-runtime.md): launch commands, scenario generation, settings and runtime ownership.
-- [Player-summary prototype](docs/Player-summary-prototype.md): Kotlin session binding, the initial observation fields, and isolation checks.
-- [City-rename prototype](docs/City-rename-prototype.md): owned-city handles, command validation, serialization, retry receipts, and failure handling.
-- [Free great-person selection](docs/Free-great-person-selection.md): shared engine operation and before/after UI saves and launch commands.
-- [Free-great-person prototype](docs/Free-great-person-prototype.md): Kotlin choice discovery, validated selection, expiring handles and retry receipts.
-- [MCP prototype](docs/MCP-prototype.md): local server launch, per-player credentials, tool contracts and connection lifetime.
-- [Session handoff](docs/Session-handoff.md): verified setup state, retained decisions, and the next implementation step.
-- [Headless implementation path](docs/Headless-player-agent-path.md): the recommended approach, repository responsibilities, and initial atomic steps.
-- [Player API review](docs/Player-agent-API-review.md): the action and information inventory and privacy requirements.
-- [Original implementation plan](docs/Player-agent-implementation-plan.md): the broader View-based backlog and linked PR boundaries. The headless path identifies which dependencies can be avoided.
+- [Player protocol](docs/Player-api-protocol.md): current tools, request examples, checkpoints, and limitations.
+- [Implementation design](docs/Player-api-plan.md): responsibilities, milestones, and acceptance gates.
+- [Coverage ledger](docs/Player-api-coverage.md): implemented and outstanding action and information surfaces.
 
-Source links in the plans point into the pinned `vendor/Unciv` submodule. Each document records the revision it reviewed; historical source line anchors can differ from a later dependency revision.
+Engine changes under development live in the selected checkout. A clean checkout at the recorded submodule revision does not include uncommitted engine changes.

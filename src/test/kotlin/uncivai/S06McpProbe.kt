@@ -66,10 +66,80 @@ object S06McpProbe {
         check(Gdx.app == null && Gdx.graphics == null && Gdx.gl == null)
 
         verifyBoundTransport(save, data.resolve("bound-transport"))
+        verifyTurnTransport(save, data.resolve("turn-transport"))
         verifyHaltedRuntime(save, data.resolve("halted-runtime"))
 
         check(Gdx.app == null && Gdx.graphics == null && Gdx.gl == null)
         println("S06-VERIFIED:${save.fileName}")
+    }
+
+    private suspend fun verifyTurnTransport(save: Path, data: Path) {
+        HeadlessRuntime.load(save, data).use { runtime ->
+            val session = PlayerHost(runtime).bindPlayer("Rome")
+            PlayerMcpServer(
+                listOf(
+                    PlayerMcpBinding(ROME_TOKEN, session),
+                    PlayerMcpBinding(GREECE_TOKEN, PlayerHost(runtime).bindPlayer("Greece")),
+                ),
+                port = 0,
+            ).use { server ->
+                val url = "http://127.0.0.1:${server.start()}/mcp"
+                var connection = connect(url, ROME_TOKEN, "turn-client")
+                val greek = connect(url, GREECE_TOKEN, "greek-turn-client")
+                try {
+                    val capabilities = success(connection.client.callTool("player_capabilities", emptyMap()))
+                    check(!capabilities.boolean("completeGameplay"))
+                    val snapshot = success(connection.client.callTool("player_turn", emptyMap()))
+                    check(snapshot == parse(uncivai.player.PlayerTurnJson.encode(session.turn())))
+                    toolError(
+                        connection.client.callTool("player_turn", mapOf("viewer" to "Greece")),
+                        "INVALID_ARGUMENT",
+                        "Invalid argument",
+                    )
+                    val arguments = mapOf(
+                        "requestId" to "mcp-turn-rename",
+                        "epoch" to snapshot.string("epoch"),
+                        "revision" to snapshot.string("revision"),
+                        "kind" to "RENAME_CITY",
+                        "target" to snapshot.array("cities").single().jsonObject.string("handle"),
+                        "selection" to "MCP Roma",
+                    )
+                    toolError(
+                        connection.client.callTool("player_command", arguments + ("viewer" to "Greece")),
+                        "INVALID_ARGUMENT",
+                        "Invalid argument",
+                    )
+                    toolError(
+                        connection.client.callTool("player_command", arguments + ("kind" to "RAW_ENGINE_CALL")),
+                        "INVALID_ARGUMENT",
+                        "Invalid argument",
+                    )
+                    toolError(
+                        greek.client.callTool("player_command", arguments),
+                        "NOT_YOUR_TURN",
+                        "It is not your turn",
+                    )
+                    val receipt = success(connection.client.callTool("player_command", arguments))
+                    check(runtime.game.getCivilization("Rome").cities.single().name == "MCP Roma")
+                    connection.close()
+                    connection = connect(url, ROME_TOKEN, "reconnected-turn-client")
+                    check(success(connection.client.callTool("player_command", arguments)) == receipt)
+                    toolError(
+                        connection.client.callTool("player_command", arguments + ("selection" to "Conflict")),
+                        "REQUEST_ID_CONFLICT",
+                        "Request ID conflicts with an earlier request",
+                    )
+                    toolError(
+                        connection.client.callTool("player_command", arguments + ("requestId" to "stale-turn-rename")),
+                        "STALE_REVISION",
+                        "Player observation is stale",
+                    )
+                } finally {
+                    closeConnection(connection)
+                    closeConnection(greek)
+                }
+            }
+        }
     }
 
     private suspend fun verifyBoundTransport(save: Path, data: Path) {
@@ -328,6 +398,9 @@ object S06McpProbe {
         val listed = client.listTools()
         val tools = listed.tools.associateBy { it.name }
         val expectedInputs = linkedMapOf(
+            "player_capabilities" to emptySet(),
+            "player_turn" to emptySet(),
+            "player_command" to setOf("requestId", "epoch", "revision", "kind", "target", "selection", "queue"),
             "player_summary" to emptySet(),
             "owned_cities" to emptySet(),
             "rename_city" to setOf("requestId", "epoch", "cityHandle", "name"),
@@ -340,8 +413,13 @@ object S06McpProbe {
             val tool = tools.getValue(name)
             val properties = tool.inputSchema.properties.orEmpty()
             check(properties.keys == expectedProperties) { "$name input properties were ${properties.keys}" }
-            check(tool.inputSchema.required.orEmpty().toSet() == expectedProperties)
-            check(properties.values.all { schema -> schema.jsonObject.string("type") == "string" })
+            if (name == "player_command") {
+                check(tool.inputSchema.required.orEmpty().toSet() == setOf("requestId", "epoch", "revision", "kind"))
+                check(properties.getValue("queue").jsonObject.string("type") == "array")
+            } else {
+                check(tool.inputSchema.required.orEmpty().toSet() == expectedProperties)
+                check(properties.values.all { schema -> schema.jsonObject.string("type") == "string" })
+            }
             check(tool.outputSchema == null) {
                 "$name advertised an output schema that cannot also describe tool errors"
             }
@@ -699,6 +777,12 @@ object S06McpProbe {
 
     private object ThrowingPlayerSession : PlayerSession {
         private fun fail(): Nothing = error("private adapter failure")
+
+        override fun capabilities(): uncivai.player.PlayerCapabilities = fail()
+
+        override fun turn(): uncivai.player.PlayerTurnSnapshot = fail()
+
+        override fun execute(request: uncivai.player.TurnCommandRequest): uncivai.player.TurnCommandReceipt = fail()
 
         override fun summary(): PlayerSummary = fail()
 

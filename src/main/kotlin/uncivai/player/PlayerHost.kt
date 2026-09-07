@@ -3,30 +3,41 @@ package uncivai.player
 import com.unciv.logic.GameInfo
 import com.unciv.logic.city.City
 import com.unciv.logic.civilization.Civilization
+import com.unciv.logic.civilization.PlayerOperations
 import com.unciv.logic.map.mapunit.MapUnit
+import uncivai.GameExecutor
 import uncivai.HeadlessRuntime
 import uncivai.RuntimeClosedException
 import uncivai.RuntimeHaltedException
+import uncivai.RuntimePausedException
 import java.util.Collections
 import java.util.UUID
 
 /** Trusted host surface that assigns a fixed player identity to each session. */
 class PlayerHost internal constructor(
-    private val runtime: HeadlessRuntime,
+    private val runtime: GameExecutor,
     private val cityRenamer: (City, String) -> Unit,
     private val greatPersonChooser: (Civilization, String) -> MapUnit?,
 ) {
-    constructor(runtime: HeadlessRuntime) : this(
+    constructor(runtime: HeadlessRuntime) : this(runtime.executor)
+
+    constructor(runtime: GameExecutor) : this(
         runtime,
-        { city, name -> city.name = name },
-        { civilization, unitName -> civilization.greatPeople.chooseFreeGreatPerson(unitName) },
+        { city, name -> check(PlayerOperations(city.civ).tryRenameCity(city, name)) },
+        { civilization, unitName -> PlayerOperations(civilization).tryChooseFreeGreatPerson(unitName) },
     )
 
     internal constructor(
         runtime: HeadlessRuntime,
         cityRenamer: (City, String) -> Unit,
+        greatPersonChooser: (Civilization, String) -> MapUnit?,
+    ) : this(runtime.executor, cityRenamer, greatPersonChooser)
+
+    internal constructor(
+        runtime: HeadlessRuntime,
+        cityRenamer: (City, String) -> Unit,
     ) : this(
-        runtime,
+        runtime.executor,
         cityRenamer,
         { civilization, unitName -> civilization.greatPeople.chooseFreeGreatPerson(unitName) },
     )
@@ -41,6 +52,12 @@ class PlayerHost internal constructor(
 }
 
 interface PlayerSession {
+    fun capabilities(): PlayerCapabilities
+
+    fun turn(): PlayerTurnSnapshot
+
+    fun execute(request: TurnCommandRequest): TurnCommandReceipt
+
     fun summary(): PlayerSummary
 
     fun cities(): OwnedCitiesSnapshot
@@ -53,11 +70,23 @@ interface PlayerSession {
 }
 
 private class BoundPlayerSession(
-    private val runtime: HeadlessRuntime,
+    private val runtime: GameExecutor,
     private val civilizationId: String,
     private val cityRenamer: (City, String) -> Unit,
     private val greatPersonChooser: (Civilization, String) -> MapUnit?,
 ) : PlayerSession {
+    private val turnSession = TurnSession(runtime, civilizationId)
+
+    override fun capabilities() = playerOperation {
+        runtime.accessGame {
+            PlayerCapabilities(durableRecovery = runtime.durableRecovery, legacyMutationsSupported = !runtime.durableRecovery)
+        }
+    }
+
+    override fun turn() = playerOperation { turnSession.snapshot() }
+
+    override fun execute(request: TurnCommandRequest) = playerOperation { turnSession.execute(request) }
+
     private val cityIdsByHandle = HashMap<String, String>()
     private val handlesByCityId = HashMap<String, String>()
     private val completedCommands = HashMap<String, CompletedCommand>()
@@ -129,6 +158,9 @@ private class BoundPlayerSession(
             if (!request.hasValidRenameArguments()) {
                 throw PlayerSessionException(PlayerSessionFailure.INVALID_ARGUMENT)
             }
+
+            runtime.requireRunning()
+            if (runtime.durableRecovery) throw PlayerSessionException(PlayerSessionFailure.COMMAND_UNAVAILABLE)
 
             if (game.currentPlayer != player.civID || game.currentPlayerCiv !== player) {
                 throw PlayerSessionException(PlayerSessionFailure.NOT_YOUR_TURN)
@@ -207,6 +239,9 @@ private class BoundPlayerSession(
             if (!game.isCurrentPlayer(player)) {
                 throw PlayerSessionException(PlayerSessionFailure.NOT_YOUR_TURN)
             }
+
+            runtime.requireRunning()
+            if (runtime.durableRecovery) throw PlayerSessionException(PlayerSessionFailure.COMMAND_UNAVAILABLE)
 
             val sharedDecision = synchronizeFreeGreatPersonDecision(game, player)
             if (sharedDecision == null) {
@@ -314,9 +349,7 @@ private sealed interface CompletedCommand {
 private fun String.hasValidRequestId(): Boolean = length in 1..128 &&
     all { character -> character.code in 0x20..0x7e }
 
-private fun RenameCityRequest.hasValidRenameArguments(): Boolean = name.isNotEmpty() &&
-    name.length <= 32 &&
-    name.none { character -> character in "[]{}\"\\<>\r\n" }
+private fun RenameCityRequest.hasValidRenameArguments(): Boolean = PlayerOperations.isValidCityName(name)
 
 private fun GameInfo.findAvailablePlayer(civilizationId: String): Civilization? = civilizations.singleOrNull { civilization ->
     civilization.civID == civilizationId &&
@@ -334,6 +367,8 @@ private inline fun <T> playerOperation(operation: () -> T): T = try {
     throw PlayerSessionException(PlayerSessionFailure.SESSION_CLOSED)
 } catch (_: RuntimeHaltedException) {
     throw PlayerSessionException(PlayerSessionFailure.GAME_HALTED)
+} catch (_: RuntimePausedException) {
+    throw PlayerSessionException(PlayerSessionFailure.GAME_PAUSED)
 } catch (_: Exception) {
     throw PlayerSessionException(PlayerSessionFailure.QUERY_FAILED)
 }

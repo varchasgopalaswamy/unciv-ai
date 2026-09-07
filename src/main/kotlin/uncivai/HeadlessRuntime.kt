@@ -11,11 +11,9 @@ import com.unciv.models.metadata.GameSettings
 import com.unciv.models.ruleset.RulesetCache
 import com.unciv.utils.Concurrency
 import com.unciv.utils.DebugUtils
-import uncivai.player.FreeGreatPersonDecisionTracker
 import java.io.File
 import java.nio.file.Files
 import java.nio.file.Path
-import java.util.UUID
 
 /**
  * Owns one display-free Unciv game in this JVM.
@@ -30,35 +28,23 @@ class HeadlessRuntime private constructor(
     val game: GameInfo,
 ) : AutoCloseable {
     private var closed = false
-    internal val epoch: String = UUID.randomUUID().toString()
-    internal val freeGreatPersonDecisions = FreeGreatPersonDecisionTracker()
-
-    /** Trusted diagnostics for an unexpected failure after a mutation began. */
-    @Volatile
-    internal var mutationFailure: Throwable? = null
-        private set
+    internal val executor = GameExecutor(game, lifecycleLock) {
+        !closed && activeRuntime === this && UncivGame.isCurrentInitialized() &&
+            UncivGame.Current === uncivGame && uncivGame.gameInfo === game
+    }
+    internal val epoch get() = executor.epoch
+    internal val mutationFailure get() = executor.mutationFailure
 
     /** Serializes player reads and commands with runtime shutdown. */
-    internal fun <T> accessGame(block: (GameInfo) -> T): T = synchronized(lifecycleLock) {
-        if (closed || activeRuntime !== this ||
-            !UncivGame.isCurrentInitialized() || UncivGame.Current !== uncivGame ||
-            uncivGame.gameInfo !== game
-        ) {
-            throw RuntimeClosedException()
-        }
-        if (mutationFailure != null) throw RuntimeHaltedException()
-        block(game)
-    }
+    internal fun <T> accessGame(block: (GameInfo) -> T): T = executor.accessGame(block)
 
     /** Stops further player operations; the caller must not assume the mutation was rolled back. */
-    internal fun haltAfterMutation(failure: Throwable): Nothing = synchronized(lifecycleLock) {
-        if (mutationFailure == null) mutationFailure = failure
-        throw RuntimeHaltedException()
-    }
+    internal fun haltAfterMutation(failure: Throwable): Nothing = executor.haltAfterMutation(failure)
 
     override fun close() {
         synchronized(lifecycleLock) {
             if (closed) return
+            executor.close()
             closed = true
 
             if (UncivGame.isCurrentInitialized() && UncivGame.Current === uncivGame) {
@@ -75,6 +61,30 @@ class HeadlessRuntime private constructor(
         private const val ASSETS_DIRECTORY_PROPERTY = "uncivai.assetsDir"
         private val lifecycleLock = Any()
         private var activeRuntime: HeadlessRuntime? = null
+
+        /** Restores both the engine save and command receipts from one trusted checkpoint. */
+        fun loadCheckpoint(checkpointPath: Path, dataDirectory: Path): HeadlessRuntime = loadCheckpoint(CheckpointStore(checkpointPath), dataDirectory)
+
+        internal fun loadCheckpoint(store: CheckpointStore, dataDirectory: Path): HeadlessRuntime {
+            val temporary = Files.createTempFile("unciv-checkpoint-load-", ".json")
+            try {
+                val checkpoint = store.read()
+                Files.writeString(temporary, checkpoint.gameJson)
+                val runtime = load(temporary, dataDirectory)
+                try {
+                    runtime.executor.restore(checkpoint, store)
+                    return runtime
+                } catch (failure: Throwable) {
+                    runtime.close()
+                    throw failure
+                }
+            } catch (failure: Throwable) {
+                store.close()
+                throw failure
+            } finally {
+                Files.deleteIfExists(temporary)
+            }
+        }
 
         /**
          * Loads [saveFile] without creating a GDX application, graphics context, or world screen.

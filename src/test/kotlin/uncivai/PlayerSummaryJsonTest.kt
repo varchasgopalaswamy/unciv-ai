@@ -75,6 +75,9 @@ class PlayerSummaryJsonTest {
             .associateBy { it.name }
         assertEquals(
             setOf(
+                "capabilities",
+                "turn",
+                "execute",
                 "summary",
                 "cities",
                 "renameCity",

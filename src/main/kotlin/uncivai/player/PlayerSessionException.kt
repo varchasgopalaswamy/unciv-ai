@@ -13,6 +13,10 @@ enum class PlayerSessionFailure {
     DECISION_UNAVAILABLE,
     OPTION_UNAVAILABLE,
     PLACEMENT_FAILED,
+    GAME_PAUSED,
+    STALE_REVISION,
+    TURN_BLOCKED,
+    COMMAND_UNAVAILABLE,
 }
 
 class PlayerSessionException(
@@ -32,6 +36,10 @@ class PlayerSessionException(
             PlayerSessionFailure.DECISION_UNAVAILABLE -> "Decision is unavailable"
             PlayerSessionFailure.OPTION_UNAVAILABLE -> "Option is unavailable"
             PlayerSessionFailure.PLACEMENT_FAILED -> "Unit could not be placed"
+            PlayerSessionFailure.GAME_PAUSED -> "Game is paused"
+            PlayerSessionFailure.STALE_REVISION -> "Player observation is stale"
+            PlayerSessionFailure.TURN_BLOCKED -> "Resolve pending choices before ending the turn"
+            PlayerSessionFailure.COMMAND_UNAVAILABLE -> "Command is unavailable"
         }
     }
 }

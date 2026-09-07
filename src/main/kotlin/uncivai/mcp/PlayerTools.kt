@@ -9,19 +9,25 @@ import io.modelcontextprotocol.kotlin.sdk.types.TextContent
 import io.modelcontextprotocol.kotlin.sdk.types.ToolAnnotations
 import io.modelcontextprotocol.kotlin.sdk.types.ToolSchema
 import kotlinx.coroutines.CancellationException
+import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.add
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.put
+import kotlinx.serialization.json.putJsonArray
 import kotlinx.serialization.json.putJsonObject
 import uncivai.player.ChooseFreeGreatPersonRequest
 import uncivai.player.PlayerCommandJson
 import uncivai.player.PlayerSession
 import uncivai.player.PlayerSessionException
 import uncivai.player.PlayerSummaryJson
+import uncivai.player.PlayerTurnJson
 import uncivai.player.RenameCityRequest
+import uncivai.player.TurnCommandKind
+import uncivai.player.TurnCommandRequest
 
 internal fun createPlayerToolsServer(session: PlayerSession): Server = Server(
     serverInfo = Implementation(name = "unciv-player", version = "0.1.0"),
@@ -31,6 +37,49 @@ internal fun createPlayerToolsServer(session: PlayerSession): Server = Server(
         ),
     ),
 ).apply {
+    addTool(
+        name = "player_capabilities",
+        description = "Return implemented gameplay operations and explicit coverage and recovery limitations.",
+        inputSchema = NO_ARGUMENTS_SCHEMA,
+        toolAnnotations = QUERY_ANNOTATIONS,
+    ) { request ->
+        playerResult {
+            request.arguments.requireNoArguments()
+            PlayerTurnJson.encode(session.capabilities())
+        }
+    }
+
+    addTool(
+        name = "player_turn",
+        description = "Return your turn status, pending decisions, owned city production, and research, policy and Great Person options. The opaque revision changes only with your observed state or successful commands. Coverage is incomplete; unsupported decisions block end turn.",
+        inputSchema = NO_ARGUMENTS_SCHEMA,
+        toolAnnotations = QUERY_ANNOTATIONS,
+    ) { request ->
+        playerResult {
+            request.arguments.requireNoArguments()
+            PlayerTurnJson.encode(session.turn())
+        }
+    }
+
+    addTool(
+        name = "player_command",
+        description = "Execute one validated gameplay command against the revision from player_turn. Use target for a city or alert handle, selection for a chosen name, and queue only for SET_RESEARCH_QUEUE. Successful requests are replayed across reconnects; restart recovery requires durableRecovery in player_capabilities. Observe again after a stale revision or successful command. END_TURN requires all pending choices resolved; idle units may be left idle as with the human UI setting.",
+        inputSchema = TURN_COMMAND_INPUT_SCHEMA,
+        toolAnnotations = COMMAND_ANNOTATIONS,
+    ) { request ->
+        playerResult {
+            val arguments = request.arguments ?: throw InvalidToolArgumentsException()
+            val command = try {
+                PlayerTurnJson.json.decodeFromJsonElement(TurnCommandRequest.serializer(), arguments)
+            } catch (_: SerializationException) {
+                throw InvalidToolArgumentsException()
+            } catch (_: IllegalArgumentException) {
+                throw InvalidToolArgumentsException()
+            }
+            PlayerTurnJson.encode(session.execute(command))
+        }
+    }
+
     addTool(
         name = "player_summary",
         description = "Return the authenticated player's current summary.",
@@ -119,6 +168,27 @@ private val COMMAND_ANNOTATIONS = ToolAnnotations(
 private val NO_ARGUMENTS_SCHEMA = ToolSchema(
     properties = buildJsonObject {},
     required = emptyList(),
+)
+
+private val TURN_COMMAND_INPUT_SCHEMA = ToolSchema(
+    properties = buildJsonObject {
+        put("requestId", requestIdProperty())
+        put("epoch", stringProperty("Epoch returned by player_turn.", minLength = 1))
+        put("revision", stringProperty("Opaque player revision returned by player_turn.", minLength = 1))
+        putJsonObject("kind") {
+            put("type", "string")
+            putJsonArray("enum") { TurnCommandKind.entries.forEach { add(it.name) } }
+        }
+        put("target", stringProperty("City or alert handle from player_turn; required only for city commands or ACKNOWLEDGE_ALERT.", minLength = 1))
+        put("selection", stringProperty("Chosen option or new city name; omit for commands without a named choice.", minLength = 1))
+        putJsonObject("queue") {
+            put("type", "array")
+            put("description", "Research queue in prerequisite order, only for SET_RESEARCH_QUEUE.")
+            put("maxItems", 1024)
+            putJsonObject("items") { put("type", "string") }
+        }
+    },
+    required = listOf("requestId", "epoch", "revision", "kind"),
 )
 
 private val RENAME_CITY_ARGUMENTS = listOf("requestId", "epoch", "cityHandle", "name")

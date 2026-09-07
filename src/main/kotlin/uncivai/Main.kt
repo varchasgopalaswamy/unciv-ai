@@ -21,7 +21,13 @@ private fun runCli(args: Array<String>): Int {
     return try {
         val options = parseOptions(args)
         val players = options.mcpConfig?.let(::loadMcpPlayerConfig)
-        HeadlessRuntime.load(options.saveFile, options.dataDirectory).use { runtime ->
+        val loaded = if (options.resumeCheckpoint != null) {
+            HeadlessRuntime.loadCheckpoint(options.resumeCheckpoint, options.dataDirectory)
+        } else {
+            HeadlessRuntime.load(checkNotNull(options.saveFile), options.dataDirectory)
+        }
+        loaded.use { runtime ->
+            options.checkpoint?.let { runtime.executor.enableCheckpoints(it) }
             if (players == null) {
                 val game = runtime.game
                 println(
@@ -75,10 +81,12 @@ private fun servePlayers(runtime: HeadlessRuntime, players: List<McpPlayerGrant>
 }
 
 private data class CliOptions(
-    val saveFile: Path,
+    val saveFile: Path?,
     val dataDirectory: Path,
     val mcpConfig: Path?,
     val port: Int,
+    val checkpoint: Path?,
+    val resumeCheckpoint: Path?,
 )
 
 private fun parseOptions(args: Array<String>): CliOptions {
@@ -86,10 +94,12 @@ private fun parseOptions(args: Array<String>): CliOptions {
     var dataDirectory: Path? = null
     var mcpConfig: Path? = null
     var port: Int? = null
+    var checkpoint: Path? = null
+    var resumeCheckpoint: Path? = null
     var index = 0
     while (index < args.size) {
         val option = args[index]
-        require(option in setOf("--save", "--data-dir", "--mcp-config", "--port")) {
+        require(option in setOf("--save", "--data-dir", "--mcp-config", "--port", "--checkpoint", "--resume-checkpoint")) {
             "Unknown argument: $option"
         }
         require(index + 1 < args.size) { "Missing value for $option" }
@@ -115,18 +125,32 @@ private fun parseOptions(args: Array<String>): CliOptions {
                 port = value.toIntOrNull()
                 require(port != null && port in 0..65535) { "--port must be between 0 and 65535" }
             }
+
+            "--checkpoint" -> {
+                require(checkpoint == null) { "--checkpoint may only be specified once" }
+                checkpoint = Path.of(value)
+            }
+
+            "--resume-checkpoint" -> {
+                require(resumeCheckpoint == null) { "--resume-checkpoint may only be specified once" }
+                resumeCheckpoint = Path.of(value)
+            }
         }
         index += 2
     }
 
     require(port == null || mcpConfig != null) { "--port requires --mcp-config" }
+    require((saveFile != null) != (resumeCheckpoint != null)) { "Specify exactly one of --save or --resume-checkpoint" }
+    require(checkpoint == null || saveFile != null) { "--checkpoint requires --save" }
     return CliOptions(
-        saveFile = requireNotNull(saveFile) { "Missing required --save <absolute-path>" },
+        saveFile = saveFile,
         dataDirectory = requireNotNull(dataDirectory) {
             "Missing required --data-dir <absolute-path>"
         },
         mcpConfig = mcpConfig,
         port = port ?: 8765,
+        checkpoint = checkpoint,
+        resumeCheckpoint = resumeCheckpoint,
     )
 }
 
@@ -138,5 +162,6 @@ private fun Throwable.conciseMessage(): String {
     return messages.joinToString(": ").ifEmpty { this::class.java.simpleName }
 }
 
-private fun usage() = "Usage: unciv-ai --save <absolute-path> --data-dir <absolute-path> " +
+private fun usage() = "Usage: unciv-ai (--save <absolute-path> [--checkpoint <absolute-path>] | " +
+    "--resume-checkpoint <absolute-path>) --data-dir <absolute-path> " +
     "[--mcp-config <absolute-path> [--port <0-65535>]]"
