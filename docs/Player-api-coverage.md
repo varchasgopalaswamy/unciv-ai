@@ -35,8 +35,13 @@ test, and UI comparison evidence. Unsupported items remain explicit.
 | Civilopedia | Public bundled rules, searchable entries, descriptions and links, no hidden game data | Not implemented |
 | Victory and defeat | Conditions, results, scores, permitted postgame information, resignation | Not implemented |
 | Lifecycle | Supported setup validation, create/load/save/pause, checkpoints, reconnect, controller replacement | Fixed Vanilla duel creation, load, checkpoint/resume, serialized execution, operator pause, player-scoped references and durable command receipts; general setup and controller management incomplete |
-| Agent runner | Codex conversations, private notes, turn scheduling, budgets, isolation | Not implemented |
+| Agent runner | Codex conversations, private notes, turn scheduling, budgets, isolation | Interactive launchers route player tokens, working directories, and explicit conversation resumption. Automatic scheduling, persisted runner progress, and budget controls are planned with the next city-development slice; isolation remains outstanding |
 | Desktop integration | Shared execution and player API across all supported controls | Shared requirements, selected picker operations, current-turn movement previews/execution and settlement effects; embedded executor and full UI migration outstanding |
+
+The [next milestone](Player-api-plan.md#next-milestone-workers-city-development-and-automatic-turns)
+combines workers and city development with automatic turn scheduling. The desktop
+inspection launcher loads exported snapshots for operator verification; it is not
+an embedded human player connected to the authoritative host.
 
 ## Known architectural gaps
 

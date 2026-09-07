@@ -41,6 +41,11 @@ After the other player finishes, ask **“Play my next turn.”** A blocked or u
 decision is reported for your attention. These sessions do not continuously poll
 or coordinate turns automatically.
 
+Automatic scheduling is included in the [next city-development milestone](Player-api-plan.md#next-milestone-workers-city-development-and-automatic-turns).
+The planned supervisor will resume the active player's conversation, verify host
+handoffs, and stop on configured limits or decisions needing operator attention.
+The commands on this page currently retain their manual one-turn behavior.
+
 Each player has its own working directory under `STATE_DIR/agents`, such as
 `agents/Rome`. The launcher reads the selected token and passes it through
 `UNCIV_PLAYER_TOKEN`, with a per-session `civ` MCP configuration. Tokens are never
