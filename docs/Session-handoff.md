@@ -1,6 +1,6 @@
 # Session handoff
 
-Saved 2026-09-06 after implementing S03, the Kotlin owned-city rename command and retry receipts. This is a private continuity note, not material for the Unciv fork or its public contributions.
+Saved 2026-09-06 after integrating S04, shared free-great-person selection in the engine, with manual UI comparison tooling. This is a private continuity note, not material for the Unciv fork or its public contributions.
 
 ## Read first
 
@@ -9,6 +9,7 @@ Saved 2026-09-06 after implementing S03, the Kotlin owned-city rename command an
 - [Headless runtime](Headless-runtime.md) documents the executable, scenario generation and lifecycle ownership.
 - [Player-summary prototype](Player-summary-prototype.md) specifies the Kotlin session interface, permitted fields and validation scope.
 - [City-rename prototype](City-rename-prototype.md) specifies owned-city handles, validation, serialization, receipts and mutation failure handling.
+- [Free great-person selection](Free-great-person-selection.md) documents the engine helper, UI recovery and before/after comparison saves and commands.
 - [Headless implementation path](Headless-player-agent-path.md) is the current approach and initial sequence, S01–S06.
 - [Player API review](Player-agent-API-review.md) is the completeness inventory. The [original implementation plan](Player-agent-implementation-plan.md) remains a broader backlog; its desktop attachment and extensive View migration prerequisites are superseded for this headless route.
 
@@ -21,18 +22,21 @@ Saved 2026-09-06 after implementing S03, the Kotlin owned-city rename command an
 - Use structured, headless control. UI automation, screenshots, and delegating unimplemented human choices to the game's AI do not meet the requirement. Ordinary automation a human can choose remains in scope.
 - S02 is a small working prototype of the observation surface. For now the runtime, facade and scripted clients remain Kotlin code in one JVM; the full action/information inventory remains required. External clients in other languages come through the later MCP transport.
 - Keep public engine work small and independently reviewable. The private host can advance against the maintained fork without waiting for upstream acceptance.
+- The S04 PR reproduction is supplied as a standalone JSON save, as requested: `build/pr-artifacts/free-great-person-blocked-placement.json`. Do not package that save in a ZIP when providing it to the user.
 
 ## Current repository state
 
-This repository remains on `main`, tracking `origin/main`. The user committed S01 as `0980746` and S02 as `dcae4ce` before this step. S03 is an uncommitted host change, starting from that clean S02 commit. The existing Spotless/ktlint configuration was applied to the changed Kotlin files. No engine files, engine revisions or commits were changed. Inspect current status before editing.
+This repository remains on `main`, tracking `origin/main`. The user committed S01 as `0980746`, S02 as `dcae4ce`, and S03 as `ddeea14`. The S04 engine contribution is committed as `df4f61112b89f3e6b1bd9efc299175b48261ea5c` and published on the fork's `experimental-changes` and `free-great-person-selection` branches; both remote refs were verified directly. The clean submodule is currently on `experimental-changes`. This host integration records that revision together with the S04 UI tooling and documentation. Inspect both repositories before further editing or staging.
 
 The submodule is `vendor/Unciv`, with URL `https://github.com/varchasgopalaswamy/Unciv.git` and integration branch `experimental-changes`. Its recorded commit is:
 
 ```text
-d77a312ed6ba0d127fe4efdfbcdc9f4918c0b5fa
+df4f61112b89f3e6b1bd9efc299175b48261ea5c
 ```
 
 The sibling `/home/vgopalas/projects/Unciv` is a separate development checkout. At the original setup handoff it was on `combat-recording-unit-infrastructure`, at `630e1938ca54ec4835620594b5f7cb84971ce75e`, with an existing untracked `.codex/` directory. It was not used or changed for S01. Use its current branch deliberately; it is a different revision from the pin. Earlier combat-history discussions concerned other feature branches, so verify APIs against the selected checkout.
+
+S04 was developed on `free-great-person-selection` in `vendor/Unciv` and is now integrated into the fork's `experimental-changes` branch. The private UI comparison script continues to use the original revision `d77a312ed6ba0d127fe4efdfbcdc9f4918c0b5fa` in `build/s04-ui/before-engine` for the before case, avoiding checkout switches or stashing edits. Copies of each selected engine's assets and isolated desktop data live under `build/s04-ui/before` and `build/s04-ui/after`. These generated directories are ignored by Git.
 
 ## Implemented and verified
 
@@ -55,6 +59,10 @@ The sibling `/home/vgopalas/projects/Unciv` is a separate development checkout. 
 - Successful request IDs are remembered for the session. Exact repeats return historical receipts even after another rename, a turn change or ownership loss; revoked player bindings still fail. IDs are 1–128 printable ASCII characters, and rejected requests do not reserve them. Reusing a successful ID with a different payload fails. Receipts are not persisted or shared across sessions.
 - Unexpected exceptions after mutation begins halt all further player operations with sanitized `GAME_HALTED`; `HeadlessRuntime.mutationFailure` retains the trusted diagnostic cause. The operation may already have changed the game. Closing remains possible; rollback is not implemented.
 - [S03CityRenameIntegrationTest.kt](../src/test/kotlin/uncivai/S03CityRenameIntegrationTest.kt) runs [S03CityRenameProbe.kt](../src/test/kotlin/uncivai/S03CityRenameProbe.kt) against both saved rulesets. Checks inspect actual `City.name` and raw serialized `GameInfo`, covering authority, argument rules, hidden names, detached observations, ownership loss, reload, A/B/retry, concurrent duplicates/conflicts, serialized reads/close and failure after a write. [PlayerCommandJsonTest.kt](../src/test/kotlin/uncivai/PlayerCommandJsonTest.kt) checks DTO and JSON whitelists.
+- S04 adds `GreatPersonManager.getFreeGreatPersonOptions()` and `chooseFreeGreatPerson(unitName)`. Options reuse engine equivalents/settings filtering and current Maya restrictions. Selection returns the placed `MapUnit`, consuming the entitlement and relevant Maya pool entry only on successful placement. Invalid, exhausted, cityless or failed-placement choices return null without consuming the pick. Existing placement can allocate an internal unit ID on failure; there is no general rollback guarantee.
+- The human picker and automated choice delegate to the new operation. Failed/empty UI choices allow returning to the map without immediate popup reopening, while the turn button still requires the unresolved choice. Success clears that screen-local deferral. These changes remain in the engine; no host great-person command or player end-turn API has been exposed yet.
+- [GreatPersonSelectionTest.kt](../vendor/Unciv/tests/src/com/unciv/logic/civilization/GreatPersonSelectionTest.kt) contains eight independent engine tests covering real placed units, Vanilla/G&K and Mongolia equivalents, Maya pool staleness, invalid/exhausted/cityless choices, blocked placement, automated success/failure, option detachment/settings, and the mandatory turn-button action while deferred.
+- At the user's request, [S04UiScenarioGenerator.kt](../src/test/kotlin/uncivai/S04UiScenarioGenerator.kt) writes six UI saves to `build/generated/s04-ui` and verifies them with the real headless loader. [S04UiLauncher.kt](../src/test/kotlin/uncivai/S04UiLauncher.kt) wraps the existing desktop entry point and automatically loads a supplied save after normal initialization. [scripts/s04-ui](../scripts/s04-ui) selects before/after and a scenario. Desktop dependencies use a separate `uiRuntime` configuration; the headless production runtime is unchanged. The engine's existing Discord dependency requires the scoped JitPack repository.
 - [EngineDependencyTest.kt](../src/test/kotlin/uncivai/EngineDependencyTest.kt) contains one integration smoke test. It loads both bundled rulesets with `consoleMode = true` and `noMods = true`, checks representative game definitions, and confirms no GDX application or graphics context exists.
 - [build.yml](../.github/workflows/build.yml) checks out the recorded submodule revision, verifies its SHA, and builds with Java 21. A `CI=true` environment rejects local checkout overrides.
 - The private [Gradle permission rule](../.codex/rules/gradle.rules) permits direct `./gradlew` commands. Shell wrappers and redirection do not match that rule.
@@ -94,18 +102,31 @@ S03 verification used the same pinned engine and OpenJDK 25.0.4.1:
 
 The build and Spotless checks passed. Thirteen JUnit tests passed with zero failures, errors or skips: the ten existing tests, two command DTO/JSON tests, and one S03 integration test that runs its complete probe against each bundled ruleset. After adding a final assertion that rejected IDs remain reusable, `./gradlew --no-daemon --console=plain spotlessApply spotlessCheck test --tests uncivai.S03CityRenameIntegrationTest` also passed. Local Markdown targets and `git diff --check` passed; the engine checkout remains clean. No engine extraction was needed. The sibling override, hosted CI and complete engine test suite were not run for S03.
 
-S01–S03 are complete. S02/S03 establish a limited own-summary/city observation contract and the first validated command; the raw runtime and its local diagnostics remain trusted host surfaces. Complete player action/information coverage, decision handling and MCP transport remain pending. Ordinary engine save migrations and derived-state restoration still apply; S01 does not promise byte-identical in-memory serialization for arbitrary older saves.
+S04 engine verification:
+
+```sh
+./gradlew --no-daemon --console=plain :Unciv:tests:test --tests com.unciv.logic.civilization.GreatPersonSelectionTest
+./gradlew --no-daemon --console=plain spotlessApply generateS04UiScenarios build prepareS04UiAssets
+```
+
+Eight engine tests and the existing 13 host tests passed. All six UI saves passed loading and placement checks, including blocked placement followed by successful placement after removing the blocking Worker. The complete engine test suite and hosted CI were not run.
+
+Real desktop auto-loading was verified for `blocked-placement` on both engine versions using `runS04Ui -PuiSmokeTest=true` (and `-PuncivDir=build/s04-ui/before-engine -PuiVersion=before` for the original). Each reached the actual great-person picker, printed `S04-UI-READY:blocked-placement.json`, and exited. The UI smoke checks verify startup; the detailed manual selection/recovery sequences are supplied for the user's review. The isolated before checkout remained clean.
+
+After the engine commit was published, `./gradlew --no-daemon --console=plain engineInfo build :Unciv:tests:test --tests com.unciv.logic.civilization.GreatPersonSelectionTest` passed with `engineInfo` reporting `df4f61112b89f3e6b1bd9efc299175b48261ea5c`. The 13 host tests reran successfully; the unchanged eight engine tests remained up to date. Spotless, local Markdown targets and diff checks passed. This integration did not change engine source or repeat the desktop smoke checks.
+
+S01–S04 are complete, with S04 published to the maintained fork and recorded as the host dependency. S02/S03 establish a limited own-summary/city observation contract and the first validated command; the raw runtime and its local diagnostics remain trusted host surfaces. Complete player action/information coverage, decision handling and MCP transport remain pending. Ordinary engine save migrations and derived-state restoration still apply; S01 does not promise byte-identical in-memory serialization for arbitrary older saves.
 
 ## Next implementation step
 
-Implement **S04: a callable, validated free-great-person choice** as the next atomic engine change.
+Implement **S05: free-great-person discovery and resolution through the bound player session** against the recorded engine revision.
 
-1. Inspect the pinned engine's `GreatPersonPickerScreen` option construction and confirmation effects, including Maya restrictions and selection-pool bookkeeping.
-2. Extract the smallest reusable screen-independent option/validation/commit operation and make the human picker delegate to it. Preserve the existing grant and free-pick effects.
-3. Add independent engine tests for ordinary and Maya choices, invalid/stale options, exhausted entitlements and failure to place a unit. Keep public contribution text confined to engine behavior and validation.
-4. Follow the checkout workflow deliberately: prepare this engine contribution in a focused branch/worktree, validate through the local override, and only pin its published revision when integrating the host adapter.
+1. Project the permitted free choices and choice identity through `PlayerSession`; keep engine `BaseUnit`/`MapUnit` objects on the trusted side.
+2. Resolve through the serialized runtime with player authority, current turn, epoch, live choice validation and receipts. Repeated resolutions must not consume another pick.
+3. Test ordinary and Maya choices, invalid/stale requests, failed placement and uncertain mutation failures without AI fallback or screen construction.
+4. Retain the manual before/after comparison commands in the selection guide for regression review; S04 no longer needs another engine change or publication step before S05 can begin.
 
-Then implement S05, exposing permitted options and validated choice resolution through the Kotlin player session, followed by S06, the thin MCP transport. End-turn and unsupported pending choices remain outside the rename slice. The complete coverage inventory still applies after this initial sequence.
+Then implement S06, the thin MCP transport. Complete turn readiness and unsupported pending choices remain outside the initial command/choice slices. The complete coverage inventory still applies after this initial sequence.
 
 ## Architecture constraints to retain
 

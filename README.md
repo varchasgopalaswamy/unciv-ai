@@ -29,6 +29,7 @@ To generate and load a lifecycle scenario:
 - [Headless runtime](docs/Headless-runtime.md): launch commands, scenario generation, settings and runtime ownership.
 - [Player-summary prototype](docs/Player-summary-prototype.md): Kotlin session binding, the initial observation fields, and isolation checks.
 - [City-rename prototype](docs/City-rename-prototype.md): owned-city handles, command validation, serialization, retry receipts, and failure handling.
+- [Free great-person selection](docs/Free-great-person-selection.md): shared engine operation and before/after UI saves and launch commands.
 - [Session handoff](docs/Session-handoff.md): verified setup state, retained decisions, and the next implementation step.
 - [Headless implementation path](docs/Headless-player-agent-path.md): the recommended approach, repository responsibilities, and initial atomic steps.
 - [Player API review](docs/Player-agent-API-review.md): the action and information inventory and privacy requirements.

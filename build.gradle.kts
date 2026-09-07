@@ -34,6 +34,14 @@ dependencies {
     testImplementation(uncivLibs.junit)
 }
 
+// Desktop dependencies are only used by the manual UI verification launcher.
+val uiRuntime by configurations.creating {
+    extendsFrom(configurations.testRuntimeClasspath.get())
+}
+dependencies {
+    uiRuntime("local.unciv:desktop")
+}
+
 spotless {
     kotlin {
         target("src/**/*.kt")
@@ -81,6 +89,51 @@ tasks.register<JavaExec>("generateS01Scenarios") {
     classpath = sourceSets.test.get().runtimeClasspath
     mainClass = "uncivai.S01ScenarioGenerator"
     args(layout.buildDirectory.dir("generated/s01-scenarios").get().asFile.absolutePath)
+}
+
+val s04UiScenarios = layout.buildDirectory.dir("generated/s04-ui")
+val generateS04UiScenarios by tasks.registering(JavaExec::class) {
+    group = "verification"
+    description = "Generates saved games for manually comparing free great-person selection."
+    dependsOn(tasks.testClasses)
+    classpath = sourceSets.test.get().runtimeClasspath
+    mainClass = "uncivai.S04UiScenarioGenerator"
+    args(s04UiScenarios.get().asFile.absolutePath)
+    outputs.dir(s04UiScenarios)
+}
+
+val uiVersion = providers.gradleProperty("uiVersion").getOrElse("after")
+require(uiVersion in setOf("before", "after")) { "uiVersion must be before or after" }
+val uiCase = providers.gradleProperty("uiCase").getOrElse("blocked-placement")
+require(uiCase in setOf("ordinary-vanilla", "ordinary", "maya", "blocked-placement", "no-city", "empty-maya-pool")) {
+    "Unknown uiCase: $uiCase"
+}
+val uiDirectory = layout.buildDirectory.dir("s04-ui/$uiVersion")
+val prepareS04UiAssets by tasks.registering(Sync::class) {
+    group = "verification"
+    description = "Copies the selected engine's UI assets so desktop-generated files stay out of source."
+    into(uiDirectory.map { it.dir("runtime-engine") })
+    from(uncivRoot.resolve("android")) {
+        into("android")
+        include("assets/**", "Images*/**", "TexturePacker.settings")
+        exclude("assets/mods/**", "assets/SaveFiles/**", "assets/MultiplayerFiles/**", "assets/GameSettings.json")
+    }
+    from(uncivRoot.resolve("docs")) { into("docs") }
+}
+tasks.register<JavaExec>("runS04Ui") {
+    group = "verification"
+    description = "Launches the real desktop UI and automatically loads an S04 scenario."
+    dependsOn(generateS04UiScenarios, prepareS04UiAssets)
+    classpath = sourceSets.test.get().output + uiRuntime
+    mainClass = "uncivai.S04UiLauncher"
+    workingDir = uiDirectory.get().dir("runtime-engine/android/assets").asFile
+    systemProperty("uncivai.assetsDir", workingDir.absolutePath)
+    systemProperty("java.awt.headless", "false")
+    systemProperty("uncivai.uiSmokeTest", providers.gradleProperty("uiSmokeTest").getOrElse("false"))
+    args(
+        s04UiScenarios.get().file("$uiCase.json").asFile.absolutePath,
+        uiDirectory.get().dir("data/$uiCase").asFile.absolutePath,
+    )
 }
 
 tasks.register("engineInfo") {

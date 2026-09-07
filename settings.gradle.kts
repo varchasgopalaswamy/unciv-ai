@@ -28,6 +28,12 @@ gradle.extensions.extraProperties["uncivRootDir"] = uncivRoot
 dependencyResolutionManagement {
     repositories {
         mavenCentral()
+        maven("https://jitpack.io") {
+            content {
+                includeGroup("com.github.MinnDevelopment")
+                includeGroup("club.minnced")
+            }
+        }
     }
     versionCatalogs {
         create("uncivLibs") {
@@ -40,5 +46,6 @@ includeBuild(uncivRoot) {
     name = "Unciv"
     dependencySubstitution {
         substitute(module("local.unciv:core")).using(project(":core"))
+        substitute(module("local.unciv:desktop")).using(project(":desktop"))
     }
 }
