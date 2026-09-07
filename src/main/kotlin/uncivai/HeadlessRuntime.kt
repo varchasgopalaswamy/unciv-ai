@@ -29,6 +29,17 @@ class HeadlessRuntime private constructor(
 ) : AutoCloseable {
     private var closed = false
 
+    /** Reads this runtime's authoritative game while excluding close or replacement. */
+    internal fun <T> readGame(block: (GameInfo) -> T): T = synchronized(lifecycleLock) {
+        if (closed || activeRuntime !== this ||
+            !UncivGame.isCurrentInitialized() || UncivGame.Current !== uncivGame ||
+            uncivGame.gameInfo !== game
+        ) {
+            throw RuntimeClosedException()
+        }
+        block(game)
+    }
+
     override fun close() {
         synchronized(lifecycleLock) {
             if (closed) return
@@ -53,55 +64,53 @@ class HeadlessRuntime private constructor(
          * Loads [saveFile] without creating a GDX application, graphics context, or world screen.
          * Both paths must be absolute. [dataDirectory] is created when needed and must be writable.
          */
-        fun load(saveFile: Path, dataDirectory: Path): HeadlessRuntime {
-            return synchronized(lifecycleLock) {
-                check(activeRuntime == null) {
-                    "A HeadlessRuntime is already active in this JVM"
+        fun load(saveFile: Path, dataDirectory: Path): HeadlessRuntime = synchronized(lifecycleLock) {
+            check(activeRuntime == null) {
+                "A HeadlessRuntime is already active in this JVM"
+            }
+            check(Gdx.app == null && Gdx.graphics == null && Gdx.gl == null) {
+                "HeadlessRuntime requires a JVM without a GDX application or graphics context"
+            }
+
+            val paths = resolvePaths(saveFile, dataDirectory)
+            val previousFiles = Gdx.files
+            val runtimeFiles = RuntimeFiles(paths.assetsDirectory, paths.dataDirectory)
+            val uncivGame = UncivGame(isConsoleMode = true)
+
+            try {
+                Gdx.files = runtimeFiles
+                UncivGame.Current = uncivGame
+                uncivGame.customDataDirectory = paths.dataDirectory.toString()
+                uncivGame.settings = controlledSettings()
+                uncivGame.files = UncivFiles(runtimeFiles, paths.dataDirectory.toString())
+
+                // Establish the no-simulation and no-automation configuration before
+                // loadGameFromFile restores the GameInfo transients.
+                DebugUtils.SIMULATE_UNTIL_TURN = 0
+                DebugUtils.VISIBLE_MAP = false
+
+                val saveHandle = FileHandle(paths.saveFile.toFile())
+                validateBundledSave(uncivGame.files, saveHandle)
+                loadBundledRulesets()
+
+                val gameInfo = uncivGame.files.loadGameFromFile(saveHandle)
+                gameInfo.simulateUntilWin = false
+                gameInfo.simulateMaxTurns = 0
+                check(!gameInfo.isSimulation()) { "Loaded game unexpectedly entered simulation mode" }
+                check(gameInfo.gameParameters.mods.isEmpty()) {
+                    "Loaded game uses mods; only bundled rulesets are supported"
                 }
-                check(Gdx.app == null && Gdx.graphics == null && Gdx.gl == null) {
-                    "HeadlessRuntime requires a JVM without a GDX application or graphics context"
+
+                uncivGame.gameInfo = gameInfo
+                HeadlessRuntime(uncivGame, runtimeFiles, previousFiles, gameInfo).also {
+                    activeRuntime = it
                 }
-
-                val paths = resolvePaths(saveFile, dataDirectory)
-                val previousFiles = Gdx.files
-                val runtimeFiles = RuntimeFiles(paths.assetsDirectory, paths.dataDirectory)
-                val uncivGame = UncivGame(isConsoleMode = true)
-
-                try {
-                    Gdx.files = runtimeFiles
-                    UncivGame.Current = uncivGame
-                    uncivGame.customDataDirectory = paths.dataDirectory.toString()
-                    uncivGame.settings = controlledSettings()
-                    uncivGame.files = UncivFiles(runtimeFiles, paths.dataDirectory.toString())
-
-                    // Establish the no-simulation and no-automation configuration before
-                    // loadGameFromFile restores the GameInfo transients.
-                    DebugUtils.SIMULATE_UNTIL_TURN = 0
-                    DebugUtils.VISIBLE_MAP = false
-
-                    val saveHandle = FileHandle(paths.saveFile.toFile())
-                    validateBundledSave(uncivGame.files, saveHandle)
-                    loadBundledRulesets()
-
-                    val gameInfo = uncivGame.files.loadGameFromFile(saveHandle)
-                    gameInfo.simulateUntilWin = false
-                    gameInfo.simulateMaxTurns = 0
-                    check(!gameInfo.isSimulation()) { "Loaded game unexpectedly entered simulation mode" }
-                    check(gameInfo.gameParameters.mods.isEmpty()) {
-                        "Loaded game uses mods; only bundled rulesets are supported"
-                    }
-
-                    uncivGame.gameInfo = gameInfo
-                    HeadlessRuntime(uncivGame, runtimeFiles, previousFiles, gameInfo).also {
-                        activeRuntime = it
-                    }
-                } catch (failure: Throwable) {
-                    uncivGame.gameInfo = null
-                    RulesetCache.clear()
-                    Concurrency.stopThreadPools()
-                    if (Gdx.files === runtimeFiles) Gdx.files = previousFiles
-                    throw failure
-                }
+            } catch (failure: Throwable) {
+                uncivGame.gameInfo = null
+                RulesetCache.clear()
+                Concurrency.stopThreadPools()
+                if (Gdx.files === runtimeFiles) Gdx.files = previousFiles
+                throw failure
             }
         }
 
@@ -201,8 +210,10 @@ class HeadlessRuntime private constructor(
         }
 
         private fun requireSeparateDataDirectory(dataDirectory: Path, assetsDirectory: Path) {
-            require(!dataDirectory.startsWith(assetsDirectory) &&
-                !assetsDirectory.startsWith(dataDirectory)) {
+            require(
+                !dataDirectory.startsWith(assetsDirectory) &&
+                    !assetsDirectory.startsWith(dataDirectory),
+            ) {
                 "Data directory must be separate from the Unciv assets directory"
             }
         }
@@ -226,6 +237,8 @@ class HeadlessRuntime private constructor(
     }
 }
 
+internal class RuntimeClosedException : IllegalStateException("Runtime is closed")
+
 private data class RuntimePaths(
     val saveFile: Path,
     val dataDirectory: Path,
@@ -240,8 +253,10 @@ private class RuntimeFiles(
     override fun getFileHandle(path: String, type: FileType): FileHandle = when (type) {
         FileType.Classpath, FileType.Internal ->
             rootedHandle(assetsDirectory, path, "asset", FileType.Internal)
+
         FileType.Local, FileType.External ->
             rootedHandle(dataDirectory, path, "data", FileType.Absolute)
+
         FileType.Absolute -> FileHandle(Path.of(path).toFile())
     }
 

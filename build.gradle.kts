@@ -2,7 +2,9 @@ import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 plugins {
     kotlin("jvm") version uncivLibs.versions.kotlin.get()
+    kotlin("plugin.serialization") version uncivLibs.versions.kotlin.get()
     application
+    id("com.diffplug.spotless") version "8.10.2"
 }
 
 group = "local.uncivai"
@@ -28,7 +30,19 @@ kotlin {
 dependencies {
     implementation("local.unciv:core")
     implementation(uncivLibs.gdx)
+    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.8.1")
     testImplementation(uncivLibs.junit)
+}
+
+spotless {
+    kotlin {
+        target("src/**/*.kt")
+        ktlint("1.8.0")
+    }
+    kotlinGradle {
+        target("*.gradle.kts")
+        ktlint("1.8.0")
+    }
 }
 
 application {

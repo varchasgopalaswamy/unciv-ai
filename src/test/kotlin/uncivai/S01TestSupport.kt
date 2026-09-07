@@ -1,6 +1,5 @@
 package uncivai
 
-import com.badlogic.gdx.Files as GdxFiles
 import com.badlogic.gdx.files.FileHandle
 import com.unciv.logic.GameInfo
 import com.unciv.logic.civilization.PlayerType
@@ -11,21 +10,25 @@ import java.nio.file.Path
 import java.nio.file.SimpleFileVisitor
 import java.nio.file.attribute.BasicFileAttributes
 import java.security.MessageDigest
+import com.badlogic.gdx.Files as GdxFiles
 
 internal fun deleteTreeWithoutFollowingLinks(root: Path) {
     if (!Files.exists(root)) return
-    Files.walkFileTree(root, object : SimpleFileVisitor<Path>() {
-        override fun visitFile(file: Path, attrs: BasicFileAttributes): FileVisitResult {
-            Files.delete(file)
-            return FileVisitResult.CONTINUE
-        }
+    Files.walkFileTree(
+        root,
+        object : SimpleFileVisitor<Path>() {
+            override fun visitFile(file: Path, attrs: BasicFileAttributes): FileVisitResult {
+                Files.delete(file)
+                return FileVisitResult.CONTINUE
+            }
 
-        override fun postVisitDirectory(directory: Path, failure: java.io.IOException?): FileVisitResult {
-            if (failure != null) throw failure
-            Files.delete(directory)
-            return FileVisitResult.CONTINUE
-        }
-    })
+            override fun postVisitDirectory(directory: Path, failure: java.io.IOException?): FileVisitResult {
+                if (failure != null) throw failure
+                Files.delete(directory)
+                return FileVisitResult.CONTINUE
+            }
+        },
+    )
 }
 
 internal class S01Files(

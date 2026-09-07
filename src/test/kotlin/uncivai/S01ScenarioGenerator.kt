@@ -21,17 +21,19 @@ import java.nio.file.Path
 
 /** Generates the two persisted, playable S01 scenarios used by integration tests and CLI examples. */
 object S01ScenarioGenerator {
-    private const val assetsProperty = "uncivai.assetsDir"
+    private const val ASSETS_PROPERTY = "uncivai.assetsDir"
 
     @JvmStatic
     fun main(args: Array<String>) {
         require(args.size == 1) { "Usage: S01ScenarioGenerator <absolute-output-directory>" }
         val outputDirectory = Path.of(args.single())
         require(outputDirectory.isAbsolute) { "Output directory must be absolute" }
-        val assetsDirectory = Path.of(requireNotNull(System.getProperty(assetsProperty)) {
-            "Missing -D$assetsProperty"
-        })
-        require(assetsDirectory.isAbsolute) { "$assetsProperty must be absolute" }
+        val assetsDirectory = Path.of(
+            requireNotNull(System.getProperty(ASSETS_PROPERTY)) {
+                "Missing -D$ASSETS_PROPERTY"
+            },
+        )
+        require(assetsDirectory.isAbsolute) { "$ASSETS_PROPERTY must be absolute" }
 
         Files.createDirectories(outputDirectory)
         val dataDirectory = Files.createTempDirectory(outputDirectory, ".generator-data-")

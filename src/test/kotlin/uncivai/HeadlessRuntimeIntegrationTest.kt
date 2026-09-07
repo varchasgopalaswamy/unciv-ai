@@ -180,9 +180,11 @@ class HeadlessRuntimeIntegrationTest {
         @BeforeClass
         @JvmStatic
         fun generateScenarios() {
-            assetsDirectory = Path.of(requireNotNull(System.getProperty("uncivai.assetsDir")) {
-                "Gradle must provide uncivai.assetsDir"
-            }).toAbsolutePath().normalize()
+            assetsDirectory = Path.of(
+                requireNotNull(System.getProperty("uncivai.assetsDir")) {
+                    "Gradle must provide uncivai.assetsDir"
+                },
+            ).toAbsolutePath().normalize()
             testClasspath = requireNotNull(System.getProperty("uncivai.testClasspath")) {
                 "Gradle must provide uncivai.testClasspath"
             }
@@ -231,7 +233,8 @@ class HeadlessRuntimeIntegrationTest {
                     "automatedUnitsChoosePromotions": true,
                     "citiesAutoBombardAtEndOfTurn": true,
                     "turnsBetweenAutosaves": 1
-                }""".trimIndent(),
+                }
+                """.trimIndent(),
                 StandardCharsets.UTF_8,
             )
         }

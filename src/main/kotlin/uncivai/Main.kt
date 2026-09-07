@@ -47,6 +47,7 @@ private fun parseOptions(args: Array<String>): CliOptions {
                 require(saveFile == null) { "--save may only be specified once" }
                 saveFile = value
             }
+
             "--data-dir" -> {
                 require(dataDirectory == null) { "--data-dir may only be specified once" }
                 dataDirectory = value

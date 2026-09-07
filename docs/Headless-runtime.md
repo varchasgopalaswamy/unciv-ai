@@ -1,6 +1,6 @@
 # Headless load and shutdown
 
-S01 provides a trusted, local executable that loads an existing Unciv save, reports the loaded game, and closes the runtime. It uses the selected engine checkout's core library and bundled assets. The player API and transport remain later steps.
+S01 provides a trusted, local executable that loads an existing Unciv save, reports the loaded game, and closes the runtime. It uses the selected engine checkout's core library and bundled assets. S02 adds a [Kotlin player-summary prototype](Player-summary-prototype.md) over that runtime; complete player coverage and transport remain later steps.
 
 ## Run a saved game
 
