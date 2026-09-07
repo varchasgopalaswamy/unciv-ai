@@ -44,7 +44,7 @@ After validation the operation assigns `City.name`, the same engine effect as [C
 
 ## Receipts and ordering
 
-A successful request is recorded for the lifetime of its session and runtime. Repeating the exact request returns its original receipt. Reusing a successful request ID with different arguments fails. The receipt describes that operation's result at the time it was applied; it is not a fresh city observation.
+A successful request is recorded for the lifetime of its session and runtime. Repeating the exact request returns its original receipt. Reusing a successful request ID with different arguments fails. S05 shares this namespace with [great-person selections](Free-great-person-prototype.md), so reusing an ID across command kinds also fails. The receipt describes that operation's result at the time it was applied; it is not a fresh city observation.
 
 Request IDs contain 1–128 printable ASCII characters, including spaces. Rejected requests do not reserve their IDs. This prototype keeps every successful receipt until its session is released; retention limits and persistent retry handling remain transport/lifecycle work.
 

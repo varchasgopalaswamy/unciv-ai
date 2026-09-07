@@ -1,6 +1,6 @@
 # Free great-person selection
 
-S04 extracts the free great-person choice into the engine's `GreatPersonManager`. The human picker and automated selection use the same operation. S05 will project the options through the bound Kotlin player session and add command validation and receipts.
+S04 extracts the free great-person choice into the engine's `GreatPersonManager`. The human picker and automated selection use the same operation. The [S05 Kotlin prototype](Free-great-person-prototype.md) projects the options through the bound player session and adds command validation and receipts.
 
 ## Engine contract
 
@@ -10,9 +10,9 @@ S04 extracts the free great-person choice into the engine's `GreatPersonManager`
 
 The operation returns `null` for an unavailable selection, exhausted choices, a civilization without cities, or failed placement. Those outcomes retain the free-choice counters and Maya pool. Previously the human picker ignored failed placement and consumed the choice anyway.
 
-The existing placement machinery supplies normal unit initialization, birth notification, quests and unit-gain effects. An attempted placement can allocate an internal unit ID before finding that no tile is available; failure does not promise byte-identical game state. Unexpected exceptions propagate, and arbitrary effects are not rolled back. S05 must apply the host's existing policy for uncertain mutation failures.
+The existing placement machinery supplies normal unit initialization, birth notification, quests and unit-gain effects. An attempted placement can allocate an internal unit ID before finding that no tile is available; failure does not promise byte-identical game state. Unexpected exceptions propagate, and arbitrary effects are not rolled back. S05 applies the host's existing policy of halting after uncertain mutation failures.
 
-This is an engine operation with trusted engine types. It does not authenticate a player, enforce session epochs, serialize concurrent callers, or cache request receipts. Those remain the host's responsibilities. A second successful call can spend a second available choice; S05 must recognize a transport retry before calling it again.
+This is an engine operation with trusted engine types. It does not authenticate a player, enforce session epochs, serialize concurrent callers, or cache request receipts. Those remain the host's responsibilities. A second successful call can spend a second available choice; S05 recognizes an exact request retry before calling it again.
 
 ## Human picker
 
@@ -52,6 +52,6 @@ The saves have one Human player, avoiding an extra hotseat-ready screen. No menu
 
 The engine contribution is committed as `df4f61112b89f3e6b1bd9efc299175b48261ea5c` and published on the maintained fork's `experimental-changes` and `free-great-person-selection` branches. The host records that commit in `vendor/Unciv`. The before comparison stays at its parent, `d77a312ed6ba0d127fe4efdfbcdc9f4918c0b5fa`.
 
-Eight engine tests and 13 host tests passed. All six saves passed loader/placement checks. Real desktop smoke checks also verified automatic loading into `GreatPersonPickerScreen` for `blocked-placement` on both the original and changed engine. Those smoke checks verify startup, not the full manual click sequence above.
+S04 verification passed eight engine tests and 13 host tests. All six saves passed loader/placement checks. Real desktop smoke checks also verified automatic loading into `GreatPersonPickerScreen` for `blocked-placement` on both the original and changed engine. Those smoke checks verify startup, not the full manual click sequence above.
 
 Engine code and tests belong to the engine Git repository; private launch tooling and integration notes remain here. Public contribution text must describe the shared selection behavior, the existing picker and validation without private project context. See the [development workflow](Development-workflow.md).

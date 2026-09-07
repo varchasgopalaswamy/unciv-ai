@@ -3,6 +3,7 @@ package uncivai.player
 import com.unciv.logic.GameInfo
 import com.unciv.logic.city.City
 import com.unciv.logic.civilization.Civilization
+import com.unciv.logic.map.mapunit.MapUnit
 import uncivai.HeadlessRuntime
 import uncivai.RuntimeClosedException
 import uncivai.RuntimeHaltedException
@@ -13,15 +14,29 @@ import java.util.UUID
 class PlayerHost internal constructor(
     private val runtime: HeadlessRuntime,
     private val cityRenamer: (City, String) -> Unit,
+    private val greatPersonChooser: (Civilization, String) -> MapUnit?,
 ) {
-    constructor(runtime: HeadlessRuntime) : this(runtime, { city, name -> city.name = name })
+    constructor(runtime: HeadlessRuntime) : this(
+        runtime,
+        { city, name -> city.name = name },
+        { civilization, unitName -> civilization.greatPeople.chooseFreeGreatPerson(unitName) },
+    )
+
+    internal constructor(
+        runtime: HeadlessRuntime,
+        cityRenamer: (City, String) -> Unit,
+    ) : this(
+        runtime,
+        cityRenamer,
+        { civilization, unitName -> civilization.greatPeople.chooseFreeGreatPerson(unitName) },
+    )
 
     fun bindPlayer(civilizationId: String): PlayerSession = playerOperation {
         runtime.accessGame { game ->
             game.findAvailablePlayer(civilizationId)
                 ?: throw PlayerSessionException(PlayerSessionFailure.PLAYER_UNAVAILABLE)
         }
-        BoundPlayerSession(runtime, civilizationId, cityRenamer)
+        BoundPlayerSession(runtime, civilizationId, cityRenamer, greatPersonChooser)
     }
 }
 
@@ -31,16 +46,24 @@ interface PlayerSession {
     fun cities(): OwnedCitiesSnapshot
 
     fun renameCity(request: RenameCityRequest): RenameCityReceipt
+
+    fun freeGreatPersonChoice(): FreeGreatPersonSnapshot
+
+    fun chooseFreeGreatPerson(request: ChooseFreeGreatPersonRequest): ChooseFreeGreatPersonReceipt
 }
 
 private class BoundPlayerSession(
     private val runtime: HeadlessRuntime,
     private val civilizationId: String,
     private val cityRenamer: (City, String) -> Unit,
+    private val greatPersonChooser: (Civilization, String) -> MapUnit?,
 ) : PlayerSession {
     private val cityIdsByHandle = HashMap<String, String>()
     private val handlesByCityId = HashMap<String, String>()
-    private val renameReceipts = HashMap<String, CompletedRename>()
+    private val completedCommands = HashMap<String, CompletedCommand>()
+    private val issuedDecisionHandles = HashSet<String>()
+    private var currentDecisionGeneration: String? = null
+    private var currentDecisionHandle: String? = null
 
     override fun summary(): PlayerSummary = playerOperation {
         runtime.accessGame { game ->
@@ -90,18 +113,18 @@ private class BoundPlayerSession(
             if (request.epoch != runtime.epoch) {
                 throw PlayerSessionException(PlayerSessionFailure.STALE_EPOCH)
             }
-            if (!request.hasValidRequestId()) {
+            if (!request.requestId.hasValidRequestId()) {
                 throw PlayerSessionException(PlayerSessionFailure.INVALID_ARGUMENT)
             }
             val player = game.findAvailablePlayer(civilizationId)
                 ?: throw PlayerSessionException(PlayerSessionFailure.PLAYER_UNAVAILABLE)
 
-            val completed = renameReceipts[request.requestId]
+            val completed = completedCommands[request.requestId]
             if (completed != null) {
-                if (completed.request != request) {
-                    throw PlayerSessionException(PlayerSessionFailure.REQUEST_ID_CONFLICT)
+                if (completed is CompletedCommand.RenameCity && completed.request == request) {
+                    return@accessGame completed.receipt
                 }
-                return@accessGame completed.receipt
+                throw PlayerSessionException(PlayerSessionFailure.REQUEST_ID_CONFLICT)
             }
             if (!request.hasValidRenameArguments()) {
                 throw PlayerSessionException(PlayerSessionFailure.INVALID_ARGUMENT)
@@ -123,16 +146,147 @@ private class BoundPlayerSession(
                 previousName = city.name,
                 name = request.name,
             )
-            val completedRename = CompletedRename(request, receipt)
+            val completedRename = CompletedCommand.RenameCity(request, receipt)
 
             try {
                 cityRenamer(city, request.name)
-                renameReceipts[request.requestId] = completedRename
+                completedCommands[request.requestId] = completedRename
             } catch (failure: Throwable) {
                 runtime.haltAfterMutation(failure)
             }
             receipt
         }
+    }
+
+    override fun freeGreatPersonChoice(): FreeGreatPersonSnapshot = playerOperation {
+        runtime.accessGame { game ->
+            val player = game.findAvailablePlayer(civilizationId)
+                ?: throw PlayerSessionException(PlayerSessionFailure.PLAYER_UNAVAILABLE)
+            val sharedDecision = synchronizeFreeGreatPersonDecision(game, player)
+            val decision = if (sharedDecision == null) {
+                clearCurrentDecision()
+                null
+            } else {
+                val fingerprint = sharedDecision.fingerprint
+                FreeGreatPersonDecision(
+                    handle = handleForDecision(sharedDecision.generation),
+                    remainingChoices = fingerprint.remainingChoices,
+                    mayaLimited = fingerprint.mayaLimitedChoices > 0,
+                    options = Collections.unmodifiableList(ArrayList(fingerprint.options)),
+                )
+            }
+
+            FreeGreatPersonSnapshot(
+                epoch = runtime.epoch,
+                decision = decision,
+            )
+        }
+    }
+
+    override fun chooseFreeGreatPerson(
+        request: ChooseFreeGreatPersonRequest,
+    ): ChooseFreeGreatPersonReceipt = playerOperation {
+        runtime.accessGame { game ->
+            if (request.epoch != runtime.epoch) {
+                throw PlayerSessionException(PlayerSessionFailure.STALE_EPOCH)
+            }
+            if (!request.requestId.hasValidRequestId()) {
+                throw PlayerSessionException(PlayerSessionFailure.INVALID_ARGUMENT)
+            }
+            val player = game.findAvailablePlayer(civilizationId)
+                ?: throw PlayerSessionException(PlayerSessionFailure.PLAYER_UNAVAILABLE)
+
+            val completed = completedCommands[request.requestId]
+            if (completed != null) {
+                if (completed is CompletedCommand.ChooseFreeGreatPerson && completed.request == request) {
+                    return@accessGame completed.receipt
+                }
+                throw PlayerSessionException(PlayerSessionFailure.REQUEST_ID_CONFLICT)
+            }
+
+            if (!game.isCurrentPlayer(player)) {
+                throw PlayerSessionException(PlayerSessionFailure.NOT_YOUR_TURN)
+            }
+
+            val sharedDecision = synchronizeFreeGreatPersonDecision(game, player)
+            if (sharedDecision == null) {
+                clearCurrentDecision()
+                throw PlayerSessionException(PlayerSessionFailure.DECISION_UNAVAILABLE)
+            }
+            if (currentDecisionGeneration != sharedDecision.generation ||
+                currentDecisionHandle != request.decisionHandle
+            ) {
+                if (currentDecisionGeneration != sharedDecision.generation) clearCurrentDecision()
+                throw PlayerSessionException(PlayerSessionFailure.DECISION_UNAVAILABLE)
+            }
+            if (request.unitName !in sharedDecision.fingerprint.options) {
+                throw PlayerSessionException(PlayerSessionFailure.OPTION_UNAVAILABLE)
+            }
+
+            val receipt = try {
+                val placedUnit = greatPersonChooser(player, request.unitName)
+                if (placedUnit == null) {
+                    null
+                } else {
+                    ChooseFreeGreatPersonReceipt(
+                        requestId = request.requestId,
+                        epoch = runtime.epoch,
+                        decisionHandle = request.decisionHandle,
+                        unitName = request.unitName,
+                        remainingChoices = player.greatPeople.freeGreatPeople,
+                    ).also { successfulReceipt ->
+                        runtime.freeGreatPersonDecisions.invalidate(player.civID)
+                        clearCurrentDecision()
+                        completedCommands[request.requestId] = CompletedCommand.ChooseFreeGreatPerson(
+                            request,
+                            successfulReceipt,
+                        )
+                    }
+                }
+            } catch (failure: Throwable) {
+                runtime.haltAfterMutation(failure)
+            }
+            receipt ?: throw PlayerSessionException(PlayerSessionFailure.PLACEMENT_FAILED)
+        }
+    }
+
+    private fun synchronizeFreeGreatPersonDecision(
+        game: GameInfo,
+        player: Civilization,
+    ): SharedFreeGreatPersonDecision? {
+        val greatPeople = player.greatPeople
+        val fingerprint = if (greatPeople.freeGreatPeople <= 0) {
+            null
+        } else {
+            val options = greatPeople.getFreeGreatPersonOptions()
+                .map { unit -> unit.name }
+                .sorted()
+            FreeGreatPersonFingerprint(
+                remainingChoices = greatPeople.freeGreatPeople,
+                mayaLimitedChoices = greatPeople.mayaLimitedFreeGP,
+                options = options,
+                turn = game.turns,
+                isYourTurn = game.isCurrentPlayer(player),
+            )
+        }
+        return runtime.freeGreatPersonDecisions.synchronize(player.civID, fingerprint)
+    }
+
+    private fun handleForDecision(generation: String): String {
+        if (currentDecisionGeneration == generation) return checkNotNull(currentDecisionHandle)
+
+        var handle: String
+        do {
+            handle = UUID.randomUUID().toString()
+        } while (!issuedDecisionHandles.add(handle))
+        currentDecisionGeneration = generation
+        currentDecisionHandle = handle
+        return handle
+    }
+
+    private fun clearCurrentDecision() {
+        currentDecisionGeneration = null
+        currentDecisionHandle = null
     }
 
     private fun handleFor(cityId: String): String = handlesByCityId.getOrPut(cityId) {
@@ -145,13 +299,20 @@ private class BoundPlayerSession(
     }
 }
 
-private data class CompletedRename(
-    val request: RenameCityRequest,
-    val receipt: RenameCityReceipt,
-)
+private sealed interface CompletedCommand {
+    data class RenameCity(
+        val request: RenameCityRequest,
+        val receipt: RenameCityReceipt,
+    ) : CompletedCommand
 
-private fun RenameCityRequest.hasValidRequestId(): Boolean = requestId.length in 1..128 &&
-    requestId.all { character -> character.code in 0x20..0x7e }
+    data class ChooseFreeGreatPerson(
+        val request: ChooseFreeGreatPersonRequest,
+        val receipt: ChooseFreeGreatPersonReceipt,
+    ) : CompletedCommand
+}
+
+private fun String.hasValidRequestId(): Boolean = length in 1..128 &&
+    all { character -> character.code in 0x20..0x7e }
 
 private fun RenameCityRequest.hasValidRenameArguments(): Boolean = name.isNotEmpty() &&
     name.length <= 32 &&
@@ -162,6 +323,8 @@ private fun GameInfo.findAvailablePlayer(civilizationId: String): Civilization? 
         civilization.isHuman() &&
         civilization.isMajorCiv()
 }
+
+private fun GameInfo.isCurrentPlayer(player: Civilization): Boolean = currentPlayer == player.civID && currentPlayerCiv === player
 
 private inline fun <T> playerOperation(operation: () -> T): T = try {
     operation()

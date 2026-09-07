@@ -33,11 +33,19 @@ data class RenameCityReceipt(
 )
 
 object PlayerCommandJson {
-    private val json = Json
+    private val json = Json {
+        explicitNulls = true
+    }
 
     fun encode(snapshot: OwnedCitiesSnapshot): String = json.encodeToString(OwnedCitiesSnapshot.serializer(), snapshot)
 
     fun encode(request: RenameCityRequest): String = json.encodeToString(RenameCityRequest.serializer(), request)
 
     fun encode(receipt: RenameCityReceipt): String = json.encodeToString(RenameCityReceipt.serializer(), receipt)
+
+    fun encode(snapshot: FreeGreatPersonSnapshot): String = json.encodeToString(FreeGreatPersonSnapshot.serializer(), snapshot)
+
+    fun encode(request: ChooseFreeGreatPersonRequest): String = json.encodeToString(ChooseFreeGreatPersonRequest.serializer(), request)
+
+    fun encode(receipt: ChooseFreeGreatPersonReceipt): String = json.encodeToString(ChooseFreeGreatPersonReceipt.serializer(), receipt)
 }

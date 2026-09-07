@@ -4,7 +4,7 @@ S02 is the first read-only observation surface over the [headless runtime](Headl
 
 ## Binding and use
 
-Trusted host code creates a `PlayerHost` and assigns each session an ordinary Human civilization. The client receives a `PlayerSession`, whose queries cannot choose a viewer. S02 introduced `summary()`; S03 extends the interface with `cities()` and `renameCity(request)`, documented in the [city-rename prototype](City-rename-prototype.md).
+Trusted host code creates a `PlayerHost` and assigns each session an ordinary Human civilization. The client receives a `PlayerSession`, whose queries cannot choose a viewer. S02 introduced `summary()`; S03 extends the interface with `cities()` and `renameCity(request)`, documented in the [city-rename prototype](City-rename-prototype.md). S05 adds `freeGreatPersonChoice()` and `chooseFreeGreatPerson(request)`, documented in the [choice prototype](Free-great-person-prototype.md).
 
 ```kotlin
 import uncivai.HeadlessRuntime
@@ -54,7 +54,7 @@ A session belongs to the runtime from which it was created. A read is synchroniz
 
 The in-process clients are trusted test clients. Kotlin access modifiers and detached data establish the API contract, not an execution sandbox for arbitrary code sharing the JVM. External agents must eventually receive only the permitted serialized surface through their bound transport connections. Raw runtime state, host factories, saves and diagnostics remain trusted host capabilities.
 
-There are no public snapshot revisions or event counters in the summary. Reads return the current own-player summary without advancing the game. S03 serializes reads and validated commands through the runtime; direct trusted engine writes must remain coordinated. Broad map information, further entity detail, history, choices and MCP transport remain later work.
+There are no public snapshot revisions or event counters in the summary. Reads return the current own-player summary without advancing the game. S03 serializes reads and validated commands through the runtime; direct trusted engine writes must remain coordinated. Broad map information, further entity detail, history, other choices and MCP transport remain later work.
 
 ## Verification
 

@@ -11,6 +11,7 @@ import com.unciv.models.metadata.GameSettings
 import com.unciv.models.ruleset.RulesetCache
 import com.unciv.utils.Concurrency
 import com.unciv.utils.DebugUtils
+import uncivai.player.FreeGreatPersonDecisionTracker
 import java.io.File
 import java.nio.file.Files
 import java.nio.file.Path
@@ -30,6 +31,7 @@ class HeadlessRuntime private constructor(
 ) : AutoCloseable {
     private var closed = false
     internal val epoch: String = UUID.randomUUID().toString()
+    internal val freeGreatPersonDecisions = FreeGreatPersonDecisionTracker()
 
     /** Trusted diagnostics for an unexpected failure after a mutation began. */
     @Volatile

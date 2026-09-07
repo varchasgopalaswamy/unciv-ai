@@ -73,7 +73,16 @@ class PlayerSummaryJsonTest {
         val sessionMethods = PlayerSession::class.java.declaredMethods
             .filterNot { it.isSynthetic }
             .associateBy { it.name }
-        assertEquals(setOf("summary", "cities", "renameCity"), sessionMethods.keys)
+        assertEquals(
+            setOf(
+                "summary",
+                "cities",
+                "renameCity",
+                "freeGreatPersonChoice",
+                "chooseFreeGreatPerson",
+            ),
+            sessionMethods.keys,
+        )
         assertEquals(0, sessionMethods.getValue("summary").parameterCount)
         assertEquals(PlayerSummary::class.java, sessionMethods.getValue("summary").returnType)
         assertEquals(0, sessionMethods.getValue("cities").parameterCount)
@@ -88,6 +97,19 @@ class PlayerSummaryJsonTest {
         assertEquals(
             uncivai.player.RenameCityReceipt::class.java,
             sessionMethods.getValue("renameCity").returnType,
+        )
+        assertEquals(0, sessionMethods.getValue("freeGreatPersonChoice").parameterCount)
+        assertEquals(
+            uncivai.player.FreeGreatPersonSnapshot::class.java,
+            sessionMethods.getValue("freeGreatPersonChoice").returnType,
+        )
+        assertEquals(
+            listOf(uncivai.player.ChooseFreeGreatPersonRequest::class.java),
+            sessionMethods.getValue("chooseFreeGreatPerson").parameterTypes.toList(),
+        )
+        assertEquals(
+            uncivai.player.ChooseFreeGreatPersonReceipt::class.java,
+            sessionMethods.getValue("chooseFreeGreatPerson").returnType,
         )
     }
 

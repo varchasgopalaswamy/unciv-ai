@@ -10,6 +10,9 @@ enum class PlayerSessionFailure {
     INVALID_ARGUMENT,
     REQUEST_ID_CONFLICT,
     GAME_HALTED,
+    DECISION_UNAVAILABLE,
+    OPTION_UNAVAILABLE,
+    PLACEMENT_FAILED,
 }
 
 class PlayerSessionException(
@@ -26,6 +29,9 @@ class PlayerSessionException(
             PlayerSessionFailure.INVALID_ARGUMENT -> "Invalid argument"
             PlayerSessionFailure.REQUEST_ID_CONFLICT -> "Request ID conflicts with an earlier request"
             PlayerSessionFailure.GAME_HALTED -> "Game is halted"
+            PlayerSessionFailure.DECISION_UNAVAILABLE -> "Decision is unavailable"
+            PlayerSessionFailure.OPTION_UNAVAILABLE -> "Option is unavailable"
+            PlayerSessionFailure.PLACEMENT_FAILED -> "Unit could not be placed"
         }
     }
 }
