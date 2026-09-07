@@ -1,6 +1,6 @@
 # Headless load and shutdown
 
-S01 provides a trusted, local executable that loads an existing Unciv save, reports the loaded game, and closes the runtime. It uses the selected engine checkout's core library and bundled assets. S02 adds a [Kotlin player-summary prototype](Player-summary-prototype.md), and S03 adds [owned-city observations and renaming](City-rename-prototype.md); complete player coverage and transport remain later steps.
+S01 provides a trusted, local executable that loads an existing Unciv save, reports the loaded game, and closes the runtime. It uses the selected engine checkout's core library and bundled assets. S02 adds a [Kotlin player-summary prototype](Player-summary-prototype.md), S03 adds [owned-city observations and renaming](City-rename-prototype.md), and S05 adds [free-great-person choices](Free-great-person-prototype.md). The [MCP prototype](MCP-prototype.md) adds opt-in serve mode with `--mcp-config`, keeping one runtime alive for independently authenticated local clients. Complete player coverage remains later work.
 
 ## Run a saved game
 

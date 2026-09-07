@@ -58,4 +58,4 @@ The S05 integration probe uses the real headless runtime and inspects placed uni
 ./gradlew --no-daemon --console=plain engineInfo build
 ```
 
-The [S04 UI comparison saves and commands](Free-great-person-selection.md) remain available for reviewing the underlying engine behavior. S05 adds no engine changes. The facade and scripted clients remain Kotlin code in one JVM. MCP transport is S06; other pending decisions, complete player information/action coverage and end-turn readiness remain required later work.
+The [S04 UI comparison saves and commands](Free-great-person-selection.md) remain available for reviewing the underlying engine behavior. S05 adds no engine changes. The facade remains Kotlin code in the game JVM; [S06](MCP-prototype.md) adds external MCP clients over a local HTTP endpoint. Other pending decisions, complete player information/action coverage and end-turn readiness remain required later work.

@@ -2,7 +2,7 @@
 
 A private headless host and MCP adapter project for agents playing Unciv, depending on a separately maintained Unciv fork. Agents must eventually have every ordinary human player action and information surface while receiving only information their player is allowed to know. Scope covers the bundled Vanilla and Gods & Kings rulesets; mod content is excluded.
 
-The repository provides a headless executable that loads a saved game and shuts down without advancing turns, plus a Kotlin prototype for player-bound summaries, owned-city observations, city renaming and free-great-person choices with retry receipts. Integration scenarios cover both bundled rulesets. Complete action/information coverage and MCP transport remain later work.
+The repository provides a headless executable and local MCP server for player-bound summaries, owned-city observations, city renaming and free-great-person choices with retry receipts. Independently authenticated clients share one game through the Kotlin facade. Integration scenarios cover both bundled rulesets. Complete action/information coverage remains later work.
 
 Read [AGENTS.md](AGENTS.md) for confidentiality and contribution instructions, and [Development workflow](docs/Development-workflow.md) for engine branches, local overrides and dependency updates.
 
@@ -31,6 +31,7 @@ To generate and load a lifecycle scenario:
 - [City-rename prototype](docs/City-rename-prototype.md): owned-city handles, command validation, serialization, retry receipts, and failure handling.
 - [Free great-person selection](docs/Free-great-person-selection.md): shared engine operation and before/after UI saves and launch commands.
 - [Free-great-person prototype](docs/Free-great-person-prototype.md): Kotlin choice discovery, validated selection, expiring handles and retry receipts.
+- [MCP prototype](docs/MCP-prototype.md): local server launch, per-player credentials, tool contracts and connection lifetime.
 - [Session handoff](docs/Session-handoff.md): verified setup state, retained decisions, and the next implementation step.
 - [Headless implementation path](docs/Headless-player-agent-path.md): the recommended approach, repository responsibilities, and initial atomic steps.
 - [Player API review](docs/Player-agent-API-review.md): the action and information inventory and privacy requirements.

@@ -70,4 +70,4 @@ Tests inspect the actual engine city name, the returned receipt and subsequent o
 ./gradlew --no-daemon --console=plain engineInfo build
 ```
 
-The remaining player actions, complete decision handling and MCP transport are later steps in the [headless plan](Headless-player-agent-path.md).
+The [MCP prototype](MCP-prototype.md) exposes this command over a local HTTP endpoint. Remaining player actions and complete decision handling are later steps in the [headless plan](Headless-player-agent-path.md).

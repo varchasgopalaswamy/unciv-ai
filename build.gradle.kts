@@ -30,8 +30,15 @@ kotlin {
 dependencies {
     implementation("local.unciv:core")
     implementation(uncivLibs.gdx)
-    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.8.1")
+    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.11.0")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.11.0")
+    implementation("io.modelcontextprotocol:kotlin-sdk-server:0.15.0")
+    implementation(platform("io.ktor:ktor-bom:3.5.1"))
+    implementation("io.ktor:ktor-server-core")
+    implementation("io.ktor:ktor-server-cio")
     testImplementation(uncivLibs.junit)
+    testImplementation("io.modelcontextprotocol:kotlin-sdk-client:0.15.0")
+    testImplementation("io.ktor:ktor-client-cio")
 }
 
 // Desktop dependencies are only used by the manual UI verification launcher.
