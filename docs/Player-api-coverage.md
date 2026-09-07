@@ -10,10 +10,10 @@ test, and UI comparison evidence. Unsupported items remain explicit.
 | --- | --- | --- |
 | Player identity | Fixed civilization, session lifetime, turn ownership, elimination | Prototype binding and summary only |
 | Turn flow | Pending choices, actionable options, optional prompts, end turn, automation timing | Shared requirements, choices and end turn tested for both bundled rulesets; automation timing and broader decisions incomplete |
-| Map | Exploration, fog, remembered improvements, terrain, rivers, resources, ownership, yields | Not implemented |
+| Map | Exploration, fog, remembered improvements, terrain, rivers, resources, ownership, yields | Explored tiles, visibility, terrain/features, rivers, revealed resources, ownership, remembered improvement names and visible units; yields and breakdowns outstanding |
 | Tile inspection | Yield breakdowns, resource reveal, city and unit details, work status | Not implemented |
-| Unit movement | Own units, paths, movement costs, movement plans, embarkation, transport | Not implemented |
-| Unit actions | Found city, worker jobs, pillage, fortify, sleep, skip, explore, automate, upgrade, disband, gift, rename | Not implemented |
+| Unit movement | Own units, paths, movement costs, movement plans, embarkation, transport | Own units with durable handles, displayed movement, current-turn previews and validated movement; UI single-turn paths share operations. Future orders, aircraft/paradrops and complete transport coverage outstanding |
+| Unit actions | Found city, worker jobs, pillage, fortify, sleep, skip, explore, automate, upgrade, disband, gift, rename | Shared settlement rules and effects with explicit promise confirmation; other actions outstanding |
 | Combat | Legal targets, human-visible previews and precision, ranged/melee/city attacks, interception, nuclear actions | Not implemented |
 | Promotions | Available promotions, prerequisites, descriptions, choice and naming | Not implemented |
 | City overview | Population, food, production, happiness, culture, borders, yields and breakdowns | Names only |
@@ -34,9 +34,9 @@ test, and UI comparison evidence. Unsupported items remain explicit.
 | Communication | Player-addressed chat, participant identity, transcript visibility | Not implemented |
 | Civilopedia | Public bundled rules, searchable entries, descriptions and links, no hidden game data | Not implemented |
 | Victory and defeat | Conditions, results, scores, permitted postgame information, resignation | Not implemented |
-| Lifecycle | Supported setup validation, create/load/save/pause, checkpoints, reconnect, controller replacement | Load, checkpoint/resume, serialized execution, operator pause, player-scoped references and durable command receipts; setup and controller management incomplete |
+| Lifecycle | Supported setup validation, create/load/save/pause, checkpoints, reconnect, controller replacement | Fixed Vanilla duel creation, load, checkpoint/resume, serialized execution, operator pause, player-scoped references and durable command receipts; general setup and controller management incomplete |
 | Agent runner | Codex conversations, private notes, turn scheduling, budgets, isolation | Not implemented |
-| Desktop integration | Shared execution and player API across all supported controls | Shared requirements and selected picker operations; embedded executor and full UI migration outstanding |
+| Desktop integration | Shared execution and player API across all supported controls | Shared requirements, selected picker operations, current-turn movement previews/execution and settlement effects; embedded executor and full UI migration outstanding |
 
 ## Known architectural gaps
 
@@ -51,3 +51,7 @@ test, and UI comparison evidence. Unsupported items remain explicit.
 - The desktop currently clones a game while advancing turns. An embedded host must
   coordinate authoritative game replacement; keeping a stale game reference is unsafe.
 - Agent filesystem isolation and completed match acceptance have not been established.
+
+The [exploration slice inventory](Exploration-and-settlement.md) records implemented
+fields, source callers, tests and remaining limits. Its scripted MCP scenario reaches
+the first turn handoff; this is not a completed duel or live-model acceptance run.

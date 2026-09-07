@@ -7,6 +7,7 @@ enum class PlayerSessionFailure {
     NOT_YOUR_TURN,
     STALE_EPOCH,
     CITY_UNAVAILABLE,
+    UNIT_UNAVAILABLE,
     INVALID_ARGUMENT,
     REQUEST_ID_CONFLICT,
     GAME_HALTED,
@@ -30,6 +31,7 @@ class PlayerSessionException(
             PlayerSessionFailure.NOT_YOUR_TURN -> "It is not your turn"
             PlayerSessionFailure.STALE_EPOCH -> "Game epoch is stale"
             PlayerSessionFailure.CITY_UNAVAILABLE -> "City is unavailable"
+            PlayerSessionFailure.UNIT_UNAVAILABLE -> "Unit is unavailable"
             PlayerSessionFailure.INVALID_ARGUMENT -> "Invalid argument"
             PlayerSessionFailure.REQUEST_ID_CONFLICT -> "Request ID conflicts with an earlier request"
             PlayerSessionFailure.GAME_HALTED -> "Game is halted"

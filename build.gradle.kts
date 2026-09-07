@@ -116,16 +116,19 @@ require(uiCase in setOf("ordinary-vanilla", "ordinary", "maya", "blocked-placeme
     "Unknown uiCase: $uiCase"
 }
 val uiDirectory = layout.buildDirectory.dir("s04-ui/$uiVersion")
-val prepareS04UiAssets by tasks.registering(Sync::class) {
-    group = "verification"
-    description = "Copies the selected engine's UI assets so desktop-generated files stay out of source."
-    into(uiDirectory.map { it.dir("runtime-engine") })
+fun Sync.copyDesktopAssets(destination: Provider<Directory>) {
+    into(destination)
     from(uncivRoot.resolve("android")) {
         into("android")
         include("assets/**", "Images*/**", "TexturePacker.settings")
         exclude("assets/mods/**", "assets/SaveFiles/**", "assets/MultiplayerFiles/**", "assets/GameSettings.json")
     }
     from(uncivRoot.resolve("docs")) { into("docs") }
+}
+val prepareS04UiAssets by tasks.registering(Sync::class) {
+    group = "verification"
+    description = "Copies the selected engine's UI assets so desktop-generated files stay out of source."
+    copyDesktopAssets(uiDirectory.map { it.dir("runtime-engine") })
 }
 tasks.register<JavaExec>("runS04Ui") {
     group = "verification"
@@ -141,6 +144,32 @@ tasks.register<JavaExec>("runS04Ui") {
         s04UiScenarios.get().file("$uiCase.json").asFile.absolutePath,
         uiDirectory.get().dir("data/$uiCase").asFile.absolutePath,
     )
+}
+
+val inspectionUiDirectory = layout.buildDirectory.dir("inspection-ui")
+val prepareInspectionUiAssets by tasks.registering(Sync::class) {
+    group = "verification"
+    description = "Copies the selected engine's UI assets for inspecting exported saves."
+    copyDesktopAssets(inspectionUiDirectory.map { it.dir("runtime-engine") })
+}
+tasks.register<JavaExec>("runInspectUi") {
+    group = "verification"
+    description = "Launches the real desktop UI and automatically loads an exported inspection save."
+    dependsOn(tasks.testClasses, prepareInspectionUiAssets)
+    classpath = sourceSets.test.get().output + uiRuntime
+    mainClass = "uncivai.InspectionUiLauncher"
+    workingDir = inspectionUiDirectory.get().dir("runtime-engine/android/assets").asFile
+    systemProperty("uncivai.assetsDir", workingDir.absolutePath)
+    systemProperty("java.awt.headless", "false")
+    systemProperty("uncivai.inspectSmokeTest", providers.gradleProperty("inspectSmokeTest").getOrElse("false"))
+    val savePath = providers.gradleProperty("inspectSave")
+    val dataPath = providers.gradleProperty("inspectDataDir")
+    doFirst {
+        require(savePath.isPresent && dataPath.isPresent) {
+            "runInspectUi requires -PinspectSave=<absolute save> and -PinspectDataDir=<absolute data directory>"
+        }
+        args(savePath.get(), dataPath.get())
+    }
 }
 
 tasks.register("engineInfo") {

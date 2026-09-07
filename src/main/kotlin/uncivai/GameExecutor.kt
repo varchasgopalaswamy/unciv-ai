@@ -86,6 +86,7 @@ class GameExecutor internal constructor(
             check(saved.alertHandles.size == player.popupAlerts.size) { "Checkpoint alert state is inconsistent" }
             turnSessions[civilization] = TurnSessionState().apply {
                 cityHandles.putAll(saved.cityHandles)
+                unitHandles.putAll(saved.unitHandles)
                 player.popupAlerts.forEachIndexed { index, alert ->
                     saved.alertHandles[index]?.let { alertHandles[alert] = it }
                 }

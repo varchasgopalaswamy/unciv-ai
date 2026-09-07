@@ -1,6 +1,6 @@
 # Player protocol
 
-The current interface is a turn-management slice, not a complete player API.
+The current interface covers turn management, exploration and settlement, not a complete player API.
 Use `player_capabilities` to inspect its operations and recovery guarantees.
 Authentication fixes the player's civilization; tool arguments cannot override it.
 
@@ -10,7 +10,8 @@ Authentication fixes the player's civilization; tool arguments cannot override i
   flag, and whether durable recovery is configured.
 - `player_turn`: phase, opaque epoch and revision, pending decisions, city handles
   and construction choices, research options, policy options, Great Person options,
-  and informational alerts. Lists are detached from engine state.
+  informational alerts, and `map` (explored tiles, frontier coordinates and owned units
+  with current-turn move previews). Lists are detached from engine state.
 - `player_command`: submit exactly one command using the latest turn snapshot.
 - Existing summary and prototype tools remain available during migration. Their
   mutation tools are disabled when durable checkpoints are enabled; use
@@ -38,10 +39,12 @@ Example, with values copied from `player_turn`:
 | `CHOOSE_FREE_GREAT_PERSON` | `selection`: offered unit name; placement may still fail |
 | `RENAME_CITY` | `target`: city handle; `selection`: valid new name |
 | `ACKNOWLEDGE_ALERT` | `target`: handle of an acknowledgeable informational alert |
+| `MOVE_UNIT` | `target`: owned unit handle; `destination`: `{ "x": ..., "y": ... }` copied from that unit's `moves` |
+| `FOUND_CITY` | `target`: settler handle; `confirmBreakPromise: true` only when accepting its listed settlement promises |
 | `END_TURN` | None; `canEndTurn` must be true |
 
 Unused fields must be absent or have their default value (`null` for target and
-selection, `[]` for queue). Unknown fields and command names are rejected. Requests
+selection and destination, `[]` for queue, `false` for confirmBreakPromise). Unknown fields and command names are rejected. Requests
 must use a unique printable ASCII `requestId` of 1–128 characters per player. Retries
 use the same ID **and the original payload**, including the original revision.
 
@@ -58,6 +61,18 @@ unit cycling disabled. It does not silently run a major civilization's AI or res
 mandatory choices. Decisions whose implementation is missing have `supported=false`.
 
 ## Launch and recovery
+
+Create a fresh Ancient-era Vanilla game with Rome and Greece in human slots:
+
+```sh
+./gradlew run --args="--new-duel --data-dir /absolute/data --checkpoint /absolute/new-checkpoint.json --mcp-config /absolute/players.json"
+```
+
+This uses Quick speed, a Tiny Pangaea map, domination/time victories, no city-states,
+barbarians, ruins or mods. The checkpoint path must be new. An optional `--seed <integer>`
+sets the map seed; it does not fix every engine random choice. See the
+[exploration guide](Exploration-and-settlement.md) for a copyable launch command
+using the credentials from the earlier manual test.
 
 Generate the existing two-player fixtures with `./gradlew generateS01Scenarios`.
 The MCP grant file is a JSON object with `players`, an array of entries containing
@@ -81,6 +96,7 @@ The server prints its loopback Streamable HTTP endpoint. The default port is 876
 Checkpointing writes engine state and receipts into one temporary file, flushes it,
 atomically replaces the checkpoint, and flushes the directory before acknowledging
 a command. Newly issued player references are also persisted before a query returns.
+Unit handles are also preserved in checkpoints; raw unit IDs never enter player responses.
 The checkpoint and adjacent `.lock` file are operator artifacts; an exclusive lock
 prevents another host from opening the same checkpoint. Atomic replacement is
 required. Existing checkpoints require explicit resume rather than overwrite.
@@ -96,5 +112,9 @@ There is no complete-match runner or agent filesystem isolation yet. The extract
 executor is independent of headless bootstrap, but the desktop has not been wired
 to that executor. Selected desktop pickers now share engine validation; the rest of
 the UI still has direct access paths. Turn snapshots intentionally cover only this
-slice, including only a subset of alert details and construction controls. Consult
+slice, including only a subset of alert details and construction controls. Movement
+commands attempt one turn of an advertised path; they do not schedule future movement.
+Aircraft relocation, paradrops, worker jobs, attacks and other special actions are absent.
+Explored terrain and ownership follow the map UI's current data; improvement names
+use Unciv's remembered values. This is not a complete historical map snapshot. Consult
 the coverage ledger for the remaining work.

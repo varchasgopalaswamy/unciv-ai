@@ -5,6 +5,7 @@ import com.unciv.logic.civilization.AlertType
 import com.unciv.logic.civilization.Civilization
 import com.unciv.logic.civilization.PlayerOperations
 import com.unciv.logic.civilization.PlayerTurnRequirements
+import com.unciv.logic.civilization.PlayerUnitOperations
 import com.unciv.logic.civilization.PopupAlert
 import uncivai.GameExecutor
 import java.util.Collections
@@ -13,6 +14,7 @@ import java.util.UUID
 /** Reconnect-stable, runtime-owned state. Access only under the game executor. */
 internal class TurnSessionState {
     val cityHandles = HashMap<String, String>()
+    val unitHandles = HashMap<Int, String>()
     val alertHandles = java.util.IdentityHashMap<PopupAlert, String>()
     val receipts = HashMap<String, Pair<TurnCommandRequest, TurnCommandReceipt>>()
     var fingerprint: PlayerTurnSnapshot? = null
@@ -52,15 +54,32 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
         if (request.revision != before.revision) fail(PlayerSessionFailure.STALE_REVISION)
         if (before.phase != "ACTIVE") fail(PlayerSessionFailure.COMMAND_UNAVAILABLE)
         val operations = PlayerOperations(player)
-        val city = request.target?.takeIf { request.kind != TurnCommandKind.ACKNOWLEDGE_ALERT }?.let { handle ->
+        val city = request.target?.takeIf { request.kind in setOf(TurnCommandKind.RENAME_CITY, TurnCommandKind.QUEUE_CONSTRUCTION) }?.let { handle ->
             val cityId = state.cityHandles.entries.firstOrNull { it.value == handle }?.key
             player.cities.singleOrNull { it.id == cityId && it.civ === player }
                 ?: fail(PlayerSessionFailure.CITY_UNAVAILABLE)
+        }
+        val unit = request.target?.takeIf { request.kind in setOf(TurnCommandKind.MOVE_UNIT, TurnCommandKind.FOUND_CITY) }?.let { handle ->
+            val unitId = state.unitHandles.entries.firstOrNull { it.value == handle }?.key
+            player.units.getCivUnits().singleOrNull { it.id == unitId && it.civ === player && !it.isDestroyed }
+                ?: fail(PlayerSessionFailure.UNIT_UNAVAILABLE)
+        }
+        val destination = if (request.kind == TurnCommandKind.MOVE_UNIT) {
+            // Resolve only an advertised option, so arbitrary coordinates never probe hidden tiles.
+            val option = before.map.units.single { it.handle == request.target }.moves
+                .firstOrNull { it.destination == request.destination } ?: fail(PlayerSessionFailure.OPTION_UNAVAILABLE)
+            game.tileMap[com.unciv.logic.map.HexCoord(option.destination.x, option.destination.y)]
+        } else {
+            null
         }
         if (request.kind == TurnCommandKind.END_TURN && !before.canEndTurn) fail(PlayerSessionFailure.TURN_BLOCKED)
 
         try {
             val accepted = when (request.kind) {
+                TurnCommandKind.MOVE_UNIT -> PlayerUnitOperations(player).tryMove(unit!!, destination!!)
+
+                TurnCommandKind.FOUND_CITY -> PlayerUnitOperations(player).tryFoundCity(unit!!, request.confirmBreakPromise)
+
                 TurnCommandKind.SET_RESEARCH_QUEUE -> operations.trySetResearchQueue(detachedRequest.queue)
 
                 TurnCommandKind.CHOOSE_FREE_TECHNOLOGY -> operations.tryChooseFreeTechnology(request.selection!!)
@@ -176,6 +195,7 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
             mayaLimited = player.greatPeople.mayaLimitedFreeGP > 0,
             greatPersonOptions = immutable(player.greatPeople.getFreeGreatPersonOptions().map { it.name }.sorted()),
             idleUnits = player.units.getDueUnits().count(),
+            map = observeMap(player, state),
         )
         if (state.fingerprint != fingerprint) {
             state.fingerprint = fingerprint
@@ -191,7 +211,7 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
     private fun state() = runtime.turnSessions.getOrPut(civilizationId) { TurnSessionState() }
 
     private fun validateShape(request: TurnCommandRequest) {
-        val needsTarget = request.kind in setOf(TurnCommandKind.RENAME_CITY, TurnCommandKind.QUEUE_CONSTRUCTION, TurnCommandKind.ACKNOWLEDGE_ALERT)
+        val needsTarget = request.kind in setOf(TurnCommandKind.RENAME_CITY, TurnCommandKind.QUEUE_CONSTRUCTION, TurnCommandKind.ACKNOWLEDGE_ALERT, TurnCommandKind.MOVE_UNIT, TurnCommandKind.FOUND_CITY)
         val needsSelection = request.kind in setOf(
             TurnCommandKind.CHOOSE_FREE_TECHNOLOGY,
             TurnCommandKind.ADOPT_POLICY,
@@ -202,7 +222,9 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
         if (needsTarget != (request.target != null) || needsSelection != (request.selection != null) ||
             request.target?.isEmpty() == true || request.selection?.isEmpty() == true || request.revision.isEmpty() ||
             (request.kind == TurnCommandKind.SET_RESEARCH_QUEUE) != request.queue.isNotEmpty() ||
-            request.queue.size > 1024 || request.queue.any { it.isEmpty() }
+            request.queue.size > 1024 || request.queue.any { it.isEmpty() } ||
+            (request.kind == TurnCommandKind.MOVE_UNIT) != (request.destination != null) ||
+            (request.confirmBreakPromise && request.kind != TurnCommandKind.FOUND_CITY)
         ) {
             fail(PlayerSessionFailure.INVALID_ARGUMENT)
         }

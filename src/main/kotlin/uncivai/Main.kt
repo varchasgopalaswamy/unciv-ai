@@ -21,7 +21,9 @@ private fun runCli(args: Array<String>): Int {
     return try {
         val options = parseOptions(args)
         val players = options.mcpConfig?.let(::loadMcpPlayerConfig)
-        val loaded = if (options.resumeCheckpoint != null) {
+        val loaded = if (options.newDuel) {
+            HeadlessRuntime.createDuel(options.dataDirectory, options.seed ?: System.currentTimeMillis())
+        } else if (options.resumeCheckpoint != null) {
             HeadlessRuntime.loadCheckpoint(options.resumeCheckpoint, options.dataDirectory)
         } else {
             HeadlessRuntime.load(checkNotNull(options.saveFile), options.dataDirectory)
@@ -87,6 +89,8 @@ private data class CliOptions(
     val port: Int,
     val checkpoint: Path?,
     val resumeCheckpoint: Path?,
+    val newDuel: Boolean,
+    val seed: Long?,
 )
 
 private fun parseOptions(args: Array<String>): CliOptions {
@@ -96,15 +100,28 @@ private fun parseOptions(args: Array<String>): CliOptions {
     var port: Int? = null
     var checkpoint: Path? = null
     var resumeCheckpoint: Path? = null
+    var newDuel = false
+    var seed: Long? = null
     var index = 0
     while (index < args.size) {
         val option = args[index]
-        require(option in setOf("--save", "--data-dir", "--mcp-config", "--port", "--checkpoint", "--resume-checkpoint")) {
+        if (option == "--new-duel") {
+            require(!newDuel) { "--new-duel may only be specified once" }
+            newDuel = true
+            index++
+            continue
+        }
+        require(option in setOf("--save", "--data-dir", "--mcp-config", "--port", "--checkpoint", "--resume-checkpoint", "--seed")) {
             "Unknown argument: $option"
         }
         require(index + 1 < args.size) { "Missing value for $option" }
         val value = args[index + 1]
         when (option) {
+            "--seed" -> {
+                require(seed == null) { "--seed may only be specified once" }
+                seed = value.toLongOrNull() ?: throw IllegalArgumentException("--seed must be an integer")
+            }
+
             "--save" -> {
                 require(saveFile == null) { "--save may only be specified once" }
                 saveFile = Path.of(value)
@@ -140,8 +157,12 @@ private fun parseOptions(args: Array<String>): CliOptions {
     }
 
     require(port == null || mcpConfig != null) { "--port requires --mcp-config" }
-    require((saveFile != null) != (resumeCheckpoint != null)) { "Specify exactly one of --save or --resume-checkpoint" }
-    require(checkpoint == null || saveFile != null) { "--checkpoint requires --save" }
+    require(listOf(saveFile != null, resumeCheckpoint != null, newDuel).count { it } == 1) {
+        "Specify exactly one of --save, --resume-checkpoint or --new-duel"
+    }
+    require(checkpoint == null || saveFile != null || newDuel) { "--checkpoint requires --save or --new-duel" }
+    require(!newDuel || checkpoint != null) { "--new-duel requires --checkpoint to persist the new game" }
+    require(seed == null || newDuel) { "--seed requires --new-duel" }
     return CliOptions(
         saveFile = saveFile,
         dataDirectory = requireNotNull(dataDirectory) {
@@ -151,6 +172,8 @@ private fun parseOptions(args: Array<String>): CliOptions {
         port = port ?: 8765,
         checkpoint = checkpoint,
         resumeCheckpoint = resumeCheckpoint,
+        newDuel = newDuel,
+        seed = seed,
     )
 }
 
@@ -162,6 +185,7 @@ private fun Throwable.conciseMessage(): String {
     return messages.joinToString(": ").ifEmpty { this::class.java.simpleName }
 }
 
-private fun usage() = "Usage: unciv-ai (--save <absolute-path> [--checkpoint <absolute-path>] | " +
+private fun usage() = "Usage: unciv-ai (--new-duel --checkpoint <absolute-path> [--seed <integer>] | " +
+    "--save <absolute-path> [--checkpoint <absolute-path>] | " +
     "--resume-checkpoint <absolute-path>) --data-dir <absolute-path> " +
     "[--mcp-config <absolute-path> [--port <0-65535>]]"

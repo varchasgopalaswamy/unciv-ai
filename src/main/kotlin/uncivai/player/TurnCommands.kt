@@ -24,6 +24,8 @@ enum class TurnCommandKind {
     CHOOSE_FREE_GREAT_PERSON,
     RENAME_CITY,
     ACKNOWLEDGE_ALERT,
+    MOVE_UNIT,
+    FOUND_CITY,
     END_TURN,
 }
 
@@ -61,6 +63,7 @@ data class PlayerTurnSnapshot(
     val mayaLimited: Boolean,
     val greatPersonOptions: List<String>,
     val idleUnits: Int,
+    val map: MapObservation = MapObservation(),
 )
 
 /** Fields unused by the selected command must be absent or have their default value. */
@@ -73,6 +76,8 @@ data class TurnCommandRequest(
     val target: String? = null,
     val selection: String? = null,
     val queue: List<String> = emptyList(),
+    val destination: TilePosition? = null,
+    val confirmBreakPromise: Boolean = false,
 )
 
 @Serializable

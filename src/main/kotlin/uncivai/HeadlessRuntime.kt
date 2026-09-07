@@ -90,7 +90,12 @@ class HeadlessRuntime private constructor(
          * Loads [saveFile] without creating a GDX application, graphics context, or world screen.
          * Both paths must be absolute. [dataDirectory] is created when needed and must be writable.
          */
-        fun load(saveFile: Path, dataDirectory: Path): HeadlessRuntime = synchronized(lifecycleLock) {
+        fun load(saveFile: Path, dataDirectory: Path): HeadlessRuntime = open(saveFile, dataDirectory, null)
+
+        /** The seed controls terrain, not every engine random choice. */
+        fun createDuel(dataDirectory: Path, seed: Long = System.currentTimeMillis()): HeadlessRuntime = open(null, dataDirectory, DuelSetup(seed))
+
+        private fun open(saveFile: Path?, dataDirectory: Path, duel: DuelSetup?): HeadlessRuntime = synchronized(lifecycleLock) {
             check(activeRuntime == null) {
                 "A HeadlessRuntime is already active in this JVM"
             }
@@ -115,11 +120,11 @@ class HeadlessRuntime private constructor(
                 DebugUtils.SIMULATE_UNTIL_TURN = 0
                 DebugUtils.VISIBLE_MAP = false
 
-                val saveHandle = FileHandle(paths.saveFile.toFile())
-                validateBundledSave(uncivGame.files, saveHandle)
+                val saveHandle = paths.saveFile?.let { FileHandle(it.toFile()) }
+                if (saveHandle != null) validateBundledSave(uncivGame.files, saveHandle)
                 loadBundledRulesets()
 
-                val gameInfo = uncivGame.files.loadGameFromFile(saveHandle)
+                val gameInfo = duel?.create() ?: uncivGame.files.loadGameFromFile(checkNotNull(saveHandle))
                 gameInfo.simulateUntilWin = false
                 gameInfo.simulateMaxTurns = 0
                 check(!gameInfo.isSimulation()) { "Loaded game unexpectedly entered simulation mode" }
@@ -187,13 +192,15 @@ class HeadlessRuntime private constructor(
 
         private val bundledRulesetNames = BaseRuleset.entries.mapTo(linkedSetOf()) { it.fullName }
 
-        private fun resolvePaths(saveFile: Path, dataDirectory: Path): RuntimePaths {
-            require(saveFile.isAbsolute) { "Save path must be absolute: $saveFile" }
+        private fun resolvePaths(saveFile: Path?, dataDirectory: Path): RuntimePaths {
+            require(saveFile == null || saveFile.isAbsolute) { "Save path must be absolute: $saveFile" }
             require(dataDirectory.isAbsolute) { "Data directory path must be absolute: $dataDirectory" }
 
-            val realSave = saveFile.toRealPath()
-            require(Files.isRegularFile(realSave)) { "Save path is not a regular file: $saveFile" }
-            require(Files.isReadable(realSave)) { "Save file is not readable: $saveFile" }
+            val realSave = saveFile?.toRealPath()
+            if (realSave != null) {
+                require(Files.isRegularFile(realSave)) { "Save path is not a regular file: $saveFile" }
+                require(Files.isReadable(realSave)) { "Save file is not readable: $saveFile" }
+            }
 
             val assetsProperty = System.getProperty(ASSETS_DIRECTORY_PROPERTY)
                 ?.takeIf { it.isNotBlank() }
@@ -228,7 +235,7 @@ class HeadlessRuntime private constructor(
             }
             requireSeparateDataDirectory(realDataDirectory, realAssetsDirectory)
 
-            require(!realSave.startsWith(realAssetsDirectory)) {
+            require(realSave == null || !realSave.startsWith(realAssetsDirectory)) {
                 "Save file must be outside the Unciv assets directory"
             }
 
@@ -268,7 +275,7 @@ internal class RuntimeClosedException : IllegalStateException("Runtime is closed
 internal class RuntimeHaltedException : IllegalStateException("Runtime is halted")
 
 private data class RuntimePaths(
-    val saveFile: Path,
+    val saveFile: Path?,
     val dataDirectory: Path,
     val assetsDirectory: Path,
 )

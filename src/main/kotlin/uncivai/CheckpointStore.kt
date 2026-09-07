@@ -36,6 +36,7 @@ internal data class SavedPlayerState(
     val revision: String,
     val fingerprint: PlayerTurnSnapshot?,
     val receipts: List<SavedReceipt>,
+    val unitHandles: Map<Int, String> = emptyMap(),
 )
 
 internal class CheckpointStore(
@@ -119,6 +120,7 @@ internal class CheckpointStore(
                 val player = game.civilizations.single { it.civID == civilization }
                 SavedPlayerState(
                     cityHandles = state.cityHandles.toMap(),
+                    unitHandles = state.unitHandles.toMap(),
                     alertHandles = player.popupAlerts.map { state.alertHandles[it] },
                     revision = state.revision,
                     fingerprint = state.fingerprint,

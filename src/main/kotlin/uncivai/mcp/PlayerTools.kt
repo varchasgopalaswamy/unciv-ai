@@ -51,7 +51,7 @@ internal fun createPlayerToolsServer(session: PlayerSession): Server = Server(
 
     addTool(
         name = "player_turn",
-        description = "Return your turn status, pending decisions, owned city production, and research, policy and Great Person options. The opaque revision changes only with your observed state or successful commands. Coverage is incomplete; unsupported decisions block end turn.",
+        description = "Return your turn status, decisions, city production, research, policy and Great Person options, explored map and owned units. Each unit has current-turn movement destinations and path previews; speculative paths can stop early on discovery. Coordinates are axial x/y. The opaque revision changes only with your observed state or successful commands. Unsupported decisions block end turn.",
         inputSchema = NO_ARGUMENTS_SCHEMA,
         toolAnnotations = QUERY_ANNOTATIONS,
     ) { request ->
@@ -63,7 +63,7 @@ internal fun createPlayerToolsServer(session: PlayerSession): Server = Server(
 
     addTool(
         name = "player_command",
-        description = "Execute one validated gameplay command against the revision from player_turn. Use target for a city or alert handle, selection for a chosen name, and queue only for SET_RESEARCH_QUEUE. Successful requests are replayed across reconnects; restart recovery requires durableRecovery in player_capabilities. Observe again after a stale revision or successful command. END_TURN requires all pending choices resolved; idle units may be left idle as with the human UI setting.",
+        description = "Execute one command using the revision from player_turn. MOVE_UNIT uses target=unit handle and destination={x,y} from that unit's moves; it attempts the previewed path this turn and may stop early. FOUND_CITY uses target=settler handle and requires confirmBreakPromise=true if settlementPromises is nonempty. Other commands use city/alert target, selection for a chosen name, and queue only for SET_RESEARCH_QUEUE. Successful requests replay across reconnects; restart recovery requires durableRecovery. Observe again after stale revisions or successful commands. END_TURN requires pending choices resolved; idle units may be left idle.",
         inputSchema = TURN_COMMAND_INPUT_SCHEMA,
         toolAnnotations = COMMAND_ANNOTATIONS,
     ) { request ->
@@ -179,7 +179,24 @@ private val TURN_COMMAND_INPUT_SCHEMA = ToolSchema(
             put("type", "string")
             putJsonArray("enum") { TurnCommandKind.entries.forEach { add(it.name) } }
         }
-        put("target", stringProperty("City or alert handle from player_turn; required only for city commands or ACKNOWLEDGE_ALERT.", minLength = 1))
+        put("target", stringProperty("City, alert or owned unit handle from player_turn, as required by the command.", minLength = 1))
+        putJsonObject("destination") {
+            put("type", "object")
+            put("description", "Destination from the unit's moves; only for MOVE_UNIT.")
+            putJsonObject("properties") {
+                putJsonObject("x") { put("type", "integer") }
+                putJsonObject("y") { put("type", "integer") }
+            }
+            putJsonArray("required") {
+                add("x")
+                add("y")
+            }
+            put("additionalProperties", false)
+        }
+        putJsonObject("confirmBreakPromise") {
+            put("type", "boolean")
+            put("description", "Explicitly accept listed settlement promises; only for FOUND_CITY.")
+        }
         put("selection", stringProperty("Chosen option or new city name; omit for commands without a named choice.", minLength = 1))
         putJsonObject("queue") {
             put("type", "array")

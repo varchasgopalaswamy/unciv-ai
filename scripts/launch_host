@@ -1,0 +1,153 @@
+#!/usr/bin/env python3
+"""Build and run a local, checkpointed Rome/Greece host in this terminal."""
+
+import argparse
+import json
+import os
+from pathlib import Path
+import secrets
+import stat
+import subprocess
+import sys
+
+
+REPO_DIR = Path(__file__).resolve().parent.parent
+
+
+def port_number(value):
+    try:
+        port = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError("port must be an integer") from None
+    if not 1 <= port <= 65535:
+        raise argparse.ArgumentTypeError("port must be between 1 and 65535")
+    return port
+
+
+def seed_number(value):
+    try:
+        seed = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError("seed must be an integer") from None
+    if not -(2**63) <= seed < 2**63:
+        raise argparse.ArgumentTypeError("seed must be a signed 64-bit integer")
+    return seed
+
+
+def parse_args(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--state-dir",
+        default=os.environ.get("UNCIV_HOST_DIR", "~/.local/state/unciv-host/demo"),
+        help="match directory (default: UNCIV_HOST_DIR or ~/.local/state/unciv-host/demo)",
+    )
+    parser.add_argument("--port", type=port_number, default=8765)
+    parser.add_argument("--checkpoint", help="checkpoint file (default: STATE_DIR/exploration.json)")
+    parser.add_argument("--players", help="credentials file (default: STATE_DIR/players.json)")
+    parser.add_argument("--new", action="store_true", help="require a new game; never overwrite a checkpoint")
+    parser.add_argument("--seed", type=seed_number, help="map seed for a new game only")
+    parser.add_argument(
+        "--unciv-dir", help="engine checkout for code and assets; relative paths use the repository root"
+    )
+    return parser.parse_args(argv)
+
+
+def absolute_path(value):
+    return Path(value).expanduser().absolute()
+
+
+def ensure_players(path, resuming):
+    """Create credentials exclusively; existing credentials are never changed."""
+    if not path.exists() and not path.is_symlink():
+        if resuming:
+            raise ValueError(
+                f"Checkpoint exists but player credentials are missing at {path}. "
+                "Restore players.json or select the original file with --players."
+            )
+        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        rome_token = secrets.token_urlsafe(32)
+        greece_token = secrets.token_urlsafe(32)
+        while greece_token == rome_token:
+            greece_token = secrets.token_urlsafe(32)
+        players = {
+            "players": [
+                {"civilizationId": "Rome", "token": rome_token},
+                {"civilizationId": "Greece", "token": greece_token},
+            ]
+        }
+        try:
+            descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
+            # Another launcher may have created it; never replace their credentials.
+            pass
+        else:
+            with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+                os.fchmod(stream.fileno(), 0o600)
+                json.dump(players, stream, indent=2)
+                stream.write("\n")
+                stream.flush()
+                os.fsync(stream.fileno())
+    if not path.is_file():
+        raise ValueError(f"Player credentials must be a regular file: {path}")
+    if os.name == "posix" and stat.S_IMODE(path.stat().st_mode) & ~0o600:
+        raise ValueError(f"Player credentials must have owner-only permissions; run chmod 600 on {path}")
+
+
+def launch(options):
+    state_dir = absolute_path(options.state_dir)
+    checkpoint = absolute_path(options.checkpoint) if options.checkpoint else state_dir / "exploration.json"
+    players = absolute_path(options.players) if options.players else state_dir / "players.json"
+    resuming = checkpoint.exists() or checkpoint.is_symlink()
+    if resuming and options.new:
+        raise ValueError(f"Checkpoint already exists at {checkpoint}. Choose a different --state-dir or --checkpoint.")
+    if resuming and not checkpoint.is_file():
+        raise ValueError(f"Checkpoint must be a regular file: {checkpoint}")
+    if resuming and options.seed is not None:
+        raise ValueError("--seed applies only to a new game; this checkpoint will be resumed.")
+
+    ensure_players(players, resuming)
+    state_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    checkpoint.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    build_command = [str(REPO_DIR / "gradlew"), "installDist", "--console=plain"]
+    if options.unciv_dir:
+        engine = Path(options.unciv_dir).expanduser()
+        if not engine.is_absolute():
+            engine = REPO_DIR / engine
+        build_command.append(f"-PuncivDir={engine.resolve()}")
+    subprocess.run(build_command, cwd=REPO_DIR, check=True)
+
+    executable = REPO_DIR / "build/install/unciv-ai/bin/unciv-ai"
+    command = [str(executable)]
+    if resuming:
+        command.extend(["--resume-checkpoint", str(checkpoint)])
+    else:
+        command.extend(["--new-duel", "--checkpoint", str(checkpoint)])
+        if options.seed is not None:
+            command.extend(["--seed", str(options.seed)])
+    command.extend([
+        "--data-dir", str(state_dir / "data"),
+        "--mcp-config", str(players),
+        "--port", str(options.port),
+    ])
+    print(f"{'Resuming' if resuming else 'Starting'} game: {checkpoint}", flush=True)
+    print(f"Wait for MCP-READY:http://127.0.0.1:{options.port}/mcp, then launch each agent in another terminal.", flush=True)
+    os.execv(str(executable), command)
+
+
+def main(argv=None):
+    options = parse_args(argv)
+    try:
+        launch(options)
+    except subprocess.CalledProcessError as failure:
+        print(f"Host build failed (exit {failure.returncode}). See Gradle output above.", file=sys.stderr)
+        return failure.returncode if failure.returncode > 0 else 1
+    except (OSError, ValueError) as failure:
+        print(f"launch_host: {failure}", file=sys.stderr)
+        return 2
+    except KeyboardInterrupt:
+        return 130
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

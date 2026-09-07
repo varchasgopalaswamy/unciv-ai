@@ -1,0 +1,154 @@
+#!/usr/bin/env python3
+"""Open an interactive Codex player using the existing local host credentials."""
+
+import argparse
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import shlex
+import shutil
+import socket
+import stat
+import sys
+
+
+class LaunchError(Exception):
+    pass
+
+
+def port_number(value):
+    try:
+        port = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError("port must be an integer from 1 to 65535") from None
+    if not 1 <= port <= 65535:
+        raise argparse.ArgumentTypeError("port must be an integer from 1 to 65535")
+    return port
+
+
+def player_credentials(path, requested):
+    try:
+        with path.open("rb") as source:
+            mode = os.fstat(source.fileno()).st_mode
+            if not stat.S_ISREG(mode) or stat.S_IMODE(mode) & ~0o600:
+                raise LaunchError("Player credentials must be a regular file with owner-only permissions (chmod 600).")
+            content = source.read(65537)
+        if len(content) > 65536:
+            raise LaunchError("Player credentials exceed 64 KiB.")
+        config = json.loads(content)
+        if not isinstance(config, dict) or set(config) != {"players"}:
+            raise ValueError()
+        players = config["players"]
+        if not isinstance(players, list) or not 1 <= len(players) <= 64:
+            raise ValueError()
+        names, tokens = set(), set()
+        for player in players:
+            if not isinstance(player, dict) or set(player) != {"civilizationId", "token"}:
+                raise ValueError()
+            name, token = player["civilizationId"], player["token"]
+            if not isinstance(name, str) or not name.strip():
+                raise ValueError()
+            if not isinstance(token, str) or not re.fullmatch(r"[A-Za-z0-9_-]{43}", token):
+                raise ValueError()
+            if name in names or token in tokens:
+                raise ValueError()
+            names.add(name)
+            tokens.add(token)
+    except FileNotFoundError:
+        raise LaunchError("No player credentials found. Run scripts/launch_host first, or supply --players.") from None
+    except (ValueError, UnicodeError, TypeError):
+        # JSON exceptions may quote credentials. Never include their text or cause.
+        raise LaunchError("Invalid player credentials file.") from None
+    matches = [p for p in players if p["civilizationId"].casefold() == requested.casefold()]
+    if len(matches) != 1:
+        raise LaunchError("Civilization is missing or ambiguous in the player credentials file.")
+    return matches[0]["civilizationId"], matches[0]["token"]
+
+
+def workspace_name(civilization):
+    if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 _-]{0,79}", civilization):
+        return civilization
+    # Credentials are trusted, but a civilization name must never become a path traversal.
+    return "player-" + hashlib.sha256(civilization.encode()).hexdigest()
+
+
+def initial_prompt(civilization):
+    return (
+        f"You are playing Unciv as {civilization}. Use only the civ MCP tools for all "
+        "game information and game actions. Do not read host saves, credentials, source "
+        "code or another player's files. You may keep your own notes in this working directory. "
+        "First inspect player_capabilities and player_turn. If it is your turn, use the "
+        "supported actions to play one sensible turn: explore with available units, settle "
+        "if appropriate, and choose research and production. Re-observe after each successful "
+        "command; use the latest epoch and revision, and preserve the original request ID "
+        "and payload when retrying an uncertain command. End your turn once, then report "
+        "what happened and wait for my next instruction. If the phase is WAITING, report "
+        "that and wait for my instruction to check again. Stop and explain unsupported "
+        "decisions, paused/finished games, or connection failures. Never substitute another "
+        "civilization's actions or automatically accept a promise-breaking confirmation."
+    )
+
+
+def parser():
+    result = argparse.ArgumentParser(description=__doc__)
+    result.add_argument("civilization", help="Civilization name, for example Rome or Greece")
+    result.add_argument("--state-dir", type=Path, default=Path(os.environ.get("UNCIV_HOST_DIR", Path.home() / ".local/state/unciv-host/demo")))
+    result.add_argument("--players", type=Path, help="Credentials file (default: STATE_DIR/players.json)")
+    result.add_argument("--port", type=port_number, default=8765, help="Local host port (default: 8765)")
+    result.add_argument("--model", help="Optional Codex model override")
+    result.add_argument("--resume", metavar="SESSION_ID", help="Resume an explicit Codex conversation ID")
+    result.add_argument("--prompt", help="Replace the default one-turn starting request")
+    result.add_argument("--dry-run", action="store_true", help="Show the command without launching Codex or printing tokens")
+    return result
+
+
+def main(argv=None):
+    args = parser().parse_args(argv)
+    try:
+        state_dir = args.state_dir.expanduser().resolve()
+        players_file = (args.players.expanduser() if args.players else state_dir / "players.json").resolve()
+        civilization, token = player_credentials(players_file, args.civilization)
+        codex = shutil.which("codex")
+        if codex is None:
+            raise LaunchError("Codex CLI is not on PATH. Install it and log in before launching a player.")
+        workspace = state_dir / "agents" / workspace_name(civilization)
+        endpoint = f"http://127.0.0.1:{args.port}/mcp"
+        # A per-invocation override; never write ~/.codex/config.toml or put a token in argv.
+        configuration = (
+            "mcp_servers.civ={url=" + json.dumps(endpoint) +
+            ',bearer_token_env_var="UNCIV_PLAYER_TOKEN",required=true}'
+        )
+        command = [codex, "--cd", str(workspace), "-c", configuration]
+        if args.model:
+            command += ["--model", args.model]
+        if args.resume:
+            command += ["resume", "--", args.resume]
+        else:
+            command += ["--"]
+        command += [args.prompt if args.prompt is not None else initial_prompt(civilization)]
+        if args.dry_run:
+            print(f"Player: {civilization}; token supplied through UNCIV_PLAYER_TOKEN (not shown).")
+            print(shlex.join(command))
+            return 0
+        try:
+            with socket.create_connection(("127.0.0.1", args.port), timeout=2):
+                pass
+        except OSError:
+            raise LaunchError(f"Host is not listening on port {args.port}. Run scripts/launch_host and wait for MCP-READY first.") from None
+        os.umask(0o077)
+        workspace.mkdir(parents=True, exist_ok=True, mode=0o700)
+        environment = os.environ.copy()
+        environment["UNCIV_PLAYER_TOKEN"] = token
+        print(f"Launching Codex as {civilization} at {endpoint}", flush=True)
+        print(f"Player working directory: {workspace}", flush=True)
+        os.execvpe(codex, command, environment)
+        return 0
+    except (LaunchError, OSError) as failure:
+        print(f"Error: {failure}", file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())
