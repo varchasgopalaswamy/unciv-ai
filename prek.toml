@@ -30,17 +30,3 @@ language = "system"
 files = '(\.kts?$|^\.editorconfig$)'
 pass_filenames = false
 require_serial = true
-
-[[repos.hooks]]
-id = "gradle-check"
-name = "Compile, lint, and test the host"
-entry = "./gradlew --console=plain check"
-language = "system"
-stages = ["pre-push"]
-pass_filenames = false
-require_serial = true
-# Includes pushes that only update the engine submodule revision.
-always_run = true
-
-# Detekt can join Gradle's check task once its Kotlin 2.4.10 compatibility is verified.
-# CI already runs `engineInfo build`, which includes Spotless through `check`.
