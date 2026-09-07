@@ -1,6 +1,6 @@
 # Session handoff
 
-Saved 2026-09-06 after implementing S02, the Kotlin player-summary prototype. This is a private continuity note, not material for the Unciv fork or its public contributions.
+Saved 2026-09-06 after implementing S03, the Kotlin owned-city rename command and retry receipts. This is a private continuity note, not material for the Unciv fork or its public contributions.
 
 ## Read first
 
@@ -8,6 +8,7 @@ Saved 2026-09-06 after implementing S02, the Kotlin player-summary prototype. Th
 - [Development workflow](Development-workflow.md) describes the submodule and local checkout override.
 - [Headless runtime](Headless-runtime.md) documents the executable, scenario generation and lifecycle ownership.
 - [Player-summary prototype](Player-summary-prototype.md) specifies the Kotlin session interface, permitted fields and validation scope.
+- [City-rename prototype](City-rename-prototype.md) specifies owned-city handles, validation, serialization, receipts and mutation failure handling.
 - [Headless implementation path](Headless-player-agent-path.md) is the current approach and initial sequence, S01–S06.
 - [Player API review](Player-agent-API-review.md) is the completeness inventory. The [original implementation plan](Player-agent-implementation-plan.md) remains a broader backlog; its desktop attachment and extensive View migration prerequisites are superseded for this headless route.
 
@@ -23,7 +24,7 @@ Saved 2026-09-06 after implementing S02, the Kotlin player-summary prototype. Th
 
 ## Current repository state
 
-This repository remains on `main`, tracking `origin/main`. The user committed S01 as `0980746` before S02. S02 is an uncommitted host change. This step began with existing Spotless configuration in `build.gradle.kts` and untracked `.editorconfig` and `prek.toml`; those were preserved. The configured formatter was applied to host Kotlin/Gradle files, including a constant-name correction in the S01 fixture generator. No engine files, engine revisions or commits were changed. Inspect current status before editing.
+This repository remains on `main`, tracking `origin/main`. The user committed S01 as `0980746` and S02 as `dcae4ce` before this step. S03 is an uncommitted host change, starting from that clean S02 commit. The existing Spotless/ktlint configuration was applied to the changed Kotlin files. No engine files, engine revisions or commits were changed. Inspect current status before editing.
 
 The submodule is `vendor/Unciv`, with URL `https://github.com/varchasgopalaswamy/Unciv.git` and integration branch `experimental-changes`. Its recorded commit is:
 
@@ -49,6 +50,11 @@ The sibling `/home/vgopalas/projects/Unciv` is a separate development checkout. 
 - [PlayerSummary.kt](../src/main/kotlin/uncivai/player/PlayerSummary.kt) defines eleven copied scalar fields: own civilization, ruleset, turn, `isYourTurn`, treasury, city/unit counts, nullable current research, and free policy/technology/great-person counts. `PlayerSummaryJson` uses generated kotlinx.serialization JSON; the host explicitly depends on version 1.8.1, matching the selected engine's resolved dependency, with the serialization compiler plugin matching Kotlin 2.4.10.
 - [PlayerSessionException.kt](../src/main/kotlin/uncivai/player/PlayerSessionException.kt) defines fixed player-facing errors without engine causes. The query surface exposes neither raw engine objects nor mutable collections. It is an in-process API contract, not a sandbox for arbitrary Kotlin code sharing the JVM.
 - [S02PlayerFacadeIntegrationTest.kt](../src/test/kotlin/uncivai/S02PlayerFacadeIntegrationTest.kt) and [S02PlayerFacadeProbe.kt](../src/test/kotlin/uncivai/S02PlayerFacadeProbe.kt) exercise two bound scripted clients on both bundled rulesets, paired unmet-opponent changes, unchanged raw serialized engine state during reads, detached results, authority checks, errors, defeat and close/reload. [PlayerSummaryJsonTest.kt](../src/test/kotlin/uncivai/PlayerSummaryJsonTest.kt) checks JSON and public Kotlin type shape, including explicit nulls and scalar-only backing fields.
+- S03 extends `PlayerSession` with `cities()` and `renameCity(request)`. [CityCommands.kt](../src/main/kotlin/uncivai/player/CityCommands.kt) defines detached own-city snapshots, rename requests and receipts with generated JSON. Opaque handles are session-scoped; each runtime load receives a fresh random epoch. All player operations and shutdown share the runtime monitor.
+- New rename requests revalidate the Human major-civilization binding, current player, live city ownership and arguments. Names follow the engine rename entry rules: 1–32 UTF-16 code units without `[]{}"\<>` or CR/LF, with no trimming or uniqueness check. Puppet/resistance status and free picks do not block that rename path. The only engine effect is assigning `City.name`.
+- Successful request IDs are remembered for the session. Exact repeats return historical receipts even after another rename, a turn change or ownership loss; revoked player bindings still fail. IDs are 1–128 printable ASCII characters, and rejected requests do not reserve them. Reusing a successful ID with a different payload fails. Receipts are not persisted or shared across sessions.
+- Unexpected exceptions after mutation begins halt all further player operations with sanitized `GAME_HALTED`; `HeadlessRuntime.mutationFailure` retains the trusted diagnostic cause. The operation may already have changed the game. Closing remains possible; rollback is not implemented.
+- [S03CityRenameIntegrationTest.kt](../src/test/kotlin/uncivai/S03CityRenameIntegrationTest.kt) runs [S03CityRenameProbe.kt](../src/test/kotlin/uncivai/S03CityRenameProbe.kt) against both saved rulesets. Checks inspect actual `City.name` and raw serialized `GameInfo`, covering authority, argument rules, hidden names, detached observations, ownership loss, reload, A/B/retry, concurrent duplicates/conflicts, serialized reads/close and failure after a write. [PlayerCommandJsonTest.kt](../src/test/kotlin/uncivai/PlayerCommandJsonTest.kt) checks DTO and JSON whitelists.
 - [EngineDependencyTest.kt](../src/test/kotlin/uncivai/EngineDependencyTest.kt) contains one integration smoke test. It loads both bundled rulesets with `consoleMode = true` and `noMods = true`, checks representative game definitions, and confirms no GDX application or graphics context exists.
 - [build.yml](../.github/workflows/build.yml) checks out the recorded submodule revision, verifies its SHA, and builds with Java 21. A `CI=true` environment rejects local checkout overrides.
 - The private [Gradle permission rule](../.codex/rules/gradle.rules) permits direct `./gradlew` commands. Shell wrappers and redirection do not match that rule.
@@ -80,18 +86,26 @@ S02 verification used the same pinned engine and OpenJDK 25.0.4.1:
 
 The final build and Spotless checks passed. Ten JUnit tests passed with zero failures, errors or skips: the six S01 tests, three summary JSON/type-contract tests, and one facade integration test that runs the complete S02 probe against each bundled ruleset. Markdown source links and `git diff --check` passed. The sibling override, hosted CI and complete engine test suite were not run for S02.
 
-S01 and S02 are complete. S02 establishes the limited own-summary contract; the raw runtime and its local diagnostics remain trusted host surfaces. Complete player action/information coverage, a gameplay command path, and MCP transport remain pending. Ordinary engine save migrations and derived-state restoration still apply; S01 does not promise byte-identical in-memory serialization for arbitrary older saves.
+S03 verification used the same pinned engine and OpenJDK 25.0.4.1:
+
+```sh
+./gradlew --no-daemon --console=plain spotlessApply engineInfo build
+```
+
+The build and Spotless checks passed. Thirteen JUnit tests passed with zero failures, errors or skips: the ten existing tests, two command DTO/JSON tests, and one S03 integration test that runs its complete probe against each bundled ruleset. After adding a final assertion that rejected IDs remain reusable, `./gradlew --no-daemon --console=plain spotlessApply spotlessCheck test --tests uncivai.S03CityRenameIntegrationTest` also passed. Local Markdown targets and `git diff --check` passed; the engine checkout remains clean. No engine extraction was needed. The sibling override, hosted CI and complete engine test suite were not run for S03.
+
+S01–S03 are complete. S02/S03 establish a limited own-summary/city observation contract and the first validated command; the raw runtime and its local diagnostics remain trusted host surfaces. Complete player action/information coverage, decision handling and MCP transport remain pending. Ordinary engine save migrations and derived-state restoration still apply; S01 does not promise byte-identical in-memory serialization for arbitrary older saves.
 
 ## Next implementation step
 
-Implement **S03: a serialized, validated owned-city rename command** as the next atomic change.
+Implement **S04: a callable, validated free-great-person choice** as the next atomic engine change.
 
-1. Extend own-city observations with enough permitted identity/name information to target a rename. Keep object resolution and player authority on the host.
-2. Serialize commands with observations and runtime lifecycle. Revalidate ownership, current player, current game epoch and rename arguments when the command executes.
-3. Add request receipts: repeating an accepted request returns its prior outcome, while reusing an ID for different arguments fails. Reject stale work after close/reload.
-4. Verify wrong-player/out-of-turn/stale requests cannot mutate a city and retries cannot apply twice. Keep end-turn and unresolved choice handling outside this command slice.
+1. Inspect the pinned engine's `GreatPersonPickerScreen` option construction and confirmation effects, including Maya restrictions and selection-pool bookkeeping.
+2. Extract the smallest reusable screen-independent option/validation/commit operation and make the human picker delegate to it. Preserve the existing grant and free-pick effects.
+3. Add independent engine tests for ordinary and Maya choices, invalid/stale options, exhausted entitlements and failure to place a unit. Keep public contribution text confined to engine behavior and validation.
+4. Follow the checkout workflow deliberately: prepare this engine contribution in a focused branch/worktree, validate through the local override, and only pin its published revision when integrating the host adapter.
 
-Then follow S04/S05 (a reusable free-great-person choice and its adapter), and S06 (thin MCP transport). S04 is independently reviewable and can be developed alongside the earlier host steps. The complete coverage inventory still applies after this initial sequence.
+Then implement S05, exposing permitted options and validated choice resolution through the Kotlin player session, followed by S06, the thin MCP transport. End-turn and unsupported pending choices remain outside the rename slice. The complete coverage inventory still applies after this initial sequence.
 
 ## Architecture constraints to retain
 

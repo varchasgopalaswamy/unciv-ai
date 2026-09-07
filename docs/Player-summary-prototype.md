@@ -4,7 +4,7 @@ S02 is the first read-only observation surface over the [headless runtime](Headl
 
 ## Binding and use
 
-Trusted host code creates a `PlayerHost` and assigns each session an ordinary Human civilization. The client receives a `PlayerSession`, whose only operation is `summary()` and whose queries cannot choose a viewer.
+Trusted host code creates a `PlayerHost` and assigns each session an ordinary Human civilization. The client receives a `PlayerSession`, whose queries cannot choose a viewer. S02 introduced `summary()`; S03 extends the interface with `cities()` and `renameCity(request)`, documented in the [city-rename prototype](City-rename-prototype.md).
 
 ```kotlin
 import uncivai.HeadlessRuntime
@@ -50,11 +50,11 @@ The three free-pick counters describe the player's own outstanding entitlements.
 
 A session belongs to the runtime from which it was created. A read is synchronized with runtime shutdown and verifies that the same game is still authoritative. Closing the runtime or replacing its game invalidates the session. Loading another runtime never redirects old sessions to the new game. Each query also checks that its assigned civilization is still a Human major civilization.
 
-`PlayerSessionException` has a fixed message and a `PlayerSessionFailure` reason: `SESSION_CLOSED`, `PLAYER_UNAVAILABLE`, or `QUERY_FAILED`. Unexpected engine exceptions are not attached as causes or included in player messages. These are Kotlin errors; a transport error format is deferred to the transport adapter.
+`PlayerSessionException` has a fixed message and a `PlayerSessionFailure` reason. Summary reads can return `SESSION_CLOSED`, `PLAYER_UNAVAILABLE`, `QUERY_FAILED`, or `GAME_HALTED` after an uncertain mutation. S03 adds the command-specific reasons described in the [city-rename prototype](City-rename-prototype.md). Unexpected engine exceptions are not attached as causes or included in player messages. These are Kotlin errors; a transport error format is deferred to the transport adapter.
 
 The in-process clients are trusted test clients. Kotlin access modifiers and detached data establish the API contract, not an execution sandbox for arbitrary code sharing the JVM. External agents must eventually receive only the permitted serialized surface through their bound transport connections. Raw runtime state, host factories, saves and diagnostics remain trusted host capabilities.
 
-There are no public snapshot revisions or event counters in S02. Reads return the current own-player summary without advancing the game. Direct trusted engine writes must remain coordinated; S03 will add the serialized, validated command path. Broad map information, entity detail, history, choices and MCP transport remain later work.
+There are no public snapshot revisions or event counters in the summary. Reads return the current own-player summary without advancing the game. S03 serializes reads and validated commands through the runtime; direct trusted engine writes must remain coordinated. Broad map information, further entity detail, history, choices and MCP transport remain later work.
 
 ## Verification
 

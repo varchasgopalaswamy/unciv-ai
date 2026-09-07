@@ -1,6 +1,6 @@
 # Headless load and shutdown
 
-S01 provides a trusted, local executable that loads an existing Unciv save, reports the loaded game, and closes the runtime. It uses the selected engine checkout's core library and bundled assets. S02 adds a [Kotlin player-summary prototype](Player-summary-prototype.md) over that runtime; complete player coverage and transport remain later steps.
+S01 provides a trusted, local executable that loads an existing Unciv save, reports the loaded game, and closes the runtime. It uses the selected engine checkout's core library and bundled assets. S02 adds a [Kotlin player-summary prototype](Player-summary-prototype.md), and S03 adds [owned-city observations and renaming](City-rename-prototype.md); complete player coverage and transport remain later steps.
 
 ## Run a saved game
 
@@ -35,6 +35,8 @@ The generator is test tooling. Production loading depends only on the host and e
 ## Runtime ownership
 
 `HeadlessRuntime.load(saveFile, dataDirectory)` exposes the loaded `GameInfo` to trusted host code and implements `AutoCloseable`. Use it with Kotlin's `use` to release the runtime on success or failure. Only one runtime may be active in a JVM because the engine uses global state. Raw engine objects are not a player-facing API or an enforced information boundary.
+
+Each load assigns a fresh opaque epoch. Player reads, command validation, mutation, receipt recording and shutdown share the runtime's lock. If an unexpected failure occurs after a command starts mutating state, the runtime retains the cause for trusted diagnostics and rejects further player operations. It can still be closed; it does not promise rollback.
 
 The runtime creates fresh settings in memory with automatic player decisions disabled. It does not read or save desktop settings. File services resolve bundled assets and runtime data independently, avoiding the console settings loader's relative `GameSettings.json` path. No display, graphics application, world screen, audio service, simulation, or desktop launcher is started.
 

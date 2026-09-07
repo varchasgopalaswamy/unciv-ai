@@ -14,6 +14,7 @@ import com.unciv.utils.DebugUtils
 import java.io.File
 import java.nio.file.Files
 import java.nio.file.Path
+import java.util.UUID
 
 /**
  * Owns one display-free Unciv game in this JVM.
@@ -28,16 +29,29 @@ class HeadlessRuntime private constructor(
     val game: GameInfo,
 ) : AutoCloseable {
     private var closed = false
+    internal val epoch: String = UUID.randomUUID().toString()
 
-    /** Reads this runtime's authoritative game while excluding close or replacement. */
-    internal fun <T> readGame(block: (GameInfo) -> T): T = synchronized(lifecycleLock) {
+    /** Trusted diagnostics for an unexpected failure after a mutation began. */
+    @Volatile
+    internal var mutationFailure: Throwable? = null
+        private set
+
+    /** Serializes player reads and commands with runtime shutdown. */
+    internal fun <T> accessGame(block: (GameInfo) -> T): T = synchronized(lifecycleLock) {
         if (closed || activeRuntime !== this ||
             !UncivGame.isCurrentInitialized() || UncivGame.Current !== uncivGame ||
             uncivGame.gameInfo !== game
         ) {
             throw RuntimeClosedException()
         }
+        if (mutationFailure != null) throw RuntimeHaltedException()
         block(game)
+    }
+
+    /** Stops further player operations; the caller must not assume the mutation was rolled back. */
+    internal fun haltAfterMutation(failure: Throwable): Nothing = synchronized(lifecycleLock) {
+        if (mutationFailure == null) mutationFailure = failure
+        throw RuntimeHaltedException()
     }
 
     override fun close() {
@@ -238,6 +252,8 @@ class HeadlessRuntime private constructor(
 }
 
 internal class RuntimeClosedException : IllegalStateException("Runtime is closed")
+
+internal class RuntimeHaltedException : IllegalStateException("Runtime is halted")
 
 private data class RuntimePaths(
     val saveFile: Path,

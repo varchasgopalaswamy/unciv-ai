@@ -63,7 +63,7 @@ class PlayerSummaryJsonTest {
     }
 
     @Test
-    fun `public DTO and session surfaces contain only the summary contract`() {
+    fun `public DTO and session surfaces contain only the declared player contract`() {
         // This guards the ordinary public API shape; it is not an in-process reflection sandbox.
         val fields = PlayerSummary::class.java.declaredFields
             .filterNot { Modifier.isStatic(it.modifiers) }
@@ -72,9 +72,23 @@ class PlayerSummaryJsonTest {
 
         val sessionMethods = PlayerSession::class.java.declaredMethods
             .filterNot { it.isSynthetic }
-        assertEquals(listOf("summary"), sessionMethods.map { it.name })
-        assertEquals(0, sessionMethods.single().parameterCount)
-        assertEquals(PlayerSummary::class.java, sessionMethods.single().returnType)
+            .associateBy { it.name }
+        assertEquals(setOf("summary", "cities", "renameCity"), sessionMethods.keys)
+        assertEquals(0, sessionMethods.getValue("summary").parameterCount)
+        assertEquals(PlayerSummary::class.java, sessionMethods.getValue("summary").returnType)
+        assertEquals(0, sessionMethods.getValue("cities").parameterCount)
+        assertEquals(
+            uncivai.player.OwnedCitiesSnapshot::class.java,
+            sessionMethods.getValue("cities").returnType,
+        )
+        assertEquals(
+            listOf(uncivai.player.RenameCityRequest::class.java),
+            sessionMethods.getValue("renameCity").parameterTypes.toList(),
+        )
+        assertEquals(
+            uncivai.player.RenameCityReceipt::class.java,
+            sessionMethods.getValue("renameCity").returnType,
+        )
     }
 
     private fun assertJsonContract(encoded: String, expectedResearch: String?) {
