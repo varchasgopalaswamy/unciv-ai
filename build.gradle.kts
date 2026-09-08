@@ -99,6 +99,32 @@ tasks.register<JavaExec>("generateS01Scenarios") {
     args(layout.buildDirectory.dir("generated/s01-scenarios").get().asFile.absolutePath)
 }
 
+tasks.register<JavaExec>("prepareConquestFixture") {
+    group = "verification"
+    description = "Prepares a fresh checkpoint with legal captures immediately available, for live capture and victory verification."
+    dependsOn(tasks.testClasses)
+    classpath = sourceSets.test.get().runtimeClasspath
+    mainClass = "uncivai.CombatRunProbe"
+    args(
+        providers.gradleProperty("combatFixtureDir")
+            .orElse(layout.buildDirectory.dir("generated/conquest-fixture").map { it.asFile.absolutePath }).get(),
+        "prepare-conquest",
+    )
+}
+
+tasks.register<JavaExec>("prepareVictoryFixture") {
+    group = "verification"
+    description = "Prepares a fresh checkpoint one capital attack and disposition away from victory."
+    dependsOn(tasks.testClasses)
+    classpath = sourceSets.test.get().runtimeClasspath
+    mainClass = "uncivai.CombatRunProbe"
+    args(
+        providers.gradleProperty("combatFixtureDir")
+            .orElse(layout.buildDirectory.dir("generated/victory-fixture").map { it.asFile.absolutePath }).get(),
+        "prepare-victory",
+    )
+}
+
 val s04UiScenarios = layout.buildDirectory.dir("generated/s04-ui")
 val generateS04UiScenarios by tasks.registering(JavaExec::class) {
     group = "verification"

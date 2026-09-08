@@ -59,6 +59,10 @@ object CombatRunProbe {
     fun main(args: Array<String>) {
         val root = Path.of(args[0])
         val stage = args[1]
+        if (stage == "prepare-conquest" || stage == "prepare-victory") {
+            if (stage == "prepare-conquest") prepareConquest(root) else prepareVictory(root)
+            return
+        }
         val fresh = stage == "combat" || stage == "conquest" || stage.startsWith("last-settler-")
         val checkpoint = root.resolve("checkpoint.json")
         val runtime = when {
@@ -83,6 +87,71 @@ object CombatRunProbe {
                     else -> error("Unknown combat test stage: $stage")
                 }
             }
+        }
+    }
+
+    /** Reuses the verified capture fixture, leaving every gameplay decision to its players. */
+    private fun prepareConquest(root: Path) {
+        val checkpoint = root.resolve("exploration.json")
+        require(!Files.exists(checkpoint)) { "Refusing to overwrite an existing conquest checkpoint: $checkpoint" }
+        HeadlessRuntime.createDuel(root.resolve("fixture-data"), 412L).use { runtime ->
+            arrange(runtime, conquest = true)
+            runtime.game.tileMap.mapParameters.name = "Combat exercise"
+            val rome = runtime.game.getCivilization("Rome")
+            val greece = runtime.game.getCivilization("Greece")
+            check(runtime.game.currentPlayerCiv === rome && rome.isAtWarWith(greece))
+            check(greece.cities.size == 2 && greece.cities.all { it.health == 1 })
+            val snapshot = PlayerHost(runtime).bindPlayer("Rome").turn()
+            check(snapshot.map.units.count { unit -> unit.combat!!.attacks.any { it.defenderIsCity } } == 2)
+            check(snapshot.scenario?.name == "COMBAT_EXERCISE")
+            runtime.executor.enableCheckpoints(checkpoint)
+            println("Prepared conquest checkpoint: ${checkpoint.toAbsolutePath()}")
+            println("Rome acts first; capture the Greek outpost at (0, 0), choose Puppet then Annex, and capture Athens at (4, 0).")
+        }
+    }
+
+    /** A single legal attack followed by the ordinary capital disposition completes this game. */
+    private fun prepareVictory(root: Path) {
+        val checkpoint = root.resolve("exploration.json")
+        require(!Files.exists(checkpoint)) { "Refusing to overwrite an existing victory checkpoint: $checkpoint" }
+        HeadlessRuntime.createDuel(root.resolve("fixture-data"), 412L).use { runtime ->
+            arrange(runtime, conquest = true)
+            val game = runtime.game
+            val rome = game.getCivilization("Rome")
+            val greece = game.getCivilization("Greece")
+            greece.cities.filterNot { it.isOriginalCapital }.toList().forEach { it.destroyCity() }
+            greece.units.getCivUnits().toList().forEach { it.destroy() }
+            rome.units.getCivUnits().filterNot { it.currentTile.position == HexCoord(3, 0) }.toList().forEach { it.destroy() }
+            game.tileMap.mapParameters.name = "Victory exercise"
+            val players = listOf(rome, greece)
+            for (tile in game.tileMap.values) players.forEach { tile.setExplored(it, false) }
+            players.forEach { player ->
+                for (technology in listOf("Pottery", "Archery", "Mining")) player.tech.addTechnology(technology, false)
+                player.tech.techsToResearch = arrayListOf("Writing", "The Wheel", "Bronze Working")
+                for (city in player.cities) {
+                    city.cityConstructions.constructionQueue.clear()
+                    city.cityConstructions.addToQueue("Archer")
+                    city.cityConstructions.addToQueue("Monument")
+                    city.cityStats.update()
+                }
+                player.units.getCivUnits().forEach { it.updateVisibleTiles(updateCivViewableTiles = false) }
+                player.cache.updateViewableTiles()
+            }
+            val capital = greece.cities.single()
+            val warrior = rome.units.getCivUnits().single()
+            check(rome.cities.size == 1 && capital.isOriginalCapital && capital.health == 1)
+            check(capital.location == HexCoord(4, 0) && warrior.currentTile.position == HexCoord(3, 0) && warrior.health == 100)
+            check(greece.units.getCivUnits().none() && game.currentPlayerCiv === rome && rome.isAtWarWith(greece))
+            check(game.victoryData == null && players.none { it.victoryManager.hasWon() })
+            val snapshot = PlayerHost(runtime).bindPlayer("Rome").turn()
+            val unit = snapshot.map.units.single()
+            val attacks = unit.combat!!.attacks
+            check(attacks.map { it.destination }.distinct() == listOf(TilePosition(4, 0)))
+            check(attacks.count { it.defenderIsCity && it.attackFrom == unit.position } == 1)
+            check(snapshot.researchQueue.isNotEmpty() && snapshot.cities.single().constructionQueue.isNotEmpty())
+            runtime.executor.enableCheckpoints(checkpoint)
+            println("Prepared victory checkpoint: ${checkpoint.toAbsolutePath()}")
+            println("Rome's Warrior at (3, 0) can directly attack Athens at (4, 0), read the capture decision and Annex it to win on turn 0.")
         }
     }
 
@@ -481,10 +550,22 @@ object CombatRunProbe {
         val results = api.operator(OperatorRequest("results")).results
         check(results == saved.results) { "Terminal state or combat reports changed after restart" }
         verifyResults(api, results)
+        val status = api.status()
+        check(status.scheduled && status.phase == "FINISHED")
         val before = json().toJson(runtime.game)
-        val player = PlayerHost(runtime).bindPlayer("Rome")
-        for (entry in saved.commands) check(player.execute(entry.request) == entry.receipt)
+        val checkpoint = Files.readString(root.resolve("checkpoint.json"))
+        for (entry in saved.commands) {
+            val owner = api.playerToken(entry.civilization)
+            val opponent = api.playerToken(if (entry.civilization == "Rome") "Greece" else "Rome")
+            check(api.execute(owner, entry.request) == entry.receipt) { "Own completed command did not replay over HTTPS after restart" }
+            api.reject(opponent, entry.request)
+            api.reject(owner, entry.request.copy(requestId = UUID.randomUUID().toString()))
+            api.reject(owner, entry.request.copy(revision = UUID.randomUUID().toString()))
+            api.reject(owner, entry.request.copy(epoch = UUID.randomUUID().toString()))
+        }
         check(json().toJson(runtime.game) == before)
+        check(api.status().handoff == status.handoff)
+        check(Files.readString(root.resolve("checkpoint.json")) == checkpoint) { "Terminal retries or fenced commands changed the checkpoint" }
         verifyTerminalRollback(runtime, api, root, checkNotNull(saved.activationId))
     }
 

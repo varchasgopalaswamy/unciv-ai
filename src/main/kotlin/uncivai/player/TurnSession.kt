@@ -46,6 +46,11 @@ internal class TurnSessionState {
 }
 
 internal class TurnSession(private val runtime: GameExecutor, private val civilizationId: String) {
+    fun completedReceipt(request: TurnCommandRequest): TurnCommandReceipt? = runtime.accessGame {
+        val completed = runtime.turnSessions[civilizationId]?.receipts?.get(request.requestId)
+        if (completed?.first == request.detached()) completed.second.detached() else null
+    }
+
     fun snapshot(): PlayerTurnSnapshot = runtime.accessGame { game ->
         runtime.captureCombatReports()
         val state = state()
@@ -449,6 +454,41 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
     }
 
     private fun scenario(game: GameInfo, player: Civilization, diplomacy: DiplomacyObservation): GameplayScenario? {
+        if (game.tileMap.mapParameters.name == "Victory exercise") {
+            return GameplayScenario(
+                "VICTORY_EXERCISE",
+                if (gameFinished(game)) "FINISHED" else "CAPTURE_CAPITAL",
+                immutable(
+                    listOf(
+                        "Victory test: capture the enemy capital with the offered melee attack now. Controllable units and attack offers are in map.units[].combat.attacks; print selected fields rather than the full snapshot.",
+                        "ATTACK takes the unit handle, exact destination and attackFrom. Read the actual receipt, then re-observe and read the full captured-city decision before choosing Annex with RESOLVE_CAPTURED_CITY.",
+                        "After the capital capture, read player_result. Stop when FINISHED; no END_TURN is needed after victory. Do not delay the offered capture for exploration, healing or production changes.",
+                    ),
+                ),
+            )
+        }
+        if (game.tileMap.mapParameters.name == "Combat exercise") {
+            return GameplayScenario(
+                "COMBAT_EXERCISE",
+                if (gameFinished(game)) {
+                    "FINISHED"
+                } else if (diplomacy.knownCivilizations.any { it.atWar }) {
+                    "AT_WAR"
+                } else {
+                    "PEACE"
+                },
+                immutable(
+                    listOf(
+                        "Combat exercise: use your summaries to track checks. Read combat reports and full capture decisions each turn.",
+                        "Your controllable units are map.units: inspect combat.attacks, combat.promotions.choices and combat.orders. map.tiles[].units contains visible summaries only. Parse tool results and print selected fields instead of the entire snapshot.",
+                        "Before attacking, promote an eligible unit. Fortify an injured unit until healed, then wake it on a later turn.",
+                        "Use offered city bombardment, ranged and melee attacks. CITY_ATTACK takes target and destination only; omit attackFrom. Unit ATTACK requires destination and attackFrom. Read actual combat receipts; previews do not prove an attack happened.",
+                        "Capture an enemy outpost, choose Puppet after reading its decision, then Annex it through city management when offered.",
+                        "After annexing an outpost, prioritize offered attacks on the enemy capital to finish the victory test, even at risk of unit losses. Do not defer a legal capital attack just to heal or fight a defending unit. Keep producing units and ending turns; do not offer peace.",
+                    ),
+                ),
+            )
+        }
         if (game.tileMap.mapParameters.name != "Close-start duel") return null
         val opponent = diplomacy.knownCivilizations.singleOrNull() ?: return GameplayScenario("CLOSE_START_DIPLOMACY", "AWAITING_WAR")
         // Only the public declaration between these two known players contributes; never expose other receipts.

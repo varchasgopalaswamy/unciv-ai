@@ -190,14 +190,13 @@ class OperatorControl internal constructor(
     internal fun activationSession(token: String): PlayerSession? = runtime.accessOperatorGame {
         val current = activation ?: return@accessOperatorGame null
         if (!MessageDigest.isEqual(hash(token), hash(current.token))) return@accessOperatorGame null
-        GuardedSession(current.session, current.civilization) { mutation ->
+        GuardedSession(current.session) { mutation ->
             if (activation !== current || leaseId == null || (mutation && runtime.handoff != current.handoff)) deny()
         }
     }
 
     private inner class GuardedSession(
         private val delegate: PlayerSession,
-        private val civilization: String? = null,
         private val check: (Boolean) -> Unit,
     ) : PlayerSession {
         private fun <T> guarded(mutation: Boolean = false, block: () -> T): T = runtime.accessOperatorGame {
@@ -207,13 +206,14 @@ class OperatorControl internal constructor(
         override fun capabilities() = guarded { delegate.capabilities() }
         override fun turn() = guarded { delegate.turn() }
         override fun result() = guarded { delegate.result() }
+        override fun completedReceipt(request: TurnCommandRequest) = guarded { delegate.completedReceipt(request) }
         override fun summary() = guarded { delegate.summary() }
         override fun cities() = guarded { delegate.cities() }
         override fun freeGreatPersonChoice() = guarded { delegate.freeGreatPersonChoice() }
         override fun execute(request: TurnCommandRequest) = guarded {
-            val completed = civilization?.let { runtime.turnSessions[it]?.receipts?.get(request.requestId) }
             // A completed receipt is a read, including a lost END_TURN acknowledgement.
-            if (completed?.first != request) check(true)
+            delegate.completedReceipt(request)?.let { return@guarded it }
+            check(true)
             delegate.execute(request)
         }
         override fun renameCity(request: RenameCityRequest) = guarded(true) { delegate.renameCity(request) }

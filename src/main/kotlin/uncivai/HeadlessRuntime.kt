@@ -98,7 +98,7 @@ class HeadlessRuntime private constructor(
         fun load(saveFile: Path, dataDirectory: Path): HeadlessRuntime = open(saveFile, dataDirectory, null)
 
         /** The seed controls terrain, not every engine random choice. */
-        fun createDuel(dataDirectory: Path, seed: Long = System.currentTimeMillis(), closeStarts: Boolean = false): HeadlessRuntime = open(null, dataDirectory, DuelSetup(seed, closeStarts))
+        fun createDuel(dataDirectory: Path, seed: Long = System.currentTimeMillis(), closeStarts: Boolean = false, combatScenario: Boolean = false): HeadlessRuntime = open(null, dataDirectory, DuelSetup(seed, closeStarts, combatScenario))
 
         private fun open(saveFile: Path?, dataDirectory: Path, duel: DuelSetup?): HeadlessRuntime = synchronized(lifecycleLock) {
             check(activeRuntime == null) {

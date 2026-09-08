@@ -40,6 +40,9 @@ becomes a Worker counts as a capture, not a casualty.
 
 Exact command retries return the original receipt without applying damage, spending
 movement or awarding experience again. Turn reviews record actual attack outcomes.
+This also works over player HTTPS credentials after a terminal host restart while
+the host remains in scheduled mode. Only that player's exact completed request is
+treated as a receipt read; new or changed commands remain subject to the scheduler.
 Interrupted turns restore their starting game, receipts, experience and combat-report
 history using the existing operator rollback protocol.
 
@@ -111,3 +114,57 @@ manually, instruct the players to establish cities, meet, declare war, move a la
 unit into range, inspect attack previews and execute an offered attack, then read
 reports, heal/promote when eligible, and negotiate peace. Inspect the exported save
 with `scripts/inspect_game` to verify the resulting position independently.
+
+## Ready-to-play combat scenario
+
+Create a fresh exercise with `--combat-scenario`:
+
+```sh
+./scripts/launch_host --new --combat-scenario --state-dir /tmp/my-combat-match --port 8767
+./scripts/launch_agent_service Rome --state-dir /tmp/my-combat-match --port 8867
+./scripts/launch_agent_service Greece --state-dir /tmp/my-combat-match --port 8868
+./scripts/run_agents --state-dir /tmp/my-combat-match --max-turns 12 --max-invocations 28 --max-seconds 5400 --turn-timeout 300
+```
+
+Run these in separate terminals, waiting for the host and both services to report
+ready before starting the scheduler. Model and reasoning flags work as in ordinary
+matches. The scenario flag is new-game-only and cannot be combined with
+`--close-starts`; omit it when resuming.
+
+The fixed 127-tile grassland map contains Rome/Athens capitals and the weakened
+Antium/Sparta outposts. Each civilization has three Warriors and one Archer,
+including an injured reserve and a veteran eligible for promotion. Both are already
+at war; research and production queues are initialized. Ordinary fog and all normal
+combat rules apply after setup.
+
+Only this scenario's snapshots contain combat exercise instructions. Agents are
+asked to promote, heal and wake units, use bombardment/ranged/melee attacks, puppet
+then annex an outpost, and fight for the capitals. The host validates actions but
+does not force this sequence or guarantee a model completes every check. Read the
+saved receipts and inspect the game to verify what happened:
+
+```sh
+./scripts/run_agents status --state-dir /tmp/my-combat-match
+./scripts/inspect_game Rome --state-dir /tmp/my-combat-match
+./scripts/run_agents stop --state-dir /tmp/my-combat-match
+```
+
+For a focused capture/victory test, the test harness can prepare a separate
+checkpoint with two Roman Warriors beside Sparta and Athens, both at 1 HP:
+
+```sh
+./gradlew prepareConquestFixture -PcombatFixtureDir=/tmp/my-conquest-fixture
+```
+
+To isolate terminal delivery from siege tactics, prepare a single final capital at
+1 HP, with a healthy Roman Warrior beside it and no defending units:
+
+```sh
+./gradlew prepareVictoryFixture -PcombatFixtureDir=/tmp/my-victory-fixture
+```
+
+These prepare `exploration.json` without issuing gameplay commands and refuse to
+overwrite an existing checkpoint. Each includes instructions for its specific
+exercise and is intended for operator test harnesses; provision fresh player
+credentials before using the normal checkpoint launcher. A victory in this prepared
+position verifies the terminal flow, not the outcome of a longer ongoing match.

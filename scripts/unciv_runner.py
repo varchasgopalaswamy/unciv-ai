@@ -104,6 +104,8 @@ def secure_url(value):
 
 
 class JsonEndpoint:
+    endpoint_role = "control endpoint"
+
     def __init__(self, url, token, ca_file, timeout=5):
         self.url, self.token, self.timeout = secure_url(url), token, timeout
         self.context = ssl.create_default_context(cafile=str(ca_file) if ca_file else None)
@@ -113,6 +115,8 @@ class JsonEndpoint:
         )
 
     def call(self, operation, **fields):
+        operation_name = operation if isinstance(operation, str) and re.fullmatch(r"[a-z_]{1,40}", operation) else "unknown operation"
+        diagnostic = f"{self.endpoint_role} {operation_name}"
         request = urllib.request.Request(
             self.url,
             data=json.dumps(dict(op=operation, **fields)).encode(),
@@ -137,14 +141,17 @@ class JsonEndpoint:
                 pass
             finally:
                 failure.close()
-            raise OperatorError(f"Control {operation} rejected: HTTP {failure.code} {code}.", code, failure.code) from None
-        except (urllib.error.URLError, TimeoutError, OSError):
-            raise OperatorError("Cannot reach or verify the HTTPS control endpoint; stopped for inspection.") from None
-        except (ValueError, KeyError, TypeError):
-            raise OperatorError("Invalid control response; stopped for inspection.") from None
+            raise OperatorError(f"HTTPS {diagnostic} rejected: HTTP {failure.code} {code}.", code, failure.code) from None
+        except (urllib.error.URLError, TimeoutError, OSError) as failure:
+            cause = failure.reason if isinstance(failure, urllib.error.URLError) and isinstance(failure.reason, BaseException) else failure
+            raise OperatorError(f"Cannot reach or verify HTTPS {diagnostic} ({type(cause).__name__}); stopped for inspection.") from None
+        except (ValueError, KeyError, TypeError) as failure:
+            raise OperatorError(f"Invalid HTTPS {diagnostic} response ({type(failure).__name__}); stopped for inspection.") from None
 
 
 class Operator(JsonEndpoint):
+    endpoint_role = "host operator"
+
     def __init__(self, host_url, token, ca_file, timeout=5):
         self.host_url = secure_url(host_url)
         super().__init__(self.host_url + "/operator", token, ca_file, timeout)
@@ -168,6 +175,7 @@ class Operator(JsonEndpoint):
 
 
 class Agent(JsonEndpoint):
+    endpoint_role = "agent service"
     TERMINAL = {"COMPLETED", "INTERRUPTED", "FAILED"}
 
     def __init__(self, configuration):

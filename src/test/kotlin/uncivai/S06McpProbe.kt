@@ -790,6 +790,8 @@ object S06McpProbe {
         override fun turn(): uncivai.player.PlayerTurnSnapshot = fail()
         override fun result(): uncivai.player.PlayerFinalState = fail()
 
+        override fun completedReceipt(request: uncivai.player.TurnCommandRequest): uncivai.player.TurnCommandReceipt? = fail()
+
         override fun execute(request: uncivai.player.TurnCommandRequest): uncivai.player.TurnCommandReceipt = fail()
 
         override fun summary(): PlayerSummary = fail()

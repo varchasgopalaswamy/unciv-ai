@@ -4,6 +4,7 @@ import argparse
 
 
 TURN_REVIEW_PROMPT = (
+    "Follow scenario.instructions. "
     "Before END_TURN, read turnReview: compare confirmed actions and remaining movement with your plan. "
     "Act or deliberately defer; send reviewId=turnReview.id and deferReason explaining idle units with legalDestinations>0. "
     "Read previousTurnReview for earlier deferred actions. "

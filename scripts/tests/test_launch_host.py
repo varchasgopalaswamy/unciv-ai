@@ -127,6 +127,19 @@ class HostLauncherTest(unittest.TestCase):
         self.execute.assert_not_called()
         self.build.assert_not_called()
 
+    def test_combat_scenario_is_new_only_and_exclusive(self):
+        self.assertEqual(0, self.run_launcher("--new", "--combat-scenario"))
+        self.assertIn("--combat-scenario", self.execute.call_args.args[1])
+        self.execute.reset_mock()
+        self.build.reset_mock()
+        self.checkpoint()
+        self.assertEqual(2, self.run_launcher("--combat-scenario"))
+        self.assertIn("only to a new game", self.errors.getvalue())
+        self.execute.assert_not_called()
+        self.build.assert_not_called()
+        with redirect_stderr(self.errors), self.assertRaises(SystemExit):
+            host.parse_args(["--close-starts", "--combat-scenario"])
+
     def test_custom_paths_with_spaces_and_engine_override_are_single_arguments(self):
         custom_players = self.write_players(Path(self.temporary.name) / "private players.json")
         custom_checkpoint = Path(self.temporary.name) / "other match" / "save.json"

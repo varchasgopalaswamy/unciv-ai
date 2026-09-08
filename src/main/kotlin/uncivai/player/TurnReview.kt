@@ -29,7 +29,7 @@ data class CompletedTurnReview(
 )
 
 @Serializable
-data class GameplayScenario(val name: String, val phase: String)
+data class GameplayScenario(val name: String, val phase: String, val instructions: List<String> = emptyList())
 
 internal fun TurnReview.deferredUnits(): List<ReviewUnit> = units.filter { it.idle && it.legalDestinations > 0 }
 

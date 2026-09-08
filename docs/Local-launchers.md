@@ -205,3 +205,7 @@ separate directories, startup arguments, resumption, and failure handling. Inspe
 tests also verify that exports preserve gameplay data, omit host receipts, clear old
 save destinations, retain earlier copies, and leave the checkpoint untouched. They
 do not invoke a model or establish complete gameplay coverage or isolation.
+
+For a prepared battlefield with cities and armies already at war, use
+`--combat-scenario` on a fresh host. See the [combat scenario](Combat.md#ready-to-play-combat-scenario)
+for its layout, exercise instructions and launch commands.
