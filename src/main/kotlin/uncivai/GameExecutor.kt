@@ -2,9 +2,12 @@ package uncivai
 
 import com.unciv.logic.GameInfo
 import com.unciv.logic.files.UncivFiles
+import com.unciv.view.GameView
 import uncivai.player.FreeGreatPersonDecisionTracker
 import uncivai.player.TurnSessionState
 import uncivai.player.detached
+import uncivai.player.gameFinished
+import uncivai.player.observation
 import java.nio.file.Path
 import java.util.UUID
 
@@ -26,6 +29,16 @@ class GameExecutor internal constructor(
     internal var freeGreatPersonDecisions = FreeGreatPersonDecisionTracker()
         private set
     internal val turnSessions = HashMap<String, TurnSessionState>()
+
+    /** Capture each player's permitted reports before turn processing can expire engine history. */
+    internal fun captureCombatReports() {
+        for (player in game.civilizations.filter { it.isHuman() && it.isMajorCiv() }) {
+            val entries = GameView(game, player).attackEventsView.getCombatReportEntries()
+            if (entries.isEmpty()) continue
+            val state = turnSessions.getOrPut(player.civID) { TurnSessionState() }
+            for (entry in entries) state.combatReports.putIfAbsent(entry.id, entry.observation())
+        }
+    }
     private var closed = false
     private var paused = false
     internal var scheduled = false
@@ -91,8 +104,8 @@ class GameExecutor internal constructor(
     internal fun commitCheckpoint() {
         val store = checkpointStore ?: return
         try {
-            // END_TURN and dropping its rollback point are one durable commit.
-            if (turnStart?.handoff != handoff) turnStart = null
+            // A handoff or terminal result and dropping its rollback point are one commit.
+            if (turnStart?.handoff != handoff || gameFinished(game)) turnStart = null
             store.write(CheckpointStore.capture(game, epoch, paused, turnSessions, handoff, scheduled, turnStart))
         } catch (failure: Throwable) {
             haltAfterMutation(failure)
@@ -137,12 +150,14 @@ class GameExecutor internal constructor(
 
     /** Check before fencing credentials so a delayed retry cannot stop a newer attempt. */
     internal fun requireRollbackActivation(activationId: String) {
+        if (gameFinished(game)) throw OperatorFailure("GAME_FINISHED")
         val saved = turnStart ?: throw OperatorFailure("TURN_CHECKPOINT_UNAVAILABLE")
         if (saved.activationId != null && saved.activationId != activationId) throw OperatorFailure("STALE_ACTIVATION")
     }
 
     /** Caller has fenced the activation; replaying this operation restores the same game. */
     internal fun rollbackScheduledTurn(activationId: String) = accessGame {
+        if (gameFinished(game)) throw OperatorFailure("GAME_FINISHED")
         val saved = turnStart ?: throw OperatorFailure("TURN_CHECKPOINT_UNAVAILABLE")
         if (!scheduled || saved.handoff != handoff || saved.civilization != game.currentPlayer || saved.turn != game.turns) {
             throw OperatorFailure("STALE_TURN")
@@ -191,6 +206,9 @@ class GameExecutor internal constructor(
                 reviewTurn = saved.reviewTurn
                 reviewActions.addAll(saved.reviewActions)
                 previousTurnReview = saved.previousTurnReview?.detached()
+                saved.combatReports.forEach { combatReports[it.id] = it.detached() }
+                deliveredCombatReports = saved.deliveredCombatReports
+                check(deliveredCombatReports in 0..combatReports.size) { "Checkpoint combat report cursor is inconsistent" }
                 saved.receipts.forEach { entry -> receipts[entry.request.requestId] = entry.request.detached() to entry.receipt.detached() }
             }
         }

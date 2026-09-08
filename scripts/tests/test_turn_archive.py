@@ -94,6 +94,32 @@ class TurnArchiveTests(unittest.TestCase):
         self.archive.update(0, "attempt", self.events(self.report("Turn finished.")), phase="COMPLETED", handoff=1)
         self.assertIn("Turn finished.", self.archive.context(1))
 
+    def test_terminal_outcome_preserves_committed_commands_without_fake_handoff(self):
+        events = self.events(*self.command(kind="RESOLVE_CAPTURED_CITY", target="city-alert", selection="Annex"), self.report("Captured the last capital."))
+        artifacts = self.archive.update(0, "final", events, phase="INTERRUPTED", terminal=True)
+        self.assertEqual(2, len(artifacts["commands"].splitlines()))
+        self.assertIn("Captured the last capital.", artifacts["summary"])
+        self.assertTrue(artifacts["attempts"][0]["terminalOutcome"])
+        metadata = json.loads((self.workspace / "turn_1/turn.json").read_text())
+        self.assertTrue(metadata["attempts"][0]["committed"])
+        self.assertIn("Host terminal outcome: confirmed.", self.debug_summary())
+        self.assertNotIn("Host handoff: confirmed.", self.debug_summary())
+        restored = TurnArchive(self.trusted, self.workspace, "Rome", "epoch")
+        self.assertEqual(artifacts, restored.update(0, "final", events, phase="INTERRUPTED"))
+        with self.assertRaises(TurnArchiveError):
+            restored.update(0, "retry", events)
+        with self.assertRaises(TurnArchiveError):
+            restored.update(0, "final", events, aborted=True)
+        with self.assertRaises(TurnArchiveError):
+            restored.update(0, "final", events, handoff=1)
+        with self.assertRaises(TurnArchiveError):
+            restored.context(1)
+
+    def test_terminal_outcome_cannot_coexist_with_handoff_or_rollback(self):
+        for arguments in ({"terminal": True, "handoff": 1}, {"terminal": True, "aborted": True}, {"terminal": 1}):
+            with self.subTest(arguments=arguments), self.assertRaises(TurnArchiveError):
+                self.archive.update(0, "final", [], **arguments)
+
     def test_context_is_numeric_finalized_and_ignores_workspace_edits(self):
         for game_turn in (9, 1, 0):
             events = self.events(self.report(f"MEMORY-{game_turn + 1}"))

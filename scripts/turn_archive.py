@@ -236,7 +236,7 @@ class TurnArchive:
         except (ValueError, UnicodeError):
             raise TurnArchiveError("Turn archive event file is corrupt.") from None
 
-    def update(self, game_turn, activation_id, events, *, phase=None, handoff=None, aborted=False):
+    def update(self, game_turn, activation_id, events, *, phase=None, handoff=None, aborted=False, terminal=False):
         """Replace one attempt from its complete trusted event log, then regenerate artifacts.
 
         ``handoff`` is the scheduler's confirmed committed counter, never a model
@@ -247,6 +247,8 @@ class TurnArchive:
             raise TurnArchiveError("An activation identity is required.")
         if handoff is not None and (type(handoff) is not int or handoff < 1):
             raise TurnArchiveError("Committed handoff must be a positive integer.")
+        if type(terminal) is not bool or (terminal and (handoff is not None or aborted)):
+            raise TurnArchiveError("Terminal completion requires a separate, non-aborted outcome.")
         if type(aborted) is not bool:
             raise TurnArchiveError("Aborted must be a boolean.")
         if phase is not None and phase not in {"STARTING", "RUNNING", "STOPPING", "COMPLETED", "INTERRUPTED", "FAILED"}:
@@ -261,6 +263,8 @@ class TurnArchive:
                     raise TurnArchiveError("An activation cannot belong to two game turns.")
             attempt = next((item for item in attempts if item["activationId"] == activation_id), None)
             if attempt is None:
+                if any(item.get("terminalOutcome") for item in attempts):
+                    raise TurnArchiveError("A completed game turn cannot be retried.")
                 attempt = {"attempt": len(attempts) + 1, "activationId": activation_id, "phase": None, "handoff": None,
                            "sourceCount": 0, "aborted": False}
                 attempts.append(attempt)
@@ -272,6 +276,10 @@ class TurnArchive:
                 raise TurnArchiveError("A game turn cannot have two committed handoffs.")
             if (aborted or attempt.get("aborted")) and (handoff is not None or attempt["handoff"] is not None):
                 raise TurnArchiveError("A confirmed handoff cannot be marked rolled back.")
+            terminal = terminal or attempt.get("terminalOutcome", False)
+            if terminal and (aborted or attempt.get("aborted") or handoff is not None or attempt["handoff"] is not None):
+                raise TurnArchiveError("A terminal outcome cannot be rolled back or replaced with a handoff.")
+            attempt["terminalOutcome"] = terminal
             attempt["aborted"] = aborted or attempt.get("aborted", False)
             attempt["sourceCount"] = len(source_events)
             if phase is not None:
@@ -284,7 +292,8 @@ class TurnArchive:
             attempt_artifacts = self._render(game_turn, turn_path, [attempt], include_aborted=True)
             attempt_metadata = {**self.binding, "gameTurn": game_turn, "attempt": attempt["attempt"],
                                 "phase": attempt["phase"], "aborted": attempt["aborted"],
-                                "committed": attempt["handoff"] is not None}
+                                "committed": attempt["handoff"] is not None or attempt.get("terminalOutcome", False),
+                                "terminalOutcome": attempt.get("terminalOutcome", False)}
             public_events = [event for event in normalized if event["kind"] in _TOOL_KINDS | {"assistant_message", "assistant_delta"}]
             # The generated trusted artifact is committed before refreshing workspace
             # copies. A bad workspace path cannot contaminate future context.
@@ -295,7 +304,7 @@ class TurnArchive:
                 metadata = {key: value for key, value in artifacts.items() if key not in {"commands", "summary"}}
                 if root != turn_path:
                     metadata["attempts"] = [{key: value for key, value in item.items() if key != "handoff"}
-                                            | {"committed": item["handoff"] is not None} for item in artifacts["attempts"]]
+                                            | {"committed": item["handoff"] is not None or item.get("terminalOutcome", False)} for item in artifacts["attempts"]]
                 write_private_json(root / "turn.json", metadata)
                 attempt_path = _directory(_directory(root / "attempts") / f"attempt_{attempt['attempt']}")
                 write_private(attempt_path / "commands.jsonl", attempt_artifacts["commands"].encode())
@@ -316,10 +325,12 @@ class TurnArchive:
                     receipt = _receipt(event["data"]) if event["kind"] == "tool_result" and not event.get("incompleteChunk") else None
                     if receipt is not None and receipt["epoch"] == self.epoch:
                         seen_requests.add((receipt["epoch"], receipt["requestId"]))
-        public_attempts = [{key: attempt[key] for key in ("attempt", "phase", "handoff", "aborted")} for attempt in attempts]
+        public_attempts = [{key: attempt[key] for key in ("attempt", "phase", "handoff", "aborted")}
+                           | {"terminalOutcome": attempt.get("terminalOutcome", False)} for attempt in attempts]
         committed = next((item["handoff"] for item in attempts if item["handoff"] is not None), None)
         summary = [f"# {_plain(self.civilization)} — turn {game_turn + 1} (game turn {game_turn})\n",
                    "Historical record. Read a fresh player_turn for current state; old commands and receipts must not be replayed as new actions.\n",
+                   "Host terminal outcome: confirmed.\n" if any(item.get("terminalOutcome") for item in attempts) else
                    "Host handoff: confirmed.\n" if committed is not None else
                    "Host handoff: unconfirmed. A completed assistant response does not establish that the game turn ended.\n"]
         aborted_count = sum(bool(attempt.get("aborted")) for attempt in attempts)
@@ -441,6 +452,8 @@ class TurnArchive:
                 if game_turn >= before_game_turn:
                     break
                 attempts = self._attempts(path)
+                if any(attempt.get("terminalOutcome") for attempt in attempts):
+                    raise TurnArchiveError("The game is complete; no further turn context may be started.")
                 if not any(attempt["handoff"] is not None for attempt in attempts):
                     raise TurnArchiveError("An earlier turn has no confirmed host handoff; reconcile it before starting a fresh turn.")
                 summary_path = path / "summary.md"

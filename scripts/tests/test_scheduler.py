@@ -37,6 +37,8 @@ class FakeHost:
         self.interruptions = []
         self.archive_failures = 0
         self.finalizations = []
+        self.terminal_finalizations, self.result_deliveries = [], []
+        self.result_failures = {}
         self.rollbacks, self.abortions = [], []
         self.effects, self.turn_start_effects, self.turn_start_handoff = 0, 0, None
         self.rollback_failures, self.abort_failures = 0, 0
@@ -73,6 +75,8 @@ class FakeHost:
                             owner.plays.append(dict(civ=body["civilization"], thread=body["threadId"], token=owner.player_token,
                                                     effectsBefore=owner.effects))
                             owner.effects += 1
+                            if behavior == "victory":
+                                owner.phase = "FINISHED"
                             if behavior in {"complete", "lost_response", "after_handoff_hang", "slow_report", "many_events"}:
                                 owner.handoff += 1
                             code, value = 200, {"behavior": behavior}
@@ -148,20 +152,29 @@ class FakeHost:
                 if self.rollback_bad_response:
                     return 200, {"status": {**self.status(), "handoff": self.handoff + 1}}
             elif operation in {"pause", "release"}:
-                self.phase, self.player_token = "PAUSED", None
+                self.phase, self.player_token = "FINISHED" if self.phase == "FINISHED" else "PAUSED", None
                 if operation == "release":
                     self.lease = None
         elif operation == "pause":
-            self.phase, self.player_token, self.lease = "PAUSED", None, None
+            self.phase, self.player_token, self.lease = "FINISHED" if self.phase == "FINISHED" else "PAUSED", None, None
         elif operation == "manual":
             if self.lease:
                 return 409, {"error": "LEASE_BUSY"}
             self.phase, self.scheduled = "ACTIVE", False
+        elif operation == "results":
+            from test_agent_results import result_payload
+            extra["results"] = {civ: result_payload(civ, self.epoch) for civ in self.agent_tokens} if self.phase == "FINISHED" else {}
         elif operation != "status":
             return 400, {"error": "BAD_REQUEST"}
         return 200, dict(status=self.status(), **extra)
 
     def agent_request(self, civilization, body):
+        if body["op"] == "result":
+            self.result_deliveries.append({key: value for key, value in body.items() if key != "op"})
+            if self.result_failures.get(civilization, 0):
+                self.result_failures[civilization] -= 1
+                return 503, {"error": "LOST_RESULT_RESPONSE"}
+            return 200, {"status": {"civilization": civilization, "epoch": body["epoch"], "received": True}}
         if body["op"] == "events":
             return 400, {"error": "INVALID_OPERATION"}  # Compatibility with an older service.
         key = (civilization, body["activationId"])
@@ -179,9 +192,11 @@ class FakeHost:
                 self.plays.append(dict(civ=civilization, thread=thread, token=body["playerToken"], request=body,
                                        effectsBefore=self.effects))
                 self.effects += 1
-                if behavior in {"complete", "lost_response", "after_handoff_hang", "refuse_interrupt"}:
+                if behavior in {"victory", "victory_hang", "victory_after_handoff"}:
+                    self.phase = "FINISHED"
+                if behavior in {"complete", "lost_response", "after_handoff_hang", "refuse_interrupt", "victory_after_handoff"}:
                     self.handoff += 1
-                phase = "RUNNING" if behavior in {"hang", "after_handoff_hang", "refuse_interrupt"} else "COMPLETED"
+                phase = "RUNNING" if behavior in {"hang", "after_handoff_hang", "refuse_interrupt", "victory_hang"} else "COMPLETED"
                 if behavior in {"crash", "lost_response", "missing_thread"}:
                     phase = "FAILED"
                 self.activations[key] = dict(activationId=body["activationId"], epoch=body["epoch"], civilization=civilization,
@@ -203,6 +218,11 @@ class FakeHost:
                 return 409, {"error": "INVALID_HANDOFF"}
             self.finalizations.append(dict(body))
             status["committedHandoff"] = body["committedHandoff"]
+        if body["op"] == "finalize_terminal":
+            if status["phase"] == "RUNNING" or any(body[field] != status[field] for field in ("epoch", "gameTurn", "handoff")):
+                return 409, {"error": "INVALID_BINDING"}
+            self.terminal_finalizations.append(dict(body))
+            status["terminalOutcome"] = True
         if body["op"] == "abort":
             if status["phase"] == "RUNNING":
                 return 409, {"error": "AGENT_BUSY"}
@@ -217,7 +237,7 @@ class FakeHost:
             if self.archive_failures:
                 self.archive_failures -= 1
                 return 503, {"error": "ARCHIVE_UNAVAILABLE"}
-            if "committedHandoff" not in status and not status.get("aborted"):
+            if "committedHandoff" not in status and not status.get("aborted") and not status.get("terminalOutcome"):
                 return 409, {"error": "TURN_NOT_FINALIZED"}
             return 200, dict(civilization=civilization, gameTurn=status["gameTurn"],
                              commands=json.dumps({"kind": "tool_result", "command": "END_TURN", "turn": status["gameTurn"],
@@ -659,6 +679,86 @@ class SchedulerTest(unittest.TestCase):
         self.assertEqual(resumed.returncode, 0, resumed.stdout + resumed.stderr)
         self.assertEqual(len(self.host.plays), 3)
         self.assertEqual(0, self.host.plays[1]["effectsBefore"])
+
+    def test_victory_during_activation_retains_commands_without_inventing_a_handoff(self):
+        self.host.behaviors = ["victory"]
+        result = self.run_cli("--max-turns", "2", "--max-seconds", "60")
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+        self.assertEqual("complete", self.saved()["status"])
+        self.assertEqual(0, self.saved()["handoffs"])
+        self.assertEqual(1, self.host.effects)
+        self.assertEqual(1, len(self.host.plays))
+        self.assertEqual(1, len(self.host.terminal_finalizations))
+        self.assertEqual([], self.host.finalizations)
+        self.assertEqual([], self.host.rollbacks)
+        self.assertIsNone(self.saved()["inFlight"])
+        self.assertEqual({"Rome", "Greece"}, set(self.saved()["resultsDelivered"]))
+        self.assertEqual({"Rome", "Greece"}, {delivery["civilization"] for delivery in self.host.result_deliveries})
+        for delivery in self.host.result_deliveries:
+            other = "Greece" if delivery["civilization"] == "Rome" else "Rome"
+            self.assertNotIn(other + " permitted report", json.dumps(delivery))
+
+    def test_final_result_delivery_failure_retries_after_restart_without_more_gameplay(self):
+        self.host.behaviors = ["victory"]
+        self.host.result_failures["Rome"] = 1
+        initial = self.run_cli("--max-turns", "2", "--max-seconds", "60")
+        self.assertEqual(2, initial.returncode, initial.stdout + initial.stderr)
+        self.assertEqual("needs_inspection", self.saved()["status"])
+        self.assertEqual(["Greece"], self.saved()["resultsDelivered"])
+        self.assertIsNone(self.saved()["inFlight"])
+        self.host.instance = str(uuid.uuid4())
+        resumed = self.run_cli("resume")
+        self.assertEqual(0, resumed.returncode, resumed.stdout + resumed.stderr)
+        self.assertEqual("complete", self.saved()["status"])
+        self.assertEqual(["Greece", "Rome", "Rome"], [item["civilization"] for item in self.host.result_deliveries])
+        self.assertEqual(1, len(self.host.plays))
+        self.assertEqual(1, self.host.effects)
+        self.assertEqual([], self.host.rollbacks)
+        self.assertEqual(0, self.saved()["handoffs"])
+
+    def test_terminal_archive_failure_resumes_without_rolling_back_the_winning_action(self):
+        self.host.behaviors = ["victory"]
+        self.host.archive_failures = 1
+        initial = self.run_cli("--max-turns", "2", "--max-seconds", "60")
+        self.assertEqual(2, initial.returncode, initial.stdout + initial.stderr)
+        self.assertIsNotNone(self.saved()["inFlight"])
+        self.assertEqual([], self.host.result_deliveries)
+        resumed = self.run_cli("resume")
+        self.assertEqual(0, resumed.returncode, resumed.stdout + resumed.stderr)
+        self.assertEqual("complete", self.saved()["status"])
+        self.assertEqual(1, self.host.effects)
+        self.assertEqual([], self.host.rollbacks)
+        self.assertEqual(1, len(self.host.plays))
+
+    def test_already_finished_game_delivers_results_without_acquiring_a_play_lease(self):
+        self.host.phase = "FINISHED"
+        result = self.run_cli("--max-turns", "1", "--max-seconds", "30")
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+        self.assertEqual("complete", self.saved()["status"])
+        self.assertEqual([], self.host.plays)
+        self.assertFalse(any(call["op"] in {"acquire", "activate", "rollback"} for call in self.host.calls))
+        self.assertEqual(2, len(self.host.result_deliveries))
+
+    def test_final_outcome_interrupts_live_agent_before_delivering_results(self):
+        self.host.behaviors = ["victory_hang"]
+        result = self.run_cli("--max-turns", "1", "--max-seconds", "30")
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+        self.assertEqual("complete", self.saved()["status"])
+        self.assertTrue(self.host.interruptions)
+        self.assertEqual(0, self.saved()["handoffs"])
+        self.assertEqual(1, len(self.host.plays))
+        self.assertTrue(all(record["phase"] != "RUNNING" for record in self.host.activations.values()))
+
+    def test_game_finished_by_end_turn_keeps_the_real_handoff_archive(self):
+        self.host.behaviors = ["victory_after_handoff"]
+        result = self.run_cli("--max-turns", "1", "--max-seconds", "30")
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+        self.assertEqual("complete", self.saved()["status"])
+        self.assertEqual(1, self.saved()["handoffs"])
+        self.assertEqual(1, len(self.host.finalizations))
+        self.assertEqual([], self.host.terminal_finalizations)
+        self.assertEqual(2, len(self.host.result_deliveries))
+        self.assertEqual([], self.host.rollbacks)
 
 
 if __name__ == "__main__":

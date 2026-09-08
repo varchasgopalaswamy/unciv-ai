@@ -102,6 +102,24 @@ class SchedulerServiceTest(unittest.TestCase):
     def records(self):
         return [json.loads(line) for line in self.trace.read_text().splitlines()]
 
+    def test_terminal_results_reach_real_https_services_without_an_extra_model_turn(self):
+        self.host.behaviors = ["victory"]
+        result = self.run_cli("--max-turns", "2", "--max-seconds", "60")
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+        self.assertEqual("complete", self.saved()["status"])
+        self.assertEqual(0, self.saved()["handoffs"])
+        self.assertEqual(1, len(self.host.plays))
+        self.assertEqual([], self.host.rollbacks)
+        self.assertEqual(1, sum(record["method"] == "turn/start" for record in self.records()))
+        for civilization in ("Rome", "Greece"):
+            workspace = self.state_dir / "agents" / civilization
+            delivered = json.loads((workspace / "result.json").read_text())
+            self.assertEqual(civilization, delivered["civilization"])
+            self.assertEqual("Victory" if civilization == "Rome" else "Defeat", delivered["result"]["outcome"])
+            self.assertIn(civilization + " permitted report", (workspace / "result.md").read_text())
+        turn = json.loads((self.state_dir / "agents/Rome/turn_1/turn.json").read_text())
+        self.assertTrue(turn["attempts"][0]["terminalOutcome"])
+
     def test_real_services_start_fresh_threads_with_turn_memory_and_pinned_settings(self):
         result = self.run_cli("--max-turns", "2", "--max-seconds", "60")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)

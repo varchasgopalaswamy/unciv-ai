@@ -21,6 +21,7 @@ import kotlinx.serialization.json.putJsonArray
 import kotlinx.serialization.json.putJsonObject
 import uncivai.player.ChooseFreeGreatPersonRequest
 import uncivai.player.PlayerCommandJson
+import uncivai.player.PlayerFinalState
 import uncivai.player.PlayerSession
 import uncivai.player.PlayerSessionException
 import uncivai.player.PlayerSummaryJson
@@ -51,7 +52,7 @@ internal fun createPlayerToolsServer(session: PlayerSession): Server = Server(
 
     addTool(
         name = "player_turn",
-        description = "Return your turn status and turnReview first: confirmed actions and each owned unit's remaining movement and legal destination count. Read this before END_TURN; previousTurnReview records deliberate deferrals. A close-start scenario reports the diplomacy exercise phase. Also returns decisions, city yields/growth/citizen options and production progress/queues, research progress, policy and Great Person options, explored map and owned units. Informational alerts include content with the full title, paragraphs, quote and acknowledgement text from the desktop popup; technology descriptions are specific to your civilization. Read all content and note useful information before acknowledging. FirstContact also identifies the met civilization. Diplomacy lists known surviving majors, relationship status, remaining peace treaty turns, legal actions and unavailable reasons, declarationConfirmation warnings, and permitted peaceOptions maxima. Incoming offers include the leader message, display text, and give/receive terms from your perspective; read them all before responding. Outgoing offers show your pending proposal and retraction option. Visible tiles include displayed yields; workers include legal job options, prerequisites and work progress. Units have current-turn movement destinations and previews; speculative paths can stop early on discovery. Coordinates are axial x/y. Revision changes only with your observed state or successful commands. Unsupported decisions block end turn.",
+        description = "Return your turn status and turnReview first: confirmed actions and each owned unit's remaining movement and legal destination count. Read this before END_TURN; previousTurnReview records deliberate deferrals. A close-start scenario reports the diplomacy exercise phase. Also returns decisions, city yields/growth/citizen options and production progress/queues, research progress, policy and Great Person options, explored map and owned units. Informational alerts include content with the full title, paragraphs, quote and acknowledgement text from the desktop popup; technology descriptions are specific to your civilization. Read all content and note useful information before acknowledging. FirstContact also identifies the met civilization. Diplomacy lists known surviving majors, relationship status, remaining peace treaty turns, legal actions and unavailable reasons, declarationConfirmation warnings, and permitted peaceOptions maxima. Incoming offers include the leader message, display text, and give/receive terms from your perspective; read them all before responding. Outgoing offers show your pending proposal and retraction option. Visible tiles include displayed yields; workers include legal job options, prerequisites and work progress. Units have current-turn movement destinations and previews; speculative paths can stop early on discovery. Coordinates are axial x/y. Revision changes only with your observed state or successful commands. Combat previews include attack origins, paths, strength modifiers and damage ranges. Read combatReports and capture alerts in full. Tactical orders and promotions include unavailable reasons. Unsupported decisions block end turn.",
         inputSchema = NO_ARGUMENTS_SCHEMA,
         toolAnnotations = QUERY_ANNOTATIONS,
     ) { request ->
@@ -63,7 +64,7 @@ internal fun createPlayerToolsServer(session: PlayerSession): Server = Server(
 
     addTool(
         name = "player_command",
-        description = "Execute one command using the revision from player_turn. MOVE_UNIT uses target=unit handle and offered destination; movement may stop early. FOUND_CITY uses settler target and requires confirmBreakPromise=true if settlementPromises is nonempty. START_WORKER_JOB uses unit target and selection=available job name; STOP_WORKER_JOB uses unit target. SET_WORKED_TILE / SET_TILE_LOCKED use city target, an offered development.tiles destination and worked / locked boolean. REMOVE_CONSTRUCTION uses city target and queue index; MOVE_CONSTRUCTION also uses an offered toIndex. Append with QUEUE_CONSTRUCTION then reorder to change production. Research queue is only for SET_RESEARCH_QUEUE. ACKNOWLEDGE_ALERT uses target=an alert handle with canAcknowledge=true and full content already read from player_turn at this revision, including FirstContact; a revision from a command receipt alone is insufficient (OBSERVATION_REQUIRED). This dismisses only that message, including WarDeclaration. DECLARE_WAR uses target=known civilizationId and requires confirmWar=true after reading declarationConfirmation at this revision. PROPOSE_PEACE uses target=known civilizationId; COUNTER_PEACE uses target=incoming offer handle. Both require peaceTerms give/receive lists with exact offered type/name/duration and positive amounts at most the option maximum, and one Peace Treaty per side. ACCEPT_PEACE and REJECT_PEACE use target=incoming offer handle after reading the current message and terms; unsupported requests can only be rejected. RETRACT_PEACE uses target=known civilizationId. Pending outgoing offers do not block END_TURN: the opponent decides on their turn. Read receipt feedback after acceptance. Successful requests replay; restart recovery requires durableRecovery. Re-observe after commands. END_TURN requires canEndTurn=true and reviewId=turnReview.id from a fresh player_turn at this revision. If any review units are idle with legalDestinations>0, act or supply a short deferReason explaining intentional idling. Read the review even if a prior report claimed movement was unavailable. Any mutation invalidates the review. TURN_REVIEW_REQUIRED means re-read the review and provide acknowledgment; this never forces movement.",
+        description = "Execute one command using the revision from player_turn. MOVE_UNIT uses target=unit handle and offered destination; movement may stop early. FOUND_CITY uses settler target and requires confirmBreakPromise=true if settlementPromises is nonempty. START_WORKER_JOB uses unit target and selection=available job name; STOP_WORKER_JOB uses unit target. SET_WORKED_TILE / SET_TILE_LOCKED use city target, an offered development.tiles destination and worked / locked boolean. REMOVE_CONSTRUCTION uses city target and queue index; MOVE_CONSTRUCTION also uses an offered toIndex. Append with QUEUE_CONSTRUCTION then reorder to change production. Research queue is only for SET_RESEARCH_QUEUE. ACKNOWLEDGE_ALERT uses target=an alert handle with canAcknowledge=true and full content already read from player_turn at this revision, including FirstContact; a revision from a command receipt alone is insufficient (OBSERVATION_REQUIRED). This dismisses only that message, including WarDeclaration. DECLARE_WAR uses target=known civilizationId and requires confirmWar=true after reading declarationConfirmation at this revision. PROPOSE_PEACE uses target=known civilizationId; COUNTER_PEACE uses target=incoming offer handle. Both require peaceTerms give/receive lists with exact offered type/name/duration and positive amounts at most the option maximum, and one Peace Treaty per side. ACCEPT_PEACE and REJECT_PEACE use target=incoming offer handle after reading the current message and terms; unsupported requests can only be rejected. RETRACT_PEACE uses target=known civilizationId. Pending outgoing offers do not block END_TURN: the opponent decides on their turn. Read receipt feedback after acceptance. Successful requests replay; restart recovery requires durableRecovery. Re-observe after commands. END_TURN requires canEndTurn=true and reviewId=turnReview.id from a fresh player_turn at this revision. If any review units are idle with legalDestinations>0, act or supply a short deferReason explaining intentional idling. Read the review even if a prior report claimed movement was unavailable. Any mutation invalidates the review. TURN_REVIEW_REQUIRED means re-read the review and provide acknowledgment; this never forces movement. ATTACK uses an owned unit target and the exact offered destination and attackFrom; CITY_ATTACK uses an owned city and offered destination. Read receipt.combat: discovery can stop movement before an attack. SET_UNIT_ORDER and PROMOTE_UNIT use an owned unit and selection=available option name. RESOLVE_CAPTURED_CITY uses the capture alert handle (including civilian return choices) and selection=available option name after reading the full decision at this revision. MANAGE_CAPTURED_CITY uses an owned city and available captureOptions selection.",
         inputSchema = TURN_COMMAND_INPUT_SCHEMA,
         toolAnnotations = COMMAND_ANNOTATIONS,
     ) { request ->
@@ -77,6 +78,18 @@ internal fun createPlayerToolsServer(session: PlayerSession): Server = Server(
                 throw InvalidToolArgumentsException()
             }
             PlayerTurnJson.encode(session.execute(command))
+        }
+    }
+
+    addTool(
+        name = "player_result",
+        description = "Read your victory or defeat result and pending combat reports, including after scheduling stops. A null result means no result is recorded for you yet.",
+        inputSchema = NO_ARGUMENTS_SCHEMA,
+        toolAnnotations = QUERY_ANNOTATIONS,
+    ) { request ->
+        playerResult {
+            request.arguments.requireNoArguments()
+            PlayerTurnJson.json.encodeToString(PlayerFinalState.serializer(), session.result())
         }
     }
 
@@ -184,7 +197,20 @@ private val TURN_COMMAND_INPUT_SCHEMA = ToolSchema(
         put("target", stringProperty("City, alert, incoming offer or owned unit handle; diplomacy partner commands use a known civilizationId from player_turn.", minLength = 1))
         putJsonObject("destination") {
             put("type", "object")
-            put("description", "Offered unit move destination, or city development tile for SET_WORKED_TILE / SET_TILE_LOCKED.")
+            put("description", "Offered movement or attack destination, or city development tile for SET_WORKED_TILE / SET_TILE_LOCKED.")
+            putJsonObject("properties") {
+                putJsonObject("x") { put("type", "integer") }
+                putJsonObject("y") { put("type", "integer") }
+            }
+            putJsonArray("required") {
+                add("x")
+                add("y")
+            }
+            put("additionalProperties", false)
+        }
+        putJsonObject("attackFrom") {
+            put("type", "object")
+            put("description", "Only ATTACK: required origin from the exact offered attack preview.")
             putJsonObject("properties") {
                 putJsonObject("x") { put("type", "integer") }
                 putJsonObject("y") { put("type", "integer") }

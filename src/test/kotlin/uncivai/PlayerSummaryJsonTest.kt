@@ -77,6 +77,7 @@ class PlayerSummaryJsonTest {
             setOf(
                 "capabilities",
                 "turn",
+                "result",
                 "execute",
                 "summary",
                 "cities",
@@ -87,6 +88,8 @@ class PlayerSummaryJsonTest {
             sessionMethods.keys,
         )
         assertEquals(0, sessionMethods.getValue("summary").parameterCount)
+        assertEquals(0, sessionMethods.getValue("result").parameterCount)
+        assertEquals(uncivai.player.PlayerFinalState::class.java, sessionMethods.getValue("result").returnType)
         assertEquals(PlayerSummary::class.java, sessionMethods.getValue("summary").returnType)
         assertEquals(0, sessionMethods.getValue("cities").parameterCount)
         assertEquals(

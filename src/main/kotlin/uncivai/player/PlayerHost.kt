@@ -56,6 +56,8 @@ interface PlayerSession {
 
     fun turn(): PlayerTurnSnapshot
 
+    fun result(): PlayerFinalState
+
     fun execute(request: TurnCommandRequest): TurnCommandReceipt
 
     fun summary(): PlayerSummary
@@ -84,6 +86,8 @@ private class BoundPlayerSession(
     }
 
     override fun turn() = playerOperation { turnSession.snapshot() }
+
+    override fun result() = playerOperation { turnSession.snapshot().finalState(civilizationId) }
 
     override fun execute(request: TurnCommandRequest) = playerOperation { turnSession.execute(request) }
 
@@ -160,7 +164,7 @@ private class BoundPlayerSession(
             }
 
             runtime.requireRunning()
-            if (runtime.durableRecovery) throw PlayerSessionException(PlayerSessionFailure.COMMAND_UNAVAILABLE)
+            if (runtime.durableRecovery || gameHasResult(game) || player.hasCaptureDecision()) throw PlayerSessionException(PlayerSessionFailure.COMMAND_UNAVAILABLE)
 
             if (game.currentPlayer != player.civID || game.currentPlayerCiv !== player) {
                 throw PlayerSessionException(PlayerSessionFailure.NOT_YOUR_TURN)
@@ -241,7 +245,7 @@ private class BoundPlayerSession(
             }
 
             runtime.requireRunning()
-            if (runtime.durableRecovery) throw PlayerSessionException(PlayerSessionFailure.COMMAND_UNAVAILABLE)
+            if (runtime.durableRecovery || gameHasResult(game) || player.hasCaptureDecision()) throw PlayerSessionException(PlayerSessionFailure.COMMAND_UNAVAILABLE)
 
             val sharedDecision = synchronizeFreeGreatPersonDecision(game, player)
             if (sharedDecision == null) {

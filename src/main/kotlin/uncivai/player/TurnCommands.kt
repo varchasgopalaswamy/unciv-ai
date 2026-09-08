@@ -9,7 +9,7 @@ import java.util.Collections
 data class PlayerCapabilities(
     val protocolVersion: Int = 1,
     val completeGameplay: Boolean = false,
-    val queries: List<String> = listOf("player_capabilities", "player_summary", "owned_cities", "free_great_person_choice", "player_turn"),
+    val queries: List<String> = listOf("player_capabilities", "player_summary", "owned_cities", "free_great_person_choice", "player_turn", "player_result"),
     val commands: List<TurnCommandKind> = TurnCommandKind.entries.toList(),
     val durableRecovery: Boolean = false,
     val legacyMutationsSupported: Boolean = true,
@@ -32,6 +32,12 @@ enum class TurnCommandKind {
     COUNTER_PEACE,
     RETRACT_PEACE,
     MOVE_UNIT,
+    ATTACK,
+    CITY_ATTACK,
+    SET_UNIT_ORDER,
+    PROMOTE_UNIT,
+    RESOLVE_CAPTURED_CITY,
+    MANAGE_CAPTURED_CITY,
     FOUND_CITY,
     START_WORKER_JOB,
     STOP_WORKER_JOB,
@@ -53,6 +59,7 @@ data class PlayerAlert(
     val canAcknowledge: Boolean,
     val firstContact: FirstContactDetails? = null,
     val content: AlertContent? = null,
+    val capture: CaptureDecision? = null,
 )
 
 @Serializable
@@ -63,6 +70,8 @@ data class TurnCity(
     val constructionQueue: List<String>,
     val constructionOptions: List<String>,
     val development: CityDevelopment? = null,
+    val attacks: List<AttackOption> = emptyList(),
+    val captureOptions: List<CaptureOption> = emptyList(),
 )
 
 @Serializable
@@ -75,6 +84,8 @@ data class PlayerTurnSnapshot(
     val turnReview: TurnReview? = null,
     val previousTurnReview: CompletedTurnReview? = null,
     val scenario: GameplayScenario? = null,
+    val result: PlayerResult? = null,
+    val combatReports: List<CombatReport> = emptyList(),
     val pending: List<PendingTurnDecision>,
     val alerts: List<PlayerAlert>,
     val cities: List<TurnCity>,
@@ -112,6 +123,7 @@ data class TurnCommandRequest(
     val peaceTerms: PeaceTerms? = null,
     val reviewId: String? = null,
     val deferReason: String? = null,
+    val attackFrom: TilePosition? = null,
 )
 
 @Serializable
@@ -123,6 +135,7 @@ data class TurnCommandReceipt(
     val turn: Int,
     val isYourTurn: Boolean,
     val feedback: AlertContent? = null,
+    val combat: CombatOutcome? = null,
 )
 
 object PlayerTurnJson {

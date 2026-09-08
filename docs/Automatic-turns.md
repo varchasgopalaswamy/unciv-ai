@@ -405,7 +405,7 @@ Separate directories are not a filesystem security boundary: trusted local servi
 still inherit the user's Codex login, configuration and available tools.
 
 The operator interface is a separate `POST /operator` endpoint with `status`,
-`acquire`, `heartbeat`, `activate`, `rollback`, `pause`, `release` and `manual`. Activation checks
+`acquire`, `heartbeat`, `activate`, `rollback`, `pause`, `release`, `manual` and `results`. Activation checks
 the match epoch, server instance, active civilization and durable handoff counter
 under the same executor lock as gameplay. Only one lease owns the match. A handoff
 counter increments per player turn; it is operator metadata, absent from player
@@ -420,5 +420,25 @@ Automated tests exercise HTTPS authentication/certificates, real engine developm
 over twenty rounds with restart, stale activations, duplicate schedulers, lease
 expiry, interrupted turns, exact receipt replay and finite budgets. Scripted tests
 do not establish a completed live-model duel, full UI parity, or a safe filesystem
-and network isolation boundary. Combat, broader diplomacy and several mandatory choice
+and network isolation boundary. Naval/air combat, broader diplomacy and several mandatory choice
 surfaces remain outside the implemented gameplay slice.
+
+## Terminal results
+
+A winning capture can finish the game without an `END_TURN`. The supervisor checks
+that authoritative terminal state before considering rollback. It drains the active
+service, archives committed final commands with a terminal outcome, and preserves
+the existing handoff count. Capture decisions remain playable until resolved.
+
+The operator-only `results` response contains separately filtered results for each
+human civilization. The supervisor sends each service only its own payload over
+HTTPS; the service writes `result.json` and `result.md` in that civilization's
+workspace. These files include the outcome, pending combat reports and complete informational
+popup text, including defeated leaders' final messages. This starts
+no extra model turn. Manual sessions can use the read-only `player_result` tool.
+
+Result acknowledgements are persisted separately per civilization. If delivery is
+interrupted, resume retries only the missing deliveries. Services validate the
+civilization and epoch and accept exact repeats; a conflicting result is rejected.
+The run becomes complete only when all configured players have acknowledged their
+result. Final turn summaries retain the same simple format as ordinary turns.

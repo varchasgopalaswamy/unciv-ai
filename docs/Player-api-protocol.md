@@ -1,7 +1,7 @@
 # Player protocol
 
 The current interface covers turn management, exploration, settlement, basic city development,
-first contact, war declarations and negotiated peace.
+first contact, war declarations, negotiated peace and basic land combat.
 It remains an incomplete player API.
 Use `player_capabilities` to inspect its operations and recovery guarantees.
 Authentication fixes the player's civilization; tool arguments cannot override it.
@@ -29,6 +29,9 @@ Authentication fixes the player's civilization; tool arguments cannot override i
   outgoing offers include permitted terms and full leader text; see [war and peace](War-and-peace.md).
   Unmet identities and hidden locations, plans and third-party requests are excluded.
 - `player_command`: submit exactly one command using the latest turn snapshot.
+- `player_result`: your victory/defeat result and pending combat reports, also available
+  after scheduling stops. Combat fields, orders and capture choices are documented in
+  [basic combat](Combat.md).
 - Existing summary and prototype tools remain available during migration. Their
   mutation tools are disabled when durable checkpoints are enabled; use
   `player_command` in that mode.
@@ -56,6 +59,12 @@ Example, with values copied from `player_turn`:
 | `RENAME_CITY` | `target`: city handle; `selection`: valid new name |
 | `ACKNOWLEDGE_ALERT` | `target`: handle of an informational alert with `canAcknowledge=true`; fetch and read its full `content` in `player_turn` at the submitted revision first |
 | `MOVE_UNIT` | `target`: owned unit handle; `destination`: `{ "x": ..., "y": ... }` copied from that unit's `moves` |
+| `ATTACK` | `target`: owned unit; `destination` and `attackFrom`: exact pair from `combat.attacks` |
+| `CITY_ATTACK` | `target`: owned city; `destination`: offered city attack |
+| `SET_UNIT_ORDER` | `target`: owned unit; `selection`: available `combat.orders` name |
+| `PROMOTE_UNIT` | `target`: owned unit; `selection`: available `combat.promotions.choices` name |
+| `RESOLVE_CAPTURED_CITY` | `target`: capture alert; `selection`: available capture option after reading the current decision (also handles civilian return) |
+| `MANAGE_CAPTURED_CITY` | `target`: owned city; `selection`: available `captureOptions` name after reading current options |
 | `FOUND_CITY` | `target`: settler handle; `confirmBreakPromise: true` only when accepting its listed settlement promises |
 | `START_WORKER_JOB` | `target`: worker handle; `selection`: available name from `worker.options` |
 | `STOP_WORKER_JOB` | `target`: worker handle; `worker.canStop` must be true |
@@ -71,7 +80,7 @@ Example, with values copied from `player_turn`:
 | `END_TURN` | `reviewId`: current `turnReview.id`; `canEndTurn` must be true. If any review units are idle with legal destinations, include `deferReason` explaining intentional idling. |
 
 Unused fields must be absent or have their default value (`null` for target and
-selection, destination, worked, locked, index, toIndex and peaceTerms; `[]` for queue,
+selection, destination, attackFrom, worked, locked, index, toIndex and peaceTerms; `[]` for queue,
 `false` for confirmBreakPromise and confirmWar). Unknown fields and command names are rejected. Requests
 must use a unique printable ASCII `requestId` of 1–128 characters per player. Retries
 use the same ID **and the original payload**, including the original revision.
@@ -179,6 +188,8 @@ mutation failure. Paused matches still support observations and successful retri
 Scheduled play also persists a restore point at the start of each player's turn.
 When the supervisor resumes an interrupted attempt, it first checks the committed
 handoff counter. A completed `END_TURN` is retained even if its response was lost.
+A committed terminal victory is also retained, even without a handoff; its final
+commands are archived and each player receives its own result over HTTPS.
 Otherwise the authenticated operator `rollback` operation restores the full
 turn-start game and receipt state, rotates stale-state revisions and revokes old
 temporary credentials. Commands from the discarded attempt are no longer effects
@@ -200,7 +211,7 @@ to that executor. Selected desktop pickers now share engine validation; the rest
 the UI still has direct access paths. Turn snapshots intentionally cover only this
 slice, including only a subset of alert details and construction controls. Movement
 commands attempt one turn of an advertised path; they do not schedule future movement.
-Aircraft relocation, paradrops, attacks and other special actions are absent.
+Naval combat, aircraft relocation, paradrops, air/nuclear attacks and other special actions are absent.
 Worker automation, route-to-destination and instant improvements are also absent.
 Citizen specialists, focus changes, tile purchases and construction purchases remain outstanding.
 Explored terrain and ownership follow the map UI's current data; improvement names

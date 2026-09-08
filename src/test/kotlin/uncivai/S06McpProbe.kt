@@ -400,7 +400,8 @@ object S06McpProbe {
         val expectedInputs = linkedMapOf(
             "player_capabilities" to emptySet(),
             "player_turn" to emptySet(),
-            "player_command" to setOf("requestId", "epoch", "revision", "reviewId", "deferReason", "kind", "target", "selection", "queue", "destination", "confirmBreakPromise", "confirmWar", "peaceTerms", "worked", "locked", "index", "toIndex"),
+            "player_result" to emptySet(),
+            "player_command" to setOf("requestId", "epoch", "revision", "reviewId", "deferReason", "kind", "target", "selection", "queue", "destination", "attackFrom", "confirmBreakPromise", "confirmWar", "peaceTerms", "worked", "locked", "index", "toIndex"),
             "player_summary" to emptySet(),
             "owned_cities" to emptySet(),
             "rename_city" to setOf("requestId", "epoch", "cityHandle", "name"),
@@ -787,6 +788,7 @@ object S06McpProbe {
         override fun capabilities(): uncivai.player.PlayerCapabilities = fail()
 
         override fun turn(): uncivai.player.PlayerTurnSnapshot = fail()
+        override fun result(): uncivai.player.PlayerFinalState = fail()
 
         override fun execute(request: uncivai.player.TurnCommandRequest): uncivai.player.TurnCommandReceipt = fail()
 

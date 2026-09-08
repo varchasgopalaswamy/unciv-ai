@@ -44,7 +44,7 @@ unsupported alert types have no offered acknowledgement. An informational alert
 in a mixed queue cannot dismiss a consequential choice alongside it.
 
 War and peace are described in [their implementation slice](War-and-peace.md).
-Broader diplomacy, trade, combat/captured-city, religion and espionage decisions retain
+Broader diplomacy, trade, religion and espionage decisions retain
 their respective implementation slices. Ruleset `Event` dialogs can have gameplay
 choices and are not generic informational popups. End-of-game victory/defeat
 screens also remain a separate lifecycle: scheduling stops on game completion,
@@ -56,3 +56,6 @@ Validation includes shared engine content/authority tests and the HTTPS
 `InformationalAlertsIntegrationTest`: complete popup content, civilization-specific
 technology descriptions, stale/foreign/invalid requests, observation before
 acknowledgement, restart with pending messages, and exact receipt replay.
+
+The [combat slice](Combat.md) now supplies captured-city/civilian choices, shared
+victory/defeat content and terminal delivery of pending informational messages.

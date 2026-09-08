@@ -185,8 +185,8 @@ the query, while the transcript provides reviewable evidence of the agent's use
 of the message. Same-version restart and receipt replay remain covered.
 
 Diplomacy/trade/war and other system choices retain their own slices. Victory and
-defeat require result delivery after scheduling stops; they remain separate from
-ordinary in-game informational popups. No generic ruleset-event dismissal is added.
+defeat use the result delivery added by the [combat slice](Combat.md); they remain
+separate from ordinary in-game informational popups. No generic ruleset-event dismissal is added.
 
 ## Delivered slice: war and negotiated peace
 
@@ -201,8 +201,8 @@ cooldown, peace negotiations and process restarts.
 Gameplay launchers and the automatic runner now accept model and reasoning-level
 overrides and preserve resolved player settings across fresh turns and resumes.
 
-Continue the duel sequence with basic melee/ranged combat, promotions and
-capture decisions. Full trade, remaining city/unit controls, embedded human play
+The basic melee/ranged combat, promotion, capture and result-delivery slice is
+implemented; its inventory and verification are recorded in [Combat.md](Combat.md). Full trade, remaining city/unit controls, embedded human play
 and isolation retain their places in the broader delivery sequence. Add each
 action together with the observations and resulting decisions needed to use it.
 

@@ -39,7 +39,7 @@ internal fun CompletedTurnReview.detached(): CompletedTurnReview = copy(
 )
 
 /** Include actual move endpoints, not the requested endpoint of a speculative path. */
-internal fun confirmedAction(request: TurnCommandRequest, before: PlayerTurnSnapshot, after: PlayerTurnSnapshot): ConfirmedTurnAction {
+internal fun confirmedAction(request: TurnCommandRequest, before: PlayerTurnSnapshot, after: PlayerTurnSnapshot, combat: CombatOutcome? = null): ConfirmedTurnAction {
     val unit = before.map.units.singleOrNull { it.handle == request.target }
     val city = before.cities.singleOrNull { it.handle == request.target }
     fun TilePosition.text() = "($x, $y)"
@@ -58,6 +58,32 @@ internal fun confirmedAction(request: TurnCommandRequest, before: PlayerTurnSnap
             val founded = after.cities.single { candidate -> before.cities.none { it.handle == candidate.handle } }
             "Founded ${founded.name} at ${unit!!.position.text()}."
         }
+
+        TurnCommandKind.ATTACK, TurnCommandKind.CITY_ATTACK -> {
+            val name = unit?.name ?: city!!.name
+            val outcome = checkNotNull(combat)
+            if (!outcome.attacked) {
+                val moved = after.map.units.singleOrNull { it.handle == request.target }
+                "$name stopped ${moved?.position?.text() ?: "before completing the route"}; no attack occurred."
+            } else {
+                "$name attacked ${request.destination!!.text()}: dealt ${outcome.damageToDefender}, received ${outcome.damageToAttacker} damage." +
+                    if (outcome.defenderCaptured) {
+                        " Target captured."
+                    } else if (outcome.defenderDestroyed) {
+                        " Target destroyed."
+                    } else {
+                        ""
+                    }
+            }
+        }
+
+        TurnCommandKind.SET_UNIT_ORDER -> "${unit!!.name}: ${request.selection}."
+
+        TurnCommandKind.PROMOTE_UNIT -> "${unit!!.name} gained ${request.selection}."
+
+        TurnCommandKind.RESOLVE_CAPTURED_CITY -> "Resolved ${before.alerts.single { it.handle == request.target }.capture!!.title}: ${request.selection}."
+
+        TurnCommandKind.MANAGE_CAPTURED_CITY -> "${city!!.name}: ${request.selection}."
 
         TurnCommandKind.ACKNOWLEDGE_ALERT -> {
             val alert = before.alerts.single { it.handle == request.target }

@@ -4,6 +4,7 @@ import com.unciv.json.json
 import com.unciv.logic.GameInfo
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import uncivai.player.CombatReport
 import uncivai.player.CompletedTurnReview
 import uncivai.player.ConfirmedTurnAction
 import uncivai.player.PlayerTurnSnapshot
@@ -58,6 +59,8 @@ internal data class SavedPlayerState(
     val reviewTurn: Int? = null,
     val reviewActions: List<ConfirmedTurnAction> = emptyList(),
     val previousTurnReview: CompletedTurnReview? = null,
+    val combatReports: List<CombatReport> = emptyList(),
+    val deliveredCombatReports: Int = 0,
 )
 
 internal class CheckpointStore(
@@ -153,6 +156,8 @@ internal class CheckpointStore(
                     reviewTurn = state.reviewTurn,
                     reviewActions = state.reviewActions.toList(),
                     previousTurnReview = state.previousTurnReview,
+                    combatReports = state.combatReports.values.toList(),
+                    deliveredCombatReports = state.deliveredCombatReports,
                 )
             },
         )

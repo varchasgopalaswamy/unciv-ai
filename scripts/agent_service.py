@@ -24,6 +24,7 @@ import aiohttp
 from aiohttp import web
 
 from agent_history import HistoryStore
+from agent_results import PlayerResultStore, ResultError, validate_result
 from agent_settings import valid_setting
 from turn_archive import TurnArchive
 from unciv_tls import codex_trust_environment, https_url, private_directory, regular_file, write_private_json
@@ -186,6 +187,7 @@ class AgentService:
         self.archive = None
         self.match = None
         self.match_file = self.state_dir / "match.json"
+        self.results = PlayerResultStore(self.state_dir, self.workspace, self.civilization)
         self.active_task = None
         self.active_id = None
         self.process = None
@@ -230,6 +232,11 @@ class AgentService:
             if record["phase"] not in TERMINAL:
                 record["phase"], record["error"] = "FAILED", "SERVICE_RESTARTED"
                 self._save(record)
+        received = self.results.load()
+        if received is not None:
+            if self.match is None or self.match["epoch"] != received["epoch"]:
+                raise ServiceError("RESULT_BINDING_CONFLICT", 409)
+            self.results.receive(received)
 
     def _save(self, record):
         write_private_json(self.records_dir / (hashlib.sha256(record["activationId"].encode()).hexdigest() + ".json"), record)
@@ -250,7 +257,43 @@ class AgentService:
             regular_file(path, private=True)
             events = [json.loads(line) for line in path.read_text().splitlines()]
         return self.archive.update(record["gameTurn"], record["activationId"], events,
-                                   phase=record["phase"], handoff=record.get("committedHandoff"), aborted=record.get("aborted", False))
+                                   phase=record["phase"], handoff=record.get("committedHandoff"), aborted=record.get("aborted", False),
+                                   terminal=record.get("terminalOutcome", False))
+
+    async def result(self, payload):
+        try:
+            validate_result(payload)
+            async with self.guard:
+                if payload["civilization"] != self.civilization:
+                    raise ServiceError("INVALID_BINDING", 409)
+                if self.match is not None and payload["epoch"] != self.match["epoch"]:
+                    raise ServiceError("WORKSPACE_EPOCH_CONFLICT", 409)
+                if self.active_id is not None and self.records[self.active_id]["phase"] not in TERMINAL:
+                    raise ServiceError("AGENT_BUSY", 409)
+                if self.match is None:
+                    self.match = {"epoch": payload["epoch"]}
+                    write_private_json(self.match_file, self.match)
+                return self.results.receive(payload)
+        except ResultError as failure:
+            raise ServiceError(str(failure), 409 if str(failure) == "RESULT_CONFLICT" else 400) from None
+
+    async def finalize_terminal(self, payload):
+        if (set(payload) != {"activationId", "epoch", "gameTurn", "handoff"}
+                or not identifier(payload.get("activationId")) or not identifier(payload.get("epoch"))
+                or any(type(payload[key]) is not int or payload[key] < 0 for key in ("gameTurn", "handoff"))):
+            raise ServiceError("INVALID_ARGUMENT")
+        async with self.guard:
+            self.status(payload["activationId"])
+            record = self.records[payload["activationId"]]
+            if any(payload[key] != record[key] for key in ("epoch", "gameTurn", "handoff")):
+                raise ServiceError("INVALID_BINDING", 409)
+            if record["phase"] not in TERMINAL:
+                raise ServiceError("AGENT_BUSY", 409)
+            if record.get("aborted") or "committedHandoff" in record:
+                raise ServiceError("FINALIZATION_CONFLICT", 409)
+            record["terminalOutcome"] = True
+            self._save(record)
+            return self.status(payload["activationId"])
 
     async def finalize(self, payload):
         if set(payload) != {"activationId", "epoch", "gameTurn", "committedHandoff"}:
@@ -266,6 +309,8 @@ class AgentService:
                 raise ServiceError("AGENT_BUSY", 409)
             if record.get("aborted"):
                 raise ServiceError("ACTIVATION_ABORTED", 409)
+            if record.get("terminalOutcome"):
+                raise ServiceError("FINALIZATION_CONFLICT", 409)
             if payload["committedHandoff"] != record["handoff"] + 1:
                 raise ServiceError("INVALID_HANDOFF", 409)
             if record.get("committedHandoff", payload["committedHandoff"]) != payload["committedHandoff"]:
@@ -299,7 +344,7 @@ class AgentService:
                 raise ServiceError("INVALID_BINDING", 409)
             if record["phase"] not in TERMINAL:
                 raise ServiceError("AGENT_BUSY", 409)
-            if "committedHandoff" in record:
+            if "committedHandoff" in record or record.get("terminalOutcome"):
                 raise ServiceError("GAME_TURN_ALREADY_COMMITTED", 409)
             record["aborted"] = True
             self._save(record)
@@ -349,6 +394,8 @@ class AgentService:
         self._validate_start(payload)
         fingerprint = hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
         async with self.guard:
+            if self.results.load() is not None or any(record.get("terminalOutcome") for record in self.records.values()):
+                raise ServiceError("GAME_FINISHED", 409)
             previous = self.records.get(payload["activationId"])
             if previous is not None:
                 if previous.get("aborted"):
@@ -638,7 +685,7 @@ class AgentService:
             self.lock = None
 
     def application(self):
-        application = web.Application(client_max_size=1_100_000)
+        application = web.Application(client_max_size=33 * 1024 * 1024)
 
         async def control(request):
             if not request.secure:
@@ -657,6 +704,10 @@ class AgentService:
                     result = await self.start(payload)
                 elif operation == "finalize":
                     result = await self.finalize(payload)
+                elif operation == "finalize_terminal":
+                    result = await self.finalize_terminal(payload)
+                elif operation == "result":
+                    result = await self.result(payload)
                 elif operation == "abort":
                     result = await self.abort(payload)
                 elif operation == "archive":

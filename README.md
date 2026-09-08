@@ -4,7 +4,7 @@ A private headless host and MCP adapter project for agents playing Unciv, depend
 
 The repository provides a headless executable and authenticated HTTPS MCP server. The player interface supports explored-map observations, current-turn movement and settlement, worker jobs, city yields and citizen assignment, construction queues, research, policies, free Great People, informational alerts including first contact, known-civilization identity, validated war declarations and peace negotiations, and validated turn advancement. Checkpoints persist game state and command receipts together. A supervisor starts a fresh Codex conversation for each game turn through HTTPS agent services, carrying forward concise summaries and following the host's committed turn changes.
 
-**This is an incomplete gameplay implementation.** Further city controls, multi-turn movement orders, special unit actions, combat, broader diplomacy, full desktop integration, and agent filesystem/network isolation remain outstanding. Consult the [coverage ledger](docs/Player-api-coverage.md) rather than treating a passing turn-flow test as full parity.
+**This is an incomplete gameplay implementation.** Further city controls, multi-turn movement orders, special unit actions, naval/air combat, broader diplomacy, full desktop integration, and agent filesystem/network isolation remain outstanding. Consult the [coverage ledger](docs/Player-api-coverage.md) rather than treating a passing turn-flow test as full parity.
 
 The [encounter slice](docs/Encounter-and-diplomacy.md) lets players inspect and
 acknowledge first contact, then continue scheduled turns. It adds an initial view
@@ -81,3 +81,6 @@ To generate and load a lifecycle scenario:
 - [Coverage ledger](docs/Player-api-coverage.md): implemented and outstanding action and information surfaces.
 
 Engine changes under development live in the selected checkout. A clean checkout at the recorded submodule revision does not include uncommitted engine changes.
+
+The [basic combat slice](docs/Combat.md) adds land/city attacks, tactical orders,
+promotions, capture choices and durable combat reports with terminal result delivery.

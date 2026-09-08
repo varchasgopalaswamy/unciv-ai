@@ -18,6 +18,7 @@ import urllib.request
 import uuid
 
 from runner_history import EventHistory, HistoryError
+from agent_results import ResultError, validate_result
 from agent_settings import CLOSE_START_PROMPT, TURN_REVIEW_PROMPT, add_settings_arguments, valid_setting
 
 
@@ -119,7 +120,7 @@ class JsonEndpoint:
             method="POST",
         )
         try:
-            maximum = 32 * 1024 * 1024 if operation == "archive" else 300 * 1024 if operation == "events" else 65536
+            maximum = 32 * 1024 * 1024 if operation in {"archive", "results"} else 300 * 1024 if operation == "events" else 65536
             with self.opener.open(request, timeout=self.timeout) as response:
                 body = response.read(maximum + 1)
             value = json.loads(body)
@@ -203,6 +204,19 @@ class Agent(JsonEndpoint):
                 or not isinstance(value.get("summary"), str)):
             raise OperatorError("Invalid player turn archive.")
         return value
+
+    def result(self, payload):
+        try:
+            validate_result(payload)
+        except ResultError:
+            raise OperatorError("Invalid player result from host; no result was delivered.") from None
+        if payload["civilization"] != self.civilization:
+            raise OperatorError("Result belongs to a different civilization.")
+        value = super().call("result", **payload)
+        expected = {"civilization": self.civilization, "epoch": payload["epoch"], "received": True}
+        if value.get("status") != expected or value["status"].get("received") is not True:
+            raise OperatorError("Agent service did not confirm final result delivery.")
+        return expected
 
     def events(self, activation, cursor):
         page = super().call("events", activationId=activation, cursor=cursor, limit=100)
@@ -479,8 +493,65 @@ class Scheduler:
         self.state["inFlight"] = None
         self.save()
 
+    def complete_terminal_turn(self, flight, host_status):
+        """Retain a winning command that ended the game without an END_TURN handoff."""
+        if host_status["phase"] != "FINISHED" or host_status["handoff"] != flight["handoff"]:
+            raise RunnerError("Host did not confirm this activation's terminal outcome.")
+        agent = self.agent_for(flight)
+        finalized = agent.call("finalize_terminal", activationId=flight["activationId"], epoch=self.state["epoch"],
+                               gameTurn=flight["gameTurn"], handoff=flight["handoff"])
+        self.record_agent(finalized, flight)
+        if finalized.get("terminalOutcome") is not True:
+            raise RunnerError("Agent service did not confirm the terminal turn archive.")
+        archive = agent.archive(flight["activationId"])
+        if archive["gameTurn"] != flight["gameTurn"]:
+            raise RunnerError("Agent service returned another turn's archive.")
+        try:
+            history = self.history_for(flight)
+            history.publish_archive(archive)
+        except HistoryError as failure:
+            raise RunnerError(f"Terminal turn archive could not be mirrored: {failure}") from None
+        self.state["sessions"][flight["civilization"]]["completedTurn"] = flight["gameTurn"]
+        self.state["inFlight"] = None
+        self.save()
+        print(f"[{flight['civilization']}] Game ended during the turn; confirmed actions are retained in {history.turn_directory}.", flush=True)
+
+    def complete_game(self, status):
+        self.check_status(status)
+        if status["phase"] != "FINISHED":
+            raise RunnerError("Host has not finished the game.")
+        flight = self.state.get("inFlight")
+        if flight:
+            self.interrupt_agent(flight)
+            if not self.poll_events(flight, drain=True):
+                raise RunnerError("Final agent history could not be mirrored; resume to retry.")
+            if status["handoff"] > flight["handoff"]:
+                self.complete_turn(flight, status)
+            else:
+                self.complete_terminal_turn(flight, status)
+        response = self.operator.call("results")
+        self.check_status(response["status"])
+        results = response.get("results")
+        if response["status"]["phase"] != "FINISHED" or not isinstance(results, dict):
+            raise RunnerError("Host did not return completed player results.")
+        delivered = self.state.setdefault("resultsDelivered", [])
+        for civilization, agent in self.agents.items():
+            payload = results.get(civilization)
+            if not isinstance(payload, dict) or payload.get("epoch") != self.state["epoch"] or payload.get("civilization") != civilization:
+                raise RunnerError("Host omitted a bound player's final result.")
+            if civilization in delivered:
+                continue
+            agent.result(payload)
+            delivered.append(civilization)
+            self.save()
+            print(f"[{civilization}] Final result delivered to result.json and result.md.", flush=True)
+        self.note("complete", "Game finished. Every player received its final result and permitted combat reports.")
+
     def reconcile(self, status):
         self.check_status(status)
+        if status["phase"] == "FINISHED":
+            self.complete_game(status)
+            return False
         flight = self.state.get("inFlight")
         if not flight:
             return True
@@ -539,24 +610,25 @@ class Scheduler:
             initial = self.operator.call("status")["status"]
             self.check_status(initial)
             flight = self.state.get("inFlight")
-            if flight and not initial.get("scheduled") and initial["handoff"] == flight["handoff"]:
+            if flight and initial["phase"] != "FINISHED" and not initial.get("scheduled") and initial["handoff"] == flight["handoff"]:
                 raise RunnerError("Host returned to manual control during this unfinished turn. Finish the turn manually before resuming the scheduler.")
-            if initial["phase"] in {"HALTED", "FINISHED"}:
+            if initial["phase"] == "FINISHED":
+                self.complete_game(initial)
+                return 0
+            if initial["phase"] == "HALTED":
                 if self.state.get("inFlight"):
                     flight = self.state["inFlight"]
                     self.interrupt_agent(flight)
                     if not self.poll_events(flight, drain=True):
                         raise RunnerError("Final agent history could not be mirrored.")
-                    if initial["phase"] == "FINISHED" and initial["handoff"] > flight["handoff"]:
-                        self.complete_turn(flight, initial)
-                self.note("complete" if initial["phase"] == "FINISHED" else "needs_inspection", "Host is " + initial["phase"] + ".")
+                self.note("needs_inspection", "Host is HALTED.")
                 return 0
             acquired = self.operator.call("acquire", leaseId=self.lease)
             self.owns_lease = True
             self.state["leaseId"] = self.lease
             self.save()
             if not self.reconcile(acquired["status"]):
-                return 2
+                return 0 if self.state["status"] == "complete" else 2
             self.state.update(status="running", reason=None)
             self.save()
             while True:
@@ -566,15 +638,18 @@ class Scheduler:
                     return 0
                 status = self.operator.call("status")["status"]
                 self.check_status(status)
-                if status["phase"] in {"HALTED", "FINISHED"}:
-                    self.note("complete" if status["phase"] == "FINISHED" else "needs_inspection", "Host is " + status["phase"] + ".")
+                if status["phase"] == "FINISHED":
+                    self.complete_game(status)
+                    return 0
+                if status["phase"] == "HALTED":
+                    self.note("needs_inspection", "Host is HALTED.")
                     return 0
                 reason = self.budget_reason(status)
                 if reason:
                     self.note("budget_exhausted", reason)
                     return 0
                 if not self.invoke(status):
-                    return 0 if self.state["status"] in {"paused", "stopped", "budget_exhausted"} else 2
+                    return 0 if self.state["status"] in {"paused", "stopped", "budget_exhausted", "complete"} else 2
         except (RunnerError, OSError) as failure:
             self.note("needs_inspection", str(failure))
             return 2
@@ -665,7 +740,9 @@ class Scheduler:
                     current = self.operator.call("status")["status"]
                     self.check_status(current)
                     last_observation = now
-                    if current["handoff"] > flight["handoff"]:
+                    if current["phase"] == "FINISHED":
+                        break
+                    elif current["handoff"] > flight["handoff"]:
                         handoff_seen = handoff_seen or now
                     elif current["serverInstance"] != flight["serverInstance"]:
                         interrupted = "host_restarted"
@@ -690,6 +767,9 @@ class Scheduler:
             raise RunnerError("Final agent history could not be mirrored. Resume to retry before the next activation.")
         final_status = self.operator.call("status")["status"]
         self.check_status(final_status)
+        if final_status["phase"] == "FINISHED":
+            self.complete_game(final_status)
+            return False
         if interrupted == "host_paused":
             interrupted = self.store.requested() or ("pause" if self.interrupted else "host_paused")
         if final_status["handoff"] > flight["handoff"]:

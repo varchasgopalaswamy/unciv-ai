@@ -4,12 +4,15 @@ import com.unciv.logic.GameInfo
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import uncivai.player.ChooseFreeGreatPersonRequest
+import uncivai.player.PlayerFinalState
 import uncivai.player.PlayerHost
 import uncivai.player.PlayerSession
 import uncivai.player.PlayerSessionException
 import uncivai.player.PlayerSessionFailure
 import uncivai.player.RenameCityRequest
 import uncivai.player.TurnCommandRequest
+import uncivai.player.finalState
+import uncivai.player.gameFinished
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
 import java.security.SecureRandom
@@ -46,6 +49,7 @@ internal data class OperatorResponse(
     val leaseId: String? = null,
     val playerToken: String? = null,
     val activationId: String? = null,
+    val results: Map<String, PlayerFinalState> = emptyMap(),
 )
 
 internal class OperatorFailure(val code: String) : IllegalStateException(code)
@@ -80,6 +84,15 @@ class OperatorControl internal constructor(
         validate(request)
         if (request.op == "status") return@accessOperatorGame OperatorResponse(status(game))
         if (runtime.mutationFailure != null) throw OperatorFailure("GAME_HALTED")
+        if (request.op == "results") {
+            val results = game.civilizations.filter { it.isHuman() && it.isMajorCiv() }.mapNotNull { player ->
+                if (!finished(game) && !player.isDefeated()) return@mapNotNull null
+                val snapshot = host.bindPlayer(player.civID).turn()
+                if (snapshot.result == null) return@mapNotNull null
+                player.civID to snapshot.finalState(player.civID)
+            }.toMap()
+            return@accessOperatorGame OperatorResponse(status(game), results = results)
+        }
         when (request.op) {
             "acquire" -> {
                 if (!runtime.durableRecovery) throw OperatorFailure("DURABLE_CHECKPOINT_REQUIRED")
@@ -193,6 +206,7 @@ class OperatorControl internal constructor(
         }
         override fun capabilities() = guarded { delegate.capabilities() }
         override fun turn() = guarded { delegate.turn() }
+        override fun result() = guarded { delegate.result() }
         override fun summary() = guarded { delegate.summary() }
         override fun cities() = guarded { delegate.cities() }
         override fun freeGreatPersonChoice() = guarded { delegate.freeGreatPersonChoice() }
@@ -223,8 +237,7 @@ class OperatorControl internal constructor(
         leaseExpiresInMs = if (leaseId == null) 0 else (expiresAt - clockMillis()).coerceAtLeast(0),
     )
 
-    private fun finished(game: GameInfo) = !game.oneMoreTurnMode &&
-        (game.victoryData != null || game.civilizations.any { it.victoryManager.hasWon() })
+    private fun finished(game: GameInfo) = gameFinished(game)
 
     private fun requireLease(id: String?) {
         if (id == null || leaseId == null || id != leaseId) throw OperatorFailure("LEASE_LOST")
@@ -236,7 +249,7 @@ class OperatorControl internal constructor(
 
     private fun validate(request: OperatorRequest) {
         val keys = when (request.op) {
-            "status", "manual" -> emptySet()
+            "status", "results", "manual" -> emptySet()
             "acquire", "heartbeat", "release" -> setOf("leaseId")
             "pause" -> if (request.leaseId == null) emptySet() else setOf("leaseId")
             "activate" -> setOf("leaseId", "epoch", "serverInstance", "handoff", "civilization", "activationId")

@@ -66,6 +66,7 @@ data class OwnedUnit(
     val canFoundCity: Boolean,
     val settlementPromises: List<String>,
     val worker: WorkerDevelopment? = null,
+    val combat: UnitCombat? = null,
 )
 
 /** Coordinates use Unciv's axial x/y grid. No tile data is returned for unexplored coordinates. */
@@ -147,6 +148,7 @@ internal fun observeMap(player: Civilization, state: TurnSessionState, canAct: B
                     canFoundCity = canFound,
                     settlementPromises = detached(if (canFound) UnitSettlement.promisesBroken(unit) else emptyList()),
                     worker = observeWorkerDevelopment(player, unit, active),
+                    combat = observeUnitCombat(player, unit, active),
                 )
             }.toList(),
         ),

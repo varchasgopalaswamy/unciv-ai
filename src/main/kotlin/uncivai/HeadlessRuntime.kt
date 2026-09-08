@@ -138,6 +138,9 @@ class HeadlessRuntime private constructor(
                 }
 
                 uncivGame.gameInfo = gameInfo
+                // A desktop autosave can precede the screen update that records a winning
+                // position. Normalize that result before any player query or checkpoint.
+                gameInfo.checkForVictory()
                 HeadlessRuntime(uncivGame, runtimeFiles, previousFiles, gameInfo).also {
                     activeRuntime = it
                 }
