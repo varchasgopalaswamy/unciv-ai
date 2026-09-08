@@ -400,7 +400,7 @@ object S06McpProbe {
         val expectedInputs = linkedMapOf(
             "player_capabilities" to emptySet(),
             "player_turn" to emptySet(),
-            "player_command" to setOf("requestId", "epoch", "revision", "kind", "target", "selection", "queue", "destination", "confirmBreakPromise", "worked", "locked", "index", "toIndex"),
+            "player_command" to setOf("requestId", "epoch", "revision", "reviewId", "deferReason", "kind", "target", "selection", "queue", "destination", "confirmBreakPromise", "confirmWar", "peaceTerms", "worked", "locked", "index", "toIndex"),
             "player_summary" to emptySet(),
             "owned_cities" to emptySet(),
             "rename_city" to setOf("requestId", "epoch", "cityHandle", "name"),
@@ -416,6 +416,12 @@ object S06McpProbe {
             if (name == "player_command") {
                 check(tool.inputSchema.required.orEmpty().toSet() == setOf("requestId", "epoch", "revision", "kind"))
                 check(properties.getValue("queue").jsonObject.string("type") == "array")
+                for ((field, maximum) in mapOf("reviewId" to "128", "deferReason" to "500")) {
+                    val schema = properties.getValue(field).jsonObject
+                    check(schema.string("type") == "string")
+                    check(schema.getValue("minLength").jsonPrimitive.content == "1")
+                    check(schema.getValue("maxLength").jsonPrimitive.content == maximum)
+                }
             } else {
                 check(tool.inputSchema.required.orEmpty().toSet() == expectedProperties)
                 check(properties.values.all { schema -> schema.jsonObject.string("type") == "string" })

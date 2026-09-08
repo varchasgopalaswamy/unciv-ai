@@ -74,13 +74,47 @@ class LaunchAgentTest(unittest.TestCase):
         self.assertNotIn("A" * 43, output)
         self.assertNotIn("B" * 43, output)
 
+    def test_default_prompt_exercises_diplomacy_only_for_the_observed_close_start_scenario(self):
+        for civilization in ("Rome", "Greece"):
+            code, execute, _ = self.launch(civilization)
+            self.assertEqual(code, 0)
+            prompt = execute.call_args.args[1][-1]
+            self.assertIn("Only when player_turn.scenario.name is CLOSE_START_DIPLOMACY", prompt)
+            self.assertIn("Rome declares war on Greece when legal", prompt)
+            self.assertIn("Rome proposes peace when negotiatePeace.available", prompt)
+            self.assertIn("Greece reads and accepts that incoming offer when legal", prompt)
+            self.assertIn("COMPLETE: never redeclare", prompt)
+            self.assertIn("reviewId=turnReview.id", prompt)
+            self.assertIn("deferReason explaining idle units with legalDestinations>0", prompt)
+            self.assertIn("previousTurnReview", prompt)
+
     def test_resume_is_explicit_and_keeps_player_configuration(self):
-        code, execute, _ = self.launch("Greece", "--resume", "conversation-id", "--model", "chosen-model", "--prompt", "Continue my turn")
+        code, execute, _ = self.launch("Greece", "--resume", "conversation-id", "--model", "chosen-model",
+                                       "--reasoning-effort", "high", "--prompt", "Continue my turn")
         self.assertEqual(code, 0)
         command = execute.call_args.args[1]
         self.assertEqual(command[-4:], ["resume", "--", "conversation-id", "Continue my turn"])
         self.assertEqual(command[command.index("--model") + 1], "chosen-model")
+        self.assertIn('model_reasoning_effort="high"', command)
         self.assertNotIn("--last", command)
+
+    def test_reasoning_alias_is_quoted_and_unset_settings_leave_codex_configuration(self):
+        code, execute, _ = self.launch("Rome", "--reasoning", "custom-level")
+        self.assertEqual(0, code)
+        self.assertIn('model_reasoning_effort="custom-level"', execute.call_args.args[1])
+        code, execute, _ = self.launch("Rome")
+        self.assertEqual(0, code)
+        command = execute.call_args.args[1]
+        self.assertNotIn("--model", command)
+        self.assertFalse(any("model_reasoning_effort" in argument for argument in command))
+
+    def test_invalid_model_or_reasoning_is_rejected_before_credentials_or_connections(self):
+        for flag in ("--model", "--reasoning-effort"):
+            for value in ("", " ", "high\n", "x" * 129):
+                with self.subTest(flag=flag, value=value), contextlib.redirect_stderr(io.StringIO()):
+                    with self.assertRaises(SystemExit) as failure:
+                        agent.parser().parse_args(["Rome", flag, value])
+                    self.assertEqual(2, failure.exception.code)
 
     def test_prompt_and_session_values_cannot_become_codex_options(self):
         code, execute, _ = self.launch("Rome", "--prompt=--help")
@@ -126,6 +160,20 @@ class LaunchAgentTest(unittest.TestCase):
         self.assertNotIn("/", agent.workspace_name("../../elsewhere"))
         self.assertNotEqual(agent.workspace_name("."), ".")
         self.assertNotEqual(agent.workspace_name(".."), "..")
+        self.assertEqual(agent.workspace_name("Rome"), "Rome")
+        self.assertEqual(agent.workspace_name("Greece"), "Greece")
+        self.assertNotEqual(agent.workspace_name("City/State"), agent.workspace_name("City%2FState"))
+        self.assertNotEqual(agent.workspace_name("New Rome"), agent.workspace_name("New_Rome"))
+
+    def test_symlinked_player_workspace_prevents_launch(self):
+        outside = self.root / "outside"
+        outside.mkdir(mode=0o700)
+        (self.root / "agents").mkdir(mode=0o700)
+        (self.root / "agents/Rome").symlink_to(outside, target_is_directory=True)
+        code, execute, _ = self.launch()
+        self.assertEqual(code, 2)
+        execute.assert_not_called()
+        self.assertEqual(list(outside.iterdir()), [])
 
     def test_https_remote_override_does_not_need_shared_host_state(self):
         (self.root / "endpoints.json").unlink()

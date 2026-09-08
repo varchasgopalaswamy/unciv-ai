@@ -4,6 +4,8 @@ import com.unciv.json.json
 import com.unciv.logic.GameInfo
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import uncivai.player.CompletedTurnReview
+import uncivai.player.ConfirmedTurnAction
 import uncivai.player.PlayerTurnSnapshot
 import uncivai.player.TurnCommandReceipt
 import uncivai.player.TurnCommandRequest
@@ -26,6 +28,19 @@ internal data class GameCheckpoint(
     val players: Map<String, SavedPlayerState>,
     val handoff: Long = 0,
     val scheduled: Boolean = false,
+    val turnStart: TurnStartCheckpoint? = null,
+)
+
+/** The pre-activation state, persisted atomically alongside every command checkpoint. */
+@Serializable
+internal data class TurnStartCheckpoint(
+    val handoff: Long,
+    val civilization: String,
+    val turn: Int,
+    val gameJson: String,
+    val players: Map<String, SavedPlayerState>,
+    val activationId: String? = null,
+    val rolledBackActivationIds: Set<String> = emptySet(),
 )
 
 @Serializable
@@ -39,6 +54,10 @@ internal data class SavedPlayerState(
     val fingerprint: PlayerTurnSnapshot?,
     val receipts: List<SavedReceipt>,
     val unitHandles: Map<Int, String> = emptyMap(),
+    val tradeHandles: List<String?> = emptyList(),
+    val reviewTurn: Int? = null,
+    val reviewActions: List<ConfirmedTurnAction> = emptyList(),
+    val previousTurnReview: CompletedTurnReview? = null,
 )
 
 internal class CheckpointStore(
@@ -114,11 +133,12 @@ internal class CheckpointStore(
     companion object {
         private val checkpointJson = Json { encodeDefaults = true }
 
-        fun capture(game: GameInfo, epoch: String, paused: Boolean, states: Map<String, TurnSessionState>, handoff: Long = 0, scheduled: Boolean = false): GameCheckpoint = GameCheckpoint(
+        fun capture(game: GameInfo, epoch: String, paused: Boolean, states: Map<String, TurnSessionState>, handoff: Long = 0, scheduled: Boolean = false, turnStart: TurnStartCheckpoint? = null): GameCheckpoint = GameCheckpoint(
             epoch = epoch,
             paused = paused,
             handoff = handoff,
             scheduled = scheduled,
+            turnStart = turnStart,
             gameJson = json().toJson(game),
             players = states.mapValues { (civilization, state) ->
                 val player = game.civilizations.single { it.civID == civilization }
@@ -126,9 +146,13 @@ internal class CheckpointStore(
                     cityHandles = state.cityHandles.toMap(),
                     unitHandles = state.unitHandles.toMap(),
                     alertHandles = player.popupAlerts.map { state.alertHandles[it] },
+                    tradeHandles = player.tradeRequests.map { state.tradeHandles[it] },
                     revision = state.revision,
                     fingerprint = state.fingerprint,
                     receipts = state.receipts.values.map { SavedReceipt(it.first, it.second) },
+                    reviewTurn = state.reviewTurn,
+                    reviewActions = state.reviewActions.toList(),
+                    previousTurnReview = state.previousTurnReview,
                 )
             },
         )

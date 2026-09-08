@@ -25,10 +25,15 @@ class HeadlessRuntime private constructor(
     private val uncivGame: UncivGame,
     private val runtimeFiles: RuntimeFiles,
     private val previousGdxFiles: com.badlogic.gdx.Files?,
-    val game: GameInfo,
+    initialGame: GameInfo,
 ) : AutoCloseable {
+    var game: GameInfo = initialGame
+        private set
     private var closed = false
-    internal val executor = GameExecutor(game, lifecycleLock) {
+    internal val executor = GameExecutor(game, lifecycleLock, { replacement ->
+        game = replacement
+        uncivGame.gameInfo = replacement
+    }) {
         !closed && activeRuntime === this && UncivGame.isCurrentInitialized() &&
             UncivGame.Current === uncivGame && uncivGame.gameInfo === game
     }
@@ -93,7 +98,7 @@ class HeadlessRuntime private constructor(
         fun load(saveFile: Path, dataDirectory: Path): HeadlessRuntime = open(saveFile, dataDirectory, null)
 
         /** The seed controls terrain, not every engine random choice. */
-        fun createDuel(dataDirectory: Path, seed: Long = System.currentTimeMillis()): HeadlessRuntime = open(null, dataDirectory, DuelSetup(seed))
+        fun createDuel(dataDirectory: Path, seed: Long = System.currentTimeMillis(), closeStarts: Boolean = false): HeadlessRuntime = open(null, dataDirectory, DuelSetup(seed, closeStarts))
 
         private fun open(saveFile: Path?, dataDirectory: Path, duel: DuelSetup?): HeadlessRuntime = synchronized(lifecycleLock) {
             check(activeRuntime == null) {

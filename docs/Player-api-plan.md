@@ -37,13 +37,18 @@ human engine slots so built-in AI cannot silently take their turns. Operator con
    Add automatic turn scheduling with the workers and city-development slice below,
    so multi-turn testing does not require manually prompting each player.
 3. Add isolation to the local scheduled runner and support a desktop human alongside
-   Codex. Preserve each player's explicit conversation ID and private notes. Use separate rootless
+   Codex. Preserve each player's completed-turn summaries, detailed command records
+   and private notes. Start a fresh conversation for every new turn and every retry
+   after a turn-start rollback. Keep failed attempts for debugging, outside turn
+   memory. Use separate rootless
    containers and restricted networking; no host saves, source checkouts, unrelated
    tools, or other players' credentials or histories. Model choice and budgets are
    operator configuration, not game rules.
-4. Persist game state and receipts consistently. On an agent failure, pause and
-   resume without choosing player actions. On uncertain mutation failure, halt and
-   recover the last consistent checkpoint. A retry must not repeat a committed action.
+4. Persist game state and receipts consistently, including a turn-start restore
+   point for scheduled players. On an agent failure, pause without choosing player
+   actions. On resume, retain any committed handoff; otherwise restore the complete
+   turn-start state and start a fresh conversation. A lost reply must not undo or
+   repeat a committed turn. Unrecoverable host failures remain halted.
 5. Complete Vanilla, then Gods & Kings, removing setup restrictions only when all
    reachable actions and information surfaces pass the coverage gates.
 
@@ -69,9 +74,17 @@ Automatic scheduling scope:
   checks the host's active civilization after checkpoint commit and rechecks before
   dispatch. Handoffs follow authoritative state, never model prose, the round counter,
   or player-scoped revisions. Waiting does not consume model calls.
-- Each match epoch/civilization keeps its own explicit conversation ID, working
+- Each match epoch/civilization keeps its own working
   directory, notes and token. Only the selected player's permitted observations enter
-  its conversation; operator status and other players' transcripts are not forwarded.
+  a fresh conversation for each new game turn using concatenated prior completed
+  summaries; operator status and other players' transcripts are not forwarded.
+  Readable `agents/Rome/turn_1/` folders contain dense `commands.jsonl` and light
+  `summary.md` records. Recovery restores an unfinished turn's starting checkpoint
+  and starts a fresh thread. Rolled-back attempts remain archived for debugging and
+  contribute neither action claims nor observations to the next turn's context.
+  Their commands and full public reports stay in `turn_1/attempts/attempt_1/`;
+  the top-level turn files contain only retained attempts. Summary report excerpts
+  have a 200-word limit; full reports remain available on explicit inspection.
 - One scheduler owns the match, with one agent activation at a time. Prevent old
   processes from surviving into another turn. A completed activation must reconcile
   with host status before the next one starts. If the agent returns while still owning
@@ -83,11 +96,16 @@ Automatic scheduling scope:
   required human confirmation, or exhausted limits. Do not choose substitute actions
   or automatically skip blocked turns. Stop on game completion and do not activate
   waiting, paused, or defeated players.
-- Persist runner progress and conversation IDs. On restart, reconcile with the
-  authoritative checkpoint and command receipts before activating a player. A lost
-  end-turn reply can coexist with a committed handoff: preserve exact request IDs and
-  payloads for uncertain retries, and never synthesize a second end-turn command.
-  Uncertain mutation failures retain the existing halt-and-recover contract.
+- Persist runner progress, attempt identities and finalized summaries. On restart,
+  reconcile with the authoritative checkpoint before activating a player. A lost
+  end-turn reply can coexist with a committed handoff: retain that completed turn
+  and never synthesize a second end-turn command. If the handoff did not commit,
+  restore the turn-start game and receipts, rotate stale-state revisions, revoke
+  temporary credentials and mark the discarded attempt as rolled back. This
+  operator-only recovery retains the match epoch and consumed budgets. Missing or
+  inconsistent restore state must stop recovery rather than guess. A `HALTED` host
+  must restart from its durable checkpoint before rollback, preserving the disk's
+  authority when a checkpoint write had an uncertain outcome.
 
 All network communication uses authenticated, certificate-verified HTTPS: player
 MCP, operator control, and per-civilization agent-service control. Each service uses
@@ -102,8 +120,9 @@ to this slice even while the isolated runner is outstanding.
 
 Acceptance: two agents develop a fresh duel over a configured short run (for example,
 20 game turns), automatically handing off turns, building workers, improving tiles,
-growing cities, and managing production. Pause and restart partway through, preserve
-each player's conversation, and verify the resulting position with `inspect_game`.
+growing cities, and managing production. Pause and restart partway through, verify
+that incomplete turns return to their starting state, start fresh conversations
+with completed-turn memory, and inspect the resulting position with `inspect_game`.
 Scripted CI clients must also exercise wrong-turn activation, duplicate supervisors,
 timeouts, incomplete turns, unsupported choices, budget exhaustion, and interruption
 on both sides of an accepted handoff. A live multi-turn model run complements these
@@ -119,7 +138,7 @@ twenty-round result did not cover that encounter.
 This slice addresses that blocker without changing the Vanilla duel's setup
 restrictions. The [encounter inventory](Encounter-and-diplomacy.md) records all
 30 alert types, their desktop text and effects, setup prerequisites and remaining
-command/test gaps. War/peace actions and broader diplomacy remain outstanding.
+command/test gaps. The subsequent war/peace slice is described below; broader diplomacy remains outstanding.
 
 - `FirstContact` exposes the encountered civilization's identity, displayed leader
   caption, introduction and acknowledgement label. `ACKNOWLEDGE_ALERT` and the
@@ -169,8 +188,20 @@ Diplomacy/trade/war and other system choices retain their own slices. Victory an
 defeat require result delivery after scheduling stops; they remain separate from
 ordinary in-game informational popups. No generic ruleset-event dismissal is added.
 
-Continue the duel sequence with validated war/peace actions and
-their mandatory offers/responses, then basic melee/ranged combat, promotions and
+## Delivered slice: war and negotiated peace
+
+The [war and peace slice](War-and-peace.md) adds shared engine diplomatic
+availability and confirmation, war declaration and message acknowledgement, and
+peace negotiation through treaties, gold, GPT and tradable resources. Player
+observations include full incoming messages/terms and accept/reject/counteroffer
+actions. Outgoing proposals can be retracted. Exact retries and pending offers
+survive checkpoints; a scripted HTTPS duel verifies scheduled turns across war,
+cooldown, peace negotiations and process restarts.
+
+Gameplay launchers and the automatic runner now accept model and reasoning-level
+overrides and preserve resolved player settings across fresh turns and resumes.
+
+Continue the duel sequence with basic melee/ranged combat, promotions and
 capture decisions. Full trade, remaining city/unit controls, embedded human play
 and isolation retain their places in the broader delivery sequence. Add each
 action together with the observations and resulting decisions needed to use it.

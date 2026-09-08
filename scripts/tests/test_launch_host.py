@@ -115,6 +115,18 @@ class HostLauncherTest(unittest.TestCase):
         self.assertIn("only to a new game", self.errors.getvalue())
         self.build.assert_not_called()
 
+    def test_close_starts_are_forwarded_only_for_a_new_game(self):
+        self.assertEqual(0, self.run_launcher("--new", "--close-starts"))
+        self.assertIn("--close-starts", self.execute.call_args.args[1])
+        self.execute.reset_mock()
+        self.build.reset_mock()
+        checkpoint = self.checkpoint()
+        self.assertEqual(2, self.run_launcher("--close-starts"))
+        self.assertIn("only to a new game", self.errors.getvalue())
+        self.assertEqual("existing checkpoint", checkpoint.read_text())
+        self.execute.assert_not_called()
+        self.build.assert_not_called()
+
     def test_custom_paths_with_spaces_and_engine_override_are_single_arguments(self):
         custom_players = self.write_players(Path(self.temporary.name) / "private players.json")
         custom_checkpoint = Path(self.temporary.name) / "other match" / "save.json"

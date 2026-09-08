@@ -1,7 +1,7 @@
 # Player protocol
 
 The current interface covers turn management, exploration, settlement, basic city development,
-first-contact acknowledgement and initial diplomacy observations.
+first contact, war declarations and negotiated peace.
 It remains an incomplete player API.
 Use `player_capabilities` to inspect its operations and recovery guarantees.
 Authentication fixes the player's civilization; tool arguments cannot override it.
@@ -24,8 +24,10 @@ Authentication fixes the player's civilization; tool arguments cannot override i
   `paragraphs`, nullable `quote`, and the `acknowledgement` label. This contains the
   full popup prose; technology descriptions use the observing civilization's context.
   `diplomacy.knownCivilizations` lists met, surviving major civilizations with their
-  identity, displayed leader caption and `atWar` flag. It excludes unmet civilizations
-  and does not expose hidden locations, resources, plans or diplomatic modifiers.
+  identity, leader caption, status, peace treaty duration, legal war/peace actions,
+  unavailable reasons and confirmation warnings. Peace trade options and incoming/
+  outgoing offers include permitted terms and full leader text; see [war and peace](War-and-peace.md).
+  Unmet identities and hidden locations, plans and third-party requests are excluded.
 - `player_command`: submit exactly one command using the latest turn snapshot.
 - Existing summary and prototype tools remain available during migration. Their
   mutation tools are disabled when durable checkpoints are enabled; use
@@ -61,11 +63,16 @@ Example, with values copied from `player_turn`:
 | `SET_TILE_LOCKED` | `target`: city handle; `destination`: listed tile coordinate; `locked`: boolean matching its offered action |
 | `REMOVE_CONSTRUCTION` | `target`: city handle; `index`: removable construction entry |
 | `MOVE_CONSTRUCTION` | `target`: city handle; `index`: construction entry; `toIndex`: one of its `moveToIndices` |
-| `END_TURN` | None; `canEndTurn` must be true |
+| `DECLARE_WAR` | `target`: known civilizationId; `confirmWar: true` after reading current confirmation |
+| `PROPOSE_PEACE` | `target`: known civilizationId; `peaceTerms` give/receive lists of offered type/name/amount/duration |
+| `ACCEPT_PEACE`, `REJECT_PEACE` | `target`: incoming offer handle, after reading its current message and terms |
+| `COUNTER_PEACE` | `target`: incoming offer handle; `peaceTerms` replacement give/receive lists |
+| `RETRACT_PEACE` | `target`: known civilizationId with a pending outgoing offer |
+| `END_TURN` | `reviewId`: current `turnReview.id`; `canEndTurn` must be true. If any review units are idle with legal destinations, include `deferReason` explaining intentional idling. |
 
 Unused fields must be absent or have their default value (`null` for target and
-selection, destination, worked, locked, index and toIndex; `[]` for queue,
-`false` for confirmBreakPromise). Unknown fields and command names are rejected. Requests
+selection, destination, worked, locked, index, toIndex and peaceTerms; `[]` for queue,
+`false` for confirmBreakPromise and confirmWar). Unknown fields and command names are rejected. Requests
 must use a unique printable ASCII `requestId` of 1–128 characters per player. Retries
 use the same ID **and the original payload**, including the original revision.
 
@@ -76,10 +83,31 @@ Revision tokens change with the returned player state or a successful command,
 not a global count of opponent actions. Reloading an ordinary save starts a new
 epoch; restoring a durable checkpoint preserves the epoch and receipts.
 
+`player_turn` puts `turnReview` near the beginning of the response. It contains
+confirmed commands from this turn and each owned unit's remaining movement,
+position, idle flag and legal destination count. Movement notes report actual
+endpoints, including when discovery shortened a move. Failed commands and receipt
+replays add no actions. `previousTurnReview` carries the previous completed turn's
+confirmed actions and deliberately deferred units with the player's reason.
+
 `END_TURN` checks shared engine picker requirements and additional unimplemented
-alerts/trades. The interface permits leaving idle units idle, as the UI does with
+alerts/trades, then requires a current review acknowledgment. Fetch and read
+`player_turn`, reconsider any unused movement, and send `reviewId=turnReview.id`.
+If any review units have `idle=true` and `legalDestinations>0`, include a nonblank
+`deferReason` of at most 500 characters. `TURN_REVIEW_REQUIRED` rejects a missing
+or mismatched acknowledgment; `OBSERVATION_REQUIRED` rejects an unread review.
+Every successful mutation invalidates the prior review. Reviews and deferrals
+persist in checkpoints, while a restart requires a fresh read before an uncommitted
+end turn. Exact retries of committed end turns still return their original receipt.
+The interface permits leaving idle units idle, as the UI does with
 unit cycling disabled. It does not silently run a major civilization's AI or resolve
 mandatory choices. Decisions whose implementation is missing have `supported=false`.
+
+Close-start games also report `scenario.name=CLOSE_START_DIPLOMACY` and phase
+`AWAITING_WAR`, `AT_WAR` or `COMPLETE`. Completion requires a recorded successful
+war declaration between the two known civilizations followed by restored peace;
+first contact alone is insufficient. This operator-created exercise is absent
+from ordinary games and changes no engine legality rules.
 
 First contact has one acknowledgement, matching the desktop popup. Read its
 introduction, then submit `ACKNOWLEDGE_ALERT` using that alert's handle and the latest
@@ -88,9 +116,10 @@ message and does not change war/peace status. Each player acknowledges their own
 message during their own turn. Paused and waiting snapshots retain its content but
 set `canAcknowledge=false`. Mixed alert queues can contain both acknowledgeable
 information and unsupported choices; acknowledging the former cannot clear the latter.
-War declarations, peace offers and other diplomatic commands remain unimplemented.
+War declarations and peace offers use explicit commands as described in [war and peace](War-and-peace.md).
+Other diplomatic systems remain incomplete.
 
-For all supported informational popups, a revision returned only by a command
+For supported informational popups, war confirmation and incoming-offer responses, a revision returned only by a command
 receipt is insufficient to acknowledge: `OBSERVATION_REQUIRED` asks the player
 to fetch and read `player_turn` first. A changed popup description invalidates
 the prior revision. After process restart, pending acknowledgements require a
@@ -146,6 +175,22 @@ Persistence or mutation failure halts player operations. Restore the checkpoint 
 retry the original request: it either has a receipt or was not committed. Ordinary
 operator pause/resume is available through `/operator` and `GameExecutor`; resume cannot clear a
 mutation failure. Paused matches still support observations and successful retries.
+
+Scheduled play also persists a restore point at the start of each player's turn.
+When the supervisor resumes an interrupted attempt, it first checks the committed
+handoff counter. A completed `END_TURN` is retained even if its response was lost.
+Otherwise the authenticated operator `rollback` operation restores the full
+turn-start game and receipt state, rotates stale-state revisions and revokes old
+temporary credentials. Commands from the discarded attempt are no longer effects
+of the current game, even if they returned successful receipts before interruption.
+The match epoch stays the same. The next attempt uses a fresh conversation, while
+failed-attempt logs remain available for inspection and outside turn-summary memory.
+Rollback requires the current lease, epoch, server instance, handoff, active
+civilization and activation ID. Its durable attempt binding prevents delayed retries
+from resetting a newer attempt; it is not a player API operation. A `HALTED` host rejects rollback:
+restart it from the durable checkpoint before resuming the supervisor, so an
+uncertain checkpoint write cannot cause a committed handoff to be undone.
+See [automatic recovery](Automatic-turns.md#pause-inspect-and-resume).
 
 ## Limits of this implementation
 

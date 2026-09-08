@@ -59,7 +59,7 @@ class CompletionCorrelationTests(unittest.IsolatedAsyncioTestCase):
         self.temporary.cleanup()
 
     def payload(self, activation="first", thread=None):
-        return {"activationId": activation, "epoch": "epoch-one", "civilization": "Rome", "threadId": thread,
+        return {"activationId": activation, "epoch": "epoch-one", "gameTurn": 0, "handoff": 0, "civilization": "Rome", "threadId": thread,
                 "mcpUrl": "https://localhost:8765/mcp", "playerToken": "P" * 43, "prompt": "Play current host turn", "model": None,
                 "timeoutSeconds": 20, "leaseSeconds": 10}
 

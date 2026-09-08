@@ -1,5 +1,6 @@
 package uncivai.player
 
+import com.unciv.logic.civilization.InformationalPopupContent
 import com.unciv.logic.civilization.PlayerOperations
 import com.unciv.logic.civilization.PopupAlert
 import com.unciv.models.translations.tr
@@ -13,13 +14,17 @@ data class AlertContent(
     val paragraphs: List<String>,
     val quote: String? = null,
     val acknowledgement: String,
+    val additionalAcknowledgements: List<String> = emptyList(),
 )
 
-internal fun observeAlertContent(operations: PlayerOperations, alert: PopupAlert): AlertContent? = operations.informationalPopupContent(alert)?.let { content ->
+internal fun observeAlertContent(operations: PlayerOperations, alert: PopupAlert): AlertContent? = operations.informationalPopupContent(alert)?.toPlayerContent()
+
+internal fun InformationalPopupContent.toPlayerContent(): AlertContent = let { content ->
     AlertContent(
         title = content.title.tr(),
         paragraphs = Collections.unmodifiableList(content.paragraphs.map { it.tr() }),
         quote = content.quote?.tr(),
         acknowledgement = content.acknowledgement.tr(),
+        additionalAcknowledgements = Collections.unmodifiableList(content.additionalAcknowledgements.map { it.tr() }),
     )
 }

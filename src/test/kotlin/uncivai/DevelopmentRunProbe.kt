@@ -85,7 +85,7 @@ object DevelopmentRunProbe {
         repeat(60) {
             val snapshot = PlayerTurnJson.json.decodeFromString<PlayerTurnSnapshot>(tool(token, "player_turn").toString())
             check(snapshot.pending.none { !it.supported }) { "Unsupported fixture decision: ${snapshot.pending}" }
-            fun command(kind: TurnCommandKind, target: String? = null, selection: String? = null, queue: List<String> = emptyList(), destination: TilePosition? = null) = TurnCommandRequest(UUID.randomUUID().toString(), snapshot.epoch, snapshot.revision, kind, target, selection, queue, destination)
+            fun command(kind: TurnCommandKind, target: String? = null, selection: String? = null, queue: List<String> = emptyList(), destination: TilePosition? = null) = TurnCommandRequest(UUID.randomUUID().toString(), snapshot.epoch, snapshot.revision, kind, target, selection, queue, destination).reviewedFor(snapshot)
             val settler = snapshot.map.units.firstOrNull { it.canFoundCity && it.settlementPromises.isEmpty() }
             val city = snapshot.cities.firstOrNull { it.constructionQueue.isEmpty() }
             val alert = snapshot.alerts.firstOrNull { it.canAcknowledge }

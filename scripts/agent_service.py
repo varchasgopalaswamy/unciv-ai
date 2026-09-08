@@ -24,6 +24,8 @@ import aiohttp
 from aiohttp import web
 
 from agent_history import HistoryStore
+from agent_settings import valid_setting
+from turn_archive import TurnArchive
 from unciv_tls import codex_trust_environment, https_url, private_directory, regular_file, write_private_json
 
 
@@ -156,9 +158,17 @@ class CodexProcess:
 
 
 class AgentService:
-    def __init__(self, civilization, workspace, state_dir, token, mcp_url, ca_file, executable="codex", process_factory=CodexProcess):
+    def __init__(self, civilization, workspace, state_dir, token, mcp_url, ca_file, executable="codex", process_factory=CodexProcess,
+                 *, model=None, reasoning_effort=None):
+        if model is not None and not valid_setting(model):
+            raise ServiceError("INVALID_MODEL")
+        if reasoning_effort is not None and not valid_setting(reasoning_effort):
+            raise ServiceError("INVALID_REASONING_EFFORT")
+        self.default_settings = {"model": model, "reasoningEffort": reasoning_effort}
         self.civilization = civilization
         self.workspace, self.state_dir = private_directory(workspace), private_directory(state_dir)
+        if self.state_dir.resolve().is_relative_to(self.workspace.resolve()):
+            raise ServiceError("PRIVATE_STATE_INSIDE_WORKSPACE")
         self.token, self.mcp_url, self.ca_file = token, https_url(mcp_url, ("/mcp",)), ca_file
         self.executable, self.process_factory = executable, process_factory
         self.history = HistoryStore(self.state_dir / "history", token)
@@ -171,7 +181,11 @@ class AgentService:
             raise ServiceError("SERVICE_ALREADY_RUNNING", 409) from None
         self.records = {}
         self.known_threads = {}
+        self.thread_settings = {}
         self.thread_totals = {}
+        self.archive = None
+        self.match = None
+        self.match_file = self.state_dir / "match.json"
         self.active_task = None
         self.active_id = None
         self.process = None
@@ -197,12 +211,19 @@ class AgentService:
                 raise ServiceError("SERVICE_BINDING_CONFLICT", 409)
         else:
             write_private_json(binding_file, binding)
+        if self.match_file.exists():
+            regular_file(self.match_file, private=True)
+            self.match = json.loads(self.match_file.read_text())
+            self.archive = TurnArchive(self.state_dir / "turn-archive", self.workspace,
+                                       self.civilization, self.match["epoch"], secrets=(self.token,))
         for file in sorted(self.records_dir.glob("*.json")):
             regular_file(file, private=True)
             record = json.loads(file.read_text())
             self.records[record["activationId"]] = record
             if record.get("threadId"):
-                self.known_threads[record["threadId"]] = record["epoch"]
+                self.known_threads[record["threadId"]] = (record["epoch"], record.get("gameTurn"))
+                if "settings" in record and "effectiveSettings" in record:
+                    self.thread_settings[record["threadId"]] = (record["settings"], record["effectiveSettings"])
                 previous = self.thread_totals.setdefault(record["threadId"], dict.fromkeys(USAGE_KEYS, 0))
                 for key in USAGE_KEYS:
                     previous[key] = max(previous[key], record.get("threadTotals", {}).get(key, 0))
@@ -219,20 +240,90 @@ class AgentService:
             os.fsync(descriptor)
         finally:
             os.close(descriptor)
+        if self.archive is not None and "gameTurn" in record:
+            self._export(record)
+
+    def _export(self, record):
+        path = self.history.path(record["activationId"]) / "events.jsonl"
+        events = []
+        if path.exists():
+            regular_file(path, private=True)
+            events = [json.loads(line) for line in path.read_text().splitlines()]
+        return self.archive.update(record["gameTurn"], record["activationId"], events,
+                                   phase=record["phase"], handoff=record.get("committedHandoff"), aborted=record.get("aborted", False))
+
+    async def finalize(self, payload):
+        if set(payload) != {"activationId", "epoch", "gameTurn", "committedHandoff"}:
+            raise ServiceError("INVALID_ARGUMENT")
+        if not identifier(payload["activationId"]) or type(payload["gameTurn"]) is not int or type(payload["committedHandoff"]) is not int:
+            raise ServiceError("INVALID_ARGUMENT")
+        async with self.guard:
+            self.status(payload["activationId"])
+            record = self.records[payload["activationId"]]
+            if (payload["epoch"], payload["gameTurn"]) != (record["epoch"], record["gameTurn"]):
+                raise ServiceError("INVALID_BINDING", 409)
+            if record["phase"] not in TERMINAL:
+                raise ServiceError("AGENT_BUSY", 409)
+            if record.get("aborted"):
+                raise ServiceError("ACTIVATION_ABORTED", 409)
+            if payload["committedHandoff"] != record["handoff"] + 1:
+                raise ServiceError("INVALID_HANDOFF", 409)
+            if record.get("committedHandoff", payload["committedHandoff"]) != payload["committedHandoff"]:
+                raise ServiceError("FINALIZATION_CONFLICT", 409)
+            record["committedHandoff"] = payload["committedHandoff"]
+            self._save(record)
+            return self.status(payload["activationId"])
+
+    async def abort(self, payload):
+        if set(payload) != {"activationId", "epoch", "gameTurn", "handoff"} or not identifier(payload.get("activationId")) or not identifier(payload.get("epoch")):
+            raise ServiceError("INVALID_ARGUMENT")
+        if any(type(payload[key]) is not int or payload[key] < 0 for key in ("gameTurn", "handoff")):
+            raise ServiceError("INVALID_ARGUMENT")
+        async with self.guard:
+            record = self.records.get(payload["activationId"])
+            if record is None:
+                if self.active_id is not None and self.records[self.active_id]["phase"] not in TERMINAL:
+                    raise ServiceError("AGENT_BUSY", 409)
+                if self.match is not None and self.match["epoch"] != payload["epoch"]:
+                    raise ServiceError("WORKSPACE_EPOCH_CONFLICT", 409)
+                if self.match is None:
+                    self.archive = TurnArchive(self.state_dir / "turn-archive", self.workspace,
+                                               self.civilization, payload["epoch"], secrets=(self.token,))
+                    self.match = {"epoch": payload["epoch"]}
+                    write_private_json(self.match_file, self.match)
+                record = {**payload, "civilization": self.civilization, "threadId": None, "phase": "INTERRUPTED",
+                          "error": "NOT_STARTED", "aborted": True, "usage": dict.fromkeys(USAGE_KEYS, 0),
+                          "turnDirectory": f"turn_{payload['gameTurn'] + 1}"}
+                self.records[record["activationId"]] = record
+            if (payload["epoch"], payload["gameTurn"], payload["handoff"]) != (record["epoch"], record["gameTurn"], record["handoff"]):
+                raise ServiceError("INVALID_BINDING", 409)
+            if record["phase"] not in TERMINAL:
+                raise ServiceError("AGENT_BUSY", 409)
+            if "committedHandoff" in record:
+                raise ServiceError("GAME_TURN_ALREADY_COMMITTED", 409)
+            record["aborted"] = True
+            self._save(record)
+            return self.status(payload["activationId"])
+
+    def archived(self, activation_id):
+        self.status(activation_id)
+        record = self.records[activation_id]
+        return {**self._export(record), "civilization": self.civilization}
 
     def status(self, activation_id=None):
         if activation_id is None:
             activation_id = self.active_id
         if activation_id is None:
-            return {"civilization": self.civilization, "activationId": None, "epoch": None, "threadId": None, "phase": "IDLE", "usage": dict.fromkeys(USAGE_KEYS, 0)}
+            return {"civilization": self.civilization, "activationId": None, "epoch": None, "threadId": None, "phase": "IDLE",
+                    "defaultSettings": dict(self.default_settings), "usage": dict.fromkeys(USAGE_KEYS, 0)}
         record = self.records.get(activation_id)
         if record is None:
             raise ServiceError("ACTIVATION_NOT_FOUND", 404)
         return {key: (dict(value) if isinstance(value, dict) else value) for key, value in record.items() if key not in {"fingerprint", "threadTotals", "baseline"}}
 
     def _validate_start(self, payload):
-        required = {"activationId", "epoch", "civilization", "threadId", "mcpUrl", "playerToken", "prompt", "model", "timeoutSeconds", "leaseSeconds"}
-        if set(payload) != required:
+        required = {"activationId", "epoch", "gameTurn", "handoff", "civilization", "threadId", "mcpUrl", "playerToken", "prompt", "model", "timeoutSeconds", "leaseSeconds"}
+        if not required <= set(payload) or set(payload) - required - {"reasoningEffort"}:
             raise ServiceError("INVALID_ARGUMENT")
         if not identifier(payload["activationId"]) or not identifier(payload["epoch"]) or payload["civilization"] != self.civilization:
             raise ServiceError("INVALID_BINDING")
@@ -242,10 +333,14 @@ class AgentService:
             raise ServiceError("INVALID_PLAYER_TOKEN")
         if payload["threadId"] is not None and not identifier(payload["threadId"]):
             raise ServiceError("INVALID_THREAD")
+        if any(type(payload[key]) is not int or payload[key] < 0 for key in ("gameTurn", "handoff")):
+            raise ServiceError("INVALID_GAME_TURN")
         if not isinstance(payload["prompt"], str) or not 1 <= len(payload["prompt"]) <= 1_000_000:
             raise ServiceError("INVALID_PROMPT")
-        if payload["model"] is not None and (not isinstance(payload["model"], str) or not 1 <= len(payload["model"]) <= 128):
+        if payload["model"] is not None and not valid_setting(payload["model"]):
             raise ServiceError("INVALID_MODEL")
+        if payload.get("reasoningEffort") is not None and not valid_setting(payload["reasoningEffort"]):
+            raise ServiceError("INVALID_REASONING_EFFORT")
         for key, maximum in (("timeoutSeconds", 86400), ("leaseSeconds", 300)):
             if type(payload[key]) is not int or not 1 <= payload[key] <= maximum:
                 raise ServiceError("INVALID_TIMEOUT")
@@ -256,20 +351,71 @@ class AgentService:
         async with self.guard:
             previous = self.records.get(payload["activationId"])
             if previous is not None:
+                if previous.get("aborted"):
+                    raise ServiceError("ACTIVATION_ABORTED", 409)
                 if previous["fingerprint"] != fingerprint:
                     raise ServiceError("ACTIVATION_CONFLICT", 409)
                 return self.status(payload["activationId"])
             if self.active_id is not None and self.records[self.active_id]["phase"] not in TERMINAL:
                 raise ServiceError("AGENT_BUSY", 409)
-            if payload["threadId"] is not None and self.known_threads.get(payload["threadId"]) != payload["epoch"]:
+            if self.match is not None and self.match["epoch"] != payload["epoch"]:
+                raise ServiceError("WORKSPACE_EPOCH_CONFLICT", 409)
+            same_turn = [record for record in self.records.values()
+                         if (record["epoch"], record.get("gameTurn")) == (payload["epoch"], payload["gameTurn"])]
+            if any("committedHandoff" in record for record in same_turn):
+                raise ServiceError("GAME_TURN_ALREADY_COMMITTED", 409)
+            game_turns = {record["gameTurn"] for record in self.records.values()
+                          if record["epoch"] == payload["epoch"] and "gameTurn" in record}
+            if game_turns and payload["gameTurn"] < max(game_turns):
+                raise ServiceError("GAME_TURN_STALE", 409)
+            committed_turns = {record["gameTurn"] for record in self.records.values()
+                               if "committedHandoff" in record}
+            if any(turn < payload["gameTurn"] and turn not in committed_turns for turn in game_turns):
+                raise ServiceError("PREVIOUS_TURN_NOT_FINALIZED", 409)
+            if payload["threadId"] is not None and self.known_threads.get(payload["threadId"]) != (payload["epoch"], payload["gameTurn"]):
                 raise ServiceError("THREAD_NOT_OWNED", 409)
+            if payload["threadId"] is not None and any(record.get("threadId") == payload["threadId"] and record.get("aborted") for record in same_turn):
+                raise ServiceError("THREAD_ABORTED", 409)
+            if payload["threadId"] is None and any(record.get("threadId") and not record.get("aborted") for record in same_turn):
+                raise ServiceError("THREAD_REQUIRED_FOR_RECOVERY", 409)
+            pinned = self.thread_settings.get(payload["threadId"])
+            if pinned is not None:
+                settings, effective_settings = pinned
+                for key in self.default_settings:
+                    if payload.get(key) is not None and payload[key] not in (settings[key], effective_settings[key]):
+                        raise ServiceError("THREAD_SETTINGS_CONFLICT", 409)
+                settings = dict(settings)
+            else:
+                defaults = self.match.get("effectiveSettings", self.default_settings) if self.match else self.default_settings
+                settings = {key: payload.get(key) if payload.get(key) is not None else default
+                            for key, default in defaults.items()}
+            if self.match is None:
+                self.archive = TurnArchive(self.state_dir / "turn-archive", self.workspace,
+                                           self.civilization, payload["epoch"], secrets=(self.token, payload["playerToken"]))
+                self.match = {"epoch": payload["epoch"]}
+                write_private_json(self.match_file, self.match)
+            prompt = payload["prompt"] + f"\n\nCurrent game turn: {payload['gameTurn']} (archive: turn_{payload['gameTurn'] + 1}/). " \
+                "Detailed commands and receipts are in turn_N/commands.jsonl; read them only when needed. " \
+                "Finish with a concise summary of actions, their reasons, important observations, and next-turn plans."
+            if payload["threadId"] is None:
+                context = self.archive.context(payload["gameTurn"])
+                if context:
+                    prompt += "\n\n" + context
+            else:
+                prompt += "\nThis is recovery of the same unfinished game turn. Reobserve current host state before retrying commands."
+            payload = {**payload, "prompt": prompt}
             record = {
                 "activationId": payload["activationId"], "epoch": payload["epoch"], "civilization": self.civilization,
+                "gameTurn": payload["gameTurn"], "handoff": payload["handoff"], "turnDirectory": f"turn_{payload['gameTurn'] + 1}",
                 "threadId": payload["threadId"], "phase": "STARTING", "usage": dict.fromkeys(USAGE_KEYS, 0), "fingerprint": fingerprint,
+                "settings": settings,
             }
+            if pinned is not None:
+                record["effectiveSettings"] = dict(effective_settings)
             self.records[record["activationId"]] = record
             self._save(record)
             self.history.begin(record, payload["prompt"], payload["playerToken"])
+            self._export(record)
             self.active_id = record["activationId"]
             self.stop_event = asyncio.Event()
             self.last_heartbeat = time.monotonic()
@@ -304,6 +450,8 @@ class AgentService:
     async def _notification(self, method, params):
         record = self.records[self.active_id]
         self.history.notify(self.active_id, record["threadId"], method, params)
+        if method == "item/completed" and self.turn_id is not None:
+            self._export(record)
         if method == "service/approvalRequired":
             self.failure = "INTERACTIVE_DECISION_REQUIRED"
             self.stop_event.set()
@@ -364,7 +512,7 @@ class AgentService:
         self.run_started.set()
         record = self.records[payload["activationId"]]
         started = time.monotonic()
-        workspace = private_directory(self.workspace / hashlib.sha256(record["epoch"].encode()).hexdigest())
+        workspace = self.workspace
         process = self.process_factory(self.executable, workspace, self.mcp_url, self.ca_file, self._notification)
         self.process = process
         owner = asyncio.current_task()
@@ -387,10 +535,15 @@ class AgentService:
 
         monitor = asyncio.create_task(watchdog())
         try:
-            await process.start(payload["playerToken"], payload["model"])
+            # Preserve resolved settings across new app-server processes even when
+            # service defaults or the local Codex configuration have changed.
+            selected = record.get("effectiveSettings", record["settings"])
+            await process.start(payload["playerToken"], selected["model"])
             options = {"cwd": str(workspace), "approvalPolicy": "never", "sandbox": "workspace-write"}
-            if payload["model"] is not None:
-                options["model"] = payload["model"]
+            if selected["model"] is not None:
+                options["model"] = selected["model"]
+            if selected["reasoningEffort"] is not None:
+                options["config"] = {"model_reasoning_effort": selected["reasoningEffort"]}
             if record["threadId"] is None:
                 result = await process.request("thread/start", options)
             else:
@@ -398,15 +551,36 @@ class AgentService:
             thread_id = result.get("thread", {}).get("id")
             if not identifier(thread_id) or (record["threadId"] is not None and thread_id != record["threadId"]):
                 raise ServiceError("INVALID_CODEX_THREAD", 502)
+            if record["threadId"] is None and thread_id in self.known_threads:
+                raise ServiceError("INVALID_CODEX_THREAD", 502)
+            if thread_id in self.known_threads and self.known_threads[thread_id] != (record["epoch"], record["gameTurn"]):
+                raise ServiceError("INVALID_CODEX_THREAD", 502)
+            effective_settings = {"model": result.get("model"), "reasoningEffort": result.get("reasoningEffort")}
+            if not valid_setting(effective_settings["model"]) or (
+                effective_settings["reasoningEffort"] is not None and not valid_setting(effective_settings["reasoningEffort"])
+            ):
+                raise ServiceError("INVALID_CODEX_SETTINGS", 502)
+            if "effectiveSettings" in record and effective_settings != record["effectiveSettings"]:
+                raise ServiceError("CODEX_SETTINGS_CHANGED", 409)
+            if selected["reasoningEffort"] is not None and effective_settings["reasoningEffort"] != selected["reasoningEffort"]:
+                raise ServiceError("CODEX_REASONING_EFFORT_NOT_APPLIED", 502)
+            record["effectiveSettings"] = effective_settings
             record["threadId"] = thread_id
-            self.known_threads[thread_id] = record["epoch"]
+            self.known_threads[thread_id] = (record["epoch"], record["gameTurn"])
+            self.thread_settings[thread_id] = (dict(record["settings"]), dict(effective_settings))
+            self.match["effectiveSettings"] = dict(effective_settings)
+            write_private_json(self.match_file, self.match)
             record["baseline"] = dict(self.thread_totals.get(thread_id, dict.fromkeys(USAGE_KEYS, 0)))
             record["threadTotals"] = dict(record["baseline"])
             self._save(record)
             if self.failure:
                 raise ServiceError(self.failure)
             self.accept_usage = True
-            result = await process.request("turn/start", {"threadId": thread_id, "input": [{"type": "text", "text": payload["prompt"]}], "approvalPolicy": "never", "summary": "auto"})
+            turn_options = {"threadId": thread_id, "input": [{"type": "text", "text": payload["prompt"]}],
+                            "approvalPolicy": "never", "summary": "auto", "model": effective_settings["model"]}
+            if effective_settings["reasoningEffort"] is not None:
+                turn_options["effort"] = effective_settings["reasoningEffort"]
+            result = await process.request("turn/start", turn_options)
             # Only the response to our own request can bind this activation's turn.
             # A turn/started replay during resume must never replace this identity.
             self.turn_id = result.get("turn", {}).get("id")
@@ -481,6 +655,14 @@ class AgentService:
                 operation = payload.pop("op", None)
                 if operation == "start":
                     result = await self.start(payload)
+                elif operation == "finalize":
+                    result = await self.finalize(payload)
+                elif operation == "abort":
+                    result = await self.abort(payload)
+                elif operation == "archive":
+                    if set(payload) != {"activationId"} or not identifier(payload["activationId"]):
+                        raise ServiceError("INVALID_ARGUMENT")
+                    return web.json_response(self.archived(payload["activationId"]))
                 elif operation == "events":
                     if set(payload) - {"activationId", "cursor", "limit"} or not identifier(payload.get("activationId")):
                         raise ServiceError("INVALID_ARGUMENT")

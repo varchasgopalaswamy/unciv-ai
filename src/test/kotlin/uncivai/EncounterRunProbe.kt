@@ -255,7 +255,7 @@ object EncounterRunProbe {
         return checkNotNull(operator(OperatorRequest("activate", lease, status.epoch, status.serverInstance, status.handoff, status.activeCivilization, UUID.randomUUID().toString())).playerToken)
     }
 
-    private fun command(snapshot: PlayerTurnSnapshot, kind: TurnCommandKind, target: String? = null, selection: String? = null, queue: List<String> = emptyList(), destination: TilePosition? = null) = TurnCommandRequest(UUID.randomUUID().toString(), snapshot.epoch, snapshot.revision, kind, target, selection, queue, destination)
+    private fun command(snapshot: PlayerTurnSnapshot, kind: TurnCommandKind, target: String? = null, selection: String? = null, queue: List<String> = emptyList(), destination: TilePosition? = null) = TurnCommandRequest(UUID.randomUUID().toString(), snapshot.epoch, snapshot.revision, kind, target, selection, queue, destination).reviewedFor(snapshot)
 
     private fun execute(token: String, request: TurnCommandRequest): TurnCommandReceipt = PlayerTurnJson.json.decodeFromString(tool(token, "player_command", PlayerTurnJson.json.encodeToJsonElement(TurnCommandRequest.serializer(), request).jsonObject).toString())
 

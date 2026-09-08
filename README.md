@@ -2,9 +2,9 @@
 
 A private headless host and MCP adapter project for agents playing Unciv, depending on a separately maintained Unciv fork. Agents must eventually have every ordinary human player action and information surface while receiving only information their player is allowed to know. Scope covers the bundled Vanilla and Gods & Kings rulesets; mod content is excluded.
 
-The repository provides a headless executable and authenticated HTTPS MCP server. The player interface supports explored-map observations, current-turn movement and settlement, worker jobs, city yields and citizen assignment, construction queues, research, policies, free Great People, informational alerts including first contact, known-civilization identity and war/peace observations, and validated turn advancement. Checkpoints persist game state and command receipts together. A supervisor schedules separate Codex conversations through HTTPS agent services, following the host's committed turn changes.
+The repository provides a headless executable and authenticated HTTPS MCP server. The player interface supports explored-map observations, current-turn movement and settlement, worker jobs, city yields and citizen assignment, construction queues, research, policies, free Great People, informational alerts including first contact, known-civilization identity, validated war declarations and peace negotiations, and validated turn advancement. Checkpoints persist game state and command receipts together. A supervisor starts a fresh Codex conversation for each game turn through HTTPS agent services, carrying forward concise summaries and following the host's committed turn changes.
 
-**This is an incomplete gameplay implementation.** Further city controls, multi-turn movement orders, special unit actions, combat, diplomacy, full desktop integration, and agent filesystem/network isolation remain outstanding. Consult the [coverage ledger](docs/Player-api-coverage.md) rather than treating a passing turn-flow test as full parity.
+**This is an incomplete gameplay implementation.** Further city controls, multi-turn movement orders, special unit actions, combat, broader diplomacy, full desktop integration, and agent filesystem/network isolation remain outstanding. Consult the [coverage ledger](docs/Player-api-coverage.md) rather than treating a passing turn-flow test as full parity.
 
 The [encounter slice](docs/Encounter-and-diplomacy.md) lets players inspect and
 acknowledge first contact, then continue scheduled turns. It adds an initial view
@@ -13,6 +13,11 @@ Ordinary [informational popups](docs/Informational-popups.md) include their full
 prose, quotes and civilization-specific technology descriptions. Agents are
 instructed to read and note their content, and acknowledgement requires a current
 `player_turn` observation.
+
+The [war and peace slice](docs/War-and-peace.md) adds legal diplomatic options,
+war-message acknowledgement, and peace offers with gold and resource terms,
+including accept/reject/counteroffer and durable retries. Gameplay launchers and
+`run_agents` accept `--model NAME --reasoning-effort LEVEL`.
 
 Read [AGENTS.md](AGENTS.md) for confidentiality and contribution instructions, and [Development workflow](docs/Development-workflow.md) for engine branches, local overrides and dependency updates.
 
@@ -46,8 +51,16 @@ for custom matches, ports, and conversation resumption.
 For automatic turns, start one HTTPS service per civilization and run the supervisor.
 See [automatic turns and HTTPS setup](docs/Automatic-turns.md) for commands, limits,
 pause/resume, and separate-machine configuration.
-The scheduler displays live player output and saves responses, exposed reasoning
-summaries and tool history; see [history locations and existing-run export](docs/Automatic-turns.md#live-output-and-saved-history).
+Player archives use readable paths such as `agents/Rome/turn_1/`: `commands.jsonl`
+contains detailed calls and receipts, while `summary.md` contains the API's turn
+number and the agent's brief public report, such as `# Turn 0` followed by its
+actions and reasons. Earlier completed summaries supply the next turn's context;
+retry information stays in the debug records. On resume after an interrupted turn,
+the host restores that turn's starting checkpoint and the agent starts a fresh
+conversation. Failed attempts stay under `turn_1/attempts/attempt_1/` for debugging
+and are excluded from turn memory. A durably committed `END_TURN` is retained even
+if its response was lost. The scheduler displays
+live player output and saves responses, exposed reasoning summaries and tool history; see [history locations and existing-run export](docs/Automatic-turns.md#live-output-and-saved-history).
 
 To verify the agents' actions visually, run `./scripts/inspect_game Rome` or
 `./scripts/inspect_game Greece`. This exports the checkpoint and opens a separate

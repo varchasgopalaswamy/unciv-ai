@@ -102,7 +102,7 @@ object DiplomacyProbe {
             check(rome.turn().diplomacy == met.diplomacy) { "Acknowledgement changed diplomacy" }
             expect(PlayerSessionFailure.OPTION_UNAVAILABLE) { rome.execute(command(rome, alert.handle)) }
             expect(PlayerSessionFailure.TURN_BLOCKED) {
-                rome.execute(command(rome, null).copy(kind = TurnCommandKind.END_TURN))
+                rome.execute(command(rome, null).copy(kind = TurnCommandKind.END_TURN).reviewedFor(rome.turn()))
             }
             check(other.popupAlerts.any { it.type == AlertType.FirstContact })
             check(player.popupAlerts.any { it === decision })

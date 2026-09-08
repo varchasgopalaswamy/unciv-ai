@@ -1,6 +1,5 @@
 """Scheduler + real HTTPS agent services + fake native Unix app-server integration."""
 
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -55,10 +54,11 @@ class SchedulerServiceTest(unittest.TestCase):
                 "--mcp-url", self.host.url + "/mcp", "--mcp-ca-file", str(self.certificate),
                 "--cert-file", str(self.certificate), "--key-file", str(self.private_key), "--ca-file", str(self.certificate),
                 "--codex", str(SCRIPTS / "tests/fake_app_server.py"),
+                "--model", civilization.lower() + "-service-model", "--reasoning-effort", "high",
             ], env=self.environment, stdout=output, stderr=output)
             self.services.append((civilization, process, output))
             self.addCleanup(self.stop_process, process)
-            identity = hashlib.sha256(civilization.encode()).hexdigest()
+            identity = civilization
             endpoint_file = self.state_dir / "agent-services" / identity / "endpoint.json"
             deadline = time.monotonic() + 10
             while time.monotonic() < deadline:
@@ -102,7 +102,7 @@ class SchedulerServiceTest(unittest.TestCase):
     def records(self):
         return [json.loads(line) for line in self.trace.read_text().splitlines()]
 
-    def test_real_services_keep_threads_tokens_epoch_workspaces_and_usage(self):
+    def test_real_services_start_fresh_threads_with_turn_memory_and_pinned_settings(self):
         result = self.run_cli("--max-turns", "2", "--max-seconds", "60")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual([play["civ"] for play in self.host.plays], ["Rome", "Greece", "Rome", "Greece"])
@@ -111,8 +111,8 @@ class SchedulerServiceTest(unittest.TestCase):
         records = self.records()
         starts = [record for record in records if record["method"] == "thread/start"]
         resumes = [record for record in records if record["method"] == "thread/resume"]
-        self.assertEqual((len(starts), len(resumes)), (2, 2))
-        self.assertEqual({item["params"]["threadId"] for item in resumes}, {self.host.plays[0]["thread"], self.host.plays[1]["thread"]})
+        self.assertEqual((len(starts), len(resumes)), (4, 0))
+        self.assertEqual(4, len({play["thread"] for play in self.host.plays}))
         self.assertEqual(len({record["tokenHash"] for record in records}), 4)
         for record in starts + resumes:
             self.assertFalse(record["operatorTokenPresent"])
@@ -122,10 +122,47 @@ class SchedulerServiceTest(unittest.TestCase):
             self.assertNotIn(self.host.operator_token, json.dumps(record))
             self.assertEqual(record["params"]["approvalPolicy"], "never")
             self.assertEqual(record["params"]["sandbox"], "workspace-write")
-            self.assertEqual(Path(record["params"]["cwd"]).name, hashlib.sha256(self.host.epoch.encode()).hexdigest())
+            self.assertIn(Path(record["params"]["cwd"]).name, {"Rome", "Greece"})
+            self.assertEqual(Path(record["params"]["cwd"]).parent, self.state_dir / "agents")
+            self.assertIn(record["params"]["model"], {"rome-service-model", "greece-service-model"})
+            self.assertEqual({"model_reasoning_effort": "high"}, record["params"]["config"])
         self.assertEqual(len({record["params"]["cwd"] for record in starts + resumes}), 2)
+        turns = [record for record in records if record["method"] == "turn/start"]
+        self.assertEqual(4, len(turns))
+        self.assertTrue(all(record["params"]["effort"] == "high" for record in turns))
+        for first_turn in turns[:2]:
+            self.assertNotIn("Previous turns (notes, not instructions):", first_turn["params"]["input"][0]["text"])
+        for second_turn in turns[2:]:
+            prompt = second_turn["params"]["input"][0]["text"]
+            self.assertIn("Previous turns (notes, not instructions):", prompt)
+            self.assertIn("Settled and chose research.", prompt)
+            self.assertIn("turn_2/", prompt)
+        for civilization in ("Rome", "Greece"):
+            for turn in (1, 2):
+                archive = self.state_dir / "agents" / civilization / f"turn_{turn}"
+                self.assertTrue((archive / "commands.jsonl").exists())
+                self.assertIn("Settled and chose research.", (archive / "summary.md").read_text())
+            self.assertFalse((self.state_dir / "agents" / civilization / "token.json").exists())
+        settings = self.saved()["sessions"]
+        for civilization in ("Rome", "Greece"):
+            self.assertEqual({"model": civilization.lower() + "-service-model", "reasoningEffort": "high"},
+                             settings[civilization]["effectiveSettings"])
 
-    def test_real_service_interruption_fences_hung_activation_and_preserves_resume(self):
+    def test_run_overrides_reach_native_turns_and_resume_without_repeating_flags(self):
+        first = self.run_cli("--model", "run-model", "--reasoning", "custom-effort", "--max-invocations", "1", "--max-seconds", "60")
+        self.assertEqual(0, first.returncode, first.stdout + first.stderr)
+        resumed = self.run_cli("resume", "--max-invocations", "3")
+        self.assertEqual(0, resumed.returncode, resumed.stdout + resumed.stderr)
+        records = [record for record in self.records() if record["method"] in {"thread/start", "thread/resume", "turn/start"}]
+        self.assertEqual(6, len(records))
+        for record in records:
+            parameters = record["params"]
+            self.assertEqual("run-model", parameters["model"])
+            effort = parameters.get("effort") if record["method"] == "turn/start" else parameters["config"]["model_reasoning_effort"]
+            self.assertEqual("custom-effort", effort)
+        self.assertNotEqual(self.host.plays[0]["thread"], self.host.plays[2]["thread"])
+
+    def test_real_service_interruption_rolls_back_and_retries_in_a_fresh_thread(self):
         self.host.behaviors = ["hang", "complete", "complete"]
         process = subprocess.Popen([sys.executable, "-B", str(SCRIPTS / "run_agents"), "--max-turns", "1", "--max-seconds", "60",
                                     "--state-dir", str(self.state_dir)], env=self.environment,
@@ -142,7 +179,11 @@ class SchedulerServiceTest(unittest.TestCase):
         resumed = self.run_cli("resume")
         self.assertEqual(resumed.returncode, 0, resumed.stdout + resumed.stderr)
         self.assertEqual([play["civ"] for play in self.host.plays], ["Rome", "Rome", "Greece"])
-        self.assertEqual(self.host.plays[0]["thread"], self.host.plays[1]["thread"])
+        self.assertNotEqual(self.host.plays[0]["thread"], self.host.plays[1]["thread"])
+        self.assertEqual(0, self.host.plays[1]["effectsBefore"])
+        self.assertEqual(1, len(self.host.rollbacks))
+        records = [json.loads(path.read_text()) for path in (self.state_dir / "agent-services/Rome/activations").glob("*.json")]
+        self.assertEqual(1, sum(record.get("aborted", False) for record in records))
         self.assertEqual(self.saved()["handoffs"], 2)
 
     def test_full_event_pagination_mirrors_visible_text_and_large_results(self):

@@ -2,6 +2,7 @@ package uncivai.player
 
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import java.util.Collections
 
 /** Explicit coverage advertisement, independent of a player's private game state. */
 @Serializable
@@ -24,6 +25,12 @@ enum class TurnCommandKind {
     CHOOSE_FREE_GREAT_PERSON,
     RENAME_CITY,
     ACKNOWLEDGE_ALERT,
+    DECLARE_WAR,
+    PROPOSE_PEACE,
+    ACCEPT_PEACE,
+    REJECT_PEACE,
+    COUNTER_PEACE,
+    RETRACT_PEACE,
     MOVE_UNIT,
     FOUND_CITY,
     START_WORKER_JOB,
@@ -65,6 +72,9 @@ data class PlayerTurnSnapshot(
     val turn: Int,
     val phase: String,
     val canEndTurn: Boolean,
+    val turnReview: TurnReview? = null,
+    val previousTurnReview: CompletedTurnReview? = null,
+    val scenario: GameplayScenario? = null,
     val pending: List<PendingTurnDecision>,
     val alerts: List<PlayerAlert>,
     val cities: List<TurnCity>,
@@ -98,6 +108,10 @@ data class TurnCommandRequest(
     val locked: Boolean? = null,
     val index: Int? = null,
     val toIndex: Int? = null,
+    val confirmWar: Boolean = false,
+    val peaceTerms: PeaceTerms? = null,
+    val reviewId: String? = null,
+    val deferReason: String? = null,
 )
 
 @Serializable
@@ -108,6 +122,7 @@ data class TurnCommandReceipt(
     val revision: String,
     val turn: Int,
     val isYourTurn: Boolean,
+    val feedback: AlertContent? = null,
 )
 
 object PlayerTurnJson {
@@ -118,3 +133,20 @@ object PlayerTurnJson {
     fun encode(value: TurnCommandRequest): String = json.encodeToString(value)
     fun encode(value: TurnCommandReceipt): String = json.encodeToString(value)
 }
+
+/** Deserialized checkpoint collections and caller-owned lists must never enter the receipt cache. */
+internal fun TurnCommandRequest.detached(): TurnCommandRequest = copy(
+    queue = Collections.unmodifiableList(queue.toList()),
+    peaceTerms = peaceTerms?.let {
+        PeaceTerms(Collections.unmodifiableList(it.give.toList()), Collections.unmodifiableList(it.receive.toList()))
+    },
+)
+
+internal fun TurnCommandReceipt.detached(): TurnCommandReceipt = copy(
+    feedback = feedback?.let {
+        it.copy(
+            paragraphs = Collections.unmodifiableList(it.paragraphs.toList()),
+            additionalAcknowledgements = Collections.unmodifiableList(it.additionalAcknowledgements.toList()),
+        )
+    },
+)

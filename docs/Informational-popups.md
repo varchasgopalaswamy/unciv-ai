@@ -8,10 +8,11 @@ Ordinary in-game informational popups are available in `player_turn.alerts`:
 | `TechResearched` | Technology name, quote and the description for the observing civilization, including its applicable unlocks |
 | `WonderBuilt` | Wonder name, optional quote and short description |
 | `GoldenAge` | Heading and the Golden Age explanation |
+| `WarDeclaration` | Declaring leader, declaration header and nonempty national declaration; both equivalent acknowledgement labels |
 | `FirstContact` | Previously supported leader introduction and acknowledgement, also exposed in the common content format |
 
 Each supported alert has `content` containing `title`, ordered `paragraphs`,
-nullable `quote`, and `acknowledgement`. These are the same text sources used by
+nullable `quote`, `acknowledgement`, and any `additionalAcknowledgements`. These are the same text sources used by
 the desktop popup, translated as its labels are. Descriptions are not shortened
 or replaced by identifiers. Images, voice playback and Civilopedia navigation
 remain separate presentation surfaces.
@@ -42,7 +43,8 @@ never applied again by dismissal. Missing technology/wonder references and
 unsupported alert types have no offered acknowledgement. An informational alert
 in a mixed queue cannot dismiss a consequential choice alongside it.
 
-Diplomacy, trade, combat/captured-city, religion and espionage decisions retain
+War and peace are described in [their implementation slice](War-and-peace.md).
+Broader diplomacy, trade, combat/captured-city, religion and espionage decisions retain
 their respective implementation slices. Ruleset `Event` dialogs can have gameplay
 choices and are not generic informational popups. End-of-game victory/defeat
 screens also remain a separate lifecycle: scheduling stops on game completion,

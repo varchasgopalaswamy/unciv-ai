@@ -45,7 +45,7 @@ async def main():
 
         async def play(params):
             text = " ".join(item.get("text", "") for item in params["input"])
-            civilization = re.search(r"You are playing Unciv as (.*?)\.", text).group(1)
+            civilization = re.search(r"Play (.*?)'s current game turn", text).group(1)
             common = dict(threadId=current["thread"], turnId=current["turn"])
             await websocket.send_json(dict(method="item/agentMessage/delta", params=dict(
                 **common, itemId="before-" + current["turn"], delta="Checking current position.",
@@ -104,7 +104,9 @@ async def main():
                 result = {"userAgent": "unciv-test-fake-app-server"}
             elif method in {"thread/start", "thread/resume"}:
                 current["thread"] = params.get("threadId") or str(uuid.uuid4())
-                result = {"thread": {"id": current["thread"], "turns": []}}
+                result = {"thread": {"id": current["thread"], "turns": []},
+                          "model": params.get("model", "fake-configured-model"),
+                          "reasoningEffort": params.get("config", {}).get("model_reasoning_effort", "medium")}
             elif method == "turn/start":
                 if params["threadId"] != current["thread"]:
                     raise RuntimeError("Wrong conversation")

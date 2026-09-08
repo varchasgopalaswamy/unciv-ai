@@ -4,11 +4,15 @@ import com.unciv.logic.GameInfo
 import com.unciv.logic.civilization.AlertType
 import com.unciv.logic.civilization.Civilization
 import com.unciv.logic.civilization.PlayerCityOperations
+import com.unciv.logic.civilization.PlayerDiplomacyOperations
 import com.unciv.logic.civilization.PlayerOperations
+import com.unciv.logic.civilization.PlayerPeaceOperations
 import com.unciv.logic.civilization.PlayerTurnRequirements
 import com.unciv.logic.civilization.PlayerUnitOperations
 import com.unciv.logic.civilization.PlayerWorkerOperations
 import com.unciv.logic.civilization.PopupAlert
+import com.unciv.logic.trade.TradeOfferType
+import com.unciv.logic.trade.TradeRequest
 import uncivai.GameExecutor
 import java.util.Collections
 import java.util.UUID
@@ -18,6 +22,7 @@ internal class TurnSessionState {
     val cityHandles = HashMap<String, String>()
     val unitHandles = HashMap<Int, String>()
     val alertHandles = java.util.IdentityHashMap<PopupAlert, String>()
+    val tradeHandles = java.util.IdentityHashMap<TradeRequest, String>()
     val receipts = HashMap<String, Pair<TurnCommandRequest, TurnCommandReceipt>>()
     var fingerprint: PlayerTurnSnapshot? = null
     var revision = UUID.randomUUID().toString()
@@ -25,6 +30,9 @@ internal class TurnSessionState {
     // Only the public query presents popup contents. A command receipt presents a revision alone.
     // Reset on process restart: uncommitted acknowledgements need a fresh read; completed receipts replay.
     var observedRevision: String? = null
+    var reviewTurn: Int? = null
+    val reviewActions = ArrayList<ConfirmedTurnAction>()
+    var previousTurnReview: CompletedTurnReview? = null
 
     fun invalidate() {
         fingerprint = null
@@ -49,7 +57,7 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
         }
         val player = player(game)
         val state = state()
-        val detachedRequest = request.copy(queue = immutable(request.queue))
+        val detachedRequest = request.detached()
         state.receipts[request.requestId]?.let { (completedRequest, receipt) ->
             if (completedRequest != detachedRequest) fail(PlayerSessionFailure.REQUEST_ID_CONFLICT)
             return@accessGame receipt
@@ -66,6 +74,57 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
                 fail(PlayerSessionFailure.OPTION_UNAVAILABLE)
             }
             if (state.observedRevision != before.revision) fail(PlayerSessionFailure.OBSERVATION_REQUIRED)
+        }
+        val peace = PlayerPeaceOperations(player)
+        val partner = if (request.kind in partnerCommands) {
+            val offered = before.diplomacy.knownCivilizations.singleOrNull { it.civilizationId == request.target }
+                ?: fail(PlayerSessionFailure.OPTION_UNAVAILABLE)
+            val available = when (request.kind) {
+                TurnCommandKind.DECLARE_WAR -> offered.declareWar.available
+                TurnCommandKind.PROPOSE_PEACE -> offered.negotiatePeace.available
+                TurnCommandKind.RETRACT_PEACE -> before.diplomacy.outgoingOffers.any { it.civilizationId == request.target && it.retract.available }
+                else -> false
+            }
+            if (!available) fail(PlayerSessionFailure.OPTION_UNAVAILABLE)
+            game.civilizations.single { it.civID == offered.civilizationId }
+        } else {
+            null
+        }
+        val trade = if (request.kind in responseCommands) {
+            val offered = before.diplomacy.incomingOffers.singleOrNull { it.handle == request.target }
+                ?: fail(PlayerSessionFailure.OPTION_UNAVAILABLE)
+            val available = when (request.kind) {
+                TurnCommandKind.ACCEPT_PEACE -> offered.accept.available
+                TurnCommandKind.REJECT_PEACE -> offered.reject.available
+                TurnCommandKind.COUNTER_PEACE -> offered.counteroffer.available
+                else -> false
+            }
+            if (!available) fail(PlayerSessionFailure.OPTION_UNAVAILABLE)
+            state.tradeHandles.entries.singleOrNull { it.value == request.target }?.key
+                ?.takeIf { candidate -> player.tradeRequests.any { it === candidate } }
+                ?: fail(PlayerSessionFailure.OPTION_UNAVAILABLE)
+        } else {
+            null
+        }
+        if ((request.kind == TurnCommandKind.DECLARE_WAR || request.kind in responseCommands) &&
+            state.observedRevision != before.revision
+        ) {
+            fail(PlayerSessionFailure.OBSERVATION_REQUIRED)
+        }
+        val selectedTerms = detachedRequest.peaceTerms
+        if (selectedTerms != null) {
+            val otherId = partner?.civID ?: trade!!.requestingCiv
+            val options = before.diplomacy.knownCivilizations.singleOrNull { it.civilizationId == otherId }?.peaceOptions
+                ?: fail(PlayerSessionFailure.OPTION_UNAVAILABLE)
+            fun offered(selections: List<PeaceTermSelection>, available: List<PeaceTerm>) = selections.all { selection ->
+                available.any {
+                    it.supported && it.name == selection.name && it.type == selection.type &&
+                        it.duration == selection.duration && selection.amount <= it.amount
+                }
+            }
+            if (!offered(selectedTerms.give, options.give) || !offered(selectedTerms.receive, options.receive)) {
+                fail(PlayerSessionFailure.OPTION_UNAVAILABLE)
+            }
         }
         val city = request.target?.takeIf { request.kind in cityCommands }?.let { handle ->
             val cityId = state.cityHandles.entries.firstOrNull { it.value == handle }?.key
@@ -95,7 +154,14 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
         } else {
             null
         }
-        if (request.kind == TurnCommandKind.END_TURN && !before.canEndTurn) fail(PlayerSessionFailure.TURN_BLOCKED)
+        if (request.kind == TurnCommandKind.END_TURN) {
+            if (!before.canEndTurn) fail(PlayerSessionFailure.TURN_BLOCKED)
+            if (state.observedRevision != before.revision) fail(PlayerSessionFailure.OBSERVATION_REQUIRED)
+            val review = before.turnReview!!
+            if (request.reviewId != review.id || (review.deferredUnits().isNotEmpty() && request.deferReason.isNullOrBlank())) {
+                fail(PlayerSessionFailure.TURN_REVIEW_REQUIRED)
+            }
+        }
         if (request.kind == TurnCommandKind.START_WORKER_JOB && before.map.units.single { it.handle == request.target }.worker
                 ?.options?.none { it.name == request.selection && it.available } != false
         ) {
@@ -149,7 +215,27 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
                     alert != null && operations.tryAcknowledgeAlert(alert)
                 }
 
+                TurnCommandKind.DECLARE_WAR -> PlayerDiplomacyOperations(player).tryDeclareWar(partner!!)
+
+                TurnCommandKind.PROPOSE_PEACE -> peace.tryPropose(partner!!, selectedTerms!!.give.map { it.engineTerm() }, selectedTerms.receive.map { it.engineTerm() })
+
+                TurnCommandKind.ACCEPT_PEACE -> peace.tryAccept(trade!!)
+
+                TurnCommandKind.REJECT_PEACE -> peace.tryReject(trade!!)
+
+                TurnCommandKind.COUNTER_PEACE -> peace.tryCounteroffer(trade!!, selectedTerms!!.give.map { it.engineTerm() }, selectedTerms.receive.map { it.engineTerm() })
+
+                TurnCommandKind.RETRACT_PEACE -> peace.tryRetract(partner!!)
+
                 TurnCommandKind.END_TURN -> {
+                    state.previousTurnReview = CompletedTurnReview(
+                        before.turn,
+                        immutable(state.reviewActions),
+                        immutable(before.turnReview!!.deferredUnits()),
+                        request.deferReason,
+                    )
+                    state.reviewActions.clear()
+                    state.reviewTurn = null
                     game.nextTurn()
                     runtime.handoff++
                     true
@@ -168,6 +254,13 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
             state.invalidate()
             runtime.freeGreatPersonDecisions.invalidate(player.civID)
             val after = snapshot(game, player, state)
+            if (request.kind != TurnCommandKind.END_TURN) {
+                state.reviewActions.add(confirmedAction(request, before, after))
+                // This is part of the same mutation/revision. Reuse the just-built map observation.
+                state.fingerprint = state.fingerprint!!.let { fingerprint ->
+                    fingerprint.copy(turnReview = fingerprint.turnReview?.copy(actions = immutable(state.reviewActions)))
+                }
+            }
             val receipt = TurnCommandReceipt(
                 requestId = request.requestId,
                 epoch = runtime.epoch,
@@ -175,6 +268,11 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
                 revision = after.revision,
                 turn = game.turns,
                 isYourTurn = game.currentPlayer == player.civID,
+                feedback = when (request.kind) {
+                    TurnCommandKind.ACCEPT_PEACE -> peace.acceptancePopupContent(game.getCivilization(trade!!.requestingCiv))?.toPlayerContent()
+                    TurnCommandKind.DECLARE_WAR -> PlayerDiplomacyOperations(player).declarationResponse(partner!!)?.toPlayerContent()
+                    else -> null
+                },
             )
             state.receipts[request.requestId] = detachedRequest to receipt
             runtime.commitCheckpoint()
@@ -198,6 +296,10 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
             game.currentPlayer == player.civID && game.currentPlayerCiv === player -> "ACTIVE"
             else -> "WAITING"
         }
+        if (phase == "ACTIVE" && state.reviewTurn != game.turns) {
+            state.reviewTurn = game.turns
+            state.reviewActions.clear()
+        }
         state.alertHandles.keys.removeIf { old -> player.popupAlerts.none { it === old } }
         val alerts = player.popupAlerts.map { alert ->
             val contact = observeFirstContact(operations, alert)
@@ -220,8 +322,13 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
             // Support is a capability even while paused or waiting; action flags require an active turn.
             pending.add(PendingTurnDecision("PopupAlerts", alerts.all { it.second }))
         }
-        if (player.tradeRequests.isNotEmpty()) pending.add(PendingTurnDecision("TradeRequests", false))
+        val diplomacy = observeDiplomacy(player, state, active = phase == "ACTIVE")
+        if (player.tradeRequests.isNotEmpty()) {
+            // Even an unsupported offer can be read and rejected if its sender is a known major.
+            pending.add(PendingTurnDecision("TradeRequests", diplomacy.incomingOffers.size == player.tradeRequests.size))
+        }
         if (player.shouldShowDiplomaticVotingResults()) pending.add(PendingTurnDecision("DiplomaticVotingResults", false))
+        val map = observeMap(player, state, canAct = phase == "ACTIVE")
         val fingerprint = PlayerTurnSnapshot(
             epoch = runtime.epoch,
             revision = "",
@@ -251,15 +358,49 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
             mayaLimited = player.greatPeople.mayaLimitedFreeGP > 0,
             greatPersonOptions = immutable(player.greatPeople.getFreeGreatPersonOptions().map { it.name }.sorted()),
             idleUnits = player.units.getDueUnits().count(),
-            map = observeMap(player, state, canAct = phase == "ACTIVE"),
+            map = map,
             research = observeResearchDevelopment(player),
-            diplomacy = observeDiplomacy(player),
+            diplomacy = diplomacy,
+            turnReview = if (phase == "ACTIVE") {
+                TurnReview(
+                    id = "",
+                    actions = immutable(state.reviewActions),
+                    units = immutable(map.units.map { ReviewUnit(it.handle, it.name, it.position, it.movement, it.idle, it.moves.size) }),
+                )
+            } else {
+                null
+            },
+            previousTurnReview = state.previousTurnReview,
+            scenario = scenario(game, player, diplomacy),
         )
         if (state.fingerprint != fingerprint) {
             state.fingerprint = fingerprint
             state.revision = UUID.randomUUID().toString()
         }
-        return fingerprint.copy(revision = state.revision)
+        return fingerprint.copy(revision = state.revision, turnReview = fingerprint.turnReview?.copy(id = state.revision))
+    }
+
+    private fun scenario(game: GameInfo, player: Civilization, diplomacy: DiplomacyObservation): GameplayScenario? {
+        if (game.tileMap.mapParameters.name != "Close-start duel") return null
+        val opponent = diplomacy.knownCivilizations.singleOrNull() ?: return GameplayScenario("CLOSE_START_DIPLOMACY", "AWAITING_WAR")
+        // Only the public declaration between these two known players contributes; never expose other receipts.
+        val warOccurred = runtime.turnSessions.any { (actor, session) ->
+            session.receipts.values.any { (command, _) ->
+                command.kind == TurnCommandKind.DECLARE_WAR &&
+                    (
+                        (actor == player.civID && command.target == opponent.civilizationId) ||
+                            (actor == opponent.civilizationId && command.target == player.civID)
+                        )
+            }
+        }
+        return GameplayScenario(
+            "CLOSE_START_DIPLOMACY",
+            when {
+                opponent.atWar -> "AT_WAR"
+                warOccurred -> "COMPLETE"
+                else -> "AWAITING_WAR"
+            },
+        )
     }
 
     private fun player(game: GameInfo): Civilization = game.civilizations.singleOrNull {
@@ -269,7 +410,7 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
     private fun state() = runtime.turnSessions.getOrPut(civilizationId) { TurnSessionState() }
 
     private fun validateShape(request: TurnCommandRequest) {
-        val needsTarget = request.kind in cityCommands || request.kind in unitCommands || request.kind == TurnCommandKind.ACKNOWLEDGE_ALERT
+        val needsTarget = request.kind in cityCommands || request.kind in unitCommands || request.kind in partnerCommands || request.kind in responseCommands || request.kind == TurnCommandKind.ACKNOWLEDGE_ALERT
         val needsSelection = request.kind in setOf(
             TurnCommandKind.CHOOSE_FREE_TECHNOLOGY,
             TurnCommandKind.ADOPT_POLICY,
@@ -288,13 +429,29 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
             (request.kind in setOf(TurnCommandKind.REMOVE_CONSTRUCTION, TurnCommandKind.MOVE_CONSTRUCTION)) != (request.index != null) ||
             (request.kind == TurnCommandKind.MOVE_CONSTRUCTION) != (request.toIndex != null) ||
             (request.index != null && request.index < 0) || (request.toIndex != null && request.toIndex < 0) ||
-            (request.confirmBreakPromise && request.kind != TurnCommandKind.FOUND_CITY)
+            (request.confirmBreakPromise && request.kind != TurnCommandKind.FOUND_CITY) ||
+            (request.kind == TurnCommandKind.DECLARE_WAR) != request.confirmWar ||
+            (request.kind != TurnCommandKind.END_TURN && (request.reviewId != null || request.deferReason != null)) ||
+            (request.reviewId != null && request.reviewId.length !in 1..128) ||
+            (request.deferReason != null && (request.deferReason.isBlank() || request.deferReason.length > 500 || request.deferReason.any { it.isISOControl() })) ||
+            (request.kind in setOf(TurnCommandKind.PROPOSE_PEACE, TurnCommandKind.COUNTER_PEACE)) != (request.peaceTerms != null)
         ) {
             fail(PlayerSessionFailure.INVALID_ARGUMENT)
+        }
+        request.peaceTerms?.let { terms ->
+            for (side in listOf(terms.give, terms.receive)) {
+                if (side.isEmpty() || side.size > 256 || side.any { it.name.isEmpty() || it.name.length > 256 || it.amount <= 0 || TradeOfferType.entries.none { type -> type.name == it.type } } ||
+                    side.map { it.type to it.name }.toSet().size != side.size
+                ) {
+                    fail(PlayerSessionFailure.INVALID_ARGUMENT)
+                }
+            }
         }
     }
 
     companion object {
+        private val partnerCommands = setOf(TurnCommandKind.DECLARE_WAR, TurnCommandKind.PROPOSE_PEACE, TurnCommandKind.RETRACT_PEACE)
+        private val responseCommands = setOf(TurnCommandKind.ACCEPT_PEACE, TurnCommandKind.REJECT_PEACE, TurnCommandKind.COUNTER_PEACE)
         private val tileCommands = setOf(TurnCommandKind.SET_WORKED_TILE, TurnCommandKind.SET_TILE_LOCKED)
         private val cityCommands = tileCommands + setOf(TurnCommandKind.RENAME_CITY, TurnCommandKind.QUEUE_CONSTRUCTION, TurnCommandKind.REMOVE_CONSTRUCTION, TurnCommandKind.MOVE_CONSTRUCTION)
         private val unitCommands = setOf(TurnCommandKind.MOVE_UNIT, TurnCommandKind.FOUND_CITY, TurnCommandKind.START_WORKER_JOB, TurnCommandKind.STOP_WORKER_JOB)

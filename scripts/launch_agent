@@ -2,7 +2,6 @@
 """Open an interactive Codex player using the existing local host credentials."""
 
 import argparse
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -12,7 +11,9 @@ import shutil
 import stat
 import sys
 
-from unciv_tls import TLSConfigError, codex_trust_environment, endpoint_configuration, verify_https_connection
+from unciv_tls import TLSConfigError, codex_trust_environment, endpoint_configuration, private_directory, verify_https_connection
+from agent_settings import CLOSE_START_PROMPT, TURN_REVIEW_PROMPT, add_settings_arguments
+from turn_archive import civilization_directory_name
 
 class LaunchError(Exception):
     pass
@@ -68,10 +69,10 @@ def player_credentials(path, requested):
 
 
 def workspace_name(civilization):
-    if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 _-]{0,79}", civilization):
-        return civilization
-    # Credentials are trusted, but a civilization name must never become a path traversal.
-    return "player-" + hashlib.sha256(civilization.encode()).hexdigest()
+    try:
+        return civilization_directory_name(civilization)
+    except ValueError:
+        raise LaunchError("Civilization name cannot be represented by a player directory.") from None
 
 
 def initial_prompt(civilization):
@@ -87,6 +88,7 @@ def initial_prompt(civilization):
         "useful gameplay information to retain. Use ACKNOWLEDGE_ALERT only when canAcknowledge "
         "is true, including FirstContact. Do not discard popup content by extracting only handles. "
         "If the API returns OBSERVATION_REQUIRED, fetch and read player_turn before retrying. "
+        + CLOSE_START_PROMPT + TURN_REVIEW_PROMPT +
         "Re-observe after each successful "
         "command; use the latest epoch and revision, and preserve the original request ID "
         "and payload when retrying an uncertain command. End your turn once, then report "
@@ -105,7 +107,8 @@ def parser():
     result.add_argument("--port", type=port_number, help="Override local HTTPS host port")
     result.add_argument("--url", help="HTTPS host origin or MCP URL; defaults to STATE_DIR/endpoints.json")
     result.add_argument("--ca-file", type=Path, help="CA PEM bundle; defaults to STATE_DIR/endpoints.json")
-    result.add_argument("--model", help="Optional Codex model override")
+    add_settings_arguments(result, model_help="Optional Codex model override",
+                           reasoning_help="Optional Codex reasoning effort override, e.g. high")
     result.add_argument("--resume", metavar="SESSION_ID", help="Resume an explicit Codex conversation ID")
     result.add_argument("--prompt", help="Replace the default one-turn starting request")
     result.add_argument("--dry-run", action="store_true", help="Show the command without launching Codex or printing tokens")
@@ -132,6 +135,8 @@ def main(argv=None):
         command = [codex, "--cd", str(workspace), "-c", configuration]
         if args.model:
             command += ["--model", args.model]
+        if args.reasoning_effort is not None:
+            command += ["-c", "model_reasoning_effort=" + json.dumps(args.reasoning_effort)]
         if args.resume:
             command += ["resume", "--", args.resume]
         else:
@@ -147,7 +152,8 @@ def main(argv=None):
         except OSError:
             raise LaunchError("Could not verify the HTTPS host connection. Check its certificate and CA file; run scripts/launch_host and wait for MCP-READY first.") from None
         os.umask(0o077)
-        workspace.mkdir(parents=True, exist_ok=True, mode=0o700)
+        private_directory(state_dir / "agents")
+        private_directory(workspace)
         environment = codex_trust_environment(ca_file, os.environ, workspace)
         environment["UNCIV_PLAYER_TOKEN"] = token
         print(f"Launching Codex as {civilization} at {endpoint}", flush=True)

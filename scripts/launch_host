@@ -52,6 +52,7 @@ def parse_args(argv=None):
     parser.add_argument("--public-host", help="HTTPS certificate hostname (default: localhost)")
     parser.add_argument("--new", action="store_true", help="require a new game; never overwrite a checkpoint")
     parser.add_argument("--seed", type=seed_number, help="map seed for a new game only")
+    parser.add_argument("--close-starts", action="store_true", help="new duel with nearby capitals and an extra Scout per player for immediate contact")
     parser.add_argument(
         "--unciv-dir", help="engine checkout for code and assets; relative paths use the repository root"
     )
@@ -111,6 +112,8 @@ def launch(options):
         raise ValueError(f"Checkpoint must be a regular file: {checkpoint}")
     if resuming and options.seed is not None:
         raise ValueError("--seed applies only to a new game; this checkpoint will be resumed.")
+    if resuming and options.close_starts:
+        raise ValueError("--close-starts applies only to a new game; choose a new --state-dir.")
     if bool(options.tls_config) != bool(options.ca_file):
         raise ValueError("--tls-config and --ca-file must be supplied together.")
     if options.tls_config and (options.listen_host or options.public_host):
@@ -143,6 +146,8 @@ def launch(options):
         command.extend(["--resume-checkpoint", str(checkpoint)])
     else:
         command.extend(["--new-duel", "--checkpoint", str(checkpoint)])
+        if options.close_starts:
+            command.append("--close-starts")
         if options.seed is not None:
             command.extend(["--seed", str(options.seed)])
     command.extend([

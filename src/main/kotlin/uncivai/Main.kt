@@ -25,7 +25,7 @@ private fun runCli(args: Array<String>): Int {
         val operatorToken = options.operatorConfig?.let(::loadOperatorConfig)
         val tls = options.tlsConfig?.let(::loadHostTls)
         val loaded = if (options.newDuel) {
-            HeadlessRuntime.createDuel(options.dataDirectory, options.seed ?: System.currentTimeMillis())
+            HeadlessRuntime.createDuel(options.dataDirectory, options.seed ?: System.currentTimeMillis(), options.closeStarts)
         } else if (options.resumeCheckpoint != null) {
             HeadlessRuntime.loadCheckpoint(options.resumeCheckpoint, options.dataDirectory)
         } else {
@@ -95,6 +95,7 @@ private data class CliOptions(
     val checkpoint: Path?,
     val resumeCheckpoint: Path?,
     val newDuel: Boolean,
+    val closeStarts: Boolean,
     val seed: Long?,
     val operatorConfig: Path?,
     val tlsConfig: Path?,
@@ -108,12 +109,19 @@ private fun parseOptions(args: Array<String>): CliOptions {
     var checkpoint: Path? = null
     var resumeCheckpoint: Path? = null
     var newDuel = false
+    var closeStarts = false
     var seed: Long? = null
     var operatorConfig: Path? = null
     var tlsConfig: Path? = null
     var index = 0
     while (index < args.size) {
         val option = args[index]
+        if (option == "--close-starts") {
+            require(!closeStarts) { "--close-starts may only be specified once" }
+            closeStarts = true
+            index++
+            continue
+        }
         if (option == "--new-duel") {
             require(!newDuel) { "--new-duel may only be specified once" }
             newDuel = true
@@ -184,6 +192,7 @@ private fun parseOptions(args: Array<String>): CliOptions {
     require(checkpoint == null || saveFile != null || newDuel) { "--checkpoint requires --save or --new-duel" }
     require(!newDuel || checkpoint != null) { "--new-duel requires --checkpoint to persist the new game" }
     require(seed == null || newDuel) { "--seed requires --new-duel" }
+    require(!closeStarts || newDuel) { "--close-starts requires --new-duel" }
     return CliOptions(
         saveFile = saveFile,
         dataDirectory = requireNotNull(dataDirectory) {
@@ -194,6 +203,7 @@ private fun parseOptions(args: Array<String>): CliOptions {
         checkpoint = checkpoint,
         resumeCheckpoint = resumeCheckpoint,
         newDuel = newDuel,
+        closeStarts = closeStarts,
         seed = seed,
         operatorConfig = operatorConfig,
         tlsConfig = tlsConfig,
@@ -208,7 +218,7 @@ private fun Throwable.conciseMessage(): String {
     return messages.joinToString(": ").ifEmpty { this::class.java.simpleName }
 }
 
-private fun usage() = "Usage: unciv-ai (--new-duel --checkpoint <absolute-path> [--seed <integer>] | " +
+private fun usage() = "Usage: unciv-ai (--new-duel --checkpoint <absolute-path> [--seed <integer>] [--close-starts] | " +
     "--save <absolute-path> [--checkpoint <absolute-path>] | " +
     "--resume-checkpoint <absolute-path>) --data-dir <absolute-path> " +
     "[--mcp-config <absolute-path> --tls-config <absolute-path> [--port <0-65535>] [--operator-config <absolute-path>]]"

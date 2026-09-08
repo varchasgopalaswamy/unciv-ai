@@ -18,6 +18,7 @@ enum class PlayerSessionFailure {
     STALE_REVISION,
     OBSERVATION_REQUIRED,
     TURN_BLOCKED,
+    TURN_REVIEW_REQUIRED,
     COMMAND_UNAVAILABLE,
 }
 
@@ -41,8 +42,9 @@ class PlayerSessionException(
             PlayerSessionFailure.PLACEMENT_FAILED -> "Unit could not be placed"
             PlayerSessionFailure.GAME_PAUSED -> "Game is paused"
             PlayerSessionFailure.STALE_REVISION -> "Player observation is stale"
-            PlayerSessionFailure.OBSERVATION_REQUIRED -> "Read player_turn and the popup content before acknowledging the alert"
+            PlayerSessionFailure.OBSERVATION_REQUIRED -> "Read player_turn and the current message, terms, confirmation or turn review before responding"
             PlayerSessionFailure.TURN_BLOCKED -> "Resolve pending choices before ending the turn"
+            PlayerSessionFailure.TURN_REVIEW_REQUIRED -> "Read turnReview in player_turn; act on remaining movement or END_TURN with its reviewId and a deferReason for idle units with legal destinations"
             PlayerSessionFailure.COMMAND_UNAVAILABLE -> "Command is unavailable"
         }
     }

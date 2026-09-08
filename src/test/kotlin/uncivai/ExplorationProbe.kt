@@ -156,7 +156,7 @@ object ExplorationProbe {
         error("Turn decisions did not converge")
     }
 
-    private fun command(turn: PlayerTurnSnapshot, kind: TurnCommandKind, target: String? = null, selection: String? = null, queue: List<String> = emptyList(), destination: TilePosition? = null) = TurnCommandRequest(UUID.randomUUID().toString(), turn.epoch, turn.revision, kind, target, selection, queue, destination)
+    private fun command(turn: PlayerTurnSnapshot, kind: TurnCommandKind, target: String? = null, selection: String? = null, queue: List<String> = emptyList(), destination: TilePosition? = null) = TurnCommandRequest(UUID.randomUUID().toString(), turn.epoch, turn.revision, kind, target, selection, queue, destination).reviewedFor(turn)
 
     private suspend fun connect(endpoint: String, token: String): Connection {
         val http = HttpClient(CIO) { install(SSE) }
@@ -191,6 +191,8 @@ object ExplorationProbe {
                 request.selection?.let { put("selection", it) }
                 if (request.queue.isNotEmpty()) put("queue", request.queue)
                 request.destination?.let { put("destination", mapOf("x" to it.x, "y" to it.y)) }
+                request.reviewId?.let { put("reviewId", it) }
+                request.deferReason?.let { put("deferReason", it) }
             },
         )
 

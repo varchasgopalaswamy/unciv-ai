@@ -269,7 +269,7 @@ class HistoryStore:
             if not (directory / "events.jsonl").exists():
                 return
             log = self.logs.setdefault(record["activationId"], HistoryLog(directory, (self.service_token,)))
-        data = {key: record[key] for key in ("phase", "threadId", "error") if key in record}
+        data = {key: record[key] for key in ("phase", "threadId", "error", "aborted") if key in record}
         if data != log.last_lifecycle:
             if data["phase"] in {"FAILED", "INTERRUPTED", "COMPLETED"}:
                 log.flush()

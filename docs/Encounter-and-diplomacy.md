@@ -9,10 +9,10 @@ disabled by Vanilla's `ModOptions.json`; espionage is disabled in the game
 parameters. An alert that cannot occur in this setup still needs a safe unsupported
 response if a fixture or a later setup introduces it.
 
-The first-contact slice adds the encounter introduction and acknowledgement, plus
-a small known-major-civilization view. Other alert types retain their previous
-support status. The tables below are an inventory and implementation backlog;
-proposed command names are **not available API commands**.
+The first-contact slice adds the encounter introduction and acknowledgement.
+The subsequent [war and peace slice](War-and-peace.md) adds diplomatic options,
+war declarations and peace negotiations. The tables below retain the remaining
+implementation backlog; names marked proposed are not available commands.
 
 ## First contact and known civilizations
 
@@ -39,15 +39,16 @@ title and the `Human - Hotseat` suffix in the current two-human setup. The API
 should match that displayed caption rather than expose the underlying count of
 players, player IDs or other host bookkeeping.
 
-The initial diplomacy view exposes only each met major civilization's identity
+The initial diplomacy slice exposed only each met major civilization's identity
 and current `atWar` relationship. The desktop diplomacy list uses
 [`DiplomacyFunctions.getKnownCivsSorted`](../vendor/Unciv/core/src/com/unciv/logic/civilization/diplomacy/DiplomacyFunctions.kt)
 and its war indicator uses `isAtWarWith`; see
 [`DiplomacyScreen.updateLeftSideTable`](../vendor/Unciv/core/src/com/unciv/ui/screens/diplomacyscreen/DiplomacyScreen.kt).
 Unmet civilizations are absent. Opponent cities, positions, orders, research,
 production, stockpiles, pending choices and raw diplomacy managers are absent.
-This intentionally small view does not yet reproduce all information on the
-desktop diplomacy screen, such as treaties, promises or relationship modifiers.
+The newer [war and peace view](War-and-peace.md) adds peace treaty status,
+confirmation warnings and legal negotiation options. Broader relationship
+modifiers and diplomatic systems remain incomplete.
 
 Required checks for this slice cover legal exploration producing both encounter
 alerts; matching desktop introduction/response text; one dismissal without other
@@ -97,17 +98,17 @@ The [informational-popup slice](Informational-popups.md) supplies the common
 acknowledgement. Agent prompts ask players to read the entire message and record
 a brief useful note before dismissal; current histories retain both.
 
-## Decisions unlocked by future diplomacy and combat commands
+## Diplomacy and combat decisions
 
 These can occur between the two human major civilizations through ordinary
-desktop actions, but today's player commands do not initiate those actions.
+desktop actions, with war declarations now implemented; the remaining actions are future work.
 Every proposed response must use currently offered choices, validate the issuing
 player's alert and recheck any changing prerequisites. The supervisor must not
 choose for a player or silently clear an unsupported queue.
 
 | Alert | Trigger and desktop observation | Buttons and game effects | Proposed API work and meaningful tests |
 | --- | --- | --- | --- |
-| `WarDeclaration` | [`DeclareWar`](../vendor/Unciv/core/src/com/unciv/logic/civilization/diplomacy/DeclareWar.kt) queues it when war is declared; `addWarDeclaration` shows declaring leader, declaration header and `nation.declaringWar` when nonempty. | `You'll pay for this!` and `Very well.` both dismiss. War is already active. A defeated declarer makes the desktop skip the popup. | Add war declarations with a detached declaration message and explicit acknowledgement. Verify both replies have identical game effects and cannot declare war a second time; validate war/peace observations on both sides. |
+| `WarDeclaration` | [`DeclareWar`](../vendor/Unciv/core/src/com/unciv/logic/civilization/diplomacy/DeclareWar.kt) queues it when war is declared; `addWarDeclaration` shows declaring leader, declaration header and `nation.declaringWar` when nonempty. | `You'll pay for this!` and `Very well.` both dismiss. War is already active. A defeated declarer makes the desktop skip the popup. | Implemented: validated DECLARE_WAR, shared full declaration content and observed ACKNOWLEDGE_ALERT. Tests cover equivalent dismissal, bilateral effects, treaty restrictions and exact retries. |
 | `DeclarationOfFriendship` | [`MajorCivDiplomacyTable.getDeclareFriendshipButton`](../vendor/Unciv/core/src/com/unciv/ui/screens/diplomacyscreen/MajorCivDiplomacyTable.kt) sends a human offer; `addDeclarationOfFriendship` shows leader, friendship header and national text or fallback. | `Declare Friendship ([30] turns)`: `signDeclarationOfFriendship`. `We are not interested.`: sets the sender's `DeclinedDeclarationOfFriendship` flag for 20 turns. Desktop skips offers from defeated civilizations or civilizations now at war. | Proposed `OFFER_FRIENDSHIP` and `RESPOND_FRIENDSHIP` with accept/decline choices. Test both effects, duplicate offers, war invalidation, expiration and exact response replay. |
 | `DemandToStopSettlingCitiesNear` | [`MajorCivDiplomacyTable.getDemandsTable`](../vendor/Unciv/core/src/com/unciv/ui/screens/diplomacyscreen/MajorCivDiplomacyTable.kt) can send the demand; `addDemand(DoNotSettleNearUs)` uses [`Demand`](../vendor/Unciv/core/src/com/unciv/logic/civilization/diplomacy/Demand.kt) text: `Please don't settle new cities near us.` | `Very well, we shall look for new lands to settle.` calls `agreeToDemand`; `We shall do as we please.` calls `refuseDemand`. These alter flags/modifiers and notify the demander. | Proposed `ISSUE_DEMAND` and `RESPOND_DEMAND`, with only offered demand kinds. Test agreement/refusal, requester and recipient direction, repeated demands, resulting acknowledgement and shared desktop effects. Human-slot promise enforcement needs the audit described below. |
 | `AcceptingDemand` | [`DiplomacyManager.agreeToDemand`](../vendor/Unciv/core/src/com/unciv/logic/civilization/diplomacy/DiplomacyManager.kt) queues a unique reply; `addAcceptingDemand` displays accepting leader, header and `nation.acceptingDemand` or fallback. | `Very well.`: dismiss. Agreement effects have already happened. | Extend explicit informational acknowledgement when demands ship. Test that duplicate replies are not queued and dismissal does not apply promise/modifier effects again. |
@@ -123,9 +124,9 @@ The player sees both offer columns, amounts/durations, relevant own resource
 counts, requesting leader and `nation.tradeRequest`. `Sounds good!` applies
 `TradeLogic.acceptTrade`; `Not this time.` declines; `How about something else...`
 removes the pending request and opens a counteroffer editor. A peace treaty uses
-this mechanism, so a war/peace slice must include the necessary offer observations
-and accept/reject/counteroffer behavior. Test changed affordability, obsolete
-offers, exact replay and each side's resulting treaty state. Trade acceptance's
+this mechanism. The [implemented peace slice](War-and-peace.md) covers offered
+treaties, gold, GPT and resources with accept/reject/counteroffer/retraction,
+changed affordability, obsolete offers, exact replay and bilateral treaty state. Trade acceptance's
 `TradeThanksPopup` is a separate informational desktop popup. Covering every
 `AlertType` alone does not cover all mandatory decisions.
 

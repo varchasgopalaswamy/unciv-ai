@@ -93,6 +93,8 @@ class OperatorControl internal constructor(
                 } else {
                     renew()
                 }
+                // Also cover a supervisor crash after recording its intent but before activate.
+                if (!finished(game)) runtime.beginScheduledTurn()
             }
 
             "heartbeat" -> {
@@ -106,6 +108,7 @@ class OperatorControl internal constructor(
                     throw OperatorFailure("STALE_TURN")
                 }
                 if (finished(game) || game.currentPlayerCiv.isDefeated()) throw OperatorFailure("PLAYER_UNAVAILABLE")
+                runtime.beginScheduledTurn(request.activationId)
                 val previous = activation
                 if (previous != null && previous.id == request.activationId) {
                     if (previous.civilization != request.civilization || previous.handoff != request.handoff) throw OperatorFailure("ACTIVATION_CONFLICT")
@@ -119,6 +122,20 @@ class OperatorControl internal constructor(
                 runtime.resume()
                 val current = checkNotNull(activation)
                 return@accessOperatorGame OperatorResponse(status(game), leaseId, current.token, current.id)
+            }
+
+            "rollback" -> {
+                requireLease(request.leaseId)
+                if (request.epoch != runtime.epoch || request.serverInstance != serverInstance || request.handoff != runtime.handoff || request.civilization != game.currentPlayer) {
+                    throw OperatorFailure("STALE_TURN")
+                }
+                // Validate the attempt before revoking a potentially newer activation.
+                runtime.requireRollbackActivation(checkNotNull(request.activationId))
+                activation = null
+                runtime.rollbackScheduledTurn(request.activationId)
+                renew()
+                // The enclosing access block refers to the game that was replaced.
+                return@accessOperatorGame runtime.accessOperatorGame { OperatorResponse(status(it), leaseId) }
             }
 
             "pause" -> {
@@ -138,6 +155,7 @@ class OperatorControl internal constructor(
                 if (leaseId != null) throw OperatorFailure("LEASE_BUSY")
                 activation = null
                 runtime.scheduled = false
+                runtime.discardTurnStart()
                 runtime.resume()
             }
         }
@@ -222,6 +240,7 @@ class OperatorControl internal constructor(
             "acquire", "heartbeat", "release" -> setOf("leaseId")
             "pause" -> if (request.leaseId == null) emptySet() else setOf("leaseId")
             "activate" -> setOf("leaseId", "epoch", "serverInstance", "handoff", "civilization", "activationId")
+            "rollback" -> setOf("leaseId", "epoch", "serverInstance", "handoff", "civilization", "activationId")
             else -> throw OperatorFailure("INVALID_ARGUMENT")
         }
         val values = mapOf("leaseId" to request.leaseId, "epoch" to request.epoch, "serverInstance" to request.serverInstance, "handoff" to request.handoff, "civilization" to request.civilization, "activationId" to request.activationId)

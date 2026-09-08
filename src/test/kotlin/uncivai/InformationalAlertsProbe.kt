@@ -301,7 +301,7 @@ object InformationalAlertsProbe {
         return receipt
     }
 
-    private fun command(snapshot: PlayerTurnSnapshot, target: String?, kind: TurnCommandKind = TurnCommandKind.ACKNOWLEDGE_ALERT) = TurnCommandRequest(UUID.randomUUID().toString(), snapshot.epoch, snapshot.revision, kind, target)
+    private fun command(snapshot: PlayerTurnSnapshot, target: String?, kind: TurnCommandKind = TurnCommandKind.ACKNOWLEDGE_ALERT) = TurnCommandRequest(UUID.randomUUID().toString(), snapshot.epoch, snapshot.revision, kind, target).reviewedFor(snapshot)
 
     private fun saveRecovery(root: Path, recovery: InformationalAlertRecovery) {
         Files.writeString(root.resolve("expected.json"), PlayerTurnJson.json.encodeToString(recovery))

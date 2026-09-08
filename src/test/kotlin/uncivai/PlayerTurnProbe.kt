@@ -137,7 +137,7 @@ object PlayerTurnProbe {
         queue: List<String> = emptyList(),
     ): TurnCommandRequest {
         val snapshot = session.turn()
-        return TurnCommandRequest(UUID.randomUUID().toString(), snapshot.epoch, snapshot.revision, kind, target, selection, queue)
+        return TurnCommandRequest(UUID.randomUUID().toString(), snapshot.epoch, snapshot.revision, kind, target, selection, queue).reviewedFor(snapshot)
     }
 
     private fun expect(reason: PlayerSessionFailure, operation: () -> Any?) {

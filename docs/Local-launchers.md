@@ -45,7 +45,9 @@ For repeated turns, use the [HTTPS agent services and automatic scheduler](Autom
 The interactive commands on this page retain their one-turn behavior.
 
 Each player has its own working directory under `STATE_DIR/agents`, such as
-`agents/Rome`. The launcher reads the selected token and passes it through
+`agents/Rome` or `agents/Greece`. Unusual characters in civilization names are encoded
+so distinct names cannot collide or escape the workspace directory. The launcher
+reads the selected token and passes it through
 `UNCIV_PLAYER_TOKEN`, with a per-session `civ` MCP configuration. Tokens are never
 printed or placed in command arguments, and your global Codex configuration is not
 edited. The launcher loads the host URL and CA certificate from `endpoints.json`,
@@ -71,6 +73,20 @@ launch_agent Rome
 ```
 
 ## Choose a match or resume a conversation
+
+For diplomacy testing, add `--close-starts` when creating a new match. Rome and
+Greece start five tiles apart, with an extra Scout each. The Scouts start adjacent
+so first contact happens immediately through normal visibility. Omit this flag
+when resuming an existing match. The default player prompt recognizes the scenario:
+Rome declares war once and proposes peace with only a Peace Treaty on each side
+when negotiation becomes legal; Greece reads and accepts that offer. Both keep
+playing while they wait. Completion persists across restarts and treaty expiry.
+Ordinary duels keep their usual diplomacy choices. See
+[automatic turns](Automatic-turns.md) for the complete setup.
+
+Before ending any turn, the default prompt asks the player to review confirmed
+actions and remaining unit movement. The command must identify the current review
+and explain any choice to leave units idle with legal moves remaining.
 
 For a separate fresh match, choose a new directory. Pass the same directory and
 port to both players:
@@ -105,10 +121,27 @@ file, case-insensitively. It also supports:
 
 ```sh
 ./scripts/launch_agent Rome --dry-run
-./scripts/launch_agent Rome --model YOUR_MODEL
+./scripts/launch_agent Rome --model YOUR_MODEL --reasoning-effort high
 ./scripts/launch_agent Rome --prompt "Inspect my position and suggest a plan before acting."
 ./scripts/launch_agent Rome --resume YOUR_SESSION_ID
 ```
+
+`--reasoning` is an alias for `--reasoning-effort`. Omitted settings use Codex's
+configuration; an effort must be supported by the selected model. These overrides
+apply only to the launched session and do not rewrite the global Codex config.
+For automatic gameplay, set per-player defaults on `launch_agent_service`, or
+override all players with `run_agents --model YOUR_MODEL --reasoning-effort high`;
+see [automatic turns](Automatic-turns.md#select-models-and-reasoning-effort).
+
+Automatic gameplay also writes `agents/Rome/turn_1/summary.md` and
+`commands.jsonl`, then starts each new game turn with a fresh conversation and the
+earlier summaries. These turn archives are managed by the agent service; interactive
+`launch_agent` sessions retain the explicit conversation behavior described here.
+When an automatic turn is interrupted, `run_agents resume` restores its starting
+checkpoint and starts a fresh conversation. Failed-attempt logs are preserved for
+inspection, while committed handoffs are retained. Manual interactive sessions keep
+the per-command checkpoint behavior described above.
+See [turn folders and memory](Automatic-turns.md#turn-folders-and-memory).
 
 Use a conversation ID belonging to that civilization and match when resuming.
 The launcher requires an explicit ID to avoid accidentally selecting the other
