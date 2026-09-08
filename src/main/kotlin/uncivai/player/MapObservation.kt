@@ -41,6 +41,7 @@ data class ObservedTile(
     val riverBottomLeft: Boolean,
     val riverBottomRight: Boolean,
     val units: List<VisibleUnit>,
+    val yields: List<DisplayedYield>? = null,
 )
 
 @Serializable
@@ -64,6 +65,7 @@ data class OwnedUnit(
     val moves: List<UnitMoveOption>,
     val canFoundCity: Boolean,
     val settlementPromises: List<String>,
+    val worker: WorkerDevelopment? = null,
 )
 
 /** Coordinates use Unciv's axial x/y grid. No tile data is returned for unexplored coordinates. */
@@ -74,11 +76,11 @@ data class MapObservation(
     val units: List<OwnedUnit> = emptyList(),
 )
 
-internal fun observeMap(player: Civilization, state: TurnSessionState): MapObservation {
+internal fun observeMap(player: Civilization, state: TurnSessionState, canAct: Boolean = true): MapObservation {
     val tiles = player.gameInfo.tileMap.tileList.filter { it.isExplored(player) }
         .sortedWith(compareBy({ it.position.x }, { it.position.y }))
     val operations = PlayerUnitOperations(player)
-    val active = PlayerOperations(player).canAct()
+    val active = canAct && PlayerOperations(player).canAct()
     val format = DecimalFormat("0.#", DecimalFormatSymbols(Locale.ROOT))
     return MapObservation(
         tiles = detached(
@@ -107,6 +109,7 @@ internal fun observeMap(player: Civilization, state: TurnSessionState): MapObser
                     riverBottom = tile.hasBottomRiver,
                     riverBottomLeft = tile.hasBottomLeftRiver,
                     riverBottomRight = tile.hasBottomRightRiver,
+                    yields = observeTileYields(player, tile),
                     units = detached(
                         tile.getUnits().filter { it.civ === player || it.isVisibleTo(player) }
                             .map { VisibleUnit(it.name, it.civ.civName, it.health) }
@@ -121,7 +124,7 @@ internal fun observeMap(player: Civilization, state: TurnSessionState): MapObser
         ),
         units = detached(
             player.units.getCivUnits().filter { operations.owns(it) }.sortedBy { it.id }.map { unit ->
-                val canFound = operations.canFoundCity(unit)
+                val canFound = active && operations.canFoundCity(unit)
                 OwnedUnit(
                     handle = state.unitHandles.getOrPut(unit.id) { UUID.randomUUID().toString() },
                     name = unit.name,
@@ -143,6 +146,7 @@ internal fun observeMap(player: Civilization, state: TurnSessionState): MapObser
                     ),
                     canFoundCity = canFound,
                     settlementPromises = detached(if (canFound) UnitSettlement.promisesBroken(unit) else emptyList()),
+                    worker = observeWorkerDevelopment(player, unit, active),
                 )
             }.toList(),
         ),

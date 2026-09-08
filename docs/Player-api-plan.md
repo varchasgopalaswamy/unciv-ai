@@ -47,12 +47,12 @@ human engine slots so built-in AI cannot silently take their turns. Operator con
 5. Complete Vanilla, then Gods & Kings, removing setup restrictions only when all
    reachable actions and information surfaces pass the coverage gates.
 
-## Next milestone: workers, city development, and automatic turns
+## Current milestone: workers, city development, and automatic turns
 
 The exploration and settlement slice, interactive player launchers, and desktop
-snapshot inspection are available. The next slice includes automatic scheduling
-alongside the gameplay additions; scheduling is not deferred until combat and
-diplomacy are complete. This section describes planned work, not current API coverage.
+snapshot inspection are available. The development slice adds worker/city controls
+and automatic scheduling. See the coverage ledger for implemented details; the
+acceptance criteria below remain broader than a passing scripted test.
 
 Gameplay scope:
 
@@ -89,7 +89,13 @@ Automatic scheduling scope:
   payloads for uncertain retries, and never synthesize a second end-turn command.
   Uncertain mutation failures retain the existing halt-and-recover contract.
 
-This first scheduler supports trusted local development sessions. Filesystem and
+All network communication uses authenticated, certificate-verified HTTPS: player
+MCP, operator control, and per-civilization agent-service control. Each service uses
+a private Unix socket for its internal Codex app-server connection, with no stdio
+protocol or plaintext network listener. Remote endpoints and CA trust can be
+configured without giving the agents access to the host filesystem.
+
+This first scheduler supports trusted development sessions. Filesystem and
 network isolation remain an explicit later milestone; separate directories alone
 do not establish a privacy boundary. Scheduling and initial budget controls belong
 to this slice even while the isolated runner is outstanding.

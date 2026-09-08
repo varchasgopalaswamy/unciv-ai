@@ -12,6 +12,18 @@ import java.nio.file.attribute.PosixFilePermissions
 
 class McpPlayerConfigTest {
     @Test
+    fun `operator configuration has a strict separate schema and sanitized failures`() = withConfig { file ->
+        Files.writeString(file, """{"token":"$tokenA"}""")
+        assertEquals(tokenA, loadOperatorConfig(file))
+        for (source in listOf(configuration(player("Rome", tokenA)), """{"token":"$tokenA","civilizationId":"Rome"}""", """{"token":"$tokenA"""", """{"token":123}""")) {
+            Files.writeString(file, source)
+            val failure = runCatching { loadOperatorConfig(file) }.exceptionOrNull()
+            assertEquals("Invalid operator configuration", failure?.message)
+            assertNull(failure?.cause)
+        }
+    }
+
+    @Test
     fun `private configuration binds distinct credentials without exposing them in toString`() = withConfig { file ->
         Files.writeString(file, configuration(player("Rome", tokenA), player("Greece", tokenB)))
         val grants = loadMcpPlayerConfig(file)

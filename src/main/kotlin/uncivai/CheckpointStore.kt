@@ -24,6 +24,8 @@ internal data class GameCheckpoint(
     val paused: Boolean,
     val gameJson: String,
     val players: Map<String, SavedPlayerState>,
+    val handoff: Long = 0,
+    val scheduled: Boolean = false,
 )
 
 @Serializable
@@ -112,9 +114,11 @@ internal class CheckpointStore(
     companion object {
         private val checkpointJson = Json { encodeDefaults = true }
 
-        fun capture(game: GameInfo, epoch: String, paused: Boolean, states: Map<String, TurnSessionState>): GameCheckpoint = GameCheckpoint(
+        fun capture(game: GameInfo, epoch: String, paused: Boolean, states: Map<String, TurnSessionState>, handoff: Long = 0, scheduled: Boolean = false): GameCheckpoint = GameCheckpoint(
             epoch = epoch,
             paused = paused,
+            handoff = handoff,
+            scheduled = scheduled,
             gameJson = json().toJson(game),
             players = states.mapValues { (civilization, state) ->
                 val player = game.civilizations.single { it.civID == civilization }

@@ -400,7 +400,7 @@ object S06McpProbe {
         val expectedInputs = linkedMapOf(
             "player_capabilities" to emptySet(),
             "player_turn" to emptySet(),
-            "player_command" to setOf("requestId", "epoch", "revision", "kind", "target", "selection", "queue", "destination", "confirmBreakPromise"),
+            "player_command" to setOf("requestId", "epoch", "revision", "kind", "target", "selection", "queue", "destination", "confirmBreakPromise", "worked", "locked", "index", "toIndex"),
             "player_summary" to emptySet(),
             "owned_cities" to emptySet(),
             "rename_city" to setOf("requestId", "epoch", "cityHandle", "name"),

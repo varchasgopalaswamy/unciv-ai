@@ -8,19 +8,19 @@ test, and UI comparison evidence. Unsupported items remain explicit.
 
 | Surface | Required information and actions | Current coverage |
 | --- | --- | --- |
-| Player identity | Fixed civilization, session lifetime, turn ownership, elimination | Prototype binding and summary only |
+| Player identity | Fixed civilization, session lifetime, turn ownership, elimination | Authenticated fixed-civilization sessions, player-scoped revisions, turn fencing and revocable activation credentials; broader controller lifecycle incomplete |
 | Turn flow | Pending choices, actionable options, optional prompts, end turn, automation timing | Shared requirements, choices and end turn tested for both bundled rulesets; automation timing and broader decisions incomplete |
-| Map | Exploration, fog, remembered improvements, terrain, rivers, resources, ownership, yields | Explored tiles, visibility, terrain/features, rivers, revealed resources, ownership, remembered improvement names and visible units; yields and breakdowns outstanding |
-| Tile inspection | Yield breakdowns, resource reveal, city and unit details, work status | Not implemented |
+| Map | Exploration, fog, remembered improvements, terrain, rivers, resources, ownership, yields | Explored tiles, visibility, terrain/features, rivers, revealed resources, ownership, remembered improvement names and visible units; live yields on visible tiles; full tile breakdowns outstanding |
+| Tile inspection | Yield breakdowns, resource reveal, city and unit details, work status | Visible map yields, owned city workable-tile yields/work/lock state, worker progress/options; full tooltip coverage outstanding |
 | Unit movement | Own units, paths, movement costs, movement plans, embarkation, transport | Own units with durable handles, displayed movement, current-turn previews and validated movement; UI single-turn paths share operations. Future orders, aircraft/paradrops and complete transport coverage outstanding |
-| Unit actions | Found city, worker jobs, pillage, fortify, sleep, skip, explore, automate, upgrade, disband, gift, rename | Shared settlement rules and effects with explicit promise confirmation; other actions outstanding |
+| Unit actions | Found city, worker jobs, pillage, fortify, sleep, skip, explore, automate, upgrade, disband, gift, rename | Shared settlement with promise confirmation and ordinary worker jobs/repair/cancellation; automation, route orders, instant improvements and other actions outstanding |
 | Combat | Legal targets, human-visible previews and precision, ranged/melee/city attacks, interception, nuclear actions | Not implemented |
 | Promotions | Available promotions, prerequisites, descriptions, choice and naming | Not implemented |
-| City overview | Population, food, production, happiness, culture, borders, yields and breakdowns | Names only |
-| City management | Rename, citizens, specialists, focus, growth, tile purchase, tile reassignment | Shared validated rename; other controls missing |
-| Construction | Available/disabled entries and reasons, progress, queues, reorder/remove, purchases, placement | Queue discovery and append without tile placement; detailed reasons, progress and other controls missing |
+| City overview | Population, food, production, happiness, culture, borders, yields and breakdowns | Owned-city population, food/growth, displayed yields/breakdowns, built buildings and construction progress; culture/border and full overview details outstanding |
+| City management | Rename, citizens, specialists, focus, growth, tile purchase, tile reassignment | Shared rename, worked-tile assignment and locks; specialists, focus/growth changes, purchases and cross-city tile reassignment missing |
+| Construction | Available/disabled entries and reasons, progress, queues, reorder/remove, purchases, placement | Queue discovery/append, indexed remove/reorder, stored production/cost/turn estimates; disabled reasons, purchases and tile placement missing |
 | Captured cities | Annex, puppet, raze/stop, liberate, occupation, resistance | Not implemented |
-| Research | Tree, descriptions, progress, costs, prerequisites, queues, free choices, repeatable tech | Shared queue validation and free choices; detailed observations incomplete |
+| Research | Tree, descriptions, progress, costs, prerequisites, queues, free choices, repeatable tech | Shared queue validation/free choices, displayed science and technology costs/progress/turn estimates; tree descriptions/prerequisite detail incomplete |
 | Policies | Branches, requirements, costs, adoption, free choices, postponement | Shared adoption and picker dismissal; detailed observations incomplete |
 | Great people | Points and thresholds, free choices, placement failure, special actions, Maya restrictions | Shared free choices with revision and durable receipts; other actions and detailed observations incomplete |
 | Diplomacy | Known civilizations, relations, modifiers, war/peace, treaties, denunciations, promises, demands | Not implemented |
@@ -35,11 +35,11 @@ test, and UI comparison evidence. Unsupported items remain explicit.
 | Civilopedia | Public bundled rules, searchable entries, descriptions and links, no hidden game data | Not implemented |
 | Victory and defeat | Conditions, results, scores, permitted postgame information, resignation | Not implemented |
 | Lifecycle | Supported setup validation, create/load/save/pause, checkpoints, reconnect, controller replacement | Fixed Vanilla duel creation, load, checkpoint/resume, serialized execution, operator pause, player-scoped references and durable command receipts; general setup and controller management incomplete |
-| Agent runner | Codex conversations, private notes, turn scheduling, budgets, isolation | Interactive launchers route player tokens, working directories, and explicit conversation resumption. Automatic scheduling, persisted runner progress, and budget controls are planned with the next city-development slice; isolation remains outstanding |
-| Desktop integration | Shared execution and player API across all supported controls | Shared requirements, selected picker operations, current-turn movement previews/execution and settlement effects; embedded executor and full UI migration outstanding |
+| Agent runner | Codex conversations, private notes, turn scheduling, budgets, isolation | HTTPS supervisor and per-civilization Codex services, explicit conversations, durable progress, authoritative handoffs, leases, pause/resume and turn/invocation/time limits; hard spending caps, isolation and completed live-match acceptance outstanding |
+| Desktop integration | Shared execution and player API across all supported controls | Shared requirements, selected pickers, movement/settlement, worker orders and city tile/queue operations; embedded executor and full UI migration outstanding |
 
-The [next milestone](Player-api-plan.md#next-milestone-workers-city-development-and-automatic-turns)
-combines workers and city development with automatic turn scheduling. The desktop
+The [development slice](City-development.md) and [automatic scheduler](Automatic-turns.md)
+add worker/city controls and repeated turns over authenticated HTTPS. The desktop
 inspection launcher loads exported snapshots for operator verification; it is not
 an embedded human player connected to the authoritative host.
 

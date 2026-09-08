@@ -26,6 +26,12 @@ enum class TurnCommandKind {
     ACKNOWLEDGE_ALERT,
     MOVE_UNIT,
     FOUND_CITY,
+    START_WORKER_JOB,
+    STOP_WORKER_JOB,
+    SET_WORKED_TILE,
+    SET_TILE_LOCKED,
+    REMOVE_CONSTRUCTION,
+    MOVE_CONSTRUCTION,
     END_TURN,
 }
 
@@ -42,6 +48,7 @@ data class TurnCity(
     val puppet: Boolean,
     val constructionQueue: List<String>,
     val constructionOptions: List<String>,
+    val development: CityDevelopment? = null,
 )
 
 @Serializable
@@ -64,6 +71,7 @@ data class PlayerTurnSnapshot(
     val greatPersonOptions: List<String>,
     val idleUnits: Int,
     val map: MapObservation = MapObservation(),
+    val research: ResearchDevelopment? = null,
 )
 
 /** Fields unused by the selected command must be absent or have their default value. */
@@ -78,6 +86,10 @@ data class TurnCommandRequest(
     val queue: List<String> = emptyList(),
     val destination: TilePosition? = null,
     val confirmBreakPromise: Boolean = false,
+    val worked: Boolean? = null,
+    val locked: Boolean? = null,
+    val index: Int? = null,
+    val toIndex: Int? = null,
 )
 
 @Serializable

@@ -9,10 +9,10 @@ from pathlib import Path
 import re
 import shlex
 import shutil
-import socket
 import stat
 import sys
 
+from unciv_tls import TLSConfigError, codex_trust_environment, endpoint_configuration, verify_https_connection
 
 class LaunchError(Exception):
     pass
@@ -96,7 +96,9 @@ def parser():
     result.add_argument("civilization", help="Civilization name, for example Rome or Greece")
     result.add_argument("--state-dir", type=Path, default=Path(os.environ.get("UNCIV_HOST_DIR", Path.home() / ".local/state/unciv-host/demo")))
     result.add_argument("--players", type=Path, help="Credentials file (default: STATE_DIR/players.json)")
-    result.add_argument("--port", type=port_number, default=8765, help="Local host port (default: 8765)")
+    result.add_argument("--port", type=port_number, help="Override local HTTPS host port")
+    result.add_argument("--url", help="HTTPS host origin or MCP URL; defaults to STATE_DIR/endpoints.json")
+    result.add_argument("--ca-file", type=Path, help="CA PEM bundle; defaults to STATE_DIR/endpoints.json")
     result.add_argument("--model", help="Optional Codex model override")
     result.add_argument("--resume", metavar="SESSION_ID", help="Resume an explicit Codex conversation ID")
     result.add_argument("--prompt", help="Replace the default one-turn starting request")
@@ -114,7 +116,8 @@ def main(argv=None):
         if codex is None:
             raise LaunchError("Codex CLI is not on PATH. Install it and log in before launching a player.")
         workspace = state_dir / "agents" / workspace_name(civilization)
-        endpoint = f"http://127.0.0.1:{args.port}/mcp"
+        origin, ca_file = endpoint_configuration(state_dir, args.url, args.ca_file, args.port)
+        endpoint = origin + "/mcp"
         # A per-invocation override; never write ~/.codex/config.toml or put a token in argv.
         configuration = (
             "mcp_servers.civ={url=" + json.dumps(endpoint) +
@@ -130,22 +133,22 @@ def main(argv=None):
         command += [args.prompt if args.prompt is not None else initial_prompt(civilization)]
         if args.dry_run:
             print(f"Player: {civilization}; token supplied through UNCIV_PLAYER_TOKEN (not shown).")
+            print(f"HTTPS trust: {ca_file or 'system certificate authorities'}")
             print(shlex.join(command))
             return 0
         try:
-            with socket.create_connection(("127.0.0.1", args.port), timeout=2):
-                pass
+            verify_https_connection(endpoint, ca_file)
         except OSError:
-            raise LaunchError(f"Host is not listening on port {args.port}. Run scripts/launch_host and wait for MCP-READY first.") from None
+            raise LaunchError("Could not verify the HTTPS host connection. Check its certificate and CA file; run scripts/launch_host and wait for MCP-READY first.") from None
         os.umask(0o077)
         workspace.mkdir(parents=True, exist_ok=True, mode=0o700)
-        environment = os.environ.copy()
+        environment = codex_trust_environment(ca_file, os.environ, workspace)
         environment["UNCIV_PLAYER_TOKEN"] = token
         print(f"Launching Codex as {civilization} at {endpoint}", flush=True)
         print(f"Player working directory: {workspace}", flush=True)
         os.execvpe(codex, command, environment)
         return 0
-    except (LaunchError, OSError) as failure:
+    except (LaunchError, TLSConfigError, OSError) as failure:
         print(f"Error: {failure}", file=sys.stderr)
         return 2
 

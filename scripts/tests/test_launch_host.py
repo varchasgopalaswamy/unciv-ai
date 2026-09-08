@@ -9,12 +9,14 @@ import os
 from pathlib import Path
 import stat
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
 
 
 SCRIPT = Path(__file__).resolve().parents[1] / "launch_host"
+sys.path.insert(0, str(SCRIPT.parent))
 LOADER = importlib.machinery.SourceFileLoader("launch_host", str(SCRIPT))
 SPEC = importlib.util.spec_from_loader(LOADER.name, LOADER)
 host = importlib.util.module_from_spec(SPEC)
@@ -31,6 +33,9 @@ class HostLauncherTest(unittest.TestCase):
         self.addCleanup(patch.stopall)
         self.build = patch.object(host.subprocess, "run").start()
         self.execute = patch.object(host.os, "execv").start()
+        self.tls = patch.object(host, "ensure_host_tls", return_value=(
+            self.state / "tls/host/config.json", self.state / "tls/ca/cert.pem",
+        )).start()
 
     def run_launcher(self, *args):
         with redirect_stdout(self.output), redirect_stderr(self.errors):
@@ -68,8 +73,14 @@ class HostLauncherTest(unittest.TestCase):
         self.execute.assert_called_once_with(executable, [
             executable, "--new-duel", "--checkpoint", str(self.state / "exploration.json"),
             "--seed", "42", "--data-dir", str(self.state / "data"),
-            "--mcp-config", str(players_path), "--port", "8766",
+            "--mcp-config", str(players_path), "--operator-config", str(self.state / "operator.json"),
+            "--tls-config", str(self.state / "tls/host/config.json"), "--port", "8766",
         ])
+        self.tls.assert_called_once_with(self.state, "127.0.0.1", "localhost")
+        self.assertEqual({"hostUrl": "https://localhost:8766", "caFile": str(self.state / "tls/ca/cert.pem")},
+                         json.loads((self.state / "endpoints.json").read_text()))
+        self.assertEqual(0o600, stat.S_IMODE((self.state / "endpoints.json").stat().st_mode))
+        self.assertIn("MCP-READY:https://localhost:8766/mcp", self.output.getvalue())
 
     def test_existing_checkpoint_resumes_and_preserves_credentials(self):
         checkpoint = self.checkpoint()
@@ -136,6 +147,33 @@ class HostLauncherTest(unittest.TestCase):
         self.assertEqual(1, self.run_launcher())
         self.assertIn("Host build failed", self.errors.getvalue())
         self.execute.assert_not_called()
+        self.assertFalse((self.state / "endpoints.json").exists())
+
+    def test_custom_tls_paths_and_hostname_are_preserved(self):
+        self.state.mkdir(parents=True)
+        tls = self.state / "custom TLS.json"
+        store, password, ca = [self.state / name for name in ("custom.p12", "password.txt", "custom-ca.pem")]
+        for path in (store, password, ca):
+            path.write_text("temporary test material")
+            path.chmod(0o600)
+        tls.write_text(json.dumps({"keyStorePath": str(store), "keyStorePasswordFile": str(password),
+                                   "keyAlias": "custom", "listenHost": "0.0.0.0", "publicHost": "game.example.com"}))
+        tls.chmod(0o600)
+        self.assertEqual(0, self.run_launcher("--tls-config", str(tls), "--ca-file", str(ca)))
+        self.tls.assert_not_called()
+        command = self.execute.call_args.args[1]
+        self.assertEqual(str(tls), command[command.index("--tls-config") + 1])
+        self.assertNotIn("temporary test material", " ".join(command) + self.output.getvalue())
+        self.assertEqual("https://game.example.com:8765", json.loads((self.state / "endpoints.json").read_text())["hostUrl"])
+
+    def test_tls_overrides_must_be_complete_and_cannot_conflict(self):
+        for arguments in (("--tls-config", "/no/config"), ("--ca-file", "/no/ca"),
+                          ("--tls-config", "/no/config", "--ca-file", "/no/ca", "--public-host", "remote.example")):
+            with self.subTest(arguments=arguments):
+                self.assertEqual(2, self.run_launcher(*arguments))
+        self.build.assert_not_called()
+        self.tls.assert_not_called()
+        self.assertFalse((self.state / "players.json").exists())
 
     def test_rejects_invalid_ports_and_out_of_range_seeds(self):
         for arguments in (["--port", "0"], ["--port", "65536"], ["--port", "bad"], ["--seed", str(2**63)]):

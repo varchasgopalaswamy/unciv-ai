@@ -5,12 +5,14 @@ import io
 import json
 import os
 from pathlib import Path
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
 
 
 SCRIPT = Path(__file__).resolve().parents[1] / "launch_agent"
+sys.path.insert(0, str(SCRIPT.parent))
 loader = importlib.machinery.SourceFileLoader("launch_agent", str(SCRIPT))
 spec = importlib.util.spec_from_loader(loader.name, loader)
 agent = importlib.util.module_from_spec(spec)
@@ -28,6 +30,9 @@ class LaunchAgentTest(unittest.TestCase):
             {"civilizationId": "Greece", "token": "B" * 43},
         ]}))
         self.players.chmod(0o600)
+        self.ca = self.root / "public-ca.pem"
+        self.ca.write_text("test CA")
+        (self.root / "endpoints.json").write_text(json.dumps({"hostUrl": "https://localhost:8765", "caFile": str(self.ca)}))
         original_umask = os.umask(0o077)
         os.umask(original_umask)
         self.addCleanup(os.umask, original_umask)
@@ -36,7 +41,8 @@ class LaunchAgentTest(unittest.TestCase):
         output = io.StringIO()
         with patch.object(agent.shutil, "which", return_value="/tools/codex"), \
                 patch.object(agent.os, "execvpe") as execute, \
-                patch.object(agent.socket, "create_connection") as connect, \
+                patch.object(agent, "verify_https_connection") as connect, \
+                patch.object(agent, "codex_trust_environment", side_effect=lambda ca, env, cwd: dict(env, CODEX_CA_CERTIFICATE=str(ca))) as trust, \
                 contextlib.redirect_stdout(output), contextlib.redirect_stderr(output):
             if not connected:
                 connect.side_effect = ConnectionRefusedError()
@@ -50,6 +56,7 @@ class LaunchAgentTest(unittest.TestCase):
             self.assertEqual(code, 0)
             binary, command, env = execute.call_args.args
             self.assertEqual(env["UNCIV_PLAYER_TOKEN"], token)
+            self.assertEqual(env["CODEX_CA_CERTIFICATE"], str(self.ca))
             self.assertEqual(command[command.index("--cd") + 1], str(self.root / "agents" / name))
             self.assertIn(name, command[-1])
             self.assertNotIn(token, " ".join(command) + output)
@@ -63,7 +70,7 @@ class LaunchAgentTest(unittest.TestCase):
         self.assertEqual(code, 0)
         execute.assert_not_called()
         self.assertFalse((self.root / "agents").exists())
-        self.assertIn("http://127.0.0.1:8989/mcp", output)
+        self.assertIn("https://localhost:8989/mcp", output)
         self.assertNotIn("A" * 43, output)
         self.assertNotIn("B" * 43, output)
 
@@ -119,6 +126,28 @@ class LaunchAgentTest(unittest.TestCase):
         self.assertNotIn("/", agent.workspace_name("../../elsewhere"))
         self.assertNotEqual(agent.workspace_name("."), ".")
         self.assertNotEqual(agent.workspace_name(".."), "..")
+
+    def test_https_remote_override_does_not_need_shared_host_state(self):
+        (self.root / "endpoints.json").unlink()
+        code, execute, _ = self.launch("Rome", "--url", "https://game.example.com:443/mcp", "--ca-file", str(self.ca))
+        self.assertEqual(code, 0)
+        self.assertIn('url="https://game.example.com:443/mcp"', execute.call_args.args[1][4])
+        self.assertFalse((self.root / "endpoints.json").exists())
+
+    def test_plaintext_and_ambiguous_urls_never_launch_or_expose_tokens(self):
+        for url in ("http://localhost:8765", "https://user:secret@localhost", "https://localhost/?token=secret", "https://localhost/#token"):
+            code, execute, output = self.launch("Rome", "--url", url)
+            self.assertEqual(code, 2)
+            execute.assert_not_called()
+            self.assertNotIn("A" * 43, output)
+
+    def test_dry_run_does_not_verify_connections_or_create_trust_bundle(self):
+        with patch.object(agent, "verify_https_connection") as verify, patch.object(agent, "codex_trust_environment") as trust:
+            with patch.object(agent.shutil, "which", return_value="/tools/codex"), contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(0, agent.main(["Rome", "--state-dir", str(self.root), "--dry-run"]))
+        verify.assert_not_called()
+        trust.assert_not_called()
+        self.assertFalse((self.root / "agents").exists())
 
 
 if __name__ == "__main__":

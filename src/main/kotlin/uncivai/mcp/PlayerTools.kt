@@ -51,7 +51,7 @@ internal fun createPlayerToolsServer(session: PlayerSession): Server = Server(
 
     addTool(
         name = "player_turn",
-        description = "Return your turn status, decisions, city production, research, policy and Great Person options, explored map and owned units. Each unit has current-turn movement destinations and path previews; speculative paths can stop early on discovery. Coordinates are axial x/y. The opaque revision changes only with your observed state or successful commands. Unsupported decisions block end turn.",
+        description = "Return your turn status, decisions, city yields/growth/citizen options and production progress/queues, research progress, policy and Great Person options, explored map and owned units. Visible tiles include displayed yields; workers include legal job options, prerequisites and work progress. Units have current-turn movement destinations and previews; speculative paths can stop early on discovery. Coordinates are axial x/y. Revision changes only with your observed state or successful commands. Unsupported decisions block end turn.",
         inputSchema = NO_ARGUMENTS_SCHEMA,
         toolAnnotations = QUERY_ANNOTATIONS,
     ) { request ->
@@ -63,7 +63,7 @@ internal fun createPlayerToolsServer(session: PlayerSession): Server = Server(
 
     addTool(
         name = "player_command",
-        description = "Execute one command using the revision from player_turn. MOVE_UNIT uses target=unit handle and destination={x,y} from that unit's moves; it attempts the previewed path this turn and may stop early. FOUND_CITY uses target=settler handle and requires confirmBreakPromise=true if settlementPromises is nonempty. Other commands use city/alert target, selection for a chosen name, and queue only for SET_RESEARCH_QUEUE. Successful requests replay across reconnects; restart recovery requires durableRecovery. Observe again after stale revisions or successful commands. END_TURN requires pending choices resolved; idle units may be left idle.",
+        description = "Execute one command using the revision from player_turn. MOVE_UNIT uses target=unit handle and offered destination; movement may stop early. FOUND_CITY uses settler target and requires confirmBreakPromise=true if settlementPromises is nonempty. START_WORKER_JOB uses unit target and selection=available job name; STOP_WORKER_JOB uses unit target. SET_WORKED_TILE / SET_TILE_LOCKED use city target, an offered development.tiles destination and worked / locked boolean. REMOVE_CONSTRUCTION uses city target and queue index; MOVE_CONSTRUCTION also uses an offered toIndex. Append with QUEUE_CONSTRUCTION then reorder to change production. Research queue is only for SET_RESEARCH_QUEUE. Successful requests replay; restart recovery requires durableRecovery. Re-observe after commands. END_TURN requires pending choices resolved; idle units may remain idle.",
         inputSchema = TURN_COMMAND_INPUT_SCHEMA,
         toolAnnotations = COMMAND_ANNOTATIONS,
     ) { request ->
@@ -182,7 +182,7 @@ private val TURN_COMMAND_INPUT_SCHEMA = ToolSchema(
         put("target", stringProperty("City, alert or owned unit handle from player_turn, as required by the command.", minLength = 1))
         putJsonObject("destination") {
             put("type", "object")
-            put("description", "Destination from the unit's moves; only for MOVE_UNIT.")
+            put("description", "Offered unit move destination, or city development tile for SET_WORKED_TILE / SET_TILE_LOCKED.")
             putJsonObject("properties") {
                 putJsonObject("x") { put("type", "integer") }
                 putJsonObject("y") { put("type", "integer") }
@@ -198,6 +198,24 @@ private val TURN_COMMAND_INPUT_SCHEMA = ToolSchema(
             put("description", "Explicitly accept listed settlement promises; only for FOUND_CITY.")
         }
         put("selection", stringProperty("Chosen option or new city name; omit for commands without a named choice.", minLength = 1))
+        putJsonObject("worked") {
+            put("type", "boolean")
+            put("description", "Assign or unassign an offered city tile; only SET_WORKED_TILE.")
+        }
+        putJsonObject("locked") {
+            put("type", "boolean")
+            put("description", "Lock or unlock an offered city tile; only SET_TILE_LOCKED.")
+        }
+        putJsonObject("index") {
+            put("type", "integer")
+            put("minimum", 0)
+            put("description", "Current construction queue index; only REMOVE_CONSTRUCTION / MOVE_CONSTRUCTION.")
+        }
+        putJsonObject("toIndex") {
+            put("type", "integer")
+            put("minimum", 0)
+            put("description", "Offered destination queue index; only MOVE_CONSTRUCTION.")
+        }
         putJsonObject("queue") {
             put("type", "array")
             put("description", "Research queue in prerequisite order, only for SET_RESEARCH_QUEUE.")

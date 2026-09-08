@@ -36,6 +36,7 @@ dependencies {
     implementation(platform("io.ktor:ktor-bom:3.5.1"))
     implementation("io.ktor:ktor-server-core")
     implementation("io.ktor:ktor-server-cio")
+    implementation("io.ktor:ktor-server-netty")
     testImplementation(uncivLibs.junit)
     testImplementation("io.modelcontextprotocol:kotlin-sdk-client:0.15.0")
     testImplementation("io.ktor:ktor-client-cio")

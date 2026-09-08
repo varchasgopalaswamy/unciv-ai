@@ -1,0 +1,158 @@
+#!/usr/bin/env python3
+"""Export this match's existing Codex conversations into private, readable history."""
+
+import argparse
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import sys
+import tempfile
+
+from agent_history import HistoryLog
+from unciv_tls import private_directory, write_private_json
+
+
+class ExportError(ValueError):
+    pass
+
+
+def text_content(content):
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return ""
+    return "\n".join(item["text"] for item in content
+                     if isinstance(item, dict) and item.get("type") in {"input_text", "output_text", "text", "summary_text"}
+                     and isinstance(item.get("text"), str))
+
+
+def public_events(source, thread_id):
+    """Read only public conversation items; never export system/developer prompts or raw reasoning."""
+    identified = False
+    with source.open("rb") as stream:
+        for line in stream:
+            try:
+                entry = json.loads(line)
+            except (ValueError, UnicodeError):
+                raise ExportError("The Codex history contains an incomplete or invalid record; retry after the activation stops.") from None
+            payload = entry.get("payload", {})
+            if not isinstance(payload, dict):
+                continue
+            if entry.get("type") == "session_meta":
+                if payload.get("id") != thread_id:
+                    raise ExportError("Conversation identity does not match the runner's saved thread ID.")
+                identified = True
+            if not identified:
+                raise ExportError("Codex history is missing its conversation identity.")
+            source_time = entry.get("timestamp")
+            if entry.get("type") == "event_msg" and payload.get("type") in {"task_started", "task_complete", "turn_aborted"}:
+                # task_complete repeats the final message, already recorded as a response item.
+                yield "lifecycle", {"phase": payload["type"], "turnId": payload.get("turn_id"), "sourceTime": source_time}
+            if entry.get("type") != "response_item":
+                continue
+            kind = payload.get("type")
+            common = {"itemId": payload.get("call_id") or payload.get("id"), "sourceTime": source_time}
+            if kind == "message":
+                role = payload.get("role")
+                if role not in {"user", "assistant"} or payload.get("phase") in {"analysis", "reasoning"} or payload.get("channel") == "analysis":
+                    continue
+                text = text_content(payload.get("content"))
+                if role == "user" and not text.startswith("You are playing Unciv as ") and "Use only the civ MCP tools" not in text:
+                    # Environment bootstrap and unrelated injected context are not game prompts.
+                    continue
+                if text:
+                    yield "user_message" if role == "user" else "assistant_message", {**common, "text": text, "phase": payload.get("phase")}
+            elif kind == "reasoning":
+                summary = text_content(payload.get("summary"))
+                if summary:
+                    yield "reasoning_summary", {**common, "text": summary}
+            elif kind in {"function_call", "custom_tool_call"}:
+                yield "tool_call", {**common, "type": kind, "tool": payload.get("name"),
+                                    "arguments": payload.get("arguments", payload.get("input"))}
+            elif kind in {"function_call_output", "custom_tool_call_output"}:
+                yield "tool_result", {**common, "type": kind, "output": payload.get("output")}
+
+
+def credentials_to_redact(state_dir):
+    """Read this match's known credentials only, never the user's Codex authentication files."""
+    secrets = []
+    for path in [state_dir / "operator.json", state_dir / "players.json"]:
+        if path.exists():
+            value = json.loads(path.read_text())
+            if isinstance(value.get("token"), str):
+                secrets.append(value["token"])
+            for player in value.get("players", []):
+                if isinstance(player.get("token"), str):
+                    secrets.append(player["token"])
+    for endpoint in (state_dir / "agent-services").glob("*/endpoint.json"):
+        value = json.loads(endpoint.read_text())
+        token_path = Path(value["tokenFile"]).expanduser()
+        if token_path.is_file():
+            token = json.loads(token_path.read_text()).get("token")
+            if isinstance(token, str):
+                secrets.append(token)
+    return secrets
+
+
+def export_history(state_dir, codex_home, output_dir, civilization=None):
+    state = json.loads((state_dir / "runner/run.json").read_text())
+    sessions = state.get("sessions", {})
+    if not isinstance(sessions, dict) or not sessions:
+        raise ExportError("The runner has no saved agent conversation IDs.")
+    names = list(sessions)
+    if civilization:
+        names = [name for name in names if name.casefold() == civilization.casefold()]
+        if len(names) != 1:
+            raise ExportError("Civilization does not uniquely match a saved runner conversation.")
+    selected = []
+    for name in names:
+        thread_id = sessions[name].get("threadId")
+        if not isinstance(thread_id, str) or not re.fullmatch(r"[A-Za-z0-9-]{1,128}", thread_id):
+            raise ExportError("A selected civilization has no valid saved conversation ID.")
+        matches = list((codex_home / "sessions").rglob("*" + thread_id + ".jsonl"))
+        if len(matches) != 1:
+            raise ExportError(f"Cannot find a unique local Codex conversation for {name}. Run this export on its agent machine.")
+        selected.append((name, thread_id, matches[0]))
+    secrets = credentials_to_redact(state_dir)
+    export_root = Path(tempfile.mkdtemp(prefix="import-", dir=private_directory(output_dir)))
+    entries = []
+    for name, thread_id, source in selected:
+        directory = export_root / hashlib.sha256(name.encode()).hexdigest()
+        log = HistoryLog(directory, secrets)
+        log.append("lifecycle", {"phase": "IMPORTED", "civilization": name, "epoch": state.get("epoch"), "threadId": thread_id,
+                                 "note": "Existing public conversation items; reasoning summaries are included only when Codex recorded them."})
+        summaries = 0
+        for kind, data in public_events(source, thread_id):
+            log.append(kind, data, event_time=data.get("sourceTime"))
+            summaries += kind == "reasoning_summary"
+        log.render()
+        entries.append({"civilization": name, "threadId": thread_id, "history": str(log.markdown),
+                        "events": str(log.path), "reasoningSummaries": summaries})
+    write_private_json(export_root / "index.json", {"epoch": state.get("epoch"), "conversations": entries})
+    return entries
+
+
+def main(arguments=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("civilization", nargs="?", help="Export one player, e.g. Greece (default: all saved players)")
+    parser.add_argument("--state-dir", type=Path, default=Path(os.environ.get("UNCIV_HOST_DIR", "~/.local/state/unciv-host/demo")))
+    parser.add_argument("--codex-home", type=Path, default=Path(os.environ.get("CODEX_HOME", "~/.codex")))
+    parser.add_argument("--output-dir", type=Path, help="Default: STATE_DIR/runner/history-imports; each export creates a new directory")
+    args = parser.parse_args(arguments)
+    try:
+        state_dir = args.state_dir.expanduser().resolve()
+        output = args.output_dir.expanduser().resolve() if args.output_dir else state_dir / "runner/history-imports"
+        entries = export_history(state_dir, args.codex_home.expanduser().resolve(), output, args.civilization)
+        for entry in entries:
+            print(f"{entry['civilization']}: {entry['history']} ({entry['reasoningSummaries']} recorded reasoning summaries)")
+        return 0
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        message = str(error) if isinstance(error, ExportError) else "Cannot export history; check the state, Codex directory and output permissions."
+        print("export_agent_history: " + message, file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())

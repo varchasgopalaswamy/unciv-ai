@@ -24,6 +24,9 @@ class GameExecutor internal constructor(
     internal val turnSessions = HashMap<String, TurnSessionState>()
     private var closed = false
     private var paused = false
+    internal var scheduled = false
+    internal var handoff = 0L
+    internal var scheduler: OperatorControl? = null
     private var checkpointStore: CheckpointStore? = null
     internal val durableRecovery get() = checkpointStore != null
 
@@ -33,7 +36,19 @@ class GameExecutor internal constructor(
 
     internal fun <T> accessGame(block: (GameInfo) -> T): T = synchronized(lifecycleLock) {
         checkAvailable()
-        synchronized(game) { block(game) }
+        synchronized(game) {
+            scheduler?.expireIfNeeded()
+            block(game)
+        }
+    }
+
+    /** Operator diagnostics remain available after an uncertain mutation; player queries do not. */
+    internal fun <T> accessOperatorGame(block: (GameInfo) -> T): T = synchronized(lifecycleLock) {
+        if (closed || !isAvailable()) throw RuntimeClosedException()
+        synchronized(game) {
+            scheduler?.expireIfNeeded()
+            block(game)
+        }
     }
 
     internal fun requireRunning() {
@@ -60,7 +75,7 @@ class GameExecutor internal constructor(
     internal fun enableCheckpoints(store: CheckpointStore) = accessGame {
         check(checkpointStore == null) { "Checkpointing is already configured" }
         try {
-            store.writeInitial(CheckpointStore.capture(game, epoch, paused, turnSessions))
+            store.writeInitial(CheckpointStore.capture(game, epoch, paused, turnSessions, handoff, scheduled))
             checkpointStore = store
         } catch (failure: Throwable) {
             store.close()
@@ -71,7 +86,7 @@ class GameExecutor internal constructor(
     internal fun commitCheckpoint() {
         val store = checkpointStore ?: return
         try {
-            store.write(CheckpointStore.capture(game, epoch, paused, turnSessions))
+            store.write(CheckpointStore.capture(game, epoch, paused, turnSessions, handoff, scheduled))
         } catch (failure: Throwable) {
             haltAfterMutation(failure)
         }
@@ -80,7 +95,10 @@ class GameExecutor internal constructor(
     internal fun restore(checkpoint: GameCheckpoint, store: CheckpointStore) = accessGame {
         check(checkpointStore == null && turnSessions.isEmpty()) { "Restore before binding players" }
         epoch = checkpoint.epoch
-        paused = checkpoint.paused
+        scheduled = checkpoint.scheduled
+        paused = checkpoint.paused || scheduled
+        handoff = checkpoint.handoff
+        check(handoff >= 0) { "Invalid handoff counter" }
         for ((civilization, saved) in checkpoint.players) {
             val player = game.civilizations.single { it.civID == civilization }
             check(saved.alertHandles.size == player.popupAlerts.size) { "Checkpoint alert state is inconsistent" }
@@ -96,6 +114,7 @@ class GameExecutor internal constructor(
             }
         }
         checkpointStore = store
+        if (scheduled) commitCheckpoint()
     }
 
     internal fun haltAfterMutation(failure: Throwable): Nothing = synchronized(lifecycleLock) {

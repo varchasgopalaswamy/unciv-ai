@@ -1,7 +1,7 @@
 # Local launchers
 
 These scripts launch the checkpointed host and interactive Codex players. They need
-Python 3, JDK 21 or newer, the initialized engine checkout, and a Codex CLI on `PATH`
+Python 3, OpenSSL, JDK 21 or newer, the initialized engine checkout, and a Codex CLI on `PATH`
 that you have already logged into. The host builds through the repository's Gradle
 wrapper, so the first launch may need to download build dependencies.
 
@@ -13,7 +13,7 @@ Run this from the repository directory in the first terminal:
 ./scripts/launch_host
 ```
 
-Wait for `MCP-READY:http://127.0.0.1:8765/mcp`. In a second terminal, from the
+Wait for `MCP-READY:https://localhost:8765/mcp`. In a second terminal, from the
 repository directory:
 
 ```sh
@@ -41,16 +41,16 @@ After the other player finishes, ask **“Play my next turn.”** A blocked or u
 decision is reported for your attention. These sessions do not continuously poll
 or coordinate turns automatically.
 
-Automatic scheduling is included in the [next city-development milestone](Player-api-plan.md#next-milestone-workers-city-development-and-automatic-turns).
-The planned supervisor will resume the active player's conversation, verify host
-handoffs, and stop on configured limits or decisions needing operator attention.
-The commands on this page currently retain their manual one-turn behavior.
+For repeated turns, use the [HTTPS agent services and automatic scheduler](Automatic-turns.md).
+The interactive commands on this page retain their one-turn behavior.
 
 Each player has its own working directory under `STATE_DIR/agents`, such as
 `agents/Rome`. The launcher reads the selected token and passes it through
 `UNCIV_PLAYER_TOKEN`, with a per-session `civ` MCP configuration. Tokens are never
 printed or placed in command arguments, and your global Codex configuration is not
-edited. This uses Codex's documented
+edited. The launcher loads the host URL and CA certificate from `endpoints.json`,
+verifies the HTTPS connection, and configures Codex to trust that CA. Plain HTTP
+URLs are rejected. This uses Codex's documented
 [MCP bearer-token environment setting](https://learn.chatgpt.com/docs/extend/mcp?surface=cli).
 
 These are trusted local sessions: they inherit your normal Codex login, settings,
@@ -89,6 +89,12 @@ only to new games. See [Exploration and settlement](Exploration-and-settlement.m
 for the duel's rules and map-seed limitations. Use a persistent directory instead
 of `/tmp` for a match you want to keep.
 
+The host generates and reuses a private local CA and server certificate under
+`STATE_DIR/tls`. Its operator credential is separate from player credentials. For
+remote endpoints, pass `--url https://HOST:PORT --ca-file /absolute/ca.pem` to the
+agent. Supply a matching hostname/certificate to the host; see
+[custom HTTPS deployment](Automatic-turns.md#separate-machines).
+
 Both scripts accept `--players /absolute/path/players.json`. The host also accepts
 `--checkpoint /absolute/path/checkpoint.json` and
 `--unciv-dir ../Unciv`; that engine override selects both code and runtime assets,
@@ -108,9 +114,8 @@ Use a conversation ID belonging to that civilization and match when resuming.
 The launcher requires an explicit ID to avoid accidentally selecting the other
 player's most recent conversation. `--dry-run` prints the command with the token
 omitted, without contacting the host or starting Codex. Normal launches check
-that the port is listening, and configure `civ` as a required MCP server so Codex
-reports initialization failures. If the host uses a nondefault port, pass it on
-every launch.
+the certificate and hostname, and configure `civ` as a required MCP server so Codex
+reports initialization failures. The saved endpoint includes the host port, so it normally needs no override.
 
 ## Inspect what the agents did
 

@@ -2,9 +2,9 @@
 
 A private headless host and MCP adapter project for agents playing Unciv, depending on a separately maintained Unciv fork. Agents must eventually have every ordinary human player action and information surface while receiving only information their player is allowed to know. Scope covers the bundled Vanilla and Gods & Kings rulesets; mod content is excluded.
 
-The repository provides a headless executable and authenticated local MCP server. The player interface supports explored-map observations, current-turn unit movement and settlement, turn decisions, research queues and free technologies, policy adoption, city production, renaming, free Great People, informational alerts, and validated turn advancement. Checkpoints persist game state and command receipts together. Integration scenarios cover both bundled rulesets, with a fresh Vanilla duel exercised through MCP.
+The repository provides a headless executable and authenticated HTTPS MCP server. The player interface supports explored-map observations, current-turn movement and settlement, worker jobs, city yields and citizen assignment, construction queues, research, policies, free Great People, informational alerts, and validated turn advancement. Checkpoints persist game state and command receipts together. A supervisor schedules separate Codex conversations through HTTPS agent services, following the host's committed turn changes.
 
-**This is an incomplete gameplay implementation.** Worker jobs, city management, multi-turn movement orders, special unit actions, combat, diplomacy, full desktop integration, and an isolated autonomous runner remain outstanding. Local scripts can launch interactive Codex players. Consult the [coverage ledger](docs/Player-api-coverage.md) rather than treating a passing turn-flow test as full parity.
+**This is an incomplete gameplay implementation.** Further city controls, multi-turn movement orders, special unit actions, combat, diplomacy, full desktop integration, and agent filesystem/network isolation remain outstanding. Consult the [coverage ledger](docs/Player-api-coverage.md) rather than treating a passing turn-flow test as full parity.
 
 Read [AGENTS.md](AGENTS.md) for confidentiality and contribution instructions, and [Development workflow](docs/Development-workflow.md) for engine branches, local overrides and dependency updates.
 
@@ -21,7 +21,7 @@ To develop against a sibling engine checkout:
 ./gradlew -PuncivDir=../Unciv engineInfo build
 ```
 
-To play a local Rome/Greece duel, with Python 3 and a logged-in Codex CLI on `PATH`,
+To play a local Rome/Greece duel, with Python 3, OpenSSL and a logged-in Codex CLI on `PATH`,
 run these in three separate terminals from this directory:
 
 ```sh
@@ -34,6 +34,12 @@ The host creates credentials and a game on first launch, and resumes its checkpo
 on subsequent launches. Each Codex session gets its civilization's token automatically
 and starts with a one-turn request. See [Local launchers](docs/Local-launchers.md)
 for custom matches, ports, and conversation resumption.
+
+For automatic turns, start one HTTPS service per civilization and run the supervisor.
+See [automatic turns and HTTPS setup](docs/Automatic-turns.md) for commands, limits,
+pause/resume, and separate-machine configuration.
+The scheduler displays live player output and saves responses, exposed reasoning
+summaries and tool history; see [history locations and existing-run export](docs/Automatic-turns.md#live-output-and-saved-history).
 
 To verify the agents' actions visually, run `./scripts/inspect_game Rome` or
 `./scripts/inspect_game Greece`. This exports the checkpoint and opens a separate

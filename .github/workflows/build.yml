@@ -20,6 +20,11 @@ jobs:
         with:
           distribution: temurin
           java-version: '21'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install agent service dependencies
+        run: python3 -m pip install -r scripts/requirements.txt
       - name: Verify pinned engine checkout
         shell: bash
         run: |

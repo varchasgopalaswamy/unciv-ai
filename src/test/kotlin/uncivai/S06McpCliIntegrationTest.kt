@@ -32,6 +32,7 @@ class S06McpCliIntegrationTest {
         val greeceToken = token()
         val config = configuration(root, "Rome" to romeToken, "Greece" to greeceToken)
         val configBytes = Files.readAllBytes(config)
+        val tls = TlsTestFixture(root)
         val child = startChild(
             root,
             "uncivai.MainKt",
@@ -42,13 +43,21 @@ class S06McpCliIntegrationTest {
                 root.resolve("runtime").toString(),
                 "--mcp-config",
                 config.toString(),
+                "--tls-config",
+                tls.config.toString(),
                 "--port",
                 "0",
             ),
         )
         try {
             val endpoint = awaitReady(child)
-            HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).build().use { client ->
+            assertEquals("https", endpoint.scheme)
+            HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).build().use { untrusted ->
+                assertTrue(runCatching { rpc(untrusted, endpoint, romeToken, initialize) }.isFailure)
+                assertTrue(runCatching { rpc(untrusted, URI.create(endpoint.toString().replace("https:", "http:")), romeToken, initialize) }.isFailure)
+            }
+            HttpClient.newBuilder().sslContext(tls.context).connectTimeout(Duration.ofSeconds(5)).build().use { client ->
+                assertTrue(runCatching { rpc(client, URI.create(endpoint.toString().replace("localhost", "127.0.0.1")), romeToken, initialize) }.isFailure)
                 for ((name, credential) in listOf("Rome" to romeToken, "Greece" to greeceToken)) {
                     val initialized = rpc(client, endpoint, credential, initialize)
                     assertEquals(200, initialized.statusCode())
@@ -78,6 +87,7 @@ class S06McpCliIntegrationTest {
     fun `invalid provisioning exits before serving and ordinary CLI still exits normally`() = withFixture { root, save ->
         val credential = token()
         val config = configuration(root, "Unknown player" to credential)
+        val tls = TlsTestFixture(root)
         val invalid = startChild(
             root,
             "uncivai.MainKt",
@@ -88,6 +98,8 @@ class S06McpCliIntegrationTest {
                 root.resolve("invalid-runtime").toString(),
                 "--mcp-config",
                 config.toString(),
+                "--tls-config",
+                tls.config.toString(),
                 "--port",
                 "0",
             ),

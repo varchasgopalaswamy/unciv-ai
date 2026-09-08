@@ -1,6 +1,7 @@
 # Player protocol
 
-The current interface covers turn management, exploration and settlement, not a complete player API.
+The current interface covers turn management, exploration, settlement and basic city development.
+It remains an incomplete player API.
 Use `player_capabilities` to inspect its operations and recovery guarantees.
 Authentication fixes the player's civilization; tool arguments cannot override it.
 
@@ -12,6 +13,10 @@ Authentication fixes the player's civilization; tool arguments cannot override i
   and construction choices, research options, policy options, Great Person options,
   informational alerts, and `map` (explored tiles, frontier coordinates and owned units
   with current-turn move previews). Lists are detached from engine state.
+  Owned cities include `development` (displayed yields/breakdowns, growth, worked
+  tiles and indexed construction progress); worker units include `worker` (jobs,
+  prerequisites and progress). `research` exposes displayed science and technology
+  progress. Yield amounts are strings retaining the relevant UI display precision.
 - `player_command`: submit exactly one command using the latest turn snapshot.
 - Existing summary and prototype tools remain available during migration. Their
   mutation tools are disabled when durable checkpoints are enabled; use
@@ -41,10 +46,17 @@ Example, with values copied from `player_turn`:
 | `ACKNOWLEDGE_ALERT` | `target`: handle of an acknowledgeable informational alert |
 | `MOVE_UNIT` | `target`: owned unit handle; `destination`: `{ "x": ..., "y": ... }` copied from that unit's `moves` |
 | `FOUND_CITY` | `target`: settler handle; `confirmBreakPromise: true` only when accepting its listed settlement promises |
+| `START_WORKER_JOB` | `target`: worker handle; `selection`: available name from `worker.options` |
+| `STOP_WORKER_JOB` | `target`: worker handle; `worker.canStop` must be true |
+| `SET_WORKED_TILE` | `target`: city handle; `destination`: listed tile coordinate; `worked`: boolean matching its offered action |
+| `SET_TILE_LOCKED` | `target`: city handle; `destination`: listed tile coordinate; `locked`: boolean matching its offered action |
+| `REMOVE_CONSTRUCTION` | `target`: city handle; `index`: removable construction entry |
+| `MOVE_CONSTRUCTION` | `target`: city handle; `index`: construction entry; `toIndex`: one of its `moveToIndices` |
 | `END_TURN` | None; `canEndTurn` must be true |
 
 Unused fields must be absent or have their default value (`null` for target and
-selection and destination, `[]` for queue, `false` for confirmBreakPromise). Unknown fields and command names are rejected. Requests
+selection, destination, worked, locked, index and toIndex; `[]` for queue,
+`false` for confirmBreakPromise). Unknown fields and command names are rejected. Requests
 must use a unique printable ASCII `requestId` of 1–128 characters per player. Retries
 use the same ID **and the original payload**, including the original revision.
 
@@ -65,7 +77,7 @@ mandatory choices. Decisions whose implementation is missing have `supported=fal
 Create a fresh Ancient-era Vanilla game with Rome and Greece in human slots:
 
 ```sh
-./gradlew run --args="--new-duel --data-dir /absolute/data --checkpoint /absolute/new-checkpoint.json --mcp-config /absolute/players.json"
+./scripts/launch_host --state-dir /absolute/match --new
 ```
 
 This uses Quick speed, a Tiny Pangaea map, domination/time victories, no city-states,
@@ -81,17 +93,20 @@ encodings of 32 random bytes. Keep this operator file outside player-accessible
 storage with owner-only permissions (`chmod 600`).
 
 ```sh
-./gradlew run --args="--save /absolute/game.json --data-dir /absolute/data --checkpoint /absolute/checkpoint.json --mcp-config /absolute/players.json"
+./gradlew run --args="--save /absolute/game.json --data-dir /absolute/data --checkpoint /absolute/checkpoint.json --mcp-config /absolute/players.json --tls-config /absolute/tls.json"
 ```
 
 Resume the same match and command history after restarting the process:
 
 ```sh
-./gradlew run --args="--resume-checkpoint /absolute/checkpoint.json --data-dir /absolute/data --mcp-config /absolute/players.json"
+./gradlew run --args="--resume-checkpoint /absolute/checkpoint.json --data-dir /absolute/data --mcp-config /absolute/players.json --tls-config /absolute/tls.json"
 ```
 
-The server prints its loopback Streamable HTTP endpoint. The default port is 8765;
-`--port 0` selects an available port. Clients use their bearer token at `/mcp`.
+The server prints its HTTPS Streamable HTTP endpoint. Serving requires `--tls-config`;
+the launcher generates a local CA and host certificate automatically. The default
+port is 8765; the low-level CLI supports `--port 0` for an available port. Clients
+verify the certificate and use their bearer token at `/mcp`. The operator interface
+uses a separate credential at `/operator`; see [automatic turns](Automatic-turns.md).
 
 Checkpointing writes engine state and receipts into one temporary file, flushes it,
 atomically replaces the checkpoint, and flushes the directory before acknowledging
@@ -103,18 +118,20 @@ required. Existing checkpoints require explicit resume rather than overwrite.
 
 Persistence or mutation failure halts player operations. Restore the checkpoint and
 retry the original request: it either has a receipt or was not committed. Ordinary
-operator pause/resume is available through `GameExecutor`; resume cannot clear a
+operator pause/resume is available through `/operator` and `GameExecutor`; resume cannot clear a
 mutation failure. Paused matches still support observations and successful retries.
 
 ## Limits of this implementation
 
-There is no complete-match runner or agent filesystem isolation yet. The extracted
+The bounded scheduler does not establish complete-match coverage or agent filesystem isolation. The extracted
 executor is independent of headless bootstrap, but the desktop has not been wired
 to that executor. Selected desktop pickers now share engine validation; the rest of
 the UI still has direct access paths. Turn snapshots intentionally cover only this
 slice, including only a subset of alert details and construction controls. Movement
 commands attempt one turn of an advertised path; they do not schedule future movement.
-Aircraft relocation, paradrops, worker jobs, attacks and other special actions are absent.
+Aircraft relocation, paradrops, attacks and other special actions are absent.
+Worker automation, route-to-destination and instant improvements are also absent.
+Citizen specialists, focus changes, tile purchases and construction purchases remain outstanding.
 Explored terrain and ownership follow the map UI's current data; improvement names
 use Unciv's remembered values. This is not a complete historical map snapshot. Consult
 the coverage ledger for the remaining work.
