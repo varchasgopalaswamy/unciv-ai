@@ -1,6 +1,7 @@
 # Player protocol
 
-The current interface covers turn management, exploration, settlement and basic city development.
+The current interface covers turn management, exploration, settlement, basic city development,
+first-contact acknowledgement and initial diplomacy observations.
 It remains an incomplete player API.
 Use `player_capabilities` to inspect its operations and recovery guarantees.
 Authentication fixes the player's civilization; tool arguments cannot override it.
@@ -17,6 +18,14 @@ Authentication fixes the player's civilization; tool arguments cannot override i
   tiles and indexed construction progress); worker units include `worker` (jobs,
   prerequisites and progress). `research` exposes displayed science and technology
   progress. Yield amounts are strings retaining the relevant UI display precision.
+  First-contact alerts include `firstContact`: `civilizationId`, `civilizationName`,
+  `leaderName` (the displayed leader caption), `message`, and `acknowledgement`.
+  Every supported informational alert also includes `content`: `title`, ordered
+  `paragraphs`, nullable `quote`, and the `acknowledgement` label. This contains the
+  full popup prose; technology descriptions use the observing civilization's context.
+  `diplomacy.knownCivilizations` lists met, surviving major civilizations with their
+  identity, displayed leader caption and `atWar` flag. It excludes unmet civilizations
+  and does not expose hidden locations, resources, plans or diplomatic modifiers.
 - `player_command`: submit exactly one command using the latest turn snapshot.
 - Existing summary and prototype tools remain available during migration. Their
   mutation tools are disabled when durable checkpoints are enabled; use
@@ -43,7 +52,7 @@ Example, with values copied from `player_turn`:
 | `QUEUE_CONSTRUCTION` | `target`: city handle; `selection`: offered construction |
 | `CHOOSE_FREE_GREAT_PERSON` | `selection`: offered unit name; placement may still fail |
 | `RENAME_CITY` | `target`: city handle; `selection`: valid new name |
-| `ACKNOWLEDGE_ALERT` | `target`: handle of an acknowledgeable informational alert |
+| `ACKNOWLEDGE_ALERT` | `target`: handle of an informational alert with `canAcknowledge=true`; fetch and read its full `content` in `player_turn` at the submitted revision first |
 | `MOVE_UNIT` | `target`: owned unit handle; `destination`: `{ "x": ..., "y": ... }` copied from that unit's `moves` |
 | `FOUND_CITY` | `target`: settler handle; `confirmBreakPromise: true` only when accepting its listed settlement promises |
 | `START_WORKER_JOB` | `target`: worker handle; `selection`: available name from `worker.options` |
@@ -71,6 +80,23 @@ epoch; restoring a durable checkpoint preserves the epoch and receipts.
 alerts/trades. The interface permits leaving idle units idle, as the UI does with
 unit cycling disabled. It does not silently run a major civilization's AI or resolve
 mandatory choices. Decisions whose implementation is missing have `supported=false`.
+
+First contact has one acknowledgement, matching the desktop popup. Read its
+introduction, then submit `ACKNOWLEDGE_ALERT` using that alert's handle and the latest
+epoch/revision. Meeting effects already happened; acknowledgement removes only the
+message and does not change war/peace status. Each player acknowledges their own
+message during their own turn. Paused and waiting snapshots retain its content but
+set `canAcknowledge=false`. Mixed alert queues can contain both acknowledgeable
+information and unsupported choices; acknowledging the former cannot clear the latter.
+War declarations, peace offers and other diplomatic commands remain unimplemented.
+
+For all supported informational popups, a revision returned only by a command
+receipt is insufficient to acknowledge: `OBSERVATION_REQUIRED` asks the player
+to fetch and read `player_turn` first. A changed popup description invalidates
+the prior revision. After process restart, pending acknowledgements require a
+fresh read; exact retries of committed acknowledgements retain their usual replay
+semantics. See [informational popups](Informational-popups.md) for content and
+agent reading requirements.
 
 ## Launch and recovery
 

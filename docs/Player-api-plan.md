@@ -47,7 +47,7 @@ human engine slots so built-in AI cannot silently take their turns. Operator con
 5. Complete Vanilla, then Gods & Kings, removing setup restrictions only when all
    reachable actions and information surfaces pass the coverage gates.
 
-## Current milestone: workers, city development, and automatic turns
+## Delivered slice: workers, city development, and automatic turns
 
 The exploration and settlement slice, interactive player launchers, and desktop
 snapshot inspection are available. The development slice adds worker/city controls
@@ -108,6 +108,72 @@ Scripted CI clients must also exercise wrong-turn activation, duplicate supervis
 timeouts, incomplete turns, unsupported choices, budget exhaustion, and interruption
 on both sides of an accepted handoff. A live multi-turn model run complements these
 checks; it does not establish a completed duel or full UI/API parity.
+
+The September 2026 live run reportedly progressed until a first-contact popup
+required an unsupported acknowledgement. The development fixture builds cities
+and improves tiles without directing military units to meet the opponent; its
+twenty-round result did not cover that encounter.
+
+## Delivered slice: first contact and the diplomacy foundation
+
+This slice addresses that blocker without changing the Vanilla duel's setup
+restrictions. The [encounter inventory](Encounter-and-diplomacy.md) records all
+30 alert types, their desktop text and effects, setup prerequisites and remaining
+command/test gaps. War/peace actions and broader diplomacy remain outstanding.
+
+- `FirstContact` exposes the encountered civilization's identity, displayed leader
+  caption, introduction and acknowledgement label. `ACKNOWLEDGE_ALERT` and the
+  desktop popup use shared engine operations and text. Meeting effects already
+  happen before the popup; acknowledgement removes only the bound player's message.
+- `player_turn.diplomacy.knownCivilizations` lists met, surviving major civilizations,
+  their displayed identity and `atWar` status. Its detached fields follow the desktop
+  diplomacy list; it contains no hidden rival positions, orders or private decisions.
+- Informational alerts advertise acknowledgement only while the player is active.
+  Paused/waiting players can still read introductions. Unsupported choices remain
+  visible and blocking, including mixed queues with supported informational alerts.
+- Agent instructions describe reading introductions and explicitly acknowledging
+  supported alerts through the existing HTTPS player API. The scheduler does not
+  clear alerts or choose diplomatic responses on a player's behalf.
+
+Verification uses engine `PlayerFirstContactTest` and `PlayerOperationsTest`, host
+`DiplomacyIntegrationTest`, and `EncounterRunIntegrationTest`. The encounter fixture
+uses legal advertised exploration to create first contact, restarts with alerts
+pending, acknowledges Rome, restarts again and retries the exact acknowledgement,
+then lets both players complete four rounds through scheduled HTTPS commands.
+The separate development regression still covers workers, improvements and growth.
+Authority/privacy checks cover wrong-player, wrong-turn, paused, stale and unknown
+handles; detached UI text; hidden opponent state; and mixed supported/unsupported
+alerts. Acknowledgement must never repeat diplomacy or city-state meeting effects.
+
+The next live acceptance run will use a new save, as requested. Compatibility with
+older checkpoint formats is outside this slice; recovery and exact retries within
+this version are required. The operator will rerun the agents separately and
+report any next unsupported decision. Automated scenarios do not establish a
+completed live duel or full diplomacy coverage.
+
+## Delivered slice: ordinary informational popup content
+
+The [informational-popup slice](Informational-popups.md) exposes full desktop text
+for opening introductions, technology discoveries, completed wonders and Golden
+Ages, alongside existing first-contact messages. Technology descriptions use the
+observing civilization's context. Desktop handlers and player observations share
+the same engine query; acknowledgement removes only the message.
+
+The player must fetch `player_turn` at the current revision before acknowledging;
+command receipt revisions alone are insufficient. Agent prompts require reading
+the content and making a brief public note before dismissal. The host records
+the query, while the transcript provides reviewable evidence of the agent's use
+of the message. Same-version restart and receipt replay remain covered.
+
+Diplomacy/trade/war and other system choices retain their own slices. Victory and
+defeat require result delivery after scheduling stops; they remain separate from
+ordinary in-game informational popups. No generic ruleset-event dismissal is added.
+
+Continue the duel sequence with validated war/peace actions and
+their mandatory offers/responses, then basic melee/ranged combat, promotions and
+capture decisions. Full trade, remaining city/unit controls, embedded human play
+and isolation retain their places in the broader delivery sequence. Add each
+action together with the observations and resulting decisions needed to use it.
 
 ## Verification gates
 

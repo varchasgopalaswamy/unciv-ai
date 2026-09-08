@@ -39,7 +39,14 @@ enum class TurnCommandKind {
 data class PendingTurnDecision(val kind: String, val supported: Boolean)
 
 @Serializable
-data class PlayerAlert(val handle: String, val kind: String, val subject: String?, val canAcknowledge: Boolean)
+data class PlayerAlert(
+    val handle: String,
+    val kind: String,
+    val subject: String?,
+    val canAcknowledge: Boolean,
+    val firstContact: FirstContactDetails? = null,
+    val content: AlertContent? = null,
+)
 
 @Serializable
 data class TurnCity(
@@ -72,6 +79,7 @@ data class PlayerTurnSnapshot(
     val idleUnits: Int,
     val map: MapObservation = MapObservation(),
     val research: ResearchDevelopment? = null,
+    val diplomacy: DiplomacyObservation = DiplomacyObservation(),
 )
 
 /** Fields unused by the selected command must be absent or have their default value. */

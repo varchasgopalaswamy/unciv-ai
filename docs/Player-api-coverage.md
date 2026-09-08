@@ -23,14 +23,14 @@ test, and UI comparison evidence. Unsupported items remain explicit.
 | Research | Tree, descriptions, progress, costs, prerequisites, queues, free choices, repeatable tech | Shared queue validation/free choices, displayed science and technology costs/progress/turn estimates; tree descriptions/prerequisite detail incomplete |
 | Policies | Branches, requirements, costs, adoption, free choices, postponement | Shared adoption and picker dismissal; detailed observations incomplete |
 | Great people | Points and thresholds, free choices, placement failure, special actions, Maya restrictions | Shared free choices with revision and durable receipts; other actions and detailed observations incomplete |
-| Diplomacy | Known civilizations, relations, modifiers, war/peace, treaties, denunciations, promises, demands | Not implemented |
+| Diplomacy | Known civilizations, relations, modifiers, war/peace, treaties, denunciations, promises, demands | Met, surviving major-civilization identities, displayed leader captions and war/peace observations; diplomatic commands, modifiers and broader information missing |
 | Trade | Offers, counteroffers, validity, resource/gold/city transfers, acceptance/rejection, expiry | Not implemented |
 | City-states | Influence, quests, gifts, protection, bullying, war/peace, allies | Not implemented |
 | Religion | Pantheon, founding/enhancing/reforming, beliefs, pressure, conversion, religious units | Not implemented |
 | Espionage | Spy status, assignment, promotion, stealing technologies, elections, coups, reports | Not implemented |
 | Economy | Treasury, income and expense breakdowns, resources, happiness, connections | Prototype treasury only |
 | Overviews | Cities, units, trades, resources, religion, demographics, rankings, wonders, victory progress | Not implemented |
-| Notifications | Per-player alerts, transient combat/movement history, popups, choices, navigation targets | Informational alert acknowledgement; consequential alerts fail closed; detailed observations incomplete |
+| Notifications | Per-player alerts, transient combat/movement history, popups, choices, navigation targets | StartIntro, TechResearched, WonderBuilt, GoldenAge and FirstContact expose shared popup prose/quotes and require observation before acknowledgement; consequential alerts fail closed; other notifications, visual/navigation and terminal result surfaces incomplete |
 | Communication | Player-addressed chat, participant identity, transcript visibility | Not implemented |
 | Civilopedia | Public bundled rules, searchable entries, descriptions and links, no hidden game data | Not implemented |
 | Victory and defeat | Conditions, results, scores, permitted postgame information, resignation | Not implemented |
@@ -42,6 +42,11 @@ The [development slice](City-development.md) and [automatic scheduler](Automatic
 add worker/city controls and repeated turns over authenticated HTTPS. The desktop
 inspection launcher loads exported snapshots for operator verification; it is not
 an embedded human player connected to the authoritative host.
+
+The [encounter inventory](Encounter-and-diplomacy.md) records the first-contact
+implementation, initial diplomacy observations, scheduled encounter/restart tests,
+and each remaining popup's UI behavior and coverage gap. First contact can be
+acknowledged; other unsupported diplomatic decisions still block turn advancement.
 
 ## Known architectural gaps
 

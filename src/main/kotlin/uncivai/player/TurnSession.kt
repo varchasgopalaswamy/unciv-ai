@@ -22,6 +22,10 @@ internal class TurnSessionState {
     var fingerprint: PlayerTurnSnapshot? = null
     var revision = UUID.randomUUID().toString()
 
+    // Only the public query presents popup contents. A command receipt presents a revision alone.
+    // Reset on process restart: uncommitted acknowledgements need a fresh read; completed receipts replay.
+    var observedRevision: String? = null
+
     fun invalidate() {
         fingerprint = null
     }
@@ -34,6 +38,7 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
         snapshot(game, player(game), state).also {
             // Persist newly issued references before a client can submit them after reconnecting.
             if (previous != state.fingerprint) runtime.commitCheckpoint()
+            state.observedRevision = it.revision
         }
     }
 
@@ -56,6 +61,12 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
         if (request.revision != before.revision) fail(PlayerSessionFailure.STALE_REVISION)
         if (before.phase != "ACTIVE") fail(PlayerSessionFailure.COMMAND_UNAVAILABLE)
         val operations = PlayerOperations(player)
+        if (request.kind == TurnCommandKind.ACKNOWLEDGE_ALERT) {
+            if (before.alerts.none { it.handle == request.target && it.canAcknowledge && it.content != null }) {
+                fail(PlayerSessionFailure.OPTION_UNAVAILABLE)
+            }
+            if (state.observedRevision != before.revision) fail(PlayerSessionFailure.OBSERVATION_REQUIRED)
+        }
         val city = request.target?.takeIf { request.kind in cityCommands }?.let { handle ->
             val cityId = state.cityHandles.entries.firstOrNull { it.value == handle }?.key
             player.cities.singleOrNull { it.id == cityId && it.civ === player }
@@ -180,13 +191,6 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
         val pending = PlayerTurnRequirements.pending(player).map { kind ->
             PendingTurnDecision(kind.name, kind in supportedRequirements)
         }.toMutableList()
-        if (player.popupAlerts.isNotEmpty()) {
-            pending.add(
-                PendingTurnDecision("PopupAlerts", player.popupAlerts.all { it.type in PlayerOperations.informationalAlerts }),
-            )
-        }
-        if (player.tradeRequests.isNotEmpty()) pending.add(PendingTurnDecision("TradeRequests", false))
-        if (player.shouldShowDiplomaticVotingResults()) pending.add(PendingTurnDecision("DiplomaticVotingResults", false))
         val phase = when {
             runtime.isPaused() -> "PAUSED"
             player.isDefeated() -> "DEFEATED"
@@ -195,6 +199,29 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
             else -> "WAITING"
         }
         state.alertHandles.keys.removeIf { old -> player.popupAlerts.none { it === old } }
+        val alerts = player.popupAlerts.map { alert ->
+            val contact = observeFirstContact(operations, alert)
+            val content = observeAlertContent(operations, alert)
+            val supported = alert.type in PlayerOperations.informationalAlerts && content != null
+            PlayerAlert(
+                handle = state.alertHandles.getOrPut(alert) { UUID.randomUUID().toString() },
+                kind = alert.type.name,
+                subject = when (alert.type) {
+                    AlertType.TechResearched, AlertType.WonderBuilt -> alert.value.takeIf { content != null }
+                    AlertType.FirstContact -> contact?.civilizationName
+                    else -> null
+                },
+                canAcknowledge = phase == "ACTIVE" && supported,
+                firstContact = contact,
+                content = content,
+            ) to supported
+        }
+        if (alerts.isNotEmpty()) {
+            // Support is a capability even while paused or waiting; action flags require an active turn.
+            pending.add(PendingTurnDecision("PopupAlerts", alerts.all { it.second }))
+        }
+        if (player.tradeRequests.isNotEmpty()) pending.add(PendingTurnDecision("TradeRequests", false))
+        if (player.shouldShowDiplomaticVotingResults()) pending.add(PendingTurnDecision("DiplomaticVotingResults", false))
         val fingerprint = PlayerTurnSnapshot(
             epoch = runtime.epoch,
             revision = "",
@@ -202,19 +229,7 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
             phase = phase,
             canEndTurn = phase == "ACTIVE" && pending.isEmpty(),
             pending = immutable(pending),
-            alerts = immutable(
-                player.popupAlerts.map { alert ->
-                    PlayerAlert(
-                        handle = state.alertHandles.getOrPut(alert) { UUID.randomUUID().toString() },
-                        kind = alert.type.name,
-                        subject = when (alert.type) {
-                            AlertType.TechResearched, AlertType.WonderBuilt -> alert.value
-                            else -> null
-                        },
-                        canAcknowledge = alert.type in PlayerOperations.informationalAlerts,
-                    )
-                },
-            ),
+            alerts = immutable(alerts.map { it.first }),
             cities = immutable(
                 player.cities.filter { it.civ === player }.map { city ->
                     TurnCity(
@@ -238,6 +253,7 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
             idleUnits = player.units.getDueUnits().count(),
             map = observeMap(player, state, canAct = phase == "ACTIVE"),
             research = observeResearchDevelopment(player),
+            diplomacy = observeDiplomacy(player),
         )
         if (state.fingerprint != fingerprint) {
             state.fingerprint = fingerprint

@@ -2,9 +2,17 @@
 
 A private headless host and MCP adapter project for agents playing Unciv, depending on a separately maintained Unciv fork. Agents must eventually have every ordinary human player action and information surface while receiving only information their player is allowed to know. Scope covers the bundled Vanilla and Gods & Kings rulesets; mod content is excluded.
 
-The repository provides a headless executable and authenticated HTTPS MCP server. The player interface supports explored-map observations, current-turn movement and settlement, worker jobs, city yields and citizen assignment, construction queues, research, policies, free Great People, informational alerts, and validated turn advancement. Checkpoints persist game state and command receipts together. A supervisor schedules separate Codex conversations through HTTPS agent services, following the host's committed turn changes.
+The repository provides a headless executable and authenticated HTTPS MCP server. The player interface supports explored-map observations, current-turn movement and settlement, worker jobs, city yields and citizen assignment, construction queues, research, policies, free Great People, informational alerts including first contact, known-civilization identity and war/peace observations, and validated turn advancement. Checkpoints persist game state and command receipts together. A supervisor schedules separate Codex conversations through HTTPS agent services, following the host's committed turn changes.
 
 **This is an incomplete gameplay implementation.** Further city controls, multi-turn movement orders, special unit actions, combat, diplomacy, full desktop integration, and agent filesystem/network isolation remain outstanding. Consult the [coverage ledger](docs/Player-api-coverage.md) rather than treating a passing turn-flow test as full parity.
+
+The [encounter slice](docs/Encounter-and-diplomacy.md) lets players inspect and
+acknowledge first contact, then continue scheduled turns. It adds an initial view
+of known rivals and tests encounters and recovery across checkpoint restarts.
+Ordinary [informational popups](docs/Informational-popups.md) include their full
+prose, quotes and civilization-specific technology descriptions. Agents are
+instructed to read and note their content, and acknowledgement requires a current
+`player_turn` observation.
 
 Read [AGENTS.md](AGENTS.md) for confidentiality and contribution instructions, and [Development workflow](docs/Development-workflow.md) for engine branches, local overrides and dependency updates.
 

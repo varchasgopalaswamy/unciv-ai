@@ -39,6 +39,23 @@ directory is `~/.local/state/unciv-host/demo`, overridden by `UNCIV_HOST_DIR` or
 `--state-dir`. Use the same directory for these local commands. Existing checkpoints
 resume automatically; choose a new directory for a new match.
 
+For a fresh match after the first-contact update, stop the previous host and agent
+services to free their ports, then use a new directory in all four terminals:
+
+```sh
+./scripts/launch_host --state-dir /tmp/civ-encounters --new
+./scripts/launch_agent_service Rome --state-dir /tmp/civ-encounters
+./scripts/launch_agent_service Greece --state-dir /tmp/civ-encounters
+./scripts/run_agents --state-dir /tmp/civ-encounters
+```
+
+`launch_host` builds the current code and selected engine before starting. First
+contact now supplies an introduction and an explicit `ACKNOWLEDGE_ALERT` action;
+the agent prompts ask players to read and acknowledge supported messages. Each
+player's contact message and command appear in their normal saved tool history.
+Diplomacy currently provides known-rival identity and war/peace observations;
+other diplomatic choices still require future implementations.
+
 The host generates and preserves a local CA, HTTPS identity, `players.json`, and a
 separate `operator.json`. Each agent service generates its own control credential
 and publishes an endpoint descriptor. Credentials never appear in command arguments.
@@ -237,5 +254,5 @@ Automated tests exercise HTTPS authentication/certificates, real engine developm
 over twenty rounds with restart, stale activations, duplicate schedulers, lease
 expiry, interrupted turns, exact receipt replay and finite budgets. Scripted tests
 do not establish a completed live-model duel, full UI parity, or a safe filesystem
-and network isolation boundary. Combat, diplomacy and several mandatory choice
+and network isolation boundary. Combat, diplomatic actions and several mandatory choice
 surfaces remain outside the implemented gameplay slice.
