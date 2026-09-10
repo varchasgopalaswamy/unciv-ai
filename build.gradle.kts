@@ -125,6 +125,19 @@ tasks.register<JavaExec>("prepareVictoryFixture") {
     )
 }
 
+tasks.register<JavaExec>("prepareEconomyFixture") {
+    group = "verification"
+    description = "Prepares a new economy exercise checkpoint without issuing player commands."
+    dependsOn(tasks.testClasses)
+    classpath = sourceSets.test.get().runtimeClasspath
+    mainClass = "uncivai.EconomyRunProbe"
+    args(
+        providers.gradleProperty("economyFixtureDir")
+            .orElse(layout.buildDirectory.dir("generated/economy-fixture").map { it.asFile.absolutePath }).get(),
+        "prepare",
+    )
+}
+
 val s04UiScenarios = layout.buildDirectory.dir("generated/s04-ui")
 val generateS04UiScenarios by tasks.registering(JavaExec::class) {
     group = "verification"

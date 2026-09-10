@@ -206,6 +206,23 @@ implemented; its inventory and verification are recorded in [Combat.md](Combat.m
 and isolation retain their places in the broader delivery sequence. Add each
 action together with the observations and resulting decisions needed to use it.
 
+## Delivered slice: economy and ordinary unit actions
+
+The [economy slice](Economy-and-unit-actions.md) adds own empire finances,
+maintenance, happiness, resource balances and city connections, plus gold purchases
+of units, buildings and visible city tiles. Land units can inspect and execute paid
+upgrades, pillage and disband, with unavailable reasons, costs, benefits, required
+confirmations and actual receipts. Corresponding ordinary desktop controls share
+engine validation and execution.
+
+Scripted HTTPS tests improve Iron, wait through scheduled turns, purchase
+reinforcements, upgrade, pillage/heal and reduce upkeep by disbanding. They inspect
+actual state across restarts, exact retries and interrupted-turn rollback. Paired
+hidden-world checks cover the new observations. Full overview details, specialist
+and city focus/growth controls, remaining unit actions, full trade, embedded human
+play and isolation remain in the wider plan. No new live-model acceptance run is
+claimed for this slice.
+
 ## Verification gates
 
 Each slice needs engine behavior tests, host authority and privacy tests, transport

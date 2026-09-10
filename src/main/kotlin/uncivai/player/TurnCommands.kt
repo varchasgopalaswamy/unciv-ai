@@ -38,6 +38,11 @@ enum class TurnCommandKind {
     PROMOTE_UNIT,
     RESOLVE_CAPTURED_CITY,
     MANAGE_CAPTURED_CITY,
+    BUY_CONSTRUCTION,
+    BUY_TILE,
+    UPGRADE_UNIT,
+    PILLAGE,
+    DISBAND_UNIT,
     FOUND_CITY,
     START_WORKER_JOB,
     STOP_WORKER_JOB,
@@ -72,6 +77,7 @@ data class TurnCity(
     val development: CityDevelopment? = null,
     val attacks: List<AttackOption> = emptyList(),
     val captureOptions: List<CaptureOption> = emptyList(),
+    val purchases: CityPurchases? = null,
 )
 
 @Serializable
@@ -101,6 +107,7 @@ data class PlayerTurnSnapshot(
     val map: MapObservation = MapObservation(),
     val research: ResearchDevelopment? = null,
     val diplomacy: DiplomacyObservation = DiplomacyObservation(),
+    val economy: EconomyObservation? = null,
 )
 
 /** Fields unused by the selected command must be absent or have their default value. */
@@ -124,6 +131,7 @@ data class TurnCommandRequest(
     val reviewId: String? = null,
     val deferReason: String? = null,
     val attackFrom: TilePosition? = null,
+    val confirmAction: Boolean = false,
 )
 
 @Serializable
@@ -136,6 +144,7 @@ data class TurnCommandReceipt(
     val isYourTurn: Boolean,
     val feedback: AlertContent? = null,
     val combat: CombatOutcome? = null,
+    val economy: EconomyOutcome? = null,
 )
 
 object PlayerTurnJson {
@@ -156,6 +165,7 @@ internal fun TurnCommandRequest.detached(): TurnCommandRequest = copy(
 )
 
 internal fun TurnCommandReceipt.detached(): TurnCommandReceipt = copy(
+    economy = economy?.copy(units = Collections.unmodifiableList(economy.units.toList())),
     feedback = feedback?.let {
         it.copy(
             paragraphs = Collections.unmodifiableList(it.paragraphs.toList()),

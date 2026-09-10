@@ -1,7 +1,7 @@
 # Player protocol
 
 The current interface covers turn management, exploration, settlement, basic city development,
-first contact, war declarations, negotiated peace and basic land combat.
+first contact, war declarations, negotiated peace, basic land combat and empire economy.
 It remains an incomplete player API.
 Use `player_capabilities` to inspect its operations and recovery guarantees.
 Authentication fixes the player's civilization; tool arguments cannot override it.
@@ -18,6 +18,10 @@ Authentication fixes the player's civilization; tool arguments cannot override i
   tiles and indexed construction progress); worker units include `worker` (jobs,
   prerequisites and progress). `research` exposes displayed science and technology
   progress. Yield amounts are strings retaining the relevant UI display precision.
+  `economy` adds own finances, maintenance, happiness, supply, resource balances
+  and city connections. `cities[].purchases` and `map.units[].economy` expose gold
+  purchases, upgrades, pillage and disband options, costs, benefits, requirements,
+  unavailable reasons and confirmations; see [economy and unit actions](Economy-and-unit-actions.md).
   First-contact alerts include `firstContact`: `civilizationId`, `civilizationName`,
   `leaderName` (the displayed leader caption), `message`, and `acknowledgement`.
   Every supported informational alert also includes `content`: `title`, ordered
@@ -65,6 +69,10 @@ Example, with values copied from `player_turn`:
 | `PROMOTE_UNIT` | `target`: owned unit; `selection`: available `combat.promotions.choices` name |
 | `RESOLVE_CAPTURED_CITY` | `target`: capture alert; `selection`: available capture option after reading the current decision (also handles civilian return) |
 | `MANAGE_CAPTURED_CITY` | `target`: owned city; `selection`: available `captureOptions` name after reading current options |
+| `BUY_CONSTRUCTION` | `target`: owned city; `selection`: available name from `purchases.constructions` |
+| `BUY_TILE` | `target`: owned city; `destination`: available position from `purchases.tiles` |
+| `UPGRADE_UNIT` | `target`: owned land unit; `selection`: available `targetName` from `economy.upgrades` |
+| `PILLAGE`, `DISBAND_UNIT` | `target`: owned land unit with the corresponding available `economy` option |
 | `FOUND_CITY` | `target`: settler handle; `confirmBreakPromise: true` only when accepting its listed settlement promises |
 | `START_WORKER_JOB` | `target`: worker handle; `selection`: available name from `worker.options` |
 | `STOP_WORKER_JOB` | `target`: worker handle; `worker.canStop` must be true |
@@ -81,7 +89,7 @@ Example, with values copied from `player_turn`:
 
 Unused fields must be absent or have their default value (`null` for target and
 selection, destination, attackFrom, worked, locked, index, toIndex and peaceTerms; `[]` for queue,
-`false` for confirmBreakPromise and confirmWar). Unknown fields and command names are rejected. Requests
+`false` for confirmBreakPromise, confirmWar and confirmAction). Unknown fields and command names are rejected. Requests
 must use a unique printable ASCII `requestId` of 1–128 characters per player. Retries
 use the same ID **and the original payload**, including the original revision.
 
@@ -91,6 +99,12 @@ observation fails with `STALE_REVISION`; observe again and submit a new request.
 Revision tokens change with the returned player state or a successful command,
 not a global count of opponent actions. Reloading an ordinary save starts a new
 epoch; restoring a durable checkpoint preserves the epoch and receipts.
+
+Gold purchases, upgrades, pillage and disband require a fresh `player_turn` read
+at the submitted revision. Read costs and full confirmation text, and include
+`confirmAction: true` when the option's `confirmation` is non-null. Read
+`receipt.economy` for actual gold and unit changes, then re-observe for current
+resource balances, maintenance and city state.
 
 `player_turn` puts `turnReview` near the beginning of the response. It contains
 confirmed commands from this turn and each owned unit's remaining movement,

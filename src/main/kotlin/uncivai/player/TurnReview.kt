@@ -39,7 +39,7 @@ internal fun CompletedTurnReview.detached(): CompletedTurnReview = copy(
 )
 
 /** Include actual move endpoints, not the requested endpoint of a speculative path. */
-internal fun confirmedAction(request: TurnCommandRequest, before: PlayerTurnSnapshot, after: PlayerTurnSnapshot, combat: CombatOutcome? = null): ConfirmedTurnAction {
+internal fun confirmedAction(request: TurnCommandRequest, before: PlayerTurnSnapshot, after: PlayerTurnSnapshot, combat: CombatOutcome? = null, economy: EconomyOutcome? = null): ConfirmedTurnAction {
     val unit = before.map.units.singleOrNull { it.handle == request.target }
     val city = before.cities.singleOrNull { it.handle == request.target }
     fun TilePosition.text() = "($x, $y)"
@@ -84,6 +84,20 @@ internal fun confirmedAction(request: TurnCommandRequest, before: PlayerTurnSnap
         TurnCommandKind.RESOLVE_CAPTURED_CITY -> "Resolved ${before.alerts.single { it.handle == request.target }.capture!!.title}: ${request.selection}."
 
         TurnCommandKind.MANAGE_CAPTURED_CITY -> "${city!!.name}: ${request.selection}."
+
+        TurnCommandKind.BUY_CONSTRUCTION -> "${city!!.name} purchased ${request.selection}; treasury changed by ${economy!!.goldChange} gold."
+
+        TurnCommandKind.BUY_TILE -> "${city!!.name} purchased ${request.destination!!.text()}; treasury changed by ${economy!!.goldChange} gold."
+
+        TurnCommandKind.UPGRADE_UNIT -> "${unit!!.name} upgraded to ${request.selection}; treasury changed by ${economy!!.goldChange} gold."
+
+        TurnCommandKind.DISBAND_UNIT -> "Disbanded ${unit!!.name} at ${unit.position.text()}; treasury changed by ${economy!!.goldChange} gold."
+
+        TurnCommandKind.PILLAGE -> {
+            val remaining = after.map.units.singleOrNull { it.handle == request.target }
+            "${unit!!.name} pillaged at ${unit.position.text()}; treasury changed by ${economy!!.goldChange} gold" +
+                (remaining?.let { "; health ${unit.health} to ${it.health}, ${it.movement} movement remaining" } ?: "") + "."
+        }
 
         TurnCommandKind.ACKNOWLEDGE_ALERT -> {
             val alert = before.alerts.single { it.handle == request.target }

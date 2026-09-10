@@ -75,6 +75,7 @@ To generate and load a lifecycle scenario:
 ```
 
 - [Player protocol](docs/Player-api-protocol.md): current tools, request examples, checkpoints, and limitations.
+- [Economy and unit actions](docs/Economy-and-unit-actions.md): finances/resources, gold purchases, upgrades, pillage/disband and a prepared exercise.
 - [Local launchers](docs/Local-launchers.md): start the host and interactive Codex players without copying tokens.
 - [Exploration and settlement](docs/Exploration-and-settlement.md): launch a fresh duel using existing player credentials, movement semantics, and validation.
 - [Implementation design](docs/Player-api-plan.md): responsibilities, milestones, and acceptance gates.

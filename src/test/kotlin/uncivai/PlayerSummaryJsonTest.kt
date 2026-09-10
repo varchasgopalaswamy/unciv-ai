@@ -79,6 +79,7 @@ class PlayerSummaryJsonTest {
                 "turn",
                 "result",
                 "execute",
+                "completedReceipt",
                 "summary",
                 "cities",
                 "renameCity",
@@ -91,6 +92,8 @@ class PlayerSummaryJsonTest {
         assertEquals(0, sessionMethods.getValue("result").parameterCount)
         assertEquals(uncivai.player.PlayerFinalState::class.java, sessionMethods.getValue("result").returnType)
         assertEquals(PlayerSummary::class.java, sessionMethods.getValue("summary").returnType)
+        assertEquals(listOf(uncivai.player.TurnCommandRequest::class.java), sessionMethods.getValue("completedReceipt").parameterTypes.toList())
+        assertEquals(uncivai.player.TurnCommandReceipt::class.java, sessionMethods.getValue("completedReceipt").returnType)
         assertEquals(0, sessionMethods.getValue("cities").parameterCount)
         assertEquals(
             uncivai.player.OwnedCitiesSnapshot::class.java,

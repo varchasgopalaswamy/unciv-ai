@@ -2,8 +2,9 @@
 
 The player API now supports ordinary land melee/ranged attacks and city bombardment,
 tactical orders, promotions and capture choices. The engine shares these operations
-with the desktop controls. Naval combat, air missions, nuclear attacks, pillaging,
-upgrades and the remaining special unit actions still need their own implementations.
+with the desktop controls. The [economy slice](Economy-and-unit-actions.md) adds land-unit
+upgrades, pillaging and disbanding. Naval combat, air missions, nuclear attacks
+and the remaining special unit actions still need their own implementations.
 This is a bounded combat slice, not full game coverage.
 
 ## Observe and act
