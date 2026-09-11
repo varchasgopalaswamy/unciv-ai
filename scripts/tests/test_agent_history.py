@@ -11,7 +11,7 @@ import aiohttp
 from aiohttp import web
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from agent_history import HistoryLog, HistoryStore, MAX_EVENT_BYTES, MAX_PAGE_BYTES, encoded
+from agent_history import HistoryLog, HistoryStore, MAX_EVENT_BYTES, MAX_PAGE_BYTES, canonical_tool_result, encoded
 from agent_service import AgentService, server_ssl_context
 from unciv_tls import client_ssl_context, ensure_server_certificate
 
@@ -120,6 +120,46 @@ class HistoryTests(unittest.TestCase):
         restored.append("error", {"message": "Recovered"})
         self.assertEqual(before + 1, restored.sequence)
         self.assertNotIn('"partial', restored.path.read_text())
+
+    def test_duplicate_mcp_payload_is_stored_once_with_metadata_and_distinct_content_preserved(self):
+        self.store.bind_turn("activation", "turn")
+        payload = {"city": "Rome", "gold": 5000, "token": self.player_token}
+        duplicate = {"type": "text", "text": json.dumps(payload, indent=2)}
+        note = {"type": "text", "text": "Read this additional confirmation."}
+        annotated = {**duplicate, "annotations": {"audience": ["user"]}}
+        result = {"structuredContent": payload, "content": [duplicate, note, annotated], "isError": False, "_meta": {"example": "retained"}}
+        original = json.dumps(result)
+        self.notify("item/completed", item={"id": "receipt", "type": "mcpToolCall", "status": "completed", "result": result})
+        self.assertEqual(original, json.dumps(result), "Archiving must not modify the live response")
+        stored = next(e["data"]["result"] for e in self.store.page("activation")["events"] if e["kind"] == "tool_result")
+        self.assertEqual({"city": "Rome", "gold": 5000, "token": "[REDACTED]"}, stored["structuredContent"])
+        self.assertEqual(2, len(stored["content"]))
+        self.assertEqual(note, stored["content"][0])
+        self.assertEqual(annotated["annotations"], stored["content"][1]["annotations"])
+        self.assertEqual(result["_meta"], stored["_meta"])
+        self.assertNotIn(self.player_token, self.store.logs["activation"].path.read_text())
+
+    def test_deduplication_never_discards_malformed_or_different_json(self):
+        for text in ('{"value":1}', '{"value":false}', '{bad json', 'A separate explanation'):
+            result = {"structuredContent": {"value": True}, "content": [{"type": "text", "text": text}]}
+            with self.subTest(text=text):
+                self.assertEqual(result, canonical_tool_result(result))
+        result = {"structuredContent": {"value": True}, "content": [{"type": "text", "text": '{ "value": true }'}]}
+        self.assertEqual([], canonical_tool_result(result)["content"])
+
+    def test_deferred_render_keeps_events_durable_and_skips_unchanged_markdown(self):
+        store = HistoryStore(self.root / "deferred", self.service_token, auto_render=False)
+        store.begin(self.record, "Play the turn", self.player_token)
+        log = store.logs["activation"]
+        log.append("tool_result", {"itemId": "receipt", "result": {"gold": 5000}})
+        self.assertFalse(log.markdown.exists())
+        restored = HistoryStore(self.root / "deferred", self.service_token, auto_render=False)
+        self.assertEqual(store.page("activation"), restored.page("activation"))
+        log.render()
+        self.assertIn('"gold": 5000', log.markdown.read_text())
+        before = log.markdown.stat()
+        log.render()
+        self.assertEqual((before.st_ino, before.st_mtime_ns), (log.markdown.stat().st_ino, log.markdown.stat().st_mtime_ns))
 
 
 class HistoryHttpsTests(unittest.IsolatedAsyncioTestCase):

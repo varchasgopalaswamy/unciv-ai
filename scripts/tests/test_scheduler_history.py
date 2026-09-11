@@ -33,14 +33,21 @@ class SchedulerHistoryTest(unittest.TestCase):
                 self.event(1, "assistant_delta", itemId="m", text="Built "),
                 self.event(2, "assistant_delta", itemId="m", text="a Farm.\x1b[31m"),
                 self.event(3, "assistant_message", itemId="m", text="Built a Farm.\x1b[0m"),
-                self.event(4, "reasoning_summary", itemId="s", text="Improve food first."),
-                self.event(5, "reasoning_text", text="DO_NOT_PERSIST_RAW_REASONING"),
-                self.event(6, "tool_result", result={"message": "Token " + secret, "encrypted_content": "PRIVATE_CIPHERTEXT"}),
+                self.event(4, "reasoning_summary_delta", itemId="s", text="Improve food first."),
+                self.event(5, "reasoning_summary", itemId="s", text="Improve food first."),
+                self.event(6, "reasoning_text", text="DO_NOT_PERSIST_RAW_REASONING"),
+                self.event(7, "tool_call", itemId="tool", name="player_units", arguments={}),
+                self.event(8, "tool_output", itemId="tool", text="Worker ready.\n"),
+                self.event(9, "tool_result", result={"message": "Token " + secret, "encrypted_content": "PRIVATE_CIPHERTEXT"}),
             ])
         self.assertEqual(capture.getvalue().count("Built a Farm."), 1)
         markdown = history.markdown.read_text()
         self.assertEqual(markdown.count("Built a Farm."), 1)
         self.assertIn("Improve food first.", markdown)
+        self.assertIn("Worker ready.", markdown)
+        self.assertIn("player_units", markdown)
+        for hidden in ("Improve food first.", "Worker ready.", "player_units", "Tool result:"):
+            self.assertNotIn(hidden, capture.getvalue())
         text = history.jsonl.read_text() + markdown + capture.getvalue()
         for forbidden in (secret, "DO_NOT_PERSIST_RAW_REASONING", "PRIVATE_CIPHERTEXT", "\x1b"):
             self.assertNotIn(forbidden, text)
@@ -69,11 +76,13 @@ class SchedulerHistoryTest(unittest.TestCase):
         encoded = json.dumps(original)
         middle = len(encoded) // 2
         chunks = [encoded[:middle], encoded[middle:]]
-        with contextlib.redirect_stdout(io.StringIO()):
+        capture = io.StringIO()
+        with contextlib.redirect_stdout(capture):
             first = EventHistory(self.root, "epoch", "Rome", "activation")
             first.append([self.event(0, "tool_result", itemId="tool", encoding="json", chunkIndex=0, chunkCount=2, text=chunks[0])])
-            resumed = EventHistory(self.root, "epoch", "Rome", "activation")
+            resumed = EventHistory(self.root, "epoch", "Rome", "activation", verbose=True)
             resumed.append([self.event(1, "tool_result", itemId="tool", encoding="json", chunkIndex=1, chunkCount=2, text=chunks[1])])
+        self.assertIn("[Rome] Tool result:", capture.getvalue())
         self.assertIn(original["result"]["largePayload"], resumed.markdown.read_text())
         self.assertEqual(resumed.cursor, 2)
 

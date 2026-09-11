@@ -129,8 +129,9 @@ class Messages:
 
 
 class LiveOutput:
-    def __init__(self, civilization, secrets=()):
+    def __init__(self, civilization, secrets=(), *, verbose=False):
         self.civilization = visible_text(civilization)
+        self.verbose = verbose
         self.messages = Messages()
         self.open_key = None
         self.chunks = Chunks(secrets)
@@ -153,6 +154,10 @@ class LiveOutput:
         if not emit:
             return
         data, kind = event.get("data", {}), event["kind"]
+        if not self.verbose and kind in {
+            "tool_call", "tool_result", "tool_output", "reasoning_summary", "reasoning_summary_delta",
+        }:
+            return
         if key is not None:
             if delta:
                 if self.open_key != key:
@@ -202,7 +207,7 @@ def bind_source(path, expected):
 
 
 class EventHistory:
-    def __init__(self, root, epoch, civilization, activation, secrets=(), *, game_turn=None):
+    def __init__(self, root, epoch, civilization, activation, secrets=(), *, game_turn=None, verbose=False):
         digest = lambda value: hashlib.sha256(value.encode()).hexdigest()
         self.source = dict(epoch=epoch, civilization=civilization, activationId=activation)
         self.turn_directory = None
@@ -228,7 +233,7 @@ class EventHistory:
         self.jsonl = self.directory / "events.jsonl"
         self.markdown = self.directory / "history.md"
         self.secrets = tuple(secrets)
-        self.output = LiveOutput(civilization, secrets)
+        self.output = LiveOutput(civilization, secrets, verbose=verbose)
         self.events = []
         bind_source(self.directory / "source.json", self.source)
         if self.jsonl.exists() or self.jsonl.is_symlink():

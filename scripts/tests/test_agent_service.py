@@ -191,7 +191,7 @@ class AgentServiceTests(unittest.IsolatedAsyncioTestCase):
                             "self-reported", "rolled back", "failed attempt", "epoch-one", "activation-one"):
             self.assertNotIn(boilerplate, prompt)
         self.assertIn("turn_2/", prompt)
-        exported = self.service.archived(first["activationId"])
+        exported = await self.service.archived(first["activationId"])
         self.assertEqual(("Rome", 0), (exported["civilization"], exported["gameTurn"]))
         self.assertIn("HUGE_OLD_SNAPSHOT_SENTINEL", exported["commands"])
         self.assertNotIn("P" * 43, json.dumps(exported))
@@ -232,7 +232,7 @@ class AgentServiceTests(unittest.IsolatedAsyncioTestCase):
         memory = self.service.archive.context(1)
         self.assertNotIn("ABORTED_STRATEGY_SENTINEL", memory)
         self.assertIn(self.factory.summary, memory)
-        dense = self.service.archived(retry["activationId"])["commands"]
+        dense = (await self.service.archived(retry["activationId"]))["commands"]
         self.assertIn("ABORTED_STRATEGY_SENTINEL", (self.service.history.path(first["activationId"]) / "events.jsonl").read_text())
         self.assertNotIn('"aborted":true', dense)
         failed_commands = self.root / "workspace/turn_1/attempts/attempt_1/commands.jsonl"

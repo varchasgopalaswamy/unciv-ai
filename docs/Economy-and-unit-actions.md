@@ -111,8 +111,8 @@ For scheduled gameplay, start each service in a separate terminal, then run the
 supervisor once both report ready:
 
 ```sh
-./scripts/launch_agent_service Rome --state-dir /tmp/civ-economy-1 --port 8867
-./scripts/launch_agent_service Greece --state-dir /tmp/civ-economy-1 --port 8868
+./scripts/launch_agent_service Rome --state-dir /tmp/civ-economy-1 --port 8877
+./scripts/launch_agent_service Greece --state-dir /tmp/civ-economy-1 --port 8878
 ./scripts/run_agents --state-dir /tmp/civ-economy-1 --max-turns 12 --max-invocations 28 --max-seconds 5400 --turn-timeout 300
 ```
 

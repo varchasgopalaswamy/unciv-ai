@@ -40,6 +40,11 @@ directory is `~/.local/state/unciv-host/demo`, overridden by `UNCIV_HOST_DIR` or
 `--state-dir`. Use the same directory for these local commands. Existing checkpoints
 resume automatically; choose a new directory for a new match.
 
+Each running agent service needs its own port, including services for other matches.
+If a port is already in use, stop the previous service or select a free `--port`.
+The supervisor discovers the selected ports from the match directory; its command
+does not need port overrides.
+
 For immediate diplomacy testing, create a new match with nearby starts and an extra
 Scout for each player:
 
@@ -203,10 +208,29 @@ do not change the next turn's context.
 
 ## Live output and saved history
 
-`run_agents` prints civilization-prefixed assistant messages, exposed reasoning
-summaries, tool activity and errors as they arrive. Large tool results have short
-terminal previews; the history retains their complete sanitized content. Each
+`run_agents` prints civilization-prefixed assistant messages, status updates and
+errors as they arrive. Add `--verbose` to also display tool calls, results, streamed
+tool output and exposed reasoning summaries. Large tool results have short terminal
+previews. Full sanitized history is always saved, regardless of this flag, and each
 activation prints its local `history.md` path.
+
+Verbosity applies to the current invocation, so it can be changed on resume:
+
+```sh
+./scripts/run_agents resume --state-dir /tmp/civ-economy-1 --verbose
+```
+
+The agent service appends accepted events through one ordered background I/O
+worker. Markdown and turn archives refresh periodically (every two seconds plus
+rendering time), and unchanged versions are skipped. Interruption and completion
+flush accepted events and derived files before publishing a terminal activation.
+Status requests and heartbeats remain on the HTTPS event loop while this work runs.
+
+New MCP tool-result records keep structured JSON once when its accompanying plain
+text contains exactly the same JSON value. Distinct text, annotations, other content
+blocks and result metadata are retained. This normalization applies to saved history;
+gameplay observations and the MCP responses received by Codex keep their existing
+format. Existing event logs retain their original contents and cursors.
 
 The supervisor fetches the events over the existing authenticated HTTPS service
 connection and stores them on the scheduler machine under:

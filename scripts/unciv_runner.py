@@ -315,8 +315,9 @@ def player_prompt(civilization, game_turn=None):
 
 
 class Scheduler:
-    def __init__(self, store, operator, agents, state):
+    def __init__(self, store, operator, agents, state, *, verbose=False):
         self.store, self.operator, self.agents, self.state = store, operator, agents, state
+        self.verbose = verbose
         self.lease = str(uuid.uuid4())
         self.owns_lease = False
         self.interrupted = False
@@ -330,6 +331,7 @@ class Scheduler:
             self.histories[key] = EventHistory(
                 self.store.root / "history", self.state["epoch"], flight["civilization"], key,
                 secrets=(self.operator.token, agent.token, player_token), game_turn=flight.get("gameTurn"),
+                verbose=self.verbose,
             )
             print(f"[{flight['civilization']}] Local history: {self.histories[key].markdown}", flush=True)
         return self.histories[key]
@@ -810,6 +812,8 @@ def parser():
     result.add_argument("--url", help="Host HTTPS base URL (default: STATE_DIR/endpoints.json)")
     result.add_argument("--ca-file", type=Path, help="CA certificate for the host (default: endpoints.json or system trust)")
     result.add_argument("--agents-config", type=Path, help="Agent endpoint list; defaults to agent-services/*/endpoint.json")
+    result.add_argument("--verbose", action="store_true",
+                        help="Show tool activity and exposed reasoning summaries in the terminal (always saved in history)")
     result.add_argument("--max-turns", type=positive, help="Game rounds from start (default: 20; persisted on resume)")
     result.add_argument("--max-invocations", type=positive, help="Agent activations including interrupted attempts (default: 48)")
     result.add_argument("--max-seconds", type=positive, help="Wall-time budget including pauses (default: 3600)")
@@ -902,7 +906,7 @@ def main(argv=None):
             store.save(state)
         if store.control.exists():
             store.control.unlink()
-        scheduler = Scheduler(store, operator, agents, state)
+        scheduler = Scheduler(store, operator, agents, state, verbose=options.verbose)
         for signum in (signal.SIGINT, signal.SIGTERM):
             old_signals[signum] = signal.signal(signum, lambda _signum, _frame: setattr(scheduler, "interrupted", True))
         return scheduler.run()

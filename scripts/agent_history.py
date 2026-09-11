@@ -14,6 +14,10 @@ from unciv_tls import private_directory, regular_file, write_private
 MAX_EVENT_BYTES = 64 * 1024
 MAX_PAGE_BYTES = 256 * 1024
 MAX_PENDING_BYTES = 1024 * 1024
+HISTORY_METHODS = frozenset({
+    "item/started", "item/completed", "item/agentMessage/delta", "item/reasoning/summaryTextDelta",
+    "item/commandExecution/outputDelta", "item/mcpToolCall/progress", "error", "turn/completed",
+})
 SECRET_KEYS = re.compile(r"token|authorization|password|secret|api.?key", re.I)
 ANSI = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\))")
 
@@ -25,6 +29,27 @@ def plain_text(value):
 
 def encoded(value):
     return json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+
+
+def canonical_tool_result(result):
+    """Keep structured JSON once, preserving distinct text and annotated blocks.
+
+    This only normalizes the audit record; the live MCP response is unchanged.
+    Compare JSON encodings so values such as true and 1 remain distinct.
+    """
+    if not isinstance(result, dict) or not isinstance(result.get("structuredContent"), dict) or not isinstance(result.get("content"), list):
+        return result
+    structured = json.dumps(result["structuredContent"], sort_keys=True, ensure_ascii=False)
+    content = []
+    for block in result["content"]:
+        if isinstance(block, dict) and set(block) == {"type", "text"} and block["type"] == "text" and isinstance(block["text"], str):
+            try:
+                if json.dumps(json.loads(block["text"]), sort_keys=True, ensure_ascii=False) == structured:
+                    continue
+            except ValueError:
+                pass
+        content.append(block)
+    return {**result, "content": content}
 
 
 def visible_item(method, params):
@@ -44,7 +69,7 @@ def visible_item(method, params):
         return ("reasoning_summary", {"itemId": item_id, "text": text}) if text else None
     if item_type == "mcpToolCall":
         if completed:
-            return "tool_result", {"itemId": item_id, "type": item_type, "status": item.get("status"), "result": item.get("result"), "error": item.get("error")}
+            return "tool_result", {"itemId": item_id, "type": item_type, "status": item.get("status"), "result": canonical_tool_result(item.get("result")), "error": item.get("error")}
         return "tool_call", {"itemId": item_id, "type": item_type, "server": item.get("server"), "tool": item.get("tool"), "arguments": item.get("arguments")}
     if item_type == "commandExecution":
         if completed:
@@ -62,12 +87,14 @@ def visible_item(method, params):
 
 
 class HistoryLog:
-    def __init__(self, directory, secrets=()):
+    def __init__(self, directory, secrets=(), *, auto_render=True):
         self.directory = private_directory(directory)
         self.path = self.directory / "events.jsonl"
         self.markdown = self.directory / "history.md"
         self.secrets = set(secret for secret in secrets if secret)
         self.sequence = 0
+        self.auto_render = auto_render
+        self.rendered_sequence = -1
         self.last_lifecycle = None
         self.turn_id = None
         self.pending = []
@@ -96,7 +123,8 @@ class HistoryLog:
                     if event["kind"] == "lifecycle":
                         self.last_lifecycle = event["data"]
                     offset += len(line)
-            self.render()
+            if self.auto_render:
+                self.render()
 
     def sanitize(self, value, depth=0):
         if depth > 20:
@@ -118,17 +146,18 @@ class HistoryLog:
 
     def _append(self, kind, data, event_time=None, render=True):
         event = {"sequence": self.sequence, "time": event_time or datetime.datetime.now(datetime.timezone.utc).isoformat(), "kind": kind, "data": data}
+        events = [event]
         if len(encoded(event)) > MAX_EVENT_BYTES:
             serialized = json.dumps(data, ensure_ascii=False, separators=(",", ":"))
             chunks = [serialized[index:index + 8192] for index in range(0, len(serialized), 8192)]
+            events = []
             for index, chunk in enumerate(chunks):
                 metadata = {key: data[key] for key in ("itemId", "turnId", "type", "status") if key in data and len(encoded(data[key])) < 256}
                 metadata.update({"text": chunk, "chunkIndex": index, "chunkCount": len(chunks), "encoding": "json"})
-                self._append(kind, metadata, event_time, render=False)
-            if render:
-                self.render()
-            return
-        raw = encoded(event) + b"\n"
+                events.append({**event, "sequence": self.sequence + index, "data": metadata})
+        # Commit all chunks from one accepted event together; each still has a
+        # bounded size and its own cursor, but does not need a separate fsync.
+        raw = b"".join(encoded(item) + b"\n" for item in events)
         descriptor = os.open(self.path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o600)
         with os.fdopen(descriptor, "ab") as stream:
             if stat.S_IMODE(os.fstat(stream.fileno()).st_mode) & ~0o600:
@@ -136,10 +165,10 @@ class HistoryLog:
             stream.write(raw)
             stream.flush()
             os.fsync(stream.fileno())
-        self.sequence += 1
+        self.sequence += len(events)
         # The JSONL is authoritative. The Markdown is a readable derivative which is
         # rebuilt at lifecycle boundaries and after completed items, never fed to agents.
-        if render and kind not in {"assistant_delta", "reasoning_summary_delta", "tool_output"}:
+        if render and self.auto_render and kind not in {"assistant_delta", "reasoning_summary_delta", "tool_output"}:
             self.render()
 
     def delta(self, kind, data):
@@ -199,6 +228,8 @@ class HistoryLog:
             self.accept(candidate, kind, data)
 
     def render(self):
+        if self.rendered_sequence == self.sequence:
+            return
         events = []
         if self.path.exists():
             with self.path.open(encoding="utf-8") as stream:
@@ -228,6 +259,7 @@ class HistoryLog:
             value = data.get("text") if "text" in data else json.dumps(data, ensure_ascii=False, indent=2)
             parts.append(f"\n## {label} · {plain_text(event['time'])}\n\n{plain_text(str(value))}\n")
         write_private(self.markdown, "".join(parts).encode())
+        self.rendered_sequence = self.sequence
 
     def page(self, cursor, limit):
         result = []
@@ -249,15 +281,16 @@ class HistoryLog:
 
 
 class HistoryStore:
-    def __init__(self, directory, service_token):
+    def __init__(self, directory, service_token, *, auto_render=True):
         self.directory, self.service_token = Path(directory), service_token
+        self.auto_render = auto_render
         self.logs = {}
 
     def path(self, activation_id):
         return self.directory / hashlib.sha256(activation_id.encode()).hexdigest()
 
     def begin(self, record, prompt, player_token):
-        log = HistoryLog(self.path(record["activationId"]), (self.service_token, player_token))
+        log = HistoryLog(self.path(record["activationId"]), (self.service_token, player_token), auto_render=self.auto_render)
         self.logs[record["activationId"]] = log
         log.append("user_message", {"text": prompt})
         self.lifecycle(record)
@@ -268,7 +301,7 @@ class HistoryStore:
             directory = self.path(record["activationId"])
             if not (directory / "events.jsonl").exists():
                 return
-            log = self.logs.setdefault(record["activationId"], HistoryLog(directory, (self.service_token,)))
+            log = self.logs.setdefault(record["activationId"], HistoryLog(directory, (self.service_token,), auto_render=self.auto_render))
         data = {key: record[key] for key in ("phase", "threadId", "error", "aborted") if key in record}
         if data != log.last_lifecycle:
             if data["phase"] in {"FAILED", "INTERRUPTED", "COMPLETED"}:
@@ -311,7 +344,7 @@ class HistoryStore:
             directory = self.path(activation_id)
             if not (directory / "events.jsonl").exists():
                 return {"events": [], "nextCursor": cursor, "hasMore": False, "available": False}
-            log = self.logs.setdefault(activation_id, HistoryLog(directory, (self.service_token,)))
+            log = self.logs.setdefault(activation_id, HistoryLog(directory, (self.service_token,), auto_render=self.auto_render))
         if cursor > log.sequence:
             raise ValueError("Event cursor exceeds history")
         return log.page(cursor, limit)

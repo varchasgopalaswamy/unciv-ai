@@ -205,7 +205,7 @@ class SchedulerServiceTest(unittest.TestCase):
         self.assertEqual(self.saved()["handoffs"], 2)
 
     def test_full_event_pagination_mirrors_visible_text_and_large_results(self):
-        self.host.behaviors = ["many_events"]
+        self.host.behaviors = ["many_events", "many_events"]
         result = self.run_cli("--max-invocations", "1", "--max-seconds", "60")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         sources = list((self.state_dir / "agent-services").glob("*/history/*/events.jsonl"))
@@ -219,6 +219,8 @@ class SchedulerServiceTest(unittest.TestCase):
         self.assertEqual(markdown.count("Settled and chose research."), 1)
         self.assertEqual(result.stdout.count("Settled and chose research."), 1)
         self.assertIn("Visible strategy summary.", markdown)
+        self.assertNotIn("Visible strategy summary.", result.stdout)
+        self.assertNotIn("[Rome] Tool result:", result.stdout)
         self.assertIn("z" * 200000, markdown)
         self.assertNotIn("RAW_REASONING_SENTINEL", markdown + mirrors[0].read_text() + result.stdout)
         self.assertNotIn(self.host.operator_token, markdown + mirrors[0].read_text() + result.stdout)
@@ -227,6 +229,13 @@ class SchedulerServiceTest(unittest.TestCase):
         self.assertEqual(resumed.returncode, 0, resumed.stdout + resumed.stderr)
         self.assertEqual(before, mirrors[0].read_bytes())
         self.assertNotIn("Settled and chose research.", resumed.stdout)
+        verbose = self.run_cli("resume", "--max-invocations", "2", "--verbose")
+        self.assertEqual(verbose.returncode, 0, verbose.stdout + verbose.stderr)
+        self.assertIn("[Greece] Reasoning summary: Visible strategy summary.", verbose.stdout)
+        self.assertIn("[Greece] Tool result:", verbose.stdout)
+        self.assertNotIn("[Rome] Tool result:", verbose.stdout)
+        self.assertEqual(before, mirrors[0].read_bytes())
+        self.assertNotIn("verbose", self.saved())
 
     def test_live_assistant_text_is_visible_before_any_handoff(self):
         self.host.behaviors = ["hang"]

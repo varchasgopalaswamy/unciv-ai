@@ -2,6 +2,7 @@
 """Launch one civilization's HTTPS Codex service in the foreground."""
 
 import argparse
+import errno
 import hashlib
 import json
 import os
@@ -92,8 +93,13 @@ def main(arguments=None):
             access_log=None, print=lambda _: print(f"AGENT-READY:{url}", flush=True),
         )
         return 0
-    except (OSError, ValueError, ServiceError, TLSConfigError):
-        print("Cannot launch agent service. Check HTTPS endpoint, certificate paths, private file permissions, port, and Codex installation.", file=sys.stderr)
+    except (OSError, ValueError, ServiceError, TLSConfigError) as error:
+        if isinstance(error, OSError) and error.errno == errno.EADDRINUSE:
+            print(f"Cannot launch agent service: {args.listen_host}:{port} is already in use. "
+                  "Stop the service using that port or choose a different --port. "
+                  "Each running agent service needs its own port, even across different match directories.", file=sys.stderr)
+        else:
+            print("Cannot launch agent service. Check HTTPS endpoint, certificate paths, private file permissions, port, and Codex installation.", file=sys.stderr)
         return 1
 
 

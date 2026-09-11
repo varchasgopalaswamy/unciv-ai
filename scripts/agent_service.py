@@ -6,6 +6,7 @@ are never used as a control protocol, and no unencrypted network listener is ope
 
 import asyncio
 import contextlib
+import copy
 import ctypes
 import fcntl
 import functools
@@ -23,14 +24,16 @@ import time
 import aiohttp
 from aiohttp import web
 
-from agent_history import HistoryStore
+from agent_history import HISTORY_METHODS, HistoryStore
 from agent_results import PlayerResultStore, ResultError, validate_result
 from agent_settings import valid_setting
+from service_io import ServiceIO
 from turn_archive import TurnArchive
 from unciv_tls import codex_trust_environment, https_url, private_directory, regular_file, write_private_json
 
 
 TERMINAL = {"COMPLETED", "INTERRUPTED", "FAILED"}
+HISTORY_RENDER_INTERVAL = 2.0
 USAGE_KEYS = {
     "input_tokens": "inputTokens", "cached_input_tokens": "cachedInputTokens",
     "output_tokens": "outputTokens", "reasoning_output_tokens": "reasoningOutputTokens",
@@ -172,7 +175,9 @@ class AgentService:
             raise ServiceError("PRIVATE_STATE_INSIDE_WORKSPACE")
         self.token, self.mcp_url, self.ca_file = token, https_url(mcp_url, ("/mcp",)), ca_file
         self.executable, self.process_factory = executable, process_factory
-        self.history = HistoryStore(self.state_dir / "history", token)
+        self.history = HistoryStore(self.state_dir / "history", token, auto_render=False)
+        self.io = ServiceIO()
+        self.archive_cache = {}
         self.records_dir = private_directory(self.state_dir / "activations")
         self.lock = os.open(self.state_dir / ".lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
         try:
@@ -231,24 +236,51 @@ class AgentService:
                     previous[key] = max(previous[key], record.get("threadTotals", {}).get(key, 0))
             if record["phase"] not in TERMINAL:
                 record["phase"], record["error"] = "FAILED", "SERVICE_RESTARTED"
-                self._save(record)
+                self._persist(record, refresh=True)
         received = self.results.load()
         if received is not None:
             if self.match is None or self.match["epoch"] != received["epoch"]:
                 raise ServiceError("RESULT_BINDING_CONFLICT", 409)
             self.results.receive(received)
 
-    def _save(self, record):
-        write_private_json(self.records_dir / (hashlib.sha256(record["activationId"].encode()).hexdigest() + ".json"), record)
+    def _persist(self, record, *, refresh=False):
         self.history.lifecycle(record)
+        if refresh:
+            self._refresh(record)
+        # Commit terminal metadata only after its history and archives. A crash
+        # during rendering therefore still restores an unfinished activation.
+        write_private_json(self.records_dir / (hashlib.sha256(record["activationId"].encode()).hexdigest() + ".json"), record)
         # Persist the directory entry before a newly created thread can be used by turn/start.
         descriptor = os.open(self.records_dir, os.O_DIRECTORY)
         try:
             os.fsync(descriptor)
         finally:
             os.close(descriptor)
-        if self.archive is not None and "gameTurn" in record:
-            self._export(record)
+
+    async def _save(self, record, *, refresh=False):
+        # The worker owns all history access. Pass a detached record so another
+        # HTTPS request cannot change an operation already queued for persistence.
+        await self.io.call(self._persist, copy.deepcopy(record), refresh=refresh)
+
+    def _refresh(self, record):
+        log = self.history.logs.get(record["activationId"])
+        if log is None:
+            self.history.page(record["activationId"], 0, 1)
+            log = self.history.logs.get(record["activationId"])
+        if log is not None:
+            log.render()
+        if self.archive is None or "gameTurn" not in record:
+            return None
+        version = (log.sequence if log else 0, record["phase"], record.get("committedHandoff"),
+                   record.get("aborted", False), record.get("terminalOutcome", False))
+        previous = self.archive_cache.get(record["activationId"])
+        if previous is None or previous[0] != version:
+            previous = (version, self._export(record))
+            # Completed transcripts can be large; retain only the most recently
+            # rendered activation, not another in-memory copy of the whole match.
+            self.archive_cache.clear()
+            self.archive_cache[record["activationId"]] = previous
+        return previous[1]
 
     def _export(self, record):
         path = self.history.path(record["activationId"]) / "events.jsonl"
@@ -272,8 +304,8 @@ class AgentService:
                     raise ServiceError("AGENT_BUSY", 409)
                 if self.match is None:
                     self.match = {"epoch": payload["epoch"]}
-                    write_private_json(self.match_file, self.match)
-                return self.results.receive(payload)
+                    await self.io.call(write_private_json, self.match_file, dict(self.match))
+                return await self.io.call(self.results.receive, payload)
         except ResultError as failure:
             raise ServiceError(str(failure), 409 if str(failure) == "RESULT_CONFLICT" else 400) from None
 
@@ -292,7 +324,7 @@ class AgentService:
             if record.get("aborted") or "committedHandoff" in record:
                 raise ServiceError("FINALIZATION_CONFLICT", 409)
             record["terminalOutcome"] = True
-            self._save(record)
+            await self._save(record, refresh=True)
             return self.status(payload["activationId"])
 
     async def finalize(self, payload):
@@ -316,7 +348,7 @@ class AgentService:
             if record.get("committedHandoff", payload["committedHandoff"]) != payload["committedHandoff"]:
                 raise ServiceError("FINALIZATION_CONFLICT", 409)
             record["committedHandoff"] = payload["committedHandoff"]
-            self._save(record)
+            await self._save(record, refresh=True)
             return self.status(payload["activationId"])
 
     async def abort(self, payload):
@@ -332,10 +364,10 @@ class AgentService:
                 if self.match is not None and self.match["epoch"] != payload["epoch"]:
                     raise ServiceError("WORKSPACE_EPOCH_CONFLICT", 409)
                 if self.match is None:
-                    self.archive = TurnArchive(self.state_dir / "turn-archive", self.workspace,
-                                               self.civilization, payload["epoch"], secrets=(self.token,))
+                    self.archive = await self.io.call(TurnArchive, self.state_dir / "turn-archive", self.workspace,
+                                                      self.civilization, payload["epoch"], secrets=(self.token,))
                     self.match = {"epoch": payload["epoch"]}
-                    write_private_json(self.match_file, self.match)
+                    await self.io.call(write_private_json, self.match_file, dict(self.match))
                 record = {**payload, "civilization": self.civilization, "threadId": None, "phase": "INTERRUPTED",
                           "error": "NOT_STARTED", "aborted": True, "usage": dict.fromkeys(USAGE_KEYS, 0),
                           "turnDirectory": f"turn_{payload['gameTurn'] + 1}"}
@@ -347,13 +379,13 @@ class AgentService:
             if "committedHandoff" in record or record.get("terminalOutcome"):
                 raise ServiceError("GAME_TURN_ALREADY_COMMITTED", 409)
             record["aborted"] = True
-            self._save(record)
+            await self._save(record, refresh=True)
             return self.status(payload["activationId"])
 
-    def archived(self, activation_id):
+    async def archived(self, activation_id):
         self.status(activation_id)
         record = self.records[activation_id]
-        return {**self._export(record), "civilization": self.civilization}
+        return {**await self.io.call(self._refresh, copy.deepcopy(record)), "civilization": self.civilization}
 
     def status(self, activation_id=None):
         if activation_id is None:
@@ -394,7 +426,7 @@ class AgentService:
         self._validate_start(payload)
         fingerprint = hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
         async with self.guard:
-            if self.results.load() is not None or any(record.get("terminalOutcome") for record in self.records.values()):
+            if await self.io.call(self.results.load) is not None or any(record.get("terminalOutcome") for record in self.records.values()):
                 raise ServiceError("GAME_FINISHED", 409)
             previous = self.records.get(payload["activationId"])
             if previous is not None:
@@ -437,15 +469,15 @@ class AgentService:
                 settings = {key: payload.get(key) if payload.get(key) is not None else default
                             for key, default in defaults.items()}
             if self.match is None:
-                self.archive = TurnArchive(self.state_dir / "turn-archive", self.workspace,
-                                           self.civilization, payload["epoch"], secrets=(self.token, payload["playerToken"]))
+                self.archive = await self.io.call(TurnArchive, self.state_dir / "turn-archive", self.workspace,
+                                                  self.civilization, payload["epoch"], secrets=(self.token, payload["playerToken"]))
                 self.match = {"epoch": payload["epoch"]}
-                write_private_json(self.match_file, self.match)
+                await self.io.call(write_private_json, self.match_file, dict(self.match))
             prompt = payload["prompt"] + f"\n\nCurrent game turn: {payload['gameTurn']} (archive: turn_{payload['gameTurn'] + 1}/). " \
                 "Detailed commands and receipts are in turn_N/commands.jsonl; read them only when needed. " \
                 "Finish with a concise summary of actions, their reasons, important observations, and next-turn plans."
             if payload["threadId"] is None:
-                context = self.archive.context(payload["gameTurn"])
+                context = await self.io.call(self.archive.context, payload["gameTurn"])
                 if context:
                     prompt += "\n\n" + context
             else:
@@ -460,9 +492,9 @@ class AgentService:
             if pinned is not None:
                 record["effectiveSettings"] = dict(effective_settings)
             self.records[record["activationId"]] = record
-            self._save(record)
-            self.history.begin(record, payload["prompt"], payload["playerToken"])
-            self._export(record)
+            await self._save(record)
+            await self.io.call(self.history.begin, copy.deepcopy(record), payload["prompt"], payload["playerToken"])
+            await self.io.call(self._refresh, copy.deepcopy(record))
             self.active_id = record["activationId"]
             self.stop_event = asyncio.Event()
             self.last_heartbeat = time.monotonic()
@@ -496,9 +528,13 @@ class AgentService:
 
     async def _notification(self, method, params):
         record = self.records[self.active_id]
-        self.history.notify(self.active_id, record["threadId"], method, params)
-        if method == "item/completed" and self.turn_id is not None:
-            self._export(record)
+        try:
+            if method in HISTORY_METHODS:
+                await self.io.call(self.history.notify, self.active_id, record["threadId"], method, params)
+        except (OSError, ValueError):
+            self.failure = "HISTORY_WRITE_FAILED"
+            self.stop_event.set()
+            raise
         if method == "service/approvalRequired":
             self.failure = "INTERACTIVE_DECISION_REQUIRED"
             self.stop_event.set()
@@ -517,7 +553,7 @@ class AgentService:
                 pending = self.early_usage.setdefault(turn_id, [usage, usage])
                 pending[1] = usage
             elif turn_id == self.turn_id:
-                self._record_usage(record, usage)
+                await self._record_usage(record, usage)
         elif method == "turn/completed" and self.accept_usage and params.get("threadId") == record["threadId"]:
             turn = params.get("turn", {})
             if not identifier(turn.get("id")):
@@ -528,7 +564,7 @@ class AgentService:
                 self.completion = turn.get("status")
                 self.stop_event.set()
 
-    def _record_usage(self, record, token_usage):
+    async def _record_usage(self, record, token_usage):
         total = token_usage.get("total", {})
         if not isinstance(total, dict):
             return
@@ -553,7 +589,7 @@ class AgentService:
         for key in USAGE_KEYS:
             prior[key] = max(prior[key], record["baseline"][key] + record["usage"][key])
         record["threadTotals"] = dict(prior)
-        self._save(record)
+        await self._save(record)
 
     async def _run(self, payload):
         self.run_started.set()
@@ -581,6 +617,18 @@ class AgentService:
                 return
 
         monitor = asyncio.create_task(watchdog())
+
+        async def render_history():
+            try:
+                while True:
+                    await asyncio.sleep(HISTORY_RENDER_INTERVAL)
+                    await self.io.call(self._refresh, copy.deepcopy(record))
+            except (OSError, ValueError):
+                self.failure = "HISTORY_WRITE_FAILED"
+                self.stop_event.set()
+                owner.cancel()
+
+        renderer = asyncio.create_task(render_history())
         try:
             # Preserve resolved settings across new app-server processes even when
             # service defaults or the local Codex configuration have changed.
@@ -616,10 +664,10 @@ class AgentService:
             self.known_threads[thread_id] = (record["epoch"], record["gameTurn"])
             self.thread_settings[thread_id] = (dict(record["settings"]), dict(effective_settings))
             self.match["effectiveSettings"] = dict(effective_settings)
-            write_private_json(self.match_file, self.match)
+            await self.io.call(write_private_json, self.match_file, copy.deepcopy(self.match))
             record["baseline"] = dict(self.thread_totals.get(thread_id, dict.fromkeys(USAGE_KEYS, 0)))
             record["threadTotals"] = dict(record["baseline"])
-            self._save(record)
+            await self._save(record)
             if self.failure:
                 raise ServiceError(self.failure)
             self.accept_usage = True
@@ -630,19 +678,22 @@ class AgentService:
             result = await process.request("turn/start", turn_options)
             # Only the response to our own request can bind this activation's turn.
             # A turn/started replay during resume must never replace this identity.
-            self.turn_id = result.get("turn", {}).get("id")
-            if not identifier(self.turn_id):
+            turn_id = result.get("turn", {}).get("id")
+            if not identifier(turn_id):
                 raise ServiceError("INVALID_CODEX_TURN", 502)
-            record["turnId"] = self.turn_id
-            self.history.bind_turn(self.active_id, self.turn_id)
+            record["turnId"] = turn_id
+            await self.io.call(self.history.bind_turn, self.active_id, turn_id)
+            # Keep buffering usage until binding finishes, so a concurrent native
+            # update cannot establish the baseline ahead of the first update.
+            self.turn_id = turn_id
             for usage in self.early_usage.get(self.turn_id, []):
-                self._record_usage(record, usage)
+                await self._record_usage(record, usage)
             self.early_usage.clear()
             if self.turn_id in self.early_completions:
                 self.completion = self.early_completions[self.turn_id]
                 self.stop_event.set()
             record["phase"] = "RUNNING"
-            self._save(record)
+            await self._save(record)
             while not self.stop_event.is_set():
                 now = time.monotonic()
                 if now - self.last_heartbeat >= payload["leaseSeconds"]:
@@ -664,22 +715,36 @@ class AgentService:
             monitor.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await monitor
+            renderer.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await renderer
             try:
                 await process.close()
             except BaseException:
                 # Never advertise terminal without confirmed process shutdown.
                 record["error"] = "STOP_UNCONFIRMED"
-                self._save(record)
+                await self._save(record)
                 raise
-            record["phase"] = "COMPLETED" if self.completion == "completed" and self.failure is None else "INTERRUPTED" if self.failure == "INTERRUPTED" or self.completion == "interrupted" else "FAILED"
+            finished = copy.deepcopy(record)
+            finished["phase"] = "COMPLETED" if self.completion == "completed" and self.failure is None else "INTERRUPTED" if self.failure == "INTERRUPTED" or self.completion == "interrupted" else "FAILED"
             if self.failure:
-                record["error"] = self.failure
-            self._save(record)
+                finished["error"] = self.failure
+            # Never publish a terminal phase until the process has stopped and
+            # all accepted events and derived turn files have finished writing.
+            try:
+                await self._save(finished, refresh=True)
+            except (OSError, ValueError):
+                record["error"] = "HISTORY_WRITE_FAILED"
+                with contextlib.suppress(OSError, ValueError):
+                    await self._save(record)
+                raise ServiceError("HISTORY_WRITE_FAILED", 503) from None
+            record.update(finished)
             self.process = None
 
     async def close(self):
         if self.active_task is not None and not self.active_task.done():
             await self.interrupt(self.active_id)
+        await self.io.close()
         if self.lock is not None:
             os.close(self.lock)
             self.lock = None
@@ -713,13 +778,13 @@ class AgentService:
                 elif operation == "archive":
                     if set(payload) != {"activationId"} or not identifier(payload["activationId"]):
                         raise ServiceError("INVALID_ARGUMENT")
-                    return web.json_response(self.archived(payload["activationId"]))
+                    return web.json_response(await self.archived(payload["activationId"]))
                 elif operation == "events":
                     if set(payload) - {"activationId", "cursor", "limit"} or not identifier(payload.get("activationId")):
                         raise ServiceError("INVALID_ARGUMENT")
                     self.status(payload["activationId"])
                     try:
-                        result = self.history.page(payload["activationId"], payload.get("cursor", 0), payload.get("limit", 100))
+                        result = await self.io.call(self.history.page, payload["activationId"], payload.get("cursor", 0), payload.get("limit", 100))
                     except ValueError:
                         raise ServiceError("INVALID_EVENT_CURSOR") from None
                     return web.json_response(result, dumps=lambda value: json.dumps(value, ensure_ascii=False, separators=(",", ":")))
