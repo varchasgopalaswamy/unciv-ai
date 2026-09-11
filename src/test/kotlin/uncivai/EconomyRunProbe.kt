@@ -47,6 +47,7 @@ object EconomyRunProbe {
         runtime.use {
             if (fresh) {
                 arrange(runtime)
+                if (stage == "prepare") prepareDuelCredentials(root)
                 runtime.executor.enableCheckpoints(checkpoint)
             }
             if (stage == "prepare") {

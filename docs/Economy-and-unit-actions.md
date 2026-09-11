@@ -78,6 +78,10 @@ turn, rolls back to that activation's starting save, repeats the actions, comple
 both players' turns and restarts again. Receipt replay must leave checkpoint bytes
 unchanged, and scheduled turns must continue.
 
+`PreparedFixtureIntegrationTest` checks that economy, conquest and victory
+preparation creates private, distinct player credentials and preserves existing
+credentials and checkpoints when preparation is repeated.
+
 ```sh
 ./gradlew build :Unciv:tests:test
 ```
@@ -87,7 +91,7 @@ separate checks and have not been run for this slice.
 
 ## Prepared economy exercise
 
-Create a fresh checkpoint, then launch the existing HTTPS host:
+Create a fresh checkpoint and private player credentials, then launch the existing HTTPS host:
 
 ```sh
 ./gradlew prepareEconomyFixture -PeconomyFixtureDir=/tmp/civ-economy-1
@@ -98,7 +102,9 @@ The fixture uses ordinary Vanilla rules on the combat exercise's small land map.
 Both civilizations have capitals, research/production queues and gold. Rome has
 an unimproved Iron source with a Worker, an eligible upgrade candidate, reserves
 for a measurable upkeep reduction, and an injured raider on a Greek Farm. The
-players start at war. No player commands have been issued in the prepared save.
+players start at war. Preparation writes `players.json` alongside the checkpoint;
+the launcher creates operator credentials and TLS configuration on first launch.
+No player commands have been issued in the prepared save.
 Only this exercise includes economy-specific instructions in `scenario`.
 
 For scheduled gameplay, start each service in a separate terminal, then run the
