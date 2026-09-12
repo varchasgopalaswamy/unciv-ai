@@ -1,38 +1,40 @@
 # Local launchers
 
-These scripts launch the checkpointed host and interactive Codex players. They need
-Python 3, OpenSSL, JDK 21 or newer, the initialized engine checkout, and a Codex CLI on `PATH`
+The `civ-agent` package launches the checkpointed host and interactive Codex players. It needs
+uv, Python 3.12 or newer, OpenSSL, JDK 21 or newer, the initialized engine checkout, and a Codex CLI on `PATH`
 that you have already logged into. The host builds through the repository's Gradle
 wrapper, so the first launch may need to download build dependencies.
 
 ## Start playing
 
-Run this from the repository directory in the first terminal:
+Install once, then start the host from the repository directory in the first terminal:
 
 ```sh
-./scripts/launch_host
+uv sync --locked
+uv run civ-agent host start --scenario city-management
 ```
 
 Wait for `MCP-READY:https://localhost:8765/mcp`. In a second terminal, from the
 repository directory:
 
 ```sh
-./scripts/launch_agent Rome
+uv run civ-agent agent start Rome
 ```
 
 In a third terminal:
 
 ```sh
-./scripts/launch_agent Greece
+uv run civ-agent agent start Greece
 ```
 
 The default match directory is `~/.local/state/unciv-host/demo`, or the value of
 `UNCIV_HOST_DIR` if set. On first launch, the host creates owner-only `players.json`
-credentials and starts a new Rome/Greece duel. Later launches resume
-`exploration.json` and retain the same credentials. This also resumes the checkpoint
-from the earlier manual exploration setup when using its original directory.
+credentials and starts the peaceful city-management exercise with two cities per
+player. New games require `--scenario city-management`. Later launches resume
+`exploration.json` and retain the same credentials; the scenario option also checks
+that the saved game belongs to this exercise.
 Missing credentials for an existing checkpoint must be restored or supplied with
-`--players`; the script will not silently replace them.
+`--players`; the command will not silently replace them.
 
 Rome acts first in a fresh game. Each session's starting prompt asks it to inspect
 the available tools and current turn, play one supported turn, end it once, and
@@ -61,28 +63,31 @@ do not prevent filesystem access to operator state or another player's files.
 The isolated runner remains a separate project milestone.
 
 Use Ctrl-C in the host terminal to stop the server. The checkpoint retains accepted
-commands. Exit each Codex session independently. Restarting `launch_host` resumes
-the game; `launch_agent` starts a new conversation unless given `--resume`.
+commands. Exit each Codex session independently. Restarting `civ-agent host start` resumes
+the game; `civ-agent agent start` starts a new conversation unless given `--resume`.
 
-To use the shorter command `launch_agent Rome`, add the scripts directory to the
-current shell's path while in the repository:
+To use `civ-agent` without the `uv run` prefix, activate the project environment:
 
 ```sh
-export PATH="$PWD/scripts:$PATH"
-launch_agent Rome
+source .venv/bin/activate
+civ-agent agent start Rome
 ```
+
+For an independent installation, run `uv tool install .` from the repository.
+Host startup and desktop inspection still need the JVM checkout. Select it with
+`--repo-dir /absolute/path/to/checkout` or `CIV_AGENT_REPO`; when neither is given,
+the command searches the current directory's ancestors and the editable package's
+source tree. `--unciv-dir` continues to select the engine relative to that host
+checkout. Agent commands, match control, history export, and
+`host inspect --export-only` do not require a checkout on the agent machine.
 
 ## Choose a match or resume a conversation
 
-For diplomacy testing, add `--close-starts` when creating a new match. Rome and
-Greece start five tiles apart, with an extra Scout each. The Scouts start adjacent
-so first contact happens immediately through normal visibility. Omit this flag
-when resuming an existing match. The default player prompt recognizes the scenario:
-Rome declares war once and proposes peace with only a Peace Treaty on each side
-when negotiation becomes legal; Greece reads and accepts that offer. Both keep
-playing while they wait. Completion persists across restarts and treaty expiry.
-Ordinary duels keep their usual diplomacy choices. See
-[automatic turns](Automatic-turns.md) for the complete setup.
+The current playable scenario is [city management](City-management.md). The host
+prints the loaded scenario before `MCP-READY`, and `player_turn.scenario` supplies
+its objectives to the agents. The default prompt follows those objectives without
+instructions from earlier exercises. See [automatic turns](Automatic-turns.md)
+for the complete setup.
 
 Before ending any turn, the default prompt asks the player to review confirmed
 actions and remaining unit movement. The command must identify the current review
@@ -93,16 +98,16 @@ port to both players:
 
 ```sh
 # First terminal
-./scripts/launch_host --state-dir /tmp/my-civ-match --new --seed 42 --port 8766
+uv run civ-agent host start --state-dir /tmp/my-civ-match --new --scenario city-management --port 8766
 # Second terminal, once MCP-READY appears
-./scripts/launch_agent Rome --state-dir /tmp/my-civ-match --port 8766
+uv run civ-agent agent start Rome --state-dir /tmp/my-civ-match --port 8766
 # Third terminal
-./scripts/launch_agent Greece --state-dir /tmp/my-civ-match --port 8766
+uv run civ-agent agent start Greece --state-dir /tmp/my-civ-match --port 8766
 ```
 
 `--new` refuses an existing checkpoint. Omit it to resume the match; `--seed` applies
-only to new games. See [Exploration and settlement](Exploration-and-settlement.md)
-for the duel's rules and map-seed limitations. Use a persistent directory instead
+only to new games. Directory names do not select or change the scenario.
+Use a persistent directory instead
 of `/tmp` for a match you want to keep.
 
 The host generates and reuses a private local CA and server certificate under
@@ -120,24 +125,24 @@ The agent launcher accepts any unambiguous civilization name in the credentials
 file, case-insensitively. It also supports:
 
 ```sh
-./scripts/launch_agent Rome --dry-run
-./scripts/launch_agent Rome --model YOUR_MODEL --reasoning-effort high
-./scripts/launch_agent Rome --prompt "Inspect my position and suggest a plan before acting."
-./scripts/launch_agent Rome --resume YOUR_SESSION_ID
+uv run civ-agent agent start Rome --dry-run
+uv run civ-agent agent start Rome --model YOUR_MODEL --reasoning-effort high
+uv run civ-agent agent start Rome --prompt "Inspect my position and suggest a plan before acting."
+uv run civ-agent agent start Rome --resume YOUR_SESSION_ID
 ```
 
 `--reasoning` is an alias for `--reasoning-effort`. Omitted settings use Codex's
 configuration; an effort must be supported by the selected model. These overrides
 apply only to the launched session and do not rewrite the global Codex config.
-For automatic gameplay, set per-player defaults on `launch_agent_service`, or
-override all players with `run_agents --model YOUR_MODEL --reasoning-effort high`;
+For automatic gameplay, set per-player defaults on `civ-agent agent-server start`, or
+override all players with `civ-agent match start --model YOUR_MODEL --reasoning-effort high`;
 see [automatic turns](Automatic-turns.md#select-models-and-reasoning-effort).
 
 Automatic gameplay also writes `agents/Rome/turn_1/summary.md` and
 `commands.jsonl`, then starts each new game turn with a fresh conversation and the
 earlier summaries. These turn archives are managed by the agent service; interactive
-`launch_agent` sessions retain the explicit conversation behavior described here.
-When an automatic turn is interrupted, `run_agents resume` restores its starting
+`civ-agent agent start` sessions retain the explicit conversation behavior described here.
+When an automatic turn is interrupted, `civ-agent match resume` restores its starting
 checkpoint and starts a fresh conversation. Failed-attempt logs are preserved for
 inspection, while committed handoffs are retained. Manual interactive sessions keep
 the per-command checkpoint behavior described above.
@@ -155,25 +160,25 @@ reports initialization failures. The saved endpoint includes the host port, so i
 From the repository directory, open a snapshot in the desktop UI:
 
 ```sh
-./scripts/inspect_game        # Open as the saved active civilization
-./scripts/inspect_game Rome   # Open Rome's perspective
-./scripts/inspect_game Greece # Open Greece's perspective
+uv run civ-agent host inspect        # Open as the saved active civilization
+uv run civ-agent host inspect Rome   # Open Rome's perspective
+uv run civ-agent host inspect Greece # Open Greece's perspective
 ```
 
-Run one command at a time. The script exports the checkpoint, builds the selected
+Run one command at a time. The command exports the checkpoint, builds the selected
 desktop engine, and loads the chosen save automatically. Click through the
 civilization's ready screen to inspect its units, cities, production and research.
 For a different match or engine checkout, use the same selection as the host:
 
 ```sh
-./scripts/inspect_game Rome --state-dir /tmp/my-civ-match
-./scripts/inspect_game --checkpoint /absolute/path/checkpoint.json --unciv-dir ../Unciv
+uv run civ-agent host inspect Rome --state-dir /tmp/my-civ-match
+uv run civ-agent host inspect --checkpoint /absolute/path/checkpoint.json --unciv-dir ../Unciv
 ```
 
-The default state directory and `UNCIV_HOST_DIR` behavior match `launch_host`.
+The default state directory and `UNCIV_HOST_DIR` behavior match `civ-agent host start`.
 Every invocation creates a fresh owner-only directory under `STATE_DIR/inspection`,
 containing `Agent snapshot.json` and an inspection save for each Human civilization
-in its `SaveFiles` folder. The script prints the directory and actual active
+in its `SaveFiles` folder. The command prints the directory and actual active
 civilization. You can open the other exported perspectives through **Load game**.
 Add `--export-only` to export without launching a window, or `--output-dir PATH`
 to choose the parent directory for these exports.
@@ -188,15 +193,15 @@ engine checkout as the desktop code.
 The host may remain running: checkpoint replacement is atomic, so an export captures
 one committed position. To compare against a particular agent report, let it finish
 and stop the host with Ctrl-C before exporting. The desktop is a snapshot, with no
-live updates or connection back to the host. Rerun `inspect_game` for a newer snapshot.
+live updates or connection back to the host. Rerun `civ-agent host inspect` for a newer snapshot.
 These full-state exports are for you as the operator, not for player agents.
 Online multiplayer checkpoints are rejected because a desktop multiplayer session
 can write back to its server; this viewer supports local matches.
 
-## Verify the scripts
+## Verify the package
 
 ```sh
-python3 -B -m unittest discover -s scripts/tests -p 'test_*.py' -v
+uv run pytest -v
 ```
 
 The launcher tests use temporary files and mocked process/network calls. They
@@ -206,6 +211,5 @@ tests also verify that exports preserve gameplay data, omit host receipts, clear
 save destinations, retain earlier copies, and leave the checkpoint untouched. They
 do not invoke a model or establish complete gameplay coverage or isolation.
 
-For a prepared battlefield with cities and armies already at war, use
-`--combat-scenario` on a fresh host. See the [combat scenario](Combat.md#ready-to-play-combat-scenario)
-for its layout, exercise instructions and launch commands.
+See [city management](City-management.md#prepared-scenario) for the current exercise's
+initial state, objectives, and verification commands.

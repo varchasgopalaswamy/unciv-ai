@@ -47,13 +47,29 @@ Example, with values copied from `player_turn`:
 
 ```json
 {
-  "requestId": "rome-turn-17-research-1",
+  "requestId": "t17a1",
   "epoch": "<epoch>",
-  "revision": "<revision>",
+  "revision": "rev12",
   "kind": "SET_RESEARCH_QUEUE",
   "queue": ["Pottery", "Writing"]
 }
 ```
+
+Player references use separate, increasing counters: `city1`, `unit1`, `alert1`,
+`offer1`, `decision1`, and `report1`. They are scoped to the authenticated player
+and game epoch. For example, Rome's `city1` and Greece's `city1` refer to their own
+cities. Both city queries return the same handles. Names can change without
+changing a handle; removed objects' numbers are never recycled.
+
+Revisions use `rev1`, `rev2`, etc.; the current turn review uses the same ID.
+Copy identifiers from the latest observation instead of predicting values. The
+game epoch is a compact random identifier beginning with `g`, separating counters
+in independent games. Credentials are separate from these references.
+
+Checkpoint format 2 persists handles, counters and report identities. Restart
+preserves them. Rollback restores game state while retaining every player's
+highest issued counters, so discarded handles and revisions cannot identify new
+objects or authorize stale commands. Older checkpoint formats require a new game.
 
 | Command | Additional fields |
 | --- | --- |
@@ -170,7 +186,7 @@ agent reading requirements.
 Create a fresh Ancient-era Vanilla game with Rome and Greece in human slots:
 
 ```sh
-./scripts/launch_host --state-dir /absolute/match --new
+uv run civ-agent host start --state-dir /absolute/match --new
 ```
 
 This uses Quick speed, a Tiny Pangaea map, domination/time victories, no city-states,

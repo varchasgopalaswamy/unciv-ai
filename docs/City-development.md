@@ -17,7 +17,7 @@ Launch the host and a player with the [local scripts](Local-launchers.md), or us
 > and payloads for retries. End this turn once. Report unsupported decisions.
 
 An interactive session plays one turn per request; the scheduler supplies later turns.
-Use `./scripts/inspect_game Rome` to examine the committed position in the desktop UI.
+Use `uv run civ-agent host inspect Rome` to examine the committed position in the desktop UI.
 
 ## Semantics and evidence
 

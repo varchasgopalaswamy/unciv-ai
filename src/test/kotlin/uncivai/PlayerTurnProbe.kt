@@ -37,8 +37,9 @@ object PlayerTurnProbe {
             check(rome.turn() == initial) { "Hidden state changed a player revision or observation" }
             check("SECRET-FOREIGN-CITY" !in PlayerTurnJson.encode(rome.turn()))
             val greekHandle = greece.turn().cities.single().handle
+            check(greekHandle == initial.cities.single().handle) { "City references must be player-local" }
             expect(PlayerSessionFailure.CITY_UNAVAILABLE) {
-                rome.execute(command(rome, TurnCommandKind.RENAME_CITY, target = greekHandle, selection = "Stolen"))
+                rome.execute(command(rome, TurnCommandKind.RENAME_CITY, target = foreign.cities.single().id, selection = "Stolen"))
             }
             expect(PlayerSessionFailure.NOT_YOUR_TURN) {
                 greece.execute(command(greece, TurnCommandKind.CHOOSE_FREE_TECHNOLOGY, selection = greece.turn().researchOptions.first()))

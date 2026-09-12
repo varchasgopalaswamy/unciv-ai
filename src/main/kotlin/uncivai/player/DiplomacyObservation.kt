@@ -11,7 +11,6 @@ import com.unciv.logic.trade.TradeOfferType
 import com.unciv.models.translations.tr
 import kotlinx.serialization.Serializable
 import java.util.Collections
-import java.util.UUID
 
 @Serializable
 data class FirstContactDetails(
@@ -140,7 +139,7 @@ internal fun observeDiplomacy(player: Civilization, state: TurnSessionState, act
         val trade = peace.inspectIncoming(request) ?: return@mapNotNull null
         val other = player.gameInfo.civilizations.single { it.civID == request.requestingCiv }
         PeaceOffer(
-            state.tradeHandles.getOrPut(request) { UUID.randomUUID().toString() },
+            state.tradeHandles.getOrPut(request) { state.identifiers.next(PlayerIdentifier.OFFER) },
             other.civID, other.civName, other.getLeaderDisplayName(), other.nation.tradeRequest.tr(),
             terms(trade.ourOffers), terms(trade.theirOffers),
             action(peace.acceptUnavailableReason(request)), action(peace.rejectUnavailableReason(request)),

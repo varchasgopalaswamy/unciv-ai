@@ -11,7 +11,6 @@ import java.text.DecimalFormat
 import java.text.DecimalFormatSymbols
 import java.util.Collections
 import java.util.Locale
-import java.util.UUID
 
 @Serializable
 data class TilePosition(val x: Int, val y: Int)
@@ -128,7 +127,7 @@ internal fun observeMap(player: Civilization, state: TurnSessionState, canAct: B
             player.units.getCivUnits().filter { operations.owns(it) }.sortedBy { it.id }.map { unit ->
                 val canFound = active && operations.canFoundCity(unit)
                 OwnedUnit(
-                    handle = state.unitHandles.getOrPut(unit.id) { UUID.randomUUID().toString() },
+                    handle = state.unitHandles.getOrPut(unit.id) { state.identifiers.next(PlayerIdentifier.UNIT) },
                     name = unit.name,
                     displayName = unit.displayName(),
                     position = unit.currentTile.position.dto(),

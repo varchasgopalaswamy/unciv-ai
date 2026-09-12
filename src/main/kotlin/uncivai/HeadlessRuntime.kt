@@ -100,6 +100,17 @@ class HeadlessRuntime private constructor(
         /** The seed controls terrain, not every engine random choice. */
         fun createDuel(dataDirectory: Path, seed: Long = System.currentTimeMillis(), closeStarts: Boolean = false, combatScenario: Boolean = false): HeadlessRuntime = open(null, dataDirectory, DuelSetup(seed, closeStarts, combatScenario))
 
+        fun createCityManagementExercise(dataDirectory: Path, seed: Long = 412L): HeadlessRuntime {
+            val runtime = createDuel(dataDirectory, seed, combatScenario = true)
+            try {
+                CityManagementScenarioSetup.arrange(runtime.game)
+                return runtime
+            } catch (failure: Throwable) {
+                runtime.close()
+                throw failure
+            }
+        }
+
         private fun open(saveFile: Path?, dataDirectory: Path, duel: DuelSetup?): HeadlessRuntime = synchronized(lifecycleLock) {
             check(activeRuntime == null) {
                 "A HeadlessRuntime is already active in this JVM"

@@ -4,7 +4,6 @@ import com.unciv.json.json
 import com.unciv.logic.city.City
 import com.unciv.logic.city.CityFocus
 import com.unciv.logic.city.GreatPersonPointsBreakdown
-import com.unciv.logic.city.managers.CityFounder
 import com.unciv.logic.civilization.PlayerCityOperations
 import com.unciv.logic.map.HexCoord
 import com.unciv.models.stats.Stat
@@ -39,12 +38,11 @@ object CityManagementRunProbe {
         if (stage == "prepare") require(!Files.exists(checkpoint)) { "Checkpoint already exists" }
         val fresh = stage in setOf("start", "prepare", "observe")
         val runtime = if (fresh) {
-            HeadlessRuntime.createDuel(root.resolve(stage), 412L, combatScenario = true)
+            HeadlessRuntime.createCityManagementExercise(root.resolve(stage))
         } else {
             HeadlessRuntime.loadCheckpoint(checkpoint, root.resolve(stage))
         }
         runtime.use {
-            if (fresh) arrange(runtime)
             if (stage == "observe") {
                 observations(runtime)
                 return
@@ -66,59 +64,6 @@ object CityManagementRunProbe {
                 }
             }
         }
-    }
-
-    private fun arrange(runtime: HeadlessRuntime) {
-        val game = runtime.game
-        game.tileMap.mapParameters.name = "City management exercise"
-        val players = listOf("Rome", "Greece").map(game::getCivilization)
-        players.forEach { player ->
-            player.units.getCivUnits().toList().forEach { it.destroy() }
-            player.cities.filterNot { it.isOriginalCapital }.toList().forEach { it.destroyCity() }
-        }
-        players.first().getDiplomacyManager(players.last())!!.makePeace()
-        // Mirror terrain and city positions, so both players can exercise every objective.
-        for (tile in game.tileMap.values) {
-            tile.baseTerrain = "Plains"
-            tile.removeTerrainFeatures()
-            tile.improvement = "Farm"
-            tile.setTileResource(null)
-            tile.setTerrainTransients()
-        }
-        for ((index, player) in players.withIndex()) {
-            val sign = if (index == 0) -1 else 1
-            val neighbor = CityFounder().foundCity(player, HexCoord(sign * 4, sign * 3))
-            neighbor.name = if (index == 0) "Antium" else "Sparta"
-            player.addGold(1000 - player.gold)
-            player.popupAlerts.clear()
-            player.notifications.clear()
-            player.tech.techsToResearch = arrayListOf("Writing", "The Wheel", "Bronze Working")
-            for (city in player.cities) {
-                city.health = 200
-                city.population.setPopulation(if (city.isOriginalCapital) 4 else 3)
-                city.setCityFocus(CityFocus.FoodFocus)
-                city.avoidGrowth = true
-                city.manualSpecialists = true
-                for (building in listOf("Granary", "Library", "University", "Market", "Colosseum")) city.cityConstructions.addBuilding(building)
-                city.cityConstructions.constructionQueue = arrayListOf("The Pyramids")
-                city.population.specialistAllocations.clear()
-                city.clearWorkedTiles()
-                city.population.foodStored = city.population.getFoodToNextPopulation() - 1
-            }
-            val capital = player.cities.single { it.isOriginalCapital }
-            val shared = capital.getWorkableTiles().filter { it in neighbor.tilesInRange && !it.isCityCenter() }
-                .sortedWith(compareBy({ it.position.x }, { it.position.y })).first()
-            check(neighbor.workTile(shared))
-            neighbor.lockedTiles.add(shared.position)
-            capital.cityStats.update()
-            neighbor.cityStats.update()
-            player.cache.updateCivResources()
-            player.cache.updateViewableTiles()
-            player.updateStatsForNextTurn()
-            check(PlayerCityOperations(player).isAssignableTile(capital, shared).not())
-        }
-        check(game.victoryData == null)
-        check(players.none { it.isAtWar() })
     }
 
     private fun observations(runtime: HeadlessRuntime) {
@@ -291,7 +236,7 @@ object CityManagementRunProbe {
         api.finishTurn(token)
         token = checkNotNull(api.activate().playerToken)
         val greekTurn = api.readAlerts(token)
-        val foreignHandle = actions.first().request.target
+        val foreignHandle = runtime.game.getCivilization("Rome").cities.first().id
         api.reject(token, command(greekTurn, TurnCommandKind.SET_CITY_FOCUS, foreignHandle, "FoodFocus"), "CITY_UNAVAILABLE")
         actions += actions(runtime, api, token, "Greece")
         api.finishTurn(token)

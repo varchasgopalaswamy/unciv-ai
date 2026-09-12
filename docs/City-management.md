@@ -51,22 +51,27 @@ receipt without repeating a sale or moving another citizen.
 Create a fresh peaceful match with two neighboring cities per civilization:
 
 ```sh
-./gradlew prepareCityManagementFixture -PcityManagementFixtureDir=/tmp/civ-city-management-1
-uv run civ-agent host start --state-dir /tmp/civ-city-management-1 --port 8774
+uv run civ-agent host start --new --scenario city-management --state-dir /tmp/civ-city-management-2 --port 8775
 ```
 
 Both Rome and Greece receive a capital, a second city, 1,000 gold, specialist
 buildings, a shared worked tile and food close to the next population threshold.
-The setup uses bundled Vanilla rules. Preparation writes the checkpoint and private
-`players.json`, and refuses to overwrite an existing checkpoint. The host creates
-operator credentials and TLS configuration when launched. Omit `--new`.
+The setup uses bundled Vanilla rules. The host creates the scenario, checkpoint,
+private credentials and TLS configuration together. New games require the scenario
+option, so an empty directory cannot silently become an ordinary duel. The loaded
+scenario is printed before `MCP-READY` and appears as `CITY_MANAGEMENT_EXERCISE` in
+`player_turn.scenario`.
+
+For a prepared or previously played checkpoint, omit `--new`. Keeping
+`--scenario city-management` verifies the saved scenario on resume. Existing
+checkpoints are never overwritten; select a fresh directory to start again.
 
 Start each service in a separate terminal, then start scheduling:
 
 ```sh
-uv run civ-agent agent-server start Rome --state-dir /tmp/civ-city-management-1 --port 8887
-uv run civ-agent agent-server start Greece --state-dir /tmp/civ-city-management-1 --port 8888
-uv run civ-agent match start --state-dir /tmp/civ-city-management-1 --max-turns 6 --max-invocations 16 --max-seconds 3600 --turn-timeout 300
+uv run civ-agent agent-server start Rome --state-dir /tmp/civ-city-management-2 --port 8897
+uv run civ-agent agent-server start Greece --state-dir /tmp/civ-city-management-2 --port 8898
+uv run civ-agent match start --state-dir /tmp/civ-city-management-2 --max-turns 6 --max-invocations 16 --max-seconds 3600 --turn-timeout 300
 ```
 
 The usual `--model` and `--reasoning-effort` options apply; see
@@ -81,7 +86,7 @@ scripted test passing does not mean a live run completed these objectives.
 Inspect the committed native save with:
 
 ```sh
-uv run civ-agent host inspect Rome --state-dir /tmp/civ-city-management-1
+uv run civ-agent host inspect Rome --state-dir /tmp/civ-city-management-2
 ```
 
 ## Verification and limits

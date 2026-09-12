@@ -3,13 +3,13 @@ package uncivai
 import com.unciv.logic.GameInfo
 import com.unciv.logic.files.UncivFiles
 import com.unciv.view.GameView
-import uncivai.player.FreeGreatPersonDecisionTracker
+import uncivai.player.PlayerIdentifier
 import uncivai.player.TurnSessionState
 import uncivai.player.detached
 import uncivai.player.gameFinished
 import uncivai.player.observation
 import java.nio.file.Path
-import java.util.UUID
+import java.security.SecureRandom
 
 /**
  * Trusted ownership of one game, independent of graphics or transport bootstrap.
@@ -24,9 +24,8 @@ class GameExecutor internal constructor(
     private val onGameReplaced: (GameInfo) -> Unit = {},
     private val isAvailable: () -> Boolean = { true },
 ) : AutoCloseable {
-    internal var epoch = UUID.randomUUID().toString()
-        private set
-    internal var freeGreatPersonDecisions = FreeGreatPersonDecisionTracker()
+    // Epochs distinguish independent games; entity/revision counters are local to each player.
+    internal var epoch = "g" + java.lang.Long.toUnsignedString(SecureRandom().nextLong(), 36)
         private set
     internal val turnSessions = HashMap<String, TurnSessionState>()
 
@@ -36,7 +35,11 @@ class GameExecutor internal constructor(
             val entries = GameView(game, player).attackEventsView.getCombatReportEntries()
             if (entries.isEmpty()) continue
             val state = turnSessions.getOrPut(player.civID) { TurnSessionState() }
-            for (entry in entries) state.combatReports.putIfAbsent(entry.id, entry.observation())
+            for (entry in entries) {
+                state.combatReports.getOrPut(entry.id) {
+                    entry.observation(state.identifiers.next(PlayerIdentifier.REPORT))
+                }
+            }
         }
     }
     private var closed = false
@@ -171,15 +174,19 @@ class GameExecutor internal constructor(
             game = replacement
             onGameReplaced(replacement)
             paused = true
+            val issued = turnSessions.mapValues { it.value.identifiers.snapshot() }
             turnSessions.clear()
             restorePlayers(saved.players)
+            for ((civilization, counters) in issued) {
+                turnSessions.getOrPut(civilization) { TurnSessionState() }.identifiers.retainIssued(counters)
+            }
             // A discarded attempt must never regain authority through an old revision.
             turnSessions.values.forEach {
-                it.revision = UUID.randomUUID().toString()
+                it.revision = it.identifiers.next(PlayerIdentifier.REVISION)
                 it.fingerprint = null
                 it.observedRevision = null
+                it.freeGreatPersonDecision = null
             }
-            freeGreatPersonDecisions = FreeGreatPersonDecisionTracker()
             turnStart = saved.copy(activationId = activationId, rolledBackActivationIds = saved.rolledBackActivationIds + activationId)
             commitCheckpoint()
         } catch (failure: Throwable) {
@@ -192,7 +199,7 @@ class GameExecutor internal constructor(
             val player = game.civilizations.single { it.civID == civilization }
             check(saved.alertHandles.size == player.popupAlerts.size) { "Checkpoint alert state is inconsistent" }
             check(saved.tradeHandles.size == player.tradeRequests.size) { "Checkpoint trade state is inconsistent" }
-            turnSessions[civilization] = TurnSessionState().apply {
+            turnSessions[civilization] = TurnSessionState(saved.identifiers).apply {
                 cityHandles.putAll(saved.cityHandles)
                 unitHandles.putAll(saved.unitHandles)
                 player.popupAlerts.forEachIndexed { index, alert ->
@@ -206,8 +213,9 @@ class GameExecutor internal constructor(
                 reviewTurn = saved.reviewTurn
                 reviewActions.addAll(saved.reviewActions)
                 previousTurnReview = saved.previousTurnReview?.detached()
-                saved.combatReports.forEach { combatReports[it.id] = it.detached() }
+                saved.combatReports.forEach { (engineId, report) -> combatReports[engineId] = report.detached() }
                 deliveredCombatReports = saved.deliveredCombatReports
+                freeGreatPersonDecision = saved.freeGreatPersonDecision
                 check(deliveredCombatReports in 0..combatReports.size) { "Checkpoint combat report cursor is inconsistent" }
                 saved.receipts.forEach { entry -> receipts[entry.request.requestId] = entry.request.detached() to entry.receipt.detached() }
             }

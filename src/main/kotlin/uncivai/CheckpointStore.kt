@@ -4,10 +4,16 @@ import com.unciv.json.json
 import com.unciv.logic.GameInfo
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.decodeFromJsonElement
+import kotlinx.serialization.json.intOrNull
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import uncivai.player.CombatReport
 import uncivai.player.CompletedTurnReview
 import uncivai.player.ConfirmedTurnAction
+import uncivai.player.PlayerIdentifier
 import uncivai.player.PlayerTurnSnapshot
+import uncivai.player.SharedFreeGreatPersonDecision
 import uncivai.player.TurnCommandReceipt
 import uncivai.player.TurnCommandRequest
 import uncivai.player.TurnSessionState
@@ -22,7 +28,7 @@ import java.nio.file.StandardOpenOption
 /** Trusted full-state artifact. Never serve this file through a player endpoint. */
 @Serializable
 internal data class GameCheckpoint(
-    val formatVersion: Int = 1,
+    val formatVersion: Int = 2,
     val epoch: String,
     val paused: Boolean,
     val gameJson: String,
@@ -49,6 +55,7 @@ internal data class SavedReceipt(val request: TurnCommandRequest, val receipt: T
 
 @Serializable
 internal data class SavedPlayerState(
+    val identifiers: Map<PlayerIdentifier, Long>,
     val cityHandles: Map<String, String>,
     val alertHandles: List<String?>,
     val revision: String,
@@ -59,8 +66,9 @@ internal data class SavedPlayerState(
     val reviewTurn: Int? = null,
     val reviewActions: List<ConfirmedTurnAction> = emptyList(),
     val previousTurnReview: CompletedTurnReview? = null,
-    val combatReports: List<CombatReport> = emptyList(),
+    val combatReports: Map<String, CombatReport> = emptyMap(),
     val deliveredCombatReports: Int = 0,
+    val freeGreatPersonDecision: SharedFreeGreatPersonDecision? = null,
 )
 
 internal class CheckpointStore(
@@ -104,8 +112,9 @@ internal class CheckpointStore(
 
     fun read(): GameCheckpoint {
         acquire()
-        val saved = checkpointJson.decodeFromString<GameCheckpoint>(Files.readString(path))
-        require(saved.formatVersion == 1) { "Unsupported checkpoint version" }
+        val document = checkpointJson.parseToJsonElement(Files.readString(path))
+        require(document.jsonObject["formatVersion"]?.jsonPrimitive?.intOrNull == 2) { "Unsupported checkpoint version; start a new game" }
+        val saved = checkpointJson.decodeFromJsonElement<GameCheckpoint>(document)
         require(saved.epoch.isNotEmpty()) { "Invalid checkpoint epoch" }
         return saved
     }
@@ -146,6 +155,7 @@ internal class CheckpointStore(
             players = states.mapValues { (civilization, state) ->
                 val player = game.civilizations.single { it.civID == civilization }
                 SavedPlayerState(
+                    identifiers = state.identifiers.snapshot(),
                     cityHandles = state.cityHandles.toMap(),
                     unitHandles = state.unitHandles.toMap(),
                     alertHandles = player.popupAlerts.map { state.alertHandles[it] },
@@ -156,8 +166,9 @@ internal class CheckpointStore(
                     reviewTurn = state.reviewTurn,
                     reviewActions = state.reviewActions.toList(),
                     previousTurnReview = state.previousTurnReview,
-                    combatReports = state.combatReports.values.toList(),
+                    combatReports = state.combatReports.toMap(),
                     deliveredCombatReports = state.deliveredCombatReports,
+                    freeGreatPersonDecision = state.freeGreatPersonDecision,
                 )
             },
         )

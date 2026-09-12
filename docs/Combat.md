@@ -106,7 +106,7 @@ Run the checks with:
 ```sh
 ./gradlew build
 ./gradlew :Unciv:tests:test
-python3 -B -m unittest discover -s scripts/tests -p 'test_*.py'
+uv run pytest
 ```
 
 Existing launchers pick up these tools after rebuilding. Use a new save for this
@@ -114,41 +114,12 @@ version; backward checkpoint compatibility is not part of this work. To test com
 manually, instruct the players to establish cities, meet, declare war, move a land
 unit into range, inspect attack previews and execute an offered attack, then read
 reports, heal/promote when eligible, and negotiate peace. Inspect the exported save
-with `scripts/inspect_game` to verify the resulting position independently.
+with `civ-agent host inspect` to verify the resulting position independently.
 
-## Ready-to-play combat scenario
+## Combat regression fixtures
 
-Create a fresh exercise with `--combat-scenario`:
-
-```sh
-./scripts/launch_host --new --combat-scenario --state-dir /tmp/my-combat-match --port 8767
-./scripts/launch_agent_service Rome --state-dir /tmp/my-combat-match --port 8867
-./scripts/launch_agent_service Greece --state-dir /tmp/my-combat-match --port 8868
-./scripts/run_agents --state-dir /tmp/my-combat-match --max-turns 12 --max-invocations 28 --max-seconds 5400 --turn-timeout 300
-```
-
-Run these in separate terminals, waiting for the host and both services to report
-ready before starting the scheduler. Model and reasoning flags work as in ordinary
-matches. The scenario flag is new-game-only and cannot be combined with
-`--close-starts`; omit it when resuming.
-
-The fixed 127-tile grassland map contains Rome/Athens capitals and the weakened
-Antium/Sparta outposts. Each civilization has three Warriors and one Archer,
-including an injured reserve and a veteran eligible for promotion. Both are already
-at war; research and production queues are initialized. Ordinary fog and all normal
-combat rules apply after setup.
-
-Only this scenario's snapshots contain combat exercise instructions. Agents are
-asked to promote, heal and wake units, use bombardment/ranged/melee attacks, puppet
-then annex an outpost, and fight for the capitals. The host validates actions but
-does not force this sequence or guarantee a model completes every check. Read the
-saved receipts and inspect the game to verify what happened:
-
-```sh
-./scripts/run_agents status --state-dir /tmp/my-combat-match
-./scripts/inspect_game Rome --state-dir /tmp/my-combat-match
-./scripts/run_agents stop --state-dir /tmp/my-combat-match
-```
+The battlefield setup remains in automated combat tests. The current playable
+launcher exercise is [city management](City-management.md#prepared-scenario).
 
 For a focused capture/victory test, the test harness can prepare a separate
 checkpoint with two Roman Warriors beside Sparta and Athens, both at 1 HP:

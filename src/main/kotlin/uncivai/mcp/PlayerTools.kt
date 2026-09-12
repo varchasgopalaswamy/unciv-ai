@@ -187,14 +187,14 @@ private val TURN_COMMAND_INPUT_SCHEMA = ToolSchema(
     properties = buildJsonObject {
         put("requestId", requestIdProperty())
         put("epoch", stringProperty("Epoch returned by player_turn.", minLength = 1))
-        put("revision", stringProperty("Opaque player revision returned by player_turn.", minLength = 1))
+        put("revision", stringProperty("Current player revision from player_turn, e.g. rev12. Copy it exactly; do not predict the next value.", minLength = 1))
         put("reviewId", stringProperty("Only END_TURN: required id from the current turnReview after reading player_turn.", minLength = 1, maxLength = 128))
         put("deferReason", stringProperty("Only END_TURN: why you intentionally leave idle units with legal destinations; required if any exist in turnReview.", minLength = 1, maxLength = 500))
         putJsonObject("kind") {
             put("type", "string")
             putJsonArray("enum") { TurnCommandKind.entries.forEach { add(it.name) } }
         }
-        put("target", stringProperty("City, alert, incoming offer or owned unit handle; diplomacy partner commands use a known civilizationId from player_turn.", minLength = 1))
+        put("target", stringProperty("Copy a current player_turn handle exactly: city1, unit1, alert1 or offer1. Handles are local to your player. Diplomacy partner commands use a known civilizationId.", minLength = 1))
         putJsonObject("destination") {
             put("type", "object")
             put("description", "Offered movement or attack destination, city development tile for SET_WORKED_TILE / SET_TILE_LOCKED, or purchases.tiles position for BUY_TILE.")
@@ -329,7 +329,7 @@ private val CHOOSE_FREE_GREAT_PERSON_INPUT_SCHEMA = stringInputSchema(
 )
 
 private fun requestIdProperty(): JsonObject = stringProperty(
-    description = "Printable ASCII request ID used for successful-command replay.",
+    description = "Short unique ID per player and game. Include the current game turn and an increasing action number. Reuse an ID only to retry its identical payload. Printable ASCII, 1-128 characters.",
     minLength = 1,
     maxLength = 128,
     pattern = "^[ -~]+$",

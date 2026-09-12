@@ -30,3 +30,30 @@ language = "system"
 files = '(\.kts?$|^\.editorconfig$)'
 pass_filenames = false
 require_serial = true
+
+[[repos.hooks]]
+id = "python-lint"
+name = "Python lint (Ruff)"
+entry = "uv run --locked ruff check ."
+language = "system"
+files = '(^src/civ_agent/.*\.py$|^tests/.*\.py$|^pyproject\.toml$|^uv\.lock$)'
+pass_filenames = false
+require_serial = true
+
+[[repos.hooks]]
+id = "python-format"
+name = "Python formatting (Ruff)"
+entry = "uv run --locked ruff format --check ."
+language = "system"
+files = '(^src/civ_agent/.*\.py$|^tests/.*\.py$|^pyproject\.toml$|^uv\.lock$)'
+pass_filenames = false
+require_serial = true
+
+[[repos.hooks]]
+id = "python-types"
+name = "Python types (Pyrefly)"
+entry = "uv run --locked pyrefly check"
+language = "system"
+files = '(^src/civ_agent/.*\.py$|^tests/.*\.py$|^pyproject\.toml$|^uv\.lock$)'
+pass_filenames = false
+require_serial = true

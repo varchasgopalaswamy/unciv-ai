@@ -124,7 +124,8 @@ object InformationalAlertsProbe {
 
         val first = snapshot.alerts.first()
         api.reject("Greece", command(waiting, waiting.alerts.first().handle), "NOT_YOUR_TURN")
-        api.reject("Rome", command(snapshot, waiting.alerts.first().handle), "OPTION_UNAVAILABLE")
+        check(waiting.alerts.first().handle == first.handle) { "Alert counters must be player-local" }
+        api.reject("Rome", command(snapshot, "alert999"), "OPTION_UNAVAILABLE")
         api.reject("Rome", command(snapshot, "unknown-alert"), "OPTION_UNAVAILABLE")
         val staleAfterPause = command(snapshot, first.handle)
         runtime.executor.pause()

@@ -73,9 +73,10 @@ object S03CityRenameProbe {
             }
             check(snapshotA.cities.single().name == romeCity.name)
             check(greekSnapshot.cities.single().name == greekCity.name)
-            check(snapshotA.cities.single().handle != snapshotB.cities.single().handle) {
-                "Separate sessions reused a city handle"
+            check(snapshotA.cities.single().handle == snapshotB.cities.single().handle) {
+                "Reconnect changed a player's city handle"
             }
+            check(snapshotA.cities.single().handle == greekSnapshot.cities.single().handle) { "Counters must be player-local" }
             check(snapshotA.cities.single().handle != romeCity.id) { "A raw city ID was exposed" }
             check(raw(game) == rawBeforeObservations) { "City observations changed engine state" }
 
@@ -92,7 +93,7 @@ object S03CityRenameProbe {
                     request(
                         "foreign-hidden-name",
                         snapshotA,
-                        greekSnapshot.cities.single().handle,
+                        greekCity.id,
                         "Roma",
                     ),
                 )
@@ -209,6 +210,7 @@ object S03CityRenameProbe {
             val snapshot = session.cities()
             val handle = snapshot.cities.single().handle
             val greekSnapshot = host.bindPlayer("Greece").cities()
+            check(greekSnapshot.cities.single().handle == handle)
 
             expectNoMutation(game, PlayerSessionFailure.STALE_EPOCH) {
                 session.renameCity(
@@ -228,7 +230,7 @@ object S03CityRenameProbe {
                     request(
                         "foreign",
                         snapshot,
-                        greekSnapshot.cities.single().handle,
+                        greece.cities.single().id,
                         "Foreign",
                     ),
                 )
@@ -398,8 +400,8 @@ object S03CityRenameProbe {
             val newSession = PlayerHost(runtime).bindPlayer("Rome")
             val newSnapshot = newSession.cities()
             check(newSnapshot.epoch != oldSnapshot.epoch) { "Reload reused a runtime epoch" }
-            check(newSnapshot.cities.single().handle != oldSnapshot.cities.single().handle) {
-                "Reload reused a session city handle"
+            check(newSnapshot.cities.single().handle == oldSnapshot.cities.single().handle) {
+                "Independent games should start their own counters"
             }
             expectNoMutation(game, PlayerSessionFailure.STALE_EPOCH) {
                 newSession.renameCity(oldRequest)

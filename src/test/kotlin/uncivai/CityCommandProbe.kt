@@ -53,12 +53,13 @@ object CityCommandProbe {
             val city = civilization.cities.single()
             val cityHandle = rome.turn().cities.single().handle
             val foreignHandle = greece.turn().cities.single().handle
+            check(foreignHandle == cityHandle) { "City references must be player-local" }
             fun command(kind: TurnCommandKind, destination: TilePosition? = null, worked: Boolean? = null, locked: Boolean? = null, index: Int? = null, toIndex: Int? = null, selection: String? = null) = rome.turn().let { TurnCommandRequest(UUID.randomUUID().toString(), it.epoch, it.revision, kind, cityHandle, selection, destination = destination, worked = worked, locked = locked, index = index, toIndex = toIndex) }
             val initial = rome.turn()
             check(initial.cities.single().development != null && initial.research != null)
             val workedTile = initial.cities.single().development!!.tiles.first { it.canUnwork }
             val unwork = command(TurnCommandKind.SET_WORKED_TILE, workedTile.position, worked = false)
-            expect(PlayerSessionFailure.CITY_UNAVAILABLE) { rome.execute(unwork.copy(target = foreignHandle)) }
+            expect(PlayerSessionFailure.CITY_UNAVAILABLE) { rome.execute(unwork.copy(target = game.getCivilization("Greece").cities.single().id)) }
             expect(PlayerSessionFailure.NOT_YOUR_TURN) {
                 greece.execute(unwork.copy(epoch = greece.turn().epoch, revision = greece.turn().revision, target = foreignHandle))
             }

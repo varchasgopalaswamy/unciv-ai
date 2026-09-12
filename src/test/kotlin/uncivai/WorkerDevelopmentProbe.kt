@@ -89,7 +89,7 @@ object WorkerDevelopmentProbe {
             val foreignHandle = greece.turn().map.units.single { it.name == "Worker" }.handle
             val start = TurnCommandKind.START_WORKER_JOB
             val stop = TurnCommandKind.STOP_WORKER_JOB
-            expect(PlayerSessionFailure.UNIT_UNAVAILABLE) { rome.execute(command(rome, start, foreignHandle, "Farm")) }
+            expect(PlayerSessionFailure.UNIT_UNAVAILABLE) { rome.execute(command(rome, start, other.id.toString(), "Farm")) }
             expect(PlayerSessionFailure.NOT_YOUR_TURN) { greece.execute(command(greece, start, foreignHandle, "Farm")) }
             expect(PlayerSessionFailure.OPTION_UNAVAILABLE) { rome.execute(command(rome, start, handle, "Academy")) }
             expect(PlayerSessionFailure.INVALID_ARGUMENT) { rome.execute(command(rome, stop, handle, "Farm")) }

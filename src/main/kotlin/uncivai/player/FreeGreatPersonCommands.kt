@@ -1,7 +1,6 @@
 package uncivai.player
 
 import kotlinx.serialization.Serializable
-import java.util.UUID
 
 @Serializable
 data class FreeGreatPersonSnapshot(
@@ -34,6 +33,7 @@ data class ChooseFreeGreatPersonReceipt(
     val remainingChoices: Int,
 )
 
+@Serializable
 internal data class FreeGreatPersonFingerprint(
     val remainingChoices: Int,
     val mayaLimitedChoices: Int,
@@ -42,34 +42,19 @@ internal data class FreeGreatPersonFingerprint(
     val isYourTurn: Boolean,
 )
 
+@Serializable
 internal data class SharedFreeGreatPersonDecision(
-    val generation: String,
+    val handle: String,
     val fingerprint: FreeGreatPersonFingerprint,
 )
 
-/** Runtime-owned decision identity. Callers serialize all access through HeadlessRuntime. */
-internal class FreeGreatPersonDecisionTracker {
-    private val decisionsByCivilization = HashMap<String, SharedFreeGreatPersonDecision>()
-
-    fun synchronize(
-        civilizationId: String,
-        fingerprint: FreeGreatPersonFingerprint?,
-    ): SharedFreeGreatPersonDecision? {
-        if (fingerprint == null) {
-            decisionsByCivilization.remove(civilizationId)
-            return null
-        }
-
-        val current = decisionsByCivilization[civilizationId]
-        if (current?.fingerprint == fingerprint) return current
-
-        return SharedFreeGreatPersonDecision(
-            generation = UUID.randomUUID().toString(),
-            fingerprint = fingerprint,
-        ).also { decisionsByCivilization[civilizationId] = it }
+/** Reconnect-stable decision identity, invalidated by changes to its permitted choices. */
+internal fun TurnSessionState.synchronizeFreeGreatPersonDecision(fingerprint: FreeGreatPersonFingerprint?): SharedFreeGreatPersonDecision? {
+    if (fingerprint == null) {
+        freeGreatPersonDecision = null
+        return null
     }
-
-    fun invalidate(civilizationId: String) {
-        decisionsByCivilization.remove(civilizationId)
-    }
+    freeGreatPersonDecision?.takeIf { it.fingerprint == fingerprint }?.let { return it }
+    return SharedFreeGreatPersonDecision(identifiers.next(PlayerIdentifier.DECISION), fingerprint)
+        .also { freeGreatPersonDecision = it }
 }

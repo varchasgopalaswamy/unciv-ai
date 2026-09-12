@@ -122,7 +122,7 @@ Acceptance: two agents develop a fresh duel over a configured short run (for exa
 20 game turns), automatically handing off turns, building workers, improving tiles,
 growing cities, and managing production. Pause and restart partway through, verify
 that incomplete turns return to their starting state, start fresh conversations
-with completed-turn memory, and inspect the resulting position with `inspect_game`.
+with completed-turn memory, and inspect the resulting position with `civ-agent host inspect`.
 Scripted CI clients must also exercise wrong-turn activation, duplicate supervisors,
 timeouts, incomplete turns, unsupported choices, budget exhaustion, and interruption
 on both sides of an accepted handoff. A live multi-turn model run complements these

@@ -23,17 +23,18 @@ import com.unciv.logic.trade.TradeOfferType
 import com.unciv.logic.trade.TradeRequest
 import uncivai.GameExecutor
 import java.util.Collections
-import java.util.UUID
 
 /** Reconnect-stable, runtime-owned state. Access only under the game executor. */
-internal class TurnSessionState {
+internal class TurnSessionState(savedIdentifiers: Map<PlayerIdentifier, Long> = emptyMap()) {
+    val identifiers = PlayerIdentifiers(savedIdentifiers)
     val cityHandles = HashMap<String, String>()
     val unitHandles = HashMap<Int, String>()
     val alertHandles = java.util.IdentityHashMap<PopupAlert, String>()
     val tradeHandles = java.util.IdentityHashMap<TradeRequest, String>()
     val receipts = HashMap<String, Pair<TurnCommandRequest, TurnCommandReceipt>>()
     var fingerprint: PlayerTurnSnapshot? = null
-    var revision = UUID.randomUUID().toString()
+    var revision = ""
+    var freeGreatPersonDecision: SharedFreeGreatPersonDecision? = null
 
     // Only the public query presents popup contents. A command receipt presents a revision alone.
     // Reset on process restart: uncommitted acknowledgements need a fresh read; completed receipts replay.
@@ -47,6 +48,8 @@ internal class TurnSessionState {
     fun invalidate() {
         fingerprint = null
     }
+
+    fun cityHandle(cityId: String): String = cityHandles.getOrPut(cityId) { identifiers.next(PlayerIdentifier.CITY) }
 }
 
 internal class TurnSession(private val runtime: GameExecutor, private val civilizationId: String) {
@@ -401,7 +404,7 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
             game.checkForVictory()
             state.invalidate()
             runtime.captureCombatReports()
-            runtime.freeGreatPersonDecisions.invalidate(player.civID)
+            state.freeGreatPersonDecision = null
             val after = snapshot(game, player, state)
             val economyResult = if (request.kind in economicCommands) economicOutcome(request, before, after) else null
             if (request.kind != TurnCommandKind.END_TURN) {
@@ -463,7 +466,7 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
             val informational = alert.type in PlayerOperations.informationalAlerts && content != null
             val supported = informational || capture != null
             PlayerAlert(
-                handle = state.alertHandles.getOrPut(alert) { UUID.randomUUID().toString() },
+                handle = state.alertHandles.getOrPut(alert) { state.identifiers.next(PlayerIdentifier.ALERT) },
                 kind = alert.type.name,
                 subject = when (alert.type) {
                     AlertType.TechResearched, AlertType.WonderBuilt -> alert.value.takeIf { content != null }
@@ -498,7 +501,7 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
             cities = immutable(
                 player.cities.filter { it.civ === player }.map { city ->
                     TurnCity(
-                        handle = state.cityHandles.getOrPut(city.id) { UUID.randomUUID().toString() },
+                        handle = state.cityHandle(city.id),
                         name = city.name,
                         puppet = city.isPuppet,
                         constructionQueue = immutable(city.cityConstructions.constructionQueue),
@@ -507,7 +510,7 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
                         attacks = immutable(if (ordinaryActions) PlayerCombatOperations(player).attacks(city).map { it.observation() } else emptyList()),
                         captureOptions = immutable(captures.cityChoices(city).map { it.observation(ordinaryActions) }),
                         purchases = observePurchases(city, active = ordinaryActions),
-                        management = observeCityManagement(city, ordinaryActions) { owned -> state.cityHandles.getOrPut(owned.id) { UUID.randomUUID().toString() } },
+                        management = observeCityManagement(city, ordinaryActions) { owned -> state.cityHandle(owned.id) },
                     )
                 },
             ),
@@ -540,7 +543,7 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
         )
         if (state.fingerprint != fingerprint) {
             state.fingerprint = fingerprint
-            state.revision = UUID.randomUUID().toString()
+            state.revision = state.identifiers.next(PlayerIdentifier.REVISION)
         }
         return fingerprint.copy(revision = state.revision, turnReview = fingerprint.turnReview?.copy(id = state.revision))
     }

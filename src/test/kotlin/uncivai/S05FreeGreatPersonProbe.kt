@@ -208,15 +208,14 @@ object S05FreeGreatPersonProbe {
             val decisionB = requireDecision(snapshotB)
 
             check(snapshotA.epoch == snapshotB.epoch)
-            check(decisionA.handle != decisionB.handle) { "Separate sessions shared a decision handle" }
+            check(decisionA.handle == decisionB.handle) { "Reconnect changed a player's decision handle" }
             check(decisionA.options == listOf("Great Engineer", "Great Scientist"))
             check(decisionA.remainingChoices == 2 && decisionA.mayaLimited)
             check(decisionA.copy(handle = decisionB.handle) == decisionB)
 
             expectNoMutation(game, PlayerSessionFailure.DECISION_UNAVAILABLE) {
-                sessionA.chooseFreeGreatPerson(
-                    choiceRequest("foreign-session-handle", snapshotA, "Great Scientist")
-                        .copy(decisionHandle = decisionB.handle),
+                PlayerHost(runtime).bindPlayer(human.civID).chooseFreeGreatPerson(
+                    choiceRequest("unobserved-decision", snapshotA, "Great Scientist"),
                 )
             }
 
@@ -317,8 +316,8 @@ object S05FreeGreatPersonProbe {
             }
             expectNoMutation(game, PlayerSessionFailure.DECISION_UNAVAILABLE) {
                 sessionA.chooseFreeGreatPerson(
-                    choiceRequest("other-session", initialA, validOption)
-                        .copy(decisionHandle = requireDecision(initialB).handle),
+                    choiceRequest("unknown-decision", initialA, validOption)
+                        .copy(decisionHandle = "decision999"),
                 )
             }
             for (invalidOption in listOf("", "Warrior", "not a unit")) {
@@ -610,7 +609,7 @@ object S05FreeGreatPersonProbe {
             val snapshotA = sessionA.freeGreatPersonChoice()
             val snapshotB = sessionB.freeGreatPersonChoice()
             val option = ordinaryLandOption(snapshotA)
-            check(requireDecision(snapshotA).handle != requireDecision(snapshotB).handle)
+            check(requireDecision(snapshotA).handle == requireDecision(snapshotB).handle)
             val unitIds = human.units.getCivUnits().map { it.id }.toSet()
             val executor = Executors.newFixedThreadPool(2)
             try {
@@ -676,7 +675,7 @@ object S05FreeGreatPersonProbe {
             val session = PlayerHost(runtime).bindPlayer("The Maya")
             val snapshot = session.freeGreatPersonChoice()
             check(snapshot.epoch != oldSnapshot.epoch)
-            check(requireDecision(snapshot).handle != requireDecision(oldSnapshot).handle)
+            check(requireDecision(snapshot).handle == requireDecision(oldSnapshot).handle)
             expectNoMutation(game, PlayerSessionFailure.STALE_EPOCH) {
                 session.chooseFreeGreatPerson(oldRequest)
             }

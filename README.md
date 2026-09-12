@@ -17,7 +17,7 @@ instructed to read and note their content, and acknowledgement requires a curren
 The [war and peace slice](docs/War-and-peace.md) adds legal diplomatic options,
 war-message acknowledgement, and peace offers with gold and resource terms,
 including accept/reject/counteroffer and durable retries. Gameplay launchers and
-`run_agents` accept `--model NAME --reasoning-effort LEVEL`.
+`civ-agent match start` accept `--model NAME --reasoning-effort LEVEL`.
 
 Read [AGENTS.md](AGENTS.md) for confidentiality and contribution instructions, and [Development workflow](docs/Development-workflow.md) for engine branches, local overrides and dependency updates.
 
@@ -34,19 +34,35 @@ To develop against a sibling engine checkout:
 ./gradlew -PuncivDir=../Unciv engineInfo build
 ```
 
-To play a local Rome/Greece duel, with Python 3, OpenSSL and a logged-in Codex CLI on `PATH`,
+Install the Python package and development tools with [uv](https://docs.astral.sh/uv/).
+Python 3.12 or newer is required:
+
+```sh
+uv sync --locked
+uv run civ-agent --help
+```
+
+To play the city-management exercise, with OpenSSL and a logged-in Codex CLI on `PATH`,
 run these in three separate terminals from this directory:
 
 ```sh
-./scripts/launch_host          # Wait for MCP-READY
-./scripts/launch_agent Rome    # Second terminal
-./scripts/launch_agent Greece  # Third terminal
+uv run civ-agent host start --scenario city-management  # Wait for MCP-READY
+uv run civ-agent agent start Rome    # Second terminal
+uv run civ-agent agent start Greece  # Third terminal
 ```
 
-The host creates credentials and a game on first launch, and resumes its checkpoint
-on subsequent launches. Each Codex session gets its civilization's token automatically
+New games require an explicit scenario. The host creates credentials and a peaceful
+two-city setup for each player. Subsequent launches resume the checkpoint; supplying
+`--scenario city-management` also verifies that it is the intended exercise.
+Each Codex session gets its civilization's token automatically
 and starts with a one-turn request. See [Local launchers](docs/Local-launchers.md)
 for custom matches, ports, and conversation resumption.
+
+All Python commands use the `civ-agent` entrypoint: `host start`, `host inspect`,
+`agent start`, `agent-server start`, `match start/resume/status/pause/stop/manual`,
+and `history export`. Add `--help` after any command for its options. The former
+Python scripts have been replaced by this package; existing match directories and
+saved credentials retain their layout.
 
 For automatic turns, start one HTTPS service per civilization and run the supervisor.
 See [automatic turns and HTTPS setup](docs/Automatic-turns.md) for commands, limits,
@@ -62,8 +78,8 @@ and are excluded from turn memory. A durably committed `END_TURN` is retained ev
 if its response was lost. The scheduler displays
 live player output and saves responses, exposed reasoning summaries and tool history; see [history locations and existing-run export](docs/Automatic-turns.md#live-output-and-saved-history).
 
-To verify the agents' actions visually, run `./scripts/inspect_game Rome` or
-`./scripts/inspect_game Greece`. This exports the checkpoint and opens a separate
+To verify the agents' actions visually, run `uv run civ-agent host inspect Rome` or
+`uv run civ-agent host inspect Greece`. This exports the checkpoint and opens a separate
 inspection copy in the desktop UI. Omit the civilization to view the actual active
 player. See [inspection options](docs/Local-launchers.md#inspect-what-the-agents-did).
 

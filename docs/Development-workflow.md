@@ -32,6 +32,42 @@ Use JDK 21 or newer and the checked-in Gradle wrapper. The included Unciv build 
 
 The initial smoke test loads Vanilla and Gods & Kings rules with mods disabled and no graphics backend. The [headless runtime](Headless-runtime.md) adds saved-game loading and shutdown, with separate-process lifecycle scenarios for both rulesets. The [Kotlin player-summary prototype](Player-summary-prototype.md) adds the first player-bound observation surface, and the [city-rename prototype](City-rename-prototype.md) adds serialized command execution and retry receipts. The recorded engine also supplies [free great-person selection](Free-great-person-selection.md), with manual before/after UI fixtures; the [Kotlin choice prototype](Free-great-person-prototype.md) exposes discovery and validated selection through the player session. The [MCP prototype](MCP-prototype.md) exposes these methods to independently authenticated local clients. Remaining player surfaces are tracked in the [headless plan](Headless-player-agent-path.md).
 
+## Python package and checks
+
+The Python application lives in `src/civ_agent/`, with a single installed
+`civ-agent` entrypoint. Command parsing is in `cli.py`; command handlers are in
+`commands/`. Scheduling, the HTTPS service, history, TLS, and turn archives are
+importable modules rather than scripts loaded by filesystem path.
+
+Use Python 3.12 or newer and [uv](https://docs.astral.sh/uv/). The project metadata,
+runtime dependencies, and Ruff, Pyrefly, and pytest configuration live in
+`pyproject.toml`. `uv.lock` records the resolved runtime and development dependencies.
+
+```sh
+uv sync --locked
+uv run ruff check .
+uv run ruff format --check .
+uv run pyrefly check
+uv run pytest
+uv build
+```
+
+Ruff checks and formats Python; Pyrefly checks the package and tests; pytest runs
+the launcher, scheduler, history, and HTTPS regression suites. Those tests use
+temporary match directories and fake model processes. They do not require a live
+game or model account. The existing unittest test cases run under pytest alongside
+new pytest tests. `uv build` produces a wheel and source archive in `dist/`.
+
+Add dependencies with `uv add PACKAGE`, or development tools with `uv add --dev
+PACKAGE`, and include both metadata and lockfile changes. Apply formatting with
+`uv run ruff format .`. CI runs the locked checks and package build; the local
+prek hooks check Python formatting, lint, and types when relevant files change.
+
+Host commands discover the JVM checkout from the working directory or editable
+source tree. An independently installed package can select it with `--repo-dir`
+or `CIV_AGENT_REPO`. Agent services need only the Python package and their runtime
+tools, credentials, and certificates. See [local commands](Local-launchers.md).
+
 ## Work on the engine locally
 
 Use an explicit override to select a sibling checkout or a dedicated engine worktree:

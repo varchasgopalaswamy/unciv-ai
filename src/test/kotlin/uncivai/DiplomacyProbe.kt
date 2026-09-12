@@ -69,9 +69,8 @@ object DiplomacyProbe {
             expect(PlayerSessionFailure.NOT_YOUR_TURN) {
                 greece.execute(command(greece, waiting.alerts.single { it.kind == "FirstContact" }.handle))
             }
-            expect(PlayerSessionFailure.OPTION_UNAVAILABLE) {
-                rome.execute(command(rome, waiting.alerts.single { it.kind == "FirstContact" }.handle))
-            }
+            check(waiting.alerts.single { it.kind == "FirstContact" }.handle == alert.handle) { "Alert counters must be player-local" }
+            expect(PlayerSessionFailure.OPTION_UNAVAILABLE) { rome.execute(command(rome, "alert999")) }
             expect(PlayerSessionFailure.OPTION_UNAVAILABLE) { rome.execute(command(rome, "unknown-alert")) }
             val stale = command(rome, alert.handle)
             runtime.executor.pause()

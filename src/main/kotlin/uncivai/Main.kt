@@ -24,15 +24,21 @@ private fun runCli(args: Array<String>): Int {
         val players = options.mcpConfig?.let(::loadMcpPlayerConfig)
         val operatorToken = options.operatorConfig?.let(::loadOperatorConfig)
         val tls = options.tlsConfig?.let(::loadHostTls)
-        val loaded = if (options.newDuel) {
-            HeadlessRuntime.createDuel(options.dataDirectory, options.seed ?: System.currentTimeMillis(), options.closeStarts, options.combatScenario)
+        val loaded = if (options.newDuel && options.scenario == "city-management") {
+            HeadlessRuntime.createCityManagementExercise(options.dataDirectory, options.seed ?: 412L)
+        } else if (options.newDuel) {
+            HeadlessRuntime.createDuel(options.dataDirectory, options.seed ?: System.currentTimeMillis())
         } else if (options.resumeCheckpoint != null) {
             HeadlessRuntime.loadCheckpoint(options.resumeCheckpoint, options.dataDirectory)
         } else {
             HeadlessRuntime.load(checkNotNull(options.saveFile), options.dataDirectory)
         }
         loaded.use { runtime ->
+            require(options.scenario == null || runtime.game.tileMap.mapParameters.name == CityManagementScenarioSetup.MAP_NAME) {
+                "Checkpoint is not the city-management scenario. Choose a fresh --state-dir and --scenario city-management."
+            }
             options.checkpoint?.let { runtime.executor.enableCheckpoints(it) }
+            println("Scenario: ${runtime.game.tileMap.mapParameters.name.ifEmpty { "Ordinary duel" }}")
             if (players == null) {
                 val game = runtime.game
                 println(
@@ -95,8 +101,7 @@ private data class CliOptions(
     val checkpoint: Path?,
     val resumeCheckpoint: Path?,
     val newDuel: Boolean,
-    val closeStarts: Boolean,
-    val combatScenario: Boolean,
+    val scenario: String?,
     val seed: Long?,
     val operatorConfig: Path?,
     val tlsConfig: Path?,
@@ -110,38 +115,31 @@ private fun parseOptions(args: Array<String>): CliOptions {
     var checkpoint: Path? = null
     var resumeCheckpoint: Path? = null
     var newDuel = false
-    var closeStarts = false
-    var combatScenario = false
+    var scenario: String? = null
     var seed: Long? = null
     var operatorConfig: Path? = null
     var tlsConfig: Path? = null
     var index = 0
     while (index < args.size) {
         val option = args[index]
-        if (option == "--combat-scenario") {
-            require(!combatScenario) { "--combat-scenario may only be specified once" }
-            combatScenario = true
-            index++
-            continue
-        }
-        if (option == "--close-starts") {
-            require(!closeStarts) { "--close-starts may only be specified once" }
-            closeStarts = true
-            index++
-            continue
-        }
         if (option == "--new-duel") {
             require(!newDuel) { "--new-duel may only be specified once" }
             newDuel = true
             index++
             continue
         }
-        require(option in setOf("--save", "--data-dir", "--mcp-config", "--operator-config", "--tls-config", "--port", "--checkpoint", "--resume-checkpoint", "--seed")) {
+        require(option in setOf("--save", "--data-dir", "--mcp-config", "--operator-config", "--tls-config", "--port", "--checkpoint", "--resume-checkpoint", "--seed", "--scenario")) {
             "Unknown argument: $option"
         }
         require(index + 1 < args.size) { "Missing value for $option" }
         val value = args[index + 1]
         when (option) {
+            "--scenario" -> {
+                require(scenario == null) { "--scenario may only be specified once" }
+                require(value == "city-management") { "Unknown scenario: $value" }
+                scenario = value
+            }
+
             "--tls-config" -> {
                 require(tlsConfig == null) { "--tls-config may only be specified once" }
                 tlsConfig = Path.of(value)
@@ -200,9 +198,6 @@ private fun parseOptions(args: Array<String>): CliOptions {
     require(checkpoint == null || saveFile != null || newDuel) { "--checkpoint requires --save or --new-duel" }
     require(!newDuel || checkpoint != null) { "--new-duel requires --checkpoint to persist the new game" }
     require(seed == null || newDuel) { "--seed requires --new-duel" }
-    require(!closeStarts || newDuel) { "--close-starts requires --new-duel" }
-    require(!combatScenario || newDuel) { "--combat-scenario requires --new-duel" }
-    require(!combatScenario || !closeStarts) { "--combat-scenario and --close-starts are mutually exclusive" }
     return CliOptions(
         saveFile = saveFile,
         dataDirectory = requireNotNull(dataDirectory) {
@@ -213,8 +208,7 @@ private fun parseOptions(args: Array<String>): CliOptions {
         checkpoint = checkpoint,
         resumeCheckpoint = resumeCheckpoint,
         newDuel = newDuel,
-        closeStarts = closeStarts,
-        combatScenario = combatScenario,
+        scenario = scenario,
         seed = seed,
         operatorConfig = operatorConfig,
         tlsConfig = tlsConfig,
@@ -229,7 +223,7 @@ private fun Throwable.conciseMessage(): String {
     return messages.joinToString(": ").ifEmpty { this::class.java.simpleName }
 }
 
-private fun usage() = "Usage: unciv-ai (--new-duel --checkpoint <absolute-path> [--seed <integer>] [--close-starts | --combat-scenario] | " +
+private fun usage() = "Usage: unciv-ai (--new-duel --checkpoint <absolute-path> [--seed <integer>] | " +
     "--save <absolute-path> [--checkpoint <absolute-path>] | " +
-    "--resume-checkpoint <absolute-path>) --data-dir <absolute-path> " +
+    "--resume-checkpoint <absolute-path>) [--scenario city-management] --data-dir <absolute-path> " +
     "[--mcp-config <absolute-path> --tls-config <absolute-path> [--port <0-65535>] [--operator-config <absolute-path>]]"

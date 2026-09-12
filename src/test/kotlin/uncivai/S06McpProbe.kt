@@ -186,7 +186,7 @@ object S06McpProbe {
             val greeceCities = success(gc.client.callTool("owned_cities", emptyMap()))
             val romeCityHandle = romeCities.array("cities").single().jsonObject.string("handle")
             val greeceCityHandle = greeceCities.array("cities").single().jsonObject.string("handle")
-            check(romeCityHandle != greeceCityHandle)
+            check(romeCityHandle == greeceCityHandle) { "City counters must be player-local" }
             check(romeCities == parse(PlayerCommandJson.encode(romeSession.cities())))
             check(greeceCities == parse(PlayerCommandJson.encode(greeceSession.cities())))
 
@@ -194,7 +194,7 @@ object S06McpProbe {
             val greeceChoice = success(gc.client.callTool("free_great_person_choice", emptyMap()))
             val romeDecisionHandle = romeChoice.decision().string("handle")
             val greeceDecisionHandle = greeceChoice.decision().string("handle")
-            check(romeDecisionHandle != greeceDecisionHandle)
+            check(romeDecisionHandle == greeceDecisionHandle) { "Decision counters must be player-local" }
             check("Great Scientist" in romeChoice.decision().strings("options"))
             check("Great Scientist" in greeceChoice.decision().strings("options"))
             check(romeChoice == parse(PlayerCommandJson.encode(romeSession.freeGreatPersonChoice())))
@@ -205,7 +205,7 @@ object S06McpProbe {
             toolError(
                 rc.client.callTool(
                     "rename_city",
-                    renameArguments("cross-city", romeCities.string("epoch"), greeceCityHandle, "No Access"),
+                    renameArguments("cross-city", romeCities.string("epoch"), greece.cities.single().id, "No Access"),
                 ),
                 "CITY_UNAVAILABLE",
                 "City is unavailable",
@@ -214,9 +214,9 @@ object S06McpProbe {
                 rc.client.callTool(
                     "choose_free_great_person",
                     choiceArguments(
-                        "cross-decision",
+                        "unknown-decision",
                         romeChoice.string("epoch"),
-                        greeceDecisionHandle,
+                        "decision999",
                         "Great Scientist",
                     ),
                 ),
@@ -329,7 +329,7 @@ object S06McpProbe {
             toolError(
                 gc.client.callTool(
                     "rename_city",
-                    renameArguments("foreign-city", greeceCities.string("epoch"), romeCityHandle, "No Access"),
+                    renameArguments("foreign-city", greeceCities.string("epoch"), game.getCivilization("Rome").cities.single().id, "No Access"),
                 ),
                 "CITY_UNAVAILABLE",
                 "City is unavailable",

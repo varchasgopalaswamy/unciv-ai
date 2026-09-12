@@ -135,6 +135,9 @@ object ScheduledRollbackProbe {
             check(control.activationSession(checkNotNull(fresh.playerToken)) != null)
             check(player.turn() == freshState && json().toJson(runtime.game) == freshGame) { "A delayed rollback erased the fresh attempt" }
             val endRequest = finishTurn(player)
+            check(player.turn().cities.single().handle != saved.mutated.cities.single().handle) {
+                "Rollback recycled a discarded city handle"
+            }
             val endReceipt = player.execute(endRequest)
             val finished = control.handle(OperatorRequest("status")).status
             check(finished.handoff == 1L && finished.activeCivilization == "Greece")

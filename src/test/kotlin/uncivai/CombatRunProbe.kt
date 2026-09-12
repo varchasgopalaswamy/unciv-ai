@@ -246,7 +246,7 @@ object CombatRunProbe {
         check(!hidden.isVisibleTo(runtime.game.getCivilization("Rome")))
         val unchanged = json().toJson(runtime.game)
         api.reject(token, valid.copy(revision = "stale-revision"))
-        api.reject(token, valid.copy(target = enemyHandle))
+        api.reject(token, valid.copy(target = "unit999"))
         api.reject(token, valid.copy(destination = TilePosition(hidden.currentTile.position.x, hidden.currentTile.position.y)))
         api.reject(api.playerToken("Greece"), valid.copy(target = enemyHandle))
         check(json().toJson(runtime.game) == unchanged)
@@ -254,6 +254,7 @@ object CombatRunProbe {
         val discarded = romanCombat(api, token)
         check(facts(runtime) != originalUnits)
         check(api.turn(api.playerToken("Greece")).combatReports.size >= 3)
+        val discardedReportIds = allReports(runtime).mapValues { (_, reports) -> reports.map { it.id }.toSet() }
         val status = api.status()
         val rollback = OperatorRequest(
             "rollback",
@@ -280,7 +281,8 @@ object CombatRunProbe {
         token = checkNotNull(api.activate().playerToken)
         var snapshot = api.readAlerts(token)
         check(snapshot.combatReports.size >= 3)
-        check(snapshot.combatReports.all { it.id.isNotBlank() && it.locations.isNotEmpty() })
+        check(snapshot.combatReports.all { it.id.matches(Regex("report[1-9][0-9]*")) && it.locations.isNotEmpty() })
+        check(snapshot.combatReports.none { it.id in discardedReportIds.getValue("Greece") }) { "Rollback recycled combat report identifiers" }
         check(snapshot.combatReports.any { it.damageReceived != null && it.damageReceived > 0 })
         val greekWarrior = snapshot.map.units.single { it.name == "Warrior" }
         val counter = checkNotNull(greekWarrior.combat).attacks.first { it.destination == TilePosition(0, 0) }

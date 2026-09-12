@@ -195,6 +195,7 @@ object DiplomacyCommandsProbe {
             player.tradeRequests.add(unsupported)
             val unsupportedSnapshot = rome.turn()
             val offered = unsupportedSnapshot.diplomacy.incomingOffers.single()
+            check(offered.handle == "offer1")
             check(offered.give.single { it.type == "City" }.name == null)
             check(offered.receive.single { it.type == "WarDeclaration" }.name == null)
             check("SECRET-CITY-ID" !in PlayerTurnJson.encode(unsupportedSnapshot))
@@ -219,6 +220,8 @@ object DiplomacyCommandsProbe {
             other.tradeRequests.add(TradeRequest(player.civID, trade(terms).reverse()))
             val own = rome.turn().diplomacy.incomingOffers.single()
             val foreign = greece.turn().diplomacy.incomingOffers.single()
+            check(own.handle == "offer2" && own.handle != offered.handle) { "A rejected offer's handle was recycled" }
+            check(foreign.handle.matches(Regex("offer[1-9][0-9]*")))
             for (handle in listOf("FORGED-OFFER-HANDLE", foreign.handle, other.civID)) {
                 rejectUnchanged(
                     PlayerSessionFailure.OPTION_UNAVAILABLE,

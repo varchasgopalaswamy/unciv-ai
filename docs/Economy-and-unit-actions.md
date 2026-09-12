@@ -98,7 +98,7 @@ Create a fresh checkpoint and private player credentials, then launch the existi
 
 ```sh
 ./gradlew prepareEconomyFixture -PeconomyFixtureDir=/tmp/civ-economy-1
-./scripts/launch_host --state-dir /tmp/civ-economy-1 --port 8767
+uv run civ-agent host start --state-dir /tmp/civ-economy-1 --port 8767
 ```
 
 The fixture uses ordinary Vanilla rules on the combat exercise's small land map.
@@ -114,16 +114,16 @@ For scheduled gameplay, start each service in a separate terminal, then run the
 supervisor once both report ready:
 
 ```sh
-./scripts/launch_agent_service Rome --state-dir /tmp/civ-economy-1 --port 8877
-./scripts/launch_agent_service Greece --state-dir /tmp/civ-economy-1 --port 8878
-./scripts/run_agents --state-dir /tmp/civ-economy-1 --max-turns 12 --max-invocations 28 --max-seconds 5400 --turn-timeout 300
+uv run civ-agent agent-server start Rome --state-dir /tmp/civ-economy-1 --port 8877
+uv run civ-agent agent-server start Greece --state-dir /tmp/civ-economy-1 --port 8878
+uv run civ-agent match start --state-dir /tmp/civ-economy-1 --max-turns 12 --max-invocations 28 --max-seconds 5400 --turn-timeout 300
 ```
 
 The existing model and reasoning flags still apply. The exercise makes the actions
 possible; the host does not force a model to perform them. To inspect the save:
 
 ```sh
-./scripts/inspect_game Rome --state-dir /tmp/civ-economy-1
+uv run civ-agent host inspect Rome --state-dir /tmp/civ-economy-1
 ```
 
 Use a new directory for another fresh fixture. Omit `--new` when launching a host

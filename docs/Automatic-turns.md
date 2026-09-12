@@ -14,24 +14,22 @@ the service also checks against the installed app-server protocol in tests.
 
 ## Run a match
 
-Use Linux, Python 3.10 or newer, OpenSSL, JDK 21 or newer, the initialized engine
+Use Linux, uv, Python 3.12 or newer, OpenSSL, JDK 21 or newer, the initialized engine
 checkout, and a logged-in Codex CLI with `app-server --listen unix://PATH` support.
-Install the Python service dependency in a virtual environment:
+Install the Python package and its locked dependencies:
 
 ```sh
-python3 -m venv .venv
-.venv/bin/python -m pip install -r scripts/requirements.txt
-source .venv/bin/activate
+uv sync --locked
 ```
 
-Run these in separate terminals from the repository, with the virtual environment
-active in the agent-service terminals:
+Run these in separate terminals from the repository. `uv run` uses the project
+environment automatically:
 
 ```sh
-./scripts/launch_host
-./scripts/launch_agent_service Rome
-./scripts/launch_agent_service Greece
-./scripts/run_agents --max-turns 20 --max-invocations 48 --max-seconds 3600
+uv run civ-agent host start --scenario city-management
+uv run civ-agent agent-server start Rome
+uv run civ-agent agent-server start Greece
+uv run civ-agent match start --max-turns 20 --max-invocations 48 --max-seconds 3600
 ```
 
 Wait for `MCP-READY` and each service's `AGENT-READY` message before starting the supervisor. The host
@@ -45,47 +43,19 @@ If a port is already in use, stop the previous service or select a free `--port`
 The supervisor discovers the selected ports from the match directory; its command
 does not need port overrides.
 
-For immediate diplomacy testing, create a new match with nearby starts and an extra
-Scout for each player:
+The current exercise is city management. Each player starts at peace with two
+cities, 1,000 gold, Universities, Granaries, and the citizen controls needed for
+its objectives. New games require `--scenario city-management`; the same option
+checks the scenario when resuming. A directory's name does not select a scenario.
+See [the prepared scenario](City-management.md#prepared-scenario) for a complete
+launch example using a fresh match directory.
 
-```sh
-./scripts/launch_host --new --close-starts --state-dir /tmp/civ-diplomacy
-```
-
-Use that state directory for both agent services and `run_agents` as well. The
-capital sites are five tiles apart on connected land. The extra Scouts start next
-to each other, triggering normal first-contact messages before the first turn.
-Both civilizations retain their usual Settler and Warrior, and normal fog of war
-applies. `--close-starts` only applies to new games; omit it when resuming.
-
-The default gameplay prompt recognizes this scenario through `player_turn.scenario`
-and asks Rome to declare war once, then offer peace as soon as negotiation is legal.
-The proposal contains the offered Peace Treaty on each side, with no payments.
-Greece reads the declaration and offer, then accepts when allowed. Both continue
-ordinary turns while negotiation is unavailable or a response is pending. The host
-reports the exercise as complete after war and peace; this survives restart and
-treaty expiry, so the prompt does not ask for another war. Ordinary duels keep their
-usual open-ended diplomacy. The same instructions apply to interactive `launch_agent`
-sessions using the default prompt.
-
-To adopt the new turn folders and recovery format, stop the previous host and agent
-services to free their ports, then use a new directory in all four terminals. Old
-runner state is deliberately rejected; existing match files are left intact:
-
-```sh
-./scripts/launch_host --state-dir /tmp/civ-encounters --new
-./scripts/launch_agent_service Rome --state-dir /tmp/civ-encounters
-./scripts/launch_agent_service Greece --state-dir /tmp/civ-encounters
-./scripts/run_agents --state-dir /tmp/civ-encounters
-```
-
-`launch_host` builds the current code and selected engine before starting. First
-contact now supplies an introduction and an explicit `ACKNOWLEDGE_ALERT` action;
-the agent prompts ask players to read and acknowledge supported messages. Each
-player's contact message and command appear in their normal saved tool history.
-Diplomacy provides known-rival identity, war/peace observations and available actions.
-Agents read declaration warnings and incoming peace terms before choosing a response.
-They can keep taking turns while waiting for an opponent to answer a proposal.
+Agents follow `player_turn.scenario.instructions`. The common prompt contains
+only gameplay rules, receipt/retry handling, and the current turn review. Request
+ID examples use the actual game turn and an increasing action number. The service
+adds archive and final-summary instructions once, then earlier committed summaries.
+Restart agent services after changing their prompt code; already running services
+continue using the version they loaded.
 
 Before handing off, agents read `player_turn.turnReview`, which lists confirmed
 actions and remaining movement. `END_TURN` includes the current review ID. Leaving
@@ -109,16 +79,16 @@ as shown. `--turn-timeout` defaults to 180 seconds per activation.
 Set both options on each service to choose different settings for each civilization:
 
 ```sh
-./scripts/launch_agent_service Rome --model YOUR_ROME_MODEL --reasoning-effort high
-./scripts/launch_agent_service Greece --model YOUR_GREECE_MODEL --reasoning-effort medium
-./scripts/run_agents
+uv run civ-agent agent-server start Rome --model YOUR_ROME_MODEL --reasoning-effort high
+uv run civ-agent agent-server start Greece --model YOUR_GREECE_MODEL --reasoning-effort medium
+uv run civ-agent match start
 ```
 
 Or override both settings for every player from the scheduler:
 
 ```sh
-./scripts/run_agents --model YOUR_MODEL --reasoning-effort high
-./scripts/run_agents resume
+uv run civ-agent match start --model YOUR_MODEL --reasoning-effort high
+uv run civ-agent match resume
 ```
 
 For each setting, a new conversation uses the scheduler override, then its service's
@@ -135,7 +105,7 @@ and reapplies them to each fresh turn conversation and after a restart. Changing
 service defaults does not silently change an ongoing player's settings. The resolved values
 appear in scheduler output, its saved session metadata, and the service's private
 `activations/*.json` records. Choose a new match to change settings for ongoing
-players. Interactive `launch_agent` accepts the same two options; see
+players. Interactive `civ-agent agent start` accepts the same two options; see
 [local launchers](Local-launchers.md).
 
 Each activation explicitly identifies the game turn it must play. A report about an
@@ -197,7 +167,10 @@ followed by the agent's brief public report. For example, `turn_1/summary.md` co
 Moved the scout east to explore. Continue toward the coast next turn.
 ```
 
-The report is limited to 200 words. If there is no final report, the service uses
+After a successful `END_TURN`, the agent immediately returns its summary as its
+final response, without further tool calls or creating or editing turn files.
+The service writes the files automatically. The report is limited to 200 words.
+If there is no final report, the service uses
 the last available public note, or just the heading if no note was captured.
 Receipt counts, handoff status, retry information and debugging labels stay in
 the detailed attempt records. Full messages remain in each attempt's event log.
@@ -208,7 +181,7 @@ do not change the next turn's context.
 
 ## Live output and saved history
 
-`run_agents` prints civilization-prefixed assistant messages, status updates and
+`civ-agent match start` prints civilization-prefixed assistant messages, status updates and
 errors as they arrive. Add `--verbose` to also display tool calls, results, streamed
 tool output and exposed reasoning summaries. Large tool results have short terminal
 previews. Full sanitized history is always saved, regardless of this flag, and each
@@ -217,7 +190,7 @@ activation prints its local `history.md` path.
 Verbosity applies to the current invocation, so it can be changed on resume:
 
 ```sh
-./scripts/run_agents resume --state-dir /tmp/civ-economy-1 --verbose
+uv run civ-agent match resume --state-dir /tmp/civ-economy-1 --verbose
 ```
 
 The agent service appends accepted events through one ordered background I/O
@@ -269,8 +242,8 @@ For conversations from before event logging was enabled, export this match's sav
 Codex histories on the machine holding those conversations:
 
 ```sh
-./scripts/export_agent_history        # Both saved players
-./scripts/export_agent_history Greece
+uv run civ-agent history export        # Both saved players
+uv run civ-agent history export Greece
 ```
 
 The exporter prints readable paths under `STATE_DIR/runner/history-imports/`.
@@ -290,10 +263,10 @@ the legacy exporter above remains available for reviewing them.
 From another terminal:
 
 ```sh
-./scripts/run_agents status
-./scripts/run_agents pause
-./scripts/inspect_game Rome
-./scripts/run_agents resume
+uv run civ-agent match status
+uv run civ-agent match pause
+uv run civ-agent host inspect Rome
+uv run civ-agent match resume
 ```
 
 Ctrl-C in the supervisor also requests a pause. Pause fences player mutations before
@@ -304,7 +277,7 @@ disappears. A restarted scheduled host starts paused and revokes old activation 
 After an interruption or host restart, use:
 
 ```sh
-./scripts/run_agents resume
+uv run civ-agent match resume
 ```
 
 The supervisor first confirms that the previous agent process has stopped and checks
@@ -325,7 +298,7 @@ A failed connection, missing or inconsistent turn-start checkpoint, unconfirmed
 process shutdown, unsupported decision or incomplete turn pauses the run. The
 scheduler does not repeatedly restart a failing agent or choose game actions to
 bypass its blocker. Inspect the attempt logs before resuming when the cause needs
-attention. While paused, `inspect_game` may show the unfinished attempt's current
+attention. While paused, `civ-agent host inspect` may show the unfinished attempt's current
 position; rollback takes place when the supervisor resumes it.
 
 Returning the host to manual control discards the automatic restore point. If an
@@ -333,7 +306,7 @@ agent attempt was unfinished, finish that player's turn manually before resuming
 the supervisor; it will not label a newly captured manual position as a rollback.
 
 If the host reports `HALTED` after a mutation or checkpoint error, stop and restart
-the host from its durable checkpoint first, then run `run_agents resume`. An
+the host from its durable checkpoint first, then run `civ-agent match resume`. An
 in-memory rollback cannot resolve an uncertain disk write; the restored checkpoint
 determines whether `END_TURN` committed. Resume cannot clear `HALTED` itself.
 
@@ -341,7 +314,7 @@ Limits and usage persist across resume. Wall time includes paused time and downt
 Increase a limit explicitly when continuing a completed short run:
 
 ```sh
-./scripts/run_agents resume --max-turns 30 --max-invocations 70 --max-seconds 7200
+uv run civ-agent match resume --max-turns 30 --max-invocations 70 --max-seconds 7200
 ```
 
 These are cumulative limits from the original start, not a new allowance. Reported
@@ -349,13 +322,13 @@ token usage is accounting; this implementation does not enforce a token or dolla
 Usage from restarted Codex processes is charged to the current activation even when
 the native counters reset. Older stored usage figures are not rewritten automatically.
 
-To return to the interactive `launch_agent` sessions, stop the scheduler and restore
+To return to the interactive `civ-agent agent start` sessions, stop the scheduler and restore
 manual control:
 
 ```sh
-./scripts/run_agents stop
-./scripts/run_agents manual
-./scripts/launch_agent Rome
+uv run civ-agent match stop
+uv run civ-agent match manual
+uv run civ-agent agent start Rome
 ```
 
 Scheduled mode fences the long-lived player credentials against new mutations.
@@ -388,7 +361,7 @@ The PKCS12 store uses the same password for the store and its private key. Its f
 password file and configuration must have owner-only permissions. Only TLS 1.2/1.3
 are enabled; there is no production HTTP listener or certificate-verification bypass.
 
-On each agent machine, run `launch_agent_service CIV` with its own `--service-dir`
+On each agent machine, run `civ-agent agent-server start CIV` with its own `--service-dir`
 and `--workspace`, `--mcp-url https://game.example.test:8765/mcp`, and
 `--mcp-ca-file /absolute/game-ca.pem`. Set `--listen-host`, `--public-host` and
 `--port` for that service. Existing PEM identities use `--cert-file`, `--key-file`

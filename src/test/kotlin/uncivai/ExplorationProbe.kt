@@ -95,7 +95,8 @@ object ExplorationProbe {
                     check(before == romeSession.turn())
                     val settler = before.map.units.single { it.name == "Settler" }
                     val greekSettler = greece.turn().map.units.single { it.name == "Settler" }
-                    rome.error(command(before, TurnCommandKind.FOUND_CITY, target = greekSettler.handle), "UNIT_UNAVAILABLE")
+                    check(greekSettler.handle == settler.handle) { "Unit references must be player-local" }
+                    rome.error(command(before, TurnCommandKind.FOUND_CITY, target = "unit999"), "UNIT_UNAVAILABLE")
                     greece.error(command(greece.turn(), TurnCommandKind.FOUND_CITY, target = greekSettler.handle), "NOT_YOUR_TURN")
                     rome.error(command(before, TurnCommandKind.MOVE_UNIT, settler.handle, destination = TilePosition(Int.MAX_VALUE, Int.MIN_VALUE)), "OPTION_UNAVAILABLE")
                     rome.error(command(before, TurnCommandKind.MOVE_UNIT, settler.handle), "INVALID_ARGUMENT")

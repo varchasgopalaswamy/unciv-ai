@@ -1,0 +1,173 @@
+"""Export a host checkpoint and open its snapshot in the Unciv desktop UI."""
+
+import argparse
+import hashlib
+import json
+import os
+import re
+import sys
+import tempfile
+from pathlib import Path
+
+from civ_agent.checkout import repository_root
+
+
+class InspectionError(Exception):
+    pass
+
+
+def parser(*, add_help: bool = True) -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=__doc__, add_help=add_help)
+    parser.add_argument(
+        "civilization",
+        nargs="?",
+        help="Optional Human civilization to view, for example Rome; defaults to the saved active player",
+    )
+    parser.add_argument(
+        "--state-dir",
+        type=Path,
+        default=Path(os.environ.get("UNCIV_HOST_DIR", Path.home() / ".local/state/unciv-host/demo")),
+        help="Match directory (default: UNCIV_HOST_DIR or ~/.local/state/unciv-host/demo)",
+    )
+    parser.add_argument("--checkpoint", type=Path, help="Checkpoint file (default: STATE_DIR/exploration.json)")
+    parser.add_argument(
+        "--output-dir", type=Path, help="Parent for fresh inspection directories (default: STATE_DIR/inspection)"
+    )
+    parser.add_argument(
+        "--unciv-dir", type=Path, help="Engine checkout used by the host; relative paths use the repository root"
+    )
+    parser.add_argument(
+        "--export-only", action="store_true", help="Export saves without building or opening the desktop"
+    )
+    parser.add_argument(
+        "--repo-dir", type=Path, help="Game host checkout (default: discover from cwd or CIV_AGENT_REPO)"
+    )
+    return parser
+
+
+def load_checkpoint(path):
+    try:
+        # The host replaces checkpoints atomically. One read captures one committed snapshot,
+        # even when the host is still running; do not acquire or modify its lock file.
+        checkpoint = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(checkpoint, dict):
+            raise ValueError()
+        if type(checkpoint.get("formatVersion")) is not int or checkpoint["formatVersion"] != 2:
+            raise InspectionError("Unsupported checkpoint format; expected formatVersion 2.")
+        if not isinstance(checkpoint.get("gameJson"), str):
+            raise ValueError()
+        game = json.loads(checkpoint["gameJson"])
+        if not isinstance(game, dict):
+            raise ValueError()
+        parameters = game.get("gameParameters", {})
+        if not isinstance(parameters, dict):
+            raise ValueError()
+        if parameters.get("isOnlineMultiplayer", False) is not False:
+            raise InspectionError("Online multiplayer checkpoints are not supported by the local inspection viewer.")
+        active = game.get("currentPlayer")
+        turn = game.get("turns", 0)  # Unciv omits default-valued fields.
+        civilizations = game.get("civilizations")
+        if not isinstance(active, str) or not active or type(turn) is not int:
+            raise ValueError()
+        if not isinstance(civilizations, list) or not civilizations:
+            raise ValueError()
+        identifiers, humans = set(), []
+        for civilization in civilizations:
+            if not isinstance(civilization, dict):
+                raise ValueError()
+            identifier = civilization.get("civID")
+            if not isinstance(identifier, str) or not identifier or identifier in identifiers:
+                raise ValueError()
+            identifier.encode("utf-8")
+            identifiers.add(identifier)
+            if civilization.get("playerType") == "Human":
+                humans.append(identifier)
+        if active not in identifiers:
+            raise ValueError()
+        return game, humans
+    except FileNotFoundError:
+        raise InspectionError(
+            f"No checkpoint found at {path}. Select your match with --state-dir or --checkpoint."
+        ) from None
+    except (ValueError, UnicodeError, TypeError, RecursionError):
+        # Do not quote JSON errors, which may include private game state or receipts.
+        raise InspectionError("Invalid host checkpoint or embedded game save.") from None
+
+
+def view_filename(civilization):
+    if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 _-]{0,79}", civilization):
+        label = civilization
+    else:
+        # '@' cannot occur in a readable label, keeping the two filename namespaces distinct.
+        label = "@" + hashlib.sha256(civilization.encode("utf-8")).hexdigest()
+    return f"Inspect {label}.json"
+
+
+def export_snapshot(game, humans, output_root):
+    output_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    directory = Path(tempfile.mkdtemp(prefix="snapshot-", dir=output_root))
+    saves = directory / "SaveFiles"
+    saves.mkdir(mode=0o700)
+    # A desktop save must never follow an old custom destination back into operator state.
+    exported = dict(game)
+    exported.pop("customSaveLocation", None)
+    snapshot = saves / "Agent snapshot.json"
+    snapshot.write_text(json.dumps(exported), encoding="utf-8")
+    views = {}
+    for civilization in humans:
+        destination = saves / view_filename(civilization)
+        destination.write_text(
+            json.dumps(dict(exported, currentPlayer=civilization)),
+            encoding="utf-8",
+        )
+        views[civilization] = destination
+    return directory, snapshot, views
+
+
+def run(options: argparse.Namespace) -> int:
+    try:
+        state = options.state_dir.expanduser().resolve()
+        checkpoint = (options.checkpoint.expanduser() if options.checkpoint else state / "exploration.json").resolve()
+        game, humans = load_checkpoint(checkpoint)
+        selected = None
+        if options.civilization is not None:
+            matches = [name for name in humans if name.casefold() == options.civilization.casefold()]
+            if len(matches) != 1:
+                raise InspectionError("Civilization is missing, ambiguous, or not a Human player in this checkpoint.")
+            selected = matches[0]
+        output_root = (options.output_dir.expanduser() if options.output_dir else state / "inspection").resolve()
+        os.umask(0o077)
+        directory, snapshot, views = export_snapshot(game, humans, output_root)
+        save = views[selected] if selected is not None else snapshot
+        print(f"Captured turn {game.get('turns', 0)}; actual active civilization: {game['currentPlayer']}", flush=True)
+        print(f"Inspection directory: {directory}", flush=True)
+        print(f"Selected save: {save}", flush=True)
+        if selected is not None:
+            print(f"Viewing as {selected}; this copy overrides the active player for inspection.", flush=True)
+        print(
+            "This is a snapshot. Desktop actions affect only this copy; rerun to inspect newer host state.", flush=True
+        )
+        if options.export_only:
+            return 0
+        repo_dir = repository_root(options.repo_dir)
+        command = [
+            str(repo_dir / "gradlew"),
+            "--console=plain",
+            "runInspectUi",
+            f"-PinspectSave={save}",
+            f"-PinspectDataDir={directory}",
+        ]
+        if options.unciv_dir:
+            engine = options.unciv_dir.expanduser()
+            if not engine.is_absolute():
+                engine = repo_dir / engine
+            command.append(f"-PuncivDir={engine.resolve()}")
+        print("Opening Unciv; click the civilization's ready screen to inspect the map.", flush=True)
+        os.chdir(repo_dir)
+        os.execv(command[0], command)
+        return 0
+    except (InspectionError, OSError, ValueError) as failure:
+        print(f"civ-agent host inspect: {failure}", file=sys.stderr)
+        return 2
+    except KeyboardInterrupt:
+        return 130

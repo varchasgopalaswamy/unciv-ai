@@ -163,7 +163,7 @@ internal fun observeUnitCombat(player: Civilization, unit: MapUnit, active: Bool
 
 internal fun ObservedCombatant.description() = CombatantDescription(kind.name, name, instanceName, isOwn)
 
-internal fun ObservedCombatReportEntry.observation(): CombatReport {
+internal fun ObservedCombatReportEntry.observation(id: String): CombatReport {
     val common = CombatReport(id, report.turn, report::class.simpleName!!, text?.tr(), emptyList())
     fun positions(values: List<com.unciv.logic.map.HexCoord>) = frozen(values.map { TilePosition(it.x, it.y) })
     return when (val value = report) {

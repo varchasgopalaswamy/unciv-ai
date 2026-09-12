@@ -11,7 +11,6 @@ import uncivai.RuntimeClosedException
 import uncivai.RuntimeHaltedException
 import uncivai.RuntimePausedException
 import java.util.Collections
-import java.util.UUID
 
 /** Trusted host surface that assigns a fixed player identity to each session. */
 class PlayerHost internal constructor(
@@ -96,12 +95,10 @@ private class BoundPlayerSession(
 
     override fun execute(request: TurnCommandRequest) = playerOperation { turnSession.execute(request) }
 
-    private val cityIdsByHandle = HashMap<String, String>()
-    private val handlesByCityId = HashMap<String, String>()
     private val completedCommands = HashMap<String, CompletedCommand>()
-    private val issuedDecisionHandles = HashSet<String>()
-    private var currentDecisionGeneration: String? = null
     private var currentDecisionHandle: String? = null
+
+    private fun state(): TurnSessionState = runtime.turnSessions.getOrPut(civilizationId) { TurnSessionState() }
 
     override fun summary(): PlayerSummary = playerOperation {
         runtime.accessGame { game ->
@@ -128,16 +125,20 @@ private class BoundPlayerSession(
         runtime.accessGame { game ->
             val player = game.findAvailablePlayer(civilizationId)
                 ?: throw PlayerSessionException(PlayerSessionFailure.PLAYER_UNAVAILABLE)
+            val state = state()
+            val previousHandles = state.cityHandles.size
             val cities = player.cities
                 .asSequence()
                 .filter { city -> city.civ === player }
                 .map { city ->
                     OwnedCitySummary(
-                        handle = handleFor(city.id),
+                        handle = state.cityHandle(city.id),
                         name = city.name,
                     )
                 }
                 .toList()
+
+            if (previousHandles != state.cityHandles.size) runtime.commitCheckpoint()
 
             OwnedCitiesSnapshot(
                 epoch = runtime.epoch,
@@ -175,7 +176,7 @@ private class BoundPlayerSession(
                 throw PlayerSessionException(PlayerSessionFailure.NOT_YOUR_TURN)
             }
 
-            val cityId = cityIdsByHandle[request.cityHandle]
+            val cityId = state().cityHandles.entries.firstOrNull { it.value == request.cityHandle }?.key
                 ?: throw PlayerSessionException(PlayerSessionFailure.CITY_UNAVAILABLE)
             val city = player.cities.singleOrNull {
                 it.id == cityId && it.civ === player
@@ -210,7 +211,7 @@ private class BoundPlayerSession(
             } else {
                 val fingerprint = sharedDecision.fingerprint
                 FreeGreatPersonDecision(
-                    handle = handleForDecision(sharedDecision.generation),
+                    handle = sharedDecision.handle.also { currentDecisionHandle = it },
                     remainingChoices = fingerprint.remainingChoices,
                     mayaLimited = fingerprint.mayaLimitedChoices > 0,
                     options = Collections.unmodifiableList(ArrayList(fingerprint.options)),
@@ -257,10 +258,10 @@ private class BoundPlayerSession(
                 clearCurrentDecision()
                 throw PlayerSessionException(PlayerSessionFailure.DECISION_UNAVAILABLE)
             }
-            if (currentDecisionGeneration != sharedDecision.generation ||
+            if (sharedDecision.handle != request.decisionHandle ||
                 currentDecisionHandle != request.decisionHandle
             ) {
-                if (currentDecisionGeneration != sharedDecision.generation) clearCurrentDecision()
+                if (currentDecisionHandle != sharedDecision.handle) clearCurrentDecision()
                 throw PlayerSessionException(PlayerSessionFailure.DECISION_UNAVAILABLE)
             }
             if (request.unitName !in sharedDecision.fingerprint.options) {
@@ -279,7 +280,7 @@ private class BoundPlayerSession(
                         unitName = request.unitName,
                         remainingChoices = player.greatPeople.freeGreatPeople,
                     ).also { successfulReceipt ->
-                        runtime.freeGreatPersonDecisions.invalidate(player.civID)
+                        state().freeGreatPersonDecision = null
                         clearCurrentDecision()
                         completedCommands[request.requestId] = CompletedCommand.ChooseFreeGreatPerson(
                             request,
@@ -313,33 +314,15 @@ private class BoundPlayerSession(
                 isYourTurn = game.isCurrentPlayer(player),
             )
         }
-        return runtime.freeGreatPersonDecisions.synchronize(player.civID, fingerprint)
-    }
-
-    private fun handleForDecision(generation: String): String {
-        if (currentDecisionGeneration == generation) return checkNotNull(currentDecisionHandle)
-
-        var handle: String
-        do {
-            handle = UUID.randomUUID().toString()
-        } while (!issuedDecisionHandles.add(handle))
-        currentDecisionGeneration = generation
-        currentDecisionHandle = handle
-        return handle
+        val state = state()
+        val previous = state.freeGreatPersonDecision
+        return state.synchronizeFreeGreatPersonDecision(fingerprint).also {
+            if (it != previous) runtime.commitCheckpoint()
+        }
     }
 
     private fun clearCurrentDecision() {
-        currentDecisionGeneration = null
         currentDecisionHandle = null
-    }
-
-    private fun handleFor(cityId: String): String = handlesByCityId.getOrPut(cityId) {
-        var handle: String
-        do {
-            handle = UUID.randomUUID().toString()
-        } while (handle in cityIdsByHandle)
-        cityIdsByHandle[handle] = cityId
-        handle
     }
 }
 
