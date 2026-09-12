@@ -57,6 +57,10 @@ interface PlayerSession {
 
     fun result(): PlayerFinalState
 
+    fun researchDetails(names: List<String> = emptyList()): ResearchDetails
+
+    fun policyDetails(names: List<String> = emptyList()): PolicyDetails
+
     /** Read a receipt only when every field matches this player's completed request. */
     fun completedReceipt(request: TurnCommandRequest): TurnCommandReceipt?
 
@@ -90,6 +94,10 @@ private class BoundPlayerSession(
     override fun turn() = playerOperation { turnSession.snapshot() }
 
     override fun result() = playerOperation { turnSession.snapshot().finalState(civilizationId) }
+
+    override fun researchDetails(names: List<String>) = playerOperation { turnSession.researchDetails(names) }
+
+    override fun policyDetails(names: List<String>) = playerOperation { turnSession.policyDetails(names) }
 
     override fun completedReceipt(request: TurnCommandRequest) = playerOperation { turnSession.completedReceipt(request) }
 

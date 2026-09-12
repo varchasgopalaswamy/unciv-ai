@@ -78,6 +78,8 @@ class PlayerSummaryJsonTest {
                 "capabilities",
                 "turn",
                 "result",
+                "researchDetails",
+                "policyDetails",
                 "execute",
                 "completedReceipt",
                 "summary",

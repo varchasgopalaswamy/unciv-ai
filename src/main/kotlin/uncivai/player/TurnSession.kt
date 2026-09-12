@@ -10,6 +10,7 @@ import com.unciv.logic.civilization.PlayerCityManagementOperations
 import com.unciv.logic.civilization.PlayerCityOperations
 import com.unciv.logic.civilization.PlayerCombatOperations
 import com.unciv.logic.civilization.PlayerDiplomacyOperations
+import com.unciv.logic.civilization.PlayerGreatPersonOperations
 import com.unciv.logic.civilization.PlayerOperations
 import com.unciv.logic.civilization.PlayerPeaceOperations
 import com.unciv.logic.civilization.PlayerPurchaseOperations
@@ -67,6 +68,21 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
             if (previous != state.fingerprint) runtime.commitCheckpoint()
             state.observedRevision = it.revision
         }
+    }
+
+    fun researchDetails(names: List<String>): ResearchDetails = details(names, ::observeResearchDetails)
+
+    fun policyDetails(names: List<String>): PolicyDetails = details(names, ::observePolicyDetails)
+
+    private fun <T> details(names: List<String>, observe: (Civilization, PlayerTurnSnapshot, List<String>) -> T): T = runtime.accessGame { game ->
+        val state = state()
+        val previous = state.fingerprint
+        val player = player(game)
+        val turn = snapshot(game, player, state)
+        val result = observe(player, turn, names.toList())
+        if (previous != state.fingerprint) runtime.commitCheckpoint()
+        // Research/policy details do not establish that popup or unit-action content was read.
+        result
     }
 
     fun execute(request: TurnCommandRequest): TurnCommandReceipt = runtime.accessGame { game ->
@@ -201,6 +217,10 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
             null
         }
         if (request.kind == TurnCommandKind.SET_UNIT_ORDER && before.map.units.single { it.handle == request.target }.combat!!.orders.none { it.name == request.selection && it.available }) fail(PlayerSessionFailure.OPTION_UNAVAILABLE)
+        if (request.kind == TurnCommandKind.ACTIVATE_GREAT_PERSON) {
+            if (before.map.units.single { it.handle == request.target }.greatPerson?.abilities?.none { it.name == request.selection && it.available } != false) fail(PlayerSessionFailure.OPTION_UNAVAILABLE)
+            if (state.observedRevision != before.revision) fail(PlayerSessionFailure.OBSERVATION_REQUIRED)
+        }
         if (request.kind == TurnCommandKind.PROMOTE_UNIT && before.map.units.single { it.handle == request.target }.combat!!.promotions?.choices?.none { it.name == request.selection && it.available } != false) fail(PlayerSessionFailure.OPTION_UNAVAILABLE)
         if (request.kind == TurnCommandKind.MANAGE_CAPTURED_CITY) {
             if (before.cities.single { it.handle == request.target }.captureOptions.none { it.name == request.selection && it.available }) fail(PlayerSessionFailure.OPTION_UNAVAILABLE)
@@ -280,6 +300,7 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
         }
 
         try {
+            val cultureBefore = player.policies.storedCulture
             runtime.captureCombatReports()
             var combatResult: CombatOutcome? = null
             val accepted = when (request.kind) {
@@ -310,6 +331,8 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
                 TurnCommandKind.PILLAGE -> PlayerUnitEconomyOperations(player).tryPillage(unit!!)
 
                 TurnCommandKind.DISBAND_UNIT -> PlayerUnitEconomyOperations(player).tryDisband(unit!!)
+
+                TurnCommandKind.ACTIVATE_GREAT_PERSON -> PlayerGreatPersonOperations(player).tryActivate(unit!!, request.selection!!)
 
                 TurnCommandKind.BUY_CONSTRUCTION -> PlayerPurchaseOperations(player).tryBuyConstruction(city!!, request.selection!!)
 
@@ -429,6 +452,7 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
                 combat = combatResult,
                 economy = economyResult,
                 cityManagement = if (request.kind in cityManagementCommands) cityManagementOutcome(before, after) else null,
+                greatPerson = if (request.kind == TurnCommandKind.ACTIVATE_GREAT_PERSON) greatPersonOutcome(request, before, after, player.policies.storedCulture - cultureBefore) else null,
             )
             state.receipts[request.requestId] = detachedRequest to receipt
             runtime.commitCheckpoint()
@@ -549,6 +573,22 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
     }
 
     private fun scenario(game: GameInfo, player: Civilization, diplomacy: DiplomacyObservation): GameplayScenario? {
+        if (game.tileMap.mapParameters.name == "Great People exercise") {
+            return GameplayScenario(
+                "GREAT_PEOPLE_EXERCISE",
+                if (gameFinished(game)) "FINISHED" else "DEVELOP",
+                immutable(
+                    listOf(
+                        "Great People exercise: remain at peace. Both players have the same checks. Inspect map.units[].greatPerson for ability effects, consumption and unavailable reasons; move to a suitable tile before activating when needed. Read receipt.greatPerson and resulting alerts or choices.",
+                        "Query research_details for Mathematics and Currency. Inspect their prerequisites and effects, then use the Research scientist to hurry the current research. Verify the actual science or completed technology and read its discovery popup.",
+                        "Use the Rush engineer in your capital to hurry National College. Ordinary building hurry leaves at least one production remaining: verify completion after a scheduled turn.",
+                        "Use the Manufactory engineer, Customs merchant, Landmark artist and Citadel general to create their respective improvements. Inspect the resulting tiles and Citadel border changes. City-state trade missions are outside this exercise.",
+                        "Use the Golden Age artist to start a Golden Age, read its popup and inspect economy.goldenAge. Query policy_details for Meritocracy, Liberty and Liberty Complete; adopt the final Liberty member, observe the automatic completion, choose a free Great General and use its Golden Age ability too.",
+                        "Keep your University's Scientist assigned. After a scheduled round, inspect the naturally generated Great Scientist and updated points/threshold, then use that new person to create an Academy on an eligible tile. Record confirmed checks briefly in your summary, then keep ordinary research and production running.",
+                    ),
+                ),
+            )
+        }
         if (game.tileMap.mapParameters.name == "City management exercise") {
             return GameplayScenario(
                 "CITY_MANAGEMENT_EXERCISE",
@@ -658,6 +698,7 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
             TurnCommandKind.ASSIGN_SPECIALIST,
             TurnCommandKind.UNASSIGN_SPECIALIST,
             TurnCommandKind.SELL_BUILDING,
+            TurnCommandKind.ACTIVATE_GREAT_PERSON,
         )
         if (needsTarget != (request.target != null) || needsSelection != (request.selection != null) ||
             request.target?.isEmpty() == true || request.selection?.isEmpty() == true || request.revision.isEmpty() ||
@@ -698,7 +739,7 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
         private val cityManagementCommands = setOf(TurnCommandKind.SET_CITY_FOCUS, TurnCommandKind.SET_AVOID_GROWTH, TurnCommandKind.SET_MANUAL_SPECIALISTS, TurnCommandKind.ASSIGN_SPECIALIST, TurnCommandKind.UNASSIGN_SPECIALIST, TurnCommandKind.RESET_CITIZENS, TurnCommandKind.SELL_BUILDING, TurnCommandKind.REASSIGN_CITY_TILE)
         private val tileCommands = setOf(TurnCommandKind.SET_WORKED_TILE, TurnCommandKind.SET_TILE_LOCKED, TurnCommandKind.BUY_TILE, TurnCommandKind.REASSIGN_CITY_TILE)
         private val cityCommands = tileCommands + cityManagementCommands + setOf(TurnCommandKind.RENAME_CITY, TurnCommandKind.QUEUE_CONSTRUCTION, TurnCommandKind.REMOVE_CONSTRUCTION, TurnCommandKind.MOVE_CONSTRUCTION, TurnCommandKind.CITY_ATTACK, TurnCommandKind.MANAGE_CAPTURED_CITY, TurnCommandKind.BUY_CONSTRUCTION)
-        private val unitCommands = setOf(TurnCommandKind.MOVE_UNIT, TurnCommandKind.FOUND_CITY, TurnCommandKind.START_WORKER_JOB, TurnCommandKind.STOP_WORKER_JOB, TurnCommandKind.ATTACK, TurnCommandKind.SET_UNIT_ORDER, TurnCommandKind.PROMOTE_UNIT, TurnCommandKind.UPGRADE_UNIT, TurnCommandKind.PILLAGE, TurnCommandKind.DISBAND_UNIT)
+        private val unitCommands = setOf(TurnCommandKind.MOVE_UNIT, TurnCommandKind.FOUND_CITY, TurnCommandKind.START_WORKER_JOB, TurnCommandKind.STOP_WORKER_JOB, TurnCommandKind.ATTACK, TurnCommandKind.SET_UNIT_ORDER, TurnCommandKind.PROMOTE_UNIT, TurnCommandKind.UPGRADE_UNIT, TurnCommandKind.PILLAGE, TurnCommandKind.DISBAND_UNIT, TurnCommandKind.ACTIVATE_GREAT_PERSON)
         private val economicCommands = setOf(TurnCommandKind.BUY_CONSTRUCTION, TurnCommandKind.BUY_TILE, TurnCommandKind.UPGRADE_UNIT, TurnCommandKind.PILLAGE, TurnCommandKind.DISBAND_UNIT, TurnCommandKind.SELL_BUILDING)
         private val supportedRequirements = setOf(
             PlayerTurnRequirements.Kind.FreeGreatPerson,

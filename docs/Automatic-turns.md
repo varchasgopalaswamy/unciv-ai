@@ -26,7 +26,7 @@ Run these in separate terminals from the repository. `uv run` uses the project
 environment automatically:
 
 ```sh
-uv run civ-agent host start --scenario city-management
+uv run civ-agent host start --scenario great-people
 uv run civ-agent agent-server start Rome
 uv run civ-agent agent-server start Greece
 uv run civ-agent match start --max-turns 20 --max-invocations 48 --max-seconds 3600
@@ -43,12 +43,12 @@ If a port is already in use, stop the previous service or select a free `--port`
 The supervisor discovers the selected ports from the match directory; its command
 does not need port overrides.
 
-The current exercise is city management. Each player starts at peace with two
-cities, 1,000 gold, Universities, Granaries, and the citizen controls needed for
-its objectives. New games require `--scenario city-management`; the same option
-checks the scenario when resuming. A directory's name does not select a scenario.
-See [the prepared scenario](City-management.md#prepared-scenario) for a complete
-launch example using a fresh match directory.
+The current exercise covers Great People plus research and policy decisions. Each
+player starts with prepared people, a staffed University and a nearly completed
+Liberty branch. New games require an explicit `--scenario`; supplying it again
+checks the actual checkpoint on resume. A directory's name does not select a scenario.
+See [Great People](Great-people.md#launch-the-exercise) for a complete launch example
+using a fresh match directory.
 
 Agents follow `player_turn.scenario.instructions`. The common prompt contains
 only gameplay rules, receipt/retry handling, and the current turn review. Request

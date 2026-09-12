@@ -42,18 +42,20 @@ uv sync --locked
 uv run civ-agent --help
 ```
 
-To play the city-management exercise, with OpenSSL and a logged-in Codex CLI on `PATH`,
+To play the Great People exercise, with OpenSSL and a logged-in Codex CLI on `PATH`,
 run these in three separate terminals from this directory:
 
 ```sh
-uv run civ-agent host start --scenario city-management  # Wait for MCP-READY
+uv run civ-agent host start --scenario great-people  # Wait for MCP-READY
 uv run civ-agent agent start Rome    # Second terminal
 uv run civ-agent agent start Greece  # Third terminal
 ```
 
-New games require an explicit scenario. The host creates credentials and a peaceful
-two-city setup for each player. Subsequent launches resume the checkpoint; supplying
-`--scenario city-management` also verifies that it is the intended exercise.
+New games require an explicit scenario. The host creates credentials and the
+prepared Great People setup for each player. Subsequent launches resume the checkpoint;
+supplying `--scenario great-people` also verifies that it is the intended exercise.
+Use a fresh match directory when switching exercises; see [Great People](docs/Great-people.md)
+for the complete automatic-turn launch commands.
 Each Codex session gets its civilization's token automatically
 and starts with a one-turn request. See [Local launchers](docs/Local-launchers.md)
 for custom matches, ports, and conversation resumption.
@@ -93,6 +95,7 @@ To generate and load a lifecycle scenario:
 - [Player protocol](docs/Player-api-protocol.md): current tools, request examples, checkpoints, and limitations.
 - [Economy and unit actions](docs/Economy-and-unit-actions.md): finances/resources, gold purchases, upgrades, pillage/disband and a prepared exercise.
 - [City management](docs/City-management.md): focus/growth, specialists and great-person progress, building sales, shared tiles and a two-city exercise for each civilization.
+- [Great People](docs/Great-people.md): usable abilities, on-demand research/policy details, and an exercise for both players to generate and use people.
 - [Local launchers](docs/Local-launchers.md): start the host and interactive Codex players without copying tokens.
 - [Exploration and settlement](docs/Exploration-and-settlement.md): launch a fresh duel using existing player credentials, movement semantics, and validation.
 - [Implementation design](docs/Player-api-plan.md): responsibilities, milestones, and acceptance gates.

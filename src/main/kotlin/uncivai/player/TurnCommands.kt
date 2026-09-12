@@ -9,7 +9,7 @@ import java.util.Collections
 data class PlayerCapabilities(
     val protocolVersion: Int = 1,
     val completeGameplay: Boolean = false,
-    val queries: List<String> = listOf("player_capabilities", "player_summary", "owned_cities", "free_great_person_choice", "player_turn", "player_result"),
+    val queries: List<String> = listOf("player_capabilities", "player_summary", "owned_cities", "free_great_person_choice", "player_turn", "player_result", "research_details", "policy_details"),
     val commands: List<TurnCommandKind> = TurnCommandKind.entries.toList(),
     val durableRecovery: Boolean = false,
     val legacyMutationsSupported: Boolean = true,
@@ -43,6 +43,7 @@ enum class TurnCommandKind {
     UPGRADE_UNIT,
     PILLAGE,
     DISBAND_UNIT,
+    ACTIVATE_GREAT_PERSON,
     FOUND_CITY,
     START_WORKER_JOB,
     STOP_WORKER_JOB,
@@ -156,6 +157,7 @@ data class TurnCommandReceipt(
     val combat: CombatOutcome? = null,
     val economy: EconomyOutcome? = null,
     val cityManagement: CityManagementOutcome? = null,
+    val greatPerson: GreatPersonOutcome? = null,
 )
 
 object PlayerTurnJson {
@@ -176,6 +178,7 @@ internal fun TurnCommandRequest.detached(): TurnCommandRequest = copy(
 )
 
 internal fun TurnCommandReceipt.detached(): TurnCommandReceipt = copy(
+    greatPerson = greatPerson?.detached(),
     cityManagement = cityManagement?.detached(),
     economy = economy?.copy(units = Collections.unmodifiableList(economy.units.toList())),
     feedback = feedback?.let {

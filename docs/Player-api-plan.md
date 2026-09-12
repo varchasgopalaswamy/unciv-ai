@@ -245,6 +245,21 @@ restarts and exact retries. A live-model run of this new scenario is still pendi
 Full overview details, remaining unit actions, general trade, embedded human play
 and isolation remain in the wider plan.
 
+## Delivered slice: Great Person abilities and decision details
+
+The [Great People slice](Great-people.md) adds shared execution-time validation for
+Great Person abilities, detached effects and unavailable reasons, unit consumption
+and durable receipts. The Vanilla exercise covers research and construction hurry,
+Artist/General Golden Ages and all five non-religious Great Person improvements.
+City-state trade missions remain outside the player API's supported setup.
+
+On-demand research and policy queries provide catalogues and selected desktop
+descriptions, prerequisites, costs, requirements, research paths and branch
+completion effects. Full descriptions are not repeated in every turn snapshot.
+The new exercise pairs immediate ability checks with ordinary specialist-generated
+Scientists and Liberty's free Great Person choice, using native-state assertions,
+scheduled HTTPS handoffs, process restarts, rollback and exact retries.
+
 ## Verification gates
 
 Each slice needs engine behavior tests, host authority and privacy tests, transport

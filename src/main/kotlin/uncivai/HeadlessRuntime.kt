@@ -100,6 +100,8 @@ class HeadlessRuntime private constructor(
         /** The seed controls terrain, not every engine random choice. */
         fun createDuel(dataDirectory: Path, seed: Long = System.currentTimeMillis(), closeStarts: Boolean = false, combatScenario: Boolean = false): HeadlessRuntime = open(null, dataDirectory, DuelSetup(seed, closeStarts, combatScenario))
 
+        fun createGreatPeopleExercise(dataDirectory: Path, seed: Long = 517L): HeadlessRuntime = open(null, dataDirectory, DuelSetup(seed, greatPeopleScenario = true))
+
         fun createCityManagementExercise(dataDirectory: Path, seed: Long = 412L): HeadlessRuntime {
             val runtime = createDuel(dataDirectory, seed, combatScenario = true)
             try {

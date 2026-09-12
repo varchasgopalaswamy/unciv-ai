@@ -46,6 +46,9 @@ data class EconomyResource(
 data class CityConnection(val name: String, val position: TilePosition, val capital: Boolean, val connectedToCapital: Boolean)
 
 @Serializable
+data class GoldenAgeObservation(val turnsRemaining: Int, val storedHappiness: Int, val happinessRequired: Int)
+
+@Serializable
 data class EconomyObservation(
     val treasury: Int,
     val goldPerTurn: Int,
@@ -56,6 +59,7 @@ data class EconomyObservation(
     val unitSupply: UnitSupply,
     val resources: List<EconomyResource>,
     val cityConnections: List<CityConnection>,
+    val goldenAge: GoldenAgeObservation,
 )
 
 /** The caller supplies the bound player and holds the executor. No foreign balances or routes escape. */
@@ -72,6 +76,7 @@ internal fun observeEconomy(player: Civilization): EconomyObservation {
     )
     return EconomyObservation(
         treasury = player.gold,
+        goldenAge = GoldenAgeObservation(player.goldenAges.turnsLeftForCurrentGoldenAge, player.goldenAges.storedHappiness, player.goldenAges.happinessRequiredForNextGoldenAge()),
         goldPerTurn = stats.values.map { it.gold }.sum().roundToInt(),
         unitMaintenance = -(stats["Unit upkeep"]?.gold ?: 0f).roundToInt(),
         goldBreakdown = rows(stats.mapValues { it.value.gold }),

@@ -88,7 +88,7 @@ internal class GameplayTestApi(runtime: HeadlessRuntime, tlsRoot: Path) : AutoCl
         return response.body()
     }
     private fun call(token: String, name: String, args: JsonObject = JsonObject(emptyMap())) = Json.parseToJsonElement(raw("/mcp", """{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"$name","arguments":$args}}""", token)).jsonObject.getValue("result").jsonObject
-    private fun tool(token: String, name: String, args: JsonObject = JsonObject(emptyMap())): JsonObject {
+    fun tool(token: String, name: String, args: JsonObject = JsonObject(emptyMap())): JsonObject {
         val response = call(token, name, args)
         check(!response.getValue("isError").jsonPrimitive.boolean) { response.toString() }
         return response.getValue("structuredContent").jsonObject

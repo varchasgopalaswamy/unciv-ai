@@ -11,6 +11,7 @@ import io.modelcontextprotocol.kotlin.sdk.types.ToolSchema
 import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.add
@@ -26,7 +27,9 @@ import uncivai.player.PlayerSession
 import uncivai.player.PlayerSessionException
 import uncivai.player.PlayerSummaryJson
 import uncivai.player.PlayerTurnJson
+import uncivai.player.PolicyDetails
 import uncivai.player.RenameCityRequest
+import uncivai.player.ResearchDetails
 import uncivai.player.TurnCommandKind
 import uncivai.player.TurnCommandRequest
 
@@ -52,7 +55,7 @@ internal fun createPlayerToolsServer(session: PlayerSession): Server = Server(
 
     addTool(
         name = "player_turn",
-        description = "Return your turn status and turnReview first: confirmed actions and each owned unit's remaining movement and legal destination count. Read this before END_TURN; previousTurnReview records deliberate deferrals. scenario includes exercise instructions and phase. Parse the response and print selected fields to avoid truncation. Controllable units are map.units, with combat.attacks, combat.promotions.choices and combat.orders; map.tiles[].units contains visible summaries only. Also returns decisions, city yields/growth/citizen options and production progress/queues, research progress, policy and Great Person options, explored map and owned units. Informational alerts include content with the full title, paragraphs, quote and acknowledgement text from the desktop popup; technology descriptions are specific to your civilization. Read all content and note useful information before acknowledging. FirstContact also identifies the met civilization. Diplomacy lists known surviving majors, relationship status, remaining peace treaty turns, legal actions and unavailable reasons, declarationConfirmation warnings, and permitted peaceOptions maxima. Incoming offers include the leader message, display text, and give/receive terms from your perspective; read them all before responding. Outgoing offers show your pending proposal and retraction option. Visible tiles include displayed yields; workers include legal job options, prerequisites and work progress. Units have current-turn movement destinations and previews; speculative paths can stop early on discovery. Coordinates are axial x/y. Revision changes only with your observed state or successful commands. Combat previews include attack origins, paths, strength modifiers and damage ranges. Read combatReports and capture alerts in full. Tactical orders and promotions include unavailable reasons. economy shows your finances, maintenance, happiness, resource balances and city connections. cities[].purchases lists gold construction/tile purchases with costs, descriptions and unavailable reasons. map.units[].economy lists upgrades, pillage and disband options. Read their costs and confirmation text before acting. Unsupported decisions block end turn.",
+        description = "Return your turn status and turnReview first: confirmed actions and each owned unit's remaining movement and legal destination count. Read this before END_TURN; previousTurnReview records deliberate deferrals. scenario includes exercise instructions and phase. Parse the response and print selected fields to avoid truncation. Controllable units are map.units, with combat.attacks, combat.promotions.choices and combat.orders; map.tiles[].units contains visible summaries only. Also returns decisions, city yields/growth/citizen options and production progress/queues, research progress, policy and Great Person options, explored map and owned units. Informational alerts include content with the full title, paragraphs, quote and acknowledgement text from the desktop popup; technology descriptions are specific to your civilization. Read all content and note useful information before acknowledging. FirstContact also identifies the met civilization. Diplomacy lists known surviving majors, relationship status, remaining peace treaty turns, legal actions and unavailable reasons, declarationConfirmation warnings, and permitted peaceOptions maxima. Incoming offers include the leader message, display text, and give/receive terms from your perspective; read them all before responding. Outgoing offers show your pending proposal and retraction option. Visible tiles include displayed yields; workers include legal job options, prerequisites and work progress. Units have current-turn movement destinations and previews; speculative paths can stop early on discovery. Coordinates are axial x/y. Revision changes only with your observed state or successful commands. Combat previews include attack origins, paths, strength modifiers and damage ranges. Read combatReports and capture alerts in full. Tactical orders and promotions include unavailable reasons. economy shows your finances, maintenance, happiness, resource balances and city connections. cities[].purchases lists gold construction/tile purchases with costs, descriptions and unavailable reasons. map.units[].economy lists upgrades, pillage and disband options. Read their costs and confirmation text before acting. map.units[].greatPerson exposes special abilities, effects, unit consumption and unavailable reasons. Research and policy descriptions are available on demand from research_details and policy_details. Unsupported decisions block end turn.",
         inputSchema = NO_ARGUMENTS_SCHEMA,
         toolAnnotations = QUERY_ANNOTATIONS,
     ) { request ->
@@ -64,7 +67,7 @@ internal fun createPlayerToolsServer(session: PlayerSession): Server = Server(
 
     addTool(
         name = "player_command",
-        description = "Execute one command using the revision from player_turn. MOVE_UNIT uses target=unit handle and offered destination; movement may stop early. FOUND_CITY uses settler target and requires confirmBreakPromise=true if settlementPromises is nonempty. START_WORKER_JOB uses unit target and selection=available job name; STOP_WORKER_JOB uses unit target. SET_WORKED_TILE / SET_TILE_LOCKED use city target, an offered development.tiles destination and worked / locked boolean. REMOVE_CONSTRUCTION uses city target and queue index; MOVE_CONSTRUCTION also uses an offered toIndex. Append with QUEUE_CONSTRUCTION then reorder to change production. Research queue is only for SET_RESEARCH_QUEUE. ACKNOWLEDGE_ALERT uses target=an alert handle with canAcknowledge=true and full content already read from player_turn at this revision, including FirstContact; a revision from a command receipt alone is insufficient (OBSERVATION_REQUIRED). This dismisses only that message, including WarDeclaration. DECLARE_WAR uses target=known civilizationId and requires confirmWar=true after reading declarationConfirmation at this revision. PROPOSE_PEACE uses target=known civilizationId; COUNTER_PEACE uses target=incoming offer handle. Both require peaceTerms give/receive lists with exact offered type/name/duration and positive amounts at most the option maximum, and one Peace Treaty per side. ACCEPT_PEACE and REJECT_PEACE use target=incoming offer handle after reading the current message and terms; unsupported requests can only be rejected. RETRACT_PEACE uses target=known civilizationId. Pending outgoing offers do not block END_TURN: the opponent decides on their turn. Read receipt feedback after acceptance. Successful requests replay; restart recovery requires durableRecovery. Re-observe after commands. END_TURN requires canEndTurn=true and reviewId=turnReview.id from a fresh player_turn at this revision. If any review units are idle with legalDestinations>0, act or supply a short deferReason explaining intentional idling. Read the review even if a prior report claimed movement was unavailable. Any mutation invalidates the review. TURN_REVIEW_REQUIRED means re-read the review and provide acknowledgment; this never forces movement. ATTACK uses an owned unit target and the exact offered destination and attackFrom; CITY_ATTACK uses an owned city and offered destination; omit attackFrom (only ATTACK accepts it). Read receipt.combat: discovery can stop movement before an attack. SET_UNIT_ORDER and PROMOTE_UNIT use an owned unit and selection=available option name. RESOLVE_CAPTURED_CITY uses the capture alert handle (including civilian return choices) and selection=available option name after reading the full decision at this revision. MANAGE_CAPTURED_CITY uses an owned city and available captureOptions selection. BUY_CONSTRUCTION uses city target and purchases.constructions selection=name; BUY_TILE uses city target and purchases.tiles destination (no selection). UPGRADE_UNIT uses unit target and economy.upgrades selection=targetName. PILLAGE and DISBAND_UNIT use unit target without selection. Re-read player_turn before these economic commands; read costs and any confirmation text, and set confirmAction=true when confirmation is present. Read receipt.economy for actual gold and unit changes; re-observe afterward. City management commands require a fresh player_turn at this revision. SET_CITY_FOCUS uses city target and management.focusOptions selection=name. SET_AVOID_GROWTH and SET_MANUAL_SPECIALISTS use city target and enabled boolean. ASSIGN_SPECIALIST / UNASSIGN_SPECIALIST use city target and management.specialists selection=name; each changes one citizen. Assignment needs a free citizen: unwork a tile first if necessary. RESET_CITIZENS uses city target and clears tile locks before automatic allocation. SELL_BUILDING uses city target and management.buildingSales selection=name; read the refund, reasons and confirmation, then set confirmAction=true. REASSIGN_CITY_TILE uses receiving city target and an available management.sharedTiles destination; it needs a free citizen and releases the donor city's tile lock. Read receipt.cityManagement for actual allocations, yields, removed buildings and gold changes.",
+        description = "Execute one command using the revision from player_turn. MOVE_UNIT uses target=unit handle and offered destination; movement may stop early. FOUND_CITY uses settler target and requires confirmBreakPromise=true if settlementPromises is nonempty. START_WORKER_JOB uses unit target and selection=available job name; STOP_WORKER_JOB uses unit target. SET_WORKED_TILE / SET_TILE_LOCKED use city target, an offered development.tiles destination and worked / locked boolean. REMOVE_CONSTRUCTION uses city target and queue index; MOVE_CONSTRUCTION also uses an offered toIndex. Append with QUEUE_CONSTRUCTION then reorder to change production. Research queue is only for SET_RESEARCH_QUEUE. ACKNOWLEDGE_ALERT uses target=an alert handle with canAcknowledge=true and full content already read from player_turn at this revision, including FirstContact; a revision from a command receipt alone is insufficient (OBSERVATION_REQUIRED). This dismisses only that message, including WarDeclaration. DECLARE_WAR uses target=known civilizationId and requires confirmWar=true after reading declarationConfirmation at this revision. PROPOSE_PEACE uses target=known civilizationId; COUNTER_PEACE uses target=incoming offer handle. Both require peaceTerms give/receive lists with exact offered type/name/duration and positive amounts at most the option maximum, and one Peace Treaty per side. ACCEPT_PEACE and REJECT_PEACE use target=incoming offer handle after reading the current message and terms; unsupported requests can only be rejected. RETRACT_PEACE uses target=known civilizationId. Pending outgoing offers do not block END_TURN: the opponent decides on their turn. Read receipt feedback after acceptance. Successful requests replay; restart recovery requires durableRecovery. Re-observe after commands. END_TURN requires canEndTurn=true and reviewId=turnReview.id from a fresh player_turn at this revision. If any review units are idle with legalDestinations>0, act or supply a short deferReason explaining intentional idling. Read the review even if a prior report claimed movement was unavailable. Any mutation invalidates the review. TURN_REVIEW_REQUIRED means re-read the review and provide acknowledgment; this never forces movement. ATTACK uses an owned unit target and the exact offered destination and attackFrom; CITY_ATTACK uses an owned city and offered destination; omit attackFrom (only ATTACK accepts it). Read receipt.combat: discovery can stop movement before an attack. SET_UNIT_ORDER and PROMOTE_UNIT use an owned unit and selection=available option name. RESOLVE_CAPTURED_CITY uses the capture alert handle (including civilian return choices) and selection=available option name after reading the full decision at this revision. MANAGE_CAPTURED_CITY uses an owned city and available captureOptions selection. BUY_CONSTRUCTION uses city target and purchases.constructions selection=name; BUY_TILE uses city target and purchases.tiles destination (no selection). UPGRADE_UNIT uses unit target and economy.upgrades selection=targetName. PILLAGE and DISBAND_UNIT use unit target without selection. Re-read player_turn before these economic commands; read costs and any confirmation text, and set confirmAction=true when confirmation is present. Read receipt.economy for actual gold and unit changes; re-observe afterward. City management commands require a fresh player_turn at this revision. SET_CITY_FOCUS uses city target and management.focusOptions selection=name. SET_AVOID_GROWTH and SET_MANUAL_SPECIALISTS use city target and enabled boolean. ASSIGN_SPECIALIST / UNASSIGN_SPECIALIST use city target and management.specialists selection=name; each changes one citizen. Assignment needs a free citizen: unwork a tile first if necessary. RESET_CITIZENS uses city target and clears tile locks before automatic allocation. SELL_BUILDING uses city target and management.buildingSales selection=name; read the refund, reasons and confirmation, then set confirmAction=true. REASSIGN_CITY_TILE uses receiving city target and an available management.sharedTiles destination; it needs a free citizen and releases the donor city's tile lock. Read receipt.cityManagement for actual allocations, yields, removed buildings and gold changes. ACTIVATE_GREAT_PERSON uses an owned unit target and selection=an available greatPerson.abilities name from a fresh player_turn. Abilities act at the current tile: move first if needed. Read effects and consumesUnit before acting, then read receipt.greatPerson and any new alerts or choices.",
         inputSchema = TURN_COMMAND_INPUT_SCHEMA,
         toolAnnotations = COMMAND_ANNOTATIONS,
     ) { request ->
@@ -90,6 +93,28 @@ internal fun createPlayerToolsServer(session: PlayerSession): Server = Server(
         playerResult {
             request.arguments.requireNoArguments()
             PlayerTurnJson.json.encodeToString(PlayerFinalState.serializer(), session.result())
+        }
+    }
+
+    addTool(
+        name = "research_details",
+        description = "Inspect your technology tree on demand. Omit names for a catalogue of prerequisites, costs and legal/blocked choices. Supply up to 16 exact names for desktop effect descriptions and prerequisiteQueue, the engine's complete ordered research path. researchNow means the technology can be researched immediately; queueAvailable applies to the entire suggested path. A free choice still requires all prerequisites. Use player_command to act and re-observe afterward.",
+        inputSchema = DETAIL_INPUT_SCHEMA,
+        toolAnnotations = QUERY_ANNOTATIONS,
+    ) { request ->
+        playerResult {
+            PlayerTurnJson.json.encodeToString(ResearchDetails.serializer(), session.researchDetails(request.arguments.detailNames()))
+        }
+    }
+
+    addTool(
+        name = "policy_details",
+        description = "Inspect your policy tree on demand, including culture, adoption cost, free choices, branches, prerequisites, era requirements and unavailable reasons. Omit names for a catalogue; supply up to 16 exact names for desktop benefits and branch completion effects. Branch completion policies are automatic. Details do not adopt anything; use ADOPT_POLICY with an available exact name.",
+        inputSchema = DETAIL_INPUT_SCHEMA,
+        toolAnnotations = QUERY_ANNOTATIONS,
+    ) { request ->
+        playerResult {
+            PlayerTurnJson.json.encodeToString(PolicyDetails.serializer(), session.policyDetails(request.arguments.detailNames()))
         }
     }
 
@@ -182,6 +207,33 @@ private val NO_ARGUMENTS_SCHEMA = ToolSchema(
     properties = buildJsonObject {},
     required = emptyList(),
 )
+
+private val DETAIL_INPUT_SCHEMA = ToolSchema(
+    properties = buildJsonObject {
+        putJsonObject("names") {
+            put("type", "array")
+            put("description", "Exact rule names; omit or use [] for the catalogue without long descriptions.")
+            put("maxItems", 16)
+            put("uniqueItems", true)
+            putJsonObject("items") {
+                put("type", "string")
+                put("minLength", 1)
+                put("maxLength", 256)
+            }
+        }
+    },
+    required = emptyList(),
+)
+
+private fun JsonObject?.detailNames(): List<String> {
+    if (this == null || isEmpty()) return emptyList()
+    if (keys != setOf("names")) throw InvalidToolArgumentsException()
+    val names = this["names"] as? JsonArray ?: throw InvalidToolArgumentsException()
+    return names.map { value ->
+        if (value !is JsonPrimitive || !value.isString) throw InvalidToolArgumentsException()
+        value.content
+    }
+}
 
 private val TURN_COMMAND_INPUT_SCHEMA = ToolSchema(
     properties = buildJsonObject {

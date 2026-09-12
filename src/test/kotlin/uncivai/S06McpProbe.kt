@@ -401,6 +401,8 @@ object S06McpProbe {
             "player_capabilities" to emptySet(),
             "player_turn" to emptySet(),
             "player_result" to emptySet(),
+            "research_details" to setOf("names"),
+            "policy_details" to setOf("names"),
             "player_command" to setOf("requestId", "epoch", "revision", "reviewId", "deferReason", "kind", "target", "selection", "queue", "destination", "attackFrom", "confirmBreakPromise", "confirmAction", "enabled", "confirmWar", "peaceTerms", "worked", "locked", "index", "toIndex"),
             "player_summary" to emptySet(),
             "owned_cities" to emptySet(),
@@ -423,6 +425,9 @@ object S06McpProbe {
                     check(schema.getValue("minLength").jsonPrimitive.content == "1")
                     check(schema.getValue("maxLength").jsonPrimitive.content == maximum)
                 }
+            } else if (name in setOf("research_details", "policy_details")) {
+                check(tool.inputSchema.required.orEmpty().isEmpty())
+                check(properties.getValue("names").jsonObject.string("type") == "array")
             } else {
                 check(tool.inputSchema.required.orEmpty().toSet() == expectedProperties)
                 check(properties.values.all { schema -> schema.jsonObject.string("type") == "string" })
@@ -789,6 +794,8 @@ object S06McpProbe {
 
         override fun turn(): uncivai.player.PlayerTurnSnapshot = fail()
         override fun result(): uncivai.player.PlayerFinalState = fail()
+        override fun researchDetails(names: List<String>): uncivai.player.ResearchDetails = fail()
+        override fun policyDetails(names: List<String>): uncivai.player.PolicyDetails = fail()
 
         override fun completedReceipt(request: uncivai.player.TurnCommandRequest): uncivai.player.TurnCommandReceipt? = fail()
 

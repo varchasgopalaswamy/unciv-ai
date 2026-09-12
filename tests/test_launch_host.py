@@ -52,7 +52,7 @@ class HostLauncherTest(unittest.TestCase):
         return checkpoint
 
     def test_new_game_creates_private_distinct_credentials_and_executes_argv(self):
-        self.assertEqual(0, self.run_launcher("--scenario", "city-management", "--seed", "42", "--port", "8766"))
+        self.assertEqual(0, self.run_launcher("--scenario", "great-people", "--seed", "42", "--port", "8766"))
         players_path = self.state / "players.json"
         players = json.loads(players_path.read_text())["players"]
         self.assertEqual(["Rome", "Greece"], [entry["civilizationId"] for entry in players])
@@ -77,7 +77,7 @@ class HostLauncherTest(unittest.TestCase):
                 "--seed",
                 "42",
                 "--scenario",
-                "city-management",
+                "great-people",
                 "--data-dir",
                 str(self.state / "data"),
                 "--mcp-config",

@@ -52,7 +52,7 @@ def parser(*, add_help: bool = True) -> argparse.ArgumentParser:
     parser.add_argument("--seed", type=seed_number, help="map seed for a new game only")
     parser.add_argument(
         "--scenario",
-        choices=["city-management"],
+        choices=["city-management", "great-people"],
         help="required for a new game; on resume, verify that the checkpoint contains this scenario",
     )
     parser.add_argument(
@@ -119,7 +119,9 @@ def launch(options):
     if resuming and options.seed is not None:
         raise ValueError("--seed applies only to a new game; this checkpoint will be resumed.")
     if not resuming and options.scenario is None:
-        raise ValueError("No checkpoint found. Start the exercise with --scenario city-management.")
+        raise ValueError(
+            "No checkpoint found. Start an exercise with --scenario great-people or --scenario city-management."
+        )
     if bool(options.tls_config) != bool(options.ca_file):
         raise ValueError("--tls-config and --ca-file must be supplied together.")
     if options.tls_config and (options.listen_host or options.public_host):

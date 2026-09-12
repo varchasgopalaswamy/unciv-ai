@@ -93,6 +93,12 @@ internal fun confirmedAction(request: TurnCommandRequest, before: PlayerTurnSnap
 
         TurnCommandKind.DISBAND_UNIT -> "Disbanded ${unit!!.name} at ${unit.position.text()}; treasury changed by ${economy!!.goldChange} gold."
 
+        TurnCommandKind.ACTIVATE_GREAT_PERSON -> {
+            val ability = unit!!.greatPerson!!.abilities.single { it.name == request.selection }
+            "${unit.name}: ${ability.title} at ${unit.position.text()}." +
+                if (after.map.units.none { it.handle == unit.handle }) " Unit consumed." else " Unit remains."
+        }
+
         TurnCommandKind.PILLAGE -> {
             val remaining = after.map.units.singleOrNull { it.handle == request.target }
             "${unit!!.name} pillaged at ${unit.position.text()}; treasury changed by ${economy!!.goldChange} gold" +

@@ -206,6 +206,8 @@ class OperatorControl internal constructor(
         override fun capabilities() = guarded { delegate.capabilities() }
         override fun turn() = guarded { delegate.turn() }
         override fun result() = guarded { delegate.result() }
+        override fun researchDetails(names: List<String>) = guarded { delegate.researchDetails(names) }
+        override fun policyDetails(names: List<String>) = guarded { delegate.policyDetails(names) }
         override fun completedReceipt(request: TurnCommandRequest) = guarded { delegate.completedReceipt(request) }
         override fun summary() = guarded { delegate.summary() }
         override fun cities() = guarded { delegate.cities() }

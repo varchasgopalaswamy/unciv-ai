@@ -257,8 +257,23 @@ the UI still has direct access paths. Turn snapshots intentionally cover only th
 slice, including only a subset of alert details and construction controls. Movement
 commands attempt one turn of an advertised path; they do not schedule future movement.
 Naval combat, aircraft relocation, paradrops, air/nuclear attacks and other special actions are absent.
-Worker automation, route-to-destination and instant improvements are also absent.
+Worker automation, route-to-destination and non-Great-Person instant improvements are also absent.
 Citizen specialists, focus changes, tile purchases and construction purchases remain outstanding.
 Explored terrain and ownership follow the map UI's current data; improvement names
 use Unciv's remembered values. This is not a complete historical map snapshot. Consult
 the coverage ledger for the remaining work.
+
+## Great People and on-demand research/policy details
+
+`ACTIVATE_GREAT_PERSON` takes an owned unit `target` and an offered
+`map.units[].greatPerson.abilities[].name` as `selection`, following a fresh
+`player_turn` read. Effects happen at the current tile and can consume the unit.
+Read `receipt.greatPerson` and new alerts/choices. `economy.goldenAge` reports
+remaining turns and happiness progress.
+
+`research_details` and `policy_details` accept optional `names` arrays (up to 16
+unique exact rule names). Omit names for a catalogue without long descriptions;
+request specific entries for desktop descriptions and, for research, the complete
+ordered `prerequisiteQueue`. Details do not acknowledge unit abilities or popup
+content, and do not mutate game state. See [Great People](Great-people.md) for
+semantics, current limits and the prepared exercise.
