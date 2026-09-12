@@ -124,6 +124,8 @@ def run(args: argparse.Namespace) -> int:
             executable,
             model=args.model,
             reasoning_effort=args.reasoning_effort,
+            gateway_url=host_origin(args.public_host, port) + "/mcp",
+            gateway_ca_file=material["ca_file"],
         )
         url = host_origin(args.public_host, port) + "/agent"
         # This file is operator-only discovery. Neither its bearer token nor the host's

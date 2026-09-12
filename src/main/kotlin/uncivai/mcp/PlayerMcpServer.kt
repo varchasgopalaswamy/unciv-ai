@@ -72,7 +72,7 @@ class PlayerMcpServer(
         }
         authenticatedPlayers = prepareAuthenticatedPlayers(
             bindings.map { binding ->
-                PlayerMcpBinding(binding.token, operator?.control?.manualSession(binding.session) ?: binding.session)
+                PlayerMcpBinding(binding.token, operator?.control?.manualSession(binding.session, binding.token) ?: binding.session)
             },
         )
     }
@@ -271,8 +271,8 @@ private fun Application.configurePlayerMcp(
         routing {
             post(OPERATOR_PATH) {
                 try {
-                    val bytes = call.receiveChannel().readRemaining(16_385).readByteArray()
-                    if (bytes.size > 16_384) throw OperatorFailure("INVALID_ARGUMENT")
+                    val bytes = call.receiveChannel().readRemaining(33_554_433).readByteArray()
+                    if (bytes.size > 33_554_432) throw OperatorFailure("INVALID_ARGUMENT")
                     val text = bytes.decodeToString()
                     val request = OperatorControl.json.decodeFromString<OperatorRequest>(text)
                     val response = operator.control.handle(request)

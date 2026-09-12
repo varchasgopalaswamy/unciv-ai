@@ -28,6 +28,9 @@ class GameExecutor internal constructor(
     internal var epoch = "g" + java.lang.Long.toUnsignedString(SecureRandom().nextLong(), 36)
         private set
     internal val turnSessions = HashMap<String, TurnSessionState>()
+    internal var communicationState = CommunicationState()
+    internal val communication = Communication(this)
+    internal var communicationPaused = false
 
     /** Capture each player's permitted reports before turn processing can expire engine history. */
     internal fun captureCombatReports() {
@@ -96,7 +99,7 @@ class GameExecutor internal constructor(
     internal fun enableCheckpoints(store: CheckpointStore) = accessGame {
         check(checkpointStore == null) { "Checkpointing is already configured" }
         try {
-            store.writeInitial(CheckpointStore.capture(game, epoch, paused, turnSessions, handoff, scheduled))
+            store.writeInitial(CheckpointStore.capture(game, epoch, paused, turnSessions, handoff, scheduled, communication = communicationState))
             checkpointStore = store
         } catch (failure: Throwable) {
             store.close()
@@ -109,7 +112,7 @@ class GameExecutor internal constructor(
         try {
             // A handoff or terminal result and dropping its rollback point are one commit.
             if (turnStart?.handoff != handoff || gameFinished(game)) turnStart = null
-            store.write(CheckpointStore.capture(game, epoch, paused, turnSessions, handoff, scheduled, turnStart))
+            store.write(CheckpointStore.capture(game, epoch, paused, turnSessions, handoff, scheduled, turnStart, communicationState, communicationPaused))
         } catch (failure: Throwable) {
             haltAfterMutation(failure)
         }
@@ -118,6 +121,8 @@ class GameExecutor internal constructor(
     internal fun restore(checkpoint: GameCheckpoint, store: CheckpointStore) = accessGame {
         check(checkpointStore == null && turnSessions.isEmpty()) { "Restore before binding players" }
         epoch = checkpoint.epoch
+        communicationState = checkpoint.communication
+        communicationPaused = checkpoint.communicationPaused
         scheduled = checkpoint.scheduled
         paused = checkpoint.paused || scheduled
         handoff = checkpoint.handoff
@@ -149,6 +154,45 @@ class GameExecutor internal constructor(
 
     internal fun discardTurnStart() {
         turnStart = null
+    }
+
+    internal fun roundSnapshot(): GameCheckpoint = accessGame {
+        check(paused && communicationPaused && scheduled)
+        val captured = CheckpointStore.capture(game, epoch, true, turnSessions, handoff, true, communication = communicationState, communicationPaused = true)
+        kotlinx.serialization.json.Json.decodeFromString<GameCheckpoint>(kotlinx.serialization.json.Json.encodeToString(captured))
+    }
+
+    internal fun restoreRound(saved: GameCheckpoint, newEpoch: String, configuredCredentials: Set<String> = emptySet()) = accessGame {
+        check(paused && communicationPaused && scheduled)
+        val replacement = UncivFiles.gameInfoFromString(saved.gameJson)
+        check(!replacement.isSimulation() && replacement.gameParameters.mods.isEmpty())
+        check(replacement.civilizations.filter { it.isHuman() }.map { it.civID }.toSet() == game.civilizations.filter { it.isHuman() }.map { it.civID }.toSet())
+        val accounting = communicationState
+        try {
+            game = replacement
+            onGameReplaced(replacement)
+            epoch = newEpoch
+            handoff = saved.handoff
+            turnStart = null
+            turnSessions.clear()
+            restorePlayers(saved.players)
+            val restoredCommunication = kotlinx.serialization.json.Json.decodeFromString<CommunicationState>(kotlinx.serialization.json.Json.encodeToString(saved.communication))
+            communicationState = restoredCommunication.copy(
+                jobs = accounting.jobs, invocations = accounting.invocations,
+                maxInvocations = accounting.maxInvocations, maxConcurrent = accounting.maxConcurrent, maxPerCivilization = accounting.maxPerCivilization,
+                coordinatedRecovery = true,
+                restorePending = true,
+                revokedCredentials = (accounting.revokedCredentials + accounting.playerCredentials.keys + configuredCredentials).toMutableSet(),
+                playerCredentials = mutableMapOf(),
+            )
+            turnSessions.values.forEach {
+                it.fingerprint = null
+                it.observedRevision = null
+            }
+            commitCheckpoint()
+        } catch (failure: Throwable) {
+            haltAfterMutation(failure)
+        }
     }
 
     /** Check before fencing credentials so a delayed retry cannot stop a newer attempt. */

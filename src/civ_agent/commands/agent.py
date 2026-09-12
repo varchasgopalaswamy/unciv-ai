@@ -1,16 +1,18 @@
 """Open an interactive Codex player using the existing local host credentials."""
 
 import argparse
+import contextlib
 import json
 import os
 import re
 import shlex
 import shutil
 import stat
+import subprocess
 import sys
 from pathlib import Path
 
-from civ_agent.agent_settings import TURN_REVIEW_PROMPT, add_settings_arguments
+from civ_agent.agent_settings import add_settings_arguments, player_tool_arguments
 from civ_agent.tls import (
     TLSConfigError,
     codex_trust_environment,
@@ -82,28 +84,32 @@ def workspace_name(civilization):
 
 
 def initial_prompt(civilization):
-    return (
-        f"You are playing Unciv as {civilization}. Use only the civ MCP tools for all "
-        "game information and game actions. Do not read host saves, credentials, source "
-        "code or another player's files. You may keep your own notes in this working directory. "
-        "First inspect player_capabilities and player_turn. If it is your turn, use the "
-        "supported actions to play one sensible turn: explore with available units, settle "
-        "if appropriate, and choose research and production. Read your diplomacy view and "
-        "each popup's full content in player_turn.alerts: title, paragraphs, quote and acknowledgement. "
-        "Before acknowledging each popup, write a brief public note of what it says and any "
-        "useful gameplay information to retain. Use ACKNOWLEDGE_ALERT only when canAcknowledge "
-        "is true, including FirstContact. Do not discard popup content by extracting only handles. "
-        "If the API returns OBSERVATION_REQUIRED, fetch and read player_turn before retrying. "
-        + TURN_REVIEW_PROMPT
-        + "Re-observe after each successful "
-        "command; use the latest epoch and revision, and preserve the original request ID "
-        "and payload when retrying an uncertain command. Use the current game turn and an increasing "
-        "action number for new request IDs. End your turn once, then make no further tool calls: report "
-        "what happened and wait for my next instruction. If the phase is WAITING, report "
-        "that and wait for my instruction to check again. Stop and explain unsupported "
-        "decisions, paused/finished games, or connection failures. Never substitute another "
-        "civilization's actions or automatically accept a promise-breaking confirmation."
+    from civ_agent.scheduler import player_prompt
+
+    return player_prompt(civilization) + (
+        "Use memory_read/history_read for earlier evidence. After completing one turn, report the outcome to the human."
     )
+
+
+def run_codex(executable, command, environment):
+    return subprocess.call(command, executable=executable, env=environment)
+
+
+@contextlib.contextmanager
+def proposal_session(state_dir, civilization, token, endpoint, args):
+    from civ_agent.scheduler import agent_services
+
+    services = agent_services(state_dir)
+    if civilization not in services:
+        raise LaunchError("Start civ-agent agent-server start for this civilization first.")
+    service = services[civilization]
+    job = service.call(
+        "open_interactive", playerToken=token, hostUrl=endpoint, model=args.model, reasoningEffort=args.reasoning_effort
+    )
+    try:
+        yield job
+    finally:
+        service.call("close_interactive", jobId=job["jobId"])
 
 
 def parser(*, add_help: bool = True) -> argparse.ArgumentParser:
@@ -132,6 +138,8 @@ def parser(*, add_help: bool = True) -> argparse.ArgumentParser:
 
 
 def run(args: argparse.Namespace) -> int:
+    from civ_agent.scheduler import RunnerError
+
     try:
         state_dir = args.state_dir.expanduser().resolve()
         players_file = (args.players.expanduser() if args.players else state_dir / "players.json").resolve()
@@ -146,7 +154,7 @@ def run(args: argparse.Namespace) -> int:
         configuration = (
             "mcp_servers.civ={url=" + json.dumps(endpoint) + ',bearer_token_env_var="UNCIV_PLAYER_TOKEN",required=true}'
         )
-        command = [codex, "--cd", str(workspace), "-c", configuration]
+        command = [codex, "--cd", str(workspace), "-c", configuration, *player_tool_arguments()]
         if args.model:
             command += ["--model", args.model]
         if args.reasoning_effort is not None:
@@ -170,12 +178,23 @@ def run(args: argparse.Namespace) -> int:
         os.umask(0o077)
         private_directory(state_dir / "agents")
         private_directory(workspace)
-        environment = codex_trust_environment(ca_file, os.environ, workspace)
-        environment["UNCIV_PLAYER_TOKEN"] = token
-        print(f"Launching Codex as {civilization} at {endpoint}", flush=True)
-        print(f"Player working directory: {workspace}", flush=True)
-        os.execvpe(codex, command, environment)
-        return 0
-    except (LaunchError, TLSConfigError, OSError) as failure:
+        with proposal_session(state_dir, civilization, token, endpoint, args) as job:
+            gateway_ca = Path(job["caFile"]) if job["caFile"] else None
+            environment = codex_trust_environment(gateway_ca, os.environ, workspace)
+            for name in list(environment):
+                if name.startswith("UNCIV_"):
+                    del environment[name]
+            environment["UNCIV_PLAYER_TOKEN"] = job["token"]
+            command[command.index("-c") + 1] = (
+                "mcp_servers.civ={url="
+                + json.dumps(job["url"])
+                + ',bearer_token_env_var="UNCIV_PLAYER_TOKEN",required=true,default_tools_approval_mode="approve"}'
+            )
+            if job["context"]:
+                command[-1] += "\n\n" + job["context"]
+            print(f"Launching Codex as {civilization} through its HTTPS proposal gateway", flush=True)
+            print(f"Player working directory: {workspace}", flush=True)
+            return run_codex(codex, command, environment)
+    except (LaunchError, TLSConfigError, OSError, RunnerError) as failure:
         print(f"Error: {failure}", file=sys.stderr)
         return 2

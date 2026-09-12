@@ -41,7 +41,8 @@ class LaunchAgentTest(unittest.TestCase):
         output = io.StringIO()
         with (
             patch.object(agent.shutil, "which", return_value="/tools/codex"),
-            patch.object(agent.os, "execvpe") as execute,
+            patch.object(agent, "run_codex", return_value=0) as execute,
+            patch.object(agent, "proposal_session") as sessions,
             patch.object(agent, "verify_https_connection") as connect,
             patch.object(
                 agent,
@@ -51,6 +52,13 @@ class LaunchAgentTest(unittest.TestCase):
             contextlib.redirect_stdout(output),
             contextlib.redirect_stderr(output),
         ):
+            sessions.return_value.__enter__.return_value = {
+                "jobId": "interactive-test",
+                "token": "J" * 43,
+                "url": "https://localhost:8865/mcp",
+                "caFile": str(self.ca),
+                "context": "",
+            }
             if not connected:
                 connect.side_effect = ConnectionRefusedError()
             code = cli.main(["agent", "start", civilization, "--state-dir", str(self.root), *extra])
@@ -62,7 +70,8 @@ class LaunchAgentTest(unittest.TestCase):
             code, execute, output = self.launch(name)
             self.assertEqual(code, 0)
             binary, command, env = execute.call_args.args
-            self.assertEqual(env["UNCIV_PLAYER_TOKEN"], token)
+            self.assertEqual(env["UNCIV_PLAYER_TOKEN"], "J" * 43)
+            self.assertNotIn(token, str(env))
             self.assertEqual(env["CODEX_CA_CERTIFICATE"], str(self.ca))
             self.assertEqual(command[command.index("--cd") + 1], str(self.root / "agents" / name))
             self.assertIn(name, command[-1])
@@ -89,9 +98,8 @@ class LaunchAgentTest(unittest.TestCase):
             self.assertIn("Follow scenario.instructions", prompt)
             self.assertNotIn("CLOSE_START_DIPLOMACY", prompt)
             self.assertNotIn("Rome declares war", prompt)
-            self.assertIn("reviewId=turnReview.id", prompt)
-            self.assertIn("deferReason explaining idle units with legalDestinations>0", prompt)
-            self.assertIn("previousTurnReview", prompt)
+            self.assertNotIn("reviewId=", prompt)
+            self.assertIn("deferReason", prompt)
 
     def test_resume_is_explicit_and_keeps_player_configuration(self):
         code, execute, _ = self.launch(
@@ -193,7 +201,7 @@ class LaunchAgentTest(unittest.TestCase):
         (self.root / "endpoints.json").unlink()
         code, execute, _ = self.launch("Rome", "--url", "https://game.example.com:443/mcp", "--ca-file", str(self.ca))
         self.assertEqual(code, 0)
-        self.assertIn('url="https://game.example.com:443/mcp"', execute.call_args.args[1][4])
+        self.assertIn('url="https://localhost:8865/mcp"', execute.call_args.args[1][4])
         self.assertFalse((self.root / "endpoints.json").exists())
 
     def test_plaintext_and_ambiguous_urls_never_launch_or_expose_tokens(self):

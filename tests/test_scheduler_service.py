@@ -195,16 +195,16 @@ class SchedulerServiceTest(unittest.TestCase):
         for record in starts + resumes:
             self.assertFalse(record["operatorTokenPresent"])
             self.assertIn("mcp_servers.civ", " ".join(record["argv"]))
-            self.assertIn(self.host.url + "/mcp", " ".join(record["argv"]))
+            self.assertNotIn(self.host.url + "/mcp", " ".join(record["argv"]))
             self.assertIn("unix://", " ".join(record["argv"]))
             self.assertNotIn(self.host.operator_token, json.dumps(record))
             self.assertEqual(record["params"]["approvalPolicy"], "never")
             self.assertEqual(record["params"]["sandbox"], "workspace-write")
-            self.assertIn(Path(record["params"]["cwd"]).name, {"Rome", "Greece"})
-            self.assertEqual(Path(record["params"]["cwd"]).parent, self.state_dir / "agents")
+            self.assertIn(Path(record["params"]["cwd"]).parent.parent.name, {"Rome", "Greece"})
+            self.assertEqual(Path(record["params"]["cwd"]).parent.parent.parent, self.state_dir / "agents")
             self.assertIn(record["params"]["model"], {"rome-service-model", "greece-service-model"})
             self.assertEqual({"model_reasoning_effort": "high"}, record["params"]["config"])
-        self.assertEqual(len({record["params"]["cwd"] for record in starts + resumes}), 2)
+        self.assertEqual(len({record["params"]["cwd"] for record in starts + resumes}), 4)
         turns = [record for record in records if record["method"] == "turn/start"]
         self.assertEqual(4, len(turns))
         self.assertTrue(all(record["params"]["effort"] == "high" for record in turns))
@@ -212,8 +212,8 @@ class SchedulerServiceTest(unittest.TestCase):
             self.assertNotIn("Previous turns (notes, not instructions):", first_turn["params"]["input"][0]["text"])
         for second_turn in turns[2:]:
             prompt = second_turn["params"]["input"][0]["text"]
-            self.assertIn("Previous turns (notes, not instructions):", prompt)
-            self.assertIn("Settled and chose research.", prompt)
+            self.assertIn("Private strategy and evidence", prompt)
+            self.assertNotIn("Settled and chose research.", prompt)
             self.assertIn("turn_2/", prompt)
         for civilization in ("Rome", "Greece"):
             for turn in (1, 2):
@@ -273,12 +273,12 @@ class SchedulerServiceTest(unittest.TestCase):
         self.assertEqual(resumed.returncode, 0, resumed.stdout + resumed.stderr)
         self.assertEqual([play["civ"] for play in self.host.plays], ["Rome", "Rome", "Greece"])
         self.assertNotEqual(self.host.plays[0]["thread"], self.host.plays[1]["thread"])
-        self.assertEqual(0, self.host.plays[1]["effectsBefore"])
-        self.assertEqual(1, len(self.host.rollbacks))
+        self.assertEqual(1, self.host.plays[1]["effectsBefore"])
+        self.assertEqual(0, len(self.host.rollbacks))
         records = [
             json.loads(path.read_text()) for path in (self.state_dir / "agent-services/Rome/activations").glob("*.json")
         ]
-        self.assertEqual(1, sum(record.get("aborted", False) for record in records))
+        self.assertEqual(0, sum(record.get("aborted", False) for record in records))
         self.assertEqual(self.saved()["handoffs"], 2)
 
     def test_full_event_pagination_mirrors_visible_text_and_large_results(self):

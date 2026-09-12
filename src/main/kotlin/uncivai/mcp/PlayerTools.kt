@@ -9,6 +9,7 @@ import io.modelcontextprotocol.kotlin.sdk.types.TextContent
 import io.modelcontextprotocol.kotlin.sdk.types.ToolAnnotations
 import io.modelcontextprotocol.kotlin.sdk.types.ToolSchema
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.delay
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -16,7 +17,9 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.add
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
 import kotlinx.serialization.json.putJsonObject
@@ -41,6 +44,45 @@ internal fun createPlayerToolsServer(session: PlayerSession): Server = Server(
         ),
     ),
 ).apply {
+    addTool(
+        name = "player_receipt",
+        description = "Trusted recovery transport: read an exact previously executed request without executing it.",
+        inputSchema = TURN_COMMAND_INPUT_SCHEMA,
+        toolAnnotations = QUERY_ANNOTATIONS,
+    ) { request ->
+        playerResult {
+            val arguments = request.arguments ?: throw InvalidToolArgumentsException()
+            val command = PlayerTurnJson.json.decodeFromJsonElement(TurnCommandRequest.serializer(), arguments)
+            session.completedReceipt(command)?.let(PlayerTurnJson::encode) ?: "{\"error\":\"NOT_ENACTED\"}"
+        }
+    }
+    addTool(
+        name = "player_communication",
+        description = "Authenticated host communication transport. Civilization services manage requests, cursors, and subscriptions.",
+        inputSchema = ToolSchema(
+            properties = buildJsonObject {
+                putJsonObject("op") { put("type", "string") }
+                putJsonObject("epoch") { put("type", "string") }
+            },
+            required = listOf("op", "epoch"),
+        ),
+        toolAnnotations = COMMAND_ANNOTATIONS,
+    ) { request ->
+        playerResult {
+            val arguments = request.arguments ?: throw InvalidToolArgumentsException()
+            val wait = arguments["waitSeconds"]?.jsonPrimitive?.intOrNull ?: 0
+            if (wait !in 0..25 || (wait > 0 && arguments["op"]?.jsonPrimitive?.content != "read")) throw InvalidToolArgumentsException()
+            val query = JsonObject(arguments - "waitSeconds")
+            var result = session.communication(query)
+            val deadline = System.nanoTime() + wait * 1_000_000_000L
+            while (wait > 0 && (result["events"] as? JsonArray)?.isEmpty() == true && System.nanoTime() < deadline) {
+                delay(100)
+                result = session.communication(query)
+            }
+            result.toString()
+        }
+    }
+
     addTool(
         name = "player_capabilities",
         description = "Return implemented gameplay operations and explicit coverage and recovery limitations.",

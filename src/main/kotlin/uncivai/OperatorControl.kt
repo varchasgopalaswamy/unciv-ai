@@ -28,7 +28,14 @@ internal data class OperatorRequest(
     val handoff: Long? = null,
     val civilization: String? = null,
     val activationId: String? = null,
+    val maxInvocations: Long? = null,
+    val maxConcurrent: Int? = null,
+    val maxPerCivilization: Int? = null,
+    val checkpoint: GameCheckpoint? = null,
 )
+
+@Serializable
+internal data class RotatedPlayerCredential(val civilizationId: String, val token: String)
 
 @Serializable
 internal data class OperatorStatus(
@@ -41,6 +48,9 @@ internal data class OperatorStatus(
     val scheduled: Boolean,
     val leaseId: String?,
     val leaseExpiresInMs: Long,
+    val modelInvocations: Long = 0,
+    val roundStart: Boolean = false,
+    val modelUsage: Map<String, Long> = emptyMap(),
 )
 
 @Serializable
@@ -50,6 +60,8 @@ internal data class OperatorResponse(
     val playerToken: String? = null,
     val activationId: String? = null,
     val results: Map<String, PlayerFinalState> = emptyMap(),
+    val checkpoint: GameCheckpoint? = null,
+    val players: List<RotatedPlayerCredential> = emptyList(),
 )
 
 internal class OperatorFailure(val code: String) : IllegalStateException(code)
@@ -63,6 +75,8 @@ class OperatorControl internal constructor(
     private var leaseId: String? = null
     private var expiresAt = 0L
     private var activation: Activation? = null
+    private val communicationSessions = mutableMapOf<String, Pair<String, PlayerSession>>()
+    private val configuredCredentials = mutableSetOf<String>()
     private val host = PlayerHost(runtime)
 
     init {
@@ -94,6 +108,82 @@ class OperatorControl internal constructor(
             return@accessOperatorGame OperatorResponse(status(game), results = results)
         }
         when (request.op) {
+            "barrier" -> {
+                requireLease(request.leaseId)
+                activation = null
+                runtime.communicationPaused = true
+                runtime.pause()
+            }
+
+            "unbarrier" -> {
+                requireLease(request.leaseId)
+                if (runtime.communicationState.restorePending) throw OperatorFailure("RESTORE_INCOMPLETE")
+                runtime.communicationPaused = false
+                runtime.commitCheckpoint()
+            }
+
+            "snapshot" -> {
+                requireLease(request.leaseId)
+                return@accessOperatorGame OperatorResponse(status(game), checkpoint = runtime.roundSnapshot())
+            }
+
+            "restore" -> {
+                requireLease(request.leaseId)
+                activation = null
+                communicationSessions.clear()
+                runtime.restoreRound(checkNotNull(request.checkpoint), checkNotNull(request.epoch), configuredCredentials)
+                return@accessOperatorGame runtime.accessOperatorGame { OperatorResponse(status(it), leaseId) }
+            }
+
+            "connect" -> {
+                requireLease(request.leaseId)
+                if (request.epoch != runtime.epoch) throw OperatorFailure("STALE_TURN")
+                val civilization = checkNotNull(request.civilization)
+                val session = host.bindPlayer(civilization)
+                val epoch = runtime.epoch
+                val owner = leaseId
+                val token = newToken()
+                communicationSessions[token] = epoch to GuardedSession(session) { mutation ->
+                    if (mutation || runtime.epoch != epoch || leaseId == null || leaseId != owner) deny()
+                }
+                runtime.communicationState.coordinatedRecovery = true
+                runtime.commitCheckpoint()
+                return@accessOperatorGame OperatorResponse(status(game), leaseId, token)
+            }
+
+            "rotate_players" -> {
+                requireLease(request.leaseId)
+                if (request.epoch != runtime.epoch || !runtime.communicationPaused) throw OperatorFailure("STALE_TURN")
+                val credentials = runtime.communicationState
+                credentials.revokedCredentials.addAll(configuredCredentials)
+                credentials.revokedCredentials.addAll(credentials.playerCredentials.keys)
+                credentials.playerCredentials.clear()
+                val players = game.civilizations.filter { it.isHuman() && it.isMajorCiv() }.map { player ->
+                    val token = newToken()
+                    credentials.playerCredentials[credentialHash(token)] = player.civID
+                    RotatedPlayerCredential(player.civID, token)
+                }
+                runtime.commitCheckpoint()
+                return@accessOperatorGame OperatorResponse(status(game), players = players)
+            }
+
+            "restore_complete" -> {
+                requireLease(request.leaseId)
+                if (request.epoch != runtime.epoch) throw OperatorFailure("STALE_TURN")
+                runtime.communicationState.restorePending = false
+                runtime.commitCheckpoint()
+            }
+
+            "job_limits" -> {
+                requireLease(request.leaseId)
+                val state = runtime.communicationState
+                if (checkNotNull(request.maxInvocations) < state.invocations || checkNotNull(request.maxConcurrent) !in 1..64 || checkNotNull(request.maxPerCivilization) !in 1..2) throw OperatorFailure("INVALID_ARGUMENT")
+                state.maxInvocations = request.maxInvocations
+                state.maxConcurrent = request.maxConcurrent
+                state.maxPerCivilization = request.maxPerCivilization
+                runtime.commitCheckpoint()
+            }
+
             "acquire" -> {
                 if (!runtime.durableRecovery) throw OperatorFailure("DURABLE_CHECKPOINT_REQUIRED")
                 if (leaseId != null && leaseId != request.leaseId) throw OperatorFailure("LEASE_BUSY")
@@ -117,6 +207,7 @@ class OperatorControl internal constructor(
 
             "activate" -> {
                 requireLease(request.leaseId)
+                if (runtime.communicationState.restorePending || runtime.communicationPaused) throw OperatorFailure("RESTORE_INCOMPLETE")
                 if (request.epoch != runtime.epoch || request.serverInstance != serverInstance || request.handoff != runtime.handoff || request.civilization != game.currentPlayer) {
                     throw OperatorFailure("STALE_TURN")
                 }
@@ -139,6 +230,7 @@ class OperatorControl internal constructor(
 
             "rollback" -> {
                 requireLease(request.leaseId)
+                if (runtime.communicationState.coordinatedRecovery) throw OperatorFailure("COORDINATED_RESTORE_REQUIRED")
                 if (request.epoch != runtime.epoch || request.serverInstance != serverInstance || request.handoff != runtime.handoff || request.civilization != game.currentPlayer) {
                     throw OperatorFailure("STALE_TURN")
                 }
@@ -152,7 +244,12 @@ class OperatorControl internal constructor(
             }
 
             "pause" -> {
-                if (request.leaseId != null) requireLease(request.leaseId) else leaseId = null
+                if (request.leaseId != null) {
+                    requireLease(request.leaseId)
+                } else {
+                    leaseId = null
+                    runtime.communicationPaused = true
+                }
                 activation = null
                 runtime.pause()
             }
@@ -166,8 +263,10 @@ class OperatorControl internal constructor(
 
             "manual" -> {
                 if (leaseId != null) throw OperatorFailure("LEASE_BUSY")
+                if (runtime.communicationState.restorePending) throw OperatorFailure("RESTORE_INCOMPLETE")
                 activation = null
                 runtime.scheduled = false
+                runtime.communicationPaused = false
                 runtime.discardTurnStart()
                 runtime.resume()
             }
@@ -183,11 +282,22 @@ class OperatorControl internal constructor(
         if (runtime.mutationFailure == null) runtime.pause()
     }
 
-    internal fun manualSession(session: PlayerSession): PlayerSession = GuardedSession(session) { mutation ->
-        if (mutation && runtime.scheduled) deny()
+    internal fun manualSession(session: PlayerSession, token: String? = null): PlayerSession {
+        val boundEpoch = runtime.epoch
+        val credential = token?.let(::credentialHash)
+        if (credential != null) configuredCredentials.add(credential)
+        return GuardedSession(session) { mutation ->
+            if (runtime.epoch != boundEpoch || credential in runtime.communicationState.revokedCredentials || (mutation && runtime.scheduled)) deny()
+        }
     }
 
     internal fun activationSession(token: String): PlayerSession? = runtime.accessOperatorGame {
+        runtime.communicationState.playerCredentials[credentialHash(token)]?.let { civilization ->
+            return@accessOperatorGame manualSession(host.bindPlayer(civilization), token)
+        }
+        communicationSessions[token]?.let { (epoch, session) ->
+            return@accessOperatorGame session.takeIf { epoch == runtime.epoch && leaseId != null }
+        }
         val current = activation ?: return@accessOperatorGame null
         if (!MessageDigest.isEqual(hash(token), hash(current.token))) return@accessOperatorGame null
         GuardedSession(current.session) { mutation ->
@@ -204,6 +314,7 @@ class OperatorControl internal constructor(
             block()
         }
         override fun capabilities() = guarded { delegate.capabilities() }
+        override fun communication(request: kotlinx.serialization.json.JsonObject) = guarded { delegate.communication(request) }
         override fun turn() = guarded { delegate.turn() }
         override fun result() = guarded { delegate.result() }
         override fun researchDetails(names: List<String>) = guarded { delegate.researchDetails(names) }
@@ -237,6 +348,13 @@ class OperatorControl internal constructor(
         scheduled = runtime.scheduled,
         leaseId = leaseId,
         leaseExpiresInMs = if (leaseId == null) 0 else (expiresAt - clockMillis()).coerceAtLeast(0),
+        modelInvocations = runtime.communicationState.invocations,
+        modelUsage = listOf("input_tokens", "cached_input_tokens", "output_tokens", "reasoning_output_tokens").associateWith { key ->
+            runtime.communicationState.jobs.values.sumOf { job ->
+                ((job["usage"] as? kotlinx.serialization.json.JsonObject)?.get(key) as? kotlinx.serialization.json.JsonPrimitive)?.content?.toLongOrNull()?.coerceAtLeast(0) ?: 0L
+            }
+        },
+        roundStart = game.civilizations.firstOrNull { it.isHuman() && it.isMajorCiv() && !it.isDefeated() }?.civID == game.currentPlayer,
     )
 
     private fun finished(game: GameInfo) = gameFinished(game)
@@ -256,9 +374,14 @@ class OperatorControl internal constructor(
             "pause" -> if (request.leaseId == null) emptySet() else setOf("leaseId")
             "activate" -> setOf("leaseId", "epoch", "serverInstance", "handoff", "civilization", "activationId")
             "rollback" -> setOf("leaseId", "epoch", "serverInstance", "handoff", "civilization", "activationId")
+            "connect" -> setOf("leaseId", "epoch", "civilization")
+            "rotate_players", "restore_complete" -> setOf("leaseId", "epoch")
+            "job_limits" -> setOf("leaseId", "maxInvocations", "maxConcurrent", "maxPerCivilization")
+            "barrier", "unbarrier", "snapshot" -> setOf("leaseId")
+            "restore" -> setOf("leaseId", "epoch", "checkpoint")
             else -> throw OperatorFailure("INVALID_ARGUMENT")
         }
-        val values = mapOf("leaseId" to request.leaseId, "epoch" to request.epoch, "serverInstance" to request.serverInstance, "handoff" to request.handoff, "civilization" to request.civilization, "activationId" to request.activationId)
+        val values = mapOf("leaseId" to request.leaseId, "epoch" to request.epoch, "serverInstance" to request.serverInstance, "handoff" to request.handoff, "civilization" to request.civilization, "activationId" to request.activationId, "maxInvocations" to request.maxInvocations, "maxConcurrent" to request.maxConcurrent, "maxPerCivilization" to request.maxPerCivilization, "checkpoint" to request.checkpoint)
         if (values.filterValues { it != null }.keys != keys || values.values.any { it is String && (it.isBlank() || it.length > 256) } || (request.handoff != null && request.handoff < 0)) {
             throw OperatorFailure("INVALID_ARGUMENT")
         }
@@ -270,6 +393,7 @@ class OperatorControl internal constructor(
         private val random = SecureRandom()
         private fun newToken(): String = Base64.getUrlEncoder().withoutPadding().encodeToString(ByteArray(32).also(random::nextBytes))
         private fun hash(value: String) = MessageDigest.getInstance("SHA-256").digest(value.toByteArray(StandardCharsets.UTF_8))
+        private fun credentialHash(value: String) = Base64.getUrlEncoder().withoutPadding().encodeToString(hash(value))
         private fun deny(): Nothing = throw PlayerSessionException(PlayerSessionFailure.COMMAND_UNAVAILABLE)
     }
 }

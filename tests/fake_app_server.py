@@ -8,6 +8,7 @@ import os
 import re
 import ssl
 import sys
+import tomllib
 import uuid
 from pathlib import Path
 from typing import Any
@@ -59,7 +60,6 @@ async def main():
             text = " ".join(item.get("text", "") for item in params["input"])
             match = re.search(r"Play (.*?)'s current game turn", text)
             assert match is not None
-            civilization = match.group(1)
             common = dict(threadId=current["thread"], turnId=current["turn"])
             await websocket.send_json(
                 dict(
@@ -85,15 +85,29 @@ async def main():
                     ),
                 )
             )
+            mcp = next(argument for argument in arguments if argument.startswith("mcp_servers"))
+            gateway_url = tomllib.loads(mcp)["mcp_servers"]["civ"]["url"]
             async with ClientSession() as client:
-                async with client.post(
-                    os.environ["CIV_TEST_HOST"] + "/simulate",
-                    ssl=context,
-                    headers={"Authorization": "Bearer " + token},
-                    json=dict(civilization=civilization, threadId=current["thread"]),
-                ) as response:
-                    response.raise_for_status()
-                    behavior = (await response.json())["behavior"]
+                for rpc_id, name, arguments_value in [
+                    (1, "player_turn", {}),
+                    (2, "player_command", {"kind": "END_TURN", "deferReason": current["thread"]}),
+                ]:
+                    async with client.post(
+                        gateway_url,
+                        ssl=context,
+                        headers={"Authorization": "Bearer " + token},
+                        json={
+                            "jsonrpc": "2.0",
+                            "id": rpc_id,
+                            "method": "tools/call",
+                            "params": {"name": name, "arguments": arguments_value},
+                        },
+                    ) as response:
+                        response.raise_for_status()
+                        result = (await response.json())["result"]["structuredContent"]
+                        if "error" in result:
+                            raise RuntimeError("Gateway rejected fake gameplay")
+                behavior = result["behavior"]
             if behavior in {"hang", "after_handoff_hang"}:
                 await asyncio.Event().wait()
             if behavior == "slow_report":

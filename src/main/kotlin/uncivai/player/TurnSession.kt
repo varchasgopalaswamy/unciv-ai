@@ -102,6 +102,7 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
         if (game.currentPlayer != player.civID || game.currentPlayerCiv !== player) fail(PlayerSessionFailure.NOT_YOUR_TURN)
         val before = snapshot(game, player, state)
         if (request.revision != before.revision) fail(PlayerSessionFailure.STALE_REVISION)
+        runtime.communication.validate(player.civID, request, request.target?.takeIf { request.kind == TurnCommandKind.DECLARE_WAR }, game.turns)
         if (before.phase != "ACTIVE") fail(PlayerSessionFailure.COMMAND_UNAVAILABLE)
         if (gameHasResult(game) && request.kind != TurnCommandKind.RESOLVE_CAPTURED_CITY) fail(PlayerSessionFailure.COMMAND_UNAVAILABLE)
         if (player.hasCaptureDecision() && request.kind !in setOf(TurnCommandKind.RESOLVE_CAPTURED_CITY, TurnCommandKind.ACKNOWLEDGE_ALERT)) fail(PlayerSessionFailure.TURN_BLOCKED)
@@ -202,7 +203,10 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
             }
             val option = offered.singleOrNull { it.destination == request.destination && (request.kind == TurnCommandKind.CITY_ATTACK || it.attackFrom == request.attackFrom) }
                 ?: fail(PlayerSessionFailure.OPTION_UNAVAILABLE)
-            game.tileMap[com.unciv.logic.map.HexCoord(option.destination.x, option.destination.y)]
+            game.tileMap[com.unciv.logic.map.HexCoord(option.destination.x, option.destination.y)].also { tile ->
+                val defender = if (tile.isCityCenter()) tile.getCity()?.civ else (tile.militaryUnit ?: tile.civilianUnit)?.civ
+                runtime.communication.validate(player.civID, request, defender?.civID, game.turns)
+            }
         } else if (request.kind in tileCommands) {
             val option = before.cities.single { it.handle == request.target }.development!!.tiles
                 .singleOrNull { it.position == request.destination } ?: fail(PlayerSessionFailure.OPTION_UNAVAILABLE)
@@ -455,6 +459,7 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
                 greatPerson = if (request.kind == TurnCommandKind.ACTIVATE_GREAT_PERSON) greatPersonOutcome(request, before, after, player.policies.storedCulture - cultureBefore) else null,
             )
             state.receipts[request.requestId] = detachedRequest to receipt
+            runtime.communication.enacted(player.civID, partner?.civID ?: trade?.requestingCiv, receipt)
             runtime.commitCheckpoint()
             receipt
         } catch (failure: PlayerSessionException) {
@@ -573,6 +578,26 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
     }
 
     private fun scenario(game: GameInfo, player: Civilization, diplomacy: DiplomacyObservation): GameplayScenario? {
+        if (game.tileMap.mapParameters.name == uncivai.VerbalBetrayalScenario.MAP_NAME) {
+            return GameplayScenario(
+                "DIPLOMACY_MEMORY_EXERCISE",
+                if (diplomacy.knownCivilizations.any { it.atWar }) "AT_WAR" else "AT_PEACE",
+                immutable(uncivai.VerbalBetrayalScenario.instructions(player.civID)),
+            )
+        }
+        if (game.tileMap.mapParameters.name == "Asynchronous chat exercise") {
+            return GameplayScenario(
+                "ASYNC_CHAT_EXERCISE",
+                "DEVELOP_AND_COMMUNICATE",
+                immutable(
+                    listOf(
+                        "Chat exercise: remain at peace, found a capital, explore nearby, and keep research and production running. Each civilization should send one public introduction without mentions and one private greeting to the other player. Do this once; keep a concise STRATEGY note so later turns do not repeat it.",
+                        "Rome should offer Greece a social peace commitment: no attacks through turn 5, unconditional, kind=peace, expiresTurn=5. Greece should read the exact offer and explicitly accept it. Communication jobs can reply off turn. Do not wait or poll during gameplay, and do not claim that a social promise enacted an engine treaty.",
+                        "Record a concise private relationship assessment with sources and uncertainty, and an economic plan. Continue ordinary turns after the agreement. Player statements remain attributed claims, not observations of their army or economy.",
+                    ),
+                ),
+            )
+        }
         if (game.tileMap.mapParameters.name == "Great People exercise") {
             return GameplayScenario(
                 "GREAT_PEOPLE_EXERCISE",

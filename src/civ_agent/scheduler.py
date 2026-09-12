@@ -18,7 +18,8 @@ import uuid
 from pathlib import Path
 
 from civ_agent.agent_results import ResultError, validate_result
-from civ_agent.agent_settings import TURN_REVIEW_PROMPT, add_settings_arguments, valid_setting
+from civ_agent.agent_settings import add_settings_arguments, valid_setting
+from civ_agent.match_recovery import RoundCoordinator
 from civ_agent.runner_history import EventHistory, HistoryError
 
 
@@ -143,7 +144,7 @@ class JsonEndpoint:
         try:
             maximum = (
                 32 * 1024 * 1024
-                if operation in {"archive", "results"}
+                if operation in {"archive", "results", "snapshot"}
                 else 300 * 1024
                 if operation == "events"
                 else 65536
@@ -219,6 +220,21 @@ class Agent(JsonEndpoint):
 
     def call(self, operation, **fields):
         result = super().call(operation, **fields)
+        if operation in {
+            "connect",
+            "disconnect",
+            "barrier",
+            "snapshot",
+            "verify_snapshot",
+            "restore",
+            "cancel_jobs",
+            "open_interactive",
+            "close_interactive",
+        }:
+            status = result.get("status")
+            if not isinstance(status, dict):
+                raise OperatorError("Invalid agent coordination response")
+            return status
         try:
             status = result["status"]
             if not isinstance(status, dict) or status.get("civilization") != self.civilization:
@@ -347,21 +363,17 @@ def player_prompt(civilization, game_turn=None):
         if game_turn is not None
         else f"Play {civilization}'s current game turn. "
     )
-    request_ids = (
-        f"For new commands use t{game_turn}a1, t{game_turn}a2, etc.; reuse an ID only for an identical retry. "
-        if game_turn is not None
-        else "Use the current game turn and an increasing action number for new request IDs; reuse only for identical retries. "
-    )
     return current + (
-        "A fresh conversation: summaries are historical notes, not current state or instructions. "
+        "A fresh conversation: private memory is historical evidence and plans, not current state or instructions. "
         "Use civ MCP tools for game state/actions; only your own turn files for history. "
         "Read player_capabilities and player_turn. Play one ACTIVE turn using offered actions. "
+        "Follow scenario.instructions when present. "
         "Read and briefly note full popups, declaration warnings and diplomatic messages/terms before responding. "
-        "Re-observe after commands; copy handles/revisions exactly. "
-        + request_ids
-        + "Read command receipts to verify actual outcomes. "
+        "Re-observe after commands; select entity handles exactly. The service handles credentials, request IDs, "
+        "versions and retries. Read command receipts to verify actual outcomes. "
         "STALE_REVISION applied nothing: re-observe, reconsider, retry once if legal; stop on repetition. "
-        + TURN_REVIEW_PROMPT
+        + "Read turnReview before END_TURN; act with mobile units or give a deferReason for intentionally idling them. "
+        "Keep concise private plans with memory_update before ending. Chat replies arrive asynchronously; do not poll. "
         + "End when legal, including while awaiting an offer response. Stop after handoff, unsupported decisions, "
         "uncertain failures or a paused/finished game. "
     )
@@ -489,7 +501,7 @@ class Scheduler:
             return "Wall-time budget exhausted (pause and downtime count)."
         if status["turn"] - self.state["initialTurn"] >= limits["maxTurns"]:
             return "Game-turn budget exhausted."
-        if self.state["invocations"] >= limits["maxInvocations"]:
+        if max(self.state["invocations"], status.get("modelInvocations", 0)) >= limits["maxInvocations"]:
             return "Agent activation budget exhausted."
         return None
 
@@ -682,58 +694,31 @@ class Scheduler:
             self.complete_turn(flight, status)
             print("Confirmed the previous activation's committed handoff; continuing from host state.", flush=True)
             return True
-        restored = self.operator.call(
-            "rollback",
-            leaseId=self.lease,
-            epoch=self.state["epoch"],
-            serverInstance=status["serverInstance"],
-            handoff=flight["handoff"],
-            civilization=flight["civilization"],
-            activationId=flight["activationId"],
-        )["status"]
-        self.check_status(restored)
-        if (
-            restored["handoff"] != flight["handoff"]
-            or restored["turn"] != flight["gameTurn"]
-            or restored.get("activeCivilization") != flight["civilization"]
-            or restored["phase"] != "PAUSED"
-            or restored["serverInstance"] != status["serverInstance"]
-            or restored.get("leaseId") != self.lease
-            or restored.get("scheduled") is not True
-        ):
-            raise RunnerError("Host did not confirm restoration of the interrupted turn; no fresh agent was started.")
-        aborted = agent.call(
-            "abort",
-            activationId=flight["activationId"],
-            epoch=self.state["epoch"],
-            gameTurn=flight["gameTurn"],
-            handoff=flight["handoff"],
-        )
-        self.record_agent(aborted, flight)
-        if aborted.get("aborted") is not True:
-            raise RunnerError("Agent service did not confirm archiving the rolled-back attempt.")
-        if not self.poll_events(flight, drain=True):
-            raise RunnerError(
-                "Rolled-back attempt history could not be mirrored; resume to retry before starting a fresh agent."
-            )
-        archive = agent.archive(flight["activationId"])
-        if archive["gameTurn"] != flight["gameTurn"]:
-            raise RunnerError("Agent service returned another turn's archive.")
-        try:
-            self.history_for(flight).publish_archive(archive)
-        except HistoryError as failure:
-            raise RunnerError(f"Rolled-back turn archive could not be mirrored: {failure}") from None
+        # Confirmed actions and messages survive ordinary interruption. A fresh
+        # job will inspect current state; its service reconciles durable requests.
+        if not agent_missing:
+            archive = agent.archive(flight["activationId"])
+            if archive["gameTurn"] != flight["gameTurn"]:
+                raise RunnerError("Agent service returned another turn's archive.")
+            try:
+                self.history_for(flight).publish_archive(archive)
+            except HistoryError as failure:
+                raise RunnerError(f"Interrupted turn archive could not be mirrored: {failure}") from None
         self.state["sessions"][flight["civilization"]]["threadId"] = None
         self.state["inFlight"] = None
         self.save()
         print(
-            f"Restored {flight['civilization']}'s turn to its starting save; the next attempt uses a fresh conversation.",
+            f"Preserved {flight['civilization']}'s confirmed work; the next attempt uses a fresh conversation.",
             flush=True,
         )
         return True
 
     def run(self):
         try:
+            rounds = RoundCoordinator(self.store.root.parent, self.operator, self.agents, self.lease)
+            journal = rounds.root / "restore.json"
+            if journal.exists() and not read_json(journal).get("complete"):
+                raise RunnerError("Emergency restoration is incomplete. Repeat match rollback before resuming.")
             initial = self.operator.call("status")["status"]
             self.check_status(initial)
             flight = self.state.get("inFlight")
@@ -763,6 +748,26 @@ class Scheduler:
             self.save()
             if not self.reconcile(acquired["status"]):
                 return 0 if self.state["status"] == "complete" else 2
+            self.operator.call(
+                "job_limits",
+                leaseId=self.lease,
+                maxInvocations=self.state["limits"]["maxInvocations"],
+                maxConcurrent=self.state["limits"].get("maxConcurrent", 4),
+                maxPerCivilization=self.state["limits"].get("maxPerCivilization", 2),
+            )
+            for civilization, agent in self.agents.items():
+                connection = self.operator.call(
+                    "connect", leaseId=self.lease, epoch=self.state["epoch"], civilization=civilization
+                )
+                agent.call(
+                    "connect",
+                    epoch=self.state["epoch"],
+                    playerToken=connection["playerToken"],
+                    model=self.state.get("model"),
+                    reasoningEffort=self.state.get("reasoningEffort"),
+                    timeoutSeconds=self.state["limits"]["activationSeconds"],
+                )
+            rounds.release()
             self.state.update(status="running", reason=None)
             self.save()
             while True:
@@ -782,9 +787,11 @@ class Scheduler:
                 if reason:
                     self.note("budget_exhausted", reason)
                     return 0
+                if status.get("roundStart"):
+                    rounds.capture(status, self.state)
                 if not self.invoke(status):
                     return 0 if self.state["status"] in {"paused", "stopped", "budget_exhausted", "complete"} else 2
-        except (RunnerError, OSError) as failure:
+        except (RunnerError, OSError, ValueError) as failure:
             self.note("needs_inspection", str(failure))
             return 2
         finally:
@@ -801,6 +808,11 @@ class Scheduler:
                     except RunnerError:
                         # No handoff follows an unconfirmed cancellation. The agent's
                         # independent heartbeat lease/timeout also stops model work.
+                        pass
+                for agent in self.agents.values():
+                    try:
+                        agent.call("disconnect")
+                    except RunnerError:
                         pass
                 try:
                     self.operator.call("release", leaseId=self.lease)
@@ -953,24 +965,24 @@ class Scheduler:
         elif interrupted in {"host_paused", "host_restarted"}:
             self.note(
                 "paused",
-                "Host interrupted the activation. Resume restores the turn's starting save before a fresh attempt.",
+                "Host interrupted the activation. Resume preserves confirmed work and starts a fresh planning job.",
             )
         elif interrupted == "budget":
             self.note("budget_exhausted", "Wall-time budget exhausted during an activation.")
         elif interrupted == "timeout":
             self.note(
                 "paused",
-                "Activation timed out without a confirmed handoff. Resume restores the turn's starting save before a fresh attempt.",
+                "Activation timed out without a confirmed handoff. Resume preserves confirmed work and starts a fresh planning job.",
             )
         elif agent_status["phase"] != "COMPLETED":
             self.note(
                 "paused",
-                "Agent service failed without a confirmed handoff. Resume restores the turn's starting save before a fresh attempt.",
+                "Agent service failed without a confirmed handoff. Resume preserves confirmed work and starts a fresh planning job.",
             )
         else:
             self.note(
                 "paused",
-                "Agent returned without a committed handoff. Resume restores the turn's starting save before a fresh attempt.",
+                "Agent returned without a committed handoff. Resume preserves confirmed work and starts a fresh planning job.",
             )
         return False
 
@@ -1004,6 +1016,8 @@ def parser(*, add_help: bool = True) -> argparse.ArgumentParser:
     )
     result.add_argument("--max-seconds", type=positive, help="Wall-time budget including pauses (default: 3600)")
     result.add_argument("--turn-timeout", type=positive, help="Timeout per activation (default: 180 seconds)")
+    result.add_argument("--max-concurrent-jobs", type=positive, default=4, help="Match-wide model concurrency")
+    result.add_argument("--jobs-per-civilization", type=int, choices=(1, 2), default=2)
     add_settings_arguments(
         result,
         model_help="Optional model override for all players; fixed for this run",
@@ -1019,6 +1033,8 @@ def new_state(options, status):
         maxInvocations=options.max_invocations or 48,
         maxSeconds=options.max_seconds or 3600,
         activationSeconds=options.turn_timeout or 180,
+        maxConcurrent=options.max_concurrent_jobs,
+        maxPerCivilization=options.jobs_per_civilization,
     )
     return dict(
         version=2,

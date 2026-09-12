@@ -5,6 +5,11 @@ uv, Python 3.12 or newer, OpenSSL, JDK 21 or newer, the initialized engine check
 that you have already logged into. The host builds through the repository's Gradle
 wrapper, so the first launch may need to download build dependencies.
 
+Interactive launch now requires the civilization's HTTPS service. Start
+`civ-agent agent-server start Rome` and `civ-agent agent-server start Greece`
+in additional terminals before the interactive commands below. See
+[chat, memory and recovery](Chat-memory-and-recovery.md) for automatic play.
+
 ## Start playing
 
 Install once, then start the host from the repository directory in the first terminal:
@@ -49,16 +54,14 @@ The interactive commands on this page retain their one-turn behavior.
 Each player has its own working directory under `STATE_DIR/agents`, such as
 `agents/Rome` or `agents/Greece`. Unusual characters in civilization names are encoded
 so distinct names cannot collide or escape the workspace directory. The launcher
-reads the selected token and passes it through
-`UNCIV_PLAYER_TOKEN`, with a per-session `civ` MCP configuration. Tokens are never
-printed or placed in command arguments, and your global Codex configuration is not
-edited. The launcher loads the host URL and CA certificate from `endpoints.json`,
-verifies the HTTPS connection, and configures Codex to trust that CA. Plain HTTP
-URLs are rejected. This uses Codex's documented
-[MCP bearer-token environment setting](https://learn.chatgpt.com/docs/extend/mcp?surface=cli).
+uses the selected host token in trusted code to open a scoped job at the player's
+HTTPS service. Codex receives only that job's gateway token through
+`UNCIV_PLAYER_TOKEN`. Tokens are never printed or placed in command arguments,
+and the launcher does not edit global Codex configuration. The service supplies
+request IDs, revisions and retry bookkeeping for the model's proposals.
 
 These are trusted local sessions: they inherit your normal Codex login, settings,
-and other configured tools. Separate working directories and prompt instructions
+with general shell and browsing tools disabled. Separate working directories and prompt instructions
 do not prevent filesystem access to operator state or another player's files.
 The isolated runner remains a separate project milestone.
 
@@ -138,14 +141,10 @@ For automatic gameplay, set per-player defaults on `civ-agent agent-server start
 override all players with `civ-agent match start --model YOUR_MODEL --reasoning-effort high`;
 see [automatic turns](Automatic-turns.md#select-models-and-reasoning-effort).
 
-Automatic gameplay also writes `agents/Rome/turn_1/summary.md` and
-`commands.jsonl`, then starts each new game turn with a fresh conversation and the
-earlier summaries. These turn archives are managed by the agent service; interactive
-`civ-agent agent start` sessions retain the explicit conversation behavior described here.
-When an automatic turn is interrupted, `civ-agent match resume` restores its starting
-checkpoint and starts a fresh conversation. Failed-attempt logs are preserved for
-inspection, while committed handoffs are retained. Manual interactive sessions keep
-the per-command checkpoint behavior described above.
+Automatic gameplay also writes concise turn summaries and detailed receipts.
+Fresh jobs receive selected structured memory. On interruption, confirmed work
+is preserved and uncertain responses are reconciled; a new conversation observes
+the current game. Whole-match rollback is an explicit operator command.
 See [turn folders and memory](Automatic-turns.md#turn-folders-and-memory).
 
 Use a conversation ID belonging to that civilization and match when resuming.

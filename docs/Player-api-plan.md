@@ -5,6 +5,12 @@ of concept, not a compatibility constraint. Progress is recorded in
 [the coverage ledger](Player-api-coverage.md); working smoke tests never imply full
 gameplay coverage or a complete privacy boundary.
 
+The [asynchronous chat, structured memory and emergency recovery slice](Async-chat-and-memory-plan.md)
+is implemented. It replaces summary concatenation with selected memory, allows
+concurrent computation behind serialized approval, and preserves confirmed work
+on normal recovery. Whole-match rollback is an explicit operator action using
+coordinated round checkpoints. See [current operation](Chat-memory-and-recovery.md).
+
 ## Contract
 
 Players receive every ordinary Unciv action and information surface as structured
@@ -39,16 +45,15 @@ human engine slots so built-in AI cannot silently take their turns. Operator con
 3. Add isolation to the local scheduled runner and support a desktop human alongside
    Codex. Preserve each player's completed-turn summaries, detailed command records
    and private notes. Start a fresh conversation for every new turn and every retry
-   after a turn-start rollback. Keep failed attempts for debugging, outside turn
+   after an interruption. Keep failed attempts for debugging, outside turn
    memory. Use separate rootless
    containers and restricted networking; no host saves, source checkouts, unrelated
    tools, or other players' credentials or histories. Model choice and budgets are
    operator configuration, not game rules.
-4. Persist game state and receipts consistently, including a turn-start restore
-   point for scheduled players. On an agent failure, pause without choosing player
-   actions. On resume, retain any committed handoff; otherwise restore the complete
-   turn-start state and start a fresh conversation. A lost reply must not undo or
-   repeat a committed turn. Unrecoverable host failures remain halted.
+4. Persist game state, receipts, communication and memory consistently. Normal
+   recovery preserves confirmed work and reconciles uncertain requests before new
+   computation. Coordinate optional whole-match recovery at round boundaries;
+   never mix restored and abandoned timelines. Unrecoverable host failures halt.
 5. Complete Vanilla, then Gods & Kings, removing setup restrictions only when all
    reachable actions and information surfaces pass the coverage gates.
 
@@ -74,21 +79,12 @@ Automatic scheduling scope:
   checks the host's active civilization after checkpoint commit and rechecks before
   dispatch. Handoffs follow authoritative state, never model prose, the round counter,
   or player-scoped revisions. Waiting does not consume model calls.
-- Each match epoch/civilization keeps its own working
-  directory, notes and token. Only the selected player's permitted observations enter
-  a fresh conversation for each new game turn using concatenated prior completed
-  summaries; operator status and other players' transcripts are not forwarded.
-  Readable `agents/Rome/turn_1/` folders contain dense `commands.jsonl` and light
-  `summary.md` records. Recovery restores an unfinished turn's starting checkpoint
-  and starts a fresh thread. Rolled-back attempts remain archived for debugging and
-  contribute neither action claims nor observations to the next turn's context.
-  Their commands and full public reports stay in `turn_1/attempts/attempt_1/`;
-  the top-level turn files contain only retained attempts. Summary report excerpts
-  have a 200-word limit; full reports remain available on explicit inspection.
-- One scheduler owns the match, with one agent activation at a time. Prevent old
-  processes from surviving into another turn. A completed activation must reconcile
-  with host status before the next one starts. If the agent returns while still owning
-  the turn, report the incomplete turn and pause rather than relaunching without progress.
+- Each civilization keeps private structured memory and readable turn summaries
+  and receipts. Fresh jobs use selected notes and events; transcripts stay available
+  on demand. The service owns credentials and request bookkeeping.
+- One scheduler owns gameplay turn authority. Each civilization may also run a
+  communication job concurrently; the inbox keeps receiving events while models
+  compute. Only the active civilization can issue ordinary gameplay commands.
 - Provide game-turn and invocation limits, per-activation timeouts, persisted model
   usage accounting, and operator stop/resume. Distinguish enforced limits from estimated
   token/cost budgets; do not promise a hard spending cap without enforcement support.
@@ -96,22 +92,10 @@ Automatic scheduling scope:
   required human confirmation, or exhausted limits. Do not choose substitute actions
   or automatically skip blocked turns. Stop on game completion and do not activate
   waiting, paused, or defeated players.
-- Persist runner progress, attempt identities and finalized summaries. On restart,
-  reconcile with the authoritative checkpoint before activating a player. A lost
-  end-turn reply can coexist with a committed handoff: retain that completed turn
-  and never synthesize a second end-turn command. If the handoff did not commit,
-  restore the turn-start game and receipts, rotate stale-state revisions, revoke
-  temporary credentials and mark the discarded attempt as rolled back. This
-  operator-only recovery retains the match epoch and consumed budgets. Missing or
-  inconsistent restore state must stop recovery rather than guess. A `HALTED` host
-  must restart from its durable checkpoint before rollback, preserving the disk's
-  authority when a checkpoint write had an uncertain outcome.
-
-All network communication uses authenticated, certificate-verified HTTPS: player
-MCP, operator control, and per-civilization agent-service control. Each service uses
-a private Unix socket for its internal Codex app-server connection, with no stdio
-protocol or plaintext network listener. Remote endpoints and CA trust can be
-configured without giving the agents access to the host filesystem.
+- Persist runner progress, job identities, confirmed actions, messages, notes and
+  receipts. Normal recovery reconciles uncertain requests without rewinding game
+  state. Explicit emergency recovery restores all participants from a complete
+  round manifest, fences old epochs and preserves operator audit/usage accounting.
 
 This first scheduler supports trusted development sessions. Filesystem and
 network isolation remain an explicit later milestone; separate directories alone
@@ -121,8 +105,8 @@ to this slice even while the isolated runner is outstanding.
 Acceptance: two agents develop a fresh duel over a configured short run (for example,
 20 game turns), automatically handing off turns, building workers, improving tiles,
 growing cities, and managing production. Pause and restart partway through, verify
-that incomplete turns return to their starting state, start fresh conversations
-with completed-turn memory, and inspect the resulting position with `civ-agent host inspect`.
+that incomplete turns retain confirmed work, start fresh conversations
+with selected private memory, and inspect the resulting position with `civ-agent host inspect`.
 Scripted CI clients must also exercise wrong-turn activation, duplicate supervisors,
 timeouts, incomplete turns, unsupported choices, budget exhaustion, and interruption
 on both sides of an accepted handoff. A live multi-turn model run complements these

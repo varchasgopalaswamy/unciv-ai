@@ -25,9 +25,13 @@ from pathlib import Path
 import aiohttp
 from aiohttp import web
 
+from civ_agent import service_recovery
 from civ_agent.agent_history import HISTORY_METHODS, HistoryStore
 from civ_agent.agent_results import PlayerResultStore, ResultError, validate_result
-from civ_agent.agent_settings import valid_setting
+from civ_agent.agent_settings import player_tool_arguments, valid_setting
+from civ_agent.chat_runtime import ChatRuntime
+from civ_agent.civilization_state import CivilizationState
+from civ_agent.proposal_gateway import HostConnection, ProposalGateway
 from civ_agent.protocol import AgentProcess, JsonObject, Notification
 from civ_agent.service_io import ServiceIO
 from civ_agent.tls import codex_trust_environment, https_url, private_directory, regular_file, write_private_json
@@ -88,9 +92,19 @@ class CodexProcess:
         config = (
             "mcp_servers.civ={url="
             + json.dumps(self.mcp_url)
-            + ',bearer_token_env_var="UNCIV_PLAYER_TOKEN",required=true}'
+            + ',bearer_token_env_var="UNCIV_PLAYER_TOKEN",required=true,default_tools_approval_mode="approve"}'
         )
-        arguments = [self.executable, "-c", config, "app-server", "--listen", "unix://" + str(socket_path)]
+        # Models use player tools and private memory tools. Disable general host
+        # inspection/execution surfaces in these narrowly scoped jobs.
+        arguments = [
+            self.executable,
+            "-c",
+            config,
+            *player_tool_arguments(),
+            "app-server",
+            "--listen",
+            "unix://" + str(socket_path),
+        ]
         self.process = await asyncio.create_subprocess_exec(
             *arguments,
             cwd=self.workspace,
@@ -205,6 +219,8 @@ class AgentService:
         *,
         model: str | None = None,
         reasoning_effort: str | None = None,
+        gateway_url: str = "https://localhost:8865/mcp",
+        gateway_ca_file: Path | None = None,
     ) -> None:
         if model is not None and not valid_setting(model):
             raise ServiceError("INVALID_MODEL")
@@ -238,6 +254,7 @@ class AgentService:
         self.active_task: asyncio.Task[None] | None = None
         self.active_id: str | None = None
         self.process: AgentProcess | None = None
+        self.gameplay_permit = None
         self.stop_event = asyncio.Event()
         self.last_heartbeat = 0.0
         self.turn_id: str | None = None
@@ -260,6 +277,13 @@ class AgentService:
                 raise ServiceError("SERVICE_BINDING_CONFLICT", 409)
         else:
             write_private_json(binding_file, binding)
+        self.memory = CivilizationState(self.state_dir / "civilization", civilization)
+        self.gateway = ProposalGateway(self.memory, self.io, self.workspace)
+        self.gateway.paused = self.memory.is_paused()
+        self.gateway_url, self.gateway_ca_file = gateway_url, gateway_ca_file
+        if (self.state_dir / "restore.json").exists():
+            self.gateway.paused = True
+        self.chat = ChatRuntime(self)
         if self.match_file.exists():
             regular_file(self.match_file, private=True)
             self.match = json.loads(self.match_file.read_text())
@@ -343,6 +367,35 @@ class AgentService:
         if path.exists():
             regular_file(path, private=True)
             events = [json.loads(line) for line in path.read_text().splitlines()]
+        # Transport identities and authoritative receipts are controller records,
+        # deliberately absent from the model's tool inputs and outputs.
+        for request in self.memory.requests_for_job(record["activationId"]):
+            item = {"itemId": "host:" + request["id"], "type": "mcpToolCall", "server": "civ", "source": "controller"}
+            events.append(
+                {
+                    "sequence": len(events),
+                    "kind": "tool_call",
+                    "data": {
+                        **item,
+                        "tool": request["transport"],
+                        "arguments": json.loads(request["payload"]),
+                    },
+                }
+            )
+            if request["result"] is not None:
+                events.append(
+                    {
+                        "sequence": len(events),
+                        "kind": "tool_result",
+                        "data": {
+                            **item,
+                            "result": {
+                                "structuredContent": json.loads(request["result"]),
+                                "isError": "error" in json.loads(request["result"]),
+                            },
+                        },
+                    }
+                )
         return self.archive.update(
             record["gameTurn"],
             record["activationId"],
@@ -589,10 +642,6 @@ class AgentService:
                 record.get("threadId") == payload["threadId"] and record.get("aborted") for record in same_turn
             ):
                 raise ServiceError("THREAD_ABORTED", 409)
-            if payload["threadId"] is None and any(
-                record.get("threadId") and not record.get("aborted") for record in same_turn
-            ):
-                raise ServiceError("THREAD_REQUIRED_FOR_RECOVERY", 409)
             pinned = self.thread_settings.get(payload["threadId"])
             if pinned is not None:
                 settings, effective_settings = pinned
@@ -622,7 +671,7 @@ class AgentService:
             prompt = (
                 payload["prompt"]
                 + f"\n\nCurrent game turn: {payload['gameTurn']} (archive: turn_{payload['gameTurn'] + 1}/). "
-                "Detailed commands and receipts are in turn_N/commands.jsonl; read them only when needed. "
+                "Use history_read only when earlier detailed commands or receipts are needed. "
                 "The service writes all turn files. Do not create or edit them. "
                 "After END_TURN succeeds, make no further tool calls; immediately return your concise turn summary "
                 "as your final response. It becomes this turn's summary.md: at most 200 words of confirmed actions "
@@ -631,9 +680,9 @@ class AgentService:
             )
             if payload["threadId"] is None:
                 assert self.archive is not None
-                context = await self.io.call(self.archive.context, payload["gameTurn"])
-                if context:
-                    prompt += "\n\n" + context
+                await self.io.call(self.memory.bind, payload["epoch"])
+                snapshot = await self.io.call(self.memory.snapshot, "gameplay")
+                prompt += "\n\n" + self.memory.context(snapshot)
             else:
                 prompt += "\nThis is recovery of the same unfinished game turn. Reobserve current host state before retrying commands."
             payload = {**payload, "prompt": prompt}
@@ -671,6 +720,16 @@ class AgentService:
         status = self.status(activation_id)
         if activation_id == self.active_id and status["phase"] not in TERMINAL:
             self.last_heartbeat = time.monotonic()
+            if self.chat.running and self.gameplay_permit == activation_id:
+                grant = await self.chat.social("job_heartbeat", job=activation_id)
+                if not grant["granted"]:
+                    self.failure = "JOB_PERMIT_EXPIRED"
+                    self.stop_event.set()
+                    for job in self.gateway.jobs.values():
+                        if job.id == activation_id:
+                            job.closed = True
+                    if self.active_task is not None:
+                        self.active_task.cancel()
         return status
 
     async def interrupt(self, activation_id):
@@ -759,11 +818,37 @@ class AgentService:
         await self._save(record)
 
     async def _run(self, payload: JsonObject) -> None:
-        self.run_started.set()
+        try:
+            await self._run_job(payload)
+        except (OSError, ValueError, ServiceError, aiohttp.ClientError):
+            # Startup can fail before a child process or its shutdown handler
+            # exists. Publish a terminal result and release interruption waiters.
+            record = self.records[payload["activationId"]]
+            if self.process is None and record["phase"] not in TERMINAL:
+                record.update(phase="FAILED", error="JOB_START_FAILED")
+                await self._save(record, refresh=True)
+            else:
+                raise
+        finally:
+            self.run_started.set()
+
+    async def _run_job(self, payload: JsonObject) -> None:
         record = self.records[payload["activationId"]]
         started = time.monotonic()
-        workspace = self.workspace
-        process = self.process_factory(self.executable, workspace, self.mcp_url, self.ca_file, self._notification)
+        workspace = private_directory(
+            self.workspace / "jobs" / hashlib.sha256(record["activationId"].encode()).hexdigest()[:12]
+        )
+        job = await self.gateway.open(
+            record["activationId"],
+            "gameplay",
+            payload["epoch"],
+            HostConnection(self.mcp_url, payload["playerToken"], self.ca_file),
+            record["settings"],
+            record["gameTurn"],
+        )
+        process = self.process_factory(
+            self.executable, workspace, self.gateway_url, self.gateway_ca_file, self._notification
+        )
         self.process = process
         owner = asyncio.current_task()
         assert owner is not None
@@ -797,11 +882,18 @@ class AgentService:
                 owner.cancel()
 
         renderer = asyncio.create_task(render_history())
+        self.run_started.set()
         try:
             # Preserve resolved settings across new app-server processes even when
             # service defaults or the local Codex configuration have changed.
             selected = record.get("effectiveSettings", record["settings"])
-            await process.start(payload["playerToken"], selected["model"])
+            if self.chat.running:
+                while not (await self.chat.social("job_claim", job=record["activationId"], purpose="gameplay"))[
+                    "granted"
+                ]:
+                    await asyncio.sleep(1)
+                self.gameplay_permit = record["activationId"]
+            await process.start(job.token, selected["model"])
             options: JsonObject = {"cwd": str(workspace), "approvalPolicy": "never", "sandbox": "workspace-write"}
             if selected["model"] is not None:
                 options["model"] = selected["model"]
@@ -928,11 +1020,17 @@ class AgentService:
                     await self._save(record)
                 raise ServiceError("HISTORY_WRITE_FAILED", 503) from None
             record.update(finished)
+            await self.gateway.close(job, finished["phase"] == "COMPLETED")
+            if self.chat.running:
+                with contextlib.suppress(OSError, ValueError, TimeoutError, aiohttp.ClientError):
+                    await self.chat.social("job_release", job=record["activationId"], usage=finished["usage"])
             self.process = None
+            self.gameplay_permit = None
 
     async def close(self):
         if self.active_task is not None and not self.active_task.done():
             await self.interrupt(self.active_id)
+        await self.chat.close()
         await self.io.close()
         if self.lock is not None:
             os.close(self.lock)
@@ -956,6 +1054,39 @@ class AgentService:
                 operation = payload.pop("op", None)
                 if operation == "start":
                     result = await self.start(payload)
+                elif operation in {"open_interactive", "close_interactive"}:
+                    from civ_agent import interactive_session
+
+                    if operation == "open_interactive":
+                        result = await interactive_session.open_session(self, payload)
+                    else:
+                        result = await interactive_session.close_session(self, payload)
+                elif operation == "connect":
+                    result = await self.chat.connect(payload)
+                elif operation == "disconnect":
+                    await self.chat.close()
+                    result = {"connected": False}
+                elif operation == "cancel_jobs":
+                    if not self.gateway.paused:
+                        raise ServiceError("BARRIER_REQUIRED", 409)
+                    if self.active_task is not None and not self.active_task.done():
+                        await self.interrupt(self.active_id)
+                    await self.chat.close()
+                    for job in list(self.gateway.jobs.values()):
+                        await self.gateway.close(job, False)
+                    result = {"stopped": True}
+                elif operation == "barrier":
+                    if set(payload) != {"paused"} or type(payload["paused"]) is not bool:
+                        raise ServiceError("INVALID_ARGUMENT")
+                    result = await service_recovery.barrier(self, payload["paused"])
+                elif operation == "snapshot":
+                    result = await service_recovery.capture(self, payload["id"])
+                elif operation == "verify_snapshot":
+                    path = service_recovery.checkpoint_path(self, payload["id"])
+                    await self.io.call(self.memory.verify, path, payload["sha256"])
+                    result = {"valid": payload["civilization"] == self.civilization}
+                elif operation == "restore":
+                    result = await service_recovery.restore(self, payload)
                 elif operation == "finalize":
                     result = await self.finalize(payload)
                 elif operation == "finalize_terminal":
@@ -1004,6 +1135,7 @@ class AgentService:
                 return web.json_response({"error": "INVALID_JSON"}, status=400)
 
         application.router.add_post("/agent", control)
+        application.router.add_post("/mcp", self.gateway.handle)
 
         async def cleanup(_):
             await self.close()

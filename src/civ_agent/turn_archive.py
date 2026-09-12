@@ -425,6 +425,10 @@ class TurnArchive:
                 ):
                     continue
                 arguments = _object(call.get("arguments")) or {}
+                if "requestId" not in arguments:
+                    # Keep the model's proposal in the detailed transcript. Its
+                    # confirmed effect is counted from the controller's record.
+                    continue
                 result = results.get(call.get("itemId"))
                 receipt = _receipt(result) if result is not None else None
                 command_kind = _short(arguments.get("kind", "Unrecognized command"), 70)

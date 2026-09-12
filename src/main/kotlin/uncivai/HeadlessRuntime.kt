@@ -102,6 +102,10 @@ class HeadlessRuntime private constructor(
 
         fun createGreatPeopleExercise(dataDirectory: Path, seed: Long = 517L): HeadlessRuntime = open(null, dataDirectory, DuelSetup(seed, greatPeopleScenario = true))
 
+        fun createChatExercise(dataDirectory: Path, seed: Long = 412L): HeadlessRuntime = createDuel(dataDirectory, seed, closeStarts = true).also { it.game.tileMap.mapParameters.name = "Asynchronous chat exercise" }
+
+        fun createVerbalBetrayalExercise(dataDirectory: Path, seed: Long = 412L): HeadlessRuntime = createDuel(dataDirectory, seed, closeStarts = true).also { it.game.tileMap.mapParameters.name = VerbalBetrayalScenario.MAP_NAME }
+
         fun createCityManagementExercise(dataDirectory: Path, seed: Long = 412L): HeadlessRuntime {
             val runtime = createDuel(dataDirectory, seed, combatScenario = true)
             try {

@@ -207,10 +207,13 @@ class AgentServiceTests(AgentServiceTestCase):
         await self.service.start(self.payload("activation-two", threadId="thread-one", playerToken="Q" * 43))
         second = await self.terminal()
         self.assertEqual(first["usage"], second["usage"])
-        self.assertEqual(["P" * 43, "Q" * 43], self.factory.tokens)
+        self.assertEqual(2, len(set(self.factory.tokens)))
+        self.assertTrue(all(token not in {"P" * 43, "Q" * 43} for token in self.factory.tokens))
         self.assertTrue(any(method == "thread/resume" for method, _ in self.factory.calls))
         self.assertTrue(all(process.closed for process in self.factory.instances))
-        self.assertTrue(all(process.workspace == self.root / "workspace" for process in self.factory.instances))
+        self.assertTrue(
+            all(process.workspace.is_relative_to(self.root / "workspace/jobs") for process in self.factory.instances)
+        )
         persisted = "".join(file.read_text() for file in self.service.records_dir.glob("*.json"))
         self.assertNotIn("P" * 43, persisted)
         self.assertNotIn("Q" * 43, persisted)
@@ -266,11 +269,11 @@ class AgentServiceTests(AgentServiceTestCase):
         self.assertIn("The service writes all turn files. Do not create or edit them.", prompt)
         self.assertIn("After END_TURN succeeds, make no further tool calls", prompt)
         self.assertIn("at most 200 words", prompt)
-        self.assertEqual(1, prompt.count(self.factory.summary))
+        self.assertEqual(0, prompt.count(self.factory.summary))
         self.assertNotIn("HUGE_OLD_SNAPSHOT_SENTINEL", prompt)
         self.assertNotIn("TAMPERED_MEMORY_SENTINEL", prompt)
-        self.assertEqual(1, prompt.count("# Turn 0\n"))
-        self.assertIn("# Turn 0\n\n" + self.factory.summary, prompt)
+        self.assertEqual(0, prompt.count("# Turn 0\n"))
+        self.assertIn("Private strategy and evidence", prompt)
         for boilerplate in (
             "Host handoff",
             "Receipt evidence",
@@ -346,9 +349,9 @@ class AgentServiceTests(AgentServiceTestCase):
         next_prompt = [payload for method, payload in self.factory.calls if method == "turn/start"][-1]["input"][0][
             "text"
         ]
-        self.assertEqual(1, next_prompt.count(self.factory.summary))
-        self.assertEqual(1, next_prompt.count("# Turn 0\n"))
-        self.assertIn("# Turn 0\n\n" + self.factory.summary, next_prompt)
+        self.assertEqual(0, next_prompt.count(self.factory.summary))
+        self.assertEqual(0, next_prompt.count("# Turn 0\n"))
+        self.assertIn("Private strategy and evidence", next_prompt)
         for excluded in (
             "ABORTED_STRATEGY_SENTINEL",
             "HUGE_OLD_SNAPSHOT_SENTINEL",
@@ -414,8 +417,9 @@ class AgentServiceTests(AgentServiceTestCase):
         )
         await self.service.start(self.payload("next-turn", gameTurn=1, handoff=2))
         next_turn = await self.terminal()
-        with self.assertRaisesRegex(ServiceError, "THREAD_REQUIRED_FOR_RECOVERY"):
-            await self.service.start(self.payload("lost-thread", gameTurn=1, handoff=2))
+        await self.service.start(self.payload("lost-thread", gameTurn=1, handoff=2))
+        fresh = await self.terminal()
+        self.assertNotEqual(next_turn["threadId"], fresh["threadId"])
         await self.service.start(self.payload("retry-turn", gameTurn=1, handoff=2, threadId=next_turn["threadId"]))
         await self.terminal()
         prompt = [payload for method, payload in self.factory.calls if method == "turn/start"][-1]["input"][0]["text"]

@@ -143,6 +143,7 @@ data class TurnCommandRequest(
     val attackFrom: TilePosition? = null,
     val confirmAction: Boolean = false,
     val enabled: Boolean? = null,
+    val socialVersion: Long? = null,
 )
 
 @Serializable

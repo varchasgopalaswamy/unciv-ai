@@ -404,6 +404,8 @@ object S06McpProbe {
             "research_details" to setOf("names"),
             "policy_details" to setOf("names"),
             "player_command" to setOf("requestId", "epoch", "revision", "reviewId", "deferReason", "kind", "target", "selection", "queue", "destination", "attackFrom", "confirmBreakPromise", "confirmAction", "enabled", "confirmWar", "peaceTerms", "worked", "locked", "index", "toIndex"),
+            "player_receipt" to setOf("requestId", "epoch", "revision", "reviewId", "deferReason", "kind", "target", "selection", "queue", "destination", "attackFrom", "confirmBreakPromise", "confirmAction", "enabled", "confirmWar", "peaceTerms", "worked", "locked", "index", "toIndex"),
+            "player_communication" to setOf("op", "epoch"),
             "player_summary" to emptySet(),
             "owned_cities" to emptySet(),
             "rename_city" to setOf("requestId", "epoch", "cityHandle", "name"),
@@ -416,7 +418,7 @@ object S06McpProbe {
             val tool = tools.getValue(name)
             val properties = tool.inputSchema.properties.orEmpty()
             check(properties.keys == expectedProperties) { "$name input properties were ${properties.keys}" }
-            if (name == "player_command") {
+            if (name in setOf("player_command", "player_receipt")) {
                 check(tool.inputSchema.required.orEmpty().toSet() == setOf("requestId", "epoch", "revision", "kind"))
                 check(properties.getValue("queue").jsonObject.string("type") == "array")
                 for ((field, maximum) in mapOf("reviewId" to "128", "deferReason" to "500")) {

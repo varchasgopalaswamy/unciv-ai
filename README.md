@@ -2,7 +2,7 @@
 
 A private headless host and MCP adapter project for agents playing Unciv, depending on a separately maintained Unciv fork. Agents must eventually have every ordinary human player action and information surface while receiving only information their player is allowed to know. Scope covers the bundled Vanilla and Gods & Kings rulesets; mod content is excluded.
 
-The repository provides a headless executable and authenticated HTTPS MCP server. The player interface supports explored-map observations, current-turn movement and settlement, worker jobs, city yields and citizen assignment, construction queues, research, policies, free Great People, informational alerts including first contact, known-civilization identity, validated war declarations and peace negotiations, and validated turn advancement. Checkpoints persist game state and command receipts together. A supervisor starts a fresh Codex conversation for each game turn through HTTPS agent services, carrying forward concise summaries and following the host's committed turn changes.
+The repository provides a headless executable and authenticated HTTPS MCP server. The player interface supports explored-map observations, current-turn movement and settlement, worker jobs, city yields and citizen assignment, construction queues, research, policies, free Great People, informational alerts including first contact, known-civilization identity, validated war declarations and peace negotiations, and validated turn advancement. Checkpoints persist game state and command receipts together. A supervisor starts a fresh Codex conversation for each game turn through HTTPS agent services, carrying forward selected structured memory and following the host's committed turn changes.
 
 **This is an incomplete gameplay implementation.** Further city controls, multi-turn movement orders, special unit actions, naval/air combat, broader diplomacy, full desktop integration, and agent filesystem/network isolation remain outstanding. Consult the [coverage ledger](docs/Player-api-coverage.md) rather than treating a passing turn-flow test as full parity.
 
@@ -42,26 +42,27 @@ uv sync --locked
 uv run civ-agent --help
 ```
 
-To play the Great People exercise, with OpenSSL and a logged-in Codex CLI on `PATH`,
-run these in three separate terminals from this directory:
+For the asynchronous chat exercise, start the host, both services and the
+supervisor in four terminals:
 
 ```sh
-uv run civ-agent host start --scenario great-people  # Wait for MCP-READY
-uv run civ-agent agent start Rome    # Second terminal
-uv run civ-agent agent start Greece  # Third terminal
+uv run civ-agent host start --state-dir /tmp/civ-chat-1 --scenario async-chat
+uv run civ-agent agent-server start Rome --state-dir /tmp/civ-chat-1
+uv run civ-agent agent-server start Greece --state-dir /tmp/civ-chat-1
+uv run civ-agent match start --state-dir /tmp/civ-chat-1 --max-turns 3 --max-invocations 32
 ```
 
-New games require an explicit scenario. The host creates credentials and the
-prepared Great People setup for each player. Subsequent launches resume the checkpoint;
-supplying `--scenario great-people` also verifies that it is the intended exercise.
-Use a fresh match directory when switching exercises; see [Great People](docs/Great-people.md)
-for the complete automatic-turn launch commands.
-Each Codex session gets its civilization's token automatically
-and starts with a one-turn request. See [Local launchers](docs/Local-launchers.md)
-for custom matches, ports, and conversation resumption.
+Wait for the host and services to report ready. New games require an explicit
+scenario. `great-people` and `city-management` are also available. Start a fresh
+save for the chat/memory slice. See [chat, memory and recovery](docs/Chat-memory-and-recovery.md)
+for model settings, human chat and whole-match rollback. Interactive `agent start`
+also requires its civilization's service and uses a scoped proposal gateway.
+Credentials, request IDs, observation versions and retry reconciliation are handled
+by code; models select gameplay choices and entity IDs.
 
 All Python commands use the `civ-agent` entrypoint: `host start`, `host inspect`,
 `agent start`, `agent-server start`, `match start/resume/status/pause/stop/manual`,
+`chat send/inbox/follow/ledger/offer/accept/withdraw/reconsider`, `match rollback`,
 and `history export`. Add `--help` after any command for its options. The former
 Python scripts have been replaced by this package; existing match directories and
 saved credentials retain their layout.
@@ -72,12 +73,11 @@ pause/resume, and separate-machine configuration.
 Player archives use readable paths such as `agents/Rome/turn_1/`: `commands.jsonl`
 contains detailed calls and receipts, while `summary.md` contains the API's turn
 number and the agent's brief public report, such as `# Turn 0` followed by its
-actions and reasons. Earlier completed summaries supply the next turn's context;
-retry information stays in the debug records. On resume after an interrupted turn,
-the host restores that turn's starting checkpoint and the agent starts a fresh
-conversation. Failed attempts stay under `turn_1/attempts/attempt_1/` for debugging
-and are excluded from turn memory. A durably committed `END_TURN` is retained even
-if its response was lost. The scheduler displays
+actions and reasons. Fresh conversations use selected private memory and new events.
+Normal recovery retains confirmed actions, messages and notes, then reconciles
+uncertain responses before starting fresh computation. Explicit `match rollback`
+restores all players and the game to a coordinated round checkpoint under a new
+epoch. The scheduler displays
 live player output and saves responses, exposed reasoning summaries and tool history; see [history locations and existing-run export](docs/Automatic-turns.md#live-output-and-saved-history).
 
 To verify the agents' actions visually, run `uv run civ-agent host inspect Rome` or

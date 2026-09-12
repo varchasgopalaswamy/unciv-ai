@@ -76,6 +76,7 @@ class PlayerSummaryJsonTest {
         assertEquals(
             setOf(
                 "capabilities",
+                "communication",
                 "turn",
                 "result",
                 "researchDetails",

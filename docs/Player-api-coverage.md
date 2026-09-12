@@ -35,7 +35,8 @@ test, and UI comparison evidence. Unsupported items remain explicit.
 | Civilopedia | Public bundled rules, searchable entries, descriptions and links, no hidden game data | Not implemented |
 | Victory and defeat | Conditions, results, scores, permitted postgame information, resignation | Shared victory/defeat text, player result query and HTTPS delivery after scheduling stops; scores, progress, resignation and postgame exploration missing |
 | Lifecycle | Supported setup validation, create/load/save/pause, checkpoints, reconnect, controller replacement | Fixed Vanilla duel creation, load, checkpoint/resume, serialized execution, operator pause, player-scoped references and durable command receipts; general setup and controller management incomplete |
-| Agent runner | Codex conversations, private notes, turn scheduling, budgets, isolation | HTTPS supervisor and per-civilization Codex services, explicit conversations, durable progress, authoritative handoffs, leases, pause/resume and turn/invocation/time limits; hard spending caps, isolation and completed live-match acceptance outstanding |
+| Player communication | Public/private channels, permitted history, social proposals and consent | Authenticated public and private chat, mentions, recipient-specific delivery, exact version consent, withdrawal/reconsideration and engine outcome records; human CLI available, browser integration and general engine trade outstanding |
+| Agent runner | Codex conversations, private notes, turn scheduling, budgets, isolation | HTTPS supervisor and responsive per-civilization services, concurrent gameplay/chat jobs, structured private memory, service-owned request bookkeeping, durable receipts, shared invocation limits and coordinated whole-match recovery; hard spending caps, OS isolation and completed live-match acceptance outstanding |
 | Desktop integration | Shared execution and player API across all supported controls | Shared requirements, selected pickers, movement/settlement, worker orders, city tile/queue operations, focus/growth, specialists, sales, shared-tile transfers, gold purchases, land-unit upgrades/pillage/disband, ordinary combat, tactical orders, promotions and capture choices; embedded executor and full UI migration outstanding |
 
 The [development slice](City-development.md) and [automatic scheduler](Automatic-turns.md)
@@ -82,3 +83,8 @@ UI delegation and two-player HTTPS saved-state, growth, rollback and restart che
 The [Great People slice](Great-people.md) covers both players' abilities and
 on-demand research/policy observations, with native-state, generation, rollback,
 restart and retry verification. Live-model and visual desktop acceptance remain separate.
+
+The [chat, memory and recovery slice](Chat-memory-and-recovery.md) adds asynchronous
+communication, provenance-aware private notes, scoped proposal approval and explicit
+whole-match restore. Its live two-player round is checked against host records and
+native saves; it does not establish a completed match or full UI parity.

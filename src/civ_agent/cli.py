@@ -4,8 +4,8 @@ import argparse
 from collections.abc import Sequence
 from importlib.metadata import version
 
-from civ_agent import scheduler
-from civ_agent.commands import agent, agent_server, history, host, inspect
+from civ_agent import match_recovery, scheduler
+from civ_agent.commands import agent, agent_server, chat, history, host, inspect, verify_betrayal
 
 
 def parser() -> argparse.ArgumentParser:
@@ -51,12 +51,30 @@ def parser() -> argparse.ArgumentParser:
     for action, description in descriptions.items():
         command = matches.add_parser(action, parents=[scheduler.parser(add_help=False)], help=description)
         command.set_defaults(handler=scheduler.run, action=action)
+    rollback = matches.add_parser(
+        "rollback",
+        parents=[match_recovery.parser(add_help=False)],
+        help="Emergency restoration of every player and the game to a completed round checkpoint",
+    )
+    rollback.set_defaults(handler=match_recovery.run)
+    verify = matches.add_parser(
+        "verify-betrayal",
+        parents=[verify_betrayal.parser(add_help=False)],
+        help="Audit the verbal-pact scenario against native state, receipts and Rome's memory",
+    )
+    verify.set_defaults(handler=verify_betrayal.run)
 
     histories = groups.add_parser("history", help="Export recorded player conversations").add_subparsers(required=True)
     export = histories.add_parser(
         "export", parents=[history.parser(add_help=False)], help="Export existing public Codex history"
     )
     export.set_defaults(handler=history.run)
+    messages = groups.add_parser("chat", help="Public/private messages and social commitments").add_subparsers(
+        required=True
+    )
+    for action in ("send", "inbox", "follow", "ledger", "offer", "accept", "withdraw", "reconsider"):
+        command = messages.add_parser(action, parents=[chat.parser(add_help=False)])
+        command.set_defaults(handler=chat.run, chat_action=action)
     return result
 
 

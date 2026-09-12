@@ -1,7 +1,7 @@
 # Automatic turns over HTTPS
 
 The supervisor starts a fresh Codex conversation for each civilization's new game
-turn, supplies its earlier turn summaries and a single-turn credential, and watches
+turn, supplies selected private memory and a scoped gateway credential, and watches
 the host for a committed handoff. A model's
 claim that it ended a turn does not advance scheduling. The game API, operator API,
 and agent-service control all use authenticated HTTPS with certificate verification.
@@ -53,7 +53,7 @@ using a fresh match directory.
 Agents follow `player_turn.scenario.instructions`. The common prompt contains
 only gameplay rules, receipt/retry handling, and the current turn review. Request
 ID examples use the actual game turn and an increasing action number. The service
-adds archive and final-summary instructions once, then earlier committed summaries.
+adds archive and final-summary instructions once, then selected notes and new events.
 Restart agent services after changing their prompt code; already running services
 continue using the version they loaded.
 
@@ -127,7 +127,7 @@ STATE_DIR/agents/
       attempts/
         attempt_1/
           commands.jsonl   That attempt's commands and receipts
-          summary.md       Public report, outcomes and rollback status
+          summary.md       Public report and attempt outcome
           events.jsonl     Full public messages and tool events
           source.json      Match, civilization, game turn and attempt metadata
     turn_2/
@@ -143,20 +143,12 @@ Folder numbers are the game's zero-based turn plus one: game turn 0 is `turn_1`.
 Names such as Rome and Greece appear directly; unusual characters are encoded so
 names cannot escape their directories or collide with another civilization's name.
 The archive records failed or interrupted attempts as well as completed turns.
-Each attempt has its own numbered directory. After rollback, its commands and
-report remain there for debugging and are removed from the turn's top-level
-`commands.jsonl` and `summary.md`. Retry details stay in the attempt directories;
-they do not enter the next turn's memory. These files contain
-only that civilization's permitted observations and public account of its decisions.
-
-At the next game turn, the service starts a new Codex thread and concatenates the
-player's earlier summaries in turn order into its starting context. Earlier full
-snapshots and receipts stay in the player's turn folders; the agent can read them
-when it needs details. Old conversation transcripts are not resumed for a new turn.
-If an attempt stops before a committed handoff, resuming restores the host's
-checkpoint from the start of that player's turn and starts another fresh conversation.
-The discarded attempt's commands and reports remain available for debugging, but
-its actions and observations do not enter later turn memory.
+Each attempt retains its diagnostics. Normal interruptions preserve confirmed
+actions, messages and memory; fresh jobs use selected notes and new events.
+Older detailed evidence is available through the gateway's memory/history tools.
+Explicit whole-match restoration archives the abandoned epoch's histories.
+See [chat, memory and recovery](Chat-memory-and-recovery.md) for the current
+concurrency, context and recovery contract.
 
 Each summary contains one heading with the turn number returned by the player API,
 followed by the agent's brief public report. For example, `turn_1/summary.md` contains:
@@ -175,9 +167,8 @@ the last available public note, or just the heading if no note was captured.
 Receipt counts, handoff status, retry information and debugging labels stay in
 the detailed attempt records. Full messages remain in each attempt's event log.
 
-Only turns with a host-confirmed handoff enter the next turn's context. The service
-concatenates its stored trusted summaries in turn order; edits to workspace copies
-do not change the next turn's context.
+Canonical memory lives in private SQLite records. Markdown files are projections;
+edits to these copies cannot change the next job's context.
 
 ## Live output and saved history
 
@@ -285,25 +276,15 @@ the host's durable handoff counter. If `END_TURN` committed, it retains the comp
 turn even when its response never reached the agent. The finalized summary can then
 be used for later turns.
 
-If no handoff committed, the host restores the full game from the checkpoint captured
-at the start of that player's turn. This discards every mutation from the unfinished
-attempt, including commands whose receipts had already arrived. The host restores
-the corresponding receipt state, rotates stale-state revisions and revokes the old
-temporary credentials. The scheduler marks that attempt as rolled back, preserves its
-detailed logs, and starts a fresh conversation with summaries from earlier completed
-turns. The match epoch and consumed budgets remain unchanged.
+If no handoff committed, confirmed commands and memory still remain. The service
+settles uncertain requests using exact host receipts before the scheduler starts
+fresh computation. It does not rewind the player automatically.
 
-Rollback is an authenticated operator action; agents cannot request it themselves.
-A failed connection, missing or inconsistent turn-start checkpoint, unconfirmed
-process shutdown, unsupported decision or incomplete turn pauses the run. The
-scheduler does not repeatedly restart a failing agent or choose game actions to
-bypass its blocker. Inspect the attempt logs before resuming when the cause needs
-attention. While paused, `civ-agent host inspect` may show the unfinished attempt's current
-position; rollback takes place when the supervisor resumes it.
-
-Returning the host to manual control discards the automatic restore point. If an
-agent attempt was unfinished, finish that player's turn manually before resuming
-the supervisor; it will not label a newly captured manual position as a rollback.
+For the emergency option, stop the supervisor and run `civ-agent match rollback
+--state-dir DIR --round N`. This restores every player and the game from a completed
+round checkpoint under a new epoch, retaining usage and operator audit records.
+A partial restore stays fenced until the same rollback command finishes. Details
+and prerequisites are in [the recovery runbook](Chat-memory-and-recovery.md).
 
 If the host reports `HALTED` after a mutation or checkpoint error, stop and restart
 the host from its durable checkpoint first, then run `civ-agent match resume`. An
@@ -401,17 +382,16 @@ history. Each civilization's working directory holds its own turn archives and n
 Separate directories are not a filesystem security boundary: trusted local services
 still inherit the user's Codex login, configuration and available tools.
 
-The operator interface is a separate `POST /operator` endpoint with `status`,
-`acquire`, `heartbeat`, `activate`, `rollback`, `pause`, `release`, `manual` and `results`. Activation checks
+The operator interface is a separate `POST /operator` endpoint with lease,
+activation, communication, budget, checkpoint and recovery operations. Activation checks
 the match epoch, server instance, active civilization and durable handoff counter
 under the same executor lock as gameplay. Only one lease owns the match. A handoff
 counter increments per player turn; it is operator metadata, absent from player
 snapshots. Epoch and receipts persist in checkpoints; activation tokens do not.
-The turn-start restore point is stored inside the same atomic checkpoint. Rollback
-requires the current lease, match epoch, server instance, handoff counter and active
-civilization; it cannot undo a handoff that has already committed.
-Rollback also names the interrupted activation. Its durable attempt binding rejects
-delayed requests from a discarded attempt after a fresh attempt has started.
+Scheduled recovery preserves confirmed actions and reconciles exact requests.
+Round manifests coordinate the native game, shared communication and each private
+memory store. Explicit whole-match restoration creates a new epoch and revokes
+the abandoned timeline's credentials; partial restoration cannot resume gameplay.
 
 Automated tests exercise HTTPS authentication/certificates, real engine development
 over twenty rounds with restart, stale activations, duplicate schedulers, lease
@@ -423,7 +403,7 @@ surfaces remain outside the implemented gameplay slice.
 ## Terminal results
 
 A winning capture can finish the game without an `END_TURN`. The supervisor checks
-that authoritative terminal state before considering rollback. It drains the active
+that authoritative terminal state before scheduling further gameplay. It drains the active
 service, archives committed final commands with a terminal outcome, and preserves
 the existing handoff count. Capture decisions remain playable until resolved.
 

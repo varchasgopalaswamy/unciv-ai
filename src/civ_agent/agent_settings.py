@@ -2,12 +2,24 @@
 
 import argparse
 
-TURN_REVIEW_PROMPT = (
-    "Follow scenario.instructions. "
-    "Before END_TURN, read turnReview: compare confirmed actions and remaining movement with your plan. "
-    "Act or deliberately defer; send reviewId=turnReview.id and deferReason explaining idle units with legalDestinations>0. "
-    "Read previousTurnReview for earlier deferred actions. "
-)
+
+def player_tool_arguments():
+    """Keep model jobs on the configured player gateway, with no general shell."""
+    disabled = (
+        "shell_tool",
+        "unified_exec",
+        "apps",
+        "browser_use",
+        "computer_use",
+        "view_image",
+        "sleep_tool",
+        "multi_agent",
+        "js_repl",
+    )
+    result = []
+    for feature in disabled:
+        result.extend(["-c", f"features.{feature}=false"])
+    return [*result, "-c", 'web_search="disabled"']
 
 
 def valid_setting(value):

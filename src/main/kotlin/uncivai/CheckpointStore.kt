@@ -36,6 +36,8 @@ internal data class GameCheckpoint(
     val handoff: Long = 0,
     val scheduled: Boolean = false,
     val turnStart: TurnStartCheckpoint? = null,
+    val communication: CommunicationState = CommunicationState(),
+    val communicationPaused: Boolean = false,
 )
 
 /** The pre-activation state, persisted atomically alongside every command checkpoint. */
@@ -145,12 +147,14 @@ internal class CheckpointStore(
     companion object {
         private val checkpointJson = Json { encodeDefaults = true }
 
-        fun capture(game: GameInfo, epoch: String, paused: Boolean, states: Map<String, TurnSessionState>, handoff: Long = 0, scheduled: Boolean = false, turnStart: TurnStartCheckpoint? = null): GameCheckpoint = GameCheckpoint(
+        fun capture(game: GameInfo, epoch: String, paused: Boolean, states: Map<String, TurnSessionState>, handoff: Long = 0, scheduled: Boolean = false, turnStart: TurnStartCheckpoint? = null, communication: CommunicationState = CommunicationState(), communicationPaused: Boolean = false): GameCheckpoint = GameCheckpoint(
             epoch = epoch,
             paused = paused,
             handoff = handoff,
             scheduled = scheduled,
             turnStart = turnStart,
+            communication = communication,
+            communicationPaused = communicationPaused,
             gameJson = json().toJson(game),
             players = states.mapValues { (civilization, state) ->
                 val player = game.civilizations.single { it.civID == civilization }
