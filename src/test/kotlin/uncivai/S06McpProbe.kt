@@ -401,7 +401,7 @@ object S06McpProbe {
             "player_capabilities" to emptySet(),
             "player_turn" to emptySet(),
             "player_result" to emptySet(),
-            "player_command" to setOf("requestId", "epoch", "revision", "reviewId", "deferReason", "kind", "target", "selection", "queue", "destination", "attackFrom", "confirmBreakPromise", "confirmAction", "confirmWar", "peaceTerms", "worked", "locked", "index", "toIndex"),
+            "player_command" to setOf("requestId", "epoch", "revision", "reviewId", "deferReason", "kind", "target", "selection", "queue", "destination", "attackFrom", "confirmBreakPromise", "confirmAction", "enabled", "confirmWar", "peaceTerms", "worked", "locked", "index", "toIndex"),
             "player_summary" to emptySet(),
             "owned_cities" to emptySet(),
             "rename_city" to setOf("requestId", "epoch", "cityHandle", "name"),

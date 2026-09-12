@@ -48,6 +48,14 @@ enum class TurnCommandKind {
     STOP_WORKER_JOB,
     SET_WORKED_TILE,
     SET_TILE_LOCKED,
+    SET_CITY_FOCUS,
+    SET_AVOID_GROWTH,
+    SET_MANUAL_SPECIALISTS,
+    ASSIGN_SPECIALIST,
+    UNASSIGN_SPECIALIST,
+    RESET_CITIZENS,
+    SELL_BUILDING,
+    REASSIGN_CITY_TILE,
     REMOVE_CONSTRUCTION,
     MOVE_CONSTRUCTION,
     END_TURN,
@@ -78,6 +86,7 @@ data class TurnCity(
     val attacks: List<AttackOption> = emptyList(),
     val captureOptions: List<CaptureOption> = emptyList(),
     val purchases: CityPurchases? = null,
+    val management: CityManagement? = null,
 )
 
 @Serializable
@@ -132,6 +141,7 @@ data class TurnCommandRequest(
     val deferReason: String? = null,
     val attackFrom: TilePosition? = null,
     val confirmAction: Boolean = false,
+    val enabled: Boolean? = null,
 )
 
 @Serializable
@@ -145,6 +155,7 @@ data class TurnCommandReceipt(
     val feedback: AlertContent? = null,
     val combat: CombatOutcome? = null,
     val economy: EconomyOutcome? = null,
+    val cityManagement: CityManagementOutcome? = null,
 )
 
 object PlayerTurnJson {
@@ -165,6 +176,7 @@ internal fun TurnCommandRequest.detached(): TurnCommandRequest = copy(
 )
 
 internal fun TurnCommandReceipt.detached(): TurnCommandReceipt = copy(
+    cityManagement = cityManagement?.detached(),
     economy = economy?.copy(units = Collections.unmodifiableList(economy.units.toList())),
     feedback = feedback?.let {
         it.copy(

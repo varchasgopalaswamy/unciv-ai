@@ -16,8 +16,8 @@ class PreparedFixtureIntegrationTest {
         val root = Files.createTempDirectory("prepared-fixture-")
         try {
             val tokens = hashSetOf<String>()
-            for ((probe, stage) in listOf("EconomyRunProbe" to "prepare", "CombatRunProbe" to "prepare-conquest", "CombatRunProbe" to "prepare-victory")) {
-                val match = root.resolve(stage)
+            for ((probe, stage) in listOf("EconomyRunProbe" to "prepare", "CityManagementRunProbe" to "prepare", "CombatRunProbe" to "prepare-conquest", "CombatRunProbe" to "prepare-victory")) {
+                val match = root.resolve("$probe-$stage")
                 val output = prepare(root, match, probe, stage, success = true)
                 val players = match.resolve("players.json")
                 val credentials = loadMcpPlayerConfig(players)

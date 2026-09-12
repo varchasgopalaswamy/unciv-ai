@@ -137,6 +137,23 @@ internal fun confirmedAction(request: TurnCommandRequest, before: PlayerTurnSnap
 
         TurnCommandKind.SET_TILE_LOCKED -> "${city!!.name}: ${if (request.locked == true) "locked" else "unlocked"} tile ${request.destination!!.text()}."
 
+        TurnCommandKind.SET_CITY_FOCUS -> "${city!!.name}: citizen focus ${request.selection}."
+
+        TurnCommandKind.SET_AVOID_GROWTH -> "${city!!.name}: avoid growth ${request.enabled}."
+
+        TurnCommandKind.SET_MANUAL_SPECIALISTS -> "${city!!.name}: manual specialists ${request.enabled}."
+
+        TurnCommandKind.ASSIGN_SPECIALIST, TurnCommandKind.UNASSIGN_SPECIALIST -> {
+            val assigned = after.cities.single { it.handle == request.target }.management!!.specialists.single { it.name == request.selection }.assigned
+            "${city!!.name}: ${request.selection} assignment is now $assigned."
+        }
+
+        TurnCommandKind.RESET_CITIZENS -> "${city!!.name}: reset citizen assignments and tile locks."
+
+        TurnCommandKind.SELL_BUILDING -> "${city!!.name} sold ${request.selection}; treasury changed by ${economy!!.goldChange} gold."
+
+        TurnCommandKind.REASSIGN_CITY_TILE -> "${city!!.name} now works ${request.destination!!.text()}, released by another owned city."
+
         TurnCommandKind.ADOPT_POLICY -> "Adopted ${request.selection}."
 
         TurnCommandKind.CHOOSE_FREE_TECHNOLOGY -> "Chose free technology ${request.selection}."

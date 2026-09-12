@@ -1,10 +1,12 @@
 package uncivai.player
 
 import com.unciv.logic.GameInfo
+import com.unciv.logic.city.CityFocus
 import com.unciv.logic.civilization.AlertType
 import com.unciv.logic.civilization.CaptureChoice
 import com.unciv.logic.civilization.Civilization
 import com.unciv.logic.civilization.PlayerCaptureOperations
+import com.unciv.logic.civilization.PlayerCityManagementOperations
 import com.unciv.logic.civilization.PlayerCityOperations
 import com.unciv.logic.civilization.PlayerCombatOperations
 import com.unciv.logic.civilization.PlayerDiplomacyOperations
@@ -164,6 +166,10 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
             val option = before.map.units.single { it.handle == request.target }.moves
                 .firstOrNull { it.destination == request.destination } ?: fail(PlayerSessionFailure.OPTION_UNAVAILABLE)
             game.tileMap[com.unciv.logic.map.HexCoord(option.destination.x, option.destination.y)]
+        } else if (request.kind == TurnCommandKind.REASSIGN_CITY_TILE) {
+            val option = before.cities.single { it.handle == request.target }.management!!.sharedTiles
+                .singleOrNull { it.position == request.destination && it.action.available } ?: fail(PlayerSessionFailure.OPTION_UNAVAILABLE)
+            game.tileMap[com.unciv.logic.map.HexCoord(option.position.x, option.position.y)]
         } else if (request.kind == TurnCommandKind.BUY_TILE) {
             val option = before.cities.single { it.handle == request.target }.purchases!!.tiles
                 .singleOrNull { it.position == request.destination } ?: fail(PlayerSessionFailure.OPTION_UNAVAILABLE)
@@ -197,8 +203,27 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
             if (before.cities.single { it.handle == request.target }.captureOptions.none { it.name == request.selection && it.available }) fail(PlayerSessionFailure.OPTION_UNAVAILABLE)
             if (state.observedRevision != before.revision) fail(PlayerSessionFailure.OBSERVATION_REQUIRED)
         }
+        if (request.kind in cityManagementCommands) {
+            val management = before.cities.single { it.handle == request.target }.management!!
+            val action = when (request.kind) {
+                TurnCommandKind.SET_CITY_FOCUS -> management.focusOptions.singleOrNull { it.name == request.selection }?.action
+                TurnCommandKind.SET_AVOID_GROWTH -> management.avoidGrowth
+                TurnCommandKind.SET_MANUAL_SPECIALISTS -> management.specialistControl
+                TurnCommandKind.RESET_CITIZENS -> management.resetCitizens
+                TurnCommandKind.ASSIGN_SPECIALIST -> management.specialists.singleOrNull { it.name == request.selection }?.assign
+                TurnCommandKind.UNASSIGN_SPECIALIST -> management.specialists.singleOrNull { it.name == request.selection }?.unassign
+                TurnCommandKind.SELL_BUILDING -> management.buildingSales.singleOrNull { it.name == request.selection }?.action
+                TurnCommandKind.REASSIGN_CITY_TILE -> management.sharedTiles.singleOrNull { it.position == request.destination }?.action
+                else -> null
+            }
+            if (action?.available != true) fail(PlayerSessionFailure.OPTION_UNAVAILABLE)
+            if (state.observedRevision != before.revision) fail(PlayerSessionFailure.OBSERVATION_REQUIRED)
+        }
         if (request.kind in economicCommands) {
             val confirmation = when (request.kind) {
+                TurnCommandKind.SELL_BUILDING -> before.cities.single { it.handle == request.target }.management!!.buildingSales
+                    .single { it.name == request.selection }.confirmation
+
                 TurnCommandKind.UPGRADE_UNIT -> (
                     before.map.units.single { it.handle == request.target }.economy!!.upgrades
                         .singleOrNull { it.targetName == request.selection && it.available } ?: fail(PlayerSessionFailure.OPTION_UNAVAILABLE)
@@ -286,6 +311,20 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
                 TurnCommandKind.BUY_CONSTRUCTION -> PlayerPurchaseOperations(player).tryBuyConstruction(city!!, request.selection!!)
 
                 TurnCommandKind.BUY_TILE -> PlayerPurchaseOperations(player).tryBuyTile(city!!, destination!!)
+
+                TurnCommandKind.SET_CITY_FOCUS -> PlayerCityManagementOperations(player).trySetFocus(city!!, CityFocus.valueOf(request.selection!!))
+
+                TurnCommandKind.SET_AVOID_GROWTH -> PlayerCityManagementOperations(player).trySetAvoidGrowth(city!!, request.enabled!!)
+
+                TurnCommandKind.SET_MANUAL_SPECIALISTS -> PlayerCityManagementOperations(player).trySetManualSpecialists(city!!, request.enabled!!)
+
+                TurnCommandKind.ASSIGN_SPECIALIST, TurnCommandKind.UNASSIGN_SPECIALIST -> PlayerCityManagementOperations(player).trySetSpecialist(city!!, request.selection!!, request.kind == TurnCommandKind.ASSIGN_SPECIALIST)
+
+                TurnCommandKind.RESET_CITIZENS -> PlayerCityManagementOperations(player).tryReassignPopulation(city!!, resetLocked = true)
+
+                TurnCommandKind.SELL_BUILDING -> PlayerCityManagementOperations(player).trySellBuilding(city!!, request.selection!!)
+
+                TurnCommandKind.REASSIGN_CITY_TILE -> PlayerCityManagementOperations(player).tryReassignTile(city!!, destination!!)
 
                 TurnCommandKind.MOVE_UNIT -> PlayerUnitOperations(player).tryMove(unit!!, destination!!)
 
@@ -386,6 +425,7 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
                 },
                 combat = combatResult,
                 economy = economyResult,
+                cityManagement = if (request.kind in cityManagementCommands) cityManagementOutcome(before, after) else null,
             )
             state.receipts[request.requestId] = detachedRequest to receipt
             runtime.commitCheckpoint()
@@ -467,6 +507,7 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
                         attacks = immutable(if (ordinaryActions) PlayerCombatOperations(player).attacks(city).map { it.observation() } else emptyList()),
                         captureOptions = immutable(captures.cityChoices(city).map { it.observation(ordinaryActions) }),
                         purchases = observePurchases(city, active = ordinaryActions),
+                        management = observeCityManagement(city, ordinaryActions) { owned -> state.cityHandles.getOrPut(owned.id) { UUID.randomUUID().toString() } },
                     )
                 },
             ),
@@ -505,6 +546,20 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
     }
 
     private fun scenario(game: GameInfo, player: Civilization, diplomacy: DiplomacyObservation): GameplayScenario? {
+        if (game.tileMap.mapParameters.name == "City management exercise") {
+            return GameplayScenario(
+                "CITY_MANAGEMENT_EXERCISE",
+                if (gameFinished(game)) "FINISHED" else "DEVELOP",
+                immutable(
+                    listOf(
+                        "City management exercise: remain at peace. Both players have a capital and a neighboring city with the same buildings and citizen options. Read cities[].development and management selectively, including unavailable reasons, yields and great-person progress.",
+                        "Change city focus and compare allocations and yields. Enable manual specialists, unwork a tile if needed, then assign and unassign a Scientist. Lock a worked tile, reset citizens and confirm the lock clears. Transfer an offered shared tile to the other city after freeing a citizen there; inspect both cities in receipt.cityManagement.",
+                        "Assign a Scientist in your capital, then sell its University after reading the refund and confirmation. Verify the building and specialist slots disappear, citizens are reassigned and gold increases; the city cannot sell another building that turn. Keep the University in your other city, assign a Scientist there and watch empire great-person points increase over scheduled turns.",
+                        "Keep Avoid Growth enabled in your other city across one full round, check that food caps without population growth, then disable it and verify growth on a later turn. Keep Granaries for food. Record completed checks and reasons briefly in your turn summaries, then continue developing both cities.",
+                    ),
+                ),
+            )
+        }
         if (game.tileMap.mapParameters.name == "Economy exercise") {
             return GameplayScenario(
                 "ECONOMY_EXERCISE",
@@ -596,6 +651,10 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
             TurnCommandKind.MANAGE_CAPTURED_CITY,
             TurnCommandKind.BUY_CONSTRUCTION,
             TurnCommandKind.UPGRADE_UNIT,
+            TurnCommandKind.SET_CITY_FOCUS,
+            TurnCommandKind.ASSIGN_SPECIALIST,
+            TurnCommandKind.UNASSIGN_SPECIALIST,
+            TurnCommandKind.SELL_BUILDING,
         )
         if (needsTarget != (request.target != null) || needsSelection != (request.selection != null) ||
             request.target?.isEmpty() == true || request.selection?.isEmpty() == true || request.revision.isEmpty() ||
@@ -605,6 +664,7 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
             (request.kind == TurnCommandKind.ATTACK) != (request.attackFrom != null) ||
             (request.kind == TurnCommandKind.SET_WORKED_TILE) != (request.worked != null) ||
             (request.kind == TurnCommandKind.SET_TILE_LOCKED) != (request.locked != null) ||
+            (request.kind in setOf(TurnCommandKind.SET_AVOID_GROWTH, TurnCommandKind.SET_MANUAL_SPECIALISTS)) != (request.enabled != null) ||
             (request.kind in setOf(TurnCommandKind.REMOVE_CONSTRUCTION, TurnCommandKind.MOVE_CONSTRUCTION)) != (request.index != null) ||
             (request.kind == TurnCommandKind.MOVE_CONSTRUCTION) != (request.toIndex != null) ||
             (request.index != null && request.index < 0) || (request.toIndex != null && request.toIndex < 0) ||
@@ -632,10 +692,11 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
     companion object {
         private val partnerCommands = setOf(TurnCommandKind.DECLARE_WAR, TurnCommandKind.PROPOSE_PEACE, TurnCommandKind.RETRACT_PEACE)
         private val responseCommands = setOf(TurnCommandKind.ACCEPT_PEACE, TurnCommandKind.REJECT_PEACE, TurnCommandKind.COUNTER_PEACE)
-        private val tileCommands = setOf(TurnCommandKind.SET_WORKED_TILE, TurnCommandKind.SET_TILE_LOCKED, TurnCommandKind.BUY_TILE)
-        private val cityCommands = tileCommands + setOf(TurnCommandKind.RENAME_CITY, TurnCommandKind.QUEUE_CONSTRUCTION, TurnCommandKind.REMOVE_CONSTRUCTION, TurnCommandKind.MOVE_CONSTRUCTION, TurnCommandKind.CITY_ATTACK, TurnCommandKind.MANAGE_CAPTURED_CITY, TurnCommandKind.BUY_CONSTRUCTION)
+        private val cityManagementCommands = setOf(TurnCommandKind.SET_CITY_FOCUS, TurnCommandKind.SET_AVOID_GROWTH, TurnCommandKind.SET_MANUAL_SPECIALISTS, TurnCommandKind.ASSIGN_SPECIALIST, TurnCommandKind.UNASSIGN_SPECIALIST, TurnCommandKind.RESET_CITIZENS, TurnCommandKind.SELL_BUILDING, TurnCommandKind.REASSIGN_CITY_TILE)
+        private val tileCommands = setOf(TurnCommandKind.SET_WORKED_TILE, TurnCommandKind.SET_TILE_LOCKED, TurnCommandKind.BUY_TILE, TurnCommandKind.REASSIGN_CITY_TILE)
+        private val cityCommands = tileCommands + cityManagementCommands + setOf(TurnCommandKind.RENAME_CITY, TurnCommandKind.QUEUE_CONSTRUCTION, TurnCommandKind.REMOVE_CONSTRUCTION, TurnCommandKind.MOVE_CONSTRUCTION, TurnCommandKind.CITY_ATTACK, TurnCommandKind.MANAGE_CAPTURED_CITY, TurnCommandKind.BUY_CONSTRUCTION)
         private val unitCommands = setOf(TurnCommandKind.MOVE_UNIT, TurnCommandKind.FOUND_CITY, TurnCommandKind.START_WORKER_JOB, TurnCommandKind.STOP_WORKER_JOB, TurnCommandKind.ATTACK, TurnCommandKind.SET_UNIT_ORDER, TurnCommandKind.PROMOTE_UNIT, TurnCommandKind.UPGRADE_UNIT, TurnCommandKind.PILLAGE, TurnCommandKind.DISBAND_UNIT)
-        private val economicCommands = setOf(TurnCommandKind.BUY_CONSTRUCTION, TurnCommandKind.BUY_TILE, TurnCommandKind.UPGRADE_UNIT, TurnCommandKind.PILLAGE, TurnCommandKind.DISBAND_UNIT)
+        private val economicCommands = setOf(TurnCommandKind.BUY_CONSTRUCTION, TurnCommandKind.BUY_TILE, TurnCommandKind.UPGRADE_UNIT, TurnCommandKind.PILLAGE, TurnCommandKind.DISBAND_UNIT, TurnCommandKind.SELL_BUILDING)
         private val supportedRequirements = setOf(
             PlayerTurnRequirements.Kind.FreeGreatPerson,
             PlayerTurnRequirements.Kind.Construction,

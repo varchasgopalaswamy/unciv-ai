@@ -38,7 +38,10 @@ alternative action. Accepted worker orders can take several game turns to finish
 inspect the following observations and checkpoint rather than interpreting acceptance
 as immediate completion.
 
-Worker automation, route-to-destination, instant improvements, specialist assignment,
-focus/growth changes, buying/reassigning tiles, construction purchases and placement,
-full Civilopedia descriptions, combat and diplomacy remain outstanding. The coverage
-ledger tracks the broader UI inventory and privacy review.
+The [city management slice](City-management.md) adds specialists, great-person
+progress, focus/growth controls, building sales and shared-tile reassignment.
+[Economy](Economy-and-unit-actions.md), [combat](Combat.md) and
+[war/peace](War-and-peace.md) have their own bounded implementations. Worker
+automation, route-to-destination, instant improvements, construction placement and
+full Civilopedia descriptions remain outstanding. The coverage ledger tracks the
+broader UI inventory and privacy review.

@@ -86,8 +86,11 @@ credentials and checkpoints when preparation is repeated.
 ./gradlew build :Unciv:tests:test
 ```
 
-These are scripted checks. A live model match and visual desktop acceptance are
-separate checks and have not been run for this slice.
+The live `/tmp/civ-economy-1` run was separately audited against native saves and
+73 persisted command receipts. Rome completed all economy objectives by turn 5;
+scheduling reached turn 12 with 24 handoffs. Greece completed purchases and repaired
+its Farm, but the fixture did not give it symmetric upgrade/raid opportunities.
+This is bounded live evidence, not a completed duel or visual desktop acceptance.
 
 ## Prepared economy exercise
 
@@ -133,6 +136,7 @@ Purchases with faith or other currencies and constructions requiring an improvem
 placement picker remain unsupported by these commands. Those desktop workflows
 retain their existing paths. Land-unit operations do not cover naval/air upgrades,
 domain-changing or relocating upgrades, special/free upgrade effects, gifting,
-renaming or automation. City focus, specialists, growth controls, building sales,
-full overview tooltips, general trade and notifications still have coverage gaps.
+renaming or automation. [City management](City-management.md) covers focus,
+specialists, growth, building sales and shared tiles. Full overview tooltips,
+general trade and notifications still have coverage gaps.
 See the [coverage ledger](Player-api-coverage.md) for the broader inventory.

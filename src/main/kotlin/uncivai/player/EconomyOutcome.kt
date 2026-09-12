@@ -38,7 +38,7 @@ internal fun economicOutcome(request: TurnCommandRequest, before: PlayerTurnSnap
     return EconomyOutcome(
         goldChange = after.economy!!.treasury - before.economy!!.treasury,
         units = Collections.unmodifiableList(changes),
-        construction = request.selection.takeIf { request.kind == TurnCommandKind.BUY_CONSTRUCTION },
+        construction = request.selection.takeIf { request.kind in setOf(TurnCommandKind.BUY_CONSTRUCTION, TurnCommandKind.SELL_BUILDING) },
         tile = request.destination.takeIf { request.kind == TurnCommandKind.BUY_TILE },
     )
 }

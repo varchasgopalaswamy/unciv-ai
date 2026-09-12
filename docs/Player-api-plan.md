@@ -218,10 +218,32 @@ engine validation and execution.
 Scripted HTTPS tests improve Iron, wait through scheduled turns, purchase
 reinforcements, upgrade, pillage/heal and reduce upkeep by disbanding. They inspect
 actual state across restarts, exact retries and interrupted-turn rollback. Paired
-hidden-world checks cover the new observations. Full overview details, specialist
-and city focus/growth controls, remaining unit actions, full trade, embedded human
-play and isolation remain in the wider plan. No new live-model acceptance run is
-claimed for this slice.
+hidden-world checks cover the new observations.
+
+The operator's `/tmp/civ-economy-1` live run was audited against native saves and
+persisted receipts: Rome completed the resource, purchase, upgrade, pillage/heal and
+disband/upkeep checks by turn 5, and scheduling reached turn 12 with 24 handoffs.
+All 73 persisted command receipts matched committed service command records; three
+rolled-back attempts were excluded. Greece also purchased and repaired its pillaged
+Farm. The fixture only gave Rome the Iron, upgrade and raiding opportunities, so
+this establishes Rome's objectives, not symmetric coverage or a completed duel.
+The cities retained some economic inefficiencies; the exercise was not a strategy
+quality benchmark. Visual desktop and human-versus-agent acceptance remain separate.
+
+## Delivered slice: city management
+
+The [city management slice](City-management.md) adds focus and Avoid Growth,
+manual/automatic specialists and one-citizen assignment, specialist yields and
+great-person progress, validated building sales and shared worked-tile transfers.
+The desktop delegates to the same engine operations. Sales remove allocations whose
+specialist slots disappear, and reading thresholds no longer mutates saved counters.
+
+The prepared scenario gives both players two cities and the same controls to test.
+Scripted HTTPS checks assert native allocations, yields, refunds, capped food,
+population growth and accumulated great-person points across turns, rollback,
+restarts and exact retries. A live-model run of this new scenario is still pending.
+Full overview details, remaining unit actions, general trade, embedded human play
+and isolation remain in the wider plan.
 
 ## Verification gates
 

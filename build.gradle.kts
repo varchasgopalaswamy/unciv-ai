@@ -138,6 +138,19 @@ tasks.register<JavaExec>("prepareEconomyFixture") {
     )
 }
 
+tasks.register<JavaExec>("prepareCityManagementFixture") {
+    group = "verification"
+    description = "Prepares a peaceful two-city-per-player city management exercise with private launch credentials."
+    dependsOn(tasks.testClasses)
+    classpath = sourceSets.test.get().runtimeClasspath
+    mainClass = "uncivai.CityManagementRunProbe"
+    args(
+        providers.gradleProperty("cityManagementFixtureDir")
+            .orElse(layout.buildDirectory.dir("generated/city-management-fixture").map { it.asFile.absolutePath }).get(),
+        "prepare",
+    )
+}
+
 val s04UiScenarios = layout.buildDirectory.dir("generated/s04-ui")
 val generateS04UiScenarios by tasks.registering(JavaExec::class) {
     group = "verification"

@@ -22,6 +22,9 @@ Authentication fixes the player's civilization; tool arguments cannot override i
   and city connections. `cities[].purchases` and `map.units[].economy` expose gold
   purchases, upgrades, pillage and disband options, costs, benefits, requirements,
   unavailable reasons and confirmations; see [economy and unit actions](Economy-and-unit-actions.md).
+  `cities[].management` adds focus/growth controls, specialist yields and slots,
+  great-person progress, building sales and shared-tile transfers; see
+  [city management](City-management.md).
   First-contact alerts include `firstContact`: `civilizationId`, `civilizationName`,
   `leaderName` (the displayed leader caption), `message`, and `acknowledgement`.
   Every supported informational alert also includes `content`: `title`, ordered
@@ -78,6 +81,12 @@ Example, with values copied from `player_turn`:
 | `STOP_WORKER_JOB` | `target`: worker handle; `worker.canStop` must be true |
 | `SET_WORKED_TILE` | `target`: city handle; `destination`: listed tile coordinate; `worked`: boolean matching its offered action |
 | `SET_TILE_LOCKED` | `target`: city handle; `destination`: listed tile coordinate; `locked`: boolean matching its offered action |
+| `SET_CITY_FOCUS` | `target`: city handle; `selection`: available `management.focusOptions` name |
+| `SET_AVOID_GROWTH`, `SET_MANUAL_SPECIALISTS` | `target`: city handle; `enabled`: desired boolean setting |
+| `ASSIGN_SPECIALIST`, `UNASSIGN_SPECIALIST` | `target`: city handle; `selection`: `management.specialists` name with the corresponding available action; changes one citizen |
+| `RESET_CITIZENS` | `target`: city handle; clears tile locks and reassigns citizens |
+| `SELL_BUILDING` | `target`: city handle; `selection`: available `management.buildingSales` name; `confirmAction: true` after reading the confirmation |
+| `REASSIGN_CITY_TILE` | `target`: receiving city handle; `destination`: available `management.sharedTiles` position; requires a free citizen |
 | `REMOVE_CONSTRUCTION` | `target`: city handle; `index`: removable construction entry |
 | `MOVE_CONSTRUCTION` | `target`: city handle; `index`: construction entry; `toIndex`: one of its `moveToIndices` |
 | `DECLARE_WAR` | `target`: known civilizationId; `confirmWar: true` after reading current confirmation |
@@ -88,7 +97,7 @@ Example, with values copied from `player_turn`:
 | `END_TURN` | `reviewId`: current `turnReview.id`; `canEndTurn` must be true. If any review units are idle with legal destinations, include `deferReason` explaining intentional idling. |
 
 Unused fields must be absent or have their default value (`null` for target and
-selection, destination, attackFrom, worked, locked, index, toIndex and peaceTerms; `[]` for queue,
+selection, destination, attackFrom, worked, locked, enabled, index, toIndex and peaceTerms; `[]` for queue,
 `false` for confirmBreakPromise, confirmWar and confirmAction). Unknown fields and command names are rejected. Requests
 must use a unique printable ASCII `requestId` of 1–128 characters per player. Retries
 use the same ID **and the original payload**, including the original revision.
@@ -105,6 +114,12 @@ at the submitted revision. Read costs and full confirmation text, and include
 `confirmAction: true` when the option's `confirmation` is non-null. Read
 `receipt.economy` for actual gold and unit changes, then re-observe for current
 resource balances, maintenance and city state.
+
+City management commands also require a fresh `player_turn`. Building sales require
+the full confirmation and return both economy and city management outcomes.
+`receipt.cityManagement` records actual settings, specialists, worked/locked tiles,
+yields, removed buildings and gold change for affected own cities. Shared-tile
+transfers preserve ownership and clear the donor city's tile lock.
 
 `player_turn` puts `turnReview` near the beginning of the response. It contains
 confirmed commands from this turn and each owned unit's remaining movement,
