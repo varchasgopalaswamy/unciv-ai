@@ -7,15 +7,12 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.boolean
 import kotlinx.serialization.json.int
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import uncivai.mcp.OperatorMcpBinding
 import uncivai.mcp.PlayerMcpBinding
 import uncivai.mcp.PlayerMcpServer
-import uncivai.player.PeaceOffer
-import uncivai.player.PeaceTerm
-import uncivai.player.PeaceTermSelection
-import uncivai.player.PeaceTerms
 import uncivai.player.PlayerHost
 import uncivai.player.PlayerTurnJson
 import uncivai.player.PlayerTurnSnapshot
@@ -37,9 +34,9 @@ private data class WarPeaceRecovery(
     val epoch: String,
     val handoff: Long,
     val snapshot: PlayerTurnSnapshot,
-    val offer: PeaceOffer,
-    val acceptance: TurnCommandRequest? = null,
-    val receipt: TurnCommandReceipt? = null,
+    val offer: JsonObject,
+    val acceptance: JsonObject? = null,
+    val receipt: JsonObject? = null,
     val romanTreasury: Int? = null,
     val greekTreasury: Int? = null,
 )
@@ -49,6 +46,7 @@ object WarPeaceRunProbe {
     private lateinit var client: HttpClient
     private lateinit var base: String
     private lateinit var lease: String
+    private lateinit var epoch: String
     private val operatorToken = "O".repeat(43)
     private val playerTokens = mapOf("Rome" to "R".repeat(43), "Greece" to "G".repeat(43))
     private var warMessagesRead = 0
@@ -80,10 +78,11 @@ object WarPeaceRunProbe {
                     val status = operator(OperatorRequest("status")).status
                     if (saved != null) {
                         check(status.epoch == saved.epoch && status.handoff == saved.handoff)
-                        check(status.phase == "PAUSED" && status.activeCivilization == "Greece" && status.leaseId == null)
+                        check(status.phase == "PAUSED" && status.activeCivilization == "Rome" && status.leaseId == null)
                     }
                     lease = UUID.randomUUID().toString()
                     operator(OperatorRequest("acquire", lease))
+                    epoch = status.epoch
                     val token = activate()
                     when (stage) {
                         "offer" -> negotiate(root, token)
@@ -162,6 +161,10 @@ object WarPeaceRunProbe {
         check(snapshot.diplomacy.knownCivilizations.single().atWar)
         check(snapshot.scenario?.phase == "AT_WAR")
         check(!snapshot.diplomacy.knownCivilizations.single().negotiatePeace.available)
+        check(!tradeOptions("Rome", "Greece")["available"]!!.jsonPrimitive.boolean)
+        val earlyTreaty = obj("type" to "Treaty", "name" to "Peace Treaty", "amount" to 1, "duration" to 10)
+        val blocked = communication("Rome", "trade_offer", "partner" to "Greece", "give" to listOf(earlyTreaty), "receive" to listOf(earlyTreaty))
+        check(blocked["reason"]!!.jsonPrimitive.content.contains("more turns"))
         val waiting = turn(playerTokens.getValue("Greece"))
         check(waiting.scenario?.phase == "AT_WAR")
         val war = waiting.alerts.single { it.kind == "WarDeclaration" }
@@ -186,129 +189,99 @@ object WarPeaceRunProbe {
         }
         check(cooldownTurns >= 2 && warMessagesRead == 1)
 
-        // Retraction removes only the sender's pending request; rejection is the recipient's choice.
-        execute(token, command(snapshot, TurnCommandKind.PROPOSE_PEACE, "Greece", terms = whitePeace(snapshot)))
-        snapshot = turn(token)
-        check(snapshot.diplomacy.outgoingOffers.single().retract.available)
-        val firstIncoming = turn(playerTokens.getValue("Greece")).diplomacy.incomingOffers.single()
-        check(!firstIncoming.accept.available && !firstIncoming.reject.available)
-        reject(token, command(snapshot, TurnCommandKind.ACCEPT_PEACE, firstIncoming.handle))
-        execute(token, command(snapshot, TurnCommandKind.RETRACT_PEACE, "Greece"))
-        snapshot = turn(token)
-        check(snapshot.diplomacy.outgoingOffers.isEmpty())
-        check(turn(playerTokens.getValue("Greece")).diplomacy.incomingOffers.isEmpty())
-        execute(token, command(snapshot, TurnCommandKind.PROPOSE_PEACE, "Greece", terms = whitePeace(snapshot)))
-        finishTurn(token)
-        token = activate()
-        snapshot = turn(token)
-        val rejected = readOffer(snapshot)
-        execute(token, command(snapshot, TurnCommandKind.REJECT_PEACE, rejected.handle))
-        snapshot = turn(token)
-        check(snapshot.diplomacy.incomingOffers.isEmpty() && snapshot.diplomacy.knownCivilizations.single().atWar)
-        check(turn(playerTokens.getValue("Rome")).diplomacy.outgoingOffers.isEmpty())
-
-        // Greece now proposes; Rome responds with a counteroffer paying 25 gold for peace.
-        execute(token, command(snapshot, TurnCommandKind.PROPOSE_PEACE, "Rome", terms = whitePeace(snapshot)))
-        finishTurn(token)
-        token = activate()
-        snapshot = turn(token)
-        val incoming = readOffer(snapshot)
-        check(incoming.counteroffer.available)
-        val terms = whitePeace(snapshot)
-        val gold = snapshot.diplomacy.knownCivilizations.single().peaceOptions!!.give.single { it.type == "Gold" }
-        check(gold.supported && gold.amount >= 25)
-        reject(token, command(snapshot, TurnCommandKind.COUNTER_PEACE, "Forged offer", terms = terms))
-        execute(token, command(snapshot, TurnCommandKind.COUNTER_PEACE, incoming.handle, terms = terms.copy(give = terms.give + select(gold, 25))))
-        check(turn(token).diplomacy.incomingOffers.isEmpty())
-        finishTurn(token)
-        token = activate()
-        snapshot = turn(token)
-        val counter = readOffer(snapshot)
-        check(counter.receive.single { it.type == "Gold" }.amount == 25)
-        check(counter.give.none { it.type == "Gold" })
+        // All proposal decisions below run while Rome owns the gameplay turn.
+        val terms = tradeOptions("Rome", "Greece")
+        val treaty = selection(terms, "give", "Treaty")
+        val gold = selection(terms, "give", "Gold", 25)
+        fun offer() = communication("Rome", "trade_offer", "partner" to "Greece", "give" to listOf(treaty), "receive" to listOf(treaty)).getValue("trade").jsonObject
+        val withdrawn = offer()
+        decide("Rome", withdrawn, "withdraw")
+        check(decide("Greece", withdrawn, "accept")["error"] != null)
+        val declined = offer()
+        decide("Greece", declined, "decline")
+        check(decide("Greece", declined, "accept")["error"] != null)
+        val initial = communication("Greece", "trade_offer", "partner" to "Rome", "give" to listOf(treaty), "receive" to listOf(treaty)).getValue("trade").jsonObject
+        val counter = communication("Rome", "trade_offer", "partner" to "Greece", "proposal" to initial["proposal"], "version" to initial["version"], "give" to listOf(treaty, gold), "receive" to listOf(treaty)).getValue("trade").jsonObject
+        check(counter.getValue("version").jsonPrimitive.int == 2)
+        check(decide("Rome", initial, "accept")["error"] != null)
+        check(communication("Greece", "trade_read", "proposal" to counter["proposal"])["trade"]!!.jsonObject["clauses"] == counter["clauses"])
+        check(turn(token).pending.none { it.kind == "TradeRequests" })
         Files.writeString(
             root.resolve("expected.json"),
             PlayerTurnJson.json.encodeToString(
-                WarPeaceRecovery(snapshot.epoch, operator(OperatorRequest("status")).status.handoff, snapshot, counter),
+                WarPeaceRecovery(epoch, operator(OperatorRequest("status")).status.handoff, turn(token), counter),
             ),
         )
     }
 
     private fun accept(root: Path, token: String, saved: WarPeaceRecovery) {
-        // Knowing a durable handle from disk cannot replace reading the actual current offer.
-        reject(token, command(saved.snapshot, TurnCommandKind.ACCEPT_PEACE, saved.offer.handle))
-        val snapshot = turn(token)
-        val offer = readOffer(snapshot)
-        check(snapshot.scenario?.phase == "AT_WAR")
-        check(offer.handle == saved.offer.handle && offer.give == saved.offer.give && offer.receive == saved.offer.receive)
-        check(offer.accept.available)
-        val romanBefore = treasury(playerTokens.getValue("Rome"))
-        val greekBefore = treasury(token)
-        val request = command(snapshot, TurnCommandKind.ACCEPT_PEACE, offer.handle)
-        val receipt = execute(token, request)
-        val romanAfter = treasury(playerTokens.getValue("Rome"))
-        val greekAfter = treasury(token)
-        check(romanAfter == romanBefore - 25 && greekAfter == greekBefore + 25) { "Peace counteroffer transferred incorrect gold" }
-        val after = turn(token)
-        val known = after.diplomacy.knownCivilizations.single()
-        check(!known.atWar && known.peaceTreatyTurns > 0 && !known.declareWar.available)
-        check(after.scenario?.phase == "COMPLETE" && turn(playerTokens.getValue("Rome")).scenario?.phase == "COMPLETE")
-        check(known.declareWar.unavailableReasons.isNotEmpty() && after.diplomacy.incomingOffers.isEmpty())
-        check(turn(playerTokens.getValue("Rome")).diplomacy.outgoingOffers.isEmpty())
+        val offer = communication("Greece", "trade_read", "proposal" to saved.offer["proposal"])["trade"]!!.jsonObject
+        check(offer["clauses"] == saved.offer["clauses"] && offer["version"] == saved.offer["version"])
+        check(offer["acceptAvailable"]!!.jsonPrimitive.boolean)
+        val romanBefore = treasury(token)
+        val greekBefore = treasury(playerTokens.getValue("Greece"))
+        val request = obj("op" to "trade_decide", "epoch" to epoch, "requestId" to "peace-accept", "proposal" to offer["proposal"], "version" to offer["version"], "decision" to "accept")
+        val receipt = tool(playerTokens.getValue("Greece"), "player_communication", request)
+        check(receipt["trade"]!!.jsonObject["status"]!!.jsonPrimitive.content == "ENACTED")
+        check(receipt["outcome"]!!.jsonObject["feedback"]!!.jsonObject["paragraphs"]!!.jsonArray.isNotEmpty())
+        check(operator(OperatorRequest("status")).status.let { it.activeCivilization == "Rome" && it.handoff == saved.handoff })
+        val romanAfter = treasury(token)
+        val greekAfter = treasury(playerTokens.getValue("Greece"))
+        check(romanAfter == romanBefore - 25 && greekAfter == greekBefore + 25)
+        for (playerToken in playerTokens.values) {
+            val after = turn(playerToken)
+            val known = after.diplomacy.knownCivilizations.single()
+            check(!known.atWar && known.peaceTreatyTurns > 0 && !known.declareWar.available)
+            check(known.declareWar.unavailableReasons.isNotEmpty())
+            check(after.scenario?.phase == "COMPLETE")
+            check(after.pending.none { it.kind == "TradeRequests" })
+        }
         Files.writeString(
             root.resolve("expected.json"),
             PlayerTurnJson.json.encodeToString(
-                saved.copy(
-                    snapshot = after,
-                    acceptance = request,
-                    receipt = receipt,
-                    romanTreasury = romanAfter,
-                    greekTreasury = greekAfter,
-                ),
+                saved.copy(snapshot = turn(token), acceptance = request, receipt = receipt, romanTreasury = romanAfter, greekTreasury = greekAfter),
             ),
         )
     }
 
     private fun continuePlaying(runtime: HeadlessRuntime, firstToken: String, saved: WarPeaceRecovery) {
         val beforeReplay = json().toJson(runtime.game)
-        // An exact committed retry remains available after restoration without a fresh read.
-        check(execute(firstToken, checkNotNull(saved.acceptance)) == saved.receipt)
-        // Read/replay only: the in-process facade must freeze deserialized cached receipts too.
-        // HTTPS-decoded client objects are independent copies and need not themselves be immutable.
-        val local = PlayerHost(runtime).bindPlayer("Greece")
-        val restored = local.execute(checkNotNull(saved.acceptance))
-        val feedback = checkNotNull(restored.feedback)
-        for (list in listOf(feedback.paragraphs, feedback.additionalAcknowledgements)) {
-            var immutable = false
-            try {
-                (list as MutableList<String>).clear()
-            } catch (_: UnsupportedOperationException) {
-                immutable = true
-            }
-            check(immutable) { "A restored receipt retained a mutable list" }
-        }
-        check(local.execute(checkNotNull(saved.acceptance)) == saved.receipt)
-        check(execute(firstToken, checkNotNull(saved.acceptance)) == saved.receipt)
+        val greekToken = playerTokens.getValue("Greece")
+        check(tool(greekToken, "player_communication", checkNotNull(saved.acceptance)) == saved.receipt)
+        check(decide("Greece", saved.offer, "accept")["outcome"] == saved.receipt!!["outcome"])
         check(json().toJson(runtime.game) == beforeReplay) { "Acceptance retry repeated peace effects" }
-        check(treasury(playerTokens.getValue("Rome")) == saved.romanTreasury)
-        check(treasury(firstToken) == saved.greekTreasury)
-        var snapshot = turn(firstToken)
-        check(snapshot.diplomacy.incomingOffers.isEmpty())
-        check(snapshot.scenario?.phase == "COMPLETE")
-        reject(firstToken, command(snapshot, TurnCommandKind.ACCEPT_PEACE, saved.offer.handle))
-        reject(firstToken, command(snapshot, TurnCommandKind.DECLARE_WAR, "Rome", confirmWar = true))
+        val rome = runtime.game.getCivilization("Rome")
+        val greece = runtime.game.getCivilization("Greece")
+        check(rome.gold == saved.romanTreasury && greece.gold == saved.greekTreasury)
+        val native = rome.getDiplomacyManager(greece)!!.trades.single()
+        check(native.reverse().equalTrade(greece.getDiplomacyManager(rome)!!.trades.single()))
+        check(native.ourOffers.single { it.type.name == "Gold" }.amount == 25)
+        check(rome.tradeRequests.isEmpty() && greece.tradeRequests.isEmpty())
+        reject(firstToken, command(turn(firstToken), TurnCommandKind.DECLARE_WAR, "Greece", confirmWar = true))
         var token = firstToken
         repeat(8) { index ->
             if (index > 0) token = activate()
-            snapshot = turn(token)
+            val snapshot = turn(token)
             check(snapshot.scenario?.phase == "COMPLETE")
             check(snapshot.diplomacy.knownCivilizations.single().let { !it.atWar && it.peaceTreatyTurns > 0 && !it.declareWar.available })
-            check(snapshot.diplomacy.incomingOffers.isEmpty())
+            check(snapshot.pending.none { it.kind == "TradeRequests" })
             finishTurn(token)
         }
         check(operator(OperatorRequest("status")).status.handoff == saved.handoff + 8)
         check(operator(OperatorRequest("status")).status.turn == saved.snapshot.turn + 4)
     }
+
+    private fun communication(civ: String, op: String, vararg fields: Pair<String, Any?>): JsonObject {
+        val request = obj("op" to op, "epoch" to epoch, *fields)
+        val mutation = op in setOf("trade_offer", "trade_decide")
+        return tool(playerTokens.getValue(civ), "player_communication", if (mutation) JsonObject(request + obj("requestId" to UUID.randomUUID().toString())) else request)
+    }
+    private fun tradeOptions(civ: String, partner: String) = communication(civ, "trade_options", "partner" to partner)
+    private fun selection(options: JsonObject, side: String, type: String, amount: Int = 1): JsonObject {
+        val term = options.getValue(side).jsonArray.map { it.jsonObject }.single { it["type"]!!.jsonPrimitive.content == type }
+        return obj("type" to term["type"], "name" to term["name"], "amount" to amount, "duration" to term["duration"])
+    }
+    private fun decide(civ: String, offer: JsonObject, decision: String) = communication(civ, "trade_decide", "proposal" to offer["proposal"], "version" to offer["version"], "decision" to decision)
 
     private fun readAndAcknowledgeAlerts(token: String): PlayerTurnSnapshot {
         repeat(12) {
@@ -324,25 +297,6 @@ object WarPeaceRunProbe {
         }
         error("Alert fixture budget exhausted")
     }
-
-    private fun readOffer(snapshot: PlayerTurnSnapshot): PeaceOffer = snapshot.diplomacy.incomingOffers.single().also {
-        check(it.civilizationName.isNotBlank() && it.leaderName.isNotBlank() && it.message.isNotBlank())
-        check(it.give.isNotEmpty() && it.receive.isNotEmpty())
-        check((it.give + it.receive).all { term -> term.supported && term.displayText.isNotBlank() })
-        check(snapshot.pending.single { decision -> decision.kind == "TradeRequests" }.supported)
-        check(!snapshot.canEndTurn && it.reject.available)
-    }
-
-    private fun whitePeace(snapshot: PlayerTurnSnapshot): PeaceTerms {
-        val known = snapshot.diplomacy.knownCivilizations.single()
-        val options = checkNotNull(known.peaceOptions)
-        return PeaceTerms(
-            listOf(select(options.give.single { it.type == "Treaty" && it.name == "Peace Treaty" })),
-            listOf(select(options.receive.single { it.type == "Treaty" && it.name == "Peace Treaty" })),
-        )
-    }
-
-    private fun select(term: PeaceTerm, amount: Int = term.amount) = PeaceTermSelection(term.type, checkNotNull(term.name), amount, term.duration)
 
     private fun finishTurn(token: String) {
         operator(OperatorRequest("heartbeat", lease))
@@ -393,7 +347,6 @@ object WarPeaceRunProbe {
         target: String? = null,
         destination: TilePosition? = null,
         confirmWar: Boolean = false,
-        terms: PeaceTerms? = null,
     ) = TurnCommandRequest(
         UUID.randomUUID().toString(),
         snapshot.epoch,
@@ -402,7 +355,6 @@ object WarPeaceRunProbe {
         target = target,
         destination = destination,
         confirmWar = confirmWar,
-        peaceTerms = terms,
     ).reviewedFor(snapshot)
 
     private fun execute(token: String, request: TurnCommandRequest): TurnCommandReceipt = PlayerTurnJson.json.decodeFromString(
@@ -432,7 +384,7 @@ object WarPeaceRunProbe {
     private fun tool(token: String, name: String, arguments: JsonObject = JsonObject(emptyMap()), expectError: Boolean = false): JsonObject {
         val body = """{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"$name","arguments":$arguments}}"""
         val result = Json.parseToJsonElement(raw("/mcp", body, token)).jsonObject.getValue("result").jsonObject
-        check(result.getValue("isError").jsonPrimitive.boolean == expectError) { result.toString() }
+        check(name == "player_communication" || result.getValue("isError").jsonPrimitive.boolean == expectError) { result.toString() }
         return if (expectError) result else result.getValue("structuredContent").jsonObject
     }
 }

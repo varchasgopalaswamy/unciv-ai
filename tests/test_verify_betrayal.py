@@ -1,6 +1,7 @@
 import copy
 import json
 import sqlite3
+from typing import Any
 
 import pytest
 
@@ -59,7 +60,7 @@ def fixture(root):
             for name, other in (("Rome", "Greece"), ("Greece", "Rome"))
         ],
     }
-    saved = {
+    saved: dict[str, Any] = {
         "epoch": "g1",
         "gameJson": json.dumps(game),
         "handoff": 5,
@@ -142,7 +143,9 @@ def test_engine_and_ledger_disagreements_override_agent_reports(tmp_path, change
     elif change == "released":
         stream.insert(3, {"id": 3.5, "kind": "consent", "body": {**stream[1]["body"], "decision": "withdraw"}})
     elif change == "engine_treaty":
-        saved["players"]["Rome"]["receipts"].append({"request": {"kind": "PROPOSE_PEACE"}})
+        saved["communication"]["trades"] = {
+            "proposals": {"d1": [{"clauses": [{"item": {"type": "Treaty", "name": "Peace Treaty"}}]}]}
+        }
     elif change == "missing_receipt":
         saved["players"]["Greece"]["receipts"].clear()
     else:

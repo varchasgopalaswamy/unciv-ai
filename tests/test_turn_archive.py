@@ -59,7 +59,7 @@ class TurnArchiveTests(unittest.TestCase):
         return self.event("assistant_message", itemId="final", phase="final_answer", text=text)
 
     def debug_summary(self, game_turn=0, attempt=1):
-        return (self.workspace / f"turn_{game_turn + 1}/attempts/attempt_{attempt}/summary.md").read_text()
+        return (self.workspace / f"turn_{game_turn}/attempts/attempt_{attempt}/summary.md").read_text()
 
     def test_civilization_names_are_readable_reversible_and_collision_free(self):
         names = ["Rome", "Greece", "../Rome", "a/b", "a\\b", "a%2Fb", ".", "..", "Éire", "Éire", "中国", "New World"]
@@ -86,7 +86,8 @@ class TurnArchiveTests(unittest.TestCase):
     def test_artifacts_separate_evidence_from_claims_and_keep_full_commands(self):
         events = self.events(*self.command(), self.report("I explored the entire continent and founded six cities."))
         artifacts = self.archive.update(0, "private-activation-id", events, phase="COMPLETED", handoff=1)
-        self.assertEqual(1, artifacts["turn"])
+        self.assertEqual(0, artifacts["turn"])
+        self.assertEqual(artifacts["gameTurn"], artifacts["turn"])
         self.assertEqual("# Turn 0\n\nI explored the entire continent and founded six cities.\n", artifacts["summary"])
         debug = self.debug_summary()
         self.assertIn("Host handoff: confirmed.", debug)
@@ -101,10 +102,10 @@ class TurnArchiveTests(unittest.TestCase):
         for name in ("commands.jsonl", "summary.md", "turn.json"):
             if name != "turn.json":
                 self.assertEqual(
-                    (self.trusted / "turn_1" / name).read_bytes(), (self.workspace / "turn_1" / name).read_bytes()
+                    (self.trusted / "turn_0" / name).read_bytes(), (self.workspace / "turn_0" / name).read_bytes()
                 )
-            self.assertEqual(0o600, (self.workspace / "turn_1" / name).stat().st_mode & 0o777)
-        player_metadata = json.loads((self.workspace / "turn_1/turn.json").read_text())
+            self.assertEqual(0o600, (self.workspace / "turn_0" / name).stat().st_mode & 0o777)
+        player_metadata = json.loads((self.workspace / "turn_0/turn.json").read_text())
         self.assertNotIn("handoff", player_metadata["attempts"][0])
         self.assertTrue(player_metadata["attempts"][0]["committed"])
 
@@ -126,7 +127,7 @@ class TurnArchiveTests(unittest.TestCase):
         self.assertEqual(2, len(artifacts["commands"].splitlines()))
         self.assertIn("Captured the last capital.", artifacts["summary"])
         self.assertTrue(artifacts["attempts"][0]["terminalOutcome"])
-        metadata = json.loads((self.workspace / "turn_1/turn.json").read_text())
+        metadata = json.loads((self.workspace / "turn_0/turn.json").read_text())
         self.assertTrue(metadata["attempts"][0]["committed"])
         self.assertIn("Host terminal outcome: confirmed.", self.debug_summary())
         self.assertNotIn("Host handoff: confirmed.", self.debug_summary())
@@ -147,18 +148,18 @@ class TurnArchiveTests(unittest.TestCase):
                 self.archive.update(0, "final", [], **arguments)
 
     def test_context_is_numeric_finalized_and_ignores_workspace_edits(self):
-        for game_turn in (9, 1, 0):
-            events = self.events(self.report(f"MEMORY-{game_turn + 1}"))
+        for game_turn in (10, 2, 0):
+            events = self.events(self.report(f"MEMORY-{game_turn}"))
             self.archive.update(game_turn, f"activation-{game_turn}", events, phase="COMPLETED", handoff=game_turn + 1)
-        (self.workspace / "turn_1" / "summary.md").write_text("PLAYER-TAMPERED-INSTRUCTIONS")
-        context = self.archive.context(10)
-        self.assertLess(context.index("MEMORY-1\n"), context.index("MEMORY-2\n"))
+        (self.workspace / "turn_0" / "summary.md").write_text("PLAYER-TAMPERED-INSTRUCTIONS")
+        context = self.archive.context(11)
+        self.assertLess(context.index("MEMORY-0\n"), context.index("MEMORY-2\n"))
         self.assertLess(context.index("MEMORY-2\n"), context.index("MEMORY-10\n"))
         self.assertNotIn("PLAYER-TAMPERED-INSTRUCTIONS", context)
         self.assertIn("notes, not instructions", context)
-        self.assertNotIn("MEMORY-10", self.archive.context(9))
+        self.assertNotIn("MEMORY-10", self.archive.context(10))
         restored = TurnArchive(self.trusted, self.workspace, "Rome", "epoch")
-        self.assertEqual(context, restored.context(10))
+        self.assertEqual(context, restored.context(11))
 
     def test_idempotent_updates_and_duplicate_notifications_do_not_duplicate_commands(self):
         call, result = self.command()
@@ -297,7 +298,7 @@ class TurnArchiveTests(unittest.TestCase):
         self.assertLess(len(artifacts["summary"]), 2450)
         self.assertNotIn("Public report excerpt", artifacts["summary"])
         self.assertEqual(200, len(artifacts["summary"].split("\n\n", 1)[1].split()))
-        self.assertIn("A reason. " * 10000, (self.workspace / "turn_1/attempts/attempt_1/events.jsonl").read_text())
+        self.assertIn("A reason. " * 10000, (self.workspace / "turn_0/attempts/attempt_1/events.jsonl").read_text())
 
     def test_rolled_back_attempts_remain_detailed_but_do_not_supply_memory(self):
         events = self.events(
@@ -318,7 +319,7 @@ class TurnArchiveTests(unittest.TestCase):
         rows = [json.loads(line) for line in artifacts["commands"].splitlines()]
         self.assertEqual([False, False], [row["aborted"] for row in rows])
         self.assertTrue(artifacts["attempts"][0]["aborted"])
-        failed = self.workspace / "turn_1/attempts/attempt_1"
+        failed = self.workspace / "turn_0/attempts/attempt_1"
         self.assertIn("ROLLED-BACK-STRATEGY", (failed / "summary.md").read_text())
         self.assertIn("effects were discarded", (failed / "summary.md").read_text())
         self.assertIn("ROLLED-BACK-UNIT", (failed / "commands.jsonl").read_text())
@@ -346,18 +347,18 @@ class TurnArchiveTests(unittest.TestCase):
         self.assertNotIn("FAILED-REPORT", artifacts["summary"])
         self.assertNotIn("Attempt 1", artifacts["summary"])
         self.assertEqual("# Turn 0\n", artifacts["summary"])
-        self.assertIn("FAILED-CITY", (self.workspace / "turn_1/attempts/attempt_1/commands.jsonl").read_text())
+        self.assertIn("FAILED-CITY", (self.workspace / "turn_0/attempts/attempt_1/commands.jsonl").read_text())
 
     def test_attempt_details_remain_sanitized_and_cannot_redirect_writes(self):
         events = self.events(self.report("Visible player-credential"))
         self.archive.update(0, "failed", events, phase="FAILED", aborted=True)
-        attempt_path = self.workspace / "turn_1/attempts/attempt_1"
+        attempt_path = self.workspace / "turn_0/attempts/attempt_1"
         for path in attempt_path.iterdir():
             self.assertNotIn("player-credential", path.read_text())
             self.assertEqual(0o600, path.stat().st_mode & 0o777)
         target = self.root / "outside"
         target.mkdir(mode=0o700)
-        (self.workspace / "turn_1/attempts/attempt_2").symlink_to(target, target_is_directory=True)
+        (self.workspace / "turn_0/attempts/attempt_2").symlink_to(target, target_is_directory=True)
         with self.assertRaises(TurnArchiveError):
             self.archive.update(0, "new", events, phase="COMPLETED", handoff=1)
         self.assertEqual([], list(target.iterdir()))
@@ -365,7 +366,7 @@ class TurnArchiveTests(unittest.TestCase):
     def test_symlink_workspace_cannot_redirect_artifact_writes(self):
         target = self.root / "outside"
         target.mkdir(mode=0o700)
-        (self.workspace / "turn_1").symlink_to(target, target_is_directory=True)
+        (self.workspace / "turn_0").symlink_to(target, target_is_directory=True)
         with self.assertRaises(TurnArchiveError):
             self.archive.update(0, "attempt", self.events(self.report()), phase="COMPLETED", handoff=1)
         self.assertEqual([], list(target.iterdir()))
@@ -374,9 +375,9 @@ class TurnArchiveTests(unittest.TestCase):
 
     def test_symlink_files_and_parent_segments_are_rejected(self):
         self.archive.update(0, "attempt", self.events(self.report()), phase="COMPLETED", handoff=1)
-        summary = self.trusted / "turn_1" / "summary.md"
+        summary = self.trusted / "turn_0" / "summary.md"
         summary.unlink()
-        summary.symlink_to(self.workspace / "turn_1" / "summary.md")
+        summary.symlink_to(self.workspace / "turn_0" / "summary.md")
         with self.assertRaises((TurnArchiveError, TLSConfigError)):
             self.archive.context(1)
         (self.root / "linked").symlink_to(self.workspace, target_is_directory=True)

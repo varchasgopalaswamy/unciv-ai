@@ -259,8 +259,8 @@ class EventHistory:
             except ValueError:
                 raise HistoryError("Invalid player or activation name for history.") from None
             player_directory = history_directory(history_directory(root) / player_name)
-            bind_source(player_directory / "source.json", dict(epoch=epoch, civilization=civilization))
-            self.turn_directory = history_directory(player_directory / f"turn_{game_turn + 1}")
+            bind_source(player_directory / "source.json", dict(version=2, epoch=epoch, civilization=civilization))
+            self.turn_directory = history_directory(player_directory / f"turn_{game_turn}")
             self.directory = history_directory(self.turn_directory / f"attempt_{attempt_name}")
             self.source["gameTurn"] = game_turn
         self.jsonl = self.directory / "events.jsonl"
@@ -373,6 +373,6 @@ class EventHistory:
                 text = json.dumps(data, ensure_ascii=False, indent=2)
                 fence = "`" * max(3, max((len(match.group()) + 1 for match in re.finditer(r"`+", text)), default=3))
                 blocks.append(f"**{kind.replace('_', ' ').capitalize()}**\n\n{fence}json\n{text}\n{fence}")
-        turn = f" — turn {self.source['gameTurn'] + 1}" if "gameTurn" in self.source else ""
+        turn = f" — turn {self.source['gameTurn']}" if "gameTurn" in self.source else ""
         header = f"# {visible_text(self.source['civilization'])}{turn} — activation {visible_text(self.source['activationId'])}\n\n"
         atomic_text(self.markdown, header + "\n\n".join(blocks) + "\n")

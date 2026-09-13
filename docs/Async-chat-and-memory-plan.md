@@ -15,7 +15,7 @@ start of a numbered game round**.
 
 The first release includes public/private chat, social commitments, structured
 memory, integration with existing gameplay commands, and a human CLI. The next
-[economic trade slice](Asynchronous-trade.md) now implements host-owned binding
+[trade slice](Asynchronous-trade.md) now implements host-owned binding
 proposals and asynchronous execution; a browser interface remains later work.
 
 ## 1. Responsive runtime and communication
@@ -125,13 +125,13 @@ communication, commitment decisions and memory updates.
   cannot silently acknowledge changed information the model has not seen.
 - Outside a civilization's gameplay turn, allow communication, social commitments
   and private-memory updates. The subsequent economic trade slice adds a narrow
-  bilateral-consent path for supported economic transfers. Ordinary gameplay
+  bilateral-consent path for supported economic transfers and peace treaties. Ordinary gameplay
   commands remain turn-bound. Never switch Unciv's active player to bypass checks.
 
 Conflicting old proposals are invalidated by social commitments. A fresh decision
 may explicitly reconsider and break a promise; record that choice.
 
-Existing war/peace commands and economic trades publish permitted outcomes into
+War declarations and shared economic/peace trades publish permitted outcomes into
 this system. Further trade categories, friendship and demands reuse its version,
 consent and receipt boundaries.
 

@@ -24,7 +24,9 @@ private fun runCli(args: Array<String>): Int {
         val players = options.mcpConfig?.let(::loadMcpPlayerConfig)
         val operatorToken = options.operatorConfig?.let(::loadOperatorConfig)
         val tls = options.tlsConfig?.let(::loadHostTls)
-        val loaded = if (options.newDuel && options.scenario == "async-trade") {
+        val loaded = if (options.newDuel && options.scenario == "async-peace") {
+            HeadlessRuntime.createPeaceExercise(options.dataDirectory, options.seed ?: 412L)
+        } else if (options.newDuel && options.scenario == "async-trade") {
             HeadlessRuntime.createTradeExercise(options.dataDirectory, options.seed ?: 412L)
         } else if (options.newDuel && options.scenario == "verbal-betrayal") {
             HeadlessRuntime.createVerbalBetrayalExercise(options.dataDirectory, options.seed ?: 412L)
@@ -43,6 +45,7 @@ private fun runCli(args: Array<String>): Int {
         }
         loaded.use { runtime ->
             val expectedScenario = when (options.scenario) {
+                "async-peace" -> PeaceScenarioSetup.MAP_NAME
                 "async-trade" -> TradeScenarioSetup.MAP_NAME
                 "verbal-betrayal" -> VerbalBetrayalScenario.MAP_NAME
                 "async-chat" -> "Asynchronous chat exercise"
@@ -152,7 +155,7 @@ private fun parseOptions(args: Array<String>): CliOptions {
         when (option) {
             "--scenario" -> {
                 require(scenario == null) { "--scenario may only be specified once" }
-                require(value in setOf("city-management", "great-people", "async-chat", "verbal-betrayal", "async-trade")) { "Unknown scenario: $value" }
+                require(value in setOf("city-management", "great-people", "async-chat", "verbal-betrayal", "async-trade", "async-peace")) { "Unknown scenario: $value" }
                 scenario = value
             }
 
@@ -241,5 +244,5 @@ private fun Throwable.conciseMessage(): String {
 
 private fun usage() = "Usage: unciv-ai (--new-duel --checkpoint <absolute-path> [--seed <integer>] | " +
     "--save <absolute-path> [--checkpoint <absolute-path>] | " +
-    "--resume-checkpoint <absolute-path>) [--scenario <city-management|great-people|async-chat|verbal-betrayal|async-trade>] --data-dir <absolute-path> " +
+    "--resume-checkpoint <absolute-path>) [--scenario <city-management|great-people|async-chat|verbal-betrayal|async-trade|async-peace>] --data-dir <absolute-path> " +
     "[--mcp-config <absolute-path> --tls-config <absolute-path> [--port <0-65535>] [--operator-config <absolute-path>]]"

@@ -215,14 +215,14 @@ class TurnArchive:
             raise TurnArchiveError("Trusted turn memory must be outside the player's writable workspace.")
         self.civilization, self.epoch = civilization, epoch
         self.secrets = tuple(secret for secret in secrets if isinstance(secret, str) and secret)
-        self.binding = {"version": 1, "civilization": civilization, "epoch": epoch}
+        self.binding = {"version": 2, "civilization": civilization, "epoch": epoch}
         with self._lock():
             for root in (self.directory, self.workspace):
                 manifest = root / "match.json"
                 if manifest.exists() or manifest.is_symlink():
                     if _load(manifest) != self.binding:
                         raise TurnArchiveError(
-                            "This civilization directory belongs to a different match; choose a new state directory."
+                            "This civilization directory has a different match or archive format; choose a new state directory."
                         )
                 else:
                     write_private_json(manifest, self.binding)
@@ -240,14 +240,14 @@ class TurnArchive:
     def _turn(self, game_turn):
         if type(game_turn) is not int or game_turn < 0:
             raise TurnArchiveError("Game turn must be a nonnegative integer.")
-        return f"turn_{game_turn + 1}"
+        return f"turn_{game_turn}"
 
     def _turns(self):
         result = []
         for path in self.directory.iterdir():
-            if re.fullmatch(r"turn_[1-9][0-9]*", path.name):
+            if re.fullmatch(r"turn_(0|[1-9][0-9]*)", path.name):
                 _directory(path)
-                result.append((int(path.name[5:]) - 1, path))
+                result.append((int(path.name[5:]), path))
         return sorted(result)
 
     def _attempts(self, turn_path: Path) -> list[JsonObject]:
@@ -384,7 +384,7 @@ class TurnArchive:
         ]
         committed = next((item["handoff"] for item in attempts if item["handoff"] is not None), None)
         summary = [
-            f"# {_plain(self.civilization)} — turn {game_turn + 1} (game turn {game_turn})\n",
+            f"# {_plain(self.civilization)} — turn {game_turn}\n",
             "Historical record. Read a fresh player_turn for current state; old commands and receipts must not be replayed as new actions.\n",
             "Host terminal outcome: confirmed.\n"
             if any(item.get("terminalOutcome") for item in attempts)
@@ -498,7 +498,7 @@ class TurnArchive:
                 )
         return {
             "gameTurn": game_turn,
-            "turn": game_turn + 1,
+            "turn": game_turn,
             "commands": _jsonl(dense),
             "summary": "\n".join(summary) if include_aborted else self._summary(game_turn, turn_path, attempts),
             "attempts": public_attempts,

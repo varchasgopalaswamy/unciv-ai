@@ -106,14 +106,14 @@ objects or authorize stale commands. Older checkpoint formats require a new game
 | `REMOVE_CONSTRUCTION` | `target`: city handle; `index`: removable construction entry |
 | `MOVE_CONSTRUCTION` | `target`: city handle; `index`: construction entry; `toIndex`: one of its `moveToIndices` |
 | `DECLARE_WAR` | `target`: known civilizationId; `confirmWar: true` after reading current confirmation |
-| `PROPOSE_PEACE` | `target`: known civilizationId; `peaceTerms` give/receive lists of offered type/name/amount/duration |
-| `ACCEPT_PEACE`, `REJECT_PEACE` | `target`: incoming offer handle, after reading its current message and terms |
-| `COUNTER_PEACE` | `target`: incoming offer handle; `peaceTerms` replacement give/receive lists |
-| `RETRACT_PEACE` | `target`: known civilizationId with a pending outgoing offer |
 | `END_TURN` | `reviewId`: current `turnReview.id`; `canEndTurn` must be true. If any review units are idle with legal destinations, include `deferReason` explaining intentional idling. |
 
+Peace proposals and decisions use the same asynchronous `trade_*` tools as economic
+trades, described in [Asynchronous-trade.md](Asynchronous-trade.md). They are not
+turn commands.
+
 Unused fields must be absent or have their default value (`null` for target and
-selection, destination, attackFrom, worked, locked, enabled, index, toIndex and peaceTerms; `[]` for queue,
+selection, destination, attackFrom, worked, locked, enabled, index and toIndex; `[]` for queue,
 `false` for confirmBreakPromise, confirmWar and confirmAction). Unknown fields and command names are rejected. Requests
 must use a unique printable ASCII `requestId` of 1–128 characters per player. Retries
 use the same ID **and the original payload**, including the original revision.

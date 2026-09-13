@@ -8,8 +8,9 @@ import copy
 
 
 class ConcurrentTradeHost:
-    def __init__(self, host):
+    def __init__(self, host, *, peace=False):
         self.host = host
+        self.peace = peace
         self.events = {civ: [] for civ in host.agent_tokens}
         self.trade = None
         self.greek_planning = False
@@ -42,6 +43,7 @@ class ConcurrentTradeHost:
                 host.changed.notify_all()
             return {
                 "testConcurrentTrade": True,
+                "testPeaceTrade": self.peace,
                 "civilization": civ,
                 "epoch": host.epoch,
                 "turn": host.handoff // 2,
@@ -58,6 +60,7 @@ class ConcurrentTradeHost:
         if op == "state":
             return {
                 "testConcurrentTrade": True,
+                "testPeaceTrade": self.peace,
                 "epoch": host.epoch,
                 "civilization": civ,
                 "peaceVersion": 0,
@@ -85,6 +88,11 @@ class ConcurrentTradeHost:
             host.changed.notify_all()
             return {"sent": True}
         if op == "trade_offer":
+            if self.peace:
+                for side in ("give", "receive"):
+                    assert [item for item in args[side] if item["type"] == "Treaty"] == [
+                        {"type": "Treaty", "name": "Peace Treaty", "amount": 1, "duration": 10}
+                    ]
             self.writes.append((civ, gameplay, op))
             version = 1 if self.trade is None else self.trade["version"] + 1
             self.trade = {

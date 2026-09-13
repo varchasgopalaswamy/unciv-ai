@@ -45,7 +45,7 @@ def test_misleading_speech_cannot_replace_observation_and_cursor_is_durable(tmp_
 
 def test_outgoing_identity_exact_retry_and_crash_recovery(tmp_path):
     memory = state(tmp_path)
-    memory.start_job("job", "gameplay", {})
+    memory.start_job("job", "gameplay", {}, game_turn=0)
     request = memory.queue("job", "player_command", {"kind": "MOVE_UNIT", "target": "unit1"}, {}, "call1")
     retry = memory.queue("job", "player_command", {"kind": "MOVE_UNIT", "target": "unit1"}, {}, "call1")
     assert request["id"] == retry["id"]
@@ -57,6 +57,12 @@ def test_outgoing_identity_exact_retry_and_crash_recovery(tmp_path):
         restarted.patch("job", [])
     restarted.receipt(request["id"], {"kind": "MOVE_UNIT", "moved": True})
     assert not restarted.pending()
+    workspace = tmp_path / "view"
+    workspace.mkdir(mode=0o700)
+    restarted.export(workspace)
+    exported = json.loads((workspace / "turn_0" / "receipts.jsonl").read_text())
+    assert exported["receipt"] == {"kind": "MOVE_UNIT", "moved": True}
+    assert not (workspace / "turn_1").exists()
 
 
 def test_round_restore_fences_jobs_and_regenerates_projections(tmp_path):

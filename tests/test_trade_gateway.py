@@ -46,12 +46,18 @@ class TradeHost(Host):
         return await super().tool(name, args)
 
 
-def test_trade_acceptance_uses_the_jobs_inspected_version_despite_other_reads(tmp_path):
+@pytest.mark.parametrize("peace", [False, True])
+def test_trade_acceptance_uses_the_jobs_inspected_version_despite_other_reads(tmp_path, peace):
     async def run():
         io = ServiceIO()
         memory = CivilizationState(tmp_path / "private", "Rome")
         gateway = ProposalGateway(memory, io, tmp_path / "workspace")
         host = TradeHost()
+        if peace:
+            host.trade["clauses"] += [
+                {"from": a, "to": b, "item": {"type": "Treaty", "name": "Peace Treaty", "amount": 1, "duration": 10}}
+                for a, b in (("Rome", "Greece"), ("Greece", "Rome"))
+            ]
         try:
             old = await gateway.open("old", "gameplay", "g1", host, {})
             chat = await gateway.open("chat", "communication", "g1", host, {})

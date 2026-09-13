@@ -147,7 +147,6 @@ def audit(root: Path, checkpoint_path: Path | None = None):
     initial_players = {
         c["civName"]: c for c in initial.get("civilizations", []) if c.get("civName") in {"Rome", "Greece"}
     }
-    peace_commands = {"PROPOSE_PEACE", "ACCEPT_PEACE", "COUNTER_PEACE", "REJECT_PEACE", "RETRACT_PEACE"}
     checks = {
         "metAtPeaceBeforeNegotiation": len(initial_players) == 2
         and all(
@@ -172,7 +171,12 @@ def audit(root: Path, checkpoint_path: Path | None = None):
         # Unciv's DiplomacyManager defaults to War; native JSON omits default
         # fields. Require a real relationship entry before applying that default.
         "nativeSaveConfirmsWarBothWays": all(d and d.get("diplomaticStatus", "War") == "War" for d in diplomacy),
-        "noEnginePeaceNegotiation": not any(row["request"]["kind"] in peace_commands for _, row in receipts)
+        "noEnginePeaceNegotiation": not any(
+            clause.get("item", {}).get("type") == "Treaty" and clause.get("item", {}).get("name") == "Peace Treaty"
+            for versions in saved.get("communication", {}).get("trades", {}).get("proposals", {}).values()
+            for proposal in versions
+            for clause in proposal.get("clauses", [])
+        )
         and not any(d.get("trades") for d in diplomacy),
         "continuedScheduledTurns": saved.get("handoff", 0) >= 5,
         "currentRelationshipBelief": epoch == saved["epoch"]

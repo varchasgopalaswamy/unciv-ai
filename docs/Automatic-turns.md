@@ -121,7 +121,7 @@ Each civilization gets a readable workspace. For the default local setup:
 ```text
 STATE_DIR/agents/
   Rome/
-    turn_1/
+    turn_0/
       commands.jsonl   Dense commands, observations and receipts from retained attempts
       summary.md       Short account of actions, reasons and outcomes
       attempts/
@@ -130,16 +130,18 @@ STATE_DIR/agents/
           summary.md       Public report and attempt outcome
           events.jsonl     Full public messages and tool events
           source.json      Match, civilization, game turn and attempt metadata
-    turn_2/
+    turn_1/
       commands.jsonl
       summary.md
   Greece/
-    turn_1/
+    turn_0/
       commands.jsonl
       summary.md
 ```
 
-Folder numbers are the game's zero-based turn plus one: game turn 0 is `turn_1`.
+Folders, summaries, receipts and the player API use the same zero-based turn number:
+turn 0 is `turn_0`, turn 1 is `turn_1`, and so on.
+Use a fresh state directory for this archive format; older archives are not migrated.
 Names such as Rome and Greece appear directly; unusual characters are encoded so
 names cannot escape their directories or collide with another civilization's name.
 The archive records failed or interrupted attempts as well as completed turns.
@@ -151,7 +153,7 @@ See [chat, memory and recovery](Chat-memory-and-recovery.md) for the current
 concurrency, context and recovery contract.
 
 Each summary contains one heading with the turn number returned by the player API,
-followed by the agent's brief public report. For example, `turn_1/summary.md` contains:
+followed by the agent's brief public report. For example, `turn_0/summary.md` contains:
 
 ```markdown
 # Turn 0
@@ -202,7 +204,7 @@ connection and stores them on the scheduler machine under:
 ```text
 STATE_DIR/runner/history/Rome/
   source.json                     Match and civilization binding
-  turn_1/
+  turn_0/
     commands.jsonl                Finalized copy of the player's detailed archive
     summary.md                    Finalized copy of the player's short summary
     attempt_<activation UUID>/

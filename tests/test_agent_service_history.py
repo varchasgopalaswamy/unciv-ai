@@ -123,7 +123,7 @@ class ServiceHistoryTests(unittest.IsolatedAsyncioTestCase):
             await self.service.interrupt("activation")
         self.assertEqual("INTERRUPTED", self.service.status()["phase"])
         self.assertTrue(self.factory.instances[0].closed)
-        self.assertIn("INTERRUPTED", (self.root / "workspace/turn_1/turn.json").read_text())
+        self.assertIn("INTERRUPTED", (self.root / "workspace/turn_0/turn.json").read_text())
 
     async def test_large_result_burst_keeps_all_receipts_and_one_payload_per_observation(self):
         await self.start()
@@ -290,4 +290,4 @@ class ServiceHistoryTests(unittest.IsolatedAsyncioTestCase):
             await self.service.active_task
         self.assertEqual("COMPLETED", self.service.status()["phase"])
         self.assertEqual("COMPLETED", json.loads(record_path.read_text())["phase"])
-        self.assertIn("The final report is durable.", (self.root / "workspace/turn_1/summary.md").read_text())
+        self.assertIn("The final report is durable.", (self.root / "workspace/turn_0/summary.md").read_text())

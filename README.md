@@ -19,10 +19,10 @@ war-message acknowledgement, and peace offers with gold and resource terms,
 including accept/reject/counteroffer and durable retries. Gameplay launchers and
 `civ-agent match start` accept `--model NAME --reasoning-effort LEVEL`.
 
-The [asynchronous economic trade slice](docs/Asynchronous-trade.md) adds canonical
-gold/GPT/resource proposals and counteroffers. Agents accept the exact stored
+The [asynchronous trade slice](docs/Asynchronous-trade.md) adds canonical
+gold/GPT/resource and peace-treaty proposals and counteroffers. Agents accept the exact stored
 terms they inspected, including outside their gameplay turn. Use `--scenario
-async-trade` for a prepared negotiation exercise and `civ-agent trade` for human
+async-trade` or `--scenario async-peace` for a prepared negotiation exercise and `civ-agent trade` for human
 inspection and decisions.
 
 Read [AGENTS.md](AGENTS.md) for confidentiality and contribution instructions, and [Development workflow](docs/Development-workflow.md) for engine branches, local overrides and dependency updates.
@@ -76,7 +76,7 @@ saved credentials retain their layout.
 For automatic turns, start one HTTPS service per civilization and run the supervisor.
 See [automatic turns and HTTPS setup](docs/Automatic-turns.md) for commands, limits,
 pause/resume, and separate-machine configuration.
-Player archives use readable paths such as `agents/Rome/turn_1/`: `commands.jsonl`
+Player archives use readable paths such as `agents/Rome/turn_0/`: `commands.jsonl`
 contains detailed calls and receipts, while `summary.md` contains the API's turn
 number and the agent's brief public report, such as `# Turn 0` followed by its
 actions and reasons. Fresh conversations use selected private memory and new events.

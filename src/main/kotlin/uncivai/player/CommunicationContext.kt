@@ -6,6 +6,7 @@ import com.unciv.logic.civilization.PlayerDiplomacyOperations
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import uncivai.GameExecutor
+import uncivai.PeaceScenarioSetup
 import uncivai.TradeScenarioSetup
 import uncivai.VerbalBetrayalScenario
 import uncivai.obj
@@ -38,6 +39,12 @@ internal fun communicationContext(runtime: GameExecutor, game: GameInfo, player:
 internal fun communicationScenario(runtime: GameExecutor, game: GameInfo, player: Civilization): GameplayScenario? {
     fun scenario(name: String, phase: String, instructions: List<String>) = GameplayScenario(name, phase, Collections.unmodifiableList(instructions))
     return when (game.tileMap.mapParameters.name) {
+        PeaceScenarioSetup.MAP_NAME -> scenario(
+            "ASYNC_PEACE_EXERCISE",
+            if (player.diplomacyFunctions.getKnownCivsSorted(includeCityStates = false).any { it.isMajorCiv() && player.isAtWarWith(it) }) "NEGOTIATING" else "ENACTED",
+            PeaceScenarioSetup.instructions(player.civID),
+        )
+
         TradeScenarioSetup.MAP_NAME -> {
             val enacted = runtime.communicationState.trades.proposals.values.any { versions -> versions.last().let { player.civID in it.participants() && it.status == "ENACTED" } }
             scenario("ASYNC_TRADE_EXERCISE", if (enacted) "ENACTED" else "NEGOTIATING", TradeScenarioSetup.instructions(player.civID))

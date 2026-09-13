@@ -1,109 +1,117 @@
 # War declarations and peace negotiations
 
-The player API supports major-civilization war declarations and human peace
-negotiations over the existing authenticated HTTPS transport. Engine operations
-are shared with desktop diplomacy controls. This slice covers mutual peace,
-gold, gold per turn, and luxury/strategic resources; city transfers, third-party
-agreements, friendship, denunciation and demands remain outside its scope.
+Peace is a term in the [shared asynchronous trade system](Asynchronous-trade.md).
+It uses the same proposal IDs, immutable versions, consent, events, receipts and
+checkpoints as gold and resource trades. There are no separate host peace commands.
 
-## Observations and choices
+## Observations and actions
 
-`player_turn.diplomacy.knownCivilizations` contains met, surviving major
-civilizations. Each entry includes `status`, `atWar`, `peaceTreatyTurns`,
-`declareWar`, `declarationConfirmation`, `negotiatePeace`, and `peaceOptions`.
-`agreements` retains the bilateral current-trade overview rows: terms with positive
-duration are ongoing obligations, while one-time consideration remains visible
-until the agreement is removed by the engine. Actions report `available` and `unavailableReasons`. Treaty restrictions,
-negotiation cooldowns, game rules and the active player's authority are checked
-again on execution. Confirmation text includes broken-promise and defensive-pact
-warnings; unknown pact partners are unnamed, matching the shared desktop warning.
+`player_turn.diplomacy.knownCivilizations` exposes met major civilizations,
+`status`, `atWar`, `peaceTreatyTurns`, war availability and confirmation text,
+peace-negotiation eligibility, and current bilateral agreements. Unknown defensive
+pact partners remain unnamed in declaration warnings.
 
-`peaceOptions.give` and `.receive` are from the authenticated player's perspective.
-Each term includes its exact `type`, `name`, current maximum `amount`, fixed
-`duration`, and desktop `displayText`. Resource terms include `ownedByYou`.
-Quantities are exposed only when the player can inspect the corresponding peace
-trade table, including an incoming peace offer. At peace this API does not expose
-an opponent's treasury or resource inventory as negotiation options.
+Declare war through `player_command` with `kind: DECLARE_WAR`, the known
+civilization ID as `target`, and `confirmWar: true`. This requires a fresh
+`player_turn` that presented the confirmation, the active gameplay turn and all
+native war eligibility checks. The receipt contains the opponent's response.
+The opponent receives a `WarDeclaration` alert with the full leader message and
+acknowledgement choices; reading and acknowledging it does not declare war again.
 
-`incomingOffers` contains player-owned requests with durable opaque handles,
-the requesting leader's full message, both offer columns, labels, and legal
-accept/reject/counteroffer choices. `outgoingOffers` shows only the player's own
-sent proposals and a retraction choice. Neither view exposes other players'
-negotiations with third parties. Unsupported terms retain their type/amount/duration
-and an explicit generic description, without raw city or other hidden IDs. Such
-requests can be rejected, but acceptance and counteroffers are unavailable.
+Use `trade_options(partner)` to inspect peace eligibility and the exact current
+terms. The ordinary engine negotiation cooldown still applies. During war,
+`requiresPeaceTreaty` is true: **both sides must contain exactly one offered
+`Treaty` named `Peace Treaty`, amount 1, with the engine's duration**. Gold, GPT
+and luxury/strategic resources may accompany it. Other treaties, one-sided peace,
+duplicate items and fabricated durations are rejected. At peace, a new peace
+treaty is unavailable, while ordinary economic trade remains available.
 
-## Commands
-
-All commands need the usual `requestId`, `epoch`, and current `revision`.
-
-| Command | Additional fields and behavior |
-| --- | --- |
-| `DECLARE_WAR` | `target`: known `civilizationId`; `confirmWar: true` after reading `declarationConfirmation`. Applies the normal bilateral war effects; receipt `feedback` includes the defender's response text shown by desktop diplomacy. |
-| `PROPOSE_PEACE` | `target`: known `civilizationId`; `peaceTerms` as below. Sends a request for the other player's turn. Retract an existing outgoing offer before replacing it. |
-| `ACCEPT_PEACE` | `target`: incoming offer handle. Revalidates current terms and applies the trade once. Receipt `feedback` contains the shared desktop acceptance message and farewell label. |
-| `REJECT_PEACE` | `target`: incoming offer handle. Applies the normal refusal and removes that request. Also available for unsupported requests from known major civilizations. |
-| `COUNTER_PEACE` | `target`: incoming offer handle; `peaceTerms`. Validates the complete replacement before consuming the incoming request and sending the counteroffer. Invalid drafts leave the request intact. |
-| `RETRACT_PEACE` | `target`: known `civilizationId`. Removes the player's pending outgoing offer. |
-
-For example, construct this payload using the **current offered** treaty duration
-and gold term duration; these numbers are illustrative, not defaults:
+For example, `trade_offer` can publish the following terms. Durations are
+illustrative; read the actual values from `trade_options`:
 
 ```json
 {
-  "requestId": "rome-peace-1",
-  "epoch": "<current epoch>",
-  "revision": "<current revision>",
-  "kind": "PROPOSE_PEACE",
-  "target": "Greece",
-  "peaceTerms": {
-    "give": [
-      {"type": "Treaty", "name": "Peace Treaty", "amount": 1, "duration": 10},
-      {"type": "Gold", "name": "Gold", "amount": 25, "duration": -1}
-    ],
-    "receive": [
-      {"type": "Treaty", "name": "Peace Treaty", "amount": 1, "duration": 10}
-    ]
-  }
+  "partner": "Greece",
+  "give": [
+    {"type": "Treaty", "name": "Peace Treaty", "amount": 1, "duration": 10},
+    {"type": "Gold", "name": "Gold", "amount": 25, "duration": -1}
+  ],
+  "receive": [
+    {"type": "Treaty", "name": "Peace Treaty", "amount": 1, "duration": 10}
+  ]
 }
 ```
 
-Both sides must contain exactly one Peace Treaty. Amounts must be positive and
-within current quantities; durations must match the speed-adjusted engine offers.
-Duplicate terms, asymmetric treaties, arbitrary durations and unsupported terms
-are rejected. The engine revalidates affordability when an offer is accepted.
-An offer does not reserve gold or resources; acceptance can become unavailable.
+The other player reads `trade_read(proposal)` and calls `trade_decide` with only
+the proposal ID and `accept` or `decline`. The author can withdraw it. A
+counteroffer uses `trade_offer` with the inspected proposal ID and replacement
+terms, requiring fresh consent. Python attaches versions, credentials and retry
+IDs. Neither player reconstructs an acceptance from prose.
 
-The opponent receives `WarDeclaration` with the declaring leader's caption,
-announcement and nation-specific declaration text. Both equivalent desktop
-responses are included in `content`; `ACKNOWLEDGE_ALERT` dismisses the message
-without changing the war a second time.
+## Scheduling and recovery
 
-## Reading, scheduling and recovery
+Both players can negotiate and consent during either gameplay turn, including
+scheduler gaps. Publishing a proposal never blocks END_TURN. Communication jobs
+receive events without model polling and cannot move units or take ordinary
+gameplay actions. No active-player switching is involved.
 
-The agent must fetch and read the current `player_turn` before declaring war or
-responding to an incoming offer, just as for informational popup acknowledgement.
-A command receipt's revision alone fails with `OBSERVATION_REQUIRED`. War also
-requires `confirmWar: true`. This gate establishes that the player snapshot was
-generated; the prompt and recorded transcript provide evidence of reading, not a
-proof of comprehension or network delivery.
+Acceptance rechecks relations, rules, duration and affordability under the game
+executor. Native `TradeLogic` applies the complete stored deal: both directions of
+peace, treaty restrictions, gold payments, recurring obligations, resource access
+and other normal peace effects. Consent, engine outcome, acknowledgement content,
+events and retry receipt commit in the same checkpoint. A competing expense can
+invalidate the proposal without enacting peace or transferring anything.
 
-Incoming requests block end turn until resolved. Outgoing proposals do not: the
-player should finish its turn and hand off so the opponent can decide. The runner
-continues to schedule by the host's committed turn changes and never chooses a
-diplomatic response itself. New gameplay prompts explain this workflow.
+Accepted peace invalidates other pending proposals between the pair, both players'
+observations and hostile-action policy versions. An attack planned before peace
+fails without damage. An unrelated greeting leaves gameplay valid. Gameplay jobs
+refresh affected observations and continue; the scheduler does not restart the
+whole turn. Native UI requests for peace between these players are cleared as
+obsolete; unrelated requests are preserved. Imported UI trade requests remain
+readable unsupported blockers, with hidden city/third-party identifiers redacted.
+They are not another negotiation interface.
 
-The checkpoint stores incoming handles with their exact request identities and
-successful receipts with game effects. Same-version restart preserves handles,
-epoch and exact replay. Unfinished decisions require another observation after
-restart. Replaying a committed acceptance returns the original receipt, even on
-a later turn, without repeating gold/resource transfer or peace effects. Start a
-new save for this version; migration from older checkpoint schemas is not included.
+Exact acceptance retries survive restart without repeating transfers. The existing
+operator rollback restores the native war state, proposal versions, receipts,
+events and all player memory together under a new epoch. Use a new save for this
+schema; no compatibility layer is maintained.
 
-Verification uses engine `PlayerDiplomacyOperationsTest` and
-`PlayerPeaceOperationsTest`, host privacy/authority probes, and
-`WarPeaceRunIntegrationTest`. Its HTTPS players meet through legal movement,
-declare war, read the opponent's declaration, wait through normal cooldown turns,
-propose/retract/reject/counteroffer peace, restart before and after acceptance,
-retry the exact accepted command and continue scheduled rounds. These are scripted
-clients; live model play and a visual desktop acceptance run remain separate.
+## Prepared asynchronous peace exercise
+
+Start the host, two agent services, then the scheduler in separate terminals:
+
+```sh
+uv run civ-agent host start --state-dir /tmp/civ-peace-1 --scenario async-peace
+uv run civ-agent agent-server start Rome --state-dir /tmp/civ-peace-1
+uv run civ-agent agent-server start Greece --state-dir /tmp/civ-peace-1
+uv run civ-agent match start --state-dir /tmp/civ-peace-1 --max-turns 3 --max-invocations 32
+```
+
+Wait for each service to report ready. The fixture starts after the war cooldown,
+with viable capitals, 1,000 gold each, surplus resources and adjacent Warriors.
+The armies should hold position. Rome offers mutual peace and one Silk for four
+GPT; Greece counters with mutual peace, two GPT and twenty immediate gold for
+that Silk; Rome accepts through communication work. Both then verify the deal,
+record sourced economy/relationship notes and continue scheduled turns.
+
+Inspect with `civ-agent trade read`, `trade options`, native saves and the files
+under `agents/Rome` and `agents/Greece`. Canonical durations record the original
+deal; native durations tick down with each civilization's turns. Check actual
+bilateral peace and obligations, not just model claims. See the trade runbook for
+human inspection commands and the normal model/reasoning options.
+
+## Verification
+
+`WarPeaceRunIntegrationTest` covers contact through movement, declaration and its
+message, natural cooldown, off-turn decline/counteroffer/acceptance, restarts before
+and after acceptance, native payment/treaty checks and continued scheduled rounds.
+`PeaceTradeProbe` covers the prepared scenario, invalid terms, lost funds,
+concurrent proposals, an old attack, native resource/GPT effects, exact retry,
+round rollback and checkpoint failures before/after replacement. Existing combat
+verification also makes peace through this shared path.
+
+Python HTTPS scheduler/service tests exercise the same counteroffer/acceptance
+flow for both economic and peace terms while gameplay recovers from a concurrent
+memory conflict. Engine tests check off-turn eligibility without loosening the
+desktop mutation fence. These are scripted tests; live-model acceptance remains
+a separate exercise. Broader trade and diplomacy/UI coverage is still incomplete.

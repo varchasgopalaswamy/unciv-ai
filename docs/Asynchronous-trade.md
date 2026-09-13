@@ -1,13 +1,15 @@
-# Asynchronous economic trade
+# Asynchronous trade and peace
 
 The Kotlin host owns each proposal's concrete terms. Players negotiate in chat,
-then publish an economic proposal with typed items, quantities and durations.
+then publish a binding proposal with typed items, quantities and durations.
 Publishing records the author's consent. The other player accepts or declines the
 stored proposal; acceptance never reconstructs terms from prose.
 
 This slice supports bilateral gold, gold per turn, luxury resources and strategic
-resources between met, surviving human major civilizations at peace. One side can
-be empty for a gift. Existing peace negotiations retain their separate commands.
+resources between met, surviving human major civilizations. At peace, one side can
+be empty for a gift. During war, both sides must include the offered Peace Treaty;
+peace and economic consideration use the same proposal and consent flow. See
+[war and peace](War-and-peace.md) for treaty rules and the `async-peace` scenario.
 City transfers, open borders, embassies, research agreements, city-states and
 third-party clauses remain outside this slice.
 
@@ -77,7 +79,8 @@ categories, exact current maxima and durations, positive nonduplicate quantities
 valid participants and safe integer balances. Pending proposals reserve no assets;
 acceptance rechecks current supply under the same executor lock as all other
 mutations. A competing expense or accepted deal can therefore invalidate an offer.
-War or enacted peace invalidates pending ordinary proposals between those players.
+War or enacted peace invalidates other pending proposals between those players.
+Accepted peace also invalidates stale hostile actions and gameplay observations.
 
 Validation, complete engine transfer, consent, outcome, recipient events and the
 request receipt share one serialized operation and atomic native checkpoint. Only
@@ -156,6 +159,6 @@ native state, ledger and receipts after restart.
 The three-player communication probe checks hidden proposal access, private
 streams/outcomes and unchanged unrelated player revisions. Python tests cover
 independent jobs' inspected versions, policy invalidation, narrow tools, exact
-receipt recovery, immutable evidence and human confirmation races. These are
-scripted checks; a live-model run of this new scenario is a separate acceptance
-exercise, and full trade/UI parity remains incomplete.
+receipt recovery, immutable evidence and human confirmation races. The same HTTPS scheduling test also negotiates peace terms off turn. These are
+scripted checks; live-model runs are separate acceptance exercises, and full
+trade/UI parity remains incomplete.

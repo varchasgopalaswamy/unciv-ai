@@ -21,7 +21,10 @@ async def exercise_trade(civilization, communication, view, call):
     silk = {"type": "Luxury_Resource", "name": "Silk", "amount": 1, "duration": 25}
     gpt = {"type": "Gold_Per_Turn", "name": "Gold per turn", "amount": 2, "duration": 25}
     gold = {"type": "Gold", "name": "Gold", "amount": 20, "duration": -1}
-    counter = {"proposal": "d1", "partner": "Rome", "give": [gpt, gold], "receive": [silk]}
+    peace = (
+        [{"type": "Treaty", "name": "Peace Treaty", "amount": 1, "duration": 10}] if view.get("testPeaceTrade") else []
+    )
+    counter = {"proposal": "d1", "partner": "Rome", "give": peace + [gpt, gold], "receive": peace + [silk]}
     if communication:
         await call(
             "memory_read", {"keys": ["economy", "relationships/" + ("Greece" if civilization == "Rome" else "Rome")]}
@@ -48,7 +51,9 @@ async def exercise_trade(civilization, communication, view, call):
         return {"behavior": "complete"}
     if view["turn"] == 0:
         if civilization == "Rome":
-            await call("trade_offer", {"partner": "Greece", "give": [silk], "receive": [{**gpt, "amount": 4}]})
+            await call(
+                "trade_offer", {"partner": "Greece", "give": peace + [silk], "receive": peace + [{**gpt, "amount": 4}]}
+            )
         else:
             await call("trade_read", {"proposal": "d1"})
             # Force the original bug: an already-running gameplay plan duplicates

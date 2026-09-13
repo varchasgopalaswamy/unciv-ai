@@ -19,9 +19,9 @@ import com.unciv.models.ruleset.RulesetCache
 import java.nio.file.Files
 
 /** Operator-owned setup. Human engine slots prevent built-in AI substitution. */
-internal class DuelSetup(private val seed: Long, private val closeStarts: Boolean = false, private val combatScenario: Boolean = false, private val greatPeopleScenario: Boolean = false, private val tradeScenario: Boolean = false) {
+internal class DuelSetup(private val seed: Long, private val closeStarts: Boolean = false, private val combatScenario: Boolean = false, private val greatPeopleScenario: Boolean = false, private val tradeScenario: Boolean = false, private val peaceScenario: Boolean = false) {
     fun create(): GameInfo {
-        require(listOf(closeStarts, combatScenario, greatPeopleScenario, tradeScenario).count { it } <= 1) { "Choose one scenario" }
+        require(listOf(closeStarts, combatScenario, greatPeopleScenario, tradeScenario, peaceScenario).count { it } <= 1) { "Choose one scenario" }
         val parameters = GameParameters().apply {
             baseRuleset = BaseRuleset.Civ_V_Vanilla.fullName
             speed = "Quick"
@@ -42,6 +42,7 @@ internal class DuelSetup(private val seed: Long, private val closeStarts: Boolea
         }
         val setup = GameSetupInfo(parameters, map)
         return when {
+            peaceScenario -> PeaceScenarioSetup.create(setup)
             tradeScenario -> TradeScenarioSetup.create(setup)
             greatPeopleScenario -> GreatPeopleScenarioSetup.create(setup)
             combatScenario -> CombatScenarioSetup.create(setup)

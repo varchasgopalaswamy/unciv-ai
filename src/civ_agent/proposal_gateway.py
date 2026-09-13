@@ -43,9 +43,6 @@ ECONOMIC = {
     "DISBAND_UNIT",
     "QUEUE_CONSTRUCTION",
     "FOUND_CITY",
-    "PROPOSE_PEACE",
-    "ACCEPT_PEACE",
-    "COUNTER_PEACE",
     "ACTIVATE_GREAT_PERSON",
 }
 
@@ -229,7 +226,7 @@ class ProposalGateway:
             "items": {
                 "type": "object",
                 "properties": {
-                    "type": {"enum": ["Gold", "Gold_Per_Turn", "Luxury_Resource", "Strategic_Resource"]},
+                    "type": {"enum": ["Gold", "Gold_Per_Turn", "Luxury_Resource", "Strategic_Resource", "Treaty"]},
                     "name": string,
                     "amount": {"type": "integer", "minimum": 1},
                     "duration": {"type": "integer"},
@@ -240,7 +237,7 @@ class ProposalGateway:
         }
         add(
             "trade_options",
-            "Inspect ordinary trade quantities, exact names/durations, unavailable reasons and active agreements with a met player. give/receive are from your perspective. Available during either player's turn.",
+            "Inspect trade quantities, exact names/durations, peace eligibility and active agreements with a met player. At war, requiresPeaceTreaty is true: include the offered Treaty named Peace Treaty on both sides. give/receive are from your perspective. Available during either player's turn.",
             {"partner": string},
             ("partner",),
         )
@@ -252,7 +249,7 @@ class ProposalGateway:
         )
         add(
             "trade_offer",
-            "Publish concrete economic terms and your consent, using trade_options names and durations. give/receive are from YOUR perspective. Empty one side for a gift. Set proposal to counteroffer or revise a deal you inspected with trade_read; this replaces its terms and requires fresh consent. expiresTurn defaults to current turn + 3. No transfer occurs until the other player accepts.",
+            "Publish binding economic or peace terms and your consent, using trade_options names and durations. At war include exactly one offered Peace Treaty on each side; other treaties are unsupported. give/receive are from YOUR perspective. Empty one side for a gift. Set proposal to counteroffer or revise a deal you inspected with trade_read; this replaces its terms and requires fresh consent. expiresTurn defaults to current turn + 3. No transfer occurs until the other player accepts.",
             {
                 "partner": string,
                 "give": trade_items,

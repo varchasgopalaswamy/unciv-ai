@@ -182,16 +182,17 @@ object EngineTradeProbe {
         for (afterReplace in listOf(false, true)) verifyFailedCheckpoint(root.resolve("failure-$afterReplace"), afterReplace)
     }
 
-    private fun verifyFailedCheckpoint(root: Path, afterReplace: Boolean) {
+    internal fun verifyFailedCheckpoint(root: Path, afterReplace: Boolean, peace: Boolean = false) {
         val checkpoint = root.resolve("checkpoint.json")
         lateinit var request: JsonObject
         var failCommit = false
-        HeadlessRuntime.createTradeExercise(root.resolve("initial")).use { runtime ->
+        (if (peace) HeadlessRuntime.createPeaceExercise(root.resolve("initial")) else HeadlessRuntime.createTradeExercise(root.resolve("initial"))).use { runtime ->
             val store = CheckpointStore(checkpoint, beforeReplace = { if (failCommit && !afterReplace) error("Simulated storage failure") }, afterReplace = { if (failCommit && afterReplace) error("Lost acknowledgement after replacement") })
             runtime.executor.enableCheckpoints(store)
             val rome = PlayerHost(runtime).bindPlayer("Rome")
             val greece = PlayerHost(runtime).bindPlayer("Greece")
-            val proposal = rome.communication(obj("op" to "trade_offer", "epoch" to runtime.executor.epoch, "requestId" to "offer", "partner" to "Greece", "give" to listOf(obj("type" to "Gold", "name" to "Gold", "amount" to 50, "duration" to -1)), "receive" to emptyList<String>()))["trade"]!!.jsonObject
+            val treaty = if (peace) listOf(obj("type" to "Treaty", "name" to "Peace Treaty", "amount" to 1, "duration" to runtime.game.speed.peaceDealDuration)) else emptyList()
+            val proposal = rome.communication(obj("op" to "trade_offer", "epoch" to runtime.executor.epoch, "requestId" to "offer", "partner" to "Greece", "give" to treaty + obj("type" to "Gold", "name" to "Gold", "amount" to 50, "duration" to -1), "receive" to treaty))["trade"]!!.jsonObject
             request = obj("op" to "trade_decide", "epoch" to runtime.executor.epoch, "requestId" to "accept", "proposal" to proposal["proposal"], "version" to 1, "decision" to "accept")
             failCommit = true
             check(runCatching { greece.communication(request) }.isFailure)
@@ -202,12 +203,14 @@ object EngineTradeProbe {
             val greece = PlayerHost(runtime).bindPlayer("Greece")
             val gold = runtime.game.getCivilization("Greece").gold
             check(gold == if (afterReplace) 1050 else 1000)
+            if (peace) check(runtime.game.getCivilization("Rome").isAtWarWith(runtime.game.getCivilization("Greece")) == !afterReplace)
             val prior = greece.communication(obj("op" to "receipt", "epoch" to runtime.executor.epoch, "requestId" to "accept"))
             check((prior["outcome"] != null) == afterReplace)
             check(greece.communication(request)["outcome"] != null)
             check(runtime.game.getCivilization("Greece").gold == 1050)
             check(runtime.game.getCivilization("Rome").gold == 950)
             check(runtime.game.getCivilization("Greece").getDiplomacyManager("Rome")!!.trades.size == 1)
+            check(!runtime.game.getCivilization("Rome").isAtWarWith(runtime.game.getCivilization("Greece")))
         }
     }
 }

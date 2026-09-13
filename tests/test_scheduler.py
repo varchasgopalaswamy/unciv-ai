@@ -407,7 +407,7 @@ class FakeHost:
                     }
                 )
                 + "\n",
-                summary=f"# {civilization} turn {status['gameTurn'] + 1}\n"
+                summary=f"# {civilization} turn {status['gameTurn']}\n"
                 + (
                     "Rolled back the unfinished attempt.\n"
                     if status.get("aborted")
@@ -525,10 +525,10 @@ class SchedulerTest(unittest.TestCase):
         self.assertEqual([play["request"]["handoff"] for play in self.host.plays], [0, 1, 2, 3])
         self.assertEqual(len(self.host.finalizations), 4)
         for civilization in ("Rome", "Greece"):
-            for turn in (1, 2):
+            for turn in (0, 1):
                 directory = self.state / "runner/history" / civilization / f"turn_{turn}"
                 self.assertIn("let the opponent play", (directory / "summary.md").read_text())
-                self.assertEqual(json.loads((directory / "commands.jsonl").read_text())["turn"], turn - 1)
+                self.assertEqual(json.loads((directory / "commands.jsonl").read_text())["turn"], turn)
         for play in self.host.plays:
             self.assertEqual(play["request"]["civilization"], play["civ"])
             self.assertNotIn(self.host.operator_token, json.dumps(play["request"]))

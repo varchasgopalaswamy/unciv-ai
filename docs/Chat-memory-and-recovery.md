@@ -119,7 +119,7 @@ border” records a claim by its author, without erasing an earlier unit observa
 
 Fresh jobs receive selected core notes and new events, rather than every prior
 turn summary. Older evidence is available through memory/history tools.
-`agents/Rome/turn_1/summary.md` remains a concise account of turn 0;
+`agents/Rome/turn_0/summary.md` remains a concise account of turn 0;
 `commands.jsonl` records detailed calls and controller-confirmed receipts, and
 `receipts.jsonl` contains the exact persisted requests and responses. Communication
 history is under `agents/Rome/communication/`, with permitted incoming events in
@@ -147,7 +147,7 @@ uv run civ-agent match resume --state-dir /tmp/civ-chat-1
 ```
 
 Use the number displayed by `player_turn`; the initial round is 0, corresponding
-to the `turn_1` directory. Stop or pause an active supervisor before rollback.
+to the `turn_0` directory. Stop or pause an active supervisor before rollback.
 Restore replaces all participants together, rotates player credentials in
 `players.json`, creates a new match epoch, regenerates projections and archives
 the abandoned timeline for the operator. Old requests and credentials remain

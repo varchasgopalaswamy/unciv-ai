@@ -236,8 +236,8 @@ class AgentServiceTests(AgentServiceTestCase):
     async def test_fresh_turn_has_only_committed_light_summaries_and_readable_archives(self):
         await self.service.start(self.payload())
         first = await self.terminal()
-        self.assertTrue((self.root / "workspace/turn_1/commands.jsonl").exists())
-        self.assertTrue((self.root / "workspace/turn_1/summary.md").exists())
+        self.assertTrue((self.root / "workspace/turn_0/commands.jsonl").exists())
+        self.assertTrue((self.root / "workspace/turn_0/summary.md").exists())
         assert self.service.archive is not None
         with self.assertRaisesRegex(ValueError, "no confirmed host handoff"):
             self.service.archive.context(1)
@@ -257,7 +257,7 @@ class AgentServiceTests(AgentServiceTestCase):
             await self.service.start(self.payload("wrong-epoch", epoch="other-epoch"))
 
         # The player may write local files; trusted completed memory remains service-owned.
-        (self.root / "workspace/turn_1/summary.md").write_text("TAMPERED_MEMORY_SENTINEL")
+        (self.root / "workspace/turn_0/summary.md").write_text("TAMPERED_MEMORY_SENTINEL")
         await self.service.start(self.payload("next-turn", gameTurn=1, handoff=2))
         second = await self.terminal()
         self.assertNotEqual(first["threadId"], second["threadId"])
@@ -286,7 +286,7 @@ class AgentServiceTests(AgentServiceTestCase):
             "activation-one",
         ):
             self.assertNotIn(boilerplate, prompt)
-        self.assertIn("turn_2/", prompt)
+        self.assertIn("turn_1/", prompt)
         exported = await self.service.archived(first["activationId"])
         self.assertEqual(("Rome", 0), (exported["civilization"], exported["gameTurn"]))
         self.assertIn("HUGE_OLD_SNAPSHOT_SENTINEL", exported["commands"])
@@ -340,7 +340,7 @@ class AgentServiceTests(AgentServiceTestCase):
             "ABORTED_STRATEGY_SENTINEL", (self.service.history.path(first["activationId"]) / "events.jsonl").read_text()
         )
         self.assertNotIn('"aborted":true', dense)
-        failed_commands = self.root / "workspace/turn_1/attempts/attempt_1/commands.jsonl"
+        failed_commands = self.root / "workspace/turn_0/attempts/attempt_1/commands.jsonl"
         self.assertIn("HUGE_OLD_SNAPSHOT_SENTINEL", failed_commands.read_text())
         with self.assertRaisesRegex(ServiceError, "GAME_TURN_ALREADY_COMMITTED"):
             await self.service.abort(dict(activationId=retry["activationId"], epoch="epoch-one", gameTurn=0, handoff=0))

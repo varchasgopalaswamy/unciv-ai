@@ -177,8 +177,8 @@ separate from ordinary in-game informational popups. No generic ruleset-event di
 The [war and peace slice](War-and-peace.md) adds shared engine diplomatic
 availability and confirmation, war declaration and message acknowledgement, and
 peace negotiation through treaties, gold, GPT and tradable resources. Player
-observations include full incoming messages/terms and accept/reject/counteroffer
-actions. Outgoing proposals can be retracted. Exact retries and pending offers
+observations include declaration messages and treaty restrictions. Peace now uses
+the shared asynchronous trade proposals, decisions and counteroffers below. Exact retries and pending offers
 survive checkpoints; a scripted HTTPS duel verifies scheduled turns across war,
 cooldown, peace negotiations and process restarts.
 
@@ -244,17 +244,19 @@ The new exercise pairs immediate ability checks with ordinary specialist-generat
 Scientists and Liberty's free Great Person choice, using native-state assertions,
 scheduled HTTPS handoffs, process restarts, rollback and exact retries.
 
-## Delivered slice: asynchronous economic trade
+## Delivered slice: asynchronous trade and peace
 
-The [economic trade slice](Asynchronous-trade.md) adds host-owned, versioned
-gold/GPT/luxury/strategic-resource proposals, counteroffers, acceptance, decline
+The [trade slice](Asynchronous-trade.md) adds host-owned, versioned
+gold/GPT/luxury/strategic-resource and peace-treaty proposals, counteroffers, acceptance, decline
 and withdrawal. Both players see canonical clauses with explicit directions;
 Python binds a simple decision to the exact version that job inspected. The host
-validates and enacts economic deals during either player's gameplay turn without
+validates and enacts deals during either player's gameplay turn without
 changing turn ownership. Engine effects, consent, events and receipts share the
 native checkpoint and coordinated rollback protocol.
 
 The prepared `async-trade` scenario negotiates Silk for GPT plus immediate gold.
+`async-peace` adds mutual peace to that same flow. Accepted peace fences stale
+attacks without restarting valid gameplay; the old host peace commands are removed.
 Scripted HTTPS tests inspect actual resources, balances, durations and handoffs,
 including stale terms, private visibility, restarts and storage failures. See the
 runbook for human trade commands and the remaining trade categories.

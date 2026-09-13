@@ -121,20 +121,6 @@ internal fun confirmedAction(request: TurnCommandRequest, before: PlayerTurnSnap
 
         TurnCommandKind.DECLARE_WAR -> "Declared war on ${request.target}."
 
-        TurnCommandKind.PROPOSE_PEACE -> "Proposed peace to ${request.target}."
-
-        TurnCommandKind.RETRACT_PEACE -> "Retracted peace offer to ${request.target}."
-
-        TurnCommandKind.ACCEPT_PEACE, TurnCommandKind.REJECT_PEACE, TurnCommandKind.COUNTER_PEACE -> {
-            val offer = before.diplomacy.incomingOffers.single { it.handle == request.target }
-            val verb = when (request.kind) {
-                TurnCommandKind.ACCEPT_PEACE -> "Accepted"
-                TurnCommandKind.REJECT_PEACE -> "Rejected"
-                else -> "Countered"
-            }
-            "$verb peace offer from ${offer.civilizationId}."
-        }
-
         TurnCommandKind.START_WORKER_JOB -> "${unit!!.name} started ${request.selection} at ${unit.position.text()}."
 
         TurnCommandKind.STOP_WORKER_JOB -> "${unit!!.name} stopped work at ${unit.position.text()}."

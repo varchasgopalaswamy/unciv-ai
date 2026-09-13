@@ -75,7 +75,7 @@ def parser() -> argparse.ArgumentParser:
     for action in ("send", "inbox", "follow", "ledger", "offer", "accept", "withdraw", "reconsider"):
         command = messages.add_parser(action, parents=[chat.parser(add_help=False)])
         command.set_defaults(handler=chat.run, chat_action=action)
-    trades = groups.add_parser("trade", help="Canonical economic proposals and engine deals").add_subparsers(
+    trades = groups.add_parser("trade", help="Canonical economic and peace proposals and engine deals").add_subparsers(
         required=True
     )
     for action in ("list", "options", "read", "offer", "accept", "decline", "withdraw"):

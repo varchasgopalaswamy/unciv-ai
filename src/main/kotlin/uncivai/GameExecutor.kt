@@ -242,15 +242,11 @@ class GameExecutor internal constructor(
         for ((civilization, saved) in players) {
             val player = game.civilizations.single { it.civID == civilization }
             check(saved.alertHandles.size == player.popupAlerts.size) { "Checkpoint alert state is inconsistent" }
-            check(saved.tradeHandles.size == player.tradeRequests.size) { "Checkpoint trade state is inconsistent" }
             turnSessions[civilization] = TurnSessionState(saved.identifiers).apply {
                 cityHandles.putAll(saved.cityHandles)
                 unitHandles.putAll(saved.unitHandles)
                 player.popupAlerts.forEachIndexed { index, alert ->
                     saved.alertHandles[index]?.let { alertHandles[alert] = it }
-                }
-                player.tradeRequests.forEachIndexed { index, request ->
-                    saved.tradeHandles[index]?.let { tradeHandles[request] = it }
                 }
                 revision = saved.revision
                 fingerprint = saved.fingerprint

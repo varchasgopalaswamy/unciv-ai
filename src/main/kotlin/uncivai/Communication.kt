@@ -346,7 +346,7 @@ internal class Communication(private val runtime: GameExecutor) {
             decisions(offer)[it]?.get("decision")?.jsonPrimitive?.content ==
                 "accept"
         }
-    private fun bumpPeace(participants: List<String>) {
+    internal fun bumpPeace(participants: List<String>) {
         participants.forEach { state.peaceVersions[it] = (state.peaceVersions[it] ?: 0) + 1 }
     }
     fun view(civilization: String, participants: List<String>): JsonObject = obj(
@@ -399,21 +399,11 @@ internal class Communication(private val runtime: GameExecutor) {
         }
     }
     fun enacted(civilization: String, opponent: String?, receipt: TurnCommandReceipt) {
-        if (opponent == null ||
-            receipt.kind !in
-            setOf(
-                TurnCommandKind.DECLARE_WAR,
-                TurnCommandKind.PROPOSE_PEACE,
-                TurnCommandKind.ACCEPT_PEACE,
-                TurnCommandKind.REJECT_PEACE,
-                TurnCommandKind.COUNTER_PEACE,
-                TurnCommandKind.RETRACT_PEACE,
-            )
-        ) {
+        if (opponent == null || receipt.kind != TurnCommandKind.DECLARE_WAR) {
             return
         }
         val audience = listOf(civilization, opponent)
-        if (receipt.kind in setOf(TurnCommandKind.DECLARE_WAR, TurnCommandKind.ACCEPT_PEACE)) trades.invalidateDiplomacy(civilization, opponent)
+        trades.invalidateDiplomacy(civilization, opponent)
         val player = runtime.accessGame { it.getCivilization(civilization) }
         val other = player.gameInfo.getCivilization(opponent)
         val record = obj(

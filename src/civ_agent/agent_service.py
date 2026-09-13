@@ -507,7 +507,7 @@ class AgentService:
                     "error": "NOT_STARTED",
                     "aborted": True,
                     "usage": dict.fromkeys(USAGE_KEYS, 0),
-                    "turnDirectory": f"turn_{payload['gameTurn'] + 1}",
+                    "turnDirectory": f"turn_{payload['gameTurn']}",
                 }
                 self.records[record["activationId"]] = record
             if (payload["epoch"], payload["gameTurn"], payload["handoff"]) != (
@@ -669,8 +669,7 @@ class AgentService:
                 self.match = {"epoch": payload["epoch"]}
                 await self.io.call(write_private_json, self.match_file, dict(self.match))
             prompt = (
-                payload["prompt"]
-                + f"\n\nCurrent game turn: {payload['gameTurn']} (archive: turn_{payload['gameTurn'] + 1}/). "
+                payload["prompt"] + f"\n\nTurn {payload['gameTurn']}; files: turn_{payload['gameTurn']}/. "
                 "Use history_read only when earlier detailed commands or receipts are needed. "
                 "The service writes all turn files. Do not create or edit them. "
                 "After END_TURN succeeds, make no further tool calls; immediately return your concise turn summary "
@@ -692,7 +691,7 @@ class AgentService:
                 "civilization": self.civilization,
                 "gameTurn": payload["gameTurn"],
                 "handoff": payload["handoff"],
-                "turnDirectory": f"turn_{payload['gameTurn'] + 1}",
+                "turnDirectory": f"turn_{payload['gameTurn']}",
                 "threadId": payload["threadId"],
                 "phase": "STARTING",
                 "usage": dict.fromkeys(USAGE_KEYS, 0),

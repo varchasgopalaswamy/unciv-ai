@@ -12,7 +12,6 @@ import com.unciv.logic.civilization.PlayerCombatOperations
 import com.unciv.logic.civilization.PlayerDiplomacyOperations
 import com.unciv.logic.civilization.PlayerGreatPersonOperations
 import com.unciv.logic.civilization.PlayerOperations
-import com.unciv.logic.civilization.PlayerPeaceOperations
 import com.unciv.logic.civilization.PlayerPurchaseOperations
 import com.unciv.logic.civilization.PlayerTurnRequirements
 import com.unciv.logic.civilization.PlayerUnitEconomyOperations
@@ -20,8 +19,6 @@ import com.unciv.logic.civilization.PlayerUnitOperations
 import com.unciv.logic.civilization.PlayerUnitOrders
 import com.unciv.logic.civilization.PlayerWorkerOperations
 import com.unciv.logic.civilization.PopupAlert
-import com.unciv.logic.trade.TradeOfferType
-import com.unciv.logic.trade.TradeRequest
 import uncivai.GameExecutor
 import java.util.Collections
 
@@ -31,7 +28,6 @@ internal class TurnSessionState(savedIdentifiers: Map<PlayerIdentifier, Long> = 
     val cityHandles = HashMap<String, String>()
     val unitHandles = HashMap<Int, String>()
     val alertHandles = java.util.IdentityHashMap<PopupAlert, String>()
-    val tradeHandles = java.util.IdentityHashMap<TradeRequest, String>()
     val receipts = HashMap<String, Pair<TurnCommandRequest, TurnCommandReceipt>>()
     var fingerprint: PlayerTurnSnapshot? = null
     var revision = ""
@@ -120,56 +116,14 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
             }
             if (state.observedRevision != before.revision) fail(PlayerSessionFailure.OBSERVATION_REQUIRED)
         }
-        val peace = PlayerPeaceOperations(player)
-        val partner = if (request.kind in partnerCommands) {
+        val partner = if (request.kind == TurnCommandKind.DECLARE_WAR) {
             val offered = before.diplomacy.knownCivilizations.singleOrNull { it.civilizationId == request.target }
                 ?: fail(PlayerSessionFailure.OPTION_UNAVAILABLE)
-            val available = when (request.kind) {
-                TurnCommandKind.DECLARE_WAR -> offered.declareWar.available
-                TurnCommandKind.PROPOSE_PEACE -> offered.negotiatePeace.available
-                TurnCommandKind.RETRACT_PEACE -> before.diplomacy.outgoingOffers.any { it.civilizationId == request.target && it.retract.available }
-                else -> false
-            }
-            if (!available) fail(PlayerSessionFailure.OPTION_UNAVAILABLE)
-            game.civilizations.single { it.civID == offered.civilizationId }
+            if (!offered.declareWar.available) fail(PlayerSessionFailure.OPTION_UNAVAILABLE)
+            if (state.observedRevision != before.revision) fail(PlayerSessionFailure.OBSERVATION_REQUIRED)
+            game.getCivilization(offered.civilizationId)
         } else {
             null
-        }
-        val trade = if (request.kind in responseCommands) {
-            val offered = before.diplomacy.incomingOffers.singleOrNull { it.handle == request.target }
-                ?: fail(PlayerSessionFailure.OPTION_UNAVAILABLE)
-            val available = when (request.kind) {
-                TurnCommandKind.ACCEPT_PEACE -> offered.accept.available
-                TurnCommandKind.REJECT_PEACE -> offered.reject.available
-                TurnCommandKind.COUNTER_PEACE -> offered.counteroffer.available
-                else -> false
-            }
-            if (!available) fail(PlayerSessionFailure.OPTION_UNAVAILABLE)
-            state.tradeHandles.entries.singleOrNull { it.value == request.target }?.key
-                ?.takeIf { candidate -> player.tradeRequests.any { it === candidate } }
-                ?: fail(PlayerSessionFailure.OPTION_UNAVAILABLE)
-        } else {
-            null
-        }
-        if ((request.kind == TurnCommandKind.DECLARE_WAR || request.kind in responseCommands) &&
-            state.observedRevision != before.revision
-        ) {
-            fail(PlayerSessionFailure.OBSERVATION_REQUIRED)
-        }
-        val selectedTerms = detachedRequest.peaceTerms
-        if (selectedTerms != null) {
-            val otherId = partner?.civID ?: trade!!.requestingCiv
-            val options = before.diplomacy.knownCivilizations.singleOrNull { it.civilizationId == otherId }?.peaceOptions
-                ?: fail(PlayerSessionFailure.OPTION_UNAVAILABLE)
-            fun offered(selections: List<PeaceTermSelection>, available: List<PeaceTerm>) = selections.all { selection ->
-                available.any {
-                    it.supported && it.name == selection.name && it.type == selection.type &&
-                        it.duration == selection.duration && selection.amount <= it.amount
-                }
-            }
-            if (!offered(selectedTerms.give, options.give) || !offered(selectedTerms.receive, options.receive)) {
-                fail(PlayerSessionFailure.OPTION_UNAVAILABLE)
-            }
         }
         val city = request.target?.takeIf { request.kind in cityCommands }?.let { handle ->
             val cityId = state.cityHandles.entries.firstOrNull { it.value == handle }?.key
@@ -393,16 +347,6 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
 
                 TurnCommandKind.DECLARE_WAR -> PlayerDiplomacyOperations(player).tryDeclareWar(partner!!)
 
-                TurnCommandKind.PROPOSE_PEACE -> peace.tryPropose(partner!!, selectedTerms!!.give.map { it.engineTerm() }, selectedTerms.receive.map { it.engineTerm() })
-
-                TurnCommandKind.ACCEPT_PEACE -> peace.tryAccept(trade!!)
-
-                TurnCommandKind.REJECT_PEACE -> peace.tryReject(trade!!)
-
-                TurnCommandKind.COUNTER_PEACE -> peace.tryCounteroffer(trade!!, selectedTerms!!.give.map { it.engineTerm() }, selectedTerms.receive.map { it.engineTerm() })
-
-                TurnCommandKind.RETRACT_PEACE -> peace.tryRetract(partner!!)
-
                 TurnCommandKind.END_TURN -> {
                     state.previousTurnReview = CompletedTurnReview(
                         before.turn,
@@ -449,7 +393,6 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
                 turn = game.turns,
                 isYourTurn = game.currentPlayer == player.civID,
                 feedback = when (request.kind) {
-                    TurnCommandKind.ACCEPT_PEACE -> peace.acceptancePopupContent(game.getCivilization(trade!!.requestingCiv))?.toPlayerContent()
                     TurnCommandKind.DECLARE_WAR -> PlayerDiplomacyOperations(player).declarationResponse(partner!!)?.toPlayerContent()
                     else -> null
                 },
@@ -459,7 +402,7 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
                 greatPerson = if (request.kind == TurnCommandKind.ACTIVATE_GREAT_PERSON) greatPersonOutcome(request, before, after, player.policies.storedCulture - cultureBefore) else null,
             )
             state.receipts[request.requestId] = detachedRequest to receipt
-            runtime.communication.enacted(player.civID, partner?.civID ?: trade?.requestingCiv, receipt)
+            runtime.communication.enacted(player.civID, partner?.civID, receipt)
             runtime.commitCheckpoint()
             receipt
         } catch (failure: PlayerSessionException) {
@@ -512,10 +455,10 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
             // Support is a capability even while paused or waiting; action flags require an active turn.
             pending.add(PendingTurnDecision("PopupAlerts", alerts.all { it.second }))
         }
-        val diplomacy = observeDiplomacy(player, state, active = ordinaryActions)
+        val diplomacy = observeDiplomacy(player, active = ordinaryActions, communicationAvailable = !runtime.communicationPaused && !gameHasResult(game))
         if (player.tradeRequests.isNotEmpty()) {
-            // Even an unsupported offer can be read and rejected if its sender is a known major.
-            pending.add(PendingTurnDecision("TradeRequests", diplomacy.incomingOffers.size == player.tradeRequests.size))
+            // Canonical proposals never create engine requests. Imported UI requests are explicit blockers.
+            pending.add(PendingTurnDecision("TradeRequests", false))
         }
         if (player.shouldShowDiplomaticVotingResults()) pending.add(PendingTurnDecision("DiplomaticVotingResults", false))
         val map = observeMap(player, state, canAct = ordinaryActions)
@@ -686,7 +629,7 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
     private fun state() = runtime.turnSessions.getOrPut(civilizationId) { TurnSessionState() }
 
     private fun validateShape(request: TurnCommandRequest) {
-        val needsTarget = request.kind in cityCommands || request.kind in unitCommands || request.kind in partnerCommands || request.kind in responseCommands || request.kind in setOf(TurnCommandKind.ACKNOWLEDGE_ALERT, TurnCommandKind.RESOLVE_CAPTURED_CITY)
+        val needsTarget = request.kind in cityCommands || request.kind in unitCommands || request.kind in partnerCommands || request.kind in setOf(TurnCommandKind.ACKNOWLEDGE_ALERT, TurnCommandKind.RESOLVE_CAPTURED_CITY)
         val needsSelection = request.kind in setOf(
             TurnCommandKind.CHOOSE_FREE_TECHNOLOGY,
             TurnCommandKind.ADOPT_POLICY,
@@ -723,25 +666,14 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
             (request.kind == TurnCommandKind.DECLARE_WAR) != request.confirmWar ||
             (request.kind != TurnCommandKind.END_TURN && (request.reviewId != null || request.deferReason != null)) ||
             (request.reviewId != null && request.reviewId.length !in 1..128) ||
-            (request.deferReason != null && (request.deferReason.isBlank() || request.deferReason.length > 500 || request.deferReason.any { it.isISOControl() })) ||
-            (request.kind in setOf(TurnCommandKind.PROPOSE_PEACE, TurnCommandKind.COUNTER_PEACE)) != (request.peaceTerms != null)
+            (request.deferReason != null && (request.deferReason.isBlank() || request.deferReason.length > 500 || request.deferReason.any { it.isISOControl() }))
         ) {
             fail(PlayerSessionFailure.INVALID_ARGUMENT)
-        }
-        request.peaceTerms?.let { terms ->
-            for (side in listOf(terms.give, terms.receive)) {
-                if (side.isEmpty() || side.size > 256 || side.any { it.name.isEmpty() || it.name.length > 256 || it.amount <= 0 || TradeOfferType.entries.none { type -> type.name == it.type } } ||
-                    side.map { it.type to it.name }.toSet().size != side.size
-                ) {
-                    fail(PlayerSessionFailure.INVALID_ARGUMENT)
-                }
-            }
         }
     }
 
     companion object {
-        private val partnerCommands = setOf(TurnCommandKind.DECLARE_WAR, TurnCommandKind.PROPOSE_PEACE, TurnCommandKind.RETRACT_PEACE)
-        private val responseCommands = setOf(TurnCommandKind.ACCEPT_PEACE, TurnCommandKind.REJECT_PEACE, TurnCommandKind.COUNTER_PEACE)
+        private val partnerCommands = setOf(TurnCommandKind.DECLARE_WAR)
         private val cityManagementCommands = setOf(TurnCommandKind.SET_CITY_FOCUS, TurnCommandKind.SET_AVOID_GROWTH, TurnCommandKind.SET_MANUAL_SPECIALISTS, TurnCommandKind.ASSIGN_SPECIALIST, TurnCommandKind.UNASSIGN_SPECIALIST, TurnCommandKind.RESET_CITIZENS, TurnCommandKind.SELL_BUILDING, TurnCommandKind.REASSIGN_CITY_TILE)
         private val tileCommands = setOf(TurnCommandKind.SET_WORKED_TILE, TurnCommandKind.SET_TILE_LOCKED, TurnCommandKind.BUY_TILE, TurnCommandKind.REASSIGN_CITY_TILE)
         private val cityCommands = tileCommands + cityManagementCommands + setOf(TurnCommandKind.RENAME_CITY, TurnCommandKind.QUEUE_CONSTRUCTION, TurnCommandKind.REMOVE_CONSTRUCTION, TurnCommandKind.MOVE_CONSTRUCTION, TurnCommandKind.CITY_ATTACK, TurnCommandKind.MANAGE_CAPTURED_CITY, TurnCommandKind.BUY_CONSTRUCTION)

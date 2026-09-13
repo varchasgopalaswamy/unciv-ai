@@ -9,6 +9,7 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.boolean
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import uncivai.mcp.OperatorMcpBinding
@@ -16,9 +17,6 @@ import uncivai.mcp.PlayerMcpBinding
 import uncivai.mcp.PlayerMcpServer
 import uncivai.player.AttackOption
 import uncivai.player.CombatReport
-import uncivai.player.PeaceTerm
-import uncivai.player.PeaceTermSelection
-import uncivai.player.PeaceTerms
 import uncivai.player.PlayerFinalState
 import uncivai.player.PlayerHost
 import uncivai.player.PlayerTurnJson
@@ -373,22 +371,20 @@ object CombatRunProbe {
             token = checkNotNull(api.activate().playerToken)
             check(++rounds < 30) { "War cooldown did not expire" }
         }
-        val options = snapshot.diplomacy.knownCivilizations.single().peaceOptions!!
-        fun treaty(terms: List<PeaceTerm>) = terms.single { it.type == "Treaty" && it.name == "Peace Treaty" }.let {
-            PeaceTermSelection(it.type, checkNotNull(it.name), it.amount, it.duration)
+        val epoch = snapshot.epoch
+        val options = api.tool(token, "player_communication", obj("op" to "trade_options", "epoch" to epoch, "partner" to "Greece"))
+        fun treaty(side: String): JsonObject {
+            val item = options.getValue(side).jsonArray.map { it.jsonObject }.single { it["type"]!!.jsonPrimitive.content == "Treaty" }
+            return JsonObject(item.filterKeys { it in setOf("type", "name", "amount", "duration") })
         }
-        api.execute(
-            token,
-            command(snapshot, TurnCommandKind.PROPOSE_PEACE, "Greece").copy(
-                peaceTerms = PeaceTerms(listOf(treaty(options.give)), listOf(treaty(options.receive))),
-            ),
-        )
+        val proposal = api.tool(token, "player_communication", obj("op" to "trade_offer", "epoch" to epoch, "requestId" to "peace-offer", "partner" to "Greece", "give" to listOf(treaty("give")), "receive" to listOf(treaty("receive"))))["trade"]!!.jsonObject
+        val greekToken = api.playerToken("Greece")
+        val read = api.tool(greekToken, "player_communication", obj("op" to "trade_read", "epoch" to epoch, "proposal" to proposal["proposal"]))
+        check(read["trade"]!!.jsonObject["clauses"] == proposal["clauses"])
+        val accepted = api.tool(greekToken, "player_communication", obj("op" to "trade_decide", "epoch" to epoch, "requestId" to "peace-accept", "proposal" to proposal["proposal"], "version" to proposal["version"], "decision" to "accept"))
+        check(accepted["outcome"] != null && api.status().activeCivilization == "Rome")
         api.finishTurn(token)
         token = checkNotNull(api.activate().playerToken)
-        snapshot = api.readAlerts(token)
-        val offer = snapshot.diplomacy.incomingOffers.single()
-        check(offer.accept.available && offer.give.isNotEmpty() && offer.receive.isNotEmpty())
-        api.execute(token, command(snapshot, TurnCommandKind.ACCEPT_PEACE, offer.handle))
         api.finishTurn(token)
         token = checkNotNull(api.activate().playerToken)
         snapshot = api.turn(token)
@@ -714,7 +710,7 @@ object CombatRunProbe {
             check(response.statusCode() == expectedStatus) { "HTTPS ${response.statusCode()}: ${response.body()}" }
             return response.body()
         }
-        private fun tool(token: String, name: String, arguments: JsonObject = JsonObject(emptyMap()), error: Boolean = false): JsonObject {
+        fun tool(token: String, name: String, arguments: JsonObject = JsonObject(emptyMap()), error: Boolean = false): JsonObject {
             val request = """{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"$name","arguments":$arguments}}"""
             val result = Json.parseToJsonElement(raw("/mcp", request, token)).jsonObject.getValue("result").jsonObject
             check(result.getValue("isError").jsonPrimitive.boolean == error) { result.toString() }

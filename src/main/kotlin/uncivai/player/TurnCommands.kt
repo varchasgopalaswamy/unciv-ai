@@ -26,11 +26,6 @@ enum class TurnCommandKind {
     RENAME_CITY,
     ACKNOWLEDGE_ALERT,
     DECLARE_WAR,
-    PROPOSE_PEACE,
-    ACCEPT_PEACE,
-    REJECT_PEACE,
-    COUNTER_PEACE,
-    RETRACT_PEACE,
     MOVE_UNIT,
     ATTACK,
     CITY_ATTACK,
@@ -137,7 +132,6 @@ data class TurnCommandRequest(
     val index: Int? = null,
     val toIndex: Int? = null,
     val confirmWar: Boolean = false,
-    val peaceTerms: PeaceTerms? = null,
     val reviewId: String? = null,
     val deferReason: String? = null,
     val attackFrom: TilePosition? = null,
@@ -173,9 +167,6 @@ object PlayerTurnJson {
 /** Deserialized checkpoint collections and caller-owned lists must never enter the receipt cache. */
 internal fun TurnCommandRequest.detached(): TurnCommandRequest = copy(
     queue = Collections.unmodifiableList(queue.toList()),
-    peaceTerms = peaceTerms?.let {
-        PeaceTerms(Collections.unmodifiableList(it.give.toList()), Collections.unmodifiableList(it.receive.toList()))
-    },
 )
 
 internal fun TurnCommandReceipt.detached(): TurnCommandReceipt = copy(

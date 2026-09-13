@@ -178,7 +178,7 @@ class SchedulerServiceTest(unittest.TestCase):
             self.assertEqual(civilization, delivered["civilization"])
             self.assertEqual("Victory" if civilization == "Rome" else "Defeat", delivered["result"]["outcome"])
             self.assertIn(civilization + " permitted report", (workspace / "result.md").read_text())
-        turn = json.loads((self.state_dir / "agents/Rome/turn_1/turn.json").read_text())
+        turn = json.loads((self.state_dir / "agents/Rome/turn_0/turn.json").read_text())
         self.assertTrue(turn["attempts"][0]["terminalOutcome"])
 
     def test_real_services_start_fresh_threads_with_turn_memory_and_pinned_settings(self):
@@ -215,9 +215,9 @@ class SchedulerServiceTest(unittest.TestCase):
             prompt = second_turn["params"]["input"][0]["text"]
             self.assertIn("Private strategy and evidence", prompt)
             self.assertNotIn("Settled and chose research.", prompt)
-            self.assertIn("turn_2/", prompt)
+            self.assertIn("turn_1/", prompt)
         for civilization in ("Rome", "Greece"):
-            for turn in (1, 2):
+            for turn in (0, 1):
                 archive = self.state_dir / "agents" / civilization / f"turn_{turn}"
                 self.assertTrue((archive / "commands.jsonl").exists())
                 self.assertIn("Settled and chose research.", (archive / "summary.md").read_text())
@@ -349,7 +349,13 @@ class SchedulerServiceTest(unittest.TestCase):
         self.assertEqual(result.stdout.count("Settled and chose research."), 2)
 
     def test_memory_conflict_recovers_while_chat_enacts_trade_and_scheduling_continues(self):
-        trade = ConcurrentTradeHost(self.host)
+        self.exercise_concurrent_trade(peace=False)
+
+    def test_peace_uses_the_same_off_turn_counteroffer_and_acceptance_flow(self):
+        self.exercise_concurrent_trade(peace=True)
+
+    def exercise_concurrent_trade(self, *, peace):
+        trade = ConcurrentTradeHost(self.host, peace=peace)
         result = self.run_cli("--max-turns", "2", "--max-seconds", "60", "--turn-timeout", "30")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(self.host.handoff, 4, result.stdout + result.stderr)

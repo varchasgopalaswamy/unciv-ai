@@ -1,6 +1,8 @@
 package uncivai
 
+import com.unciv.Constants
 import com.unciv.logic.civilization.Civilization
+import com.unciv.logic.civilization.PlayerPeaceOperations
 import com.unciv.logic.trade.Trade
 import com.unciv.logic.trade.TradeEvaluation
 import com.unciv.logic.trade.TradeLogic
@@ -18,6 +20,7 @@ import kotlinx.serialization.json.jsonPrimitive
 import uncivai.player.PlayerSessionException
 import uncivai.player.PlayerSessionFailure
 import uncivai.player.gameHasResult
+import uncivai.player.toPlayerContent
 import java.security.SecureRandom
 
 @Serializable
@@ -55,13 +58,15 @@ internal data class EngineTradeState(val proposals: MutableMap<String, MutableLi
 
 /** Bilateral consent is independent of hotseat ownership. The enclosing communication operation
  * holds the game executor through validation, engine transfer, receipt and atomic checkpoint.
- * Only the four ordinary economic categories can reach TradeLogic.acceptTrade here.
+ * Economic terms and mutual peace use the same canonical proposals and engine transaction.
  */
 internal class EngineTrades(private val runtime: GameExecutor) {
     private val state get() = runtime.communicationState.trades
     private val json = Json { encodeDefaults = true }
     private val random = SecureRandom()
-    private val supported = setOf(TradeOfferType.Gold, TradeOfferType.Gold_Per_Turn, TradeOfferType.Luxury_Resource, TradeOfferType.Strategic_Resource)
+    private val supported = setOf(TradeOfferType.Gold, TradeOfferType.Gold_Per_Turn, TradeOfferType.Luxury_Resource, TradeOfferType.Strategic_Resource, TradeOfferType.Treaty)
+
+    private fun supported(type: TradeOfferType, name: String) = type in supported && (type != TradeOfferType.Treaty || name == Constants.peaceTreaty)
 
     private fun invalid(): Nothing = throw PlayerSessionException(PlayerSessionFailure.INVALID_ARGUMENT)
     private fun text(request: JsonObject, key: String) = (request[key] as? JsonPrimitive)?.takeIf { it.isString }?.content?.takeIf { it.isNotBlank() && it.length <= 128 } ?: invalid()
@@ -71,14 +76,14 @@ internal class EngineTrades(private val runtime: GameExecutor) {
         !known(a, b) -> "Trade requires in-game contact between two human major civilizations."
         a.isDefeated() || b.isDefeated() -> "A civilization has been defeated."
         gameHasResult(a.gameInfo) -> "The game has ended."
-        a.isAtWarWith(b) || b.isAtWarWith(a) -> "Ordinary trade requires peace. Use peace negotiations to end the war."
+        a.isAtWarWith(b) || b.isAtWarWith(a) -> PlayerPeaceOperations(a).negotiationStateReason(b)
         else -> null
     }
 
     private fun available(logic: TradeLogic, owner: Civilization): List<TradeSelection> {
         val offers = if (logic.ourCivilization === owner) logic.ourAvailableOffers else logic.theirAvailableOffers
         val resources = owner.getCivResourcesByName()
-        return offers.filter { it.type in supported }.map {
+        return offers.filter { supported(it.type, it.name) }.map {
             val amount = if (it.type in setOf(TradeOfferType.Luxury_Resource, TradeOfferType.Strategic_Resource)) minOf(it.amount, resources[it.name] ?: 0) else it.amount
             TradeSelection(it.type, it.name, amount.coerceAtLeast(0), it.duration)
         }
@@ -100,6 +105,7 @@ internal class EngineTrades(private val runtime: GameExecutor) {
                 "partner" to b.civID,
                 "available" to (reason == null),
                 "unavailableReason" to reason,
+                "requiresPeaceTreaty" to a.isAtWarWith(b),
                 "give" to logic?.let { options(available(it, a)) }.orEmpty(),
                 "receive" to logic?.let { options(available(it, b)) }.orEmpty(),
                 "activeAgreements" to a.getDiplomacyManager(b)!!.trades.map { trade ->
@@ -160,7 +166,7 @@ internal class EngineTrades(private val runtime: GameExecutor) {
             } catch (_: IllegalArgumentException) {
                 invalid()
             }
-            if (terms.size > 64 || terms.any { it.type !in supported || it.amount <= 0 || it.name.isBlank() || it.name.length > 256 } || terms.map { it.type to it.name }.distinct().size != terms.size) invalid()
+            if (terms.size > 64 || terms.any { !supported(it.type, it.name) || it.amount <= 0 || it.name.isBlank() || it.name.length > 256 } || terms.map { it.type to it.name }.distinct().size != terms.size) invalid()
             return terms
         }
         val give = terms("give")
@@ -199,14 +205,25 @@ internal class EngineTrades(private val runtime: GameExecutor) {
         val a = player(proposal.author)
         val b = player(proposal.partner)
         val logic = TradeLogic(a, b)
-        logic.currentTrade.set(engineTrade(proposal))
+        val trade = engineTrade(proposal)
+        logic.currentTrade.set(trade)
         try {
+            if (trade.isPeaceTreaty()) {
+                // Obsolete native UI requests cannot remain as turn blockers after peace.
+                a.tradeRequests.removeAll { it.requestingCiv == b.civID && it.trade.isPeaceTreaty() }
+                b.tradeRequests.removeAll { it.requestingCiv == a.civID && it.trade.isPeaceTreaty() }
+            }
             logic.acceptTrade()
             // A gameplay job must re-observe effects before spending changed resources or ending turn.
             proposal.participants().forEach { runtime.turnSessions[it]?.invalidate() }
-            val outcome = obj("action" to "ENACT_TRADE", "proposal" to proposal.proposal, "version" to proposal.version, "author" to civilization, "participants" to proposal.participants(), "turn" to now, "clauses" to json.encodeToJsonElement(proposal.clauses), "confirmation" to obj("source" to "engine"))
+            val feedback = if (trade.isPeaceTreaty()) PlayerPeaceOperations(b).acceptancePopupContent(a)?.toPlayerContent() else null
+            val outcome = obj("action" to "ENACT_TRADE", "proposal" to proposal.proposal, "version" to proposal.version, "author" to civilization, "participants" to proposal.participants(), "turn" to now, "clauses" to json.encodeToJsonElement(proposal.clauses), "confirmation" to obj("source" to "engine", "atWar" to a.isAtWarWith(b), "peaceTreatyTurns" to a.getDiplomacyManager(b)!!.turnsToPeaceTreaty()), "feedback" to feedback?.let { json.encodeToJsonElement(it) })
             val updated = proposal.copy(status = "ENACTED", consents = proposal.consents + TradeConsent(civilization, "accept", now), outcome = outcome)
             replace(updated, civilization)
+            if (trade.isPeaceTreaty()) {
+                invalidateDiplomacy(a.civID, b.civID)
+                runtime.communication.bumpPeace(proposal.participants())
+            }
             runtime.communicationState.outcomes.add(outcome)
             runtime.communication.emit(proposal.participants(), "engine", outcome, proposal.participants().toSet() - civilization)
             return obj("trade" to view(updated, civilization), "outcome" to outcome)
@@ -219,6 +236,16 @@ internal class EngineTrades(private val runtime: GameExecutor) {
         val a = player(proposal.author)
         val b = player(proposal.partner)
         relationReason(a, b)?.let { return it }
+        // TradeLogic executes a treaty from one side only. Require the same native peace
+        // obligation on both sides so the stored consent and the engine deal cannot diverge.
+        for (owner in listOf(a, b)) {
+            val treaties = proposal.clauses.filter { it.from == owner.civID && it.item.type == TradeOfferType.Treaty }
+            if (a.isAtWarWith(b)) {
+                if (treaties.size != 1 || treaties.single().item != TradeSelection(TradeOfferType.Treaty, Constants.peaceTreaty, 1, a.gameInfo.speed.peaceDealDuration)) return "Peace requires one Peace Treaty on each side with the engine's quantity and duration."
+            } else if (treaties.isNotEmpty()) {
+                return "These civilizations are already at peace."
+            }
+        }
         val logic = TradeLogic(a, b)
         for (owner in listOf(a, b)) {
             val available = available(logic, owner)

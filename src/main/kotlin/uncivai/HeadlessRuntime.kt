@@ -106,6 +106,8 @@ class HeadlessRuntime private constructor(
 
         fun createVerbalBetrayalExercise(dataDirectory: Path, seed: Long = 412L): HeadlessRuntime = createDuel(dataDirectory, seed, closeStarts = true).also { it.game.tileMap.mapParameters.name = VerbalBetrayalScenario.MAP_NAME }
 
+        fun createPeaceExercise(dataDirectory: Path, seed: Long = 412L): HeadlessRuntime = open(null, dataDirectory, DuelSetup(seed, peaceScenario = true))
+
         fun createTradeExercise(dataDirectory: Path, seed: Long = 412L): HeadlessRuntime = open(null, dataDirectory, DuelSetup(seed, tradeScenario = true))
 
         fun createCityManagementExercise(dataDirectory: Path, seed: Long = 412L): HeadlessRuntime {

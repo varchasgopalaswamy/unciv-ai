@@ -24,12 +24,12 @@ class ReadableHistoryTest(unittest.TestCase):
         retry = self.history(activation="retry-5678")
         following = self.history(game_turn=1)
         other = self.history(civilization="Greece")
-        self.assertEqual(first.directory, self.root / "Rome/turn_1/attempt_1234-abcd")
+        self.assertEqual(first.directory, self.root / "Rome/turn_0/attempt_1234-abcd")
         self.assertEqual(retry.turn_directory, first.turn_directory)
         self.assertNotEqual(retry.directory, first.directory)
-        self.assertEqual(following.turn_directory, self.root / "Rome/turn_2")
-        self.assertEqual(other.turn_directory, self.root / "Greece/turn_1")
-        self.assertIn("Rome — turn 1", first.markdown.read_text())
+        self.assertEqual(following.turn_directory, self.root / "Rome/turn_1")
+        self.assertEqual(other.turn_directory, self.root / "Greece/turn_0")
+        self.assertIn("Rome — turn 0", first.markdown.read_text())
 
     def test_readable_history_resumes_without_duplicate_events_or_console_output(self):
         first = self.history()
@@ -118,7 +118,7 @@ class ReadableHistoryTest(unittest.TestCase):
         outside = Path(self.temporary.name) / "outside"
         outside.mkdir(mode=0o700)
         for index, components in enumerate(
-            ((), ("Rome",), ("Rome", "turn_1"), ("Rome", "turn_1", "attempt_1234-abcd"))
+            ((), ("Rome",), ("Rome", "turn_0"), ("Rome", "turn_0", "attempt_1234-abcd"))
         ):
             with self.subTest(components=components):
                 root = Path(self.temporary.name) / f"case-{index}"

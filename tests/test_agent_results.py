@@ -83,7 +83,7 @@ class FinalResultServiceTest(service_tests.AgentServiceTestCase):
         self.assertTrue(finalized["terminalOutcome"])
         self.assertNotIn("committedHandoff", finalized)
         self.assertEqual(finalized, await self.service.finalize_terminal(payload))
-        turn = json.loads((self.root / "workspace/turn_1/turn.json").read_text())
+        turn = json.loads((self.root / "workspace/turn_0/turn.json").read_text())
         self.assertTrue(turn["attempts"][0]["terminalOutcome"])
         with self.assertRaises(ServiceError):
             await self.service.abort(payload)

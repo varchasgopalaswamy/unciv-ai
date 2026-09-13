@@ -8,7 +8,6 @@ internal enum class PlayerIdentifier(val prefix: String) {
     CITY("city"),
     UNIT("unit"),
     ALERT("alert"),
-    OFFER("offer"),
     DECISION("decision"),
     REPORT("report"),
     REVISION("rev"),

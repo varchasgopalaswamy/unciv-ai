@@ -24,15 +24,8 @@ data class FirstContactDetails(
 @Serializable
 data class DiplomaticAction(val available: Boolean, val unavailableReasons: List<String>)
 
-/** An exact selection from a displayed trade table. Duration is revalidated by the engine. */
 @Serializable
-data class PeaceTermSelection(val type: String, val name: String, val amount: Int, val duration: Int)
-
-@Serializable
-data class PeaceTerms(val give: List<PeaceTermSelection>, val receive: List<PeaceTermSelection>)
-
-@Serializable
-data class PeaceTerm(
+data class DiplomacyTradeTerm(
     val type: String,
     val name: String?,
     val amount: Int,
@@ -42,37 +35,20 @@ data class PeaceTerm(
     val ownedByYou: Int? = null,
 )
 
-/** Option amounts are current maxima; give/receive always refer to the authenticated player. */
-@Serializable
-data class PeaceOptions(val give: List<PeaceTerm>, val receive: List<PeaceTerm>)
-
 /** Current trade overview rows, including paid one-time consideration while a treaty remains. */
 @Serializable
-data class PeaceAgreement(val give: List<PeaceTerm>, val receive: List<PeaceTerm>)
+data class TradeAgreement(val give: List<DiplomacyTradeTerm>, val receive: List<DiplomacyTradeTerm>)
 
+/** Imported engine requests retain readable content but are outside the shared proposal flow. */
 @Serializable
-data class PeaceOffer(
-    val handle: String,
+data class UnhandledTradeRequest(
     val civilizationId: String,
     val civilizationName: String,
     val leaderName: String,
     val message: String,
-    val give: List<PeaceTerm>,
-    val receive: List<PeaceTerm>,
-    val accept: DiplomaticAction,
-    val reject: DiplomaticAction,
-    val counteroffer: DiplomaticAction,
-    val acceptLabel: String = "Sounds good!",
-    val rejectLabel: String = "Not this time.",
-    val counterofferLabel: String = "How about something else...",
-)
-
-@Serializable
-data class OutgoingPeaceOffer(
-    val civilizationId: String,
-    val give: List<PeaceTerm>,
-    val receive: List<PeaceTerm>,
-    val retract: DiplomaticAction,
+    val give: List<DiplomacyTradeTerm>,
+    val receive: List<DiplomacyTradeTerm>,
+    val unavailableReason: String = "This saved UI request cannot be acted on through trade proposals.",
 )
 
 @Serializable
@@ -86,15 +62,14 @@ data class KnownCivilization(
     val declareWar: DiplomaticAction,
     val declarationConfirmation: List<String>,
     val negotiatePeace: DiplomaticAction,
-    val peaceOptions: PeaceOptions?,
-    val agreements: List<PeaceAgreement>,
+    val agreements: List<TradeAgreement>,
 )
 
 @Serializable
 data class DiplomacyObservation(
     val knownCivilizations: List<KnownCivilization> = emptyList(),
-    val incomingOffers: List<PeaceOffer> = emptyList(),
-    val outgoingOffers: List<OutgoingPeaceOffer> = emptyList(),
+    val incomingRequests: List<UnhandledTradeRequest> = emptyList(),
+    val outgoingRequests: List<UnhandledTradeRequest> = emptyList(),
 )
 
 /** Copy the introduction of an actual player-owned alert, never a caller-supplied civilization. */
@@ -102,27 +77,26 @@ internal fun observeFirstContact(operations: PlayerOperations, alert: PopupAlert
     FirstContactDetails(it.civilizationId, it.civilizationName, it.leaderName, it.message.tr(), it.acknowledgement.tr())
 }
 
-internal fun observeDiplomacy(player: Civilization, state: TurnSessionState, active: Boolean): DiplomacyObservation {
+internal fun observeDiplomacy(player: Civilization, active: Boolean, communicationAvailable: Boolean): DiplomacyObservation {
     val diplomacy = PlayerDiplomacyOperations(player)
     val peace = PlayerPeaceOperations(player)
     fun action(reasons: List<String>) = DiplomaticAction(
         active && reasons.isEmpty(),
         immutable((reasons + if (active || reasons.isNotEmpty()) emptyList() else listOf("Not the active player turn.")).map { it.tr() }),
     )
-    fun action(reason: String?) = action(listOfNotNull(reason))
     val resources = player.getCivResourcesByName()
-    fun terms(terms: List<PeaceTradeTerm>): List<PeaceTerm> = immutable(
+    fun terms(terms: List<PeaceTradeTerm>): List<DiplomacyTradeTerm> = immutable(
         terms.map { term ->
             val supported = PlayerPeaceOperations.supportsTerm(term)
             val resource = term.type in setOf(TradeOfferType.Luxury_Resource, TradeOfferType.Strategic_Resource)
             // In particular, never resolve a raw city ID via the global desktop game singleton.
-            // Unsupported offers are described explicitly and may only be rejected here.
+            // Unsupported offers are described without revealing private identifiers.
             val display = if (supported) {
                 TradeOffer(term.name, term.type, term.amount, term.duration).getOfferText()
             } else {
                 "Unsupported trade term: [${term.type.name}]".tr()
             }
-            PeaceTerm(
+            DiplomacyTradeTerm(
                 term.type.name,
                 term.name.takeIf { supported },
                 term.amount,
@@ -134,45 +108,40 @@ internal fun observeDiplomacy(player: Civilization, state: TurnSessionState, act
         },
     )
     val known = player.diplomacyFunctions.getKnownCivsSorted(includeCityStates = false).filter { it.isMajorCiv() }.toList()
-    state.tradeHandles.keys.removeIf { old -> player.tradeRequests.none { it === old } }
-    val incoming = player.tradeRequests.mapNotNull { request ->
-        val trade = peace.inspectIncoming(request) ?: return@mapNotNull null
-        val other = player.gameInfo.civilizations.single { it.civID == request.requestingCiv }
-        PeaceOffer(
-            state.tradeHandles.getOrPut(request) { state.identifiers.next(PlayerIdentifier.OFFER) },
-            other.civID, other.civName, other.getLeaderDisplayName(), other.nation.tradeRequest.tr(),
-            terms(trade.ourOffers), terms(trade.theirOffers),
-            action(peace.acceptUnavailableReason(request)), action(peace.rejectUnavailableReason(request)),
-            action(peace.counterofferUnavailableReason(request)),
-            "Sounds good!".tr(), "Not this time.".tr(), "How about something else...".tr(),
-        )
+    fun request(other: Civilization, trade: com.unciv.logic.civilization.PeaceTrade) = UnhandledTradeRequest(
+        other.civID,
+        other.civName,
+        other.getLeaderDisplayName(),
+        other.nation.tradeRequest.tr(),
+        terms(trade.ourOffers),
+        terms(trade.theirOffers),
+    )
+    val incoming = player.tradeRequests.mapNotNull { incoming ->
+        val trade = peace.inspectIncoming(incoming) ?: return@mapNotNull null
+        request(player.gameInfo.getCivilization(incoming.requestingCiv), trade)
     }
     return DiplomacyObservation(
         knownCivilizations = immutable(
             known.mapNotNull { other ->
                 val options = diplomacy.options(other) ?: return@mapNotNull null
-                val outgoing = peace.pendingOutgoing(other)
-                val peaceOptions = peace.availableTerms(other)
+                val peaceReason = peace.negotiationStateReason(other) ?: if (communicationAvailable) null else "Communication is unavailable."
                 KnownCivilization(
                     other.civID, other.civName, other.getLeaderDisplayName(), player.isAtWarWith(other),
                     options.status.name, options.peaceTreatyTurns, action(options.declareWar.unavailableReasons),
                     immutable(options.declarationConfirmation.map { it.tr() }),
-                    action(peace.negotiationUnavailableReason(other) ?: if (outgoing != null) "Retract your existing offer first." else null),
-                    peaceOptions?.let { PeaceOptions(terms(it.ourOptions), terms(it.theirOptions)) },
-                    immutable(peace.activeAgreements(other).map { PeaceAgreement(terms(it.ourOffers), terms(it.theirOffers)) }),
+                    DiplomaticAction(peaceReason == null, immutable(listOfNotNull(peaceReason?.tr()))),
+                    immutable(peace.activeAgreements(other).map { TradeAgreement(terms(it.ourOffers), terms(it.theirOffers)) }),
                 )
             },
         ),
-        incomingOffers = immutable(incoming),
-        outgoingOffers = immutable(
+        incomingRequests = immutable(incoming),
+        outgoingRequests = immutable(
             known.mapNotNull { other ->
                 val trade = peace.pendingOutgoing(other) ?: return@mapNotNull null
-                OutgoingPeaceOffer(other.civID, terms(trade.ourOffers), terms(trade.theirOffers), action(peace.retractUnavailableReason(other)))
+                request(other, trade)
             },
         ),
     )
 }
-
-internal fun PeaceTermSelection.engineTerm(): PeaceTradeTerm = PeaceTradeTerm(name, TradeOfferType.valueOf(type), amount, duration)
 
 private fun <T> immutable(values: List<T>): List<T> = Collections.unmodifiableList(values.toList())

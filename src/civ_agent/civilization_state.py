@@ -484,7 +484,7 @@ class CivilizationState:
             ]
         receipts = {}
         for request in requests:
-            key = "communication" if request["game_turn"] is None else f"turn_{request['game_turn'] + 1}"
+            key = "communication" if request["game_turn"] is None else f"turn_{request['game_turn']}"
             receipts.setdefault(key, []).append(
                 {
                     "request": json.loads(request["payload"]),
