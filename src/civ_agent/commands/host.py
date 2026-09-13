@@ -52,7 +52,7 @@ def parser(*, add_help: bool = True) -> argparse.ArgumentParser:
     parser.add_argument("--seed", type=seed_number, help="map seed for a new game only")
     parser.add_argument(
         "--scenario",
-        choices=["city-management", "great-people", "async-chat", "verbal-betrayal"],
+        choices=["city-management", "great-people", "async-chat", "verbal-betrayal", "async-trade"],
         help="required for a new game; on resume, verify that the checkpoint contains this scenario",
     )
     parser.add_argument(

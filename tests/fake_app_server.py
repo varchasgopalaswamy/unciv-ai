@@ -16,6 +16,55 @@ from typing import Any
 from aiohttp import ClientSession, web
 
 
+async def exercise_trade(civilization, communication, view, call):
+    """Script reasoning choices, while the real gateway owns all concurrency checks."""
+    silk = {"type": "Luxury_Resource", "name": "Silk", "amount": 1, "duration": 25}
+    gpt = {"type": "Gold_Per_Turn", "name": "Gold per turn", "amount": 2, "duration": 25}
+    gold = {"type": "Gold", "name": "Gold", "amount": 20, "duration": -1}
+    counter = {"proposal": "d1", "partner": "Rome", "give": [gpt, gold], "receive": [silk]}
+    if communication:
+        await call(
+            "memory_read", {"keys": ["economy", "relationships/" + ("Greece" if civilization == "Rome" else "Rome")]}
+        )
+        await call("trade_read", {"proposal": "d1"})
+        if civilization == "Greece":
+            await call(
+                "memory_update",
+                {
+                    "changes": [
+                        {
+                            "key": "relationships/Rome",
+                            "category": "plan",
+                            "body": {"text": "Counteroffer prepared by the communication job; gameplay can continue."},
+                        }
+                    ]
+                },
+            )
+            await call("trade_offer", counter)
+            await call("chat_send", {"to": "Rome", "text": "Counteroffer prepared"})
+        else:
+            accepted = await call("trade_decide", {"proposal": "d1", "decision": "accept"})
+            assert accepted["trade"]["status"] == "ENACTED"
+        return {"behavior": "complete"}
+    if view["turn"] == 0:
+        if civilization == "Rome":
+            await call("trade_offer", {"partner": "Greece", "give": [silk], "receive": [{**gpt, "amount": 4}]})
+        else:
+            await call("trade_read", {"proposal": "d1"})
+            # Force the original bug: an already-running gameplay plan duplicates
+            # the chat job's counteroffer after its relationship note changed.
+            stale = await call("trade_offer", counter)
+            assert stale["error"] == "STALE_ASSUMPTIONS" and stale["recoverable"] and not stale["applied"]
+            assert stale["changedRecords"] == ["relationships/Rome"]
+            for read in stale["recovery"]["reads"]:
+                refreshed = await call(read["tool"], read["arguments"])
+                if read["tool"] == "trade_read":
+                    assert refreshed["trade"]["author"] == "Greece"  # Already handled: do not duplicate it.
+            await call("chat_send", {"to": "Rome", "text": "Reconsidered after memory conflict"})
+    await call("player_turn", {})
+    return await call("player_command", {"kind": "END_TURN"})
+
+
 async def main():
     arguments = sys.argv[1:]
     if "app-server" not in arguments:
@@ -59,6 +108,9 @@ async def main():
         async def play(params):
             text = " ".join(item.get("text", "") for item in params["input"])
             match = re.search(r"Play (.*?)'s current game turn", text)
+            communication = match is None
+            if communication:
+                match = re.search(r"Handle (.*?)'s newly received communication", text)
             assert match is not None
             common = dict(threadId=current["thread"], turnId=current["turn"])
             await websocket.send_json(
@@ -88,10 +140,11 @@ async def main():
             mcp = next(argument for argument in arguments if argument.startswith("mcp_servers"))
             gateway_url = tomllib.loads(mcp)["mcp_servers"]["civ"]["url"]
             async with ClientSession() as client:
-                for rpc_id, name, arguments_value in [
-                    (1, "player_turn", {}),
-                    (2, "player_command", {"kind": "END_TURN", "deferReason": current["thread"]}),
-                ]:
+                rpc_id = 0
+
+                async def call(name, arguments_value):
+                    nonlocal rpc_id
+                    rpc_id += 1
                     async with client.post(
                         gateway_url,
                         ssl=context,
@@ -104,9 +157,27 @@ async def main():
                         },
                     ) as response:
                         response.raise_for_status()
-                        result = (await response.json())["result"]["structuredContent"]
-                        if "error" in result:
-                            raise RuntimeError("Gateway rejected fake gameplay")
+                        value = (await response.json())["result"]["structuredContent"]
+                        record(
+                            "test/tool",
+                            {
+                                "civilization": match.group(1),
+                                "purpose": "communication" if communication else "gameplay",
+                                "tool": name,
+                                "result": value,
+                            },
+                        )
+                        return value
+
+                view = await call("chat_read" if communication else "player_turn", {})
+                if view.get("testConcurrentTrade"):
+                    assert "recovery.reads" in text
+                    result = await exercise_trade(match.group(1), communication, view, call)
+                else:
+                    assert not communication
+                    result = await call("player_command", {"kind": "END_TURN", "deferReason": current["thread"]})
+                if "error" in result:
+                    raise RuntimeError("Gateway rejected fake gameplay")
                 behavior = result["behavior"]
             if behavior in {"hang", "after_handoff_hang"}:
                 await asyncio.Event().wait()

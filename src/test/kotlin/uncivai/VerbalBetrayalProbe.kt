@@ -34,6 +34,12 @@ object VerbalBetrayalProbe {
                 },
             )
             check(greece.turn().scenario!!.instructions.any { "DECLARE_WAR" in it })
+            for ((civ, session) in sessions) {
+                val context = session.communication(obj("op" to "state", "epoch" to runtime.executor.epoch)).getValue("context").jsonObject
+                val role = context.getValue("scenario").jsonObject.getValue("instructions").jsonArray.map { it.jsonPrimitive.content }
+                check(role == session.turn().scenario!!.instructions)
+                check(role.any { "DECLARE_WAR" in it } == (civ == "Greece"))
+            }
             var sequence = 0
             fun chat(civ: String, op: String, vararg fields: Pair<String, Any?>): JsonObject = sessions.getValue(civ).communication(
                 obj(

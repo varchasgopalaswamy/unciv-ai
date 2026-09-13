@@ -578,26 +578,7 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
     }
 
     private fun scenario(game: GameInfo, player: Civilization, diplomacy: DiplomacyObservation): GameplayScenario? {
-        if (game.tileMap.mapParameters.name == uncivai.VerbalBetrayalScenario.MAP_NAME) {
-            return GameplayScenario(
-                "DIPLOMACY_MEMORY_EXERCISE",
-                if (diplomacy.knownCivilizations.any { it.atWar }) "AT_WAR" else "AT_PEACE",
-                immutable(uncivai.VerbalBetrayalScenario.instructions(player.civID)),
-            )
-        }
-        if (game.tileMap.mapParameters.name == "Asynchronous chat exercise") {
-            return GameplayScenario(
-                "ASYNC_CHAT_EXERCISE",
-                "DEVELOP_AND_COMMUNICATE",
-                immutable(
-                    listOf(
-                        "Chat exercise: remain at peace, found a capital, explore nearby, and keep research and production running. Each civilization should send one public introduction without mentions and one private greeting to the other player. Do this once; keep a concise STRATEGY note so later turns do not repeat it.",
-                        "Rome should offer Greece a social peace commitment: no attacks through turn 5, unconditional, kind=peace, expiresTurn=5. Greece should read the exact offer and explicitly accept it. Communication jobs can reply off turn. Do not wait or poll during gameplay, and do not claim that a social promise enacted an engine treaty.",
-                        "Record a concise private relationship assessment with sources and uncertainty, and an economic plan. Continue ordinary turns after the agreement. Player statements remain attributed claims, not observations of their army or economy.",
-                    ),
-                ),
-            )
-        }
+        communicationScenario(runtime, game, player)?.let { return it }
         if (game.tileMap.mapParameters.name == "Great People exercise") {
             return GameplayScenario(
                 "GREAT_PEOPLE_EXERCISE",

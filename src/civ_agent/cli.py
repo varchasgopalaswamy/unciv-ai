@@ -5,7 +5,7 @@ from collections.abc import Sequence
 from importlib.metadata import version
 
 from civ_agent import match_recovery, scheduler
-from civ_agent.commands import agent, agent_server, chat, history, host, inspect, verify_betrayal
+from civ_agent.commands import agent, agent_server, chat, history, host, inspect, trade, verify_betrayal
 
 
 def parser() -> argparse.ArgumentParser:
@@ -75,6 +75,12 @@ def parser() -> argparse.ArgumentParser:
     for action in ("send", "inbox", "follow", "ledger", "offer", "accept", "withdraw", "reconsider"):
         command = messages.add_parser(action, parents=[chat.parser(add_help=False)])
         command.set_defaults(handler=chat.run, chat_action=action)
+    trades = groups.add_parser("trade", help="Canonical economic proposals and engine deals").add_subparsers(
+        required=True
+    )
+    for action in ("list", "options", "read", "offer", "accept", "decline", "withdraw"):
+        command = trades.add_parser(action, parents=[trade.parser(add_help=False)])
+        command.set_defaults(handler=trade.run, trade_action=action)
     return result
 
 

@@ -14,6 +14,7 @@ import urllib.request
 from pathlib import Path
 
 from civ_agent.scheduler import atomic_json
+from tests.concurrent_trade_host import ConcurrentTradeHost
 from tests.support import match_command
 from tests.test_scheduler import FakeHost
 
@@ -346,3 +347,27 @@ class SchedulerServiceTest(unittest.TestCase):
         self.assertEqual(len(records), 2)
         self.assertTrue(all(record["phase"] == "COMPLETED" for record in records))
         self.assertEqual(result.stdout.count("Settled and chose research."), 2)
+
+    def test_memory_conflict_recovers_while_chat_enacts_trade_and_scheduling_continues(self):
+        trade = ConcurrentTradeHost(self.host)
+        result = self.run_cli("--max-turns", "2", "--max-seconds", "60", "--turn-timeout", "30")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.host.handoff, 4, result.stdout + result.stderr)
+        self.assertEqual(self.saved()["status"], "budget_exhausted")
+        self.assertEqual(trade.enacted, {"civilization": "Rome", "activeCivilization": "Greece", "handoff": 1})
+        self.assertEqual(
+            trade.writes,
+            [("Rome", True, "trade_offer"), ("Greece", False, "trade_offer"), ("Rome", False, "trade_decide")],
+        )
+        self.assertFalse(any(name == "player_turn" and not gameplay for _, gameplay, name, _ in trade.reads))
+        records = self.records()
+        failures = [
+            r["params"]["result"] for r in records if r["method"] == "test/tool" and r["params"]["result"].get("error")
+        ]
+        self.assertEqual(len(failures), 1)
+        self.assertEqual(failures[0]["changedRecords"], ["relationships/Rome"])
+        self.assertTrue(failures[0]["recoverable"])
+        self.assertFalse(failures[0]["applied"])
+        for path in (self.state_dir / "agent-services").glob("*/activations/*.json"):
+            self.assertEqual(json.loads(path.read_text())["phase"], "COMPLETED")
+        self.assertEqual(len([r for r in records if r["method"] == "turn/start"]), 6)  # Four turns and two chat jobs.

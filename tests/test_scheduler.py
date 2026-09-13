@@ -10,6 +10,7 @@ import threading
 import time
 import unittest
 import uuid
+from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -45,6 +46,7 @@ class FakeHost:
         self.rollback_bad_response = False
         self.rollback_error: str | None = None
         self.changed = threading.Condition()
+        self.mcp_override: Callable[[str | None, JsonObject, str], JsonObject | None] | None = None
         owner = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -72,7 +74,10 @@ class FakeHost:
                         else:
                             arguments = body.get("params", {}).get("arguments", {})
                             name = body.get("params", {}).get("name")
-                            if name == "player_communication":
+                            override = owner.mcp_override(name, arguments, supplied) if owner.mcp_override else None
+                            if override is not None:
+                                result = override
+                            elif name == "player_communication":
                                 op = arguments["op"]
                                 if op == "state":
                                     result = {

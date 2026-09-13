@@ -14,8 +14,9 @@ rollback restores **all players and the game to a consistent checkpoint at the
 start of a numbered game round**.
 
 The first release includes public/private chat, social commitments, structured
-memory, integration with existing gameplay commands, and a human CLI. New trade
-mechanics and a browser interface remain later work.
+memory, integration with existing gameplay commands, and a human CLI. The next
+[economic trade slice](Asynchronous-trade.md) now implements host-owned binding
+proposals and asynchronous execution; a browser interface remains later work.
 
 ## 1. Responsive runtime and communication
 
@@ -123,14 +124,16 @@ communication, commitment decisions and memory updates.
 - Preserve observation and confirmation requirements. Refreshing a revision
   cannot silently acknowledge changed information the model has not seen.
 - Outside a civilization's gameplay turn, allow communication, social commitments
-  and private-memory updates—not ordinary gameplay commands. Never switch Unciv's
-  active player to bypass turn checks.
+  and private-memory updates. The subsequent economic trade slice adds a narrow
+  bilateral-consent path for supported economic transfers. Ordinary gameplay
+  commands remain turn-bound. Never switch Unciv's active player to bypass checks.
 
 Conflicting old proposals are invalidated by social commitments. A fresh decision
 may explicitly reconsider and break a promise; record that choice.
 
-Existing war/peace commands publish permitted outcomes into this system. Future
-trade, friendship and demands reuse its version, consent and receipt boundaries.
+Existing war/peace commands and economic trades publish permitted outcomes into
+this system. Further trade categories, friendship and demands reuse its version,
+consent and receipt boundaries.
 
 ## 4. Normal recovery and the emergency rollback
 

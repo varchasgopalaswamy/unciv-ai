@@ -8,6 +8,11 @@ import java.util.concurrent.TimeUnit
 
 class CommunicationIntegrationTest {
     @Test
+    fun `economic consent applies exact terms out of turn and survives recovery`() {
+        runProbe("uncivai.EngineTradeProbe")
+    }
+
+    @Test
     fun `chat privacy consent and complete round recovery`() {
         runProbe("uncivai.CommunicationProbe")
     }

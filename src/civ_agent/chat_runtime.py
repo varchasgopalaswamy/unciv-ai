@@ -11,7 +11,7 @@ import aiohttp
 from civ_agent.agent_history import HISTORY_METHODS
 from civ_agent.agent_settings import valid_setting
 from civ_agent.civilization_state import StateConflict, job_id
-from civ_agent.proposal_gateway import HostConnection
+from civ_agent.proposal_gateway import RECOVERY_INSTRUCTIONS, HostConnection
 from civ_agent.protocol import JsonObject
 from civ_agent.tls import private_directory, write_private_json
 
@@ -190,12 +190,19 @@ class ChatRuntime:
         self.jobs[id] = (job, process)
         prompt = (
             f"Handle {service.civilization}'s newly received communication. Ordinary gameplay is handled separately. "
-            "Read player_turn, chat_read and relevant memory once. Follow your scenario.instructions within your "
-            "communication permissions; decide whether a useful response or explicit social commitment "
-            "is warranted. You may send private/public messages and propose memory changes. Never poll, wait for a "
+            "Read chat_read and relevant memory once. Its context includes the turn, economy, diplomatic status and "
+            "your scenario.instructions. Use player_turn only if a specific question needs additional gameplay detail. "
+            "Follow your scenario.instructions within your "
+            "communication permissions; decide whether a useful response, social commitment or binding economic trade "
+            "is warranted. Read exact binding terms with trade_read before trade_decide; trade_options and trade_offer "
+            "support negotiation outside your gameplay turn. Social consent alone never transfers resources. "
+            "You may send private/public messages and propose memory changes. Never poll, wait for a "
             "reply, or simulate another player. Statements are attributed claims, not authoritative game facts. "
             "Do not answer greetings with endless acknowledgements. Make concise memory updates for decisions or "
-            "beliefs worth retaining. Finish with a short summary.\n\n" + service.memory.context(job.memory)
+            "beliefs worth retaining. "
+            + RECOVERY_INSTRUCTIONS
+            + "Finish with a short summary.\n\n"
+            + service.memory.context(job.memory)
         )
 
         def export_history():

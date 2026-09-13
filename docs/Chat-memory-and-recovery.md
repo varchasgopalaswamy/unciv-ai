@@ -43,8 +43,10 @@ to the host.
 
 Tools include `chat_read`, `chat_history`, `chat_send`, `commitment_offer`,
 `commitment_decide`, `memory_read`, `memory_update` and `history_read`, alongside
-the existing player observations and validated gameplay commands. Communication
-jobs cannot issue gameplay commands. General shell and browsing tools are disabled
+the existing player observations and validated gameplay commands. The
+[economic trade tools](Asynchronous-trade.md) allow both job types to inspect,
+propose and decide exact binding terms. Communication jobs cannot issue ordinary
+gameplay commands. General shell and browsing tools are disabled
 for player jobs. The scoped gateway's tools are preapproved for this authorized
 match; this does not grant the model operator access.
 
@@ -55,6 +57,18 @@ unseen observation. Each successful gameplay action requires a fresh `player_tur
 before the next action. Unit, city, economic, diplomatic and private-policy
 evidence have separate versions; the host also retains its conservative full-view
 revision check and performs engine legality checks atomically.
+
+A concurrent change returns a recoverable `STALE_ASSUMPTIONS` result naming the
+affected records and the reads needed to reconsider that action. It explicitly
+confirms that nothing was dispatched. The agent can skip work another job already
+handled and continue its turn; a rejected decision is never automatically replayed
+against fresh assumptions. Uncertain network responses retain their separate
+stop-and-reconcile behavior.
+
+Communication jobs normally read `chat_read` for compact, player-bound turn,
+scenario, economy and diplomatic context. Full gameplay observations remain on
+demand. This keeps map details and construction menus out of ordinary message
+handling and trade negotiation.
 
 ## Delivery and commitments
 
@@ -163,7 +177,7 @@ The September 12, 2026 verification passed 214 Python tests (plus 75 subtests),
 56 Kotlin tests, Ruff and Pyrefly. The live scenario validates this bounded slice;
 it is not a completed match or an exhaustive action/privacy audit.
 
-New engine trade mechanics and a browser chat interface remain later work. Full
+Further trade categories and a browser chat interface remain later work. Full
 player API coverage and operating-system/container isolation also remain separate
 milestones. HTTPS and scoped tools provide the communication boundary for those
 deployments; they do not by themselves isolate files readable by a process's OS

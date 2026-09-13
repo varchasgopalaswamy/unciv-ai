@@ -41,6 +41,7 @@ internal class GameplayTestApi(runtime: HeadlessRuntime, tlsRoot: Path) : AutoCl
         return operator(OperatorRequest("activate", lease, current.epoch, current.serverInstance, current.handoff, current.activeCivilization, UUID.randomUUID().toString()))
     }
     fun turn(token: String): PlayerTurnSnapshot = PlayerTurnJson.json.decodeFromString(tool(token, "player_turn").toString())
+    fun communicate(token: String, request: JsonObject): JsonObject = call(token, "player_communication", request).getValue("structuredContent").jsonObject
     fun execute(token: String, request: TurnCommandRequest): TurnCommandReceipt = PlayerTurnJson.json.decodeFromString(tool(token, "player_command", PlayerTurnJson.json.encodeToJsonElement(TurnCommandRequest.serializer(), request).jsonObject).toString())
     fun reject(token: String, request: TurnCommandRequest, code: String) {
         val response = call(token, "player_command", PlayerTurnJson.json.encodeToJsonElement(TurnCommandRequest.serializer(), request).jsonObject)

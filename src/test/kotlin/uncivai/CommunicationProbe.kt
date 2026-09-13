@@ -58,6 +58,22 @@ object CommunicationProbe {
                 check(read("Rome")["events"]!!.jsonArray.last().jsonObject["wake"]!!.jsonPrimitive.boolean.not())
                 check(read("Egypt")["events"]!!.jsonArray.single().jsonObject["wake"]!!.jsonPrimitive.boolean)
                 check(players.getValue("Rome").turn().diplomacy == contact) // Chat did not manufacture contact.
+                val rome = game.getCivilization("Rome")
+                val greece = game.getCivilization("Greece")
+                rome.diplomacyFunctions.makeCivilizationsMeet(greece)
+                rome.addGold(100)
+                greece.addGold(100)
+                val egyptBefore = players.getValue("Egypt").turn().revision
+                val egyptInbox = read("Egypt")
+                val economic = command("Rome", "trade_offer", "partner" to "Greece", "give" to emptyList<String>(), "receive" to listOf(obj("type" to "Gold", "name" to "Gold", "amount" to 10, "duration" to -1)))["trade"]!!.jsonObject
+                val economicId = economic["proposal"]!!.jsonPrimitive.content
+                check(state("Egypt")["trades"]!!.jsonArray.isEmpty())
+                fun hidden(id: String) = runCatching { players.getValue("Egypt").communication(obj("op" to "trade_read", "epoch" to executor.epoch, "proposal" to id)) }.exceptionOrNull() as PlayerSessionException
+                check(hidden(economicId).reason == hidden("nonexistent").reason)
+                command("Greece", "trade_decide", "proposal" to economicId, "version" to 1, "decision" to "accept")
+                check(read("Egypt") == egyptInbox)
+                check(players.getValue("Egypt").turn().revision == egyptBefore)
+                check(state("Egypt")["outcomes"]!!.jsonArray.isEmpty())
                 val offered = command(
                     "Rome",
                     "offer",
@@ -85,8 +101,8 @@ object CommunicationProbe {
                         executor.communication.validate("Rome", attack, "Greece", 0)
                     }.exceptionOrNull() is PlayerSessionException,
                 )
-                val economic = attack.copy(kind = TurnCommandKind.QUEUE_CONSTRUCTION, socialVersion = null)
-                executor.communication.validate("Rome", economic, null, 0)
+                val economicCommand = attack.copy(kind = TurnCommandKind.QUEUE_CONSTRUCTION, socialVersion = null)
+                executor.communication.validate("Rome", economicCommand, null, 0)
                 val accepted = state("Rome")["consents"]!!.jsonArray.size
                 command("Greece", "accept", "proposal" to proposal, "version" to 1)
                 check(state("Rome")["consents"]!!.jsonArray.size == accepted)

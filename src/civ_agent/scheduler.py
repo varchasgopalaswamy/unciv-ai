@@ -358,6 +358,8 @@ class RunStore:
 
 
 def player_prompt(civilization, game_turn=None):
+    from civ_agent.proposal_gateway import RECOVERY_INSTRUCTIONS
+
     current = (
         f"Play {civilization}'s current game turn, numbered {game_turn} in player_turn. "
         if game_turn is not None
@@ -372,6 +374,7 @@ def player_prompt(civilization, game_turn=None):
         "Re-observe after commands; select entity handles exactly. The service handles credentials, request IDs, "
         "versions and retries. Read command receipts to verify actual outcomes. "
         "STALE_REVISION applied nothing: re-observe, reconsider, retry once if legal; stop on repetition. "
+        + RECOVERY_INSTRUCTIONS
         + "Read turnReview before END_TURN; act with mobile units or give a deferReason for intentionally idling them. "
         "Keep concise private plans with memory_update before ending. Chat replies arrive asynchronously; do not poll. "
         + "End when legal, including while awaiting an offer response. Stop after handoff, unsupported decisions, "

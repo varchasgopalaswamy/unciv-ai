@@ -12,7 +12,7 @@ from typing import Any, Protocol
 import aiohttp
 from aiohttp import web
 
-from civ_agent.civilization_state import CivilizationState, StateConflict, encode
+from civ_agent.civilization_state import CivilizationState, StaleAssumptions, StateConflict, encode
 from civ_agent.protocol import JsonObject
 from civ_agent.service_io import ServiceIO
 from civ_agent.tls import client_ssl_context, https_url
@@ -28,6 +28,12 @@ READ_TOOLS = {
     "owned_cities",
     "free_great_person_choice",
 }
+COMMUNICATION_READ_TOOLS = {"player_turn", "player_result"}
+RECOVERY_INSTRUCTIONS = (
+    "STALE_ASSUMPTIONS applied nothing: follow recovery.reads, reconsider only the affected action, "
+    "then make a fresh decision or skip it if another job already handled it. "
+    "If it conflicts again, defer that action and continue other work; do not stop the gameplay turn for this. "
+)
 HOSTILE = {"ATTACK", "CITY_ATTACK", "DECLARE_WAR"}
 ECONOMIC = {
     "BUY_CONSTRUCTION",
@@ -126,6 +132,7 @@ class JobAccess:
     token: str = field(default_factory=lambda: secrets.token_urlsafe(32))
     observation: JsonObject | None = None
     social: JsonObject | None = None
+    trades: dict[str, JsonObject] = field(default_factory=dict)
     closed: bool = False
     verified: bool = False
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
@@ -172,11 +179,13 @@ class ProposalGateway:
         upstream = (await job.connection.rpc("tools/list", {}))["tools"]
         tools = []
         for tool in upstream:
-            if tool["name"] in READ_TOOLS:
+            if tool["name"] in READ_TOOLS and (job.purpose == "gameplay" or tool["name"] in COMMUNICATION_READ_TOOLS):
                 entry = copy.deepcopy(tool)
                 if tool["name"] == "player_turn":
                     entry["description"] = (
                         "Read current permitted game state, full popups and diplomatic terms, legal action choices, and turnReview. Re-observe after each command. Read confirmation consequences before acknowledging them."
+                        if job.purpose == "gameplay"
+                        else "Read the full permitted gameplay view only when a question needs map, city or other detail absent from chat_read. Routine negotiation uses chat_read, trade_read and trade_options."
                     )
                 tools.append(entry)
             elif tool["name"] == "player_command" and job.purpose == "gameplay":
@@ -198,7 +207,8 @@ class ProposalGateway:
                     "name": name,
                     "description": description,
                     "annotations": {
-                        "readOnlyHint": name in {"history_read", "chat_read", "chat_history", "memory_read"},
+                        "readOnlyHint": name
+                        in {"history_read", "chat_read", "chat_history", "memory_read", "trade_options", "trade_read"},
                         "destructiveHint": False,
                         "openWorldHint": False,
                     },
@@ -213,6 +223,51 @@ class ProposalGateway:
 
         string = {"type": "string"}
         strings = {"type": "array", "items": string}
+        trade_items = {
+            "type": "array",
+            "maxItems": 64,
+            "items": {
+                "type": "object",
+                "properties": {
+                    "type": {"enum": ["Gold", "Gold_Per_Turn", "Luxury_Resource", "Strategic_Resource"]},
+                    "name": string,
+                    "amount": {"type": "integer", "minimum": 1},
+                    "duration": {"type": "integer"},
+                },
+                "required": ["type", "name", "amount", "duration"],
+                "additionalProperties": False,
+            },
+        }
+        add(
+            "trade_options",
+            "Inspect ordinary trade quantities, exact names/durations, unavailable reasons and active agreements with a met player. give/receive are from your perspective. Available during either player's turn.",
+            {"partner": string},
+            ("partner",),
+        )
+        add(
+            "trade_read",
+            "Read a host-owned binding trade before accepting, declining, withdrawing or counteroffering. Every clause has an explicit from/to direction, identical for both players. Pending deal IDs appear in chat_read. Re-read after changed terms; never poll.",
+            {"proposal": string},
+            ("proposal",),
+        )
+        add(
+            "trade_offer",
+            "Publish concrete economic terms and your consent, using trade_options names and durations. give/receive are from YOUR perspective. Empty one side for a gift. Set proposal to counteroffer or revise a deal you inspected with trade_read; this replaces its terms and requires fresh consent. expiresTurn defaults to current turn + 3. No transfer occurs until the other player accepts.",
+            {
+                "partner": string,
+                "give": trade_items,
+                "receive": trade_items,
+                "expiresTurn": {"type": "integer"},
+                "proposal": string,
+            },
+            ("partner", "give", "receive"),
+        )
+        add(
+            "trade_decide",
+            "Accept or decline the exact trade you inspected with trade_read; an author can withdraw it. Supply only its ID and decision. Acceptance rechecks legality and transfers the stored terms atomically, including outside your gameplay turn. Only an ENACTED result with an engine outcome confirms execution. Changed, expired or unavailable terms require a new decision.",
+            {"proposal": string, "decision": {"enum": ["accept", "decline", "withdraw"]}},
+            ("proposal", "decision"),
+        )
         add(
             "history_read",
             "Inspect confirmed actions and detailed receipts from one earlier game turn when needed. Turn numbers are those shown by player_turn.",
@@ -221,7 +276,7 @@ class ProposalGateway:
         )
         add(
             "chat_read",
-            "Read available public/private messages and social commitments once. Incoming private messages and public mentions wake communication work automatically; never poll or wait for replies.",
+            "Read compact current context (turn, your scenario instructions, economy and known diplomatic relations), messages, social commitments and binding trade IDs once. Inspect a binding proposal with trade_read before deciding. Incoming private messages, trades and public mentions wake communication work automatically; never poll or wait for replies.",
             {},
         )
         add(
@@ -309,7 +364,30 @@ class ProposalGateway:
             receipt = await self.io.call(self.memory.call_receipt, job.id, call_id)
             if receipt is not None:
                 return public_result(receipt)
-            result = await self._call(job, name, arguments, call_id)
+            try:
+                result = await self._call(job, name, arguments, call_id)
+            except StaleAssumptions as conflict:
+                # Nothing was queued or sent. Cache the rejection too: replaying
+                # this call after a read must never execute an old decision.
+                reads = []
+                private = [key for key in conflict.keys if not key.startswith("observation:")]
+                if private:
+                    reads.append({"tool": "memory_read", "arguments": {"keys": private}})
+                if any(key.startswith("observation:") for key in conflict.keys):
+                    reads.append({"tool": "player_turn", "arguments": {}})
+                if name in {"trade_offer", "trade_decide"}:
+                    reads.append(
+                        {"tool": "trade_read", "arguments": {"proposal": arguments["proposal"]}}
+                        if "proposal" in arguments
+                        else {"tool": "trade_options", "arguments": {"partner": arguments["partner"]}}
+                    )
+                result = {
+                    "error": "STALE_ASSUMPTIONS",
+                    "applied": False,
+                    "recoverable": True,
+                    "changedRecords": conflict.keys,
+                    "recovery": {"reads": reads, "instruction": RECOVERY_INSTRUCTIONS},
+                }
             await self.io.call(self.memory.call, job.id, call_id, name, arguments, result)
             return result
 
@@ -327,7 +405,26 @@ class ProposalGateway:
                 raise ValueError("INVALID_ARGUMENT")
             return public_result(await self.io.call(self.memory.history, arguments["turn"], arguments.get("offset", 0)))
         self.check(job)
+        if name in {"trade_options", "trade_read"}:
+            key = "partner" if name == "trade_options" else "proposal"
+            if set(arguments) != {key} or not isinstance(arguments[key], str):
+                raise ValueError("INVALID_ARGUMENT")
+            value = await job.connection.tool("player_communication", {**arguments, "op": name, "epoch": job.epoch})
+            self.check(job)
+            if "error" not in value:
+                scope = ("trade_options/" if name == "trade_options" else "trade/") + arguments[key]
+                version = await self.io.call(self.memory.observe, scope, value, job.id)
+                job.memory["records"]["observation:" + scope] = {
+                    "version": version,
+                    "category": "observation",
+                    "body": value,
+                }
+                if name == "trade_read":
+                    job.trades[arguments["proposal"]] = copy.deepcopy(value["trade"])
+            return public_result(value)
         if name in READ_TOOLS:
+            if job.purpose == "communication" and name not in COMMUNICATION_READ_TOOLS:
+                raise StateConflict("TOOL_NOT_PERMITTED")
             value = await job.connection.tool(name, arguments)
             self.check(job)
             if name == "player_turn" and "error" not in value:
@@ -394,6 +491,24 @@ class ProposalGateway:
             if arguments.get("kind") in HOSTILE:
                 payload["socialVersion"] = job.social["peaceVersion"]
             transport = "player_command"
+        elif name in {"trade_offer", "trade_decide"}:
+            allowed = (
+                {"partner", "give", "receive", "expiresTurn", "proposal"}
+                if name == "trade_offer"
+                else {"proposal", "decision"}
+            )
+            required = {"partner", "give", "receive"} if name == "trade_offer" else allowed
+            if set(arguments) - allowed or not required <= arguments.keys():
+                raise ValueError("INVALID_ARGUMENT")
+            if "proposal" in arguments and not isinstance(arguments["proposal"], str):
+                raise ValueError("INVALID_ARGUMENT")
+            payload = {**arguments, "op": name, "epoch": job.epoch}
+            if "proposal" in arguments:
+                selected = job.trades.get(arguments["proposal"])
+                if selected is None:
+                    raise StateConflict("Read this proposal's exact terms with trade_read before deciding.")
+                payload["version"] = selected["version"]
+            transport = "player_communication"
         elif name in {"chat_send", "commitment_offer", "commitment_decide"}:
             payload = {**arguments, "epoch": job.epoch}
             if name == "chat_send":
@@ -417,6 +532,8 @@ class ProposalGateway:
         else:
             raise ValueError("TOOL_NOT_PERMITTED")
         policy_keys = {"SOUL", "STRATEGY"}
+        if name in {"trade_offer", "trade_decide"}:
+            policy_keys.add("economy")
         if transport == "player_command":
             policy_keys.add("observation:turn")
             if arguments.get("kind") in ECONOMIC:
@@ -429,7 +546,10 @@ class ProposalGateway:
                 key = "observation:" + scope + str(arguments.get("target"))
                 if key in job.memory["records"]:
                     policy_keys.add(key)
-        other = arguments.get("to") or arguments.get("target")
+        other = arguments.get("to") or arguments.get("target") or arguments.get("partner")
+        if name == "trade_decide":
+            selected = job.trades[arguments["proposal"]]
+            other = selected["partner"] if selected["author"] == self.memory.civilization else selected["author"]
         if other:
             policy_keys.add("relationships/" + str(other))
         dependencies = {key: job.memory["records"].get(key, {}).get("version", 0) for key in policy_keys}
@@ -452,7 +572,9 @@ class ProposalGateway:
                 raise
             finally:
                 self.in_flight -= 1
-            if transport == "player_command" and "error" not in value:
+            if (
+                transport == "player_command" or name == "trade_decide" and value.get("outcome")
+            ) and "error" not in value:
                 job.observation = None
             return public_result(value)
 

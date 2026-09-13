@@ -17,11 +17,13 @@ import uncivai.player.PlayerSessionFailure
 import uncivai.player.TurnCommandKind
 import uncivai.player.TurnCommandReceipt
 import uncivai.player.TurnCommandRequest
+import uncivai.player.communicationContext
 import java.security.SecureRandom
 
 /** Shared records and recipient streams are part of the same commit as game receipts. */
 @Serializable
 internal data class CommunicationState(
+    val trades: EngineTradeState = EngineTradeState(),
     val streams: MutableMap<String, MutableList<JsonObject>> = mutableMapOf(),
     val offers: MutableMap<String, MutableList<JsonObject>> = mutableMapOf(),
     val consents: MutableList<JsonObject> = mutableListOf(),
@@ -58,6 +60,7 @@ internal fun obj(vararg pairs: Pair<String, Any?>): JsonObject = buildJsonObject
 }
 
 internal class Communication(private val runtime: GameExecutor) {
+    private val trades = EngineTrades(runtime)
     private val random = SecureRandom()
     private val state get() = runtime.communicationState
     private fun fail(): Nothing = throw PlayerSessionException(PlayerSessionFailure.INVALID_ARGUMENT)
@@ -69,7 +72,7 @@ internal class Communication(private val runtime: GameExecutor) {
         ?: fail()
     private fun shortId(prefix: String) = prefix + java.lang.Long.toUnsignedString(random.nextLong(), 36).take(9)
     private fun visible(record: JsonObject, civilization: String) = civilization in members(record["participants"])
-    private fun emit(audience: List<String>, kind: String, body: JsonObject, wakes: Set<String> = emptySet()) {
+    internal fun emit(audience: List<String>, kind: String, body: JsonObject, wakes: Set<String> = emptySet()) {
         for (recipient in audience) {
             val stream = state.streams.getOrPut(recipient) { mutableListOf() }
             stream.add(obj("id" to stream.size + 1, "kind" to kind, "body" to body, "wake" to (recipient in wakes)))
@@ -108,6 +111,7 @@ internal class Communication(private val runtime: GameExecutor) {
             if (request.keys != setOf("op", "epoch")) fail()
             return@accessGame view(civilization, participants)
         }
+        if (op in setOf("trade_options", "trade_read")) return@accessGame trades.read(civilization, request)
         if (op in setOf("job_claim", "job_heartbeat", "job_release")) {
             if (request.keys.any { it !in setOf("op", "epoch", "job", "purpose", "usage") }) fail()
             val job = string(request, "job")
@@ -182,10 +186,16 @@ internal class Communication(private val runtime: GameExecutor) {
 
             "accept", "withdraw", "reconsider" -> setOf("proposal", "version", "reason")
 
+            "trade_offer" -> setOf("partner", "give", "receive", "expiresTurn", "proposal", "version")
+
+            "trade_decide" -> setOf("proposal", "version", "decision")
+
             else -> fail()
         }
         if (request.keys.any { it !in allowed }) fail()
         val response = when (op) {
+            "trade_offer", "trade_decide" -> trades.mutate(civilization, request)
+
             "send" -> {
                 val target = request["to"]?.let { string(request, "to") }
                 if (target != null && (target !in participants || target == civilization)) fail()
@@ -342,6 +352,7 @@ internal class Communication(private val runtime: GameExecutor) {
     fun view(civilization: String, participants: List<String>): JsonObject = obj(
         "epoch" to runtime.epoch,
         "civilization" to civilization,
+        "context" to runtime.accessGame { game -> communicationContext(runtime, game, game.getCivilization(civilization)) },
         "channels" to participants,
         "peaceVersion" to (state.peaceVersions[civilization] ?: 0),
         "offers" to state.offers.values.flatMap {
@@ -361,6 +372,7 @@ internal class Communication(private val runtime: GameExecutor) {
         },
         "consents" to state.consents.filter { visible(it, civilization) },
         "outcomes" to state.outcomes.filter { visible(it, civilization) },
+        "trades" to trades.summaries(civilization),
     )
     fun validate(civilization: String, request: TurnCommandRequest, opponent: String?, turn: Int) {
         if (request.socialVersion != null &&
@@ -401,6 +413,7 @@ internal class Communication(private val runtime: GameExecutor) {
             return
         }
         val audience = listOf(civilization, opponent)
+        if (receipt.kind in setOf(TurnCommandKind.DECLARE_WAR, TurnCommandKind.ACCEPT_PEACE)) trades.invalidateDiplomacy(civilization, opponent)
         val player = runtime.accessGame { it.getCivilization(civilization) }
         val other = player.gameInfo.getCivilization(opponent)
         val record = obj(

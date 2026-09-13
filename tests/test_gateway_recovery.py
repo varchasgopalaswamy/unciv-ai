@@ -106,11 +106,19 @@ def test_new_private_policy_requires_reconsideration_but_own_updates_are_immedia
             await gateway.call(planning, "player_turn", {}, "observe")
             change = {"key": "STRATEGY", "category": "policy", "body": {"text": "Hold defensive positions"}}
             await gateway.call(chat, "memory_update", {"changes": [change]}, "change")
-            with pytest.raises(StateConflict, match="STALE_ASSUMPTIONS"):
-                await gateway.call(planning, "player_command", {"kind": "MOVE_UNIT", "target": "unit1"}, "old-plan")
+            stale = await gateway.call(planning, "player_command", {"kind": "MOVE_UNIT", "target": "unit1"}, "old-plan")
+            assert stale["error"] == "STALE_ASSUMPTIONS" and stale["applied"] is False and stale["recoverable"]
+            assert stale["changedRecords"] == ["STRATEGY"]
+            assert stale["recovery"]["reads"] == [{"tool": "memory_read", "arguments": {"keys": ["STRATEGY"]}}]
+            assert not memory.requests_for_job(planning.id) and not host.executed
             await gateway.call(planning, "memory_read", {"keys": ["STRATEGY"]}, "reconsider")
             change["body"]["text"] = "Move back to defend the capital"
             await gateway.call(planning, "memory_update", {"changes": [change]}, "new-plan")
+            assert (
+                await gateway.call(planning, "player_command", {"kind": "MOVE_UNIT", "target": "unit1"}, "old-plan")
+                == stale
+            )  # A transport replay never executes the obsolete decision after refresh.
+            assert not host.executed
             assert (await gateway.call(planning, "player_command", {"kind": "MOVE_UNIT", "target": "unit1"}, "defend"))[
                 "done"
             ]

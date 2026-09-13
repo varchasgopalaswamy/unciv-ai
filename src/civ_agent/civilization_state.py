@@ -24,6 +24,14 @@ class StateConflict(ValueError):
     pass
 
 
+class StaleAssumptions(StateConflict):
+    """A local pre-dispatch rejection; the affected evidence must be read again."""
+
+    def __init__(self, keys: list[str]):
+        super().__init__("STALE_ASSUMPTIONS")
+        self.keys = sorted(keys)
+
+
 class CivilizationState:
     def __init__(self, root: Path, civilization: str):
         self.root = private_directory(root)
@@ -265,8 +273,9 @@ class CivilizationState:
         if row is None or row["status"] != "RUNNING" or row["epoch"] != self._meta(db, "epoch"):
             raise StateConflict("STALE_JOB")
         current = self._records(db)
-        if any(current.get(key, {}).get("version", 0) != version for key, version in dependencies.items()):
-            raise StateConflict("STALE_ASSUMPTIONS")
+        changed = [key for key, version in dependencies.items() if current.get(key, {}).get("version", 0) != version]
+        if changed:
+            raise StaleAssumptions(changed)
 
     def patch(self, job: str, changes: list[JsonObject]) -> JsonObject:
         """Compare each record independently, retaining valid parts of a job."""
