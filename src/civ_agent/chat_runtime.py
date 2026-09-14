@@ -9,10 +9,11 @@ import time
 import aiohttp
 
 from civ_agent.agent_history import HISTORY_METHODS
-from civ_agent.agent_settings import valid_setting
 from civ_agent.civilization_state import StateConflict, job_id
-from civ_agent.proposal_gateway import RECOVERY_INSTRUCTIONS, HostConnection
+from civ_agent.host_connection import HostConnection
+from civ_agent.proposal_gateway import RECOVERY_INSTRUCTIONS
 from civ_agent.protocol import JsonObject
+from civ_agent.schemas import ConnectRequest, validate
 from civ_agent.tls import private_directory, write_private_json
 
 
@@ -31,14 +32,7 @@ class ChatRuntime:
         self.error = None
 
     async def connect(self, payload):
-        if set(payload) != {"epoch", "playerToken", "model", "reasoningEffort", "timeoutSeconds"}:
-            raise ValueError("INVALID_ARGUMENT")
-        if (
-            any(payload[key] is not None and not valid_setting(payload[key]) for key in ("model", "reasoningEffort"))
-            or type(payload["timeoutSeconds"]) is not int
-            or not 1 <= payload["timeoutSeconds"] <= 86400
-        ):
-            raise ValueError("INVALID_ARGUMENT")
+        validate(ConnectRequest, payload)
         await self.close()
         service = self.service
         await service.io.call(service.memory.bind, payload["epoch"])
@@ -54,14 +48,18 @@ class ChatRuntime:
         }
         self.timeout = payload["timeoutSeconds"]
         self.running = True
-        identity = await self.social("state")
-        if identity.get("civilization") != service.civilization:
-            self.running = False
-            raise StateConflict("PLAYER_CREDENTIAL_MISMATCH")
-        await self.reconcile()
-        await service.io.call(service.memory.allow_communication_retry)
-        if await service.io.call(service.memory.has_wake):
-            self.pending.set()
+        try:
+            identity = await self.social("state")
+            if identity.get("civilization") != service.civilization:
+                self.running = False
+                raise StateConflict("PLAYER_CREDENTIAL_MISMATCH")
+            await self.reconcile()
+            await service.io.call(service.memory.allow_communication_retry)
+            if await service.io.call(service.memory.has_wake):
+                self.pending.set()
+        except BaseException:
+            await self.close()
+            raise
         self.listener = asyncio.create_task(self.receive())
         self.worker = asyncio.create_task(self.dispatch())
         return {"connected": True, "epoch": self.epoch}
@@ -192,10 +190,15 @@ class ChatRuntime:
             f"Handle {service.civilization}'s newly received communication. Ordinary gameplay is handled separately. "
             "Read chat_read and relevant memory once. Its context includes the turn, economy, diplomatic status and "
             "your scenario.instructions. Use player_turn only if a specific question needs additional gameplay detail. "
-            "Follow your scenario.instructions within your "
-            "communication permissions; decide whether a useful response, social commitment or binding trade/peace deal "
+            "Follow scenario.instructions when present; otherwise your objective is to win the game. "
+            "Use diplomacy to advance your strategy within your communication permissions; "
+            "decide whether a useful response, social commitment or binding diplomatic agreement "
             "is warranted. Read exact binding terms with trade_read before trade_decide; trade_options and trade_offer "
-            "support negotiation outside your gameplay turn. Social consent alone never transfers resources or enacts a treaty. "
+            "support responding and counteroffering outside your gameplay turn. Only the current player may open "
+            "a new negotiation; invite them through chat otherwise. Formal negotiation freezes gameplay until "
+            "acceptance, decline, withdrawal or its deadline. Respect counteroffersRemaining; never reopen "
+            "a closed negotiation automatically. Use friendship_offer for engine friendship; "
+            "social consent alone never transfers resources or enacts an engine agreement. "
             "You may send private/public messages and propose memory changes. Never poll, wait for a "
             "reply, or simulate another player. Statements are attributed claims, not authoritative game facts. "
             "Do not answer greetings with endless acknowledgements. Make concise memory updates for decisions or "
@@ -281,3 +284,6 @@ class ChatRuntime:
                 with contextlib.suppress(asyncio.CancelledError):
                     await task
         self.listener = self.worker = None
+        if self.connection is not None:
+            await self.connection.close()
+            self.connection = None

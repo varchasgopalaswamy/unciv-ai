@@ -26,12 +26,12 @@ class ExplorationIntegrationTest {
     fun `fresh duel supports private exploration settlement turn handoff and recovery through MCP`() {
         val root = Files.createTempDirectory("exploration-")
         try {
-            child(root, "uncivai.MainKt", "--new-duel", "--seed", "10001", "--data-dir", root.resolve("data").toString(), "--checkpoint", root.resolve("game.json").toString())
+            child(root, "uncivai.ExplorationFixture", root.toString())
             child(root, "uncivai.ExplorationProbe", root.toString())
             child(root, "uncivai.ExplorationRecoveryProbe", root.toString())
-            child(root, "uncivai.MainKt", "--new-duel", "--data-dir", root.resolve("data").toString(), "--checkpoint", root.resolve("game.json").toString(), expectedExit = 2)
-            child(root, "uncivai.MainKt", "--new-duel", "--data-dir", root.resolve("data").toString(), expectedExit = 2)
-            child(root, "uncivai.MainKt", "--new-duel", "--save", root.resolve("game.json").toString(), "--data-dir", root.resolve("data").toString(), expectedExit = 2)
+            child(root, "uncivai.MainKt", "--new-game", "--data-dir", root.resolve("data").toString(), "--checkpoint", root.resolve("game.json").toString(), expectedExit = 1)
+            child(root, "uncivai.MainKt", "--new-game", "--data-dir", root.resolve("data").toString(), expectedExit = 1)
+            child(root, "uncivai.MainKt", "--new-game", "--save", root.resolve("game.json").toString(), "--data-dir", root.resolve("data").toString(), expectedExit = 1)
         } finally {
             deleteTreeWithoutFollowingLinks(root)
         }

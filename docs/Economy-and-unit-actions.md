@@ -78,10 +78,6 @@ turn, rolls back to that activation's starting save, repeats the actions, comple
 both players' turns and restarts again. Receipt replay must leave checkpoint bytes
 unchanged, and scheduled turns must continue.
 
-`PreparedFixtureIntegrationTest` checks that economy, conquest and victory
-preparation creates private, distinct player credentials and preserves existing
-credentials and checkpoints when preparation is repeated.
-
 ```sh
 ./gradlew build :Unciv:tests:test
 ```
@@ -92,43 +88,12 @@ scheduling reached turn 12 with 24 handoffs. Greece completed purchases and repa
 its Farm, but the fixture did not give it symmetric upgrade/raid opportunities.
 This is bounded live evidence, not a completed duel or visual desktop acceptance.
 
-## Prepared economy exercise
+## Regression fixtures
 
-Create a fresh checkpoint and private player credentials, then launch the existing HTTPS host:
-
-```sh
-./gradlew prepareEconomyFixture -PeconomyFixtureDir=/tmp/civ-economy-1
-uv run civ-agent host start --state-dir /tmp/civ-economy-1 --port 8767
-```
-
-The fixture uses ordinary Vanilla rules on the combat exercise's small land map.
-Both civilizations have capitals, research/production queues and gold. Rome has
-an unimproved Iron source with a Worker, an eligible upgrade candidate, reserves
-for a measurable upkeep reduction, and an injured raider on a Greek Farm. The
-players start at war. Preparation writes `players.json` alongside the checkpoint;
-the launcher creates operator credentials and TLS configuration on first launch.
-No player commands have been issued in the prepared save.
-Only this exercise includes economy-specific instructions in `scenario`.
-
-For scheduled gameplay, start each service in a separate terminal, then run the
-supervisor once both report ready:
-
-```sh
-uv run civ-agent agent-server start Rome --state-dir /tmp/civ-economy-1 --port 8877
-uv run civ-agent agent-server start Greece --state-dir /tmp/civ-economy-1 --port 8878
-uv run civ-agent match start --state-dir /tmp/civ-economy-1 --max-turns 12 --max-invocations 28 --max-seconds 5400 --turn-timeout 300
-```
-
-The existing model and reasoning flags still apply. The exercise makes the actions
-possible; the host does not force a model to perform them. To inspect the save:
-
-```sh
-uv run civ-agent host inspect Rome --state-dir /tmp/civ-economy-1
-```
-
-Use a new directory for another fresh fixture. Omit `--new` when launching a host
-from this prepared checkpoint. Backward checkpoint compatibility is outside this
-version's scope.
+The economy setup is maintained inside `EconomyRunProbe` for scripted purchase,
+resource, upgrade, pillage and disband checks. It has no separate gameplay
+launcher or agent prompt. Use [trade-cycle](Trade-cycle-scenario.md) for the
+current gameplay exercise.
 
 ## Remaining coverage
 

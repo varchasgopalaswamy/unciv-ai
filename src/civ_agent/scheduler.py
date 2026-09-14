@@ -369,14 +369,15 @@ def player_prompt(civilization, game_turn=None):
         "A fresh conversation: private memory is historical evidence and plans, not current state or instructions. "
         "Use civ MCP tools for game state/actions; only your own turn files for history. "
         "Read player_capabilities and player_turn. Play one ACTIVE turn using offered actions. "
-        "Follow scenario.instructions when present. "
+        "Follow scenario.instructions when present; otherwise your objective is to win the game. "
+        "Choose a strategy using the enabled victory conditions in player_turn.rules. "
         "Read and briefly note full popups, declaration warnings and diplomatic messages/terms before responding. "
         "Re-observe after commands; select entity handles exactly. The service handles credentials, request IDs, "
         "versions and retries. Read command receipts to verify actual outcomes. "
         "STALE_REVISION applied nothing: re-observe, reconsider, retry once if legal; stop on repetition. "
         + RECOVERY_INSTRUCTIONS
         + "Read turnReview before END_TURN; act with mobile units or give a deferReason for intentionally idling them. "
-        "Keep concise private plans with memory_update before ending. Chat replies arrive asynchronously; do not poll. "
+        "Keep concise private strategy and plans with memory_update before ending. Chat replies arrive asynchronously; do not poll. "
         + "End when legal, including while awaiting an offer response. Stop after handoff, unsupported decisions, "
         "uncertain failures or a paused/finished game. "
     )
@@ -768,7 +769,10 @@ class Scheduler:
                     playerToken=connection["playerToken"],
                     model=self.state.get("model"),
                     reasoningEffort=self.state.get("reasoningEffort"),
-                    timeoutSeconds=self.state["limits"]["activationSeconds"],
+                    timeoutSeconds=max(
+                        self.state["limits"]["activationSeconds"],
+                        connection["status"].get("negotiationTimeoutSeconds", 300),
+                    ),
                 )
             rounds.release()
             self.state.update(status="running", reason=None)
@@ -910,7 +914,10 @@ class Scheduler:
                 if time.time() >= self.state["deadline"]:
                     interrupted = "budget"
                     break
-                if now - began >= self.state["limits"]["activationSeconds"]:
+                if (
+                    now - began - agent_status.get("negotiationWaitSeconds", 0)
+                    >= self.state["limits"]["activationSeconds"]
+                ):
                     interrupted = "timeout"
                     break
                 if now - last_heartbeat >= 5:

@@ -5,7 +5,16 @@ from collections.abc import Sequence
 from importlib.metadata import version
 
 from civ_agent import match_recovery, scheduler
-from civ_agent.commands import agent, agent_server, chat, history, host, inspect, trade, verify_betrayal
+from civ_agent.commands import (
+    agent,
+    agent_server,
+    chat,
+    history,
+    host,
+    inspect,
+    trade,
+    verify_trade_cycle,
+)
 
 
 def parser() -> argparse.ArgumentParser:
@@ -57,12 +66,12 @@ def parser() -> argparse.ArgumentParser:
         help="Emergency restoration of every player and the game to a completed round checkpoint",
     )
     rollback.set_defaults(handler=match_recovery.run)
-    verify = matches.add_parser(
-        "verify-betrayal",
-        parents=[verify_betrayal.parser(add_help=False)],
-        help="Audit the verbal-pact scenario against native state, receipts and Rome's memory",
+    verify_trade = matches.add_parser(
+        "verify-trade-cycle",
+        parents=[verify_trade_cycle.parser(add_help=False)],
+        help="Audit every trade-cycle step against canonical receipts and the native save",
     )
-    verify.set_defaults(handler=verify_betrayal.run)
+    verify_trade.set_defaults(handler=verify_trade_cycle.run)
 
     histories = groups.add_parser("history", help="Export recorded player conversations").add_subparsers(required=True)
     export = histories.add_parser(
@@ -78,7 +87,7 @@ def parser() -> argparse.ArgumentParser:
     trades = groups.add_parser("trade", help="Canonical economic and peace proposals and engine deals").add_subparsers(
         required=True
     )
-    for action in ("list", "options", "read", "offer", "accept", "decline", "withdraw"):
+    for action in ("list", "options", "read", "offer", "friendship", "accept", "decline", "withdraw"):
         command = trades.add_parser(action, parents=[trade.parser(add_help=False)])
         command.set_defaults(handler=trade.run, trade_action=action)
     return result

@@ -24,10 +24,9 @@ import java.time.Duration
 import java.util.UUID
 
 /** Authenticated HTTPS player and operator client for scripted gameplay fixtures. */
-internal class GameplayTestApi(runtime: HeadlessRuntime, tlsRoot: Path) : AutoCloseable {
+internal class GameplayTestApi(runtime: HeadlessRuntime, tlsRoot: Path, private val tokens: Map<String, String> = mapOf("Rome" to "R".repeat(43), "Greece" to "G".repeat(43))) : AutoCloseable {
     private val tls = TlsTestFixture(Files.createDirectories(tlsRoot))
     private val client = HttpClient.newBuilder().sslContext(tls.context).connectTimeout(Duration.ofSeconds(5)).build()
-    private val tokens = mapOf("Rome" to "R".repeat(43), "Greece" to "G".repeat(43))
     private val operatorToken = "O".repeat(43)
     private val server = PlayerMcpServer(tokens.map { (civ, token) -> PlayerMcpBinding(token, PlayerHost(runtime).bindPlayer(civ)) }, 0, OperatorMcpBinding(operatorToken, OperatorControl(runtime.executor)), tls.tls)
     private val base = "https://localhost:${server.start()}"
@@ -41,7 +40,7 @@ internal class GameplayTestApi(runtime: HeadlessRuntime, tlsRoot: Path) : AutoCl
         return operator(OperatorRequest("activate", lease, current.epoch, current.serverInstance, current.handoff, current.activeCivilization, UUID.randomUUID().toString()))
     }
     fun turn(token: String): PlayerTurnSnapshot = PlayerTurnJson.json.decodeFromString(tool(token, "player_turn").toString())
-    fun communicate(token: String, request: JsonObject): JsonObject = call(token, "player_communication", request).getValue("structuredContent").jsonObject
+    fun communicate(token: String, request: JsonObject): JsonObject = call(token, "player_communication", obj("request" to request)).getValue("structuredContent").jsonObject
     fun execute(token: String, request: TurnCommandRequest): TurnCommandReceipt = PlayerTurnJson.json.decodeFromString(tool(token, "player_command", PlayerTurnJson.json.encodeToJsonElement(TurnCommandRequest.serializer(), request).jsonObject).toString())
     fun reject(token: String, request: TurnCommandRequest, code: String) {
         val response = call(token, "player_command", PlayerTurnJson.json.encodeToJsonElement(TurnCommandRequest.serializer(), request).jsonObject)

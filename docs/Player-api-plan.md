@@ -178,7 +178,7 @@ The [war and peace slice](War-and-peace.md) adds shared engine diplomatic
 availability and confirmation, war declaration and message acknowledgement, and
 peace negotiation through treaties, gold, GPT and tradable resources. Player
 observations include declaration messages and treaty restrictions. Peace now uses
-the shared asynchronous trade proposals, decisions and counteroffers below. Exact retries and pending offers
+the shared trade proposals, decisions and counteroffers below. Exact retries and pending offers
 survive checkpoints; a scripted HTTPS duel verifies scheduled turns across war,
 cooldown, peace negotiations and process restarts.
 
@@ -222,10 +222,10 @@ great-person progress, validated building sales and shared worked-tile transfers
 The desktop delegates to the same engine operations. Sales remove allocations whose
 specialist slots disappear, and reading thresholds no longer mutates saved counters.
 
-The prepared scenario gives both players two cities and the same controls to test.
+The internal regression fixture gives both players two cities and the same controls to test.
 Scripted HTTPS checks assert native allocations, yields, refunds, capped food,
 population growth and accumulated great-person points across turns, rollback,
-restarts and exact retries. A live-model run of this new scenario is still pending.
+restarts and exact retries. The fixture remains internal to the regression suite.
 Full overview details, remaining unit actions, general trade, embedded human play
 and isolation remain in the wider plan.
 
@@ -244,7 +244,7 @@ The new exercise pairs immediate ability checks with ordinary specialist-generat
 Scientists and Liberty's free Great Person choice, using native-state assertions,
 scheduled HTTPS handoffs, process restarts, rollback and exact retries.
 
-## Delivered slice: asynchronous trade and peace
+## Delivered slice: trade and peace with paused gameplay
 
 The [trade slice](Asynchronous-trade.md) adds host-owned, versioned
 gold/GPT/luxury/strategic-resource and peace-treaty proposals, counteroffers, acceptance, decline
@@ -252,14 +252,36 @@ and withdrawal. Both players see canonical clauses with explicit directions;
 Python binds a simple decision to the exact version that job inspected. The host
 validates and enacts deals during either player's gameplay turn without
 changing turn ownership. Engine effects, consent, events and receipts share the
-native checkpoint and coordinated rollback protocol.
+native checkpoint and coordinated rollback protocol. The current player initiates
+each negotiation, which pauses gameplay until settlement or a persisted deadline.
+Three shared counteroffers and five minutes are the configurable defaults; no
+negotiation token budget applies. Services wait outside state and dispatch locks,
+keeping chat responsive and refreshing gameplay before further action.
 
-The prepared `async-trade` scenario negotiates Silk for GPT plus immediate gold.
-`async-peace` adds mutual peace to that same flow. Accepted peace fences stale
+Internal trade fixtures negotiate Silk for GPT plus immediate gold and add
+mutual peace to that same flow. Accepted peace fences stale
 attacks without restarting valid gameplay; the old host peace commands are removed.
 Scripted HTTPS tests inspect actual resources, balances, durations and handoffs,
 including stale terms, private visibility, restarts and storage failures. See the
 runbook for human trade commands and the remaining trade categories.
+
+The same consent system supports Open Borders,
+embassies, research agreements, defensive pacts, city transfers and native
+Declarations of Friendship. Treaty costs and both sides' matching obligations
+are validated at enactment; city references stay short and stable while ownership
+changes. Traded-city disposition and friendship popups expose their content and
+validated choices. Scripted checks cover prerequisites, off-turn consent, funding,
+ownership and fog, restart replay and coordinated rollback. Remaining trade work
+is third-party clauses and an enacted-agreement expiration/cancellation workflow;
+neither is part of this implementation. Live-model and human acceptance runs remain
+separate verification gates.
+
+The [`trade-cycle` scenario](Trade-cycle-scenario.md) now combines all supported
+trade items and terminal negotiation paths in eleven stages with compact current
+instructions. Its scripted HTTPS probe verifies exact native effects, pending
+negotiation restarts, replay and rollback. `match verify-trade-cycle` audits a
+live run from native checkpoints, canonical receipts and round snapshots. A live
+model run of this combined scenario remains to be performed.
 
 ## Verification gates
 

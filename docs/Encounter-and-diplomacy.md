@@ -1,13 +1,14 @@
 # Encounters and diplomacy coverage
 
 This inventory follows the selected engine's `AlertType` dispatch and popup
-producers. It applies to the setup in [DuelSetup](../src/main/kotlin/uncivai/DuelSetup.kt):
+producers. Its reachability notes use the internal [Vanilla duel fixture](../src/test/kotlin/uncivai/fixtures/DuelSetup.kt):
 Vanilla Rome and Greece, two human engine slots, Quick speed, Ancient start,
 Domination/Time victories, 330 maximum turns, no city-states, barbarians, ruins or
 mods. Human slots do not run built-in civilization AI diplomacy. Religion is
 disabled by Vanilla's `ModOptions.json`; espionage is disabled in the game
 parameters. An alert that cannot occur in this setup still needs a safe unsupported
-response if a fixture or a later setup introduces it.
+response if another fixture or setup introduces it. The launchable
+[trade-cycle scenario](Trade-cycle-scenario.md) uses Gods & Kings.
 
 The first-contact slice adds the encounter introduction and acknowledgement.
 The subsequent [war and peace slice](War-and-peace.md) adds diplomatic options,

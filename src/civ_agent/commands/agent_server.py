@@ -39,7 +39,7 @@ def parser(*, add_help: bool = True) -> argparse.ArgumentParser:
     result.add_argument("--mcp-url", help="Permitted HTTPS host MCP endpoint; inferred from endpoints.json by default")
     result.add_argument("--mcp-ca-file", type=Path, help="Additional trusted CA for the host MCP endpoint")
     result.add_argument(
-        "--port", type=int, default=None, help="HTTPS port (Rome:8865, Greece:8866; required for other civilizations)"
+        "--port", type=int, default=None, help="HTTPS port (Rome:8865, Greece:8866, France:8867; required for others)"
     )
     result.add_argument("--listen-host", default="127.0.0.1")
     result.add_argument(
@@ -66,7 +66,11 @@ def run(args: argparse.Namespace) -> int:
     try:
         if not args.civilization.strip() or len(args.civilization) > 128:
             raise ServiceError("INVALID_CIVILIZATION")
-        port = args.port if args.port is not None else {"Rome": 8865, "Greece": 8866}.get(args.civilization)
+        port = (
+            args.port
+            if args.port is not None
+            else {"Rome": 8865, "Greece": 8866, "France": 8867}.get(args.civilization)
+        )
         if port is None or not 1 <= port <= 65535:
             raise ServiceError("INVALID_PORT")
         root = args.state_dir.expanduser().resolve()

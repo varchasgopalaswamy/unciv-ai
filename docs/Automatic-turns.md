@@ -26,14 +26,15 @@ Run these in separate terminals from the repository. `uv run` uses the project
 environment automatically:
 
 ```sh
-uv run civ-agent host start --scenario great-people
+uv run civ-agent host start
 uv run civ-agent agent-server start Rome
 uv run civ-agent agent-server start Greece
-uv run civ-agent match start --max-turns 20 --max-invocations 48 --max-seconds 3600
+uv run civ-agent agent-server start France
+uv run civ-agent match start --max-turns 20 --max-invocations 72 --turn-timeout 300 --max-seconds 7200
 ```
 
 Wait for `MCP-READY` and each service's `AGENT-READY` message before starting the supervisor. The host
-uses port 8765; Rome and Greece services default to 8865 and 8866. The default match
+uses port 8765; Rome, Greece and France services default to 8865, 8866 and 8867. The default match
 directory is `~/.local/state/unciv-host/demo`, overridden by `UNCIV_HOST_DIR` or
 `--state-dir`. Use the same directory for these local commands. Existing checkpoints
 resume automatically; choose a new directory for a new match.
@@ -43,15 +44,18 @@ If a port is already in use, stop the previous service or select a free `--port`
 The supervisor discovers the selected ports from the match directory; its command
 does not need port overrides.
 
-The current exercise covers Great People plus research and policy decisions. Each
-player starts with prepared people, a staffed University and a nearly completed
-Liberty branch. New games require an explicit `--scenario`; supplying it again
-checks the actual checkpoint on resume. A directory's name does not select a scenario.
-See [Great People](Great-people.md#launch-the-exercise) for a complete launch example
-using a fresh match directory.
+New games default to [Vanilla with Rome, Greece and France](Vanilla-game.md), using
+Quick speed and ordinary starting conditions. The linked guide gives larger
+scheduler limits for a full game. The only scripted scenario is
+[trade-cycle](Trade-cycle-scenario.md), covering eleven trade stages and two further
+rounds with Rome and Greece. Select it with `--scenario trade-cycle`;
+supplying it again checks the actual checkpoint on
+resume. A directory's name does not select a scenario. The runbook explains the
+intentional negotiation deadline and native-save verification.
 
-Agents follow `player_turn.scenario.instructions`. The common prompt contains
-only gameplay rules, receipt/retry handling, and the current turn review. Request
+Agents aim to win using the enabled victory conditions in `player_turn.rules`.
+Prepared exercises instead supply `player_turn.scenario.instructions`.
+The common prompt also covers gameplay rules, receipt/retry handling, and the current turn review. Request
 ID examples use the actual game turn and an increasing action number. The service
 adds archive and final-summary instructions once, then selected notes and new events.
 Restart agent services after changing their prompt code; already running services
@@ -70,9 +74,9 @@ and publishes an endpoint descriptor. Credentials never appear in command argume
 The supervisor sends only the active player's temporary token to its service; the
 operator token and other players' transcripts are not forwarded.
 
-The limits above allow twenty **game rounds**, up to forty ordinary Rome/Greece
-activations plus eight additional activations for recovery. Defaults are the same
-as shown. `--turn-timeout` defaults to 180 seconds per activation.
+The limits above allow twenty **game rounds**, up to sixty ordinary three-player
+activations plus twelve additional activations for recovery. Omitted limits default
+to 20 rounds, 48 activations, one hour, and 180 seconds per activation.
 
 ## Select models and reasoning effort
 

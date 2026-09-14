@@ -34,9 +34,8 @@ object CityManagementRunProbe {
     fun main(args: Array<String>) {
         val root = Path.of(args[0])
         val stage = args[1]
-        val checkpoint = root.resolve(if (stage == "prepare") "exploration.json" else "checkpoint.json")
-        if (stage == "prepare") require(!Files.exists(checkpoint)) { "Checkpoint already exists" }
-        val fresh = stage in setOf("start", "prepare", "observe")
+        val checkpoint = root.resolve("checkpoint.json")
+        val fresh = stage in setOf("start", "observe")
         val runtime = if (fresh) {
             HeadlessRuntime.createCityManagementExercise(root.resolve(stage))
         } else {
@@ -48,12 +47,7 @@ object CityManagementRunProbe {
                 return
             }
             if (fresh) {
-                if (stage == "prepare") prepareDuelCredentials(root)
                 runtime.executor.enableCheckpoints(checkpoint)
-            }
-            if (stage == "prepare") {
-                println("Prepared city management exercise: $checkpoint")
-                return
             }
             GameplayTestApi(runtime, root.resolve("$stage-tls")).use { api ->
                 when (stage) {
@@ -131,7 +125,7 @@ object CityManagementRunProbe {
         val neighbor = player.cities.single { !it.isOriginalCapital }
         val result = arrayListOf<CityManagementAction>()
         var turn = api.readAlerts(token)
-        check(turn.scenario?.name == "CITY_MANAGEMENT_EXERCISE")
+        check(turn.scenario == null)
         check(turn.cities.size == 2)
         fun offered(city: City) = turn.cities.single { it.name == city.name }
         fun act(kind: TurnCommandKind, city: City, selection: String? = null, enabled: Boolean? = null, destination: TilePosition? = null, worked: Boolean? = null): TurnCommandReceipt {

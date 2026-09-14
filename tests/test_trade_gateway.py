@@ -8,14 +8,120 @@ import pytest
 from civ_agent.chat_runtime import ChatRuntime
 from civ_agent.civilization_state import CivilizationState, StateConflict
 from civ_agent.proposal_gateway import ProposalGateway
+from civ_agent.protocol import JsonObject
 from civ_agent.service_io import ServiceIO
 from tests.test_proposal_gateway import Host
+
+
+class HoldingHost(Host):
+    """One deterministic hold; events release application waits, without model polling."""
+
+    def __init__(self):
+        super().__init__()
+        self.active = False
+        self.waiting = asyncio.Event()
+        self.settled = asyncio.Event()
+        self.writes = []
+        self.trade: JsonObject = {
+            "proposal": "d1",
+            "version": 1,
+            "author": "Rome",
+            "partner": "Greece",
+            "status": "PENDING",
+            "clauses": [],
+        }
+
+    async def tool(self, name, args):
+        if name == "player_command" and self.active:
+            return {"error": {"code": "NEGOTIATION_ACTIVE"}}
+        if name == "player_communication":
+            if args["op"] == "negotiation":
+                if self.active and args.get("waitSeconds"):
+                    self.waiting.set()
+                    await self.settled.wait()
+                return {"negotiation": {"active": self.active}}
+            if args["op"] == "trade_read":
+                return {"trade": copy.deepcopy(self.trade)}
+            if args["op"] == "trade_offer":
+                self.writes.append(copy.deepcopy(args))
+                self.active = True
+                return {"trade": copy.deepcopy(self.trade)}
+            if args["op"] == "trade_decide":
+                self.writes.append(copy.deepcopy(args))
+                self.active = False
+                self.trade.update(status="ENACTED", outcome={"action": "ENACT_TRADE"})
+                self.revision = "after-trade"
+                self.settled.set()
+                return {"trade": copy.deepcopy(self.trade), "outcome": self.trade["outcome"]}
+        return await super().tool(name, args)
+
+
+def test_game_command_waits_outside_dispatch_and_requires_a_new_decision(tmp_path):
+    async def run():
+        io = ServiceIO()
+        gateway = ProposalGateway(CivilizationState(tmp_path / "private", "Rome"), io, tmp_path / "workspace")
+        host = HoldingHost()
+        try:
+            game = await gateway.open("game", "gameplay", "g1", host, {})
+            chat = await gateway.open("chat", "communication", "g1", host, {})
+            await gateway.call(game, "player_turn", {}, "observe")
+            host.active = True
+            pending = asyncio.create_task(gateway.call(game, "player_command", {"kind": "END_TURN"}, "old"))
+            await asyncio.wait_for(host.waiting.wait(), 1)
+            assert not pending.done() and not gateway.dispatch.locked() and not host.executed
+            await gateway.call(chat, "trade_read", {"proposal": "d1"}, "read")
+            await gateway.call(chat, "trade_decide", {"proposal": "d1", "decision": "accept"}, "accept")
+            result = await asyncio.wait_for(pending, 1)
+            assert result["error"] == "OBSERVATION_REQUIRED" and result["applied"] is False
+            assert host.executed == []
+            await gateway.call(game, "player_turn", {}, "refresh")
+            assert await gateway.call(game, "player_command", {"kind": "END_TURN"}, "old") == result
+            await gateway.call(game, "player_command", {"kind": "END_TURN"}, "new-decision")
+            assert len(host.executed) == 1 and host.executed[0]["revision"] == "after-trade"
+        finally:
+            await io.close()
+
+    asyncio.run(run())
+
+
+def test_interrupted_offer_wait_replays_receipt_without_reopening_negotiation(tmp_path):
+    async def run():
+        io = ServiceIO()
+        gateway = ProposalGateway(CivilizationState(tmp_path / "private", "Rome"), io, tmp_path / "workspace")
+        host = HoldingHost()
+        try:
+            game = await gateway.open("game", "gameplay", "g1", host, {})
+            arguments = {
+                "partner": "Greece",
+                "give": [{"type": "Gold", "name": "Gold", "amount": 1, "duration": -1}],
+                "receive": [],
+            }
+            pending = asyncio.create_task(gateway.call(game, "trade_offer", arguments, "offer"))
+            await asyncio.wait_for(host.waiting.wait(), 1)
+            pending.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await pending
+            assert game.wait_started is None and not gateway.dispatch.locked()
+            # Counteroffer arrival and acceptance can run while the gameplay caller is interrupted.
+            host.trade.update(author="Greece", partner="Rome", version=2)
+            chat = await gateway.open("chat", "communication", "g1", host, {})
+            await gateway.call(chat, "trade_read", {"proposal": "d1"}, "read")
+            await gateway.call(chat, "trade_decide", {"proposal": "d1", "decision": "accept"}, "accept")
+            result = await gateway.call(game, "trade_offer", arguments, "offer")
+            assert result["trade"]["status"] == "ENACTED" and result["trade"]["version"] == 2
+            assert result["outcome"]["action"] == "ENACT_TRADE"
+            assert await gateway.call(game, "trade_offer", arguments, "offer") == result
+            assert [request["op"] for request in host.writes] == ["trade_offer", "trade_decide"]
+        finally:
+            await io.close()
+
+    asyncio.run(run())
 
 
 class TradeHost(Host):
     def __init__(self):
         super().__init__()
-        self.trade = {
+        self.trade: JsonObject = {
             "proposal": "d1",
             "version": 1,
             "author": "Greece",
@@ -46,14 +152,28 @@ class TradeHost(Host):
         return await super().tool(name, args)
 
 
-@pytest.mark.parametrize("peace", [False, True])
-def test_trade_acceptance_uses_the_jobs_inspected_version_despite_other_reads(tmp_path, peace):
+@pytest.mark.parametrize("kind", ["economic", "peace", "bilateral"])
+def test_trade_acceptance_uses_the_jobs_inspected_version_despite_other_reads(tmp_path, kind):
     async def run():
         io = ServiceIO()
         memory = CivilizationState(tmp_path / "private", "Rome")
         gateway = ProposalGateway(memory, io, tmp_path / "workspace")
         host = TradeHost()
-        if peace:
+        if kind == "bilateral":
+            host.trade["clauses"] += [
+                {"from": a, "to": b, "item": {"type": "Treaty", "name": name, "amount": amount, "duration": 25}}
+                for a, b in (("Rome", "Greece"), ("Greece", "Rome"))
+                for name, amount in (("Research Agreement", 166), ("Defensive Pact", 1))
+            ]
+            host.trade["clauses"].append(
+                {
+                    "from": "Rome",
+                    "to": "Greece",
+                    "item": {"type": "City", "name": "tc1", "amount": 1, "duration": -1},
+                    "city": {"name": "Antium", "population": 3},
+                }
+            )
+        if kind == "peace":
             host.trade["clauses"] += [
                 {"from": a, "to": b, "item": {"type": "Treaty", "name": "Peace Treaty", "amount": 1, "duration": 10}}
                 for a, b in (("Rome", "Greece"), ("Greece", "Rome"))
@@ -77,6 +197,7 @@ def test_trade_acceptance_uses_the_jobs_inspected_version_despite_other_reads(tm
             accepted = await gateway.call(chat, "trade_decide", {"proposal": "d1", "decision": "accept"}, "accept")
             assert accepted["outcome"]["confirmation"]["source"] == "engine"
             assert host.writes[-1]["version"] == 2
+            assert old.trades["d1"]["clauses"] == shown["trade"]["clauses"]
             assert (
                 await gateway.call(chat, "trade_decide", {"proposal": "d1", "decision": "accept"}, "accept") == accepted
             )
@@ -118,6 +239,18 @@ def test_trade_tools_keep_decisions_small_and_do_not_grant_gameplay(tmp_path):
             job = await gateway.open("chat", "communication", "g1", host, {})
             tools = {tool["name"]: tool for tool in await gateway.tools(job)}
             assert "player_command" not in tools
+            assert tools["friendship_offer"]["inputSchema"]["required"] == ["partner"]
+            assert set(tools["friendship_offer"]["inputSchema"]["properties"]) == {"partner"}
+            assert set(tools["trade_offer"]["inputSchema"]["$defs"]["TradeItem"]["properties"]["type"]["enum"]) == {
+                "Gold",
+                "Gold_Per_Turn",
+                "Luxury_Resource",
+                "Strategic_Resource",
+                "Treaty",
+                "Agreement",
+                "Embassy",
+                "City",
+            }
             assert tools["trade_decide"]["inputSchema"]["required"] == ["proposal", "decision"]
             assert set(tools["trade_decide"]["inputSchema"]["properties"]) == {"proposal", "decision"}
             await gateway.call(job, "trade_read", {"proposal": "d1"}, "read")
@@ -135,6 +268,57 @@ def test_trade_tools_keep_decisions_small_and_do_not_grant_gameplay(tmp_path):
             await gateway.call(job, "trade_offer", offer, "counter")
             assert host.writes[-1]["version"] == 1
             assert host.writes[-1]["partner"] == "Greece"
+        finally:
+            await io.close()
+
+    asyncio.run(run())
+
+
+def test_friendship_proposal_uses_the_same_small_decision_and_durable_request_path(tmp_path):
+    class FriendshipHost(TradeHost):
+        async def tool(self, name, args):
+            if name == "player_communication" and args["op"] == "friendship_offer":
+                self.writes.append(copy.deepcopy(args))
+                return {
+                    "trade": {
+                        "proposal": "d2",
+                        "version": 1,
+                        "author": "Rome",
+                        "partner": "Greece",
+                        "clauses": [],
+                        "friendship": {"name": "Declaration of Friendship", "duration": 30},
+                        "status": "PENDING",
+                    }
+                }
+            return await super().tool(name, args)
+
+    async def run():
+        io = ServiceIO()
+        gateway = ProposalGateway(CivilizationState(tmp_path / "private", "Rome"), io, tmp_path / "workspace")
+        host = FriendshipHost()
+        try:
+            job = await gateway.open("chat", "communication", "g1", host, {})
+            offered = await gateway.call(job, "friendship_offer", {"partner": "Greece"}, "offer")
+            assert offered["trade"]["friendship"] == {"name": "Declaration of Friendship", "duration": 30}
+            assert set(host.writes[-1]) == {"op", "epoch", "requestId", "partner"}
+            assert await gateway.call(job, "friendship_offer", {"partner": "Greece"}, "offer") == offered
+            assert len(host.writes) == 1
+            with pytest.raises(ValueError):
+                await gateway.call(job, "friendship_offer", {"partner": "Greece", "duration": 999}, "forged")
+            host.trade = {
+                "proposal": "d1",
+                "version": 1,
+                "author": "Greece",
+                "partner": "Rome",
+                "clauses": [],
+                "friendship": {"name": "Declaration of Friendship", "duration": 30},
+                "status": "PENDING",
+            }
+            await gateway.call(job, "trade_read", {"proposal": "d1"}, "inspect")
+            result = await gateway.call(job, "trade_decide", {"proposal": "d1", "decision": "accept"}, "accept")
+            assert result["outcome"]
+            assert set(host.writes[-1]) == {"op", "epoch", "requestId", "proposal", "version", "decision"}
+            assert job.trades["d1"]["friendship"]["duration"] == 30
         finally:
             await io.close()
 

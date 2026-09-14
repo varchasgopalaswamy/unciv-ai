@@ -96,6 +96,7 @@ class LaunchAgentTest(unittest.TestCase):
             self.assertEqual(code, 0)
             prompt = execute.call_args.args[1][-1]
             self.assertIn("Follow scenario.instructions", prompt)
+            self.assertIn("otherwise your objective is to win the game", prompt)
             self.assertNotIn("CLOSE_START_DIPLOMACY", prompt)
             self.assertNotIn("Rome declares war", prompt)
             self.assertNotIn("reviewId=", prompt)

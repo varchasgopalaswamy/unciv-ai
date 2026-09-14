@@ -14,6 +14,9 @@ Authentication fixes the player's civilization; tool arguments cannot override i
   and construction choices, research options, policy options, Great Person options,
   informational alerts, and `map` (explored tiles, frontier coordinates and owned units
   with current-turn move previews). Lists are detached from engine state.
+  `rules` contains public ruleset, difficulty, speed, enabled `victoryTypes`, and
+  `maxTurns` (null when no enabled victory uses a turn limit). The same public
+  settings appear in the communication context.
   Owned cities include `development` (displayed yields/breakdowns, growth, worked
   tiles and indexed construction progress); worker units include `worker` (jobs,
   prerequisites and progress). `research` exposes displayed science and technology

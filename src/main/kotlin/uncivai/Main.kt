@@ -1,63 +1,42 @@
 package uncivai
 
+import com.github.ajalt.clikt.core.main
 import uncivai.mcp.OperatorMcpBinding
 import uncivai.mcp.PlayerMcpBinding
 import uncivai.mcp.PlayerMcpServer
 import uncivai.player.PlayerHost
-import java.nio.file.Path
 import java.util.concurrent.CountDownLatch
-import kotlin.system.exitProcess
 
-fun main(args: Array<String>) {
-    val exitCode = runCli(args)
-    if (exitCode != 0) exitProcess(exitCode)
-}
+fun main(args: Array<String>) = HostCli(::launchHost).main(args)
 
-private fun runCli(args: Array<String>): Int {
-    if (args.contentEquals(arrayOf("--help"))) {
-        println(usage())
-        return 0
-    }
-
-    return try {
-        val options = parseOptions(args)
+private fun launchHost(options: CliOptions) {
+    try {
         val players = options.mcpConfig?.let(::loadMcpPlayerConfig)
         val operatorToken = options.operatorConfig?.let(::loadOperatorConfig)
         val tls = options.tlsConfig?.let(::loadHostTls)
-        val loaded = if (options.newDuel && options.scenario == "async-peace") {
-            HeadlessRuntime.createPeaceExercise(options.dataDirectory, options.seed ?: 412L)
-        } else if (options.newDuel && options.scenario == "async-trade") {
-            HeadlessRuntime.createTradeExercise(options.dataDirectory, options.seed ?: 412L)
-        } else if (options.newDuel && options.scenario == "verbal-betrayal") {
-            HeadlessRuntime.createVerbalBetrayalExercise(options.dataDirectory, options.seed ?: 412L)
-        } else if (options.newDuel && options.scenario == "async-chat") {
-            HeadlessRuntime.createChatExercise(options.dataDirectory, options.seed ?: 412L)
-        } else if (options.newDuel && options.scenario == "great-people") {
-            HeadlessRuntime.createGreatPeopleExercise(options.dataDirectory, options.seed ?: 517L)
-        } else if (options.newDuel && options.scenario == "city-management") {
-            HeadlessRuntime.createCityManagementExercise(options.dataDirectory, options.seed ?: 412L)
-        } else if (options.newDuel) {
-            HeadlessRuntime.createDuel(options.dataDirectory, options.seed ?: System.currentTimeMillis())
+        val loaded = if (options.newGame) {
+            if (options.scenario == "trade-cycle") {
+                HeadlessRuntime.createTradeCycleExercise(options.dataDirectory, options.seed ?: 412L)
+            } else {
+                HeadlessRuntime.createVanillaGame(options.dataDirectory, options.seed ?: System.currentTimeMillis())
+            }
         } else if (options.resumeCheckpoint != null) {
             HeadlessRuntime.loadCheckpoint(options.resumeCheckpoint, options.dataDirectory)
         } else {
             HeadlessRuntime.load(checkNotNull(options.saveFile), options.dataDirectory)
         }
         loaded.use { runtime ->
-            val expectedScenario = when (options.scenario) {
-                "async-peace" -> PeaceScenarioSetup.MAP_NAME
-                "async-trade" -> TradeScenarioSetup.MAP_NAME
-                "verbal-betrayal" -> VerbalBetrayalScenario.MAP_NAME
-                "async-chat" -> "Asynchronous chat exercise"
-                "great-people" -> GreatPeopleScenarioSetup.MAP_NAME
-                "city-management" -> CityManagementScenarioSetup.MAP_NAME
-                else -> null
+            require(options.scenario == null || runtime.game.tileMap.mapParameters.name == TradeCycleScenarioSetup.MAP_NAME) {
+                "Checkpoint is not the trade-cycle scenario. Choose a fresh --state-dir and --scenario trade-cycle."
             }
-            require(expectedScenario == null || runtime.game.tileMap.mapParameters.name == expectedScenario) {
-                "Checkpoint is not the ${options.scenario} scenario. Choose a fresh --state-dir and --scenario ${options.scenario}."
+            runtime.executor.accessGame {
+                options.tradeCounteroffers?.let { runtime.executor.communicationState.trades.counterofferLimit = it }
+                options.tradeTimeoutSeconds?.let { runtime.executor.communicationState.trades.timeoutSeconds = it }
+                runtime.executor.commitCheckpoint()
             }
             options.checkpoint?.let { runtime.executor.enableCheckpoints(it) }
-            println("Scenario: ${runtime.game.tileMap.mapParameters.name.ifEmpty { "Ordinary duel" }}")
+            println("Scenario: ${runtime.game.tileMap.mapParameters.name.ifEmpty { "Ordinary game" }}")
+            println("Rules: ${runtime.game.gameParameters}; map seed: ${runtime.game.tileMap.mapParameters.seed}")
             if (players == null) {
                 val game = runtime.game
                 println(
@@ -68,11 +47,8 @@ private fun runCli(args: Array<String>): Int {
                 servePlayers(runtime, players, options.port, operatorToken, checkNotNull(tls))
             }
         }
-        0
     } catch (failure: Exception) {
-        System.err.println("Error: ${failure.conciseMessage()}")
-        System.err.println(usage())
-        2
+        throw com.github.ajalt.clikt.core.CliktError(failure.conciseMessage())
     }
 }
 
@@ -112,128 +88,6 @@ private fun servePlayers(runtime: HeadlessRuntime, players: List<McpPlayerGrant>
     }
 }
 
-private data class CliOptions(
-    val saveFile: Path?,
-    val dataDirectory: Path,
-    val mcpConfig: Path?,
-    val port: Int,
-    val checkpoint: Path?,
-    val resumeCheckpoint: Path?,
-    val newDuel: Boolean,
-    val scenario: String?,
-    val seed: Long?,
-    val operatorConfig: Path?,
-    val tlsConfig: Path?,
-)
-
-private fun parseOptions(args: Array<String>): CliOptions {
-    var saveFile: Path? = null
-    var dataDirectory: Path? = null
-    var mcpConfig: Path? = null
-    var port: Int? = null
-    var checkpoint: Path? = null
-    var resumeCheckpoint: Path? = null
-    var newDuel = false
-    var scenario: String? = null
-    var seed: Long? = null
-    var operatorConfig: Path? = null
-    var tlsConfig: Path? = null
-    var index = 0
-    while (index < args.size) {
-        val option = args[index]
-        if (option == "--new-duel") {
-            require(!newDuel) { "--new-duel may only be specified once" }
-            newDuel = true
-            index++
-            continue
-        }
-        require(option in setOf("--save", "--data-dir", "--mcp-config", "--operator-config", "--tls-config", "--port", "--checkpoint", "--resume-checkpoint", "--seed", "--scenario")) {
-            "Unknown argument: $option"
-        }
-        require(index + 1 < args.size) { "Missing value for $option" }
-        val value = args[index + 1]
-        when (option) {
-            "--scenario" -> {
-                require(scenario == null) { "--scenario may only be specified once" }
-                require(value in setOf("city-management", "great-people", "async-chat", "verbal-betrayal", "async-trade", "async-peace")) { "Unknown scenario: $value" }
-                scenario = value
-            }
-
-            "--tls-config" -> {
-                require(tlsConfig == null) { "--tls-config may only be specified once" }
-                tlsConfig = Path.of(value)
-            }
-
-            "--operator-config" -> {
-                require(operatorConfig == null) { "--operator-config may only be specified once" }
-                operatorConfig = Path.of(value)
-            }
-
-            "--seed" -> {
-                require(seed == null) { "--seed may only be specified once" }
-                seed = value.toLongOrNull() ?: throw IllegalArgumentException("--seed must be an integer")
-            }
-
-            "--save" -> {
-                require(saveFile == null) { "--save may only be specified once" }
-                saveFile = Path.of(value)
-            }
-
-            "--data-dir" -> {
-                require(dataDirectory == null) { "--data-dir may only be specified once" }
-                dataDirectory = Path.of(value)
-            }
-
-            "--mcp-config" -> {
-                require(mcpConfig == null) { "--mcp-config may only be specified once" }
-                mcpConfig = Path.of(value)
-            }
-
-            "--port" -> {
-                require(port == null) { "--port may only be specified once" }
-                port = value.toIntOrNull()
-                require(port != null && port in 0..65535) { "--port must be between 0 and 65535" }
-            }
-
-            "--checkpoint" -> {
-                require(checkpoint == null) { "--checkpoint may only be specified once" }
-                checkpoint = Path.of(value)
-            }
-
-            "--resume-checkpoint" -> {
-                require(resumeCheckpoint == null) { "--resume-checkpoint may only be specified once" }
-                resumeCheckpoint = Path.of(value)
-            }
-        }
-        index += 2
-    }
-
-    require(port == null || mcpConfig != null) { "--port requires --mcp-config" }
-    require(operatorConfig == null || mcpConfig != null) { "--operator-config requires --mcp-config" }
-    require((tlsConfig != null) == (mcpConfig != null)) { "Serving requires both --mcp-config and --tls-config (HTTPS only)" }
-    require(listOf(saveFile != null, resumeCheckpoint != null, newDuel).count { it } == 1) {
-        "Specify exactly one of --save, --resume-checkpoint or --new-duel"
-    }
-    require(checkpoint == null || saveFile != null || newDuel) { "--checkpoint requires --save or --new-duel" }
-    require(!newDuel || checkpoint != null) { "--new-duel requires --checkpoint to persist the new game" }
-    require(seed == null || newDuel) { "--seed requires --new-duel" }
-    return CliOptions(
-        saveFile = saveFile,
-        dataDirectory = requireNotNull(dataDirectory) {
-            "Missing required --data-dir <absolute-path>"
-        },
-        mcpConfig = mcpConfig,
-        port = port ?: 8765,
-        checkpoint = checkpoint,
-        resumeCheckpoint = resumeCheckpoint,
-        newDuel = newDuel,
-        scenario = scenario,
-        seed = seed,
-        operatorConfig = operatorConfig,
-        tlsConfig = tlsConfig,
-    )
-}
-
 private fun Throwable.conciseMessage(): String {
     val messages = generateSequence(this) { it.cause }
         .mapNotNull { it.message?.trim()?.takeIf(String::isNotEmpty) }
@@ -241,8 +95,3 @@ private fun Throwable.conciseMessage(): String {
         .toList()
     return messages.joinToString(": ").ifEmpty { this::class.java.simpleName }
 }
-
-private fun usage() = "Usage: unciv-ai (--new-duel --checkpoint <absolute-path> [--seed <integer>] | " +
-    "--save <absolute-path> [--checkpoint <absolute-path>] | " +
-    "--resume-checkpoint <absolute-path>) [--scenario <city-management|great-people|async-chat|verbal-betrayal|async-trade|async-peace>] --data-dir <absolute-path> " +
-    "[--mcp-config <absolute-path> --tls-config <absolute-path> [--port <0-65535>] [--operator-config <absolute-path>]]"

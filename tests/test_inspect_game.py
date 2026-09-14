@@ -42,7 +42,7 @@ class InspectGameTest(unittest.TestCase):
         self.checkpoint.write_text(
             json.dumps(
                 {
-                    "formatVersion": 2,
+                    "formatVersion": 3,
                     "epoch": "private-epoch",
                     "paused": False,
                     "gameJson": json.dumps(self.game),
@@ -134,8 +134,9 @@ class InspectGameTest(unittest.TestCase):
         bad_inputs = [
             '{"DO-NOT-PRINT":',
             json.dumps({"formatVersion": 1, "gameJson": "{}"}),
-            json.dumps({"formatVersion": 2, "gameJson": "DO-NOT-PRINT"}),
             json.dumps({"formatVersion": 2, "gameJson": "{}"}),
+            json.dumps({"formatVersion": 3, "gameJson": "DO-NOT-PRINT"}),
+            json.dumps({"formatVersion": 3, "gameJson": "{}"}),
         ]
         for content in bad_inputs:
             with self.subTest(content=content):

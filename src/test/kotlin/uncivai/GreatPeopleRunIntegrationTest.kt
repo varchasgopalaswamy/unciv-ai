@@ -11,7 +11,7 @@ class GreatPeopleRunIntegrationTest {
     fun `Great People and decision details work over HTTPS across turns rollback and restarts`() {
         val root = Files.createTempDirectory("great-people-run-")
         try {
-            for (stage in listOf("cli", "observe", "start", "restore", "verify")) {
+            for (stage in listOf("observe", "start", "restore", "verify")) {
                 val log = root.resolve("$stage.log")
                 val process = ProcessBuilder(
                     Path.of(System.getProperty("java.home"), "bin", "java").toString(), "-Xmx1g", "-Djava.awt.headless=true",

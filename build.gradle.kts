@@ -32,6 +32,8 @@ dependencies {
     implementation(uncivLibs.gdx)
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.11.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.11.0")
+    implementation("com.github.ajalt.clikt:clikt:5.0.3")
+    implementation("com.networknt:json-schema-validator:3.0.7")
     implementation("io.modelcontextprotocol:kotlin-sdk-server:0.15.0")
     implementation(platform("io.ktor:ktor-bom:3.5.1"))
     implementation("io.ktor:ktor-server-core")
@@ -99,56 +101,13 @@ tasks.register<JavaExec>("generateS01Scenarios") {
     args(layout.buildDirectory.dir("generated/s01-scenarios").get().asFile.absolutePath)
 }
 
-tasks.register<JavaExec>("prepareConquestFixture") {
+tasks.register<JavaExec>("verifyTradeCycle") {
     group = "verification"
-    description = "Prepares a fresh checkpoint with legal captures immediately available, for live capture and victory verification."
+    description = "Drives the complete trade exercise over HTTPS without model calls and retains native checkpoints."
     dependsOn(tasks.testClasses)
     classpath = sourceSets.test.get().runtimeClasspath
-    mainClass = "uncivai.CombatRunProbe"
-    args(
-        providers.gradleProperty("combatFixtureDir")
-            .orElse(layout.buildDirectory.dir("generated/conquest-fixture").map { it.asFile.absolutePath }).get(),
-        "prepare-conquest",
-    )
-}
-
-tasks.register<JavaExec>("prepareVictoryFixture") {
-    group = "verification"
-    description = "Prepares a fresh checkpoint one capital attack and disposition away from victory."
-    dependsOn(tasks.testClasses)
-    classpath = sourceSets.test.get().runtimeClasspath
-    mainClass = "uncivai.CombatRunProbe"
-    args(
-        providers.gradleProperty("combatFixtureDir")
-            .orElse(layout.buildDirectory.dir("generated/victory-fixture").map { it.asFile.absolutePath }).get(),
-        "prepare-victory",
-    )
-}
-
-tasks.register<JavaExec>("prepareEconomyFixture") {
-    group = "verification"
-    description = "Prepares a new economy exercise checkpoint without issuing player commands."
-    dependsOn(tasks.testClasses)
-    classpath = sourceSets.test.get().runtimeClasspath
-    mainClass = "uncivai.EconomyRunProbe"
-    args(
-        providers.gradleProperty("economyFixtureDir")
-            .orElse(layout.buildDirectory.dir("generated/economy-fixture").map { it.asFile.absolutePath }).get(),
-        "prepare",
-    )
-}
-
-tasks.register<JavaExec>("prepareCityManagementFixture") {
-    group = "verification"
-    description = "Prepares a peaceful two-city-per-player city management exercise with private launch credentials."
-    dependsOn(tasks.testClasses)
-    classpath = sourceSets.test.get().runtimeClasspath
-    mainClass = "uncivai.CityManagementRunProbe"
-    args(
-        providers.gradleProperty("cityManagementFixtureDir")
-            .orElse(layout.buildDirectory.dir("generated/city-management-fixture").map { it.asFile.absolutePath }).get(),
-        "prepare",
-    )
+    mainClass = "uncivai.TradeCycleProbe"
+    args(providers.gradleProperty("tradeCycleDir").orElse(layout.buildDirectory.dir("generated/trade-cycle").map { it.asFile.absolutePath }).get())
 }
 
 val s04UiScenarios = layout.buildDirectory.dir("generated/s04-ui")

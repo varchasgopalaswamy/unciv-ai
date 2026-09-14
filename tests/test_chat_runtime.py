@@ -13,6 +13,9 @@ class MailboxHost:
         self.expire_gameplay = False
         self.gameplay_heartbeats = 0
 
+    async def close(self):
+        pass
+
     def post(self, text, wake=True):
         self.events.append(
             {"id": len(self.events) + 1, "kind": "message", "wake": wake, "body": {"author": "Greece", "text": text}}
@@ -52,6 +55,7 @@ class Jobs:
     def __init__(self):
         self.service = None
         self.purposes = []
+        self.prompts = []
         self.planning_started = asyncio.Event()
         self.replied = asyncio.Event()
 
@@ -70,6 +74,7 @@ class Jobs:
                 if method == "thread/start":
                     return {"thread": {"id": workspace.name}, "model": "test-model", "reasoningEffort": "medium"}
                 if method == "turn/start":
+                    owner.prompts.append(parameters["input"][0]["text"])
                     purpose = (
                         "communication"
                         if "newly received communication" in parameters["input"][0]["text"]
@@ -162,6 +167,7 @@ def test_chat_batches_and_replies_while_planning_job_is_held(tmp_path, monkeypat
             host.post("Let me know what you need.")
             await asyncio.wait_for(jobs.replied.wait(), 3)
             assert jobs.purposes == ["gameplay", "communication"]
+            assert "otherwise your objective is to win the game" in jobs.prompts[1]
             assert host.sent == ["I will consider your offer."]
             assert service.status()["phase"] == "RUNNING"  # Long planning still in progress.
             await asyncio.sleep(0.1)

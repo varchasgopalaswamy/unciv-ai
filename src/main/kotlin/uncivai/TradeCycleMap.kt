@@ -3,24 +3,88 @@ package uncivai
 import com.badlogic.gdx.files.FileHandle
 import com.unciv.logic.GameInfo
 import com.unciv.logic.GameStarter
+import com.unciv.logic.civilization.PlayerType
 import com.unciv.logic.files.MapSaver
 import com.unciv.logic.map.HexCoord
+import com.unciv.logic.map.MapParameters
 import com.unciv.logic.map.MapSize
+import com.unciv.logic.map.MapType
 import com.unciv.logic.map.TileMap
 import com.unciv.logic.map.mapunit.UnitSettlement
+import com.unciv.models.metadata.BaseRuleset
+import com.unciv.models.metadata.GameParameters
 import com.unciv.models.metadata.GameSetupInfo
+import com.unciv.models.metadata.Player
 import com.unciv.models.ruleset.RulesetCache
 import java.nio.file.Files
 
-/** A peaceful, solvent pair with connected surplus resources for bilateral trade verification. */
-internal object TradeScenarioSetup {
-    const val MAP_NAME = "Asynchronous trade exercise"
+/** Map, cities and technologies for the trade-cycle exercise. Human slots preserve player control. */
+internal object TradeCycleMap {
+    fun create(seed: Long): GameInfo {
+        val mapSeed = seed
+        val parameters = GameParameters().apply {
+            baseRuleset = BaseRuleset.Civ_V_GnK.fullName
+            speed = "Quick"
+            startingEra = "Ancient era"
+            numberOfCityStates = 0
+            noBarbarians = true
+            shufflePlayerOrder = false
+            victoryTypes = arrayListOf("Domination", "Time")
+            maxTurns = 330
+            players = arrayListOf(Player("Rome", PlayerType.Human), Player("Greece", PlayerType.Human))
+        }
+        val map = MapParameters().apply {
+            baseRuleset = parameters.baseRuleset
+            type = MapType.pangaea
+            mapSize = MapSize.Tiny
+            noRuins = true
+            this.seed = mapSeed
+        }
+        val setup = GameSetupInfo(parameters, map)
+        return base(setup).also { game ->
+            for (player in game.civilizations.filter { it.isMajorCiv() }) {
+                fun research(name: String) {
+                    if (player.tech.isResearched(name)) return
+                    game.ruleset.technologies.getValue(name).prerequisites.forEach(::research)
+                    player.tech.addTechnology(name, false)
+                }
+                research("Education")
+                research("Chivalry")
+                player.tech.techsToResearch = arrayListOf("Machinery", "Printing Press")
+                val position = if (player.civID == "Rome") HexCoord(-4, -4) else HexCoord(4, 4)
+                val settler = checkNotNull(game.tileMap.placeUnitNearTile(position, "Settler", player))
+                check(settler.currentTile.position == position)
+                val city = checkNotNull(UnitSettlement.tryFoundCity(settler))
+                city.name = if (player.civID == "Rome") "Antium" else "Sparta"
+                city.population.setPopulation(3)
+                for (owned in player.cities) {
+                    owned.avoidGrowth = true
+                    owned.cityConstructions.addBuilding("Granary")
+                    owned.cityConstructions.constructionQueue.clear()
+                    owned.cityConstructions.addToQueue("Gold")
+                    owned.getTiles().filterNot { it.isCityCenter() }.filter { it.resource == null }.forEach { it.setImprovementBasic("Trading post") }
+                    owned.reassignPopulation()
+                    owned.cityStats.update()
+                }
+                player.popupAlerts.clear()
+                player.notifications.clear()
+                player.cache.updateCivResources()
+                player.cache.updateViewableTiles()
+                player.updateStatsForNextTurn()
+                check(player.cities.size == 2 && !city.isCapital())
+            }
+        }.also { game ->
+            check(game.currentPlayer == "Rome")
+            check(game.civilizations.filter { it.isMajorCiv() }.all { it.isHuman() })
+            check(game.gameParameters.mods.isEmpty())
+        }
+    }
 
-    fun create(setup: GameSetupInfo): GameInfo {
+    private fun base(setup: GameSetupInfo): GameInfo {
         val ruleset = RulesetCache.getComplexRuleset(setup.gameParameters)
         val map = TileMap(6, ruleset).apply {
             mapParameters = setup.mapParameters.apply {
-                name = MAP_NAME
+                name = TradeCycleScenarioSetup.MAP_NAME
                 mapSize = MapSize(6)
             }
             for (tile in values) {
@@ -85,12 +149,4 @@ internal object TradeScenarioSetup {
         }
         return game
     }
-
-    fun instructions(civilization: String): List<String> = listOf(
-        "Complete one ordinary binding trade with the other player while continuing normal scheduled turns. Remain at peace. Keep the existing construction and research queues; resolve any mandatory choices.",
-        "Negotiate in private chat, then use trade_options and trade_offer for exact quantities and engine durations. A social commitment does not transfer resources. Read trade_read before accepting or counteroffering; the service supplies the inspected version.",
-        "After the engine confirms ENACTED, verify your resource access and active agreements with trade_options, and record the actual deal in economy and your relationship notes with observed sources. Do not initiate another deal. Never poll or wait for a reply; incoming offers wake communication work.",
-        "Rome's gameplay job should initiate the first offer once, only if chat_read shows no existing proposal. Leave subsequent counteroffers and acceptance to communication jobs; gameplay should keep developing and ending turns. Before responding, read the latest terms and relevant relationship memory so concurrent jobs do not repeat completed steps.",
-        if (civilization == "Rome") "Offer Greece 1 Silk in exchange for 4 Gold per turn, using the actual offered names and durations. If Greece counters with 2 Gold per turn and 20 immediate Gold in exchange for your 1 Silk, read those terms and accept." else "Wait for Rome's initial Silk offer through event delivery. Counteroffer once: give Rome 2 Gold per turn plus 20 immediate Gold and receive 1 Silk. Use the same proposal ID after reading it. Let Rome accept your counteroffer; do not accept the original 4-GPT price.",
-    )
 }

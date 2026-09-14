@@ -8,14 +8,13 @@ import copy
 
 
 class ConcurrentTradeHost:
-    def __init__(self, host, *, peace=False):
+    def __init__(self, host, *, peace=False, settlement_delay=0):
         self.host = host
         self.peace = peace
+        self.settlement_delay = settlement_delay
         self.events = {civ: [] for civ in host.agent_tokens}
         self.trade = None
-        self.greek_planning = False
-        self.counter_ready = False
-        self.recovered = False
+        self.gameplay_waiting = False
         self.enacted = None
         self.writes = []
         self.reads = []
@@ -38,9 +37,8 @@ class ConcurrentTradeHost:
         gameplay = token == host.player_token
         self.reads.append((civ, gameplay, name, args.get("op")))
         if name == "player_turn":
-            if civ == "Greece" and gameplay and host.handoff == 1:
-                self.greek_planning = True
-                host.changed.notify_all()
+            if civ == "Greece" and gameplay:
+                assert self.enacted is not None
             return {
                 "testConcurrentTrade": True,
                 "testPeaceTrade": self.peace,
@@ -51,12 +49,19 @@ class ConcurrentTradeHost:
                 "revision": "rev1",
                 "turnReview": {"id": "review1"},
             }
-        if name == "player_command" and civ == "Greece" and host.handoff == 1:
-            self.wait(lambda: self.enacted is not None)
+        if name == "player_command":
+            assert self.enacted is not None and self.trade is not None and self.trade["status"] == "ENACTED"
             return None  # The ordinary fake host commits the handoff.
         if name != "player_communication":
             return None
         op = args["op"]
+        if op == "negotiation":
+            if self.trade is not None and self.trade["status"] == "PENDING":
+                self.gameplay_waiting = True
+                host.changed.notify_all()
+                if args.get("waitSeconds"):
+                    self.wait(lambda: self.enacted is not None)
+            return {"negotiation": {"active": self.trade is not None and self.trade["status"] == "PENDING"}}
         if op == "state":
             return {
                 "testConcurrentTrade": True,
@@ -75,16 +80,11 @@ class ConcurrentTradeHost:
             host.changed.wait_for(lambda: len(stream) > args["cursor"], timeout=1)
             return {"events": copy.deepcopy(stream[args["cursor"] :]), "nextCursor": len(stream), "hasMore": False}
         if op == "trade_read":
-            if civ == "Greece" and not gameplay and not self.counter_ready:
-                self.wait(lambda: self.greek_planning)
-            if civ == "Greece" and gameplay:
-                self.wait(lambda: self.counter_ready)
+            if civ == "Greece" and not gameplay:
+                self.wait(lambda: self.gameplay_waiting)
+                host.changed.wait_for(lambda: False, timeout=self.settlement_delay)
             return {"trade": copy.deepcopy(self.trade)}
         if op == "send":
-            if args["text"] == "Counteroffer prepared":
-                self.counter_ready = True
-            if args["text"] == "Reconsidered after memory conflict":
-                self.recovered = True
             host.changed.notify_all()
             return {"sent": True}
         if op == "trade_offer":
@@ -107,12 +107,13 @@ class ConcurrentTradeHost:
             self.post(args["partner"], "trade", copy.deepcopy(self.trade))
             return {"trade": copy.deepcopy(self.trade)}
         if op == "trade_decide":
-            self.wait(lambda: self.recovered)
-            assert civ == "Rome" and not gameplay and host.handoff == 1
+            assert self.gameplay_waiting
+            assert civ == "Rome" and not gameplay and host.handoff == 0
             assert self.trade is not None and args["version"] == self.trade["version"] == 2
             self.writes.append((civ, gameplay, op))
             self.trade["status"] = "ENACTED"
-            self.enacted = {"civilization": civ, "activeCivilization": "Greece", "handoff": host.handoff}
+            self.enacted = {"civilization": civ, "activeCivilization": "Rome", "handoff": host.handoff}
+            self.trade["outcome"] = {"confirmation": self.enacted}
             host.changed.notify_all()
             return {"trade": copy.deepcopy(self.trade), "outcome": {"confirmation": self.enacted}}
         return None

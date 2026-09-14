@@ -32,14 +32,6 @@ object GreatPeopleRunProbe {
     fun main(args: Array<String>) {
         val root = Path.of(args[0])
         val stage = args[1]
-        if (stage == "cli") {
-            val checkpoint = root.resolve("cli.json")
-            uncivai.main(arrayOf("--new-duel", "--scenario", "great-people", "--checkpoint", checkpoint.toString(), "--data-dir", root.resolve("cli-create").toString()))
-            val before = Files.readString(checkpoint)
-            uncivai.main(arrayOf("--resume-checkpoint", checkpoint.toString(), "--scenario", "great-people", "--data-dir", root.resolve("cli-resume").toString()))
-            check(before == Files.readString(checkpoint))
-            return
-        }
         val checkpoint = root.resolve(if (stage == "observe") "observe.json" else "checkpoint.json")
         val fresh = stage in setOf("observe", "start")
         val runtime = if (fresh) HeadlessRuntime.createGreatPeopleExercise(root.resolve(stage)) else HeadlessRuntime.loadCheckpoint(checkpoint, root.resolve(stage))
@@ -75,7 +67,7 @@ object GreatPeopleRunProbe {
         val token = api.playerToken("Rome")
         val before = json().toJson(runtime.game)
         val turn = api.turn(token)
-        check(turn.scenario?.name == "GREAT_PEOPLE_EXERCISE")
+        check(turn.scenario == null)
         check(turn.cities.size == 1 && turn.map.units.size == 7)
         check(turn.map.units.all { it.greatPerson != null })
         val research = research(api, token, "Currency")

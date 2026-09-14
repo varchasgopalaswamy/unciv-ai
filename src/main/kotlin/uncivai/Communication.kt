@@ -7,11 +7,6 @@ import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.int
-import kotlinx.serialization.json.intOrNull
-import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
-import kotlinx.serialization.json.long
 import uncivai.player.PlayerSessionException
 import uncivai.player.PlayerSessionFailure
 import uncivai.player.TurnCommandKind
@@ -24,14 +19,14 @@ import java.security.SecureRandom
 @Serializable
 internal data class CommunicationState(
     val trades: EngineTradeState = EngineTradeState(),
-    val streams: MutableMap<String, MutableList<JsonObject>> = mutableMapOf(),
-    val offers: MutableMap<String, MutableList<JsonObject>> = mutableMapOf(),
-    val consents: MutableList<JsonObject> = mutableListOf(),
-    val outcomes: MutableList<JsonObject> = mutableListOf(),
-    val requests: MutableMap<String, JsonObject> = mutableMapOf(),
+    val streams: MutableMap<String, MutableList<CommunicationEvent>> = mutableMapOf(),
+    val offers: MutableMap<String, MutableList<SocialOffer>> = mutableMapOf(),
+    val consents: MutableList<SocialConsent> = mutableListOf(),
+    val outcomes: MutableList<EngineOutcome> = mutableListOf(),
+    val requests: MutableMap<String, CommunicationReceipt> = mutableMapOf(),
     val peaceVersions: MutableMap<String, Long> = mutableMapOf(),
     val acceptedVersions: MutableMap<String, Int> = mutableMapOf(),
-    val jobs: MutableMap<String, JsonObject> = mutableMapOf(),
+    val jobs: MutableMap<String, CommunicationJob> = mutableMapOf(),
     var invocations: Long = 0,
     var maxInvocations: Long = 1000,
     var maxConcurrent: Int = 4,
@@ -60,368 +55,191 @@ internal fun obj(vararg pairs: Pair<String, Any?>): JsonObject = buildJsonObject
 }
 
 internal class Communication(private val runtime: GameExecutor) {
-    private val trades = EngineTrades(runtime)
+    internal val trades = EngineTrades(runtime)
     private val random = SecureRandom()
     private val state get() = runtime.communicationState
     private fun fail(): Nothing = throw PlayerSessionException(PlayerSessionFailure.INVALID_ARGUMENT)
-    private fun string(request: JsonObject, key: String, max: Int = 128): String = (request[key] as? JsonPrimitive)?.takeIf {
-        it.isString
-    }?.content?.takeIf { it.isNotBlank() && it.length <= max }
-        ?: fail()
-    private fun members(value: JsonElement?): List<String> = (value as? JsonArray)?.map { (it as? JsonPrimitive)?.takeIf { p -> p.isString }?.content ?: fail() }?.distinct()
-        ?: fail()
     private fun shortId(prefix: String) = prefix + java.lang.Long.toUnsignedString(random.nextLong(), 36).take(9)
-    private fun visible(record: JsonObject, civilization: String) = civilization in members(record["participants"])
+
     internal fun emit(audience: List<String>, kind: String, body: JsonObject, wakes: Set<String> = emptySet()) {
         for (recipient in audience) {
             val stream = state.streams.getOrPut(recipient) { mutableListOf() }
-            stream.add(obj("id" to stream.size + 1, "kind" to kind, "body" to body, "wake" to (recipient in wakes)))
+            stream.add(CommunicationEvent(stream.size + 1, kind, body, recipient in wakes))
         }
     }
-    fun handle(civilization: String, request: JsonObject): JsonObject = runtime.accessGame { game ->
-        val participants = game.civilizations.filter { it.isHuman() && it.isMajorCiv() }.map { it.civID }
-        if (civilization !in participants) fail()
-        if (string(request, "epoch") != runtime.epoch) throw PlayerSessionException(PlayerSessionFailure.STALE_EPOCH)
-        val op = string(request, "op")
-        val own = state.streams[civilization].orEmpty()
-        if (op == "receipt") {
-            if (request.keys != setOf("op", "epoch", "requestId")) fail()
-            return@accessGame state.requests[
-                "$civilization:${string(
-                    request,
-                    "requestId",
-                )}",
-            ]?.get("response")?.jsonObject
-                ?: obj("error" to "NOT_ENACTED")
-        }
-        if (op == "read") {
-            if (request.keys.any { it !in setOf("op", "epoch", "cursor", "limit") }) fail()
-            val cursor = request["cursor"]?.jsonPrimitive?.intOrNull ?: 0
-            val limit = request["limit"]?.jsonPrimitive?.intOrNull ?: 50
-            if (cursor !in 0..own.size || limit !in 1..100) fail()
-            val page = own.drop(cursor).take(limit)
-            return@accessGame obj(
-                "epoch" to runtime.epoch,
-                "events" to page,
-                "nextCursor" to cursor + page.size,
-                "hasMore" to (cursor + page.size < own.size),
-            )
-        }
-        if (op == "state") {
-            if (request.keys != setOf("op", "epoch")) fail()
-            return@accessGame view(civilization, participants)
-        }
-        if (op in setOf("trade_options", "trade_read")) return@accessGame trades.read(civilization, request)
-        if (op in setOf("job_claim", "job_heartbeat", "job_release")) {
-            if (request.keys.any { it !in setOf("op", "epoch", "job", "purpose", "usage") }) fail()
-            val job = string(request, "job")
-            val now = System.currentTimeMillis()
-            val prior = state.jobs[job]
-            if (prior != null && prior["civilization"]?.jsonPrimitive?.content != civilization) fail()
-            val active = state.jobs.values.filter { (it["expires"]?.jsonPrimitive?.long ?: 0) > now }
-            if (op == "job_claim" && prior == null) {
-                val purpose = string(request, "purpose")
-                if (purpose !in setOf("gameplay", "communication")) fail()
-                if (runtime.communicationPaused || state.invocations >= state.maxInvocations ||
-                    active.size >= state.maxConcurrent ||
-                    active.count { it["civilization"]?.jsonPrimitive?.content == civilization } >=
-                    state.maxPerCivilization ||
-                    active.any {
-                        it["civilization"]?.jsonPrimitive?.content == civilization &&
-                            it["purpose"]?.jsonPrimitive?.content == purpose
-                    }
-                ) {
-                    return@accessGame obj("granted" to false)
-                }
-                state.jobs[job] = obj("civilization" to civilization, "purpose" to purpose, "expires" to now + 90000)
-                state.invocations++
-            } else if (prior != null) {
-                if (op != "job_release" &&
-                    (prior["expires"]?.jsonPrimitive?.long ?: 0) <= now
-                ) {
-                    return@accessGame obj("granted" to false)
-                }
-                state.jobs[job] =
-                    JsonObject(
-                        prior +
-                            obj(
-                                "expires" to (
-                                    if (op ==
-                                        "job_release"
-                                    ) {
-                                        0
-                                    } else {
-                                        now + 90000
-                                    }
-                                    ),
-                                "usage" to (request["usage"] ?: prior["usage"]),
-                            ),
+
+    fun handle(civilization: String, arguments: JsonObject): JsonObject {
+        val request = InputSchemas.communication.decode(CommunicationRequest.serializer(), arguments)
+        return runtime.accessGame { game ->
+            val participants = game.civilizations.filter { it.isHuman() && it.isMajorCiv() }.map { it.civID }
+            if (civilization !in participants) fail()
+            if (request.epoch != runtime.epoch) throw PlayerSessionException(PlayerSessionFailure.STALE_EPOCH)
+            val own = state.streams[civilization].orEmpty()
+            when (request.op) {
+                "negotiation" -> return@accessGame obj("negotiation" to trades.negotiation(civilization))
+
+                "receipt" -> return@accessGame state.requests["$civilization:${request.requestId}"]?.response ?: obj("error" to "NOT_ENACTED")
+
+                "read" -> {
+                    if (request.cursor !in 0..own.size) fail()
+                    val page = own.drop(request.cursor).take(request.limit)
+                    return@accessGame obj(
+                        "epoch" to runtime.epoch,
+                        "events" to page.map { it.recordJson() },
+                        "nextCursor" to request.cursor + page.size,
+                        "hasMore" to (request.cursor + page.size < own.size),
                     )
-            } else {
-                fail()
-            }
-            runtime.commitCheckpoint()
-            return@accessGame obj("granted" to true)
-        }
-        if (runtime.communicationPaused) throw PlayerSessionException(PlayerSessionFailure.COMMAND_UNAVAILABLE)
-        val id = string(request, "requestId")
-        val requestKey = "$civilization:$id"
-        state.requests[requestKey]?.let {
-            if (it["request"] != request) throw PlayerSessionException(PlayerSessionFailure.REQUEST_ID_CONFLICT)
-            return@accessGame it.getValue("response").jsonObject
-        }
-        val common = setOf("op", "epoch", "requestId")
-        val allowed = common + when (op) {
-            "send" -> setOf("to", "text", "mentions")
-
-            "offer", "revise" -> setOf(
-                "proposal",
-                "participants",
-                "terms",
-                "conditions",
-                "expiresTurn",
-                "kind",
-                "sources",
-            )
-
-            "accept", "withdraw", "reconsider" -> setOf("proposal", "version", "reason")
-
-            "trade_offer" -> setOf("partner", "give", "receive", "expiresTurn", "proposal", "version")
-
-            "trade_decide" -> setOf("proposal", "version", "decision")
-
-            else -> fail()
-        }
-        if (request.keys.any { it !in allowed }) fail()
-        val response = when (op) {
-            "trade_offer", "trade_decide" -> trades.mutate(civilization, request)
-
-            "send" -> {
-                val target = request["to"]?.let { string(request, "to") }
-                if (target != null && (target !in participants || target == civilization)) fail()
-                val audience = if (target == null) participants else listOf(civilization, target)
-                val mentions = request["mentions"]?.let(::members).orEmpty()
-                if (mentions.any { it !in audience }) fail()
-                val message = obj(
-                    "message" to shortId("m"),
-                    "author" to civilization,
-                    "participants" to audience,
-                    "public" to (target == null),
-                    "text" to string(request, "text", 4000),
-                    "mentions" to mentions,
-                    "turn" to game.turns,
-                )
-                emit(
-                    audience,
-                    "message",
-                    message,
-                    (if (target != null) setOf(target) else mentions.toSet()) - civilization,
-                )
-                obj("message" to message)
-            }
-
-            "offer", "revise" -> {
-                val audience = members(request["participants"])
-                if (audience.size !in 2..participants.size || civilization !in audience ||
-                    audience.any { it !in participants }
-                ) {
-                    fail()
                 }
-                val proposalId = if (op == "revise") string(request, "proposal") else shortId("p")
-                val prior = state.offers[proposalId]?.lastOrNull()
-                if (op == "revise" &&
-                    (
-                        prior == null || prior["author"]?.jsonPrimitive?.content != civilization ||
-                            members(prior["participants"]) != audience
-                        )
-                ) {
-                    fail()
+
+                "state" -> return@accessGame view(civilization, participants)
+
+                "trade_options", "trade_read" -> return@accessGame trades.read(civilization, request)
+
+                "job_claim", "job_heartbeat", "job_release" -> return@accessGame job(civilization, request)
+            }
+            if (runtime.communicationPaused) throw PlayerSessionException(PlayerSessionFailure.COMMAND_UNAVAILABLE)
+            val requestKey = "$civilization:${checkNotNull(request.requestId)}"
+            state.requests[requestKey]?.let {
+                if (it.request != arguments) throw PlayerSessionException(PlayerSessionFailure.REQUEST_ID_CONFLICT)
+                return@accessGame it.response
+            }
+            val response = when (request.op) {
+                "trade_offer", "trade_decide", "friendship_offer" -> trades.mutate(civilization, request)
+
+                "send" -> {
+                    val target = request.to
+                    if (target != null && (target !in participants || target == civilization)) fail()
+                    val audience = if (target == null) participants else listOf(civilization, target)
+                    if (request.mentions.any { it !in audience }) fail()
+                    val message = ChatMessage(shortId("m"), civilization, audience, target == null, checkNotNull(request.text), request.mentions, game.turns)
+                    emit(audience, "message", message.recordJson(), (if (target != null) setOf(target) else request.mentions.toSet()) - civilization)
+                    obj("message" to message.recordJson())
                 }
-                val kind = string(request, "kind")
-                if (kind !in setOf("peace", "other")) fail()
-                val expires = request["expiresTurn"]?.jsonPrimitive?.intOrNull
-                if (request.containsKey("expiresTurn") && (expires == null || expires <= game.turns)) fail()
-                val sources = request["sources"]?.let(::members).orEmpty()
-                if (sources.any { source ->
-                        own.none { event ->
-                            event["body"]?.jsonObject?.let { body ->
-                                body["message"]?.jsonPrimitive?.content ==
-                                    source &&
-                                    members(body["participants"]).containsAll(audience)
-                            } ==
-                                true
-                        }
+
+                "offer", "revise" -> {
+                    val audience = request.participants
+                    if (audience.size !in 2..participants.size || civilization !in audience || audience.any { it !in participants }) fail()
+                    val proposalId = if (request.op == "revise") checkNotNull(request.proposal) else shortId("p")
+                    val prior = state.offers[proposalId]?.lastOrNull()
+                    if (request.op == "revise" && (prior == null || prior.author != civilization || prior.participants != audience)) fail()
+                    if (request.expiresTurn != null && request.expiresTurn <= game.turns) fail()
+                    val messages = own.filter { it.kind == "message" }.map {
+                        communicationJson.decodeFromJsonElement(ChatMessage.serializer(), it.body)
                     }
-                ) {
-                    fail()
+                    if (request.sources.any { source -> messages.none { it.message == source && it.participants.containsAll(audience) } }) fail()
+                    val offer = SocialOffer(proposalId, (prior?.version ?: 0) + 1, civilization, audience, checkNotNull(request.kind), checkNotNull(request.terms), checkNotNull(request.conditions), request.expiresTurn, request.sources, game.turns)
+                    state.offers.getOrPut(proposalId) { mutableListOf() }.add(offer)
+                    emit(audience, "offer", offer.recordJson(), audience.toSet() - civilization)
+                    consent(civilization, offer, "accept", "Published these terms", game.turns)
+                    bumpPeace(audience)
+                    obj("offer" to offer.recordJson())
                 }
-                val version = (prior?.get("version")?.jsonPrimitive?.int ?: 0) + 1
-                val offer = obj(
-                    "proposal" to proposalId, "version" to version, "author" to civilization,
-                    "participants" to audience, "kind" to kind, "terms" to string(request, "terms", 4000),
-                    "conditions" to string(request, "conditions", 2000), "expiresTurn" to expires,
-                    "sources" to sources, "turn" to game.turns,
-                )
-                state.offers.getOrPut(proposalId) { mutableListOf() }.add(offer)
-                emit(audience, "offer", offer, audience.toSet() - civilization)
-                // Publishing exact terms is the author's explicit consent to them.
-                consent(civilization, offer, "accept", "Published these terms", game.turns)
-                bumpPeace(audience)
-                obj("offer" to offer)
-            }
 
-            else -> {
-                val proposal = string(request, "proposal")
-                val version = request["version"]?.jsonPrimitive?.intOrNull ?: fail()
-                val versions = state.offers[proposal] ?: fail()
-                val offer =
-                    versions.singleOrNull { it["version"]?.jsonPrimitive?.int == version && visible(it, civilization) }
-                        ?: fail()
-                if (op == "accept" &&
-                    offer != versions.last()
-                ) {
-                    throw PlayerSessionException(PlayerSessionFailure.STALE_REVISION)
+                else -> {
+                    val proposal = checkNotNull(request.proposal)
+                    val version = checkNotNull(request.version)
+                    val versions = state.offers[proposal] ?: fail()
+                    val offer = versions.singleOrNull { it.version == version && civilization in it.participants } ?: fail()
+                    if (request.op == "accept" && offer != versions.last()) throw PlayerSessionException(PlayerSessionFailure.STALE_REVISION)
+                    if (request.op == "accept" && (expired(offer, game.turns) || withdrawn(offer))) throw PlayerSessionException(PlayerSessionFailure.COMMAND_UNAVAILABLE)
+                    val reason = if (request.op == "accept") "Explicit consent" else checkNotNull(request.reason)
+                    val existing = decisions(offer)[civilization]
+                    if (existing?.decision != request.op) {
+                        consent(civilization, offer, request.op, reason, game.turns)
+                        bumpPeace(offer.participants)
+                    }
+                    if (accepted(offer, game.turns)) state.acceptedVersions[proposal] = version
+                    obj("decision" to request.op, "proposal" to proposal, "version" to version, "accepted" to accepted(offer, game.turns))
                 }
-                if (op == "accept" &&
-                    (expired(offer, game.turns) || withdrawn(offer))
-                ) {
-                    throw PlayerSessionException(PlayerSessionFailure.COMMAND_UNAVAILABLE)
-                }
-                val reason = if (op == "accept") "Explicit consent" else string(request, "reason", 1000)
-                val existing = state.consents.lastOrNull {
-                    it["proposal"] == offer["proposal"] &&
-                        it["version"] == offer["version"] &&
-                        it["author"]?.jsonPrimitive?.content == civilization
-                }
-                if (existing?.get("decision")?.jsonPrimitive?.content != op) {
-                    consent(civilization, offer, op, reason, game.turns)
-                    bumpPeace(members(offer["participants"]))
-                }
-                if (accepted(offer, game.turns)) state.acceptedVersions[proposal] = version
-                obj(
-                    "decision" to op,
-                    "proposal" to proposal,
-                    "version" to version,
-                    "accepted" to accepted(offer, game.turns),
-                )
             }
+            state.requests[requestKey] = CommunicationReceipt(arguments, response, CommunicationAudit(runtime.handoff, game.currentPlayer, System.currentTimeMillis()))
+            runtime.commitCheckpoint()
+            response
         }
-        state.requests[requestKey] = obj(
-            "request" to request,
-            "response" to response,
-            "audit" to
-                obj(
-                    "handoff" to runtime.handoff,
-                    "activeCivilization" to game.currentPlayer,
-                    "timeMillis" to System.currentTimeMillis(),
-                ),
-        )
+    }
+
+    private fun job(civilization: String, request: CommunicationRequest): JsonObject {
+        val id = checkNotNull(request.job)
+        val now = System.currentTimeMillis()
+        val prior = state.jobs[id]
+        if (prior != null && prior.civilization != civilization) fail()
+        val active = state.jobs.values.filter { it.expires > now }
+        if (request.op == "job_claim" && prior == null) {
+            val purpose = checkNotNull(request.purpose)
+            if (runtime.communicationPaused || state.invocations >= state.maxInvocations || active.size >= state.maxConcurrent ||
+                active.count { it.civilization == civilization } >= state.maxPerCivilization || active.any { it.civilization == civilization && it.purpose == purpose }
+            ) {
+                return obj("granted" to false)
+            }
+            state.jobs[id] = CommunicationJob(civilization, purpose, now + 90000)
+            state.invocations++
+        } else if (prior != null) {
+            if (request.op != "job_release" && prior.expires <= now) return obj("granted" to false)
+            if (request.op == "job_claim" && prior.purpose != request.purpose) fail()
+            state.jobs[id] = prior.copy(expires = if (request.op == "job_release") 0 else now + 90000, usage = request.usage ?: prior.usage)
+        } else {
+            fail()
+        }
         runtime.commitCheckpoint()
-        response
+        return obj("granted" to true)
     }
-    private fun consent(author: String, offer: JsonObject, decision: String, reason: String, turn: Int) {
-        val record = obj(
-            "proposal" to offer["proposal"],
-            "version" to offer["version"],
-            "author" to author,
-            "participants" to offer["participants"],
-            "decision" to decision,
-            "reason" to reason,
-            "turn" to turn,
-        )
+
+    private fun consent(author: String, offer: SocialOffer, decision: String, reason: String, turn: Int) {
+        val record = SocialConsent(offer.proposal, offer.version, author, offer.participants, decision, reason, turn)
         state.consents.add(record)
-        emit(members(offer["participants"]), "consent", record, members(offer["participants"]).toSet() - author)
+        emit(offer.participants, "consent", record.recordJson(), offer.participants.toSet() - author)
     }
-    private fun expired(offer: JsonObject, turn: Int) = offer["expiresTurn"]?.jsonPrimitive?.intOrNull?.let { it <= turn } == true
-    private fun decisions(offer: JsonObject) = state.consents.filter {
-        it["proposal"] == offer["proposal"] &&
-            it["version"] == offer["version"]
-    }.associateBy { it.getValue("author").jsonPrimitive.content }
-    private fun withdrawn(offer: JsonObject) = decisions(offer).values.any {
-        it["decision"]?.jsonPrimitive?.content in
-            setOf("withdraw", "reconsider")
-    }
-    private fun accepted(offer: JsonObject, turn: Int): Boolean = !expired(offer, turn) && !withdrawn(offer) &&
-        members(offer["participants"]).all {
-            decisions(offer)[it]?.get("decision")?.jsonPrimitive?.content ==
-                "accept"
-        }
+    private fun expired(offer: SocialOffer, turn: Int) = offer.expiresTurn?.let { it <= turn } == true
+    private fun decisions(offer: SocialOffer) = state.consents.filter { it.proposal == offer.proposal && it.version == offer.version }.associateBy { it.author }
+    private fun withdrawn(offer: SocialOffer) = decisions(offer).values.any { it.decision in setOf("withdraw", "reconsider") }
+    private fun accepted(offer: SocialOffer, turn: Int): Boolean = !expired(offer, turn) && !withdrawn(offer) && offer.participants.all { decisions(offer)[it]?.decision == "accept" }
+
     internal fun bumpPeace(participants: List<String>) {
         participants.forEach { state.peaceVersions[it] = (state.peaceVersions[it] ?: 0) + 1 }
     }
-    fun view(civilization: String, participants: List<String>): JsonObject = obj(
-        "epoch" to runtime.epoch,
-        "civilization" to civilization,
-        "context" to runtime.accessGame { game -> communicationContext(runtime, game, game.getCivilization(civilization)) },
-        "channels" to participants,
-        "peaceVersion" to (state.peaceVersions[civilization] ?: 0),
-        "offers" to state.offers.values.flatMap {
-            it.filter { offer -> visible(offer, civilization) }.map { offer ->
-                JsonObject(
-                    offer +
-                        obj(
-                            "effective" to
-                                (
-                                    state.acceptedVersions[offer["proposal"]?.jsonPrimitive?.content] ==
-                                        offer["version"]?.jsonPrimitive?.int &&
-                                        accepted(offer, runtime.accessGame { game -> game.turns })
-                                    ),
-                        ),
-                )
-            }
-        },
-        "consents" to state.consents.filter { visible(it, civilization) },
-        "outcomes" to state.outcomes.filter { visible(it, civilization) },
-        "trades" to trades.summaries(civilization),
-    )
+
+    fun view(civilization: String, participants: List<String>): JsonObject = runtime.accessGame { game ->
+        obj(
+            "epoch" to runtime.epoch, "civilization" to civilization,
+            "context" to communicationContext(runtime, game, game.getCivilization(civilization)), "channels" to participants,
+            "peaceVersion" to (state.peaceVersions[civilization] ?: 0),
+            "offers" to state.offers.values.flatten().filter { civilization in it.participants }.map { offer ->
+                JsonObject(offer.recordJson() + obj("effective" to (state.acceptedVersions[offer.proposal] == offer.version && accepted(offer, game.turns))))
+            },
+            "consents" to state.consents.filter { civilization in it.participants }.map { it.recordJson() },
+            "outcomes" to state.outcomes.filter { civilization in it.participants }.map { it.recordJson() },
+            "trades" to trades.summaries(civilization), "negotiation" to trades.negotiation(civilization),
+        )
+    }
+
     fun validate(civilization: String, request: TurnCommandRequest, opponent: String?, turn: Int) {
-        if (request.socialVersion != null &&
-            request.socialVersion != (state.peaceVersions[civilization] ?: 0)
-        ) {
-            throw PlayerSessionException(PlayerSessionFailure.STALE_REVISION)
-        }
-        if (request.kind !in
-            setOf(TurnCommandKind.ATTACK, TurnCommandKind.CITY_ATTACK, TurnCommandKind.DECLARE_WAR)
-        ) {
-            return
-        }
-        if (opponent == null) return // Attack target is resolved only after validating its offered destination.
+        if (request.socialVersion != null && request.socialVersion != (state.peaceVersions[civilization] ?: 0)) throw PlayerSessionException(PlayerSessionFailure.STALE_REVISION)
+        if (request.kind !in setOf(TurnCommandKind.ATTACK, TurnCommandKind.CITY_ATTACK, TurnCommandKind.DECLARE_WAR) || opponent == null) return
         if (state.offers.values.flatten().any {
-                state.acceptedVersions[it["proposal"]?.jsonPrimitive?.content] ==
-                    it["version"]?.jsonPrimitive?.int &&
-                    it["kind"]?.jsonPrimitive?.content == "peace" &&
-                    visible(it, civilization) &&
-                    visible(it, opponent) &&
-                    accepted(it, turn)
+                state.acceptedVersions[it.proposal] == it.version && it.kind == "peace" && civilization in it.participants && opponent in it.participants && accepted(it, turn)
             }
         ) {
             throw PlayerSessionException(PlayerSessionFailure.COMMAND_UNAVAILABLE)
         }
     }
+
     fun enacted(civilization: String, opponent: String?, receipt: TurnCommandReceipt) {
-        if (opponent == null || receipt.kind != TurnCommandKind.DECLARE_WAR) {
-            return
-        }
+        if (opponent == null || receipt.kind !in setOf(TurnCommandKind.DECLARE_WAR, TurnCommandKind.RESPOND_FRIENDSHIP)) return
         val audience = listOf(civilization, opponent)
         trades.invalidateDiplomacy(civilization, opponent)
         val player = runtime.accessGame { it.getCivilization(civilization) }
         val other = player.gameInfo.getCivilization(opponent)
-        val record = obj(
-            "outcome" to shortId("o"),
-            "action" to receipt.kind.name,
-            "author" to civilization,
-            "participants" to audience,
-            "turn" to receipt.turn,
-            "confirmation" to obj("source" to "engine", "atWar" to player.isAtWarWith(other)),
-            "relatedProposals" to
-                state.offers.values.map {
-                    it.last()
-                }.filter {
-                    members(it["participants"]).toSet() == audience.toSet()
-                }.map { obj("proposal" to it["proposal"], "version" to it["version"]) },
+        val record = EngineOutcome(
+            outcome = shortId("o"),
+            action = if (receipt.kind == TurnCommandKind.RESPOND_FRIENDSHIP) "DECLARE_FRIENDSHIP" else receipt.kind.name,
+            author = civilization,
+            participants = audience,
+            turn = receipt.turn,
+            confirmation = bilateralConfirmation(player, other),
+            relatedProposals = state.offers.values.map { it.last() }.filter { it.participants.toSet() == audience.toSet() }.map { ProposalReference(it.proposal, it.version) },
         )
         state.outcomes.add(record)
-        emit(audience, "engine", record, audience.toSet() - civilization)
+        emit(audience, "engine", record.recordJson(), audience.toSet() - civilization)
         bumpPeace(audience)
     }
 }

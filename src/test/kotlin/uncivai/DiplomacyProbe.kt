@@ -84,10 +84,12 @@ object DiplomacyProbe {
             val decision = PopupAlert(AlertType.DeclarationOfFriendship, other.civID)
             player.popupAlerts.add(decision)
             val mixed = rome.turn()
-            check(!mixed.pending.single { it.kind == "PopupAlerts" }.supported)
-            val unsupported = mixed.alerts.single { it.kind == "DeclarationOfFriendship" }
-            check(!unsupported.canAcknowledge && unsupported.firstContact == null && unsupported.subject == null)
-            expect(PlayerSessionFailure.OPTION_UNAVAILABLE) { rome.execute(command(rome, unsupported.handle)) }
+            check(mixed.pending.single { it.kind == "PopupAlerts" }.supported)
+            val friendship = mixed.alerts.single { it.kind == "DeclarationOfFriendship" }
+            check(!friendship.canAcknowledge && friendship.firstContact == null && friendship.subject == null)
+            check(friendship.friendship!!.content.paragraphs.last().isNotEmpty())
+            check(friendship.friendship.accept.available && friendship.friendship.canDecline)
+            expect(PlayerSessionFailure.OPTION_UNAVAILABLE) { rome.execute(command(rome, friendship.handle)) }
             val acknowledge = command(rome, alert.handle)
             val alertIndex = player.popupAlerts.indexOfFirst { it.type == AlertType.FirstContact }
             val rawAlert = player.popupAlerts.removeAt(alertIndex)

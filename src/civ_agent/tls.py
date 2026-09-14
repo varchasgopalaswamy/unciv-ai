@@ -9,11 +9,19 @@ import secrets
 import socket
 import ssl
 import stat
-import subprocess
 import tempfile
 from contextlib import contextmanager
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
+
+from cryptography import x509
+from cryptography.exceptions import InvalidSignature, UnsupportedAlgorithm
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.hazmat.primitives.serialization import pkcs12
+from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
+from cryptography.x509.verification import PolicyBuilder, Store, VerificationError
 
 
 class TLSConfigError(ValueError):
@@ -121,14 +129,76 @@ def host_origin(host, port):
     return f"https://{'[' + host + ']' if ':' in host else host}:{port}"
 
 
-def _openssl(*arguments):
+@contextmanager
+def _certificate_errors():
     try:
-        return subprocess.run(["openssl", *map(str, arguments)], check=True, capture_output=True, timeout=30).stdout
-    except (OSError, subprocess.SubprocessError):
-        # Tool errors can contain PEM contents or password diagnostics; report only the operation.
-        raise TLSConfigError(
-            f"OpenSSL {arguments[0]} failed. Check certificate files and that openssl is installed."
-        ) from None
+        yield
+    except TLSConfigError:
+        raise
+    except (ValueError, TypeError, InvalidSignature, UnsupportedAlgorithm, VerificationError, x509.ExtensionNotFound):
+        # Library diagnostics can contain private material. Keep errors input-free.
+        raise TLSConfigError("Invalid or expired local certificate, key, or key store.") from None
+
+
+def _key(path):
+    regular_file(path, private=True)
+    key = serialization.load_pem_private_key(path.read_bytes(), password=None)
+    if not isinstance(key, rsa.RSAPrivateKey):
+        raise TLSConfigError("Local certificate keys must be RSA private keys.")
+    return key
+
+
+def _cert(path):
+    regular_file(path, private=True)
+    cert = x509.load_pem_x509_certificate(path.read_bytes())
+    now = datetime.now(UTC)
+    if not cert.not_valid_before_utc <= now or cert.not_valid_after_utc <= now + timedelta(days=1):
+        raise TLSConfigError("Local certificate is not valid for the next 24 hours.")
+    return cert
+
+
+def _builder(key, subject, issuer, ca, days):
+    now = datetime.now(UTC)
+    return (
+        x509.CertificateBuilder()
+        .subject_name(subject)
+        .issuer_name(issuer)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now)
+        .not_valid_after(now + timedelta(days=days))
+        .add_extension(x509.BasicConstraints(ca=ca, path_length=None), critical=True)
+        .add_extension(
+            x509.KeyUsage(
+                digital_signature=not ca,
+                content_commitment=False,
+                key_encipherment=not ca,
+                data_encipherment=False,
+                key_agreement=False,
+                key_cert_sign=ca,
+                crl_sign=ca,
+                encipher_only=False,
+                decipher_only=False,
+            ),
+            critical=True,
+        )
+        .add_extension(x509.SubjectKeyIdentifier.from_public_key(key.public_key()), critical=False)
+    )
+
+
+def _write_identity(directory, key, cert):
+    write_private(
+        directory / "key.pem",
+        key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()),
+    )
+    write_private(directory / "cert.pem", cert.public_bytes(serialization.Encoding.PEM))
+
+
+def _subject(host):
+    try:
+        return x509.IPAddress(ipaddress.ip_address(host))
+    except ValueError:
+        return x509.DNSName(host)
 
 
 @contextmanager
@@ -150,121 +220,61 @@ def _ensure_ca(directory):
         with tempfile.TemporaryDirectory(prefix=".ca-", dir=directory) as temporary:
             staging = Path(temporary) / "ca"
             staging.mkdir(mode=0o700)
-            _openssl(
-                "req",
-                "-x509",
-                "-newkey",
-                "rsa:3072",
-                "-noenc",
-                "-sha256",
-                "-days",
-                "3650",
-                "-subj",
-                "/CN=Local game development CA",
-                "-keyout",
-                staging / "key.pem",
-                "-out",
-                staging / "cert.pem",
-                "-addext",
-                "basicConstraints=critical,CA:TRUE",
-                "-addext",
-                "keyUsage=critical,keyCertSign,cRLSign",
-            )
-            for file in staging.iterdir():
-                file.chmod(0o600)
+            key = rsa.generate_private_key(public_exponent=65537, key_size=3072)
+            name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "Local game development CA")])
+            cert = _builder(key, name, name, ca=True, days=3650).sign(key, hashes.SHA256())
+            _write_identity(staging, key, cert)
             os.replace(staging, authority)
     private_directory(authority)
-    key, cert = authority / "key.pem", authority / "cert.pem"
-    regular_file(key, private=True)
-    regular_file(cert, private=True)
-    _openssl("x509", "-in", cert, "-noout", "-checkend", "86400")
-    if _openssl("pkey", "-in", key, "-pubout") != _openssl("x509", "-in", cert, "-pubkey", "-noout"):
+    key_path, cert_path = authority / "key.pem", authority / "cert.pem"
+    key, cert = _key(key_path), _cert(cert_path)
+    if key.public_key() != cert.public_key():
         raise TLSConfigError("Existing development CA certificate and private key do not match.")
-    _openssl("verify", "-CAfile", cert, cert)
-    return cert, key
+    cert.verify_directly_issued_by(cert)
+    if not cert.extensions.get_extension_for_class(x509.BasicConstraints).value.ca or not (
+        cert.extensions.get_extension_for_class(x509.KeyUsage).value.key_cert_sign
+    ):
+        raise TLSConfigError("Existing development CA cannot sign certificates.")
+    return cert_path, key_path
 
 
 def ensure_server_certificate(state_dir, identity, hosts=None):
     """Return PEM Paths ca_file/cert_file/key_file; never rotate or overwrite existing identities."""
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,95}", identity):
         raise TLSConfigError("Invalid server certificate identity.")
+    if identity == "ca":
+        raise TLSConfigError("Reserved server certificate identity.")
     hosts = sorted(set(host_name(host) for host in (hosts or ["localhost", "127.0.0.1"])))
-    with _certificate_lock(state_dir) as directory:
+    with _certificate_lock(state_dir) as directory, _certificate_errors():
         ca_cert, ca_key = _ensure_ca(directory)
+        authority, signing_key = _cert(ca_cert), _key(ca_key)
         target = directory / identity
-        if identity == "ca":
-            raise TLSConfigError("Reserved server certificate identity.")
         if not target.exists() and not target.is_symlink():
             with tempfile.TemporaryDirectory(prefix=".server-", dir=directory) as temporary:
                 staging = Path(temporary) / "server"
                 staging.mkdir(mode=0o700)
-                sans = []
-                for host in hosts:
-                    try:
-                        ipaddress.ip_address(host)
-                        sans.append("IP:" + host)
-                    except ValueError:
-                        sans.append("DNS:" + host)
-                extension = Path(temporary) / "extensions.cnf"
-                extension.write_text(
-                    "basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature,keyEncipherment\n"
-                    "extendedKeyUsage=serverAuth\nsubjectAltName=" + ",".join(sans) + "\n"
+                key = rsa.generate_private_key(public_exponent=65537, key_size=3072)
+                name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, hosts[0])])
+                cert = (
+                    _builder(key, name, authority.subject, ca=False, days=825)
+                    .add_extension(x509.ExtendedKeyUsage([ExtendedKeyUsageOID.SERVER_AUTH]), critical=False)
+                    .add_extension(x509.SubjectAlternativeName([_subject(host) for host in hosts]), critical=False)
+                    .add_extension(
+                        x509.AuthorityKeyIdentifier.from_issuer_public_key(signing_key.public_key()), critical=False
+                    )
+                    .sign(signing_key, hashes.SHA256())
                 )
-                request = Path(temporary) / "server.csr"
-                _openssl(
-                    "req",
-                    "-new",
-                    "-newkey",
-                    "rsa:3072",
-                    "-noenc",
-                    "-sha256",
-                    "-subj",
-                    "/CN=" + hosts[0],
-                    "-keyout",
-                    staging / "key.pem",
-                    "-out",
-                    request,
-                )
-                _openssl(
-                    "x509",
-                    "-req",
-                    "-in",
-                    request,
-                    "-CA",
-                    ca_cert,
-                    "-CAkey",
-                    ca_key,
-                    "-set_serial",
-                    "0x" + secrets.token_hex(20),
-                    "-days",
-                    "825",
-                    "-sha256",
-                    "-extfile",
-                    extension,
-                    "-out",
-                    staging / "cert.pem",
-                )
-                for file in staging.iterdir():
-                    file.chmod(0o600)
+                _write_identity(staging, key, cert)
                 os.replace(staging, target)
         private_directory(target)
-        cert, key = target / "cert.pem", target / "key.pem"
-        regular_file(cert, private=True)
-        regular_file(key, private=True)
-        _openssl("x509", "-in", cert, "-noout", "-checkend", "86400")
-        _openssl("verify", "-purpose", "sslserver", "-CAfile", ca_cert, cert)
+        cert_path, key_path = target / "cert.pem", target / "key.pem"
+        cert, key = _cert(cert_path), _key(key_path)
+        if cert.public_key() != key.public_key():
+            raise TLSConfigError("Existing server certificate and private key do not match.")
+        policy = PolicyBuilder().store(Store([authority])).max_chain_depth(0)
         for host in hosts:
-            try:
-                ipaddress.ip_address(host)
-                check = "-verify_ip"
-            except ValueError:
-                check = "-verify_hostname"
-            _openssl("verify", "-CAfile", ca_cert, check, host, cert)
-        try:
-            ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER).load_cert_chain(cert, key)
-        except ssl.SSLError:
-            raise TLSConfigError("Existing server certificate and private key do not match.") from None
-        return {"ca_file": ca_cert, "cert_file": cert, "key_file": key}
+            policy.build_server_verifier(_subject(host)).verify(cert, [])
+        return {"ca_file": ca_cert, "cert_file": cert_path, "key_file": key_path}
 
 
 def ensure_host_tls(state_dir, listen_host="127.0.0.1", public_host="localhost"):
@@ -273,38 +283,40 @@ def ensure_host_tls(state_dir, listen_host="127.0.0.1", public_host="localhost")
     if ":" in public_host or ":" in listen_host:
         raise TLSConfigError("The game host currently supports DNS hostnames and IPv4 addresses.")
     material = ensure_server_certificate(state_dir, "host", ["localhost", "127.0.0.1", public_host])
-    with _certificate_lock(state_dir):
+    with _certificate_lock(state_dir), _certificate_errors():
         directory = material["cert_file"].parent
         password, key_store = directory / "password.txt", directory / "host.p12"
-        if key_store.exists() != password.exists():
+        if (key_store.exists() or key_store.is_symlink()) != (password.exists() or password.is_symlink()):
             raise TLSConfigError("Incomplete host key store; restore both host.p12 and password.txt.")
-        if not key_store.exists():
-            # The password is read by OpenSSL from a file, never from process arguments.
+        if not key_store.exists() and not key_store.is_symlink():
             with tempfile.TemporaryDirectory(prefix=".keystore-", dir=directory) as temporary:
                 staging = Path(temporary)
-                write_private(staging / "password.txt", (secrets.token_urlsafe(32) + "\n").encode())
-                _openssl(
-                    "pkcs12",
-                    "-export",
-                    "-name",
-                    "host",
-                    "-inkey",
-                    material["key_file"],
-                    "-in",
-                    material["cert_file"],
-                    "-certfile",
-                    material["ca_file"],
-                    "-out",
+                secret = secrets.token_urlsafe(32).encode()
+                write_private(staging / "password.txt", secret + b"\n")
+                write_private(
                     staging / "host.p12",
-                    "-passout",
-                    "file:" + str(staging / "password.txt"),
+                    pkcs12.serialize_key_and_certificates(
+                        b"host",
+                        _key(material["key_file"]),
+                        _cert(material["cert_file"]),
+                        [_cert(material["ca_file"])],
+                        serialization.BestAvailableEncryption(secret),
+                    ),
                 )
-                (staging / "host.p12").chmod(0o600)
                 os.replace(staging / "password.txt", password)
                 os.replace(staging / "host.p12", key_store)
         regular_file(password, private=True)
         regular_file(key_store, private=True)
-        _openssl("pkcs12", "-in", key_store, "-passin", "file:" + str(password), "-noout")
+        stored = pkcs12.load_pkcs12(key_store.read_bytes(), password.read_bytes().strip())
+        if (
+            stored.key is None
+            or stored.cert is None
+            or stored.cert.friendly_name != b"host"
+            or stored.cert.certificate != _cert(material["cert_file"])
+            or stored.key.public_key() != _key(material["key_file"]).public_key()
+            or [item.certificate for item in stored.additional_certs] != [_cert(material["ca_file"])]
+        ):
+            raise TLSConfigError("Existing host key store does not match the host certificate and issuer.")
         config = directory / "config.json"
         write_private_json(
             config,

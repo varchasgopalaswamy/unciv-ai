@@ -10,6 +10,7 @@ import com.unciv.logic.civilization.PlayerCityManagementOperations
 import com.unciv.logic.civilization.PlayerCityOperations
 import com.unciv.logic.civilization.PlayerCombatOperations
 import com.unciv.logic.civilization.PlayerDiplomacyOperations
+import com.unciv.logic.civilization.PlayerFriendshipOperations
 import com.unciv.logic.civilization.PlayerGreatPersonOperations
 import com.unciv.logic.civilization.PlayerOperations
 import com.unciv.logic.civilization.PlayerPurchaseOperations
@@ -104,6 +105,11 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
         if (player.hasCaptureDecision() && request.kind !in setOf(TurnCommandKind.RESOLVE_CAPTURED_CITY, TurnCommandKind.ACKNOWLEDGE_ALERT)) fail(PlayerSessionFailure.TURN_BLOCKED)
         val operations = PlayerOperations(player)
         val captures = PlayerCaptureOperations(player)
+        if (request.kind == TurnCommandKind.RESPOND_FRIENDSHIP) {
+            val decision = before.alerts.singleOrNull { it.handle == request.target }?.friendship ?: fail(PlayerSessionFailure.OPTION_UNAVAILABLE)
+            if (request.selection !in setOf("Accept", "Decline") || (request.selection == "Accept" && !decision.accept.available) || !decision.canDecline) fail(PlayerSessionFailure.OPTION_UNAVAILABLE)
+            if (state.observedRevision != before.revision) fail(PlayerSessionFailure.OBSERVATION_REQUIRED)
+        }
         if (request.kind == TurnCommandKind.RESOLVE_CAPTURED_CITY) {
             val decision = before.alerts.singleOrNull { it.handle == request.target }?.capture
                 ?: fail(PlayerSessionFailure.OPTION_UNAVAILABLE)
@@ -122,6 +128,8 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
             if (!offered.declareWar.available) fail(PlayerSessionFailure.OPTION_UNAVAILABLE)
             if (state.observedRevision != before.revision) fail(PlayerSessionFailure.OBSERVATION_REQUIRED)
             game.getCivilization(offered.civilizationId)
+        } else if (request.kind == TurnCommandKind.RESPOND_FRIENDSHIP && request.selection == "Accept") {
+            game.getCivilization(before.alerts.single { it.handle == request.target }.friendship!!.civilizationId)
         } else {
             null
         }
@@ -282,6 +290,11 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
                     alert != null && captures.tryResolve(alert, CaptureChoice.valueOf(request.selection!!))
                 }
 
+                TurnCommandKind.RESPOND_FRIENDSHIP -> {
+                    val alert = state.alertHandles.entries.singleOrNull { it.value == request.target }?.key
+                    alert != null && PlayerFriendshipOperations(player).tryRespond(alert, request.selection == "Accept")
+                }
+
                 TurnCommandKind.MANAGE_CAPTURED_CITY -> captures.tryManageCity(city!!, CaptureChoice.valueOf(request.selection!!))
 
                 TurnCommandKind.UPGRADE_UNIT -> PlayerUnitEconomyOperations(player).tryUpgrade(unit!!, request.selection!!) != null
@@ -425,7 +438,8 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
             game.currentPlayer == player.civID && game.currentPlayerCiv === player -> "ACTIVE"
             else -> "WAITING"
         }
-        val ordinaryActions = phase == "ACTIVE" && !gameHasResult(game) && !player.hasCaptureDecision()
+        val negotiating = runtime.communicationState.trades.activeProposal != null
+        val ordinaryActions = phase == "ACTIVE" && !negotiating && !gameHasResult(game) && !player.hasCaptureDecision()
         if (phase == "ACTIVE" && state.reviewTurn != game.turns) {
             state.reviewTurn = game.turns
             state.reviewActions.clear()
@@ -434,9 +448,17 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
         val alerts = player.popupAlerts.map { alert ->
             val contact = observeFirstContact(operations, alert)
             val content = observeAlertContent(operations, alert)
-            val capture = captures.captureDecision(alert)?.observation(active = phase == "ACTIVE")
+            val capture = captures.captureDecision(alert)?.observation(active = phase == "ACTIVE" && !negotiating)
+            val friendship = PlayerFriendshipOperations(player).decision(alert)?.let {
+                FriendshipDecision(
+                    it.civilizationId,
+                    it.content.toPlayerContent(),
+                    DiplomaticAction(ordinaryActions && it.unavailableReason == null, immutable(listOfNotNull(it.unavailableReason))),
+                    ordinaryActions,
+                )
+            }
             val informational = alert.type in PlayerOperations.informationalAlerts && content != null
-            val supported = informational || capture != null
+            val supported = informational || capture != null || friendship != null
             PlayerAlert(
                 handle = state.alertHandles.getOrPut(alert) { state.identifiers.next(PlayerIdentifier.ALERT) },
                 kind = alert.type.name,
@@ -445,10 +467,11 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
                     AlertType.FirstContact -> contact?.civilizationName
                     else -> null
                 },
-                canAcknowledge = phase == "ACTIVE" && !gameHasResult(game) && informational,
+                canAcknowledge = phase == "ACTIVE" && !negotiating && !gameHasResult(game) && informational,
                 firstContact = contact,
                 content = content,
                 capture = capture,
+                friendship = friendship,
             ) to supported
         }
         if (alerts.isNotEmpty()) {
@@ -468,6 +491,7 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
             turn = game.turns,
             phase = phase,
             canEndTurn = ordinaryActions && pending.isEmpty(),
+            negotiation = runtime.communication.trades.negotiation(civilizationId),
             pending = immutable(pending),
             alerts = immutable(alerts.map { it.first }),
             cities = immutable(
@@ -509,7 +533,8 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
                 null
             },
             previousTurnReview = state.previousTurnReview,
-            scenario = scenario(game, player, diplomacy),
+            rules = observeGameRules(game),
+            scenario = communicationScenario(runtime, game, player),
             combatReports = immutable(state.combatReports.values.drop(state.deliveredCombatReports)),
             result = observeResult(player),
         )
@@ -520,108 +545,6 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
         return fingerprint.copy(revision = state.revision, turnReview = fingerprint.turnReview?.copy(id = state.revision))
     }
 
-    private fun scenario(game: GameInfo, player: Civilization, diplomacy: DiplomacyObservation): GameplayScenario? {
-        communicationScenario(runtime, game, player)?.let { return it }
-        if (game.tileMap.mapParameters.name == "Great People exercise") {
-            return GameplayScenario(
-                "GREAT_PEOPLE_EXERCISE",
-                if (gameFinished(game)) "FINISHED" else "DEVELOP",
-                immutable(
-                    listOf(
-                        "Great People exercise: remain at peace. Both players have the same checks. Inspect map.units[].greatPerson for ability effects, consumption and unavailable reasons; move to a suitable tile before activating when needed. Read receipt.greatPerson and resulting alerts or choices.",
-                        "Query research_details for Mathematics and Currency. Inspect their prerequisites and effects, then use the Research scientist to hurry the current research. Verify the actual science or completed technology and read its discovery popup.",
-                        "Use the Rush engineer in your capital to hurry National College. Ordinary building hurry leaves at least one production remaining: verify completion after a scheduled turn.",
-                        "Use the Manufactory engineer, Customs merchant, Landmark artist and Citadel general to create their respective improvements. Inspect the resulting tiles and Citadel border changes. City-state trade missions are outside this exercise.",
-                        "Use the Golden Age artist to start a Golden Age, read its popup and inspect economy.goldenAge. Query policy_details for Meritocracy, Liberty and Liberty Complete; adopt the final Liberty member, observe the automatic completion, choose a free Great General and use its Golden Age ability too.",
-                        "Keep your University's Scientist assigned. After a scheduled round, inspect the naturally generated Great Scientist and updated points/threshold, then use that new person to create an Academy on an eligible tile. Record confirmed checks briefly in your summary, then keep ordinary research and production running.",
-                    ),
-                ),
-            )
-        }
-        if (game.tileMap.mapParameters.name == "City management exercise") {
-            return GameplayScenario(
-                "CITY_MANAGEMENT_EXERCISE",
-                if (gameFinished(game)) "FINISHED" else "DEVELOP",
-                immutable(
-                    listOf(
-                        "City management exercise: remain at peace. Both players have a capital and a neighboring city with the same buildings and citizen options. Read cities[].development and management selectively, including unavailable reasons, yields and great-person progress.",
-                        "Change city focus and compare allocations and yields. Enable manual specialists, unwork a tile if needed, then assign and unassign a Scientist. Lock a worked tile, reset citizens and confirm the lock clears. Transfer an offered shared tile to the other city after freeing a citizen there; inspect both cities in receipt.cityManagement.",
-                        "Assign a Scientist in your capital, then sell its University after reading the refund and confirmation. Verify the building and specialist slots disappear, citizens are reassigned and gold increases; the city cannot sell another building that turn. Keep the University in your other city, assign a Scientist there and watch empire great-person points increase over scheduled turns.",
-                        "Keep Avoid Growth enabled in your other city across one full round, check that food caps without population growth, then disable it and verify growth on a later turn. Keep Granaries for food. Record completed checks and reasons briefly in your turn summaries, then continue developing both cities.",
-                    ),
-                ),
-            )
-        }
-        if (game.tileMap.mapParameters.name == "Economy exercise") {
-            return GameplayScenario(
-                "ECONOMY_EXERCISE",
-                if (gameFinished(game)) "FINISHED" else "DEVELOP",
-                immutable(
-                    listOf(
-                        "Economy exercise: read economy for gold, maintenance, happiness and resources. Read cities[].purchases and map.units[].economy selectively, including costs, effects, unavailable reasons and confirmations.",
-                        "Improve an owned strategic resource with a Worker and let the job finish through scheduled turns. Upgrade an eligible unit using the newly available resource. Purchase a unit, a building and an offered city tile.",
-                        "Pillage an eligible tile and inspect actual healing, movement and gold changes. Disband spare units and check maintenance. Use only offered actions, confirm the full offered text, and read receipt.economy before re-observing.",
-                    ),
-                ),
-            )
-        }
-        if (game.tileMap.mapParameters.name == "Victory exercise") {
-            return GameplayScenario(
-                "VICTORY_EXERCISE",
-                if (gameFinished(game)) "FINISHED" else "CAPTURE_CAPITAL",
-                immutable(
-                    listOf(
-                        "Victory test: capture the enemy capital with the offered melee attack now. Controllable units and attack offers are in map.units[].combat.attacks; print selected fields rather than the full snapshot.",
-                        "ATTACK takes the unit handle, exact destination and attackFrom. Read the actual receipt, then re-observe and read the full captured-city decision before choosing Annex with RESOLVE_CAPTURED_CITY.",
-                        "After the capital capture, read player_result. Stop when FINISHED; no END_TURN is needed after victory. Do not delay the offered capture for exploration, healing or production changes.",
-                    ),
-                ),
-            )
-        }
-        if (game.tileMap.mapParameters.name == "Combat exercise") {
-            return GameplayScenario(
-                "COMBAT_EXERCISE",
-                if (gameFinished(game)) {
-                    "FINISHED"
-                } else if (diplomacy.knownCivilizations.any { it.atWar }) {
-                    "AT_WAR"
-                } else {
-                    "PEACE"
-                },
-                immutable(
-                    listOf(
-                        "Combat exercise: use your summaries to track checks. Read combat reports and full capture decisions each turn.",
-                        "Your controllable units are map.units: inspect combat.attacks, combat.promotions.choices and combat.orders. map.tiles[].units contains visible summaries only. Parse tool results and print selected fields instead of the entire snapshot.",
-                        "Before attacking, promote an eligible unit. Fortify an injured unit until healed, then wake it on a later turn.",
-                        "Use offered city bombardment, ranged and melee attacks. CITY_ATTACK takes target and destination only; omit attackFrom. Unit ATTACK requires destination and attackFrom. Read actual combat receipts; previews do not prove an attack happened.",
-                        "Capture an enemy outpost, choose Puppet after reading its decision, then Annex it through city management when offered.",
-                        "After annexing an outpost, prioritize offered attacks on the enemy capital to finish the victory test, even at risk of unit losses. Do not defer a legal capital attack just to heal or fight a defending unit. Keep producing units and ending turns; do not offer peace.",
-                    ),
-                ),
-            )
-        }
-        if (game.tileMap.mapParameters.name != "Close-start duel") return null
-        val opponent = diplomacy.knownCivilizations.singleOrNull() ?: return GameplayScenario("CLOSE_START_DIPLOMACY", "AWAITING_WAR")
-        // Only the public declaration between these two known players contributes; never expose other receipts.
-        val warOccurred = runtime.turnSessions.any { (actor, session) ->
-            session.receipts.values.any { (command, _) ->
-                command.kind == TurnCommandKind.DECLARE_WAR &&
-                    (
-                        (actor == player.civID && command.target == opponent.civilizationId) ||
-                            (actor == opponent.civilizationId && command.target == player.civID)
-                        )
-            }
-        }
-        return GameplayScenario(
-            "CLOSE_START_DIPLOMACY",
-            when {
-                opponent.atWar -> "AT_WAR"
-                warOccurred -> "COMPLETE"
-                else -> "AWAITING_WAR"
-            },
-        )
-    }
-
     private fun player(game: GameInfo): Civilization = game.civilizations.singleOrNull {
         it.civID == civilizationId && it.isHuman() && it.isMajorCiv()
     } ?: fail(PlayerSessionFailure.PLAYER_UNAVAILABLE)
@@ -629,7 +552,7 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
     private fun state() = runtime.turnSessions.getOrPut(civilizationId) { TurnSessionState() }
 
     private fun validateShape(request: TurnCommandRequest) {
-        val needsTarget = request.kind in cityCommands || request.kind in unitCommands || request.kind in partnerCommands || request.kind in setOf(TurnCommandKind.ACKNOWLEDGE_ALERT, TurnCommandKind.RESOLVE_CAPTURED_CITY)
+        val needsTarget = request.kind in cityCommands || request.kind in unitCommands || request.kind in partnerCommands || request.kind in setOf(TurnCommandKind.ACKNOWLEDGE_ALERT, TurnCommandKind.RESOLVE_CAPTURED_CITY, TurnCommandKind.RESPOND_FRIENDSHIP)
         val needsSelection = request.kind in setOf(
             TurnCommandKind.CHOOSE_FREE_TECHNOLOGY,
             TurnCommandKind.ADOPT_POLICY,
@@ -640,6 +563,7 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
             TurnCommandKind.SET_UNIT_ORDER,
             TurnCommandKind.PROMOTE_UNIT,
             TurnCommandKind.RESOLVE_CAPTURED_CITY,
+            TurnCommandKind.RESPOND_FRIENDSHIP,
             TurnCommandKind.MANAGE_CAPTURED_CITY,
             TurnCommandKind.BUY_CONSTRUCTION,
             TurnCommandKind.UPGRADE_UNIT,

@@ -26,19 +26,13 @@ object EconomyRunProbe {
     fun main(args: Array<String>) {
         val root = Path.of(args[0])
         val stage = args[1]
-        val checkpoint = root.resolve(if (stage == "prepare") "exploration.json" else "checkpoint.json")
-        if (stage == "prepare") require(!Files.exists(checkpoint)) { "Checkpoint already exists" }
-        val fresh = stage in setOf("start", "prepare")
+        val checkpoint = root.resolve("checkpoint.json")
+        val fresh = stage in setOf("start")
         val runtime = if (fresh) HeadlessRuntime.createDuel(root.resolve(stage), 412L, combatScenario = true) else HeadlessRuntime.loadCheckpoint(checkpoint, root.resolve(stage))
         runtime.use {
             if (fresh) {
                 arrange(runtime)
-                if (stage == "prepare") prepareDuelCredentials(root)
                 runtime.executor.enableCheckpoints(checkpoint)
-            }
-            if (stage == "prepare") {
-                println("Prepared economy exercise: $checkpoint")
-                return
             }
             GameplayTestApi(runtime, root.resolve("$stage-tls")).use { api ->
                 when (stage) {

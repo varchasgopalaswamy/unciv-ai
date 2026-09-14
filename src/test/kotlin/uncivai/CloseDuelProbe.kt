@@ -29,7 +29,7 @@ object CloseDuelProbe {
                     val session = host.bindPlayer(player.civID)
                     val initial = session.turn()
                     check(initial.turn == 0)
-                    check(initial.scenario?.name == "CLOSE_START_DIPLOMACY" && initial.scenario.phase == "AWAITING_WAR")
+                    check(initial.scenario == null)
                     check(initial.diplomacy.knownCivilizations.size == 1)
                     check(initial.alerts.any { it.kind == "FirstContact" && it.content != null })
                     check(initial.map.tiles.size < runtime.game.tileMap.values.size) { "Setup revealed the whole map" }
@@ -44,7 +44,7 @@ object CloseDuelProbe {
                     val player = runtime.game.getCivilization(name)
                     check(player.cities.size == 1 && player.units.getCivUnits().count { it.name == "Scout" } == 1)
                     check(player.popupAlerts.none { it.type.name == "FirstContact" })
-                    check(PlayerHost(runtime).bindPlayer(name).turn().scenario?.phase == "AWAITING_WAR")
+                    check(PlayerHost(runtime).bindPlayer(name).turn().scenario == null)
                 }
             }
         }

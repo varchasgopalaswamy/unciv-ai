@@ -3,6 +3,7 @@
 import json
 import os
 
+from civ_agent.result_schema import PlayerResult
 from civ_agent.tls import private_directory, regular_file, write_private, write_private_json
 
 
@@ -13,149 +14,11 @@ class ResultError(ValueError):
 def validate_result(payload):
     """Reject malformed or broader-than-player-view data before any workspace write."""
 
-    def text(value, nullable=False):
-        return value is None and nullable or isinstance(value, str) and len(value) <= 65536
-
-    def integer(value, nullable=False):
-        return value is None and nullable or type(value) is int and value >= 0
-
-    def combatant(value):
-        return value is None or (
-            isinstance(value, dict)
-            and set(value) == {"kind", "name", "instanceName", "isOwn"}
-            and text(value["kind"])
-            and text(value["name"], True)
-            and text(value["instanceName"], True)
-            and type(value["isOwn"]) is bool
-        )
-
     try:
-        if not isinstance(payload, dict) or set(payload) != {
-            "epoch",
-            "civilization",
-            "result",
-            "combatReports",
-            "messages",
-        }:
-            raise ValueError()
-        for key in ("epoch", "civilization"):
-            if not isinstance(payload[key], str) or not 1 <= len(payload[key]) <= 128:
-                raise ValueError()
-        result = payload["result"]
-        required = {
-            "outcome",
-            "winningCivilizationId",
-            "winningCivilizationName",
-            "victoryType",
-            "victoryTurn",
-            "title",
-            "paragraphs",
-        }
-        if not isinstance(result, dict) or set(result) != required or result["outcome"] not in {"Victory", "Defeat"}:
-            raise ValueError()
-        if not all(
-            text(result[key], True) for key in ("winningCivilizationId", "winningCivilizationName", "victoryType")
-        ):
-            raise ValueError()
-        if not integer(result["victoryTurn"], True) or not text(result["title"]):
-            raise ValueError()
-        if not isinstance(result["paragraphs"], list) or not all(text(item) for item in result["paragraphs"]):
-            raise ValueError()
-        if not isinstance(payload["messages"], list):
-            raise ValueError()
-        for message in payload["messages"]:
-            if (
-                not isinstance(message, dict)
-                or not {"title", "paragraphs", "acknowledgement"} <= set(message)
-                or set(message) - {"title", "paragraphs", "quote", "acknowledgement", "additionalAcknowledgements"}
-            ):
-                raise ValueError()
-            if (
-                not text(message["title"])
-                or not text(message["acknowledgement"])
-                or not text(message.get("quote"), True)
-                or not isinstance(message["paragraphs"], list)
-                or not all(text(item) for item in message["paragraphs"])
-                or not isinstance(message.get("additionalAcknowledgements", []), list)
-                or not all(text(item) for item in message.get("additionalAcknowledgements", []))
-            ):
-                raise ValueError()
-        reports = payload["combatReports"]
-        if not isinstance(reports, list):
-            raise ValueError()
-        report_fields = {
-            "id",
-            "turn",
-            "kind",
-            "text",
-            "locations",
-            "attacker",
-            "defender",
-            "outcome",
-            "damageReceived",
-            "retaliationDamage",
-            "attackerDefeatedByDefender",
-            "showZeroDamage",
-            "ourUnit",
-            "enemyUnit",
-            "ourDamage",
-            "enemyDamage",
-            "ourDestroyed",
-            "enemyDestroyed",
-            "isAttacking",
-            "weaponType",
-            "attackingCivilizationName",
-            "improvementName",
-            "unitType",
-            "hitOurTerritory",
-        }
-        seen = set()
-        for report in reports:
-            if (
-                not isinstance(report, dict)
-                or not {"id", "turn", "kind", "text", "locations"} <= set(report)
-                or set(report) - report_fields
-            ):
-                raise ValueError()
-            if not text(report["id"]) or not report["id"] or report["id"] in seen or not integer(report["turn"]):
-                raise ValueError()
-            seen.add(report["id"])
-            if not text(report["kind"]) or not text(report["text"], True) or not text(report.get("outcome"), True):
-                raise ValueError()
-            if not all(combatant(report.get(key)) for key in ("attacker", "defender", "ourUnit", "enemyUnit")):
-                raise ValueError()
-            if not all(
-                integer(report.get(key), True)
-                for key in ("damageReceived", "retaliationDamage", "ourDamage", "enemyDamage")
-            ):
-                raise ValueError()
-            if any(
-                report.get(key) is not None and type(report[key]) is not bool
-                for key in (
-                    "attackerDefeatedByDefender",
-                    "showZeroDamage",
-                    "ourDestroyed",
-                    "enemyDestroyed",
-                    "isAttacking",
-                    "hitOurTerritory",
-                )
-            ):
-                raise ValueError()
-            if not all(
-                text(report.get(key), True)
-                for key in ("weaponType", "attackingCivilizationName", "improvementName", "unitType")
-            ):
-                raise ValueError()
-            if not isinstance(report["locations"], list) or not all(
-                isinstance(tile, dict)
-                and set(tile) == {"x", "y"}
-                and all(type(value) is int for value in tile.values())
-                for tile in report["locations"]
-            ):
-                raise ValueError()
+        PlayerResult.model_validate(payload)
         if len(json.dumps(payload, allow_nan=False).encode()) > 32 * 1024 * 1024:
             raise ValueError()
-    except (ValueError, TypeError, KeyError):
+    except (ValueError, TypeError):
         raise ResultError("INVALID_RESULT") from None
 
 

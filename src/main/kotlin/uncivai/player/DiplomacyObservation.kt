@@ -10,6 +10,9 @@ import com.unciv.logic.trade.TradeOffer
 import com.unciv.logic.trade.TradeOfferType
 import com.unciv.models.translations.tr
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonObject
+import uncivai.bilateralStatus
+import uncivai.supportedTradeTerm
 import java.util.Collections
 
 @Serializable
@@ -63,6 +66,7 @@ data class KnownCivilization(
     val declarationConfirmation: List<String>,
     val negotiatePeace: DiplomaticAction,
     val agreements: List<TradeAgreement>,
+    val bilateral: JsonObject,
 )
 
 @Serializable
@@ -87,18 +91,20 @@ internal fun observeDiplomacy(player: Civilization, active: Boolean, communicati
     val resources = player.getCivResourcesByName()
     fun terms(terms: List<PeaceTradeTerm>): List<DiplomacyTradeTerm> = immutable(
         terms.map { term ->
-            val supported = PlayerPeaceOperations.supportsTerm(term)
+            val supported = supportedTradeTerm(term.type, term.name)
             val resource = term.type in setOf(TradeOfferType.Luxury_Resource, TradeOfferType.Strategic_Resource)
             // In particular, never resolve a raw city ID via the global desktop game singleton.
             // Unsupported offers are described without revealing private identifiers.
-            val display = if (supported) {
+            val display = if (term.type == TradeOfferType.City) {
+                player.gameInfo.getCities().firstOrNull { it.id == term.name }?.let { "${it.name} (${it.population.population})" } ?: "Non-existent city"
+            } else if (supported) {
                 TradeOffer(term.name, term.type, term.amount, term.duration).getOfferText()
             } else {
                 "Unsupported trade term: [${term.type.name}]".tr()
             }
             DiplomacyTradeTerm(
                 term.type.name,
-                term.name.takeIf { supported },
+                term.name.takeIf { supported && term.type != TradeOfferType.City },
                 term.amount,
                 term.duration,
                 supported,
@@ -131,6 +137,7 @@ internal fun observeDiplomacy(player: Civilization, active: Boolean, communicati
                     immutable(options.declarationConfirmation.map { it.tr() }),
                     DiplomaticAction(peaceReason == null, immutable(listOfNotNull(peaceReason?.tr()))),
                     immutable(peace.activeAgreements(other).map { TradeAgreement(terms(it.ourOffers), terms(it.theirOffers)) }),
+                    bilateralStatus(player, other),
                 )
             },
         ),

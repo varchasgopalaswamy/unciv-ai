@@ -106,7 +106,7 @@ class S06McpCliIntegrationTest {
         )
         try {
             assertTrue(invalid.process.waitFor(15, TimeUnit.SECONDS))
-            assertEquals(2, invalid.process.exitValue())
+            assertEquals(1, invalid.process.exitValue())
             val output = Files.readString(invalid.log)
             assertFalse(output.contains("MCP-READY:"))
             assertFalse(output.contains(credential))

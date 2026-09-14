@@ -1,6 +1,7 @@
 package uncivai
 
 import com.unciv.logic.civilization.diplomacy.DiplomacyFlags
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.boolean
 import kotlinx.serialization.json.int
@@ -45,10 +46,9 @@ object EngineTradeProbe {
             runtime.executor.enableCheckpoints(checkpoint)
             GameplayTestApi(runtime, root.resolve("tls")).use { api ->
                 api.acquire()
-                api.finishTurn(checkNotNull(api.activate().playerToken))
                 healthyCities()
                 var active = checkNotNull(api.activate().playerToken)
-                check(runtime.game.currentPlayer == "Greece")
+                check(runtime.game.currentPlayer == "Rome")
                 val epoch = runtime.executor.epoch
                 var sequence = 0
                 fun command(civ: String, op: String, vararg fields: Pair<String, Any?>): JsonObject = api.communicate(api.playerToken(civ), obj("op" to op, "epoch" to epoch, "requestId" to "trade${++sequence}", *fields))
@@ -59,7 +59,7 @@ object EngineTradeProbe {
                 check(context.getValue("communicationAvailable").jsonPrimitive.boolean)
                 check(context.getValue("economy").jsonObject.getValue("treasury").jsonPrimitive.int == runtime.game.getCivilization("Rome").gold)
                 check(context.getValue("knownCivilizations").jsonArray.single().jsonObject.getValue("civilizationId").jsonPrimitive.content == "Greece")
-                check(context.getValue("scenario").jsonObject.getValue("name").jsonPrimitive.content == "ASYNC_TRADE_EXERCISE")
+                check(context.getValue("scenario") == JsonNull)
                 check(context.keys.none { it in setOf("map", "cities", "researchOptions", "turnReview") })
                 check(context.toString().length < 6000)
                 fun item(side: String, type: String, name: String, amount: Int): JsonObject {
@@ -94,7 +94,7 @@ object EngineTradeProbe {
                 acceptedRequest = obj("op" to "trade_decide", "epoch" to epoch, "requestId" to "accept-counter", "proposal" to id, "version" to 2, "decision" to "accept")
                 acceptedReceipt = api.communicate(api.playerToken("Rome"), acceptedRequest)
                 check(acceptedReceipt["trade"]!!.jsonObject["status"]!!.jsonPrimitive.content == "ENACTED")
-                check(runtime.executor.handoff == handoff && runtime.game.currentPlayer == "Greece")
+                check(runtime.executor.handoff == handoff && runtime.game.currentPlayer == "Rome")
                 check(rome.gold == beforeGold.first + 20 && greece.gold == beforeGold.second - 20)
                 check(rome.getCivResourcesByName()["Silk"] == beforeSilk - 1)
                 check(greece.getCivResourcesByName()["Silk"] == 1)
@@ -108,7 +108,7 @@ object EngineTradeProbe {
                 check(greece.getDiplomacyManager(rome)!!.trades.size == 1)
                 api.reject(active, TurnCommandRequest("stale-game", epoch, beforeView.revision, TurnCommandKind.END_TURN).reviewedFor(beforeView), "STALE_REVISION")
 
-                fun offer(give: List<JsonObject>, receive: List<JsonObject>, expires: Int = runtime.game.turns + 3): JsonObject = command("Rome", "trade_offer", "partner" to "Greece", "give" to give, "receive" to receive, "expiresTurn" to expires)["trade"]!!.jsonObject
+                fun offer(give: List<JsonObject>, receive: List<JsonObject>): JsonObject = command("Rome", "trade_offer", "partner" to "Greece", "give" to give, "receive" to receive)["trade"]!!.jsonObject
                 fun decide(proposal: JsonObject, decision: String, civ: String = "Greece") = command(civ, "trade_decide", "proposal" to proposal["proposal"], "version" to proposal["version"], "decision" to decision)
                 for (decision in listOf("decline", "withdraw")) {
                     val proposal = offer(listOf(iron), listOf(gold))
@@ -132,10 +132,12 @@ object EngineTradeProbe {
                 check(greece.getDiplomacyManager(rome)!!.trades.size == 1)
                 ironTile.improvementIsPillaged = false
                 rome.cache.updateCivResources()
-                val expired = offer(listOf(iron), listOf(gold), runtime.game.turns + 1)
+                val expired = offer(listOf(iron), listOf(gold))
+                runtime.executor.clockMillis = { expired["deadlineMillis"]!!.jsonPrimitive.content.toLong() }
+                check(decide(expired, "accept")["error"] != null)
+                runtime.executor.clockMillis = System::currentTimeMillis
                 api.finishTurn(active)
                 val next = checkNotNull(api.activate().playerToken)
-                check(decide(expired, "accept")["error"] != null)
                 api.finishTurn(next)
                 healthyCities()
                 check(rome.getDiplomacyManager(greece)!!.trades.single().ourOffers.single().duration < silk["duration"]!!.jsonPrimitive.int)
@@ -173,11 +175,15 @@ object EngineTradeProbe {
             runtime.executor.communicationPaused = false
             runtime.executor.resume()
             val open = sessions.getValue("Rome").communication(obj("op" to "trade_offer", "epoch" to runtime.executor.epoch, "requestId" to "before-war", "partner" to "Greece", "give" to emptyList<String>(), "receive" to listOf(obj("type" to "Gold", "name" to "Gold", "amount" to 10, "duration" to -1))))["trade"]!!.jsonObject
-            val beforeWar = sessions.getValue("Greece").turn()
-            sessions.getValue("Greece").execute(TurnCommandRequest("war", beforeWar.epoch, beforeWar.revision, TurnCommandKind.DECLARE_WAR, target = "Rome", confirmWar = true))
+            val frozen = sessions.getValue("Rome").turn()
+            val blocked = runCatching { sessions.getValue("Rome").execute(TurnCommandRequest("war", frozen.epoch, frozen.revision, TurnCommandKind.DECLARE_WAR, target = "Greece", confirmWar = true)) }.exceptionOrNull()
+            check((blocked as uncivai.player.PlayerSessionException).reason == uncivai.player.PlayerSessionFailure.NEGOTIATION_ACTIVE)
+            sessions.getValue("Rome").communication(obj("op" to "trade_decide", "epoch" to runtime.executor.epoch, "requestId" to "withdraw-before-war", "proposal" to open["proposal"], "version" to open["version"], "decision" to "withdraw"))
+            val beforeWar = sessions.getValue("Rome").turn()
+            sessions.getValue("Rome").execute(TurnCommandRequest("war", beforeWar.epoch, beforeWar.revision, TurnCommandKind.DECLARE_WAR, target = "Greece", confirmWar = true))
             val invalid = sessions.getValue("Rome").communication(obj("op" to "trade_read", "epoch" to runtime.executor.epoch, "proposal" to open["proposal"]))
-            check(invalid["trade"]!!.jsonObject["status"]!!.jsonPrimitive.content == "INVALID")
-            check(runtime.executor.communicationState.outcomes.last()["action"]!!.jsonPrimitive.content == "DECLARE_WAR")
+            check(invalid["trade"]!!.jsonObject["status"]!!.jsonPrimitive.content == "WITHDRAWN")
+            check(runtime.executor.communicationState.outcomes.last().action == "DECLARE_WAR")
         }
         for (afterReplace in listOf(false, true)) verifyFailedCheckpoint(root.resolve("failure-$afterReplace"), afterReplace)
     }

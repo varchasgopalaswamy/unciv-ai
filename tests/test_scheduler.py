@@ -50,6 +50,12 @@ class FakeHost:
         owner = self
 
         class Handler(BaseHTTPRequestHandler):
+            def setup(self):
+                # Handshake inside the request worker, not the accept loop. A
+                # cancelled client may leave a TCP connection without TLS data.
+                self.request.settimeout(10)
+                super().setup()
+
             def log_message(self, format: str, *args: object) -> None:
                 pass
 
@@ -71,9 +77,45 @@ class FakeHost:
                         supplied = self.headers.get("Authorization", "").removeprefix("Bearer ")
                         if supplied != owner.player_token and supplied not in owner.agent_tokens.values():
                             code, value = 401, {"error": "UNAUTHORIZED"}
+                        elif body.get("method", "").startswith("notifications/"):
+                            code, value = 202, {}
+                        elif body.get("method") == "initialize":
+                            code, value = (
+                                200,
+                                {
+                                    "jsonrpc": "2.0",
+                                    "id": body["id"],
+                                    "result": {
+                                        "protocolVersion": "2025-06-18",
+                                        "serverInfo": {"name": "test-host", "version": "1"},
+                                        "capabilities": {"tools": {}},
+                                    },
+                                },
+                            )
+                        elif body.get("method") == "tools/list":
+                            code, value = (
+                                200,
+                                {
+                                    "jsonrpc": "2.0",
+                                    "id": body["id"],
+                                    "result": {
+                                        "tools": [
+                                            {"name": name, "inputSchema": {"type": "object"}}
+                                            for name in (
+                                                "player_turn",
+                                                "player_communication",
+                                                "player_command",
+                                                "player_receipt",
+                                            )
+                                        ]
+                                    },
+                                },
+                            )
                         else:
                             arguments = body.get("params", {}).get("arguments", {})
                             name = body.get("params", {}).get("name")
+                            if name == "player_communication":
+                                arguments = arguments["request"]
                             override = owner.mcp_override(name, arguments, supplied) if owner.mcp_override else None
                             if override is not None:
                                 result = override
@@ -93,6 +135,8 @@ class FakeHost:
                                     }
                                 elif op == "read":
                                     result = {"events": [], "nextCursor": 0, "hasMore": False}
+                                elif op == "negotiation":
+                                    result = {"negotiation": {"active": False}}
                                 elif op == "receipt":
                                     result = {"error": "NOT_ENACTED"}
                                 else:
@@ -184,7 +228,7 @@ class FakeHost:
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         context.load_cert_chain(certificate, private_key)
-        self.server.socket = context.wrap_socket(self.server.socket, server_side=True)
+        self.server.socket = context.wrap_socket(self.server.socket, server_side=True, do_handshake_on_connect=False)
         self.port = self.server.server_address[1]
         self.url = f"https://localhost:{self.port}"
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
@@ -196,13 +240,14 @@ class FakeHost:
         self.thread.join(timeout=2)
 
     def status(self):
+        civilizations = tuple(self.agent_tokens)
         return dict(
             epoch=self.epoch,
             serverInstance=self.instance,
-            turn=self.handoff // 2,
+            turn=self.handoff // len(civilizations),
             handoff=self.handoff,
             phase=self.phase,
-            activeCivilization=("Rome", "Greece")[self.handoff % 2],
+            activeCivilization=civilizations[self.handoff % len(civilizations)],
             scheduled=self.scheduled,
             leaseId=self.lease,
             leaseExpiresInMs=30000 if self.lease else 0,
@@ -513,6 +558,30 @@ class SchedulerTest(unittest.TestCase):
     def saved(self):
         return json.loads((self.state / "runner/run.json").read_text())
 
+    def test_three_players_cycle_and_resume_without_skipping_france(self):
+        token = secrets.token_urlsafe(32)
+        self.host.agent_tokens["France"] = token
+        service = self.state / "agent-services" / "France"
+        atomic_json(service / "token.json", {"token": token})
+        atomic_json(
+            service / "endpoint.json",
+            dict(
+                civilizationId="France",
+                url=self.host.url + "/agent/France",
+                tokenFile=str(service / "token.json"),
+                caFile=str(self.certificate),
+            ),
+        )
+        first = self.run_cli("--max-turns", "1", "--max-seconds", "60")
+        self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
+        self.assertEqual([play["civ"] for play in self.host.plays], ["Rome", "Greece", "France"])
+        resumed = self.run_cli("resume", "--max-turns", "2")
+        self.assertEqual(resumed.returncode, 0, resumed.stdout + resumed.stderr)
+        self.assertEqual([play["civ"] for play in self.host.plays], ["Rome", "Greece", "France"] * 2)
+        self.assertEqual(self.saved()["handoffs"], 6)
+        for turn in (0, 1):
+            self.assertTrue((self.state / f"runner/history/France/turn_{turn}/summary.md").is_file())
+
     def test_consecutive_rounds_use_fresh_threads_tokens_and_authoritative_handoffs(self):
         result = self.run_cli("--max-turns", "2", "--max-invocations", "8", "--max-seconds", "30")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -818,6 +887,8 @@ class SchedulerTest(unittest.TestCase):
         self.assertIn("fresh conversation", prompt)
         self.assertIn("historical evidence and plans, not current state", prompt)
         self.assertIn("Follow scenario.instructions", prompt)
+        self.assertIn("otherwise your objective is to win the game", prompt)
+        self.assertIn("player_turn.rules", prompt)
         self.assertNotIn("CLOSE_START_DIPLOMACY", prompt)
         self.assertNotIn("requestId", prompt)
         self.assertNotIn("t11a1", player_prompt("Rome", game_turn=11))

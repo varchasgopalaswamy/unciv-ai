@@ -6,7 +6,8 @@ that you have already logged into. The host builds through the repository's Grad
 wrapper, so the first launch may need to download build dependencies.
 
 Interactive launch now requires the civilization's HTTPS service. Start
-`civ-agent agent-server start Rome` and `civ-agent agent-server start Greece`
+`civ-agent agent-server start Rome`, `civ-agent agent-server start Greece`, and
+`civ-agent agent-server start France`
 in additional terminals before the interactive commands below. See
 [chat, memory and recovery](Chat-memory-and-recovery.md) for automatic play.
 
@@ -16,7 +17,7 @@ Install once, then start the host from the repository directory in the first ter
 
 ```sh
 uv sync --locked
-uv run civ-agent host start --scenario great-people
+uv run civ-agent host start
 ```
 
 Wait for `MCP-READY:https://localhost:8765/mcp`. In a second terminal, from the
@@ -32,12 +33,19 @@ In a third terminal:
 uv run civ-agent agent start Greece
 ```
 
+In a fourth terminal:
+
+```sh
+uv run civ-agent agent start France
+```
+
 The default match directory is `~/.local/state/unciv-host/demo`, or the value of
 `UNCIV_HOST_DIR` if set. On first launch, the host creates owner-only `players.json`
-credentials and starts the peaceful Great People exercise. New games require an
-explicit scenario, such as `--scenario great-people`. Later launches resume
-`exploration.json` and retain the same credentials; the scenario option also checks
-that the saved game belongs to this exercise.
+credentials and starts a Quick Vanilla game between Rome, Greece, and France.
+Each player aims to win; see the [ordinary-game setup](Vanilla-game.md).
+`--scenario trade-cycle` instead selects the prepared Rome/Greece trade exercise.
+Later launches resume `exploration.json` and retain the same credentials; an
+explicit scenario option also checks that the saved game belongs to that exercise.
 Missing credentials for an existing checkpoint must be restored or supplied with
 `--players`; the command will not silently replace them.
 
@@ -86,7 +94,9 @@ checkout. Agent commands, match control, history export, and
 
 ## Choose a match or resume a conversation
 
-The current exercise is [Great People](Great-people.md). The host
+The default is an [ordinary three-player Vanilla game](Vanilla-game.md).
+The only scripted exercise is [the complete trade cycle](Trade-cycle-scenario.md),
+selected with `--scenario trade-cycle`. The host
 prints the loaded scenario before `MCP-READY`, and `player_turn.scenario` supplies
 its objectives to the agents. The default prompt follows those objectives without
 instructions from earlier exercises. See [automatic turns](Automatic-turns.md)
@@ -101,11 +111,13 @@ port to both players:
 
 ```sh
 # First terminal
-uv run civ-agent host start --state-dir /tmp/my-civ-match --new --scenario great-people --port 8766
+uv run civ-agent host start --state-dir /tmp/my-civ-match --new --port 8766
 # Second terminal, once MCP-READY appears
 uv run civ-agent agent start Rome --state-dir /tmp/my-civ-match --port 8766
 # Third terminal
 uv run civ-agent agent start Greece --state-dir /tmp/my-civ-match --port 8766
+# Fourth terminal
+uv run civ-agent agent start France --state-dir /tmp/my-civ-match --port 8766
 ```
 
 `--new` refuses an existing checkpoint. Omit it to resume the match; `--seed` applies
@@ -210,5 +222,5 @@ tests also verify that exports preserve gameplay data, omit host receipts, clear
 save destinations, retain earlier copies, and leave the checkpoint untouched. They
 do not invoke a model or establish complete gameplay coverage or isolation.
 
-See [Great People](Great-people.md#launch-the-exercise) for the current exercise's
+See [the trade cycle](Trade-cycle-scenario.md) for the current exercise's
 initial state, objectives, and verification commands.

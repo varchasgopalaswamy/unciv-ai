@@ -28,7 +28,7 @@ import java.nio.file.StandardOpenOption
 /** Trusted full-state artifact. Never serve this file through a player endpoint. */
 @Serializable
 internal data class GameCheckpoint(
-    val formatVersion: Int = 2,
+    val formatVersion: Int = 3,
     val epoch: String,
     val paused: Boolean,
     val gameJson: String,
@@ -114,7 +114,7 @@ internal class CheckpointStore(
     fun read(): GameCheckpoint {
         acquire()
         val document = checkpointJson.parseToJsonElement(Files.readString(path))
-        require(document.jsonObject["formatVersion"]?.jsonPrimitive?.intOrNull == 2) { "Unsupported checkpoint version; start a new game" }
+        require(document.jsonObject["formatVersion"]?.jsonPrimitive?.intOrNull == 3) { "Unsupported checkpoint version; start a new game" }
         val saved = checkpointJson.decodeFromJsonElement<GameCheckpoint>(document)
         require(saved.epoch.isNotEmpty()) { "Invalid checkpoint epoch" }
         return saved

@@ -80,7 +80,7 @@ object CombatScenarioProbe {
             check(units.count { it.health == 65 } == 1 && units.count { it.promotions.XP == 10 } == 1)
             check(player.tech.techsToResearch == listOf("Writing", "The Wheel", "Bronze Working"))
             val snapshot = PlayerHost(runtime).bindPlayer(player.civID).turn()
-            check(snapshot.scenario?.name == "COMBAT_EXERCISE" && snapshot.scenario.phase == "AT_WAR")
+            check(snapshot.scenario == null)
             check(snapshot.map.tiles.size < game.tileMap.values.size) { "Scenario bypassed ordinary fog of war" }
         }
     }

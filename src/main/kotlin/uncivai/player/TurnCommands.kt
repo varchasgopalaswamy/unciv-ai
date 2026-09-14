@@ -25,6 +25,7 @@ enum class TurnCommandKind {
     CHOOSE_FREE_GREAT_PERSON,
     RENAME_CITY,
     ACKNOWLEDGE_ALERT,
+    RESPOND_FRIENDSHIP,
     DECLARE_WAR,
     MOVE_UNIT,
     ATTACK,
@@ -69,7 +70,11 @@ data class PlayerAlert(
     val firstContact: FirstContactDetails? = null,
     val content: AlertContent? = null,
     val capture: CaptureDecision? = null,
+    val friendship: FriendshipDecision? = null,
 )
+
+@Serializable
+data class FriendshipDecision(val civilizationId: String, val content: AlertContent, val accept: DiplomaticAction, val canDecline: Boolean)
 
 @Serializable
 data class TurnCity(
@@ -92,6 +97,8 @@ data class PlayerTurnSnapshot(
     val turn: Int,
     val phase: String,
     val canEndTurn: Boolean,
+    val rules: GameRules,
+    val negotiation: kotlinx.serialization.json.JsonObject = uncivai.obj("active" to false),
     val turnReview: TurnReview? = null,
     val previousTurnReview: CompletedTurnReview? = null,
     val scenario: GameplayScenario? = null,

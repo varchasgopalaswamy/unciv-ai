@@ -38,7 +38,7 @@ async def exercise_trade(civilization, communication, view, call):
                         {
                             "key": "relationships/Rome",
                             "category": "plan",
-                            "body": {"text": "Counteroffer prepared by the communication job; gameplay can continue."},
+                            "body": {"text": "Counteroffer prepared; gameplay resumes after settlement."},
                         }
                     ]
                 },
@@ -51,21 +51,13 @@ async def exercise_trade(civilization, communication, view, call):
         return {"behavior": "complete"}
     if view["turn"] == 0:
         if civilization == "Rome":
-            await call(
+            settled = await call(
                 "trade_offer", {"partner": "Greece", "give": peace + [silk], "receive": peace + [{**gpt, "amount": 4}]}
             )
+            assert settled["trade"]["status"] == "ENACTED"
         else:
-            await call("trade_read", {"proposal": "d1"})
-            # Force the original bug: an already-running gameplay plan duplicates
-            # the chat job's counteroffer after its relationship note changed.
-            stale = await call("trade_offer", counter)
-            assert stale["error"] == "STALE_ASSUMPTIONS" and stale["recoverable"] and not stale["applied"]
-            assert stale["changedRecords"] == ["relationships/Rome"]
-            for read in stale["recovery"]["reads"]:
-                refreshed = await call(read["tool"], read["arguments"])
-                if read["tool"] == "trade_read":
-                    assert refreshed["trade"]["author"] == "Greece"  # Already handled: do not duplicate it.
-            await call("chat_send", {"to": "Rome", "text": "Reconsidered after memory conflict"})
+            settled = await call("trade_read", {"proposal": "d1"})
+            assert settled["trade"]["status"] == "ENACTED"
     await call("player_turn", {})
     return await call("player_command", {"kind": "END_TURN"})
 

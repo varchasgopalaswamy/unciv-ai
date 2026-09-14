@@ -13,6 +13,9 @@ import java.nio.file.Path
 import java.util.UUID
 
 object VerbalBetrayalProbe {
+    private const val PACT_TERMS = "Neither Rome nor Greece will declare war on or attack the other before turn 8."
+    private const val PACT_CONDITIONS = "Unconditional. Neither party may end this fixed-term promise unilaterally."
+
     @JvmStatic
     fun main(args: Array<String>) {
         val root = Path.of(args[0])
@@ -26,19 +29,7 @@ object VerbalBetrayalProbe {
                 val initial = session.turn()
                 check(initial.diplomacy.knownCivilizations.single().atWar.not())
                 check(initial.alerts.any { it.kind == "FirstContact" && it.content != null })
-                check(initial.scenario!!.name == "DIPLOMACY_MEMORY_EXERCISE")
-            }
-            check(
-                rome.turn().scenario!!.instructions.none {
-                    "betray" in it || "reconsider" in it || "DECLARE_WAR" in it
-                },
-            )
-            check(greece.turn().scenario!!.instructions.any { "DECLARE_WAR" in it })
-            for ((civ, session) in sessions) {
-                val context = session.communication(obj("op" to "state", "epoch" to runtime.executor.epoch)).getValue("context").jsonObject
-                val role = context.getValue("scenario").jsonObject.getValue("instructions").jsonArray.map { it.jsonPrimitive.content }
-                check(role == session.turn().scenario!!.instructions)
-                check(role.any { "DECLARE_WAR" in it } == (civ == "Greece"))
+                check(initial.scenario == null)
             }
             var sequence = 0
             fun chat(civ: String, op: String, vararg fields: Pair<String, Any?>): JsonObject = sessions.getValue(civ).communication(
@@ -50,14 +41,14 @@ object VerbalBetrayalProbe {
                 ),
             )
 
-            chat("Rome", "send", "to" to "Greece", "text" to VerbalBetrayalScenario.PACT_TERMS)
+            chat("Rome", "send", "to" to "Greece", "text" to PACT_TERMS)
             val offer = chat(
                 "Rome",
                 "offer",
                 "participants" to listOf("Rome", "Greece"),
                 "kind" to "peace",
-                "terms" to VerbalBetrayalScenario.PACT_TERMS,
-                "conditions" to VerbalBetrayalScenario.PACT_CONDITIONS,
+                "terms" to PACT_TERMS,
+                "conditions" to PACT_CONDITIONS,
                 "expiresTurn" to 8,
             )["offer"]!!.jsonObject
             val proposal = offer["proposal"]!!.jsonPrimitive.content
@@ -105,7 +96,7 @@ object VerbalBetrayalProbe {
             val events = rome.communication(obj("op" to "state", "epoch" to runtime.executor.epoch))
             check(
                 events["offers"]!!.jsonArray.single().jsonObject["terms"]!!.jsonPrimitive.content ==
-                    VerbalBetrayalScenario.PACT_TERMS,
+                    PACT_TERMS,
             )
             check(
                 events["consents"]!!.jsonArray.count {
@@ -114,18 +105,16 @@ object VerbalBetrayalProbe {
                     2,
             )
             check(events["outcomes"]!!.jsonArray.single().jsonObject["author"]!!.jsonPrimitive.content == "Greece")
-            check(rome.turn().scenario!!.phase == "AT_WAR")
+            check(rome.turn().diplomacy.knownCivilizations.single().atWar)
         }
         HeadlessRuntime.loadCheckpoint(checkpoint, root.resolve("restarted")).use { runtime ->
             check(runtime.game.getCivilization("Rome").isAtWarWith(runtime.game.getCivilization("Greece")))
             val outcome = runtime.executor.communicationState.outcomes.single()
-            check(outcome["action"]!!.jsonPrimitive.content == "DECLARE_WAR")
-            check(
-                PlayerHost(runtime).bindPlayer("Rome").turn().scenario!!.instructions.none {
-                    "betray" in it ||
-                        "reconsider" in it
-                },
-            )
+            check(outcome.action == "DECLARE_WAR")
+            check(outcome.confirmation.relationships.keys == setOf("Rome", "Greece"))
+            check(outcome.confirmation.relationships.getValue("Rome").let { it.otherCivilizationId == "Greece" && it.atWar })
+            check(outcome.confirmation.relationships.getValue("Greece").let { it.otherCivilizationId == "Rome" && it.atWar })
+            check(PlayerHost(runtime).bindPlayer("Rome").turn().scenario == null)
         }
     }
 

@@ -12,6 +12,12 @@ def test_human_acceptance_pins_displayed_terms_and_requires_consent(tmp_path, mo
     calls = []
 
     class Host:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_):
+            pass
+
         async def tool(self, name, args):
             calls.append((name, copy.deepcopy(args)))
             if name == "player_turn" or args.get("op") == "state":

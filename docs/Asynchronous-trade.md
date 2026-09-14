@@ -1,17 +1,27 @@
-# Asynchronous trade and peace
+# Trade negotiation with paused gameplay
 
 The Kotlin host owns each proposal's concrete terms. Players negotiate in chat,
 then publish a binding proposal with typed items, quantities and durations.
 Publishing records the author's consent. The other player accepts or declines the
 stored proposal; acceptance never reconstructs terms from prose.
 
-This slice supports bilateral gold, gold per turn, luxury resources and strategic
-resources between met, surviving human major civilizations. At peace, one side can
+Only the current player can initiate a formal negotiation. Off-turn players can
+invite them through chat. The first valid offer freezes all gameplay mutations,
+including END_TURN, purchases, movement, war declarations and city changes. Other
+deals cannot open or enact during that window. Chat, observations and private
+memory remain available. The two players negotiate against the same game state.
+
+This supports bilateral gold, gold per turn, luxury and strategic resources,
+Open Borders, embassies, research agreements, defensive pacts and city transfers
+between met, surviving human major civilizations. At peace, one side can
 be empty for a gift. During war, both sides must include the offered Peace Treaty;
 peace and economic consideration use the same proposal and consent flow. See
-[war and peace](War-and-peace.md) for treaty rules and the `async-peace` scenario.
-City transfers, open borders, embassies, research agreements, city-states and
-third-party clauses remain outside this slice.
+[war and peace](War-and-peace.md) for treaty rules.
+Engine declarations of friendship use the same stored proposal and decision flow.
+City-states, third-party clauses, mod-only terms and an agreement
+expiration/cancellation notification and memory workflow remain out of scope.
+Native engine durations still tick normally. The existing proposal deadline and
+withdrawal of an unaccepted proposal are distinct from cancelling an enacted deal.
 
 ## Player tools
 
@@ -20,12 +30,55 @@ third-party clauses remain outside this slice.
 | `trade_options(partner)` | Current trade-table maxima, engine durations, unavailable reasons and active agreements |
 | `trade_read(proposal)` | Full canonical terms, consent, status, execution outcome and previous versions |
 | `trade_offer(partner, give, receive, …)` | Publish terms; optionally counteroffer/revise an inspected proposal |
+| `friendship_offer(partner)` | Publish consent to the engine's fixed Declaration of Friendship |
 | `trade_decide(proposal, decision)` | Accept, decline, or (as author) withdraw the inspected terms |
 
 `give` and `receive` in an offer are from the **proposing player's** perspective.
 The host converts them to canonical clauses with explicit `from` and `to` players.
 Both parties see the same clauses. Each item contains `type`, `name`, `amount` and
 `duration`, using the offered names and durations from `trade_options`.
+
+Treaties must occur identically on both sides. For a Research Agreement, `amount`
+is the **gold cost paid by each player**, not an adjustable quantity. Both final
+balances must cover that cost after immediate gold transfers; GPT cannot fund it.
+The signing cost and durations are rechecked at acceptance. Open Borders and
+embassies are directional: giving Open Borders permits the recipient to enter
+your territory; giving an embassy reveals your capital area to the recipient.
+`unavailableGive`/`unavailableReceive` explain missing prerequisites, while
+`relationship` exposes native friendship, embassy, borders, research and pact status.
+
+Shared engine outcomes use `confirmation.relationships`, keyed by civilization
+ID. Each entry names `otherCivilizationId` and records that civilization's
+`mayEnterOtherTerritory`, `hasEmbassyInOtherCapital`, war state and treaty
+durations. For example, Rome granting Greece Open Borders records
+`relationships.Greece.mayEnterOtherTerritory=true` with
+`otherCivilizationId="Rome"`; the Roman entry can still be false. The same
+confirmation appears in acceptance receipts, `trade_read`, communication state
+and engine events. It remains the settlement snapshot through retries, later
+agreements and checkpoint restarts. These shared records contain no
+reader-relative "you" fields. Current `trade_options.relationship` and
+`player_turn` views describe the player making the query.
+Start a fresh match after updating: these typed confirmations use checkpoint
+format version 3.
+
+City terms use shared short trade IDs such as `tc1`, stable through ownership
+changes and restart. These differ from an owned city's gameplay handle. The trade
+dialog exposes the city's name and population, not its private production,
+buildings or citizen assignments. Both participants see the same frozen city
+description in a proposal. Acceptance rechecks ownership, capital/resistance rules
+and pending city decisions. A sale removes the seller's gameplay authority and
+updates territory and visibility immediately. The buyer gets the ordinary owned
+city view. A resulting `CityTraded` alert exposes the full KeepCity/Liberate choice
+through `RESOLVE_CAPTURED_CITY`; the inherited original-owner choice does not add
+third-party negotiation clauses.
+
+Friendship has concrete engine-owned terms (`friendship`, with the native 30-turn
+duration), empty economic clauses, and the same `trade_read`/`trade_decide` consent
+and retry rules. It cannot be counteroffered into different terms. A social chat
+promise does not sign it. An incoming native friendship popup is also readable:
+`RESPOND_FRIENDSHIP` takes its alert handle and `Accept` or `Decline`, after reading
+the full decision. Accepting either path records a `DECLARE_FRIENDSHIP` engine
+outcome and invalidates affected gameplay plans.
 
 The model supplies only the proposal ID and decision when accepting:
 
@@ -41,15 +94,38 @@ and decision.
 
 A counteroffer or revision creates a new immutable version, superseding the
 pending version and recording only its new author's consent. Accepted versions
-cannot be amended or withdrawn retroactively. The default proposal expiration is
-the current game turn plus three; `expiresTurn` sets a different absolute deadline.
-That deadline concerns acceptance, not the duration of the resulting engine deal.
+cannot be amended or withdrawn retroactively. Each negotiation allows three
+counteroffers shared by both players, excluding the initial offer. Each published
+replacement counts, including an author's revision. At the limit, the latest terms
+can still be accepted, declined or withdrawn. New proposal IDs cannot bypass an
+open negotiation. There is no negotiation-specific token budget.
+
+The default wall-clock deadline is five minutes after the first offer. Neither
+counters nor restarts reset it. The host closes expired proposals, records a
+terminal event and releases gameplay even if no player is connected. This deadline
+is separate from the duration of an enacted treaty or resource agreement.
+
+Configure subsequent negotiations at host launch:
+
+```bash
+uv run civ-agent host start --state-dir /tmp/civ-trade-cycle-1 --scenario trade-cycle \
+  --trade-counteroffers 3 --trade-timeout 300
+```
+
+Settings persist in the checkpoint; omitted flags on resume retain them. Zero
+counteroffers allows acceptance or rejection of the initial terms only. An open
+negotiation retains the settings with which it began.
 
 ## Execution and recovery
 
-Trade computation and messages remain asynchronous. Both gameplay and
-communication jobs have trade tools; communication jobs retain no permission to
-move units, build, attack or end a gameplay turn. There is no model polling.
+Trade computation and messages remain asynchronous, while gameplay waits for the
+negotiation to close. A gameplay offer call returns the settled canonical proposal.
+The service waits through HTTPS long-polling outside its dispatch lock and memory
+actor; separate communication jobs, including the initiating civilization's job,
+handle counteroffers and decisions. Communication tool calls return immediately
+after their own command. No model polls or repeatedly restarts to wait for replies.
+Ordinary gameplay timeout accounting excludes this service wait; heartbeat leases,
+the negotiation deadline and whole-match time limits still apply.
 
 Routine communication starts with `chat_read`. Its compact `context` contains
 the current turn, that player's scenario role, own economic totals and known
@@ -67,20 +143,23 @@ plan. Replaying the rejected call returns the same rejection even after a refres
 it cannot execute an obsolete decision. Uncertain transmitted requests still
 stop the job and require receipt reconciliation.
 
-The host's dedicated bilateral-consent path runs during either player's gameplay
-turn without switching Unciv's active player. It also remains available during
-the scheduler's gaps between gameplay activations. Operator communication barriers
-and whole-match pause fence it alongside chat. This is an explicit scheduling
-extension to hotseat, not general permission to take an inactive player's turn.
+The non-current participant can counteroffer or consent without switching Unciv's
+active player. A new negotiation requires the current player and running gameplay.
+Operator communication barriers fence decisions alongside chat. An interrupted
+gameplay job resumes from durable receipts and the existing deadline; it does not
+reopen the negotiation. Emergency rollback restores the whole shared checkpoint.
 
 The host reuses `TradeLogic` for the desktop's offer table and transfer effects,
 and `TradeEvaluation` for engine validity. It additionally requires the supported
 categories, exact current maxima and durations, positive nonduplicate quantities,
-valid participants and safe integer balances. Pending proposals reserve no assets;
-acceptance rechecks current supply under the same executor lock as all other
-mutations. A competing expense or accepted deal can therefore invalidate an offer.
-War or enacted peace invalidates other pending proposals between those players.
-Accepted peace also invalidates stale hostile actions and gameplay observations.
+valid participants and safe integer balances. Acceptance still rechecks legality
+under the executor lock as a final integrity check. Normal gameplay cannot capture
+the offered city, pillage its improvements or spend promised gold during negotiation.
+Acceptance or closure releases the hold atomically with the receipt and checkpoint.
+Gameplay must re-observe after the hold; a command prepared before waiting is
+returned for reconsideration, never automatically executed against new state.
+New friendship does the same. Accepted peace or friendship also invalidates stale
+hostile actions and gameplay observations.
 
 Validation, complete engine transfer, consent, outcome, recipient events and the
 request receipt share one serialized operation and atomic native checkpoint. Only
@@ -99,56 +178,32 @@ player's memory together under the existing new-epoch recovery protocol.
 
 ## Playable verification scenario
 
-Use a fresh directory and four terminals:
+[`--scenario trade-cycle`](Trade-cycle-scenario.md) is the only gameplay scenario.
+It covers eleven staged negotiations, every supported item, intentional
+decline/withdrawal/expiry, three counters, funded research and a two-way city
+exchange. Its runbook includes launch commands, the checkpoint verifier and
+scripted recovery checks.
 
-```sh
-uv run civ-agent host start --state-dir /tmp/civ-trade-1 --scenario async-trade
-uv run civ-agent agent-server start Rome --state-dir /tmp/civ-trade-1
-uv run civ-agent agent-server start Greece --state-dir /tmp/civ-trade-1
-uv run civ-agent match start --state-dir /tmp/civ-trade-1 --max-turns 3 --max-invocations 32
-```
-
-Wait for host and agent services to report ready before starting the match. Model
-and reasoning options work as in the other scenarios. Both civilizations start
-with a capital, connected surplus resources, positive income and 1,000 gold.
-Grassland and a Granary provide enough food for five citizens. Legal Barracks and
-Monument queues are prepared, with Avoid Growth enabled. The fixture creates
-peaceful contact directly and carries no previous war or peace-negotiation history.
-
-Rome's first gameplay job offers one Silk for four gold per turn. Communication
-jobs handle Greece's counteroffer of two gold per turn and twenty immediate gold,
-then Rome's acceptance. Gameplay jobs continue their turns without duplicating
-these responses. Both
-players then inspect the enacted deal, update their economic and relationship
-notes, and continue scheduled turns without arranging another deal.
-
-Use a new save for this revised setup. Restart the host and both agent services
-to load the updated code before rerunning the exercise.
-
-Inspect authoritative player-visible records while the host is running:
-
-```sh
-uv run civ-agent trade list Rome --state-dir /tmp/civ-trade-1
-uv run civ-agent trade read Rome --state-dir /tmp/civ-trade-1 --proposal DEAL_ID
-uv run civ-agent trade options Greece --state-dir /tmp/civ-trade-1 --partner Rome
-```
-
-The human CLI also provides `offer`, `accept`, `decline` and `withdraw`. `offer`
-takes JSON arrays through `--give-json` and `--receive-json`, with optional
-`--proposal` for a counteroffer and `--expires-turn` for its deadline. Human
-acceptance displays the current concrete terms and pins that version before
-asking for confirmation.
-
-Read `agents/<civilization>/economy.md`, relationship notes and communication
-history to assess reasoning. Check the native save, host proposal/outcome and
-active agreements to establish what actually happened. Proposal clauses retain
-the original duration; native active agreements show remaining duration, following
-Unciv's per-player turn accounting. `host inspect` opens an exported save in Unciv.
+Human commands include `civ-agent trade list`, `options`, `read`, `offer`,
+`friendship`, `accept`, `decline` and `withdraw`. `offer` takes JSON arrays through
+`--give-json` and `--receive-json`, with optional `--proposal` for a counteroffer.
+Human acceptance displays the current concrete terms and pins that version
+before asking for confirmation.
 
 ## Verification
 
-`EngineTradeProbe` performs authenticated HTTPS negotiation while Greece retains
-the same gameplay activation. Rome accepts out of turn. It checks exact canonical
+`BilateralTradeProbe` checks exact treaty shape/cost, prerequisite ordering,
+directional embassies, off-turn friendship and trade acceptance, city ownership
+and fog changes, stale seller commands, funded and underfunded research,
+duplicate/forged/excluded terms, restart replay and whole-round restoration.
+Engine tests cover owned friendship popup responses and traded-city disposition
+authority, including stale decisions and original-owner war restrictions.
+
+`NegotiationProbe` verifies the shared counteroffer cap, blocked game commands and
+legacy mutations, private pause metadata, terminal decisions, persistent deadlines,
+unattended expiry and resumed gameplay. `EngineTradeProbe` performs authenticated
+HTTPS negotiation while Rome retains the same gameplay activation. Greece counters
+out of turn, and Rome accepts through communication. It checks exact canonical
 clauses, immediate balances, GPT rates, imported/exported resources, engine deal
 durations, subsequent handoffs, pending-offer restart and exact retries. It also
 covers stale counteroffers and gameplay observations, decline/withdrawal, invalid

@@ -16,25 +16,28 @@ class Host:
         self.executed = []
         self.seen = {}
 
-    async def rpc(self, method, params):
-        return {
-            "tools": [
-                {
-                    "name": "player_command",
-                    "inputSchema": {
-                        "properties": {
-                            key: {"type": "string"} for key in ("kind", "target", "requestId", "epoch", "revision")
-                        },
-                        "required": ["kind", "requestId", "epoch", "revision"],
+    async def close(self):
+        pass
+
+    async def list_tools(self):
+        return [
+            {
+                "name": "player_command",
+                "inputSchema": {
+                    "properties": {
+                        key: {"type": "string"} for key in ("kind", "target", "requestId", "epoch", "revision")
                     },
-                }
-            ]
-        }
+                    "required": ["kind", "requestId", "epoch", "revision"],
+                },
+            }
+        ]
 
     async def tool(self, name, args):
         if name == "player_turn":
             return {"epoch": "g1", "revision": self.revision, "phase": "ACTIVE", "turnReview": {"id": "review1"}}
         if name == "player_communication":
+            if args["op"] == "negotiation":
+                return {"negotiation": {"active": False}}
             if args["op"] == "state":
                 return {
                     "civilization": self.civilization,

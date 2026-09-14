@@ -1,0 +1,286 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "requestId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[ -~]+$",
+      "description": "Code-owned request identifier. Reuse only for an identical retry."
+    },
+    "epoch": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "\\S",
+      "description": "Epoch returned by player_turn."
+    },
+    "revision": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "\\S",
+      "description": "Current player revision from player_turn, e.g. rev12. Copy it exactly; do not predict the next value."
+    },
+    "kind": {
+      "type": "string",
+      "enum": [
+        "SET_RESEARCH_QUEUE",
+        "CHOOSE_FREE_TECHNOLOGY",
+        "ADOPT_POLICY",
+        "DISMISS_POLICY_PICKER",
+        "QUEUE_CONSTRUCTION",
+        "CHOOSE_FREE_GREAT_PERSON",
+        "RENAME_CITY",
+        "ACKNOWLEDGE_ALERT",
+        "RESPOND_FRIENDSHIP",
+        "DECLARE_WAR",
+        "MOVE_UNIT",
+        "ATTACK",
+        "CITY_ATTACK",
+        "SET_UNIT_ORDER",
+        "PROMOTE_UNIT",
+        "RESOLVE_CAPTURED_CITY",
+        "MANAGE_CAPTURED_CITY",
+        "BUY_CONSTRUCTION",
+        "BUY_TILE",
+        "UPGRADE_UNIT",
+        "PILLAGE",
+        "DISBAND_UNIT",
+        "ACTIVATE_GREAT_PERSON",
+        "FOUND_CITY",
+        "START_WORKER_JOB",
+        "STOP_WORKER_JOB",
+        "SET_WORKED_TILE",
+        "SET_TILE_LOCKED",
+        "SET_CITY_FOCUS",
+        "SET_AVOID_GROWTH",
+        "SET_MANUAL_SPECIALISTS",
+        "ASSIGN_SPECIALIST",
+        "UNASSIGN_SPECIALIST",
+        "RESET_CITIZENS",
+        "SELL_BUILDING",
+        "REASSIGN_CITY_TILE",
+        "REMOVE_CONSTRUCTION",
+        "MOVE_CONSTRUCTION",
+        "END_TURN"
+      ],
+      "description": "Gameplay operation to execute."
+    },
+    "target": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "\\S"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Copy a current player_turn handle exactly: city1, unit1, alert1 or offer1. Handles are local to your player. Diplomacy partner commands use a known civilizationId."
+    },
+    "selection": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "\\S"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Chosen option or new city name; omit for commands without a named choice."
+    },
+    "reviewId": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "\\S"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Only END_TURN: required id from the current turnReview after reading player_turn."
+    },
+    "deferReason": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500,
+          "pattern": "\\S"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Only END_TURN: why you intentionally leave idle units with legal destinations; required if any exist in turnReview."
+    },
+    "destination": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "x": {
+              "type": "integer",
+              "minimum": -2147483648,
+              "maximum": 2147483647
+            },
+            "y": {
+              "type": "integer",
+              "minimum": -2147483648,
+              "maximum": 2147483647
+            }
+          },
+          "required": [
+            "x",
+            "y"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Offered movement or attack destination, city development tile for SET_WORKED_TILE / SET_TILE_LOCKED, or purchases.tiles position for BUY_TILE."
+    },
+    "attackFrom": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "x": {
+              "type": "integer",
+              "minimum": -2147483648,
+              "maximum": 2147483647
+            },
+            "y": {
+              "type": "integer",
+              "minimum": -2147483648,
+              "maximum": 2147483647
+            }
+          },
+          "required": [
+            "x",
+            "y"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Only ATTACK: required origin from the exact offered attack preview."
+    },
+    "confirmBreakPromise": {
+      "type": "boolean",
+      "description": "Explicitly accept listed settlement promises; only for FOUND_CITY."
+    },
+    "confirmAction": {
+      "type": "boolean",
+      "description": "For BUY_CONSTRUCTION, BUY_TILE, UPGRADE_UNIT, PILLAGE, DISBAND_UNIT or SELL_BUILDING: confirm the offered confirmation text after reading player_turn; required true when confirmation is non-null."
+    },
+    "confirmWar": {
+      "type": "boolean",
+      "description": "Required true for DECLARE_WAR after reading declarationConfirmation; omit otherwise."
+    },
+    "enabled": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Required only for SET_AVOID_GROWTH and SET_MANUAL_SPECIALISTS: the desired setting."
+    },
+    "worked": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Assign or unassign an offered city tile; only SET_WORKED_TILE."
+    },
+    "locked": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Lock or unlock an offered city tile; only SET_TILE_LOCKED."
+    },
+    "index": {
+      "anyOf": [
+        {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 2147483647
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Current construction queue index; only REMOVE_CONSTRUCTION / MOVE_CONSTRUCTION."
+    },
+    "toIndex": {
+      "anyOf": [
+        {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 2147483647
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Offered destination queue index; only MOVE_CONSTRUCTION."
+    },
+    "socialVersion": {
+      "anyOf": [
+        {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9223372036854775807
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Code-owned version of social commitments used to check planning assumptions."
+    },
+    "queue": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 256,
+        "pattern": "\\S"
+      },
+      "maxItems": 1024,
+      "description": "Research queue in prerequisite order, only for SET_RESEARCH_QUEUE."
+    }
+  },
+  "required": [
+    "requestId",
+    "epoch",
+    "revision",
+    "kind"
+  ],
+  "additionalProperties": false
+}

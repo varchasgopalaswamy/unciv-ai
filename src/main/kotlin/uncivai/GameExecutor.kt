@@ -4,12 +4,17 @@ import com.unciv.logic.GameInfo
 import com.unciv.logic.files.UncivFiles
 import com.unciv.view.GameView
 import uncivai.player.PlayerIdentifier
+import uncivai.player.PlayerSessionException
+import uncivai.player.PlayerSessionFailure
 import uncivai.player.TurnSessionState
 import uncivai.player.detached
 import uncivai.player.gameFinished
 import uncivai.player.observation
 import java.nio.file.Path
 import java.security.SecureRandom
+import java.util.concurrent.Executors
+import java.util.concurrent.ScheduledFuture
+import java.util.concurrent.TimeUnit
 
 /**
  * Trusted ownership of one game, independent of graphics or transport bootstrap.
@@ -30,7 +35,21 @@ class GameExecutor internal constructor(
     internal val turnSessions = HashMap<String, TurnSessionState>()
     internal var communicationState = CommunicationState()
     internal val communication = Communication(this)
+    internal val communicationChanges = CommunicationChanges()
     internal var communicationPaused = false
+    internal var clockMillis: () -> Long = System::currentTimeMillis
+    private val tradeDeadlines = Executors.newSingleThreadScheduledExecutor { task ->
+        Thread(task, "trade-deadline").apply { isDaemon = true }
+    }
+    private var tradeDeadline: ScheduledFuture<*>? = null
+
+    internal fun scheduleTradeDeadline(deadline: Long) {
+        tradeDeadline?.cancel(false)
+        tradeDeadline = tradeDeadlines.schedule({
+            // Shutdown or fail-stop may win the race. Such a runtime must stay closed.
+            runCatching { accessGame {} }
+        }, (deadline - clockMillis()).coerceAtLeast(0), TimeUnit.MILLISECONDS)
+    }
 
     /** Capture each player's permitted reports before turn processing can expire engine history. */
     internal fun captureCombatReports() {
@@ -60,8 +79,12 @@ class GameExecutor internal constructor(
 
     internal fun <T> accessGame(block: (GameInfo) -> T): T = synchronized(lifecycleLock) {
         checkAvailable()
+        val outermost = !Thread.holdsLock(game)
         synchronized(game) {
-            scheduler?.expireIfNeeded()
+            if (outermost) {
+                scheduler?.expireIfNeeded()
+                communication.trades.expireIfNeeded()
+            }
             block(game)
         }
     }
@@ -69,14 +92,19 @@ class GameExecutor internal constructor(
     /** Operator diagnostics remain available after an uncertain mutation; player queries do not. */
     internal fun <T> accessOperatorGame(block: (GameInfo) -> T): T = synchronized(lifecycleLock) {
         if (closed || !isAvailable()) throw RuntimeClosedException()
+        val outermost = !Thread.holdsLock(game)
         synchronized(game) {
-            scheduler?.expireIfNeeded()
+            if (outermost) {
+                scheduler?.expireIfNeeded()
+                if (mutationFailure == null) communication.trades.expireIfNeeded()
+            }
             block(game)
         }
     }
 
     internal fun requireRunning() {
         if (paused) throw RuntimePausedException()
+        if (communicationState.trades.activeProposal != null) throw PlayerSessionException(PlayerSessionFailure.NEGOTIATION_ACTIVE)
     }
 
     internal fun isPaused(): Boolean = paused
@@ -108,11 +136,11 @@ class GameExecutor internal constructor(
     }
 
     internal fun commitCheckpoint() {
-        val store = checkpointStore ?: return
         try {
             // A handoff or terminal result and dropping its rollback point are one commit.
             if (turnStart?.handoff != handoff || gameFinished(game)) turnStart = null
-            store.write(CheckpointStore.capture(game, epoch, paused, turnSessions, handoff, scheduled, turnStart, communicationState, communicationPaused))
+            checkpointStore?.write(CheckpointStore.capture(game, epoch, paused, turnSessions, handoff, scheduled, turnStart, communicationState, communicationPaused))
+            communicationChanges.committed(communicationState)
         } catch (failure: Throwable) {
             haltAfterMutation(failure)
         }
@@ -122,6 +150,9 @@ class GameExecutor internal constructor(
         check(checkpointStore == null && turnSessions.isEmpty()) { "Restore before binding players" }
         epoch = checkpoint.epoch
         communicationState = checkpoint.communication
+        communicationState.trades.activeProposal?.let {
+            scheduleTradeDeadline(communicationState.trades.proposals.getValue(it).last().deadlineMillis)
+        }
         communicationPaused = checkpoint.communicationPaused
         scheduled = checkpoint.scheduled
         paused = checkpoint.paused || scheduled
@@ -185,11 +216,16 @@ class GameExecutor internal constructor(
                 revokedCredentials = (accounting.revokedCredentials + accounting.playerCredentials.keys + configuredCredentials).toMutableSet(),
                 playerCredentials = mutableMapOf(),
             )
+            tradeDeadline?.cancel(false)
+            communicationState.trades.activeProposal?.let {
+                scheduleTradeDeadline(communicationState.trades.proposals.getValue(it).last().deadlineMillis)
+            }
             turnSessions.values.forEach {
                 it.fingerprint = null
                 it.observedRevision = null
             }
             commitCheckpoint()
+            communicationChanges.invalidate()
         } catch (failure: Throwable) {
             haltAfterMutation(failure)
         }
@@ -264,6 +300,7 @@ class GameExecutor internal constructor(
 
     internal fun haltAfterMutation(failure: Throwable): Nothing = synchronized(lifecycleLock) {
         if (mutationFailure == null) mutationFailure = failure
+        communicationChanges.invalidate()
         throw RuntimeHaltedException()
     }
 
@@ -271,6 +308,8 @@ class GameExecutor internal constructor(
         synchronized(lifecycleLock) {
             synchronized(game) {
                 closed = true
+                communicationChanges.invalidate()
+                tradeDeadlines.shutdownNow()
                 checkpointStore?.close()
             }
         }

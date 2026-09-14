@@ -51,7 +51,7 @@ internal fun observeResult(player: Civilization): PlayerResult? = PlayerOperatio
 internal fun gameHasResult(game: GameInfo): Boolean = !game.oneMoreTurnMode &&
     (game.victoryData != null || game.civilizations.any { it.victoryManager.hasWon() })
 
-internal fun Civilization.hasCaptureDecision(): Boolean = popupAlerts.any { it.type == AlertType.CityConquered || it.type == AlertType.RecapturedCivilian }
+internal fun Civilization.hasCaptureDecision(): Boolean = popupAlerts.any { it.type in setOf(AlertType.CityConquered, AlertType.RecapturedCivilian, AlertType.CityTraded) }
 
 /** A capture choice is still the current human player's responsibility even after a winning attack. */
 internal fun gameFinished(game: GameInfo): Boolean = gameHasResult(game) && !game.currentPlayerCiv.hasCaptureDecision()

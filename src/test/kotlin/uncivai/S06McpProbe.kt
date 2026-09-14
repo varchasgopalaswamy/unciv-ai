@@ -403,9 +403,9 @@ object S06McpProbe {
             "player_result" to emptySet(),
             "research_details" to setOf("names"),
             "policy_details" to setOf("names"),
-            "player_command" to setOf("requestId", "epoch", "revision", "reviewId", "deferReason", "kind", "target", "selection", "queue", "destination", "attackFrom", "confirmBreakPromise", "confirmAction", "enabled", "confirmWar", "worked", "locked", "index", "toIndex"),
-            "player_receipt" to setOf("requestId", "epoch", "revision", "reviewId", "deferReason", "kind", "target", "selection", "queue", "destination", "attackFrom", "confirmBreakPromise", "confirmAction", "enabled", "confirmWar", "worked", "locked", "index", "toIndex"),
-            "player_communication" to setOf("op", "epoch"),
+            "player_command" to setOf("requestId", "epoch", "revision", "reviewId", "deferReason", "kind", "target", "selection", "queue", "destination", "attackFrom", "confirmBreakPromise", "confirmAction", "enabled", "confirmWar", "worked", "locked", "index", "toIndex", "socialVersion"),
+            "player_receipt" to setOf("requestId", "epoch", "revision", "reviewId", "deferReason", "kind", "target", "selection", "queue", "destination", "attackFrom", "confirmBreakPromise", "confirmAction", "enabled", "confirmWar", "worked", "locked", "index", "toIndex", "socialVersion"),
+            "player_communication" to setOf("request"),
             "player_summary" to emptySet(),
             "owned_cities" to emptySet(),
             "rename_city" to setOf("requestId", "epoch", "cityHandle", "name"),
@@ -422,11 +422,14 @@ object S06McpProbe {
                 check(tool.inputSchema.required.orEmpty().toSet() == setOf("requestId", "epoch", "revision", "kind"))
                 check(properties.getValue("queue").jsonObject.string("type") == "array")
                 for ((field, maximum) in mapOf("reviewId" to "128", "deferReason" to "500")) {
-                    val schema = properties.getValue(field).jsonObject
+                    val schema = properties.getValue(field).jsonObject.getValue("anyOf").jsonArray.first().jsonObject
                     check(schema.string("type") == "string")
                     check(schema.getValue("minLength").jsonPrimitive.content == "1")
                     check(schema.getValue("maxLength").jsonPrimitive.content == maximum)
                 }
+            } else if (name == "player_communication") {
+                check(tool.inputSchema.required == listOf("request"))
+                check(properties.getValue("request").jsonObject.getValue("oneOf").jsonArray.size == 18)
             } else if (name in setOf("research_details", "policy_details")) {
                 check(tool.inputSchema.required.orEmpty().isEmpty())
                 check(properties.getValue("names").jsonObject.string("type") == "array")

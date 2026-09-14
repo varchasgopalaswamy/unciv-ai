@@ -57,35 +57,13 @@ These queries contain public rules and the bound player's permitted state. They
 do not choose research, adopt policies, expose another player's counters or enlarge
 the ordinary turn snapshot with full rule descriptions.
 
-## Launch the exercise
+## Regression fixtures
 
-Use a fresh directory. Run the first three commands in separate terminals, waiting
-for `MCP-READY` and both `AGENT-READY` messages before starting the match:
-
-```sh
-uv run civ-agent host start --state-dir /tmp/civ-great-people-1 --scenario great-people --port 8776
-uv run civ-agent agent-server start Rome --state-dir /tmp/civ-great-people-1 --port 8899
-uv run civ-agent agent-server start Greece --state-dir /tmp/civ-great-people-1 --port 8900
-uv run civ-agent match start --state-dir /tmp/civ-great-people-1 --model gpt-5.6-luna --reasoning-effort medium --max-turns 6 --max-invocations 16 --max-seconds 3600 --turn-timeout 600
-```
-
-Model and reasoning settings are optional operator choices. Agent prompts receive
-the exercise instructions through `player_turn.scenario`; no extra pasted gameplay
-prompt is needed. Supplying `--scenario great-people` on resume verifies the actual
-checkpoint scenario. A directory's name does not select a scenario.
-
-Both players start with one capital, seven prepared Great People, a valid National
-College queue, a staffed University, Scientist points just below generation, and
-one remaining Liberty policy. The exercise asks each player to:
-
-1. Inspect the Mathematics/Currency research path and hurry research.
-2. Hurry National College and verify its completion after a turn advances.
-3. Construct a Manufactory, Customs house, Landmark and Citadel.
-4. Start a Golden Age, then complete Liberty, select a free General and use its
-   Golden Age ability too. Read each resulting popup and decision.
-5. Observe the naturally generated Scientist, the increased threshold and the
-   remaining points; use that new person to construct an Academy.
-6. Continue ordinary production and research through scheduled turns.
+Internal fixtures give both players a capital, prepared Great People, a staffed
+University, a National College queue, near-threshold Scientist points and one
+remaining Liberty policy. Scripted tests exercise research, improvements, Golden
+Ages, construction hurry, policy completion and natural generation. They are
+independent of the [trade-cycle gameplay scenario](Trade-cycle-scenario.md).
 
 ## Verification
 
@@ -94,7 +72,7 @@ consumption, stale actions, ownership/turn restrictions, immutable pure queries
 and hidden-resource invariance. It also checks the culture, wonder-hurry and
 city-state mission engine paths independently of this repository's fixture.
 
-`GreatPeopleRunIntegrationTest` launches the CLI and scripted HTTPS clients. It
+`GreatPeopleRunIntegrationTest` launches scripted HTTPS clients. It
 checks both players against native state, including the five improvements, science,
 construction completion, Golden Ages, Liberty's free choice and natural Scientist
 generation. Separate processes check mid-turn persistence, complete turn-start

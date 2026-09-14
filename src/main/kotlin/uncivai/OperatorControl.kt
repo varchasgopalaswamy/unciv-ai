@@ -51,6 +51,8 @@ internal data class OperatorStatus(
     val modelInvocations: Long = 0,
     val roundStart: Boolean = false,
     val modelUsage: Map<String, Long> = emptyMap(),
+    val negotiationWaitMillis: Long = 0,
+    val negotiationTimeoutSeconds: Int = 300,
 )
 
 @Serializable
@@ -107,171 +109,176 @@ class OperatorControl internal constructor(
             }.toMap()
             return@accessOperatorGame OperatorResponse(status(game), results = results)
         }
-        when (request.op) {
-            "barrier" -> {
-                requireLease(request.leaseId)
-                activation = null
-                runtime.communicationPaused = true
-                runtime.pause()
-            }
-
-            "unbarrier" -> {
-                requireLease(request.leaseId)
-                if (runtime.communicationState.restorePending) throw OperatorFailure("RESTORE_INCOMPLETE")
-                runtime.communicationPaused = false
-                runtime.commitCheckpoint()
-            }
-
-            "snapshot" -> {
-                requireLease(request.leaseId)
-                return@accessOperatorGame OperatorResponse(status(game), checkpoint = runtime.roundSnapshot())
-            }
-
-            "restore" -> {
-                requireLease(request.leaseId)
-                activation = null
-                communicationSessions.clear()
-                runtime.restoreRound(checkNotNull(request.checkpoint), checkNotNull(request.epoch), configuredCredentials)
-                return@accessOperatorGame runtime.accessOperatorGame { OperatorResponse(status(it), leaseId) }
-            }
-
-            "connect" -> {
-                requireLease(request.leaseId)
-                if (request.epoch != runtime.epoch) throw OperatorFailure("STALE_TURN")
-                val civilization = checkNotNull(request.civilization)
-                val session = host.bindPlayer(civilization)
-                val epoch = runtime.epoch
-                val owner = leaseId
-                val token = newToken()
-                communicationSessions[token] = epoch to GuardedSession(session) { mutation ->
-                    if (mutation || runtime.epoch != epoch || leaseId == null || leaseId != owner) deny()
-                }
-                runtime.communicationState.coordinatedRecovery = true
-                runtime.commitCheckpoint()
-                return@accessOperatorGame OperatorResponse(status(game), leaseId, token)
-            }
-
-            "rotate_players" -> {
-                requireLease(request.leaseId)
-                if (request.epoch != runtime.epoch || !runtime.communicationPaused) throw OperatorFailure("STALE_TURN")
-                val credentials = runtime.communicationState
-                credentials.revokedCredentials.addAll(configuredCredentials)
-                credentials.revokedCredentials.addAll(credentials.playerCredentials.keys)
-                credentials.playerCredentials.clear()
-                val players = game.civilizations.filter { it.isHuman() && it.isMajorCiv() }.map { player ->
-                    val token = newToken()
-                    credentials.playerCredentials[credentialHash(token)] = player.civID
-                    RotatedPlayerCredential(player.civID, token)
-                }
-                runtime.commitCheckpoint()
-                return@accessOperatorGame OperatorResponse(status(game), players = players)
-            }
-
-            "restore_complete" -> {
-                requireLease(request.leaseId)
-                if (request.epoch != runtime.epoch) throw OperatorFailure("STALE_TURN")
-                runtime.communicationState.restorePending = false
-                runtime.commitCheckpoint()
-            }
-
-            "job_limits" -> {
-                requireLease(request.leaseId)
-                val state = runtime.communicationState
-                if (checkNotNull(request.maxInvocations) < state.invocations || checkNotNull(request.maxConcurrent) !in 1..64 || checkNotNull(request.maxPerCivilization) !in 1..2) throw OperatorFailure("INVALID_ARGUMENT")
-                state.maxInvocations = request.maxInvocations
-                state.maxConcurrent = request.maxConcurrent
-                state.maxPerCivilization = request.maxPerCivilization
-                runtime.commitCheckpoint()
-            }
-
-            "acquire" -> {
-                if (!runtime.durableRecovery) throw OperatorFailure("DURABLE_CHECKPOINT_REQUIRED")
-                if (leaseId != null && leaseId != request.leaseId) throw OperatorFailure("LEASE_BUSY")
-                if (leaseId == null) {
-                    leaseId = request.leaseId
-                    runtime.scheduled = true
+        try {
+            when (request.op) {
+                "barrier" -> {
+                    requireLease(request.leaseId)
                     activation = null
-                    renew()
+                    runtime.communicationPaused = true
                     runtime.pause()
-                } else {
-                    renew()
                 }
-                // Also cover a supervisor crash after recording its intent but before activate.
-                if (!finished(game)) runtime.beginScheduledTurn()
-            }
 
-            "heartbeat" -> {
-                requireLease(request.leaseId)
-                renew()
-            }
-
-            "activate" -> {
-                requireLease(request.leaseId)
-                if (runtime.communicationState.restorePending || runtime.communicationPaused) throw OperatorFailure("RESTORE_INCOMPLETE")
-                if (request.epoch != runtime.epoch || request.serverInstance != serverInstance || request.handoff != runtime.handoff || request.civilization != game.currentPlayer) {
-                    throw OperatorFailure("STALE_TURN")
+                "unbarrier" -> {
+                    requireLease(request.leaseId)
+                    if (runtime.communicationState.restorePending) throw OperatorFailure("RESTORE_INCOMPLETE")
+                    runtime.communicationPaused = false
+                    runtime.commitCheckpoint()
                 }
-                if (finished(game) || game.currentPlayerCiv.isDefeated()) throw OperatorFailure("PLAYER_UNAVAILABLE")
-                runtime.beginScheduledTurn(request.activationId)
-                val previous = activation
-                if (previous != null && previous.id == request.activationId) {
-                    if (previous.civilization != request.civilization || previous.handoff != request.handoff) throw OperatorFailure("ACTIVATION_CONFLICT")
-                } else {
-                    val id = checkNotNull(request.activationId)
+
+                "snapshot" -> {
+                    requireLease(request.leaseId)
+                    return@accessOperatorGame OperatorResponse(status(game), checkpoint = runtime.roundSnapshot())
+                }
+
+                "restore" -> {
+                    requireLease(request.leaseId)
+                    activation = null
+                    communicationSessions.clear()
+                    runtime.restoreRound(checkNotNull(request.checkpoint), checkNotNull(request.epoch), configuredCredentials)
+                    return@accessOperatorGame runtime.accessOperatorGame { OperatorResponse(status(it), leaseId) }
+                }
+
+                "connect" -> {
+                    requireLease(request.leaseId)
+                    if (request.epoch != runtime.epoch) throw OperatorFailure("STALE_TURN")
                     val civilization = checkNotNull(request.civilization)
                     val session = host.bindPlayer(civilization)
-                    activation = Activation(id, civilization, runtime.handoff, newToken(), session)
+                    val epoch = runtime.epoch
+                    val owner = leaseId
+                    val token = newToken()
+                    communicationSessions[token] = epoch to GuardedSession(session) { mutation ->
+                        if (mutation || runtime.epoch != epoch || leaseId == null || leaseId != owner) deny()
+                    }
+                    runtime.communicationState.coordinatedRecovery = true
+                    runtime.commitCheckpoint()
+                    return@accessOperatorGame OperatorResponse(status(game), leaseId, token)
                 }
-                renew()
-                runtime.resume()
-                val current = checkNotNull(activation)
-                return@accessOperatorGame OperatorResponse(status(game), leaseId, current.token, current.id)
-            }
 
-            "rollback" -> {
-                requireLease(request.leaseId)
-                if (runtime.communicationState.coordinatedRecovery) throw OperatorFailure("COORDINATED_RESTORE_REQUIRED")
-                if (request.epoch != runtime.epoch || request.serverInstance != serverInstance || request.handoff != runtime.handoff || request.civilization != game.currentPlayer) {
-                    throw OperatorFailure("STALE_TURN")
-                }
-                // Validate the attempt before revoking a potentially newer activation.
-                runtime.requireRollbackActivation(checkNotNull(request.activationId))
-                activation = null
-                runtime.rollbackScheduledTurn(request.activationId)
-                renew()
-                // The enclosing access block refers to the game that was replaced.
-                return@accessOperatorGame runtime.accessOperatorGame { OperatorResponse(status(it), leaseId) }
-            }
-
-            "pause" -> {
-                if (request.leaseId != null) {
+                "rotate_players" -> {
                     requireLease(request.leaseId)
-                } else {
-                    leaseId = null
-                    runtime.communicationPaused = true
+                    if (request.epoch != runtime.epoch || !runtime.communicationPaused) throw OperatorFailure("STALE_TURN")
+                    val credentials = runtime.communicationState
+                    credentials.revokedCredentials.addAll(configuredCredentials)
+                    credentials.revokedCredentials.addAll(credentials.playerCredentials.keys)
+                    credentials.playerCredentials.clear()
+                    val players = game.civilizations.filter { it.isHuman() && it.isMajorCiv() }.map { player ->
+                        val token = newToken()
+                        credentials.playerCredentials[credentialHash(token)] = player.civID
+                        RotatedPlayerCredential(player.civID, token)
+                    }
+                    runtime.commitCheckpoint()
+                    return@accessOperatorGame OperatorResponse(status(game), players = players)
                 }
-                activation = null
-                runtime.pause()
-            }
 
-            "release" -> {
-                requireLease(request.leaseId)
-                activation = null
-                leaseId = null
-                runtime.pause()
-            }
+                "restore_complete" -> {
+                    requireLease(request.leaseId)
+                    if (request.epoch != runtime.epoch) throw OperatorFailure("STALE_TURN")
+                    runtime.communicationState.restorePending = false
+                    runtime.commitCheckpoint()
+                }
 
-            "manual" -> {
-                if (leaseId != null) throw OperatorFailure("LEASE_BUSY")
-                if (runtime.communicationState.restorePending) throw OperatorFailure("RESTORE_INCOMPLETE")
-                activation = null
-                runtime.scheduled = false
-                runtime.communicationPaused = false
-                runtime.discardTurnStart()
-                runtime.resume()
+                "job_limits" -> {
+                    requireLease(request.leaseId)
+                    val state = runtime.communicationState
+                    if (checkNotNull(request.maxInvocations) < state.invocations || checkNotNull(request.maxConcurrent) !in 1..64 || checkNotNull(request.maxPerCivilization) !in 1..2) throw OperatorFailure("INVALID_ARGUMENT")
+                    state.maxInvocations = request.maxInvocations
+                    state.maxConcurrent = request.maxConcurrent
+                    state.maxPerCivilization = request.maxPerCivilization
+                    runtime.commitCheckpoint()
+                }
+
+                "acquire" -> {
+                    if (!runtime.durableRecovery) throw OperatorFailure("DURABLE_CHECKPOINT_REQUIRED")
+                    if (leaseId != null && leaseId != request.leaseId) throw OperatorFailure("LEASE_BUSY")
+                    if (leaseId == null) {
+                        leaseId = request.leaseId
+                        runtime.scheduled = true
+                        activation = null
+                        renew()
+                        runtime.pause()
+                    } else {
+                        renew()
+                    }
+                    // Also cover a supervisor crash after recording its intent but before activate.
+                    if (!finished(game)) runtime.beginScheduledTurn()
+                }
+
+                "heartbeat" -> {
+                    requireLease(request.leaseId)
+                    renew()
+                }
+
+                "activate" -> {
+                    requireLease(request.leaseId)
+                    if (runtime.communicationState.restorePending || runtime.communicationPaused) throw OperatorFailure("RESTORE_INCOMPLETE")
+                    if (request.epoch != runtime.epoch || request.serverInstance != serverInstance || request.handoff != runtime.handoff || request.civilization != game.currentPlayer) {
+                        throw OperatorFailure("STALE_TURN")
+                    }
+                    if (finished(game) || game.currentPlayerCiv.isDefeated()) throw OperatorFailure("PLAYER_UNAVAILABLE")
+                    runtime.beginScheduledTurn(request.activationId)
+                    val previous = activation
+                    if (previous != null && previous.id == request.activationId) {
+                        if (previous.civilization != request.civilization || previous.handoff != request.handoff) throw OperatorFailure("ACTIVATION_CONFLICT")
+                    } else {
+                        val id = checkNotNull(request.activationId)
+                        val civilization = checkNotNull(request.civilization)
+                        val session = host.bindPlayer(civilization)
+                        activation = Activation(id, civilization, runtime.handoff, newToken(), session)
+                    }
+                    renew()
+                    runtime.resume()
+                    val current = checkNotNull(activation)
+                    return@accessOperatorGame OperatorResponse(status(game), leaseId, current.token, current.id)
+                }
+
+                "rollback" -> {
+                    requireLease(request.leaseId)
+                    if (runtime.communicationState.coordinatedRecovery) throw OperatorFailure("COORDINATED_RESTORE_REQUIRED")
+                    if (request.epoch != runtime.epoch || request.serverInstance != serverInstance || request.handoff != runtime.handoff || request.civilization != game.currentPlayer) {
+                        throw OperatorFailure("STALE_TURN")
+                    }
+                    // Validate the attempt before revoking a potentially newer activation.
+                    runtime.requireRollbackActivation(checkNotNull(request.activationId))
+                    activation = null
+                    runtime.rollbackScheduledTurn(request.activationId)
+                    renew()
+                    // The enclosing access block refers to the game that was replaced.
+                    return@accessOperatorGame runtime.accessOperatorGame { OperatorResponse(status(it), leaseId) }
+                }
+
+                "pause" -> {
+                    if (request.leaseId != null) {
+                        requireLease(request.leaseId)
+                    } else {
+                        leaseId = null
+                        runtime.communicationPaused = true
+                    }
+                    activation = null
+                    runtime.pause()
+                }
+
+                "release" -> {
+                    requireLease(request.leaseId)
+                    activation = null
+                    leaseId = null
+                    runtime.pause()
+                }
+
+                "manual" -> {
+                    if (leaseId != null) throw OperatorFailure("LEASE_BUSY")
+                    if (runtime.communicationState.restorePending) throw OperatorFailure("RESTORE_INCOMPLETE")
+                    activation = null
+                    runtime.scheduled = false
+                    runtime.communicationPaused = false
+                    runtime.discardTurnStart()
+                    runtime.resume()
+                }
             }
+            OperatorResponse(status(game), leaseId)
+        } finally {
+            // All state and credential changes precede the wake, even for early returns.
+            if (request.op != "heartbeat") runtime.communicationChanges.invalidate()
         }
-        OperatorResponse(status(game), leaseId)
     }
 
     /** Called while holding the executor lock, including immediately before a player operation. */
@@ -279,6 +286,7 @@ class OperatorControl internal constructor(
         if (leaseId == null || clockMillis() < expiresAt) return
         leaseId = null
         activation = null
+        runtime.communicationChanges.invalidate()
         if (runtime.mutationFailure == null) runtime.pause()
     }
 
@@ -314,6 +322,7 @@ class OperatorControl internal constructor(
             block()
         }
         override fun capabilities() = guarded { delegate.capabilities() }
+        override fun communicationChanges() = guarded { delegate.communicationChanges() }
         override fun communication(request: kotlinx.serialization.json.JsonObject) = guarded { delegate.communication(request) }
         override fun turn() = guarded { delegate.turn() }
         override fun result() = guarded { delegate.result() }
@@ -345,13 +354,15 @@ class OperatorControl internal constructor(
             else -> "ACTIVE"
         },
         activeCivilization = game.currentPlayer,
+        negotiationWaitMillis = runtime.communication.trades.waitMillis(),
+        negotiationTimeoutSeconds = runtime.communicationState.trades.timeoutSeconds,
         scheduled = runtime.scheduled,
         leaseId = leaseId,
         leaseExpiresInMs = if (leaseId == null) 0 else (expiresAt - clockMillis()).coerceAtLeast(0),
         modelInvocations = runtime.communicationState.invocations,
         modelUsage = listOf("input_tokens", "cached_input_tokens", "output_tokens", "reasoning_output_tokens").associateWith { key ->
             runtime.communicationState.jobs.values.sumOf { job ->
-                ((job["usage"] as? kotlinx.serialization.json.JsonObject)?.get(key) as? kotlinx.serialization.json.JsonPrimitive)?.content?.toLongOrNull()?.coerceAtLeast(0) ?: 0L
+                job.usage?.tokens(key) ?: 0L
             }
         },
         roundStart = game.civilizations.firstOrNull { it.isHuman() && it.isMajorCiv() && !it.isDefeated() }?.civID == game.currentPlayer,

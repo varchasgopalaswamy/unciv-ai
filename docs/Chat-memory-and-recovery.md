@@ -3,21 +3,10 @@
 See the [architecture diagram](Async-chat-architecture.md) for the component and
 data flows.
 
-Start a fresh save for this slice. Run these commands in four terminals:
-
-```sh
-uv run civ-agent host start --state-dir /tmp/civ-chat-1 --scenario async-chat
-uv run civ-agent agent-server start Rome --state-dir /tmp/civ-chat-1
-uv run civ-agent agent-server start Greece --state-dir /tmp/civ-chat-1
-uv run civ-agent match start --state-dir /tmp/civ-chat-1 --max-turns 3 --max-invocations 32
-```
-
-Wait for `MCP-READY` and both `AGENT-READY` messages before starting the match.
-The scenario asks both players to develop their capitals, introduce themselves
-publicly and privately, and explicitly agree to Rome's social peace proposal.
-Inspect the host ledger and saves to confirm outcomes.
-For a deliberate violation and Rome's resulting trust assessment, use the
-[verbal-pact betrayal scenario](Verbal-betrayal-scenario.md).
+Chat and memory are available throughout the [trade-cycle scenario](Trade-cycle-scenario.md),
+the only launchable gameplay exercise. Follow that runbook to start the host,
+both agent services and the scheduler. Public/private messages and social
+commitments are also covered by internal regression fixtures.
 
 Add `--model NAME --reasoning-effort LEVEL` to `match start` to select settings
 for both gameplay and communication. The defaults allow one gameplay job and one
@@ -45,7 +34,9 @@ Tools include `chat_read`, `chat_history`, `chat_send`, `commitment_offer`,
 `commitment_decide`, `memory_read`, `memory_update` and `history_read`, alongside
 the existing player observations and validated gameplay commands. The
 [economic trade tools](Asynchronous-trade.md) allow both job types to inspect,
-propose and decide exact binding terms. Communication jobs cannot issue ordinary
+propose and decide exact binding terms. Only the current player opens a formal
+negotiation; gameplay then waits while both sides communicate and decide. Its
+counteroffer limit, deadline and pending state survive restart. Communication jobs cannot issue ordinary
 gameplay commands. General shell and browsing tools are disabled
 for player jobs. The scoped gateway's tools are preapproved for this authorized
 match; this does not grant the model operator access.

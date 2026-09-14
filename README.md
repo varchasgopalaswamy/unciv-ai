@@ -19,11 +19,17 @@ war-message acknowledgement, and peace offers with gold and resource terms,
 including accept/reject/counteroffer and durable retries. Gameplay launchers and
 `civ-agent match start` accept `--model NAME --reasoning-effort LEVEL`.
 
-The [asynchronous trade slice](docs/Asynchronous-trade.md) adds canonical
-gold/GPT/resource and peace-treaty proposals and counteroffers. Agents accept the exact stored
-terms they inspected, including outside their gameplay turn. Use `--scenario
-async-trade` or `--scenario async-peace` for a prepared negotiation exercise and `civ-agent trade` for human
-inspection and decisions.
+The [trade negotiation slice](docs/Asynchronous-trade.md) adds canonical
+economic and peace proposals, friendship, embassies, Open Borders, research
+agreements, defensive pacts and city transfers. Agents accept the exact stored
+terms they inspected, including outside their gameplay turn. The current player
+opens negotiation and gameplay pauses until it closes. The default limit is three
+shared counteroffers and five minutes; configure `--trade-counteroffers` and
+`--trade-timeout` at host launch. Chat and communication jobs stay responsive. Use
+`--scenario trade-cycle` for the [complete trade exercise](docs/Trade-cycle-scenario.md),
+including counteroffers, terminal decisions, paid peace, every supported item,
+and native-save verification with `civ-agent match verify-trade-cycle`.
+`civ-agent trade` provides human inspection and decisions.
 
 Read [AGENTS.md](AGENTS.md) for confidentiality and contribution instructions, and [Development workflow](docs/Development-workflow.md) for engine branches, local overrides and dependency updates.
 
@@ -48,23 +54,33 @@ uv sync --locked
 uv run civ-agent --help
 ```
 
-For the asynchronous chat exercise, start the host, both services and the
-supervisor in four terminals:
+By default, new games use **Vanilla rules and Quick speed**, with **Rome, Greece,
+and France** each trying to win. Start the host, three services and the supervisor
+in five terminals:
 
 ```sh
-uv run civ-agent host start --state-dir /tmp/civ-chat-1 --scenario async-chat
-uv run civ-agent agent-server start Rome --state-dir /tmp/civ-chat-1
-uv run civ-agent agent-server start Greece --state-dir /tmp/civ-chat-1
-uv run civ-agent match start --state-dir /tmp/civ-chat-1 --max-turns 3 --max-invocations 32
+uv run civ-agent host start --state-dir /tmp/civ-vanilla-1 --new
+uv run civ-agent agent-server start Rome --state-dir /tmp/civ-vanilla-1
+uv run civ-agent agent-server start Greece --state-dir /tmp/civ-vanilla-1
+uv run civ-agent agent-server start France --state-dir /tmp/civ-vanilla-1
+uv run civ-agent match start --state-dir /tmp/civ-vanilla-1 --max-turns 331 --max-invocations 1200 --max-seconds 172800 --turn-timeout 600
 ```
 
-Wait for the host and services to report ready. New games require an explicit
-scenario. `great-people` and `city-management` are also available. Start a fresh
-save for the chat/memory slice. See [chat, memory and recovery](docs/Chat-memory-and-recovery.md)
-for model settings, human chat and whole-match rollback. Interactive `agent start`
-also requires its civilization's service and uses a scoped proposal gateway.
-Credentials, request IDs, observation versions and retry reconciliation are handled
-by code; models select gameplay choices and entity IDs.
+Wait for the host and services to report ready; choose a fresh directory for a new
+match. The [ordinary-game guide](docs/Vanilla-game.md) covers setup, model choices,
+limits and inspection. The only scripted scenario remains
+[trade-cycle](docs/Trade-cycle-scenario.md), selected explicitly with
+`--scenario trade-cycle`. See [chat, memory and recovery](docs/Chat-memory-and-recovery.md)
+for human chat and whole-match rollback. Interactive `agent start` requires its
+civilization's service and uses a scoped proposal gateway. Credentials, request
+IDs, observation versions and retry reconciliation are handled by code; models
+select gameplay choices and entity IDs.
+
+The [Python architecture diagrams](docs/Python-architecture.md) show the service,
+concurrent model jobs, memory, and HTTPS boundaries, including Pydantic validation,
+the official MCP client, and cryptography certificate provisioning. The
+[Kotlin architecture](docs/Kotlin-architecture.md) covers Clikt, Networknt input
+validation, typed communication records, and coroutine subscriptions.
 
 All Python commands use the `civ-agent` entrypoint: `host start`, `host inspect`,
 `agent start`, `agent-server start`, `match start/resume/status/pause/stop/manual`,
@@ -91,7 +107,7 @@ To verify the agents' actions visually, run `uv run civ-agent host inspect Rome`
 inspection copy in the desktop UI. Omit the civilization to view the actual active
 player. See [inspection options](docs/Local-launchers.md#inspect-what-the-agents-did).
 
-To generate and load a lifecycle scenario:
+To generate and load an internal lifecycle test fixture:
 
 ```sh
 ./gradlew generateS01Scenarios

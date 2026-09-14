@@ -1,0 +1,775 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "op": {
+          "const": "state"
+        },
+        "epoch": {
+          "$ref": "#/$defs/epoch"
+        }
+      },
+      "required": [
+        "op",
+        "epoch"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "op": {
+          "const": "negotiation"
+        },
+        "epoch": {
+          "$ref": "#/$defs/epoch"
+        },
+        "waitSeconds": {
+          "$ref": "#/$defs/waitSeconds"
+        }
+      },
+      "required": [
+        "op",
+        "epoch"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "op": {
+          "const": "read"
+        },
+        "epoch": {
+          "$ref": "#/$defs/epoch"
+        },
+        "cursor": {
+          "$ref": "#/$defs/cursor"
+        },
+        "limit": {
+          "$ref": "#/$defs/limit"
+        },
+        "waitSeconds": {
+          "$ref": "#/$defs/waitSeconds"
+        }
+      },
+      "required": [
+        "op",
+        "epoch"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "op": {
+          "const": "receipt"
+        },
+        "epoch": {
+          "$ref": "#/$defs/epoch"
+        },
+        "requestId": {
+          "$ref": "#/$defs/requestId"
+        }
+      },
+      "required": [
+        "op",
+        "epoch",
+        "requestId"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "op": {
+          "const": "trade_options"
+        },
+        "epoch": {
+          "$ref": "#/$defs/epoch"
+        },
+        "partner": {
+          "$ref": "#/$defs/partner"
+        }
+      },
+      "required": [
+        "op",
+        "epoch",
+        "partner"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "op": {
+          "const": "trade_read"
+        },
+        "epoch": {
+          "$ref": "#/$defs/epoch"
+        },
+        "proposal": {
+          "$ref": "#/$defs/proposal"
+        }
+      },
+      "required": [
+        "op",
+        "epoch",
+        "proposal"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "op": {
+          "const": "job_claim"
+        },
+        "epoch": {
+          "$ref": "#/$defs/epoch"
+        },
+        "job": {
+          "$ref": "#/$defs/job"
+        },
+        "purpose": {
+          "$ref": "#/$defs/purpose"
+        }
+      },
+      "required": [
+        "op",
+        "epoch",
+        "job",
+        "purpose"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "op": {
+          "const": "job_heartbeat"
+        },
+        "epoch": {
+          "$ref": "#/$defs/epoch"
+        },
+        "job": {
+          "$ref": "#/$defs/job"
+        },
+        "usage": {
+          "$ref": "#/$defs/usage"
+        }
+      },
+      "required": [
+        "op",
+        "epoch",
+        "job"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "op": {
+          "const": "job_release"
+        },
+        "epoch": {
+          "$ref": "#/$defs/epoch"
+        },
+        "job": {
+          "$ref": "#/$defs/job"
+        },
+        "usage": {
+          "$ref": "#/$defs/usage"
+        }
+      },
+      "required": [
+        "op",
+        "epoch",
+        "job"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "op": {
+          "const": "send"
+        },
+        "epoch": {
+          "$ref": "#/$defs/epoch"
+        },
+        "requestId": {
+          "$ref": "#/$defs/requestId"
+        },
+        "to": {
+          "$ref": "#/$defs/to"
+        },
+        "text": {
+          "$ref": "#/$defs/text"
+        },
+        "mentions": {
+          "$ref": "#/$defs/mentions"
+        }
+      },
+      "required": [
+        "op",
+        "epoch",
+        "requestId",
+        "text"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "op": {
+          "const": "offer"
+        },
+        "epoch": {
+          "$ref": "#/$defs/epoch"
+        },
+        "requestId": {
+          "$ref": "#/$defs/requestId"
+        },
+        "participants": {
+          "$ref": "#/$defs/participants"
+        },
+        "terms": {
+          "$ref": "#/$defs/terms"
+        },
+        "conditions": {
+          "$ref": "#/$defs/conditions"
+        },
+        "expiresTurn": {
+          "$ref": "#/$defs/expiresTurn"
+        },
+        "kind": {
+          "$ref": "#/$defs/kind"
+        },
+        "sources": {
+          "$ref": "#/$defs/sources"
+        }
+      },
+      "required": [
+        "op",
+        "epoch",
+        "requestId",
+        "participants",
+        "terms",
+        "conditions",
+        "kind"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "op": {
+          "const": "revise"
+        },
+        "epoch": {
+          "$ref": "#/$defs/epoch"
+        },
+        "requestId": {
+          "$ref": "#/$defs/requestId"
+        },
+        "participants": {
+          "$ref": "#/$defs/participants"
+        },
+        "terms": {
+          "$ref": "#/$defs/terms"
+        },
+        "conditions": {
+          "$ref": "#/$defs/conditions"
+        },
+        "expiresTurn": {
+          "$ref": "#/$defs/expiresTurn"
+        },
+        "kind": {
+          "$ref": "#/$defs/kind"
+        },
+        "sources": {
+          "$ref": "#/$defs/sources"
+        },
+        "proposal": {
+          "$ref": "#/$defs/proposal"
+        }
+      },
+      "required": [
+        "op",
+        "epoch",
+        "requestId",
+        "participants",
+        "terms",
+        "conditions",
+        "kind",
+        "proposal"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "op": {
+          "const": "accept"
+        },
+        "epoch": {
+          "$ref": "#/$defs/epoch"
+        },
+        "requestId": {
+          "$ref": "#/$defs/requestId"
+        },
+        "proposal": {
+          "$ref": "#/$defs/proposal"
+        },
+        "version": {
+          "$ref": "#/$defs/version"
+        }
+      },
+      "required": [
+        "op",
+        "epoch",
+        "requestId",
+        "proposal",
+        "version"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "op": {
+          "const": "withdraw"
+        },
+        "epoch": {
+          "$ref": "#/$defs/epoch"
+        },
+        "requestId": {
+          "$ref": "#/$defs/requestId"
+        },
+        "proposal": {
+          "$ref": "#/$defs/proposal"
+        },
+        "version": {
+          "$ref": "#/$defs/version"
+        },
+        "reason": {
+          "$ref": "#/$defs/reason"
+        }
+      },
+      "required": [
+        "op",
+        "epoch",
+        "requestId",
+        "proposal",
+        "version",
+        "reason"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "op": {
+          "const": "reconsider"
+        },
+        "epoch": {
+          "$ref": "#/$defs/epoch"
+        },
+        "requestId": {
+          "$ref": "#/$defs/requestId"
+        },
+        "proposal": {
+          "$ref": "#/$defs/proposal"
+        },
+        "version": {
+          "$ref": "#/$defs/version"
+        },
+        "reason": {
+          "$ref": "#/$defs/reason"
+        }
+      },
+      "required": [
+        "op",
+        "epoch",
+        "requestId",
+        "proposal",
+        "version",
+        "reason"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "op": {
+          "const": "trade_offer"
+        },
+        "epoch": {
+          "$ref": "#/$defs/epoch"
+        },
+        "requestId": {
+          "$ref": "#/$defs/requestId"
+        },
+        "partner": {
+          "$ref": "#/$defs/partner"
+        },
+        "give": {
+          "$ref": "#/$defs/give"
+        },
+        "receive": {
+          "$ref": "#/$defs/receive"
+        },
+        "proposal": {
+          "$ref": "#/$defs/proposal"
+        },
+        "version": {
+          "$ref": "#/$defs/version"
+        }
+      },
+      "required": [
+        "op",
+        "epoch",
+        "requestId",
+        "partner",
+        "give",
+        "receive"
+      ],
+      "additionalProperties": false,
+      "dependentRequired": {
+        "proposal": [
+          "version"
+        ],
+        "version": [
+          "proposal"
+        ]
+      }
+    },
+    {
+      "type": "object",
+      "properties": {
+        "op": {
+          "const": "friendship_offer"
+        },
+        "epoch": {
+          "$ref": "#/$defs/epoch"
+        },
+        "requestId": {
+          "$ref": "#/$defs/requestId"
+        },
+        "partner": {
+          "$ref": "#/$defs/partner"
+        }
+      },
+      "required": [
+        "op",
+        "epoch",
+        "requestId",
+        "partner"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "op": {
+          "const": "trade_decide"
+        },
+        "epoch": {
+          "$ref": "#/$defs/epoch"
+        },
+        "requestId": {
+          "$ref": "#/$defs/requestId"
+        },
+        "proposal": {
+          "$ref": "#/$defs/proposal"
+        },
+        "version": {
+          "$ref": "#/$defs/version"
+        },
+        "decision": {
+          "$ref": "#/$defs/decision"
+        }
+      },
+      "required": [
+        "op",
+        "epoch",
+        "requestId",
+        "proposal",
+        "version",
+        "decision"
+      ],
+      "additionalProperties": false
+    }
+  ],
+  "$defs": {
+    "epoch": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "\\S"
+    },
+    "waitSeconds": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 25
+    },
+    "cursor": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 2147483647
+    },
+    "limit": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 100
+    },
+    "requestId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[ -~]+$"
+    },
+    "partner": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "\\S"
+    },
+    "proposal": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "\\S"
+    },
+    "job": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "\\S"
+    },
+    "purpose": {
+      "enum": [
+        "gameplay",
+        "communication"
+      ]
+    },
+    "usage": {
+      "type": "object",
+      "properties": {
+        "input_tokens": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9223372036854775807
+        },
+        "cached_input_tokens": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9223372036854775807
+        },
+        "output_tokens": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9223372036854775807
+        },
+        "reasoning_output_tokens": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9223372036854775807
+        }
+      },
+      "required": [],
+      "additionalProperties": false
+    },
+    "to": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "\\S"
+    },
+    "text": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4000,
+      "pattern": "\\S"
+    },
+    "mentions": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128,
+        "pattern": "\\S"
+      },
+      "maxItems": 100,
+      "uniqueItems": true
+    },
+    "participants": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128,
+        "pattern": "\\S"
+      },
+      "maxItems": 100,
+      "uniqueItems": true,
+      "minItems": 2
+    },
+    "terms": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4000,
+      "pattern": "\\S"
+    },
+    "conditions": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2000,
+      "pattern": "\\S"
+    },
+    "expiresTurn": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 2147483647
+    },
+    "kind": {
+      "enum": [
+        "peace",
+        "other"
+      ]
+    },
+    "sources": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128,
+        "pattern": "\\S"
+      },
+      "maxItems": 100,
+      "uniqueItems": true
+    },
+    "version": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 2147483647
+    },
+    "reason": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1000,
+      "pattern": "\\S"
+    },
+    "give": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "Embassy",
+              "Gold",
+              "Gold_Per_Turn",
+              "Treaty",
+              "Agreement",
+              "Luxury_Resource",
+              "Strategic_Resource",
+              "Stockpiled_Resource",
+              "Technology",
+              "Introduction",
+              "WarDeclaration",
+              "PeaceProposal",
+              "City"
+            ]
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": "\\S"
+          },
+          "amount": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 2147483647
+          },
+          "duration": {
+            "type": "integer",
+            "minimum": -1,
+            "maximum": 2147483647
+          }
+        },
+        "required": [
+          "type",
+          "name",
+          "amount",
+          "duration"
+        ],
+        "additionalProperties": false
+      },
+      "maxItems": 64
+    },
+    "receive": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "Embassy",
+              "Gold",
+              "Gold_Per_Turn",
+              "Treaty",
+              "Agreement",
+              "Luxury_Resource",
+              "Strategic_Resource",
+              "Stockpiled_Resource",
+              "Technology",
+              "Introduction",
+              "WarDeclaration",
+              "PeaceProposal",
+              "City"
+            ]
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": "\\S"
+          },
+          "amount": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 2147483647
+          },
+          "duration": {
+            "type": "integer",
+            "minimum": -1,
+            "maximum": 2147483647
+          }
+        },
+        "required": [
+          "type",
+          "name",
+          "amount",
+          "duration"
+        ],
+        "additionalProperties": false
+      },
+      "maxItems": 64
+    },
+    "decision": {
+      "enum": [
+        "accept",
+        "decline",
+        "withdraw"
+      ]
+    }
+  }
+}

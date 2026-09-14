@@ -8,6 +8,26 @@ import java.util.concurrent.TimeUnit
 
 class CommunicationIntegrationTest {
     @Test
+    fun `complete trade scenario settles every supported item and terminal path across restart`() {
+        runProbe("uncivai.TradeCycleProbe")
+    }
+
+    @Test
+    fun `communication waits release the executor survive races cancel and fail closed`() {
+        runProbe("uncivai.CommunicationWaitProbe")
+    }
+
+    @Test
+    fun `negotiation freezes gameplay bounds counters and expires durably across restart`() {
+        runProbe("uncivai.NegotiationProbe")
+    }
+
+    @Test
+    fun `bilateral agreements and city transfers require exact consent and survive off turn recovery`() {
+        runProbe("uncivai.BilateralTradeProbe")
+    }
+
+    @Test
     fun `peace consent shares trade transactions invalidates attacks and rolls back atomically`() {
         runProbe("uncivai.PeaceTradeProbe")
     }
@@ -23,7 +43,7 @@ class CommunicationIntegrationTest {
     }
 
     @Test
-    fun `private betrayal role social pact and authoritative declaration survive restart`() {
+    fun `social pact and authoritative declaration survive restart`() {
         runProbe("uncivai.VerbalBetrayalProbe")
     }
 

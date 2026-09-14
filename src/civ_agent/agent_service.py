@@ -14,7 +14,6 @@ import hashlib
 import hmac
 import json
 import os
-import re
 import signal
 import ssl
 import tempfile
@@ -24,6 +23,7 @@ from pathlib import Path
 
 import aiohttp
 from aiohttp import web
+from pydantic import ValidationError
 
 from civ_agent import service_recovery
 from civ_agent.agent_history import HISTORY_METHODS, HistoryStore
@@ -31,8 +31,10 @@ from civ_agent.agent_results import PlayerResultStore, ResultError, validate_res
 from civ_agent.agent_settings import player_tool_arguments, valid_setting
 from civ_agent.chat_runtime import ChatRuntime
 from civ_agent.civilization_state import CivilizationState
-from civ_agent.proposal_gateway import HostConnection, ProposalGateway
+from civ_agent.host_connection import HostConnection
+from civ_agent.proposal_gateway import ProposalGateway
 from civ_agent.protocol import AgentProcess, JsonObject, Notification
+from civ_agent.schemas import StartRequest, start_error
 from civ_agent.service_io import ServiceIO
 from civ_agent.tls import codex_trust_environment, https_url, private_directory, regular_file, write_private_json
 from civ_agent.turn_archive import TurnArchive
@@ -92,7 +94,7 @@ class CodexProcess:
         config = (
             "mcp_servers.civ={url="
             + json.dumps(self.mcp_url)
-            + ',bearer_token_env_var="UNCIV_PLAYER_TOKEN",required=true,default_tools_approval_mode="approve"}'
+            + ',bearer_token_env_var="UNCIV_PLAYER_TOKEN",required=true,default_tools_approval_mode="approve",tool_timeout_sec=86400}'
         )
         # Models use player tools and private memory tools. Disable general host
         # inspection/execution surfaces in these narrowly scoped jobs.
@@ -548,54 +550,24 @@ class AgentService:
         record = self.records.get(activation_id)
         if record is None:
             raise ServiceError("ACTIVATION_NOT_FOUND", 404)
-        return {
+        result = {
             key: (dict(value) if isinstance(value, dict) else value)
             for key, value in record.items()
             if key not in {"fingerprint", "threadTotals", "baseline"}
         }
+        job = next((job for job in self.gateway.jobs.values() if job.id == activation_id), None)
+        result["negotiationWaitSeconds"] = job.waiting_seconds() if job else record.get("negotiationWaitSeconds", 0)
+        return result
 
     def _validate_start(self, payload):
-        required = {
-            "activationId",
-            "epoch",
-            "gameTurn",
-            "handoff",
-            "civilization",
-            "threadId",
-            "mcpUrl",
-            "playerToken",
-            "prompt",
-            "model",
-            "timeoutSeconds",
-            "leaseSeconds",
-        }
-        if not required <= set(payload) or set(payload) - required - {"reasoningEffort"}:
-            raise ServiceError("INVALID_ARGUMENT")
-        if (
-            not identifier(payload["activationId"])
-            or not identifier(payload["epoch"])
-            or payload["civilization"] != self.civilization
-        ):
+        try:
+            request = StartRequest.model_validate(payload)
+        except ValidationError as error:
+            raise ServiceError(start_error(error)) from None
+        if request.civilization != self.civilization:
             raise ServiceError("INVALID_BINDING")
-        if payload["mcpUrl"] != self.mcp_url:
+        if request.mcpUrl != self.mcp_url:
             raise ServiceError("INVALID_MCP_ENDPOINT")
-        if not isinstance(payload["playerToken"], str) or not re.fullmatch(
-            r"[A-Za-z0-9_-]{43}", payload["playerToken"]
-        ):
-            raise ServiceError("INVALID_PLAYER_TOKEN")
-        if payload["threadId"] is not None and not identifier(payload["threadId"]):
-            raise ServiceError("INVALID_THREAD")
-        if any(type(payload[key]) is not int or payload[key] < 0 for key in ("gameTurn", "handoff")):
-            raise ServiceError("INVALID_GAME_TURN")
-        if not isinstance(payload["prompt"], str) or not 1 <= len(payload["prompt"]) <= 1_000_000:
-            raise ServiceError("INVALID_PROMPT")
-        if payload["model"] is not None and not valid_setting(payload["model"]):
-            raise ServiceError("INVALID_MODEL")
-        if payload.get("reasoningEffort") is not None and not valid_setting(payload["reasoningEffort"]):
-            raise ServiceError("INVALID_REASONING_EFFORT")
-        for key, maximum in (("timeoutSeconds", 86400), ("leaseSeconds", 300)):
-            if type(payload[key]) is not int or not 1 <= payload[key] <= maximum:
-                raise ServiceError("INVALID_TIMEOUT")
 
     async def start(self, payload: JsonObject) -> JsonObject:
         self._validate_start(payload)
@@ -832,6 +804,10 @@ class AgentService:
             self.run_started.set()
 
     async def _run_job(self, payload: JsonObject) -> None:
+        async with HostConnection(self.mcp_url, payload["playerToken"], self.ca_file) as connection:
+            await self._run_connected_job(payload, connection)
+
+    async def _run_connected_job(self, payload: JsonObject, connection: HostConnection) -> None:
         record = self.records[payload["activationId"]]
         started = time.monotonic()
         workspace = private_directory(
@@ -841,7 +817,7 @@ class AgentService:
             record["activationId"],
             "gameplay",
             payload["epoch"],
-            HostConnection(self.mcp_url, payload["playerToken"], self.ca_file),
+            connection,
             record["settings"],
             record["gameTurn"],
         )
@@ -860,7 +836,7 @@ class AgentService:
                 now = time.monotonic()
                 if now - self.last_heartbeat >= payload["leaseSeconds"]:
                     self.failure = "HEARTBEAT_EXPIRED"
-                elif now - started >= payload["timeoutSeconds"]:
+                elif now - started - job.waiting_seconds() >= payload["timeoutSeconds"]:
                     self.failure = "ACTIVATION_TIMEOUT"
                 else:
                     continue
@@ -973,7 +949,7 @@ class AgentService:
                 if now - self.last_heartbeat >= payload["leaseSeconds"]:
                     self.failure = "HEARTBEAT_EXPIRED"
                     break
-                if now - started >= payload["timeoutSeconds"]:
+                if now - started - job.waiting_seconds() >= payload["timeoutSeconds"]:
                     self.failure = "ACTIVATION_TIMEOUT"
                     break
                 with contextlib.suppress(asyncio.TimeoutError):
@@ -985,6 +961,7 @@ class AgentService:
         except (TimeoutError, ServiceError, OSError, ValueError, KeyError, aiohttp.ClientError) as error:
             self.failure = error.code if isinstance(error, ServiceError) else "CODEX_CONNECTION_FAILED"
         finally:
+            record["negotiationWaitSeconds"] = job.waiting_seconds()
             self.stopping = True
             monitor.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -1030,6 +1007,8 @@ class AgentService:
         if self.active_task is not None and not self.active_task.done():
             await self.interrupt(self.active_id)
         await self.chat.close()
+        for job in list(self.gateway.jobs.values()):
+            await self.gateway.close(job, False)
         await self.io.close()
         if self.lock is not None:
             os.close(self.lock)

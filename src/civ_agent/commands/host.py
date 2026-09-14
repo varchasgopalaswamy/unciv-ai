@@ -1,4 +1,4 @@
-"""Build and run a local, checkpointed Rome/Greece host in this terminal."""
+"""Build and run a checkpointed Vanilla Rome/Greece/France game or prepared exercise."""
 
 import argparse
 import json
@@ -51,9 +51,23 @@ def parser(*, add_help: bool = True) -> argparse.ArgumentParser:
     parser.add_argument("--new", action="store_true", help="require a new game; never overwrite a checkpoint")
     parser.add_argument("--seed", type=seed_number, help="map seed for a new game only")
     parser.add_argument(
+        "--trade-counteroffers",
+        type=int,
+        choices=range(101),
+        metavar="0-100",
+        help="shared counteroffer limit (default: 3; resumes saved setting)",
+    )
+    parser.add_argument(
+        "--trade-timeout",
+        type=int,
+        choices=range(1, 86401),
+        metavar="SECONDS",
+        help="negotiation wall-clock deadline (default: 300; resumes saved setting)",
+    )
+    parser.add_argument(
         "--scenario",
-        choices=["city-management", "great-people", "async-chat", "verbal-betrayal", "async-trade", "async-peace"],
-        help="required for a new game; on resume, verify that the checkpoint contains this scenario",
+        choices=["trade-cycle"],
+        help="prepared exercise (default: Vanilla Rome/Greece/France); on resume, verify the saved scenario",
     )
     parser.add_argument(
         "--unciv-dir", help="engine checkout for code and assets; relative paths use the repository root"
@@ -68,7 +82,7 @@ def absolute_path(value):
     return Path(value).expanduser().absolute()
 
 
-def ensure_players(path, resuming):
+def ensure_players(path, resuming, civilizations):
     """Create credentials exclusively; existing credentials are never changed."""
     if not path.exists() and not path.is_symlink():
         if resuming:
@@ -77,16 +91,14 @@ def ensure_players(path, resuming):
                 "Restore players.json or select the original file with --players."
             )
         path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        rome_token = secrets.token_urlsafe(32)
-        greece_token = secrets.token_urlsafe(32)
-        while greece_token == rome_token:
-            greece_token = secrets.token_urlsafe(32)
-        players = {
-            "players": [
-                {"civilizationId": "Rome", "token": rome_token},
-                {"civilizationId": "Greece", "token": greece_token},
-            ]
-        }
+        tokens = set()
+        players = {"players": []}
+        for civilization in civilizations:
+            token = secrets.token_urlsafe(32)
+            while token in tokens:
+                token = secrets.token_urlsafe(32)
+            tokens.add(token)
+            players["players"].append({"civilizationId": civilization, "token": token})
         try:
             descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         except FileExistsError:
@@ -118,16 +130,13 @@ def launch(options):
         raise ValueError(f"Checkpoint must be a regular file: {checkpoint}")
     if resuming and options.seed is not None:
         raise ValueError("--seed applies only to a new game; this checkpoint will be resumed.")
-    if not resuming and options.scenario is None:
-        raise ValueError(
-            "No checkpoint found. Start an exercise with --scenario great-people or --scenario city-management."
-        )
     if bool(options.tls_config) != bool(options.ca_file):
         raise ValueError("--tls-config and --ca-file must be supplied together.")
     if options.tls_config and (options.listen_host or options.public_host):
         raise ValueError("A custom TLS configuration already supplies listenHost and publicHost.")
 
-    ensure_players(players, resuming)
+    civilizations = ("Rome", "Greece") if options.scenario == "trade-cycle" else ("Rome", "Greece", "France")
+    ensure_players(players, resuming, civilizations)
     ensure_operator(operator, players)
     state_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     checkpoint.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -150,10 +159,14 @@ def launch(options):
 
     executable = repo_dir / "build/install/unciv-ai/bin/unciv-ai"
     command = [str(executable)]
+    if options.trade_counteroffers is not None:
+        command.extend(["--trade-counteroffers", str(options.trade_counteroffers)])
+    if options.trade_timeout is not None:
+        command.extend(["--trade-timeout", str(options.trade_timeout)])
     if resuming:
         command.extend(["--resume-checkpoint", str(checkpoint)])
     else:
-        command.extend(["--new-duel", "--checkpoint", str(checkpoint)])
+        command.extend(["--new-game", "--checkpoint", str(checkpoint)])
         if options.seed is not None:
             command.extend(["--seed", str(options.seed)])
     if options.scenario is not None:
@@ -173,7 +186,7 @@ def launch(options):
         ]
     )
     write_private_json(state_dir / "endpoints.json", {"hostUrl": origin, "caFile": str(ca_file)})
-    action = "Resuming" if resuming else f"Starting {options.scenario}"
+    action = "Resuming" if resuming else f"Starting {options.scenario or 'Vanilla Rome/Greece/France'}"
     print(f"{action} game: {checkpoint}", flush=True)
     print(f"Wait for MCP-READY:{origin}/mcp, then launch each agent in another terminal.", flush=True)
     os.execv(str(executable), command)

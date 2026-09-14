@@ -348,19 +348,23 @@ class SchedulerServiceTest(unittest.TestCase):
         self.assertTrue(all(record["phase"] == "COMPLETED" for record in records))
         self.assertEqual(result.stdout.count("Settled and chose research."), 2)
 
-    def test_memory_conflict_recovers_while_chat_enacts_trade_and_scheduling_continues(self):
+    def test_gameplay_waits_while_chat_enacts_trade_and_scheduling_continues(self):
         self.exercise_concurrent_trade(peace=False)
 
     def test_peace_uses_the_same_off_turn_counteroffer_and_acceptance_flow(self):
         self.exercise_concurrent_trade(peace=True)
 
-    def exercise_concurrent_trade(self, *, peace):
-        trade = ConcurrentTradeHost(self.host, peace=peace)
-        result = self.run_cli("--max-turns", "2", "--max-seconds", "60", "--turn-timeout", "30")
+    def test_negotiation_wait_does_not_exhaust_the_gameplay_activation_timeout(self):
+        self.exercise_concurrent_trade(peace=False, settlement_delay=5, turn_timeout=3)
+
+    def exercise_concurrent_trade(self, *, peace, settlement_delay=0, turn_timeout=30):
+        trade = ConcurrentTradeHost(self.host, peace=peace, settlement_delay=settlement_delay)
+        result = self.run_cli("--max-turns", "2", "--max-seconds", "60", "--turn-timeout", str(turn_timeout))
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(self.host.handoff, 4, result.stdout + result.stderr)
         self.assertEqual(self.saved()["status"], "budget_exhausted")
-        self.assertEqual(trade.enacted, {"civilization": "Rome", "activeCivilization": "Greece", "handoff": 1})
+        self.assertEqual(trade.enacted, {"civilization": "Rome", "activeCivilization": "Rome", "handoff": 0})
+        self.assertTrue(trade.gameplay_waiting)
         self.assertEqual(
             trade.writes,
             [("Rome", True, "trade_offer"), ("Greece", False, "trade_offer"), ("Rome", False, "trade_decide")],
@@ -370,10 +374,7 @@ class SchedulerServiceTest(unittest.TestCase):
         failures = [
             r["params"]["result"] for r in records if r["method"] == "test/tool" and r["params"]["result"].get("error")
         ]
-        self.assertEqual(len(failures), 1)
-        self.assertEqual(failures[0]["changedRecords"], ["relationships/Rome"])
-        self.assertTrue(failures[0]["recoverable"])
-        self.assertFalse(failures[0]["applied"])
+        self.assertEqual(failures, [])
         for path in (self.state_dir / "agent-services").glob("*/activations/*.json"):
             self.assertEqual(json.loads(path.read_text())["phase"], "COMPLETED")
         self.assertEqual(len([r for r in records if r["method"] == "turn/start"]), 6)  # Four turns and two chat jobs.

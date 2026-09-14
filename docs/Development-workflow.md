@@ -32,6 +32,15 @@ Use JDK 21 or newer and the checked-in Gradle wrapper. The included Unciv build 
 
 The initial smoke test loads Vanilla and Gods & Kings rules with mods disabled and no graphics backend. The [headless runtime](Headless-runtime.md) adds saved-game loading and shutdown, with separate-process lifecycle scenarios for both rulesets. The [Kotlin player-summary prototype](Player-summary-prototype.md) adds the first player-bound observation surface, and the [city-rename prototype](City-rename-prototype.md) adds serialized command execution and retry receipts. The recorded engine also supplies [free great-person selection](Free-great-person-selection.md), with manual before/after UI fixtures; the [Kotlin choice prototype](Free-great-person-prototype.md) exposes discovery and validated selection through the player session. The [MCP prototype](MCP-prototype.md) exposes these methods to independently authenticated local clients. Remaining player surfaces are tracked in the [headless plan](Headless-player-agent-path.md).
 
+## Kotlin host libraries
+
+The host uses Clikt for command-line parsing, Networknt for explicit JSON Schema
+validation, and kotlinx.serialization for typed requests and checkpoint records.
+Ktor and the official MCP SDK serve HTTPS. Coroutine notifications wake
+communication subscriptions after committed changes. See the
+[Kotlin architecture](Kotlin-architecture.md) for request validation, subscription
+lifetimes, and the transport schema layout.
+
 ## Python package and checks
 
 The Python application lives in `src/civ_agent/`, with a single installed
@@ -42,6 +51,13 @@ importable modules rather than scripts loaded by filesystem path.
 Use Python 3.12 or newer and [uv](https://docs.astral.sh/uv/). The project metadata,
 runtime dependencies, and Ruff, Pyrefly, and pytest configuration live in
 `pyproject.toml`. `uv.lock` records the resolved runtime and development dependencies.
+
+Runtime libraries include aiohttp for the service and Codex socket connection,
+Pydantic for owned boundary schemas, the official MCP SDK with httpx2 for host
+clients, and cryptography for certificate and keystore provisioning. See the
+[Python architecture diagrams](Python-architecture.md) for their responsibilities
+and connection lifetimes. TLS provisioning does not require an OpenSSL executable;
+some independent test fixtures still use it.
 
 ```sh
 uv sync --locked

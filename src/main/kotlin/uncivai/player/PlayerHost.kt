@@ -51,6 +51,7 @@ class PlayerHost internal constructor(
 }
 
 interface PlayerSession {
+    fun communicationChanges(): kotlinx.coroutines.flow.StateFlow<Long> = throw PlayerSessionException(PlayerSessionFailure.COMMAND_UNAVAILABLE)
     fun communication(request: kotlinx.serialization.json.JsonObject): kotlinx.serialization.json.JsonObject = throw PlayerSessionException(PlayerSessionFailure.COMMAND_UNAVAILABLE)
     fun capabilities(): PlayerCapabilities
 
@@ -85,6 +86,10 @@ private class BoundPlayerSession(
     private val greatPersonChooser: (Civilization, String) -> MapUnit?,
 ) : PlayerSession {
     private val turnSession = TurnSession(runtime, civilizationId)
+
+    override fun communicationChanges() = playerOperation {
+        runtime.accessGame { runtime.communicationChanges.forPlayer(civilizationId) }
+    }
 
     override fun communication(request: kotlinx.serialization.json.JsonObject) = playerOperation {
         runtime.communication.handle(civilizationId, request)

@@ -118,25 +118,6 @@ with `civ-agent host inspect` to verify the resulting position independently.
 
 ## Combat regression fixtures
 
-The battlefield setup remains in automated combat tests. The current playable
-launcher exercise is [city management](City-management.md#prepared-scenario).
-
-For a focused capture/victory test, the test harness can prepare a separate
-checkpoint with two Roman Warriors beside Sparta and Athens, both at 1 HP:
-
-```sh
-./gradlew prepareConquestFixture -PcombatFixtureDir=/tmp/my-conquest-fixture
-```
-
-To isolate terminal delivery from siege tactics, prepare a single final capital at
-1 HP, with a healthy Roman Warrior beside it and no defending units:
-
-```sh
-./gradlew prepareVictoryFixture -PcombatFixtureDir=/tmp/my-victory-fixture
-```
-
-These prepare `exploration.json` without issuing gameplay commands and refuse to
-overwrite an existing checkpoint. Each includes instructions for its specific
-exercise and is intended for operator test harnesses; provision fresh player
-credentials before using the normal checkpoint launcher. A victory in this prepared
-position verifies the terminal flow, not the outcome of a longer ongoing match.
+Battlefield, conquest and victory states remain in the automated combat tests.
+They are test data builders without standalone gameplay launchers or scenario
+instructions. The current gameplay exercise is [trade-cycle](Trade-cycle-scenario.md).

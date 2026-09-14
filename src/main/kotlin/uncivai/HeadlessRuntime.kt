@@ -97,31 +97,14 @@ class HeadlessRuntime private constructor(
          */
         fun load(saveFile: Path, dataDirectory: Path): HeadlessRuntime = open(saveFile, dataDirectory, null)
 
-        /** The seed controls terrain, not every engine random choice. */
-        fun createDuel(dataDirectory: Path, seed: Long = System.currentTimeMillis(), closeStarts: Boolean = false, combatScenario: Boolean = false): HeadlessRuntime = open(null, dataDirectory, DuelSetup(seed, closeStarts, combatScenario))
+        fun createTradeCycleExercise(dataDirectory: Path, seed: Long = 412L): HeadlessRuntime = create(dataDirectory) { TradeCycleScenarioSetup.create(seed) }
 
-        fun createGreatPeopleExercise(dataDirectory: Path, seed: Long = 517L): HeadlessRuntime = open(null, dataDirectory, DuelSetup(seed, greatPeopleScenario = true))
+        fun createVanillaGame(dataDirectory: Path, seed: Long = System.currentTimeMillis()): HeadlessRuntime = create(dataDirectory) { VanillaGameSetup.create(seed) }
 
-        fun createChatExercise(dataDirectory: Path, seed: Long = 412L): HeadlessRuntime = createDuel(dataDirectory, seed, closeStarts = true).also { it.game.tileMap.mapParameters.name = "Asynchronous chat exercise" }
+        /** Trusted creation hook; fixture builders live in the test source set. */
+        internal fun create(dataDirectory: Path, setup: () -> GameInfo): HeadlessRuntime = open(null, dataDirectory, setup)
 
-        fun createVerbalBetrayalExercise(dataDirectory: Path, seed: Long = 412L): HeadlessRuntime = createDuel(dataDirectory, seed, closeStarts = true).also { it.game.tileMap.mapParameters.name = VerbalBetrayalScenario.MAP_NAME }
-
-        fun createPeaceExercise(dataDirectory: Path, seed: Long = 412L): HeadlessRuntime = open(null, dataDirectory, DuelSetup(seed, peaceScenario = true))
-
-        fun createTradeExercise(dataDirectory: Path, seed: Long = 412L): HeadlessRuntime = open(null, dataDirectory, DuelSetup(seed, tradeScenario = true))
-
-        fun createCityManagementExercise(dataDirectory: Path, seed: Long = 412L): HeadlessRuntime {
-            val runtime = createDuel(dataDirectory, seed, combatScenario = true)
-            try {
-                CityManagementScenarioSetup.arrange(runtime.game)
-                return runtime
-            } catch (failure: Throwable) {
-                runtime.close()
-                throw failure
-            }
-        }
-
-        private fun open(saveFile: Path?, dataDirectory: Path, duel: DuelSetup?): HeadlessRuntime = synchronized(lifecycleLock) {
+        private fun open(saveFile: Path?, dataDirectory: Path, setup: (() -> GameInfo)?): HeadlessRuntime = synchronized(lifecycleLock) {
             check(activeRuntime == null) {
                 "A HeadlessRuntime is already active in this JVM"
             }
@@ -150,7 +133,7 @@ class HeadlessRuntime private constructor(
                 if (saveHandle != null) validateBundledSave(uncivGame.files, saveHandle)
                 loadBundledRulesets()
 
-                val gameInfo = duel?.create() ?: uncivGame.files.loadGameFromFile(checkNotNull(saveHandle))
+                val gameInfo = setup?.invoke() ?: uncivGame.files.loadGameFromFile(checkNotNull(saveHandle))
                 gameInfo.simulateUntilWin = false
                 gameInfo.simulateMaxTurns = 0
                 check(!gameInfo.isSimulation()) { "Loaded game unexpectedly entered simulation mode" }

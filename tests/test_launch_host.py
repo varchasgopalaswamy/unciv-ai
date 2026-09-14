@@ -52,7 +52,7 @@ class HostLauncherTest(unittest.TestCase):
         return checkpoint
 
     def test_new_game_creates_private_distinct_credentials_and_executes_argv(self):
-        self.assertEqual(0, self.run_launcher("--scenario", "great-people", "--seed", "42", "--port", "8766"))
+        self.assertEqual(0, self.run_launcher("--scenario", "trade-cycle", "--seed", "42", "--port", "8766"))
         players_path = self.state / "players.json"
         players = json.loads(players_path.read_text())["players"]
         self.assertEqual(["Rome", "Greece"], [entry["civilizationId"] for entry in players])
@@ -71,13 +71,13 @@ class HostLauncherTest(unittest.TestCase):
             executable,
             [
                 executable,
-                "--new-duel",
+                "--new-game",
                 "--checkpoint",
                 str(self.state / "exploration.json"),
                 "--seed",
                 "42",
                 "--scenario",
-                "great-people",
+                "trade-cycle",
                 "--data-dir",
                 str(self.state / "data"),
                 "--mcp-config",
@@ -107,7 +107,7 @@ class HostLauncherTest(unittest.TestCase):
         self.assertEqual("existing checkpoint", checkpoint.read_text())
         command = self.execute.call_args.args[1]
         self.assertEqual(["--resume-checkpoint", str(checkpoint)], command[1:3])
-        self.assertNotIn("--new-duel", command)
+        self.assertNotIn("--new-game", command)
 
     def test_resume_without_credentials_refuses_to_rotate_them(self):
         self.checkpoint()
@@ -131,20 +131,46 @@ class HostLauncherTest(unittest.TestCase):
         self.assertIn("only to a new game", self.errors.getvalue())
         self.build.assert_not_called()
 
-    def test_new_game_requires_an_explicit_scenario_before_creating_credentials(self):
-        self.assertEqual(2, self.run_launcher("--new"))
-        self.assertIn("--scenario city-management", self.errors.getvalue())
-        self.assertFalse(self.state.exists())
-        self.execute.assert_not_called()
-        self.build.assert_not_called()
+    def test_default_new_game_provisions_all_three_players_without_scenario(self):
+        self.assertEqual(0, self.run_launcher("--new", "--seed", "-7", "--trade-counteroffers", "5"))
+        players = json.loads((self.state / "players.json").read_text())["players"]
+        self.assertEqual(["Rome", "Greece", "France"], [entry["civilizationId"] for entry in players])
+        self.assertEqual(3, len({entry["token"] for entry in players}))
+        self.assertEqual(0o600, stat.S_IMODE((self.state / "players.json").stat().st_mode))
+        for entry in players:
+            self.assertRegex(entry["token"], r"^[A-Za-z0-9_-]{43}$")
+            self.assertNotIn(entry["token"], self.output.getvalue() + self.errors.getvalue())
+        command = self.execute.call_args.args[1]
+        self.assertIn("--new-game", command)
+        self.assertNotIn("--scenario", command)
+        self.assertEqual("-7", command[command.index("--seed") + 1])
+        self.assertEqual("5", command[command.index("--trade-counteroffers") + 1])
+        self.assertIn("Starting Vanilla Rome/Greece/France game", self.output.getvalue())
 
     def test_resume_forwards_scenario_for_checkpoint_validation(self):
         self.checkpoint()
         self.write_players()
-        self.assertEqual(0, self.run_launcher("--scenario", "city-management"))
+        self.assertEqual(0, self.run_launcher("--scenario", "trade-cycle"))
         command = self.execute.call_args.args[1]
         self.assertIn("--resume-checkpoint", command)
-        self.assertEqual("city-management", command[command.index("--scenario") + 1])
+        self.assertEqual("trade-cycle", command[command.index("--scenario") + 1])
+
+    def test_removed_scenarios_are_rejected_without_creating_state(self):
+        for scenario in (
+            "city-management",
+            "great-people",
+            "async-chat",
+            "verbal-betrayal",
+            "async-trade",
+            "async-peace",
+            "bilateral-trade",
+        ):
+            with self.subTest(scenario=scenario), self.assertRaises(SystemExit) as failure:
+                self.run_launcher("--scenario", scenario)
+            self.assertEqual(2, failure.exception.code)
+        self.assertFalse(self.state.exists())
+        self.build.assert_not_called()
+        self.execute.assert_not_called()
 
     def test_custom_paths_with_spaces_and_engine_override_are_single_arguments(self):
         custom_players = self.write_players(Path(self.temporary.name) / "private players.json")
@@ -153,7 +179,7 @@ class HostLauncherTest(unittest.TestCase):
             0,
             self.run_launcher(
                 "--scenario",
-                "city-management",
+                "trade-cycle",
                 "--players",
                 str(custom_players),
                 "--checkpoint",
@@ -178,7 +204,7 @@ class HostLauncherTest(unittest.TestCase):
         players = self.write_players()
         players.chmod(0o644)
         original = players.read_bytes()
-        self.assertEqual(2, self.run_launcher("--scenario", "city-management"))
+        self.assertEqual(2, self.run_launcher("--scenario", "trade-cycle"))
         self.assertEqual(original, players.read_bytes())
         self.assertEqual(0o644, stat.S_IMODE(players.stat().st_mode))
         self.assertIn("chmod 600", self.errors.getvalue())
@@ -186,7 +212,7 @@ class HostLauncherTest(unittest.TestCase):
 
     def test_build_failure_does_not_launch_host(self):
         self.build.side_effect = subprocess.CalledProcessError(1, ["gradlew"])
-        self.assertEqual(1, self.run_launcher("--scenario", "city-management"))
+        self.assertEqual(1, self.run_launcher("--scenario", "trade-cycle"))
         self.assertIn("Host build failed", self.errors.getvalue())
         self.execute.assert_not_called()
         self.assertFalse((self.state / "endpoints.json").exists())
@@ -211,7 +237,7 @@ class HostLauncherTest(unittest.TestCase):
         )
         tls.chmod(0o600)
         self.assertEqual(
-            0, self.run_launcher("--scenario", "city-management", "--tls-config", str(tls), "--ca-file", str(ca))
+            0, self.run_launcher("--scenario", "trade-cycle", "--tls-config", str(tls), "--ca-file", str(ca))
         )
         self.tls.assert_not_called()
         command = self.execute.call_args.args[1]
@@ -228,7 +254,7 @@ class HostLauncherTest(unittest.TestCase):
             ("--tls-config", "/no/config", "--ca-file", "/no/ca", "--public-host", "remote.example"),
         ):
             with self.subTest(arguments=arguments):
-                self.assertEqual(2, self.run_launcher("--scenario", "city-management", *arguments))
+                self.assertEqual(2, self.run_launcher("--scenario", "trade-cycle", *arguments))
         self.build.assert_not_called()
         self.tls.assert_not_called()
         self.assertFalse((self.state / "players.json").exists())

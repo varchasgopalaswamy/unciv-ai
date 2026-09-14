@@ -6,7 +6,7 @@ import com.unciv.logic.city.managers.CityFounder
 import com.unciv.logic.civilization.PlayerCityOperations
 import com.unciv.logic.map.HexCoord
 
-/** Symmetric, peaceful setup shared by the playable exercise and its engine-state checks. */
+/** Symmetric, peaceful fixture for the city-management regression tests. */
 internal object CityManagementScenarioSetup {
     const val MAP_NAME = "City management exercise"
 

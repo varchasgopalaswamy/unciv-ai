@@ -77,6 +77,7 @@ class PlayerSummaryJsonTest {
             setOf(
                 "capabilities",
                 "communication",
+                "communicationChanges",
                 "turn",
                 "result",
                 "researchDetails",
@@ -91,6 +92,8 @@ class PlayerSummaryJsonTest {
             ),
             sessionMethods.keys,
         )
+        assertEquals(kotlinx.coroutines.flow.StateFlow::class.java, sessionMethods.getValue("communicationChanges").returnType)
+        assertEquals(0, sessionMethods.getValue("communicationChanges").parameterCount)
         assertEquals(0, sessionMethods.getValue("summary").parameterCount)
         assertEquals(0, sessionMethods.getValue("result").parameterCount)
         assertEquals(uncivai.player.PlayerFinalState::class.java, sessionMethods.getValue("result").returnType)

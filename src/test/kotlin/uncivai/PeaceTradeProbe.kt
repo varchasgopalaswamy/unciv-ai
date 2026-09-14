@@ -72,29 +72,29 @@ object PeaceTradeProbe {
                 greece.addGold(950)
                 check(decide("Greece", costly)["error"] != null) // Cannot revive an invalid proposal.
 
+                val before = api.turn(token)
+                val warrior = before.map.units.single { it.name == "Warrior" }
+                val attack = warrior.combat!!.attacks.first()
+                val socialVersion = runtime.executor.communicationState.peaceVersions["Rome"] ?: 0
+                val staleAttack = TurnCommandRequest("stale-attack", epoch, before.revision, TurnCommandKind.ATTACK, target = warrior.handle, destination = attack.destination, attackFrom = attack.attackFrom, socialVersion = socialVersion)
                 val initial = offer(listOf(treaty, silk), listOf(treaty, JsonObject(gpt + obj("amount" to 4))))["trade"]!!.jsonObject
                 val counter = command("Greece", "trade_offer", "partner" to "Rome", "proposal" to initial["proposal"], "version" to initial["version"], "give" to listOf(treaty, gpt, gold), "receive" to listOf(treaty, silk))["trade"]!!.jsonObject
                 check(decide("Greece", initial)["error"] != null)
                 check(rome.isAtWarWith(greece) && rome.getDiplomacyManager(greece)!!.trades.isEmpty())
                 check(query("Rome", "trade_read", "proposal" to counter["proposal"])["trade"]!!.jsonObject["clauses"] == counter["clauses"])
-                val obsolete = offer(listOf(treaty), listOf(treaty))["trade"]!!.jsonObject
+                check(offer(listOf(treaty), listOf(treaty))["error"] != null) // No overlapping negotiation.
 
-                // Preserve an actual attack planned before peace, while Greece takes its turn.
-                api.finishTurn(token)
-                token = checkNotNull(api.activate().playerToken)
-                check(runtime.game.currentPlayer == "Greece")
+                api.reject(token, staleAttack, "NEGOTIATION_ACTIVE")
+                api.reject(token, TurnCommandRequest("held-end", epoch, before.revision, TurnCommandKind.END_TURN).reviewedFor(before), "NEGOTIATION_ACTIVE")
+                check(runtime.game.currentPlayer == "Rome")
                 api.operator(OperatorRequest("barrier", api.lease))
                 round = api.operator(OperatorRequest("snapshot", api.lease)).checkpoint!!
                 api.operator(OperatorRequest("unbarrier", api.lease))
                 token = checkNotNull(api.activate().playerToken)
-                val before = api.turn(token)
-                check(before.scenario?.name == "ASYNC_PEACE_EXERCISE")
-                val warrior = before.map.units.single { it.name == "Warrior" }
-                val attack = warrior.combat!!.attacks.first()
-                val socialVersion = runtime.executor.communicationState.peaceVersions["Greece"] ?: 0
-                val staleAttack = TurnCommandRequest("stale-attack", epoch, before.revision, TurnCommandKind.ATTACK, target = warrior.handle, destination = attack.destination, attackFrom = attack.attackFrom, socialVersion = socialVersion)
+                check(before.scenario == null)
+                val held = api.turn(token)
                 command("Rome", "send", "to" to "Greece", "text" to "Hello")
-                check(api.turn(token).revision == before.revision) { "An unrelated greeting invalidated gameplay" }
+                check(api.turn(token).revision == held.revision) { "An unrelated greeting invalidated gameplay" }
                 val balances = rome.gold to greece.gold
                 val health = listOf(rome, greece).map { it.units.getCivUnits().single().health }
                 val income = rome.stats.statsForNextTurn.gold to greece.stats.statsForNextTurn.gold
@@ -102,7 +102,7 @@ object PeaceTradeProbe {
                 accepted = obj("op" to "trade_decide", "epoch" to epoch, "requestId" to "accept-peace", "proposal" to counter["proposal"], "version" to counter["version"], "decision" to "accept")
                 receipt = api.communicate(api.playerToken("Rome"), accepted)
                 check(receipt["trade"]!!.jsonObject["status"]!!.jsonPrimitive.content == "ENACTED")
-                check(runtime.game.currentPlayer == "Greece" && runtime.executor.handoff == handoff)
+                check(runtime.game.currentPlayer == "Rome" && runtime.executor.handoff == handoff)
                 check(!rome.isAtWarWith(greece) && !greece.isAtWarWith(rome))
                 check(rome.gold == balances.first + 20 && greece.gold == balances.second - 20)
                 check(rome.stats.statsForNextTurn.gold == income.first + 2 && greece.stats.statsForNextTurn.gold == income.second - 2)
@@ -112,7 +112,6 @@ object PeaceTradeProbe {
                 check(native.ourOffers.single { it.type == TradeOfferType.Treaty }.duration == treaty["duration"]!!.jsonPrimitive.int)
                 check(native.ourOffers.single { it.type == TradeOfferType.Gold_Per_Turn }.duration == gpt["duration"]!!.jsonPrimitive.int)
                 check(rome.tradeRequests.isEmpty() && greece.tradeRequests.isEmpty())
-                check(query("Rome", "trade_read", "proposal" to obsolete["proposal"])["trade"]!!.jsonObject["status"]!!.jsonPrimitive.content == "INVALID")
                 check(offer(listOf(treaty), listOf(treaty))["error"] != null)
                 check(api.communicate(api.playerToken("Rome"), accepted) == receipt)
                 api.reject(token, staleAttack, "STALE_REVISION")
@@ -124,7 +123,7 @@ object PeaceTradeProbe {
                 // Refresh only affected observations and continue ordinary scheduled gameplay.
                 api.finishTurn(token)
                 token = checkNotNull(api.activate().playerToken)
-                check(api.turn(token).scenario?.phase == "ENACTED")
+                check(api.turn(token).scenario == null)
                 api.finishTurn(token)
             }
         }
@@ -140,7 +139,7 @@ object PeaceTradeProbe {
                 check(game.getCivilization("Rome").isAtWarWith(game.getCivilization("Greece")))
                 check(game.getCivilization("Rome").getDiplomacyManager("Greece")!!.trades.isEmpty())
             }
-            check(runtime.executor.communicationState.outcomes.none { it["action"]?.jsonPrimitive?.content == "ENACT_TRADE" })
+            check(runtime.executor.communicationState.outcomes.none { it.action == "ENACT_TRADE" })
             check(runCatching { rome.communication(accepted) }.isFailure)
         }
         verifyRequestCleanup(root.resolve("requests"))

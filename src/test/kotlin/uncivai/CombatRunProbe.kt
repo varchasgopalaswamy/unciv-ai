@@ -57,10 +57,6 @@ object CombatRunProbe {
     fun main(args: Array<String>) {
         val root = Path.of(args[0])
         val stage = args[1]
-        if (stage == "prepare-conquest" || stage == "prepare-victory") {
-            if (stage == "prepare-conquest") prepareConquest(root) else prepareVictory(root)
-            return
-        }
         val fresh = stage == "combat" || stage == "conquest" || stage.startsWith("last-settler-")
         val checkpoint = root.resolve("checkpoint.json")
         val runtime = when {
@@ -85,73 +81,6 @@ object CombatRunProbe {
                     else -> error("Unknown combat test stage: $stage")
                 }
             }
-        }
-    }
-
-    /** Reuses the verified capture fixture, leaving every gameplay decision to its players. */
-    private fun prepareConquest(root: Path) {
-        val checkpoint = root.resolve("exploration.json")
-        require(!Files.exists(checkpoint)) { "Refusing to overwrite an existing conquest checkpoint: $checkpoint" }
-        HeadlessRuntime.createDuel(root.resolve("fixture-data"), 412L).use { runtime ->
-            arrange(runtime, conquest = true)
-            runtime.game.tileMap.mapParameters.name = "Combat exercise"
-            val rome = runtime.game.getCivilization("Rome")
-            val greece = runtime.game.getCivilization("Greece")
-            check(runtime.game.currentPlayerCiv === rome && rome.isAtWarWith(greece))
-            check(greece.cities.size == 2 && greece.cities.all { it.health == 1 })
-            val snapshot = PlayerHost(runtime).bindPlayer("Rome").turn()
-            check(snapshot.map.units.count { unit -> unit.combat!!.attacks.any { it.defenderIsCity } } == 2)
-            check(snapshot.scenario?.name == "COMBAT_EXERCISE")
-            prepareDuelCredentials(root)
-            runtime.executor.enableCheckpoints(checkpoint)
-            println("Prepared conquest checkpoint: ${checkpoint.toAbsolutePath()}")
-            println("Rome acts first; capture the Greek outpost at (0, 0), choose Puppet then Annex, and capture Athens at (4, 0).")
-        }
-    }
-
-    /** A single legal attack followed by the ordinary capital disposition completes this game. */
-    private fun prepareVictory(root: Path) {
-        val checkpoint = root.resolve("exploration.json")
-        require(!Files.exists(checkpoint)) { "Refusing to overwrite an existing victory checkpoint: $checkpoint" }
-        HeadlessRuntime.createDuel(root.resolve("fixture-data"), 412L).use { runtime ->
-            arrange(runtime, conquest = true)
-            val game = runtime.game
-            val rome = game.getCivilization("Rome")
-            val greece = game.getCivilization("Greece")
-            greece.cities.filterNot { it.isOriginalCapital }.toList().forEach { it.destroyCity() }
-            greece.units.getCivUnits().toList().forEach { it.destroy() }
-            rome.units.getCivUnits().filterNot { it.currentTile.position == HexCoord(3, 0) }.toList().forEach { it.destroy() }
-            game.tileMap.mapParameters.name = "Victory exercise"
-            val players = listOf(rome, greece)
-            for (tile in game.tileMap.values) players.forEach { tile.setExplored(it, false) }
-            players.forEach { player ->
-                for (technology in listOf("Pottery", "Archery", "Mining")) player.tech.addTechnology(technology, false)
-                player.tech.techsToResearch = arrayListOf("Writing", "The Wheel", "Bronze Working")
-                for (city in player.cities) {
-                    city.cityConstructions.constructionQueue.clear()
-                    city.cityConstructions.addToQueue("Archer")
-                    city.cityConstructions.addToQueue("Monument")
-                    city.cityStats.update()
-                }
-                player.units.getCivUnits().forEach { it.updateVisibleTiles(updateCivViewableTiles = false) }
-                player.cache.updateViewableTiles()
-            }
-            val capital = greece.cities.single()
-            val warrior = rome.units.getCivUnits().single()
-            check(rome.cities.size == 1 && capital.isOriginalCapital && capital.health == 1)
-            check(capital.location == HexCoord(4, 0) && warrior.currentTile.position == HexCoord(3, 0) && warrior.health == 100)
-            check(greece.units.getCivUnits().none() && game.currentPlayerCiv === rome && rome.isAtWarWith(greece))
-            check(game.victoryData == null && players.none { it.victoryManager.hasWon() })
-            val snapshot = PlayerHost(runtime).bindPlayer("Rome").turn()
-            val unit = snapshot.map.units.single()
-            val attacks = unit.combat!!.attacks
-            check(attacks.map { it.destination }.distinct() == listOf(TilePosition(4, 0)))
-            check(attacks.count { it.defenderIsCity && it.attackFrom == unit.position } == 1)
-            check(snapshot.researchQueue.isNotEmpty() && snapshot.cities.single().constructionQueue.isNotEmpty())
-            prepareDuelCredentials(root)
-            runtime.executor.enableCheckpoints(checkpoint)
-            println("Prepared victory checkpoint: ${checkpoint.toAbsolutePath()}")
-            println("Rome's Warrior at (3, 0) can directly attack Athens at (4, 0), read the capture decision and Annex it to win on turn 0.")
         }
     }
 
@@ -711,7 +640,8 @@ object CombatRunProbe {
             return response.body()
         }
         fun tool(token: String, name: String, arguments: JsonObject = JsonObject(emptyMap()), error: Boolean = false): JsonObject {
-            val request = """{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"$name","arguments":$arguments}}"""
+            val payload = if (name == "player_communication") obj("request" to arguments) else arguments
+            val request = """{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"$name","arguments":$payload}}"""
             val result = Json.parseToJsonElement(raw("/mcp", request, token)).jsonObject.getValue("result").jsonObject
             check(result.getValue("isError").jsonPrimitive.boolean == error) { result.toString() }
             return if (error) result else result.getValue("structuredContent").jsonObject

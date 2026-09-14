@@ -1,6 +1,6 @@
 # War declarations and peace negotiations
 
-Peace is a term in the [shared asynchronous trade system](Asynchronous-trade.md).
+Peace is a term in the [shared trade negotiation system](Asynchronous-trade.md).
 It uses the same proposal IDs, immutable versions, consent, events, receipts and
 checkpoints as gold and resource trades. There are no separate host peace commands.
 
@@ -50,17 +50,18 @@ IDs. Neither player reconstructs an acceptance from prose.
 
 ## Scheduling and recovery
 
-Both players can negotiate and consent during either gameplay turn, including
-scheduler gaps. Publishing a proposal never blocks END_TURN. Communication jobs
-receive events without model polling and cannot move units or take ordinary
-gameplay actions. No active-player switching is involved.
+The current player opens a negotiation; the other participant can counteroffer or
+consent off turn. Publishing the first valid offer blocks all gameplay, including
+END_TURN, until settlement or the deadline. Three counteroffers are shared by both
+players by default. Communication jobs receive events without model polling and
+cannot take ordinary gameplay actions. No active-player switching is involved.
 
 Acceptance rechecks relations, rules, duration and affordability under the game
 executor. Native `TradeLogic` applies the complete stored deal: both directions of
 peace, treaty restrictions, gold payments, recurring obligations, resource access
 and other normal peace effects. Consent, engine outcome, acknowledgement content,
-events and retry receipt commit in the same checkpoint. A competing expense can
-invalidate the proposal without enacting peace or transferring anything.
+events and retry receipt commit in the same checkpoint. The host prevents competing
+expenses and other game mutations while negotiation is open.
 
 Accepted peace invalidates other pending proposals between the pair, both players'
 observations and hostile-action policy versions. An attack planned before peace
@@ -76,36 +77,20 @@ operator rollback restores the native war state, proposal versions, receipts,
 events and all player memory together under a new epoch. Use a new save for this
 schema; no compatibility layer is maintained.
 
-## Prepared asynchronous peace exercise
+## Gameplay exercise
 
-Start the host, two agent services, then the scheduler in separate terminals:
-
-```sh
-uv run civ-agent host start --state-dir /tmp/civ-peace-1 --scenario async-peace
-uv run civ-agent agent-server start Rome --state-dir /tmp/civ-peace-1
-uv run civ-agent agent-server start Greece --state-dir /tmp/civ-peace-1
-uv run civ-agent match start --state-dir /tmp/civ-peace-1 --max-turns 3 --max-invocations 32
-```
-
-Wait for each service to report ready. The fixture starts after the war cooldown,
-with viable capitals, 1,000 gold each, surplus resources and adjacent Warriors.
-The armies should hold position. Rome offers mutual peace and one Silk for four
-GPT; Greece counters with mutual peace, two GPT and twenty immediate gold for
-that Silk; Rome accepts through communication work. Both then verify the deal,
-record sourced economy/relationship notes and continue scheduled turns.
-
-Inspect with `civ-agent trade read`, `trade options`, native saves and the files
-under `agents/Rome` and `agents/Greece`. Canonical durations record the original
-deal; native durations tick down with each civilization's turns. Check actual
-bilateral peace and obligations, not just model claims. See the trade runbook for
-human inspection commands and the normal model/reasoning options.
+The [trade-cycle scenario](Trade-cycle-scenario.md) starts with an eligible war,
+negotiates paid peace through a counteroffer, then continues through the supported
+economic and treaty features. Its checkpoint verifier checks exact terms,
+consent, native agreements and continued turns. Use the runbook for launch and
+inspection commands.
 
 ## Verification
 
 `WarPeaceRunIntegrationTest` covers contact through movement, declaration and its
 message, natural cooldown, off-turn decline/counteroffer/acceptance, restarts before
 and after acceptance, native payment/treaty checks and continued scheduled rounds.
-`PeaceTradeProbe` covers the prepared scenario, invalid terms, lost funds,
+`PeaceTradeProbe` covers an internal prepared war, invalid terms, lost funds,
 concurrent proposals, an old attack, native resource/GPT effects, exact retry,
 round rollback and checkpoint failures before/after replacement. Existing combat
 verification also makes peace through this shared path.
