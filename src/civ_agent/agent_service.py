@@ -31,6 +31,7 @@ from civ_agent.agent_results import PlayerResultStore, ResultError, validate_res
 from civ_agent.agent_settings import player_tool_arguments, valid_setting
 from civ_agent.chat_runtime import ChatRuntime
 from civ_agent.civilization_state import CivilizationState
+from civ_agent.diagnostics import Diagnostics
 from civ_agent.host_connection import HostConnection
 from civ_agent.proposal_gateway import ProposalGateway
 from civ_agent.protocol import AgentProcess, JsonObject, Notification
@@ -221,6 +222,7 @@ class AgentService:
         *,
         model: str | None = None,
         reasoning_effort: str | None = None,
+        memory_context_chars: int = 12000,
         gateway_url: str = "https://localhost:8865/mcp",
         gateway_ca_file: Path | None = None,
     ) -> None:
@@ -279,7 +281,8 @@ class AgentService:
                 raise ServiceError("SERVICE_BINDING_CONFLICT", 409)
         else:
             write_private_json(binding_file, binding)
-        self.memory = CivilizationState(self.state_dir / "civilization", civilization)
+        self.memory = CivilizationState(self.state_dir / "civilization", civilization, memory_context_chars)
+        self.memory.export(self.workspace)
         self.gateway = ProposalGateway(self.memory, self.io, self.workspace)
         self.gateway.paused = self.memory.is_paused()
         self.gateway_url, self.gateway_ca_file = gateway_url, gateway_ca_file
@@ -315,6 +318,7 @@ class AgentService:
             if self.match is None or self.match["epoch"] != received["epoch"]:
                 raise ServiceError("RESULT_BINDING_CONFLICT", 409)
             self.results.receive(received)
+        self.diagnostics = Diagnostics(self.state_dir, self.civilization)
 
     def _persist(self, record, *, refresh=False):
         self.history.lifecycle(record)
@@ -352,6 +356,7 @@ class AgentService:
             record.get("committedHandoff"),
             record.get("aborted", False),
             record.get("terminalOutcome", False),
+            self.memory.generation(),
         )
         previous = self.archive_cache.get(record["activationId"])
         if previous is None or previous[0] != version:
@@ -364,6 +369,7 @@ class AgentService:
 
     def _export(self, record):
         assert self.archive is not None
+        self.memory.export(self.workspace)
         path = self.history.path(record["activationId"]) / "events.jsonl"
         events = []
         if path.exists():
@@ -406,6 +412,7 @@ class AgentService:
             handoff=record.get("committedHandoff"),
             aborted=record.get("aborted", False),
             terminal=record.get("terminalOutcome", False),
+            structured_summary=self.memory.summary(record["gameTurn"]),
         )
 
     async def result(self, payload):
@@ -645,15 +652,17 @@ class AgentService:
                 "Use history_read only when earlier detailed commands or receipts are needed. "
                 "The service writes all turn files. Do not create or edit them. "
                 "After END_TURN succeeds, make no further tool calls; immediately return your concise turn summary "
-                "as your final response. It becomes this turn's summary.md: at most 200 words of confirmed actions "
-                "and reasons, discoveries, unfinished business and next-turn plans. Distinguish failures and historical "
-                "actions. No headings, IDs, receipts, retry history or execution status."
+                "as your final response. The service generates summary.json and summary.md from receipts and typed memory. "
+                "Supply intent (reason or active plan ID) for consequential actions. Maintain concise typed plans, "
+                "beliefs and notes with memory_update before ending the turn; retire completed or irrelevant records. "
+                "A plan needing review must be reconsidered before reuse. Final prose is only a report."
             )
             if payload["threadId"] is None:
                 assert self.archive is not None
                 await self.io.call(self.memory.bind, payload["epoch"])
                 snapshot = await self.io.call(self.memory.snapshot, "gameplay")
                 prompt += "\n\n" + self.memory.context(snapshot)
+                payload = {**payload, "_memorySnapshot": snapshot}
             else:
                 prompt += "\nThis is recovery of the same unfinished game turn. Reobserve current host state before retrying commands."
             payload = {**payload, "prompt": prompt}
@@ -791,9 +800,12 @@ class AgentService:
     async def _run(self, payload: JsonObject) -> None:
         try:
             await self._run_job(payload)
-        except (OSError, ValueError, ServiceError, aiohttp.ClientError):
+        except (OSError, ValueError, ServiceError, aiohttp.ClientError) as error:
             # Startup can fail before a child process or its shutdown handler
             # exists. Publish a terminal result and release interruption waiters.
+            self.diagnostics.emit(
+                "gameplay_job_failed", error=error, activationId=payload["activationId"], gameTurn=payload["gameTurn"]
+            )
             record = self.records[payload["activationId"]]
             if self.process is None and record["phase"] not in TERMINAL:
                 record.update(phase="FAILED", error="JOB_START_FAILED")
@@ -804,8 +816,18 @@ class AgentService:
             self.run_started.set()
 
     async def _run_job(self, payload: JsonObject) -> None:
-        async with HostConnection(self.mcp_url, payload["playerToken"], self.ca_file) as connection:
+        context = {
+            "purpose": "gameplay",
+            "activationId": payload["activationId"],
+            "gameTurn": payload["gameTurn"],
+            "epoch": payload["epoch"],
+        }
+        self.diagnostics.emit("gameplay_job_started", **context)
+        async with HostConnection(
+            self.mcp_url, payload["playerToken"], self.ca_file, diagnostics=self.diagnostics, context=context
+        ) as connection:
             await self._run_connected_job(payload, connection)
+        self.diagnostics.emit("gameplay_job_finished", **context, phase=self.records[payload["activationId"]]["phase"])
 
     async def _run_connected_job(self, payload: JsonObject, connection: HostConnection) -> None:
         record = self.records[payload["activationId"]]
@@ -820,6 +842,7 @@ class AgentService:
             connection,
             record["settings"],
             record["gameTurn"],
+            memory_snapshot=payload.get("_memorySnapshot"),
         )
         process = self.process_factory(
             self.executable, workspace, self.gateway_url, self.gateway_ca_file, self._notification
@@ -1009,6 +1032,7 @@ class AgentService:
         await self.chat.close()
         for job in list(self.gateway.jobs.values()):
             await self.gateway.close(job, False)
+        await asyncio.to_thread(self.diagnostics.close)
         await self.io.close()
         if self.lock is not None:
             os.close(self.lock)

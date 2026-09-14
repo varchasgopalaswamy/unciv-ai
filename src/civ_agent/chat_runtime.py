@@ -37,7 +37,13 @@ class ChatRuntime:
         service = self.service
         await service.io.call(service.memory.bind, payload["epoch"])
         self.epoch = payload["epoch"]
-        self.connection = HostConnection(service.mcp_url, payload["playerToken"], service.ca_file)
+        self.connection = HostConnection(
+            service.mcp_url,
+            payload["playerToken"],
+            service.ca_file,
+            diagnostics=service.diagnostics,
+            context={"purpose": "communication", "epoch": self.epoch},
+        )
         defaults = (
             service.match.get("effectiveSettings", service.default_settings)
             if service.match
@@ -202,7 +208,8 @@ class ChatRuntime:
             "You may send private/public messages and propose memory changes. Never poll, wait for a "
             "reply, or simulate another player. Statements are attributed claims, not authoritative game facts. "
             "Do not answer greetings with endless acknowledgements. Make concise memory updates for decisions or "
-            "beliefs worth retaining. "
+            "beliefs worth retaining; retire obsolete records. Consequential diplomatic actions require intent "
+            "with a reason or an active plan ID. The service generates summaries from receipts and typed memory. "
             + RECOVERY_INSTRUCTIONS
             + "Finish with a short summary.\n\n"
             + service.memory.context(job.memory)

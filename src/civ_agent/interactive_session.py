@@ -12,7 +12,13 @@ async def open_session(service, payload):
         raise ValueError("INVALID_INTERACTIVE_BINDING")
     if service.chat.running or (service.active_task is not None and not service.active_task.done()):
         raise StateConflict("SCHEDULED_JOB_ACTIVE")
-    connection = HostConnection(service.mcp_url, payload["playerToken"], service.ca_file)
+    connection = HostConnection(
+        service.mcp_url,
+        payload["playerToken"],
+        service.ca_file,
+        diagnostics=service.diagnostics,
+        context={"purpose": "interactive"},
+    )
     try:
         view = await connection.tool("player_turn", {})
         identity = await connection.tool("player_communication", {"op": "state", "epoch": view.get("epoch")})

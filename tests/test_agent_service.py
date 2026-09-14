@@ -203,6 +203,15 @@ class AgentServiceTests(AgentServiceTestCase):
         self.assertEqual(first, await self.service.start(self.payload()))
         self.assertEqual(1, len(self.factory.instances))
         await self.service.close()
+        diagnostics = self.service.diagnostics.path.read_text()
+        events = [json.loads(line) for line in diagnostics.splitlines()]
+        started = next(event for event in events if event["event"] == "gameplay_job_started")
+        self.assertEqual("activation-one", started["activationId"])
+        self.assertEqual(0, started["gameTurn"])
+        self.assertTrue(any(e["event"] == "gameplay_job_finished" and e["phase"] == "COMPLETED" for e in events))
+        self.assertFalse(self.service.diagnostics.path.is_relative_to(self.service.workspace))
+        self.assertNotIn("P" * 43, diagnostics)
+        self.assertNotIn("S" * 43, diagnostics)
         self.service = self.make_service()
         await self.service.start(self.payload("activation-two", threadId="thread-one", playerToken="Q" * 43))
         second = await self.terminal()
@@ -268,7 +277,7 @@ class AgentServiceTests(AgentServiceTestCase):
         prompt = [payload for method, payload in self.factory.calls if method == "turn/start"][-1]["input"][0]["text"]
         self.assertIn("The service writes all turn files. Do not create or edit them.", prompt)
         self.assertIn("After END_TURN succeeds, make no further tool calls", prompt)
-        self.assertIn("at most 200 words", prompt)
+        self.assertIn("receipts and typed memory", prompt)
         self.assertEqual(0, prompt.count(self.factory.summary))
         self.assertNotIn("HUGE_OLD_SNAPSHOT_SENTINEL", prompt)
         self.assertNotIn("TAMPERED_MEMORY_SENTINEL", prompt)
@@ -334,7 +343,7 @@ class AgentServiceTests(AgentServiceTestCase):
         assert self.service.archive is not None
         memory = self.service.archive.context(1)
         self.assertNotIn("ABORTED_STRATEGY_SENTINEL", memory)
-        self.assertIn(self.factory.summary, memory)
+        self.assertNotIn(self.factory.summary, memory)
         dense = (await self.service.archived(retry["activationId"]))["commands"]
         self.assertIn(
             "ABORTED_STRATEGY_SENTINEL", (self.service.history.path(first["activationId"]) / "events.jsonl").read_text()
@@ -587,7 +596,7 @@ class AgentServiceTests(AgentServiceTestCase):
                     self.assertEqual(200, response.status)
                     archive = await response.json()
                     self.assertEqual("Rome", archive["civilization"])
-                    self.assertIn(self.factory.summary, archive["summary"])
+                    self.assertNotIn(self.factory.summary, archive["summary"])
                     self.assertNotIn("fingerprint", archive)
         finally:
             await runner.cleanup()

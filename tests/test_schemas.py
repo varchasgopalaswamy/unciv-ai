@@ -32,6 +32,9 @@ from tests.test_proposal_gateway import Host
     ],
 )
 def test_advertised_schema_and_runtime_reject_invalid_input_before_mutation(tmp_path, tool, arguments):
+    if tool in {"trade_offer", "trade_decide"}:
+        arguments = {**arguments, "intent": {"reason": "Validate input"}}
+
     async def run():
         io = ServiceIO()
         memory = CivilizationState(tmp_path / "private", "Rome")
@@ -95,6 +98,6 @@ def test_models_do_not_echo_private_inputs_and_optional_tool_fields_stay_omitted
     assert "PRIVATE INVALID SETTING" not in str(caught.value)
     for name, arguments in (
         ("chat_history", {"with": "Greece"}),
-        ("trade_offer", {"partner": "Greece", "give": [], "receive": []}),
+        ("trade_offer", {"partner": "Greece", "give": [], "receive": [], "intent": {"reason": "Offer terms"}}),
     ):
         assert validate(TOOL_MODELS[name], arguments).model_dump(by_alias=True, exclude_unset=True) == arguments

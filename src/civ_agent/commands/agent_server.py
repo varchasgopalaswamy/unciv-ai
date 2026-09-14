@@ -14,6 +14,7 @@ from aiohttp import web
 
 from civ_agent.agent_service import AgentService, ServiceError, server_ssl_context
 from civ_agent.agent_settings import add_settings_arguments
+from civ_agent.civilization_state import MemoryFormatError
 from civ_agent.tls import (
     TLSConfigError,
     endpoint_configuration,
@@ -52,6 +53,12 @@ def parser(*, add_help: bool = True) -> argparse.ArgumentParser:
     result.add_argument("--ca-file", type=Path, help="CA clients trust for this service certificate")
     result.add_argument("--token-file", type=Path, help="Existing service bearer token file (created if absent)")
     result.add_argument("--codex", default="codex", help="Codex executable path")
+    result.add_argument(
+        "--memory-context-chars",
+        type=int,
+        default=12000,
+        help="Private memory context limit for fresh jobs (default: 12000 characters)",
+    )
     add_settings_arguments(
         result,
         model_help="Default model for new conversations; civ-agent match start --model overrides it",
@@ -128,6 +135,7 @@ def run(args: argparse.Namespace) -> int:
             executable,
             model=args.model,
             reasoning_effort=args.reasoning_effort,
+            memory_context_chars=args.memory_context_chars,
             gateway_url=host_origin(args.public_host, port) + "/mcp",
             gateway_ca_file=material["ca_file"],
         )
@@ -146,6 +154,7 @@ def run(args: argparse.Namespace) -> int:
         )
         print(f"Starting {args.civilization} agent service at {url}", flush=True)
         print(f"Player turn files: {workspace}", flush=True)
+        print(f"Service diagnostics: {service.diagnostics.path}", flush=True)
         print(
             f"New conversation defaults: model={args.model or 'Codex config'}, reasoning={args.reasoning_effort or 'Codex config'}",
             flush=True,
@@ -160,7 +169,12 @@ def run(args: argparse.Namespace) -> int:
         )
         return 0
     except (OSError, ValueError, ServiceError, TLSConfigError) as error:
-        if isinstance(error, OSError) and error.errno == errno.EADDRINUSE:
+        if isinstance(error, MemoryFormatError):
+            print(
+                "Cannot launch agent service: unsupported memory format. Start a fresh match in a new state directory.",
+                file=sys.stderr,
+            )
+        elif isinstance(error, OSError) and error.errno == errno.EADDRINUSE:
             print(
                 f"Cannot launch agent service: {args.listen_host}:{port} is already in use. "
                 "Stop the service using that port or choose a different --port. "

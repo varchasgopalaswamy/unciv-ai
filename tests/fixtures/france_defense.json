@@ -1,0 +1,1856 @@
+{
+  "source": "Player-visible France observations from the vanilla match, turns 25, 35 and 60. Unrelated offers and empty tiles removed. Military classification and two-hex proximity added for the new DTO; these positions do not cross a map seam.",
+  "turns": {
+    "25": {
+      "turn": 25,
+      "phase": "ACTIVE",
+      "canEndTurn": false,
+      "cities": [
+        {
+          "attacks": [],
+          "constructionQueue": [
+            "Library"
+          ],
+          "handle": "city1",
+          "name": "Paris",
+          "puppet": false
+        },
+        {
+          "attacks": [],
+          "constructionQueue": [
+            "Monument"
+          ],
+          "handle": "city2",
+          "name": "Orleans",
+          "puppet": false
+        }
+      ],
+      "map": {
+        "tiles": [
+          {
+            "position": {
+              "x": -3,
+              "y": -1
+            },
+            "visible": true,
+            "units": [
+              {
+                "civilization": "France",
+                "health": 100,
+                "name": "Worker",
+                "military": false,
+                "atWar": false
+              }
+            ]
+          },
+          {
+            "position": {
+              "x": -1,
+              "y": 0
+            },
+            "visible": true,
+            "units": [
+              {
+                "civilization": "France",
+                "health": 100,
+                "name": "Worker",
+                "military": false,
+                "atWar": false
+              }
+            ]
+          }
+        ],
+        "units": [
+          {
+            "canFoundCity": false,
+            "combat": {
+              "attacks": [],
+              "attacksRemaining": 1,
+              "order": {
+                "action": null,
+                "due": true,
+                "fortificationTurns": 0,
+                "healingPerTurn": 0,
+                "idle": true
+              },
+              "orders": [
+                {
+                  "available": false,
+                  "name": "FORTIFY",
+                  "unavailableReasons": [
+                    "This unit cannot fortify here"
+                  ]
+                },
+                {
+                  "available": false,
+                  "name": "FORTIFY_UNTIL_HEALED",
+                  "unavailableReasons": [
+                    "This unit cannot fortify here",
+                    "The unit is already at full health"
+                  ]
+                },
+                {
+                  "available": true,
+                  "name": "SLEEP",
+                  "unavailableReasons": []
+                },
+                {
+                  "available": false,
+                  "name": "SLEEP_UNTIL_HEALED",
+                  "unavailableReasons": [
+                    "The unit is already at full health"
+                  ]
+                },
+                {
+                  "available": true,
+                  "name": "SKIP",
+                  "unavailableReasons": []
+                },
+                {
+                  "available": false,
+                  "name": "WAKE",
+                  "unavailableReasons": [
+                    "The unit is already awake and due"
+                  ]
+                }
+              ],
+              "promotions": {
+                "choices": [],
+                "earnedPromotions": 0,
+                "experience": 0,
+                "experienceForNextPromotion": 10
+              },
+              "range": 2,
+              "rangedStrength": 0,
+              "strength": 0,
+              "supported": false
+            },
+            "displayName": "[Worker]",
+            "handle": "unit3",
+            "health": 100,
+            "idle": true,
+            "movement": "2/2",
+            "movementSupported": true,
+            "name": "Worker",
+            "position": {
+              "x": -1,
+              "y": 0
+            },
+            "settlementPromises": [],
+            "military": false,
+            "nearbyHostiles": []
+          },
+          {
+            "canFoundCity": false,
+            "combat": {
+              "attacks": [],
+              "attacksRemaining": 1,
+              "order": {
+                "action": null,
+                "due": true,
+                "fortificationTurns": 0,
+                "healingPerTurn": 0,
+                "idle": true
+              },
+              "orders": [
+                {
+                  "available": false,
+                  "name": "FORTIFY",
+                  "unavailableReasons": [
+                    "This unit cannot fortify here"
+                  ]
+                },
+                {
+                  "available": false,
+                  "name": "FORTIFY_UNTIL_HEALED",
+                  "unavailableReasons": [
+                    "This unit cannot fortify here",
+                    "The unit is already at full health"
+                  ]
+                },
+                {
+                  "available": true,
+                  "name": "SLEEP",
+                  "unavailableReasons": []
+                },
+                {
+                  "available": false,
+                  "name": "SLEEP_UNTIL_HEALED",
+                  "unavailableReasons": [
+                    "The unit is already at full health"
+                  ]
+                },
+                {
+                  "available": true,
+                  "name": "SKIP",
+                  "unavailableReasons": []
+                },
+                {
+                  "available": false,
+                  "name": "WAKE",
+                  "unavailableReasons": [
+                    "The unit is already awake and due"
+                  ]
+                }
+              ],
+              "promotions": {
+                "choices": [],
+                "earnedPromotions": 0,
+                "experience": 0,
+                "experienceForNextPromotion": 10
+              },
+              "range": 2,
+              "rangedStrength": 0,
+              "strength": 0,
+              "supported": false
+            },
+            "displayName": "[Worker]",
+            "handle": "unit4",
+            "health": 100,
+            "idle": true,
+            "movement": "2/2",
+            "movementSupported": true,
+            "name": "Worker",
+            "position": {
+              "x": -3,
+              "y": -1
+            },
+            "settlementPromises": [],
+            "military": false,
+            "nearbyHostiles": []
+          }
+        ]
+      },
+      "combatReports": [
+        {
+          "attacker": {
+            "instanceName": null,
+            "isOwn": false,
+            "kind": "Unit",
+            "name": "Brute"
+          },
+          "attackerDefeatedByDefender": false,
+          "attackingCivilizationName": null,
+          "damageReceived": 19,
+          "defender": {
+            "instanceName": null,
+            "isOwn": true,
+            "kind": "Unit",
+            "name": "Warrior"
+          },
+          "enemyDamage": null,
+          "enemyDestroyed": null,
+          "enemyUnit": null,
+          "hitOurTerritory": null,
+          "id": "report7",
+          "improvementName": null,
+          "isAttacking": null,
+          "kind": "ObservedAttackResult",
+          "locations": [
+            {
+              "x": -5,
+              "y": 3
+            },
+            {
+              "x": -6,
+              "y": 2
+            }
+          ],
+          "ourDamage": null,
+          "ourDestroyed": null,
+          "ourUnit": null,
+          "outcome": "Survived",
+          "retaliationDamage": 24,
+          "showZeroDamage": true,
+          "text": "An enemy Brute (-24 HP) has attacked our Warrior (-19 HP)",
+          "turn": 25,
+          "unitType": null,
+          "weaponType": null
+        },
+        {
+          "attacker": {
+            "instanceName": null,
+            "isOwn": false,
+            "kind": "Unit",
+            "name": "Brute"
+          },
+          "attackerDefeatedByDefender": false,
+          "attackingCivilizationName": null,
+          "damageReceived": 8,
+          "defender": {
+            "instanceName": null,
+            "isOwn": true,
+            "kind": "Unit",
+            "name": "Warrior"
+          },
+          "enemyDamage": null,
+          "enemyDestroyed": null,
+          "enemyUnit": null,
+          "hitOurTerritory": null,
+          "id": "report8",
+          "improvementName": null,
+          "isAttacking": null,
+          "kind": "ObservedAttackResult",
+          "locations": [
+            {
+              "x": -5,
+              "y": 3
+            },
+            {
+              "x": -4,
+              "y": 3
+            }
+          ],
+          "ourDamage": null,
+          "ourDestroyed": null,
+          "ourUnit": null,
+          "outcome": "Destroyed",
+          "retaliationDamage": 9,
+          "showZeroDamage": true,
+          "text": "An enemy Brute (-9 HP) has destroyed our Warrior (-8 HP)",
+          "turn": 25,
+          "unitType": null,
+          "weaponType": null
+        }
+      ],
+      "economy": {
+        "cityConnections": [
+          {
+            "capital": false,
+            "connectedToCapital": false,
+            "name": "Orleans",
+            "position": {
+              "x": -5,
+              "y": -1
+            }
+          },
+          {
+            "capital": true,
+            "connectedToCapital": true,
+            "name": "Paris",
+            "position": {
+              "x": -1,
+              "y": 1
+            }
+          }
+        ],
+        "goldBreakdown": [
+          {
+            "amount": 3,
+            "source": "Buildings"
+          },
+          {
+            "amount": -2,
+            "source": "Maintenance"
+          },
+          {
+            "amount": 5,
+            "source": "Tile yields"
+          }
+        ],
+        "goldPerTurn": 6,
+        "goldenAge": {
+          "happinessRequired": 341,
+          "storedHappiness": 103,
+          "turnsRemaining": 0
+        },
+        "happiness": 0,
+        "happinessBreakdown": [
+          {
+            "amount": 9,
+            "source": "Base happiness"
+          },
+          {
+            "amount": -6,
+            "source": "Cities"
+          },
+          {
+            "amount": 4,
+            "source": "Luxury resources"
+          },
+          {
+            "amount": -7,
+            "source": "Population"
+          }
+        ],
+        "resources": [
+          {
+            "available": 1,
+            "breakdown": [
+              {
+                "amount": 1,
+                "source": "Tiles"
+              }
+            ],
+            "citiesCelebrating": 0,
+            "citiesDemanding": 0,
+            "exported": 0,
+            "imported": 0,
+            "name": "Gold Ore",
+            "offered": 0,
+            "type": "Luxury",
+            "unimprovedTiles": 0,
+            "used": 0
+          },
+          {
+            "available": 0,
+            "breakdown": [],
+            "citiesCelebrating": 0,
+            "citiesDemanding": 0,
+            "exported": 0,
+            "imported": 0,
+            "name": "Pearls",
+            "offered": 0,
+            "type": "Luxury",
+            "unimprovedTiles": 1,
+            "used": 0
+          },
+          {
+            "available": 0,
+            "breakdown": [],
+            "citiesCelebrating": 0,
+            "citiesDemanding": 1,
+            "exported": 0,
+            "imported": 0,
+            "name": "Wine",
+            "offered": 0,
+            "type": "Luxury",
+            "unimprovedTiles": 0,
+            "used": 0
+          },
+          {
+            "available": 2,
+            "breakdown": [
+              {
+                "amount": 2,
+                "source": "Tiles"
+              }
+            ],
+            "citiesCelebrating": 0,
+            "citiesDemanding": 0,
+            "exported": 0,
+            "imported": 0,
+            "name": "Horses",
+            "offered": 0,
+            "type": "Strategic",
+            "unimprovedTiles": 1,
+            "used": 0
+          }
+        ],
+        "treasury": 107,
+        "unitMaintenance": 0,
+        "unitSupply": {
+          "base": 5,
+          "deficit": 0,
+          "fromCities": 4,
+          "fromPopulation": 3,
+          "inUse": 2,
+          "productionPenaltyPercent": 0,
+          "total": 12
+        }
+      },
+      "turnReview": {
+        "actions": [],
+        "units": [
+          {
+            "handle": "unit3",
+            "idle": true,
+            "legalDestinations": 10,
+            "movement": "2/2",
+            "name": "Worker",
+            "position": {
+              "x": -1,
+              "y": 0
+            }
+          },
+          {
+            "handle": "unit4",
+            "idle": true,
+            "legalDestinations": 12,
+            "movement": "2/2",
+            "name": "Worker",
+            "position": {
+              "x": -3,
+              "y": -1
+            }
+          }
+        ],
+        "id": "review1"
+      },
+      "epoch": "g1",
+      "revision": "rev1"
+    },
+    "35": {
+      "turn": 35,
+      "phase": "ACTIVE",
+      "canEndTurn": true,
+      "cities": [
+        {
+          "attacks": [],
+          "constructionQueue": [
+            "National Epic"
+          ],
+          "handle": "city1",
+          "name": "Paris",
+          "puppet": false
+        },
+        {
+          "attacks": [
+            {
+              "attackFrom": {
+                "x": -5,
+                "y": -1
+              },
+              "attackerModifiers": {
+                "Difficulty": 33
+              },
+              "attackerStrength": 9,
+              "defender": "Brute",
+              "defenderIsCity": false,
+              "defenderModifiers": {},
+              "defenderStrength": 6,
+              "destination": {
+                "x": -5,
+                "y": -3
+              },
+              "maxDamageToAttacker": 0,
+              "maxDamageToDefender": 48,
+              "minDamageToAttacker": 0,
+              "minDamageToDefender": 32,
+              "movementCost": 0.0,
+              "path": []
+            }
+          ],
+          "constructionQueue": [
+            "Library"
+          ],
+          "handle": "city2",
+          "name": "Orleans",
+          "puppet": false
+        }
+      ],
+      "map": {
+        "tiles": [
+          {
+            "position": {
+              "x": -7,
+              "y": -3
+            },
+            "visible": true,
+            "units": [
+              {
+                "civilization": "Rome",
+                "health": 100,
+                "name": "Scout",
+                "military": true,
+                "atWar": false
+              }
+            ]
+          },
+          {
+            "position": {
+              "x": -5,
+              "y": -3
+            },
+            "visible": true,
+            "units": [
+              {
+                "civilization": "Barbarians",
+                "health": 100,
+                "name": "Brute",
+                "military": true,
+                "atWar": true
+              },
+              {
+                "civilization": "Barbarians",
+                "health": 100,
+                "name": "Worker",
+                "military": false,
+                "atWar": true
+              }
+            ]
+          },
+          {
+            "position": {
+              "x": -1,
+              "y": -2
+            },
+            "visible": true,
+            "units": [
+              {
+                "civilization": "Barbarians",
+                "health": 50,
+                "name": "Brute",
+                "military": true,
+                "atWar": true
+              }
+            ]
+          }
+        ],
+        "units": []
+      },
+      "combatReports": [
+        {
+          "attacker": {
+            "instanceName": null,
+            "isOwn": false,
+            "kind": "Unit",
+            "name": "Brute"
+          },
+          "attackerDefeatedByDefender": false,
+          "attackingCivilizationName": null,
+          "damageReceived": 0,
+          "defender": {
+            "instanceName": null,
+            "isOwn": true,
+            "kind": "Unit",
+            "name": "Worker"
+          },
+          "enemyDamage": null,
+          "enemyDestroyed": null,
+          "enemyUnit": null,
+          "hitOurTerritory": null,
+          "id": "report10",
+          "improvementName": null,
+          "isAttacking": null,
+          "kind": "ObservedAttackResult",
+          "locations": [
+            {
+              "x": -5,
+              "y": -3
+            }
+          ],
+          "ourDamage": null,
+          "ourDestroyed": null,
+          "ourUnit": null,
+          "outcome": "Captured",
+          "retaliationDamage": 0,
+          "showZeroDamage": false,
+          "text": "An enemy Brute has captured our Worker",
+          "turn": 35,
+          "unitType": null,
+          "weaponType": null
+        }
+      ],
+      "economy": {
+        "cityConnections": [
+          {
+            "capital": false,
+            "connectedToCapital": false,
+            "name": "Orleans",
+            "position": {
+              "x": -5,
+              "y": -1
+            }
+          },
+          {
+            "capital": true,
+            "connectedToCapital": true,
+            "name": "Paris",
+            "position": {
+              "x": -1,
+              "y": 1
+            }
+          }
+        ],
+        "goldBreakdown": [
+          {
+            "amount": 3,
+            "source": "Buildings"
+          },
+          {
+            "amount": -3,
+            "source": "Maintenance"
+          },
+          {
+            "amount": 10,
+            "source": "Tile yields"
+          }
+        ],
+        "goldPerTurn": 10,
+        "goldenAge": {
+          "happinessRequired": 341,
+          "storedHappiness": 96,
+          "turnsRemaining": 0
+        },
+        "happiness": -2,
+        "happinessBreakdown": [
+          {
+            "amount": 9,
+            "source": "Base happiness"
+          },
+          {
+            "amount": -6,
+            "source": "Cities"
+          },
+          {
+            "amount": 4,
+            "source": "Luxury resources"
+          },
+          {
+            "amount": -9,
+            "source": "Population"
+          }
+        ],
+        "resources": [
+          {
+            "available": 1,
+            "breakdown": [
+              {
+                "amount": 1,
+                "source": "Tiles"
+              }
+            ],
+            "citiesCelebrating": 0,
+            "citiesDemanding": 0,
+            "exported": 0,
+            "imported": 0,
+            "name": "Gold Ore",
+            "offered": 0,
+            "type": "Luxury",
+            "unimprovedTiles": 0,
+            "used": 0
+          },
+          {
+            "available": 0,
+            "breakdown": [],
+            "citiesCelebrating": 0,
+            "citiesDemanding": 0,
+            "exported": 0,
+            "imported": 0,
+            "name": "Pearls",
+            "offered": 0,
+            "type": "Luxury",
+            "unimprovedTiles": 1,
+            "used": 0
+          },
+          {
+            "available": 0,
+            "breakdown": [],
+            "citiesCelebrating": 0,
+            "citiesDemanding": 2,
+            "exported": 0,
+            "imported": 0,
+            "name": "Spices",
+            "offered": 0,
+            "type": "Luxury",
+            "unimprovedTiles": 0,
+            "used": 0
+          },
+          {
+            "available": 2,
+            "breakdown": [
+              {
+                "amount": 2,
+                "source": "Tiles"
+              }
+            ],
+            "citiesCelebrating": 0,
+            "citiesDemanding": 0,
+            "exported": 0,
+            "imported": 0,
+            "name": "Horses",
+            "offered": 0,
+            "type": "Strategic",
+            "unimprovedTiles": 1,
+            "used": 0
+          }
+        ],
+        "treasury": 171,
+        "unitMaintenance": 0,
+        "unitSupply": {
+          "base": 5,
+          "deficit": 0,
+          "fromCities": 4,
+          "fromPopulation": 4,
+          "inUse": 0,
+          "productionPenaltyPercent": 0,
+          "total": 13
+        }
+      },
+      "turnReview": {
+        "actions": [],
+        "units": [],
+        "id": "review1"
+      },
+      "epoch": "g1",
+      "revision": "rev1"
+    },
+    "60": {
+      "turn": 60,
+      "phase": "ACTIVE",
+      "canEndTurn": false,
+      "cities": [
+        {
+          "attacks": [],
+          "constructionQueue": [
+            "University"
+          ],
+          "handle": "city1",
+          "name": "Paris",
+          "puppet": false
+        },
+        {
+          "attacks": [
+            {
+              "attackFrom": {
+                "x": -5,
+                "y": -1
+              },
+              "attackerModifiers": {
+                "Difficulty": 33
+              },
+              "attackerStrength": 11,
+              "defender": "Brute",
+              "defenderIsCity": false,
+              "defenderModifiers": {
+                "Tile": 25
+              },
+              "defenderStrength": 8,
+              "destination": {
+                "x": -6,
+                "y": -1
+              },
+              "maxDamageToAttacker": 0,
+              "maxDamageToDefender": 32,
+              "minDamageToAttacker": 0,
+              "minDamageToDefender": 30,
+              "movementCost": 0.0,
+              "path": []
+            }
+          ],
+          "constructionQueue": [
+            "University"
+          ],
+          "handle": "city2",
+          "name": "Orleans",
+          "puppet": false
+        }
+      ],
+      "map": {
+        "tiles": [
+          {
+            "position": {
+              "x": -6,
+              "y": -2
+            },
+            "visible": true,
+            "units": [
+              {
+                "civilization": "France",
+                "health": 100,
+                "name": "Worker",
+                "military": false,
+                "atWar": false
+              }
+            ]
+          },
+          {
+            "position": {
+              "x": -6,
+              "y": -1
+            },
+            "visible": true,
+            "units": [
+              {
+                "civilization": "Barbarians",
+                "health": 32,
+                "name": "Brute",
+                "military": true,
+                "atWar": true
+              },
+              {
+                "civilization": "Barbarians",
+                "health": 100,
+                "name": "Worker",
+                "military": false,
+                "atWar": true
+              }
+            ]
+          },
+          {
+            "position": {
+              "x": -4,
+              "y": -4
+            },
+            "visible": true,
+            "units": [
+              {
+                "civilization": "Barbarians",
+                "health": 37,
+                "name": "Brute",
+                "military": true,
+                "atWar": true
+              }
+            ]
+          },
+          {
+            "position": {
+              "x": -3,
+              "y": -4
+            },
+            "visible": true,
+            "units": [
+              {
+                "civilization": "Barbarians",
+                "health": 14,
+                "name": "Brute",
+                "military": true,
+                "atWar": true
+              },
+              {
+                "civilization": "Barbarians",
+                "health": 100,
+                "name": "Settler",
+                "military": false,
+                "atWar": true
+              }
+            ]
+          },
+          {
+            "position": {
+              "x": -3,
+              "y": -3
+            },
+            "visible": true,
+            "units": [
+              {
+                "civilization": "France",
+                "health": 75,
+                "name": "Pikeman",
+                "military": true,
+                "atWar": false
+              }
+            ]
+          },
+          {
+            "position": {
+              "x": -2,
+              "y": 1
+            },
+            "visible": true,
+            "units": [
+              {
+                "civilization": "France",
+                "health": 100,
+                "name": "Worker",
+                "military": false,
+                "atWar": false
+              }
+            ]
+          }
+        ],
+        "units": [
+          {
+            "canFoundCity": false,
+            "combat": {
+              "attacks": [],
+              "attacksRemaining": 1,
+              "order": {
+                "action": null,
+                "due": true,
+                "fortificationTurns": 0,
+                "healingPerTurn": 0,
+                "idle": true
+              },
+              "orders": [
+                {
+                  "available": false,
+                  "name": "FORTIFY",
+                  "unavailableReasons": [
+                    "This unit cannot fortify here"
+                  ]
+                },
+                {
+                  "available": false,
+                  "name": "FORTIFY_UNTIL_HEALED",
+                  "unavailableReasons": [
+                    "This unit cannot fortify here",
+                    "The unit is already at full health"
+                  ]
+                },
+                {
+                  "available": true,
+                  "name": "SLEEP",
+                  "unavailableReasons": []
+                },
+                {
+                  "available": false,
+                  "name": "SLEEP_UNTIL_HEALED",
+                  "unavailableReasons": [
+                    "The unit is already at full health"
+                  ]
+                },
+                {
+                  "available": true,
+                  "name": "SKIP",
+                  "unavailableReasons": []
+                },
+                {
+                  "available": false,
+                  "name": "WAKE",
+                  "unavailableReasons": [
+                    "The unit is already awake and due"
+                  ]
+                }
+              ],
+              "promotions": {
+                "choices": [],
+                "earnedPromotions": 0,
+                "experience": 0,
+                "experienceForNextPromotion": 10
+              },
+              "range": 2,
+              "rangedStrength": 0,
+              "strength": 0,
+              "supported": false
+            },
+            "displayName": "[Worker]",
+            "handle": "unit7",
+            "health": 100,
+            "idle": true,
+            "movement": "2/2",
+            "movementSupported": true,
+            "name": "Worker",
+            "position": {
+              "x": -2,
+              "y": 1
+            },
+            "settlementPromises": [],
+            "military": false,
+            "nearbyHostiles": []
+          },
+          {
+            "canFoundCity": false,
+            "combat": {
+              "attacks": [
+                {
+                  "attackFrom": {
+                    "x": -3,
+                    "y": -3
+                  },
+                  "attackerModifiers": {
+                    "Difficulty": 33
+                  },
+                  "attackerStrength": 13,
+                  "defender": "Brute",
+                  "defenderIsCity": false,
+                  "defenderModifiers": {},
+                  "defenderStrength": 6,
+                  "destination": {
+                    "x": -4,
+                    "y": -4
+                  },
+                  "maxDamageToAttacker": 15,
+                  "maxDamageToDefender": 37,
+                  "minDamageToAttacker": 10,
+                  "minDamageToDefender": 37,
+                  "movementCost": 0.0,
+                  "path": []
+                },
+                {
+                  "attackFrom": {
+                    "x": -3,
+                    "y": -3
+                  },
+                  "attackerModifiers": {
+                    "Difficulty": 33
+                  },
+                  "attackerStrength": 13,
+                  "defender": "Brute",
+                  "defenderIsCity": false,
+                  "defenderModifiers": {
+                    "Fortification": 40
+                  },
+                  "defenderStrength": 8,
+                  "destination": {
+                    "x": -3,
+                    "y": -4
+                  },
+                  "maxDamageToAttacker": 19,
+                  "maxDamageToDefender": 14,
+                  "minDamageToAttacker": 13,
+                  "minDamageToDefender": 14,
+                  "movementCost": 0.0,
+                  "path": []
+                }
+              ],
+              "attacksRemaining": 1,
+              "order": {
+                "action": "Fortify until healed",
+                "due": true,
+                "fortificationTurns": 1,
+                "healingPerTurn": 10,
+                "idle": false
+              },
+              "orders": [
+                {
+                  "available": false,
+                  "name": "FORTIFY",
+                  "unavailableReasons": [
+                    "Already fortified; wake the unit before changing its order"
+                  ]
+                },
+                {
+                  "available": false,
+                  "name": "FORTIFY_UNTIL_HEALED",
+                  "unavailableReasons": [
+                    "Already fortified; wake the unit before changing its order"
+                  ]
+                },
+                {
+                  "available": false,
+                  "name": "SLEEP",
+                  "unavailableReasons": [
+                    "Use fortification or wake the unit before sleeping"
+                  ]
+                },
+                {
+                  "available": false,
+                  "name": "SLEEP_UNTIL_HEALED",
+                  "unavailableReasons": [
+                    "Use fortification or wake the unit before sleeping"
+                  ]
+                },
+                {
+                  "available": true,
+                  "name": "SKIP",
+                  "unavailableReasons": []
+                },
+                {
+                  "available": true,
+                  "name": "WAKE",
+                  "unavailableReasons": []
+                }
+              ],
+              "promotions": {
+                "choices": [
+                  {
+                    "acquired": false,
+                    "available": false,
+                    "description": "This Unit heals 50 HP\nDoing so will consume this opportunity to choose a Promotion",
+                    "experienceCost": 20,
+                    "name": "Heal Instantly",
+                    "prerequisites": [],
+                    "unavailableReasons": [
+                      "Not enough experience"
+                    ]
+                  },
+                  {
+                    "acquired": false,
+                    "available": false,
+                    "description": "+15% Strength when fighting in Open terrain tiles",
+                    "experienceCost": 20,
+                    "name": "Shock I",
+                    "prerequisites": [],
+                    "unavailableReasons": [
+                      "Not enough experience"
+                    ]
+                  },
+                  {
+                    "acquired": false,
+                    "available": false,
+                    "description": "+15% Strength when fighting in Open terrain tiles\nRequires: Shock I",
+                    "experienceCost": 20,
+                    "name": "Shock II",
+                    "prerequisites": [
+                      "Shock I"
+                    ],
+                    "unavailableReasons": [
+                      "Requires one of: Shock I",
+                      "Not enough experience"
+                    ]
+                  },
+                  {
+                    "acquired": false,
+                    "available": false,
+                    "description": "+15% Strength when fighting in Open terrain tiles\nRequires: Shock II",
+                    "experienceCost": 20,
+                    "name": "Shock III",
+                    "prerequisites": [
+                      "Shock II"
+                    ],
+                    "unavailableReasons": [
+                      "Requires one of: Shock II",
+                      "Not enough experience"
+                    ]
+                  },
+                  {
+                    "acquired": true,
+                    "available": false,
+                    "description": "+15% Strength when fighting in Rough terrain tiles",
+                    "experienceCost": 20,
+                    "name": "Drill I",
+                    "prerequisites": [],
+                    "unavailableReasons": [
+                      "This promotion is already acquired",
+                      "Not enough experience"
+                    ]
+                  },
+                  {
+                    "acquired": false,
+                    "available": false,
+                    "description": "+15% Strength when fighting in Rough terrain tiles\nRequires: Drill I",
+                    "experienceCost": 20,
+                    "name": "Drill II",
+                    "prerequisites": [
+                      "Drill I"
+                    ],
+                    "unavailableReasons": [
+                      "Not enough experience"
+                    ]
+                  },
+                  {
+                    "acquired": false,
+                    "available": false,
+                    "description": "+15% Strength when fighting in Rough terrain tiles\nRequires: Drill II",
+                    "experienceCost": 20,
+                    "name": "Drill III",
+                    "prerequisites": [
+                      "Drill II"
+                    ],
+                    "unavailableReasons": [
+                      "Requires one of: Drill II",
+                      "Not enough experience"
+                    ]
+                  },
+                  {
+                    "acquired": false,
+                    "available": false,
+                    "description": "+50% Strength vs cities\nRequires: Shock II OR Drill II",
+                    "experienceCost": 20,
+                    "name": "Besiege",
+                    "prerequisites": [
+                      "Shock II",
+                      "Drill II"
+                    ],
+                    "unavailableReasons": [
+                      "Requires one of: Shock II, Drill II",
+                      "Not enough experience"
+                    ]
+                  },
+                  {
+                    "acquired": false,
+                    "available": false,
+                    "description": "+33% Strength vs Mounted units\nRequires: Shock II OR Drill II",
+                    "experienceCost": 20,
+                    "name": "Formation I",
+                    "prerequisites": [
+                      "Shock II",
+                      "Drill II"
+                    ],
+                    "unavailableReasons": [
+                      "Requires one of: Shock II, Drill II",
+                      "Not enough experience"
+                    ]
+                  },
+                  {
+                    "acquired": false,
+                    "available": false,
+                    "description": "+33% Strength vs Mounted units\nRequires: Formation I",
+                    "experienceCost": 20,
+                    "name": "Formation II",
+                    "prerequisites": [
+                      "Formation I"
+                    ],
+                    "unavailableReasons": [
+                      "Requires one of: Formation I",
+                      "Not enough experience"
+                    ]
+                  },
+                  {
+                    "acquired": false,
+                    "available": false,
+                    "description": "1 additional attacks per turn\nRequires: Shock III OR Drill III",
+                    "experienceCost": 20,
+                    "name": "Blitz",
+                    "prerequisites": [
+                      "Shock III",
+                      "Drill III"
+                    ],
+                    "unavailableReasons": [
+                      "Requires one of: Shock III, Drill III",
+                      "Not enough experience"
+                    ]
+                  },
+                  {
+                    "acquired": false,
+                    "available": false,
+                    "description": "Double movement in Forest\nDouble movement in Jungle\nRequires: Shock III OR Drill III",
+                    "experienceCost": 20,
+                    "name": "Woodsman",
+                    "prerequisites": [
+                      "Shock III",
+                      "Drill III"
+                    ],
+                    "unavailableReasons": [
+                      "Requires one of: Shock III, Drill III",
+                      "Not enough experience"
+                    ]
+                  },
+                  {
+                    "acquired": false,
+                    "available": false,
+                    "description": "Eliminates combat penalty for attacking over a river\nEliminates combat penalty for attacking across a coast\nRequires: Shock I OR Drill I",
+                    "experienceCost": 20,
+                    "name": "Amphibious",
+                    "prerequisites": [
+                      "Shock I",
+                      "Drill I"
+                    ],
+                    "unavailableReasons": [
+                      "Not enough experience"
+                    ]
+                  },
+                  {
+                    "acquired": false,
+                    "available": false,
+                    "description": "All adjacent units heal +5 HP when healing\nRequires: Shock I OR Drill I",
+                    "experienceCost": 20,
+                    "name": "Medic",
+                    "prerequisites": [
+                      "Shock I",
+                      "Drill I",
+                      "Scouting II",
+                      "Survivalism II"
+                    ],
+                    "unavailableReasons": [
+                      "Not enough experience"
+                    ]
+                  },
+                  {
+                    "acquired": false,
+                    "available": false,
+                    "description": "+5 HP when healing in Foreign Land tiles\nAll adjacent units heal +5 HP when healing\nRequires: Medic",
+                    "experienceCost": 20,
+                    "name": "Medic II",
+                    "prerequisites": [
+                      "Medic"
+                    ],
+                    "unavailableReasons": [
+                      "Requires one of: Medic",
+                      "Not enough experience"
+                    ]
+                  },
+                  {
+                    "acquired": false,
+                    "available": false,
+                    "description": "+33% Strength vs Ranged units when defending",
+                    "experienceCost": 20,
+                    "name": "Cover I",
+                    "prerequisites": [],
+                    "unavailableReasons": [
+                      "Not enough experience"
+                    ]
+                  },
+                  {
+                    "acquired": false,
+                    "available": false,
+                    "description": "+33% Strength vs Ranged units when defending\nRequires: Cover I",
+                    "experienceCost": 20,
+                    "name": "Cover II",
+                    "prerequisites": [
+                      "Cover I"
+                    ],
+                    "unavailableReasons": [
+                      "Requires one of: Cover I",
+                      "Not enough experience"
+                    ]
+                  },
+                  {
+                    "acquired": false,
+                    "available": false,
+                    "description": "Unit will heal every turn, even if it performs an action\nRequires: Shock III OR Drill III",
+                    "experienceCost": 20,
+                    "name": "March",
+                    "prerequisites": [
+                      "Accuracy II",
+                      "Barrage II",
+                      "Shock III",
+                      "Drill III"
+                    ],
+                    "unavailableReasons": [
+                      "Requires one of: Accuracy II, Barrage II, Shock III, Drill III",
+                      "Not enough experience"
+                    ]
+                  },
+                  {
+                    "acquired": false,
+                    "available": false,
+                    "description": "+1 Sight\nRequires: Shock II OR Drill II",
+                    "experienceCost": 20,
+                    "name": "Sentry",
+                    "prerequisites": [
+                      "Accuracy I",
+                      "Barrage I",
+                      "Shock II",
+                      "Drill II",
+                      "Bombardment I",
+                      "Targeting I",
+                      "Boarding Party I",
+                      "Coastal Raider I"
+                    ],
+                    "unavailableReasons": [
+                      "Requires one of: Accuracy I, Barrage I, Shock II, Drill II, Bombardment I, Targeting I, Boarding Party I, Coastal Raider I",
+                      "Not enough experience"
+                    ]
+                  },
+                  {
+                    "acquired": false,
+                    "available": false,
+                    "description": "+33% Strength vs Armored units",
+                    "experienceCost": 20,
+                    "name": "Ambush I",
+                    "prerequisites": [],
+                    "unavailableReasons": [
+                      "Not enough experience"
+                    ]
+                  },
+                  {
+                    "acquired": false,
+                    "available": false,
+                    "description": "+33% Strength vs Armored units\nRequires: Ambush I",
+                    "experienceCost": 20,
+                    "name": "Ambush II",
+                    "prerequisites": [
+                      "Ambush I"
+                    ],
+                    "unavailableReasons": [
+                      "Requires one of: Ambush I",
+                      "Not enough experience"
+                    ]
+                  }
+                ],
+                "earnedPromotions": 1,
+                "experience": 4,
+                "experienceForNextPromotion": 20
+              },
+              "range": 1,
+              "rangedStrength": 0,
+              "strength": 10,
+              "supported": true
+            },
+            "displayName": "[Pikeman]",
+            "handle": "unit9",
+            "health": 75,
+            "idle": false,
+            "movement": "2/2",
+            "movementSupported": true,
+            "name": "Pikeman",
+            "position": {
+              "x": -3,
+              "y": -3
+            },
+            "settlementPromises": [],
+            "military": true,
+            "nearbyHostiles": [
+              {
+                "position": {
+                  "x": -4,
+                  "y": -4
+                },
+                "distance": 1,
+                "unit": {
+                  "civilization": "Barbarians",
+                  "health": 37,
+                  "name": "Brute",
+                  "military": true,
+                  "atWar": true
+                }
+              },
+              {
+                "position": {
+                  "x": -3,
+                  "y": -4
+                },
+                "distance": 1,
+                "unit": {
+                  "civilization": "Barbarians",
+                  "health": 14,
+                  "name": "Brute",
+                  "military": true,
+                  "atWar": true
+                }
+              }
+            ]
+          },
+          {
+            "canFoundCity": false,
+            "combat": {
+              "attacks": [],
+              "attacksRemaining": 1,
+              "order": {
+                "action": null,
+                "due": true,
+                "fortificationTurns": 0,
+                "healingPerTurn": 0,
+                "idle": true
+              },
+              "orders": [
+                {
+                  "available": false,
+                  "name": "FORTIFY",
+                  "unavailableReasons": [
+                    "This unit cannot fortify here"
+                  ]
+                },
+                {
+                  "available": false,
+                  "name": "FORTIFY_UNTIL_HEALED",
+                  "unavailableReasons": [
+                    "This unit cannot fortify here",
+                    "The unit is already at full health"
+                  ]
+                },
+                {
+                  "available": true,
+                  "name": "SLEEP",
+                  "unavailableReasons": []
+                },
+                {
+                  "available": false,
+                  "name": "SLEEP_UNTIL_HEALED",
+                  "unavailableReasons": [
+                    "The unit is already at full health"
+                  ]
+                },
+                {
+                  "available": true,
+                  "name": "SKIP",
+                  "unavailableReasons": []
+                },
+                {
+                  "available": false,
+                  "name": "WAKE",
+                  "unavailableReasons": [
+                    "The unit is already awake and due"
+                  ]
+                }
+              ],
+              "promotions": {
+                "choices": [],
+                "earnedPromotions": 0,
+                "experience": 0,
+                "experienceForNextPromotion": 10
+              },
+              "range": 2,
+              "rangedStrength": 0,
+              "strength": 0,
+              "supported": false
+            },
+            "displayName": "[Worker]",
+            "handle": "unit10",
+            "health": 100,
+            "idle": true,
+            "movement": "2/2",
+            "movementSupported": true,
+            "name": "Worker",
+            "position": {
+              "x": -6,
+              "y": -2
+            },
+            "settlementPromises": [],
+            "military": false,
+            "nearbyHostiles": [
+              {
+                "position": {
+                  "x": -6,
+                  "y": -1
+                },
+                "distance": 1,
+                "unit": {
+                  "civilization": "Barbarians",
+                  "health": 32,
+                  "name": "Brute",
+                  "military": true,
+                  "atWar": true
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "combatReports": [
+        {
+          "attacker": {
+            "instanceName": null,
+            "isOwn": false,
+            "kind": "Unit",
+            "name": "Brute"
+          },
+          "attackerDefeatedByDefender": false,
+          "attackingCivilizationName": null,
+          "damageReceived": 0,
+          "defender": {
+            "instanceName": null,
+            "isOwn": true,
+            "kind": "Unit",
+            "name": "Worker"
+          },
+          "enemyDamage": null,
+          "enemyDestroyed": null,
+          "enemyUnit": null,
+          "hitOurTerritory": null,
+          "id": "report11",
+          "improvementName": null,
+          "isAttacking": null,
+          "kind": "ObservedAttackResult",
+          "locations": [
+            {
+              "x": -6,
+              "y": -1
+            }
+          ],
+          "ourDamage": null,
+          "ourDestroyed": null,
+          "ourUnit": null,
+          "outcome": "Captured",
+          "retaliationDamage": 0,
+          "showZeroDamage": false,
+          "text": "An enemy Brute has captured our Worker",
+          "turn": 60,
+          "unitType": null,
+          "weaponType": null
+        },
+        {
+          "attacker": {
+            "instanceName": null,
+            "isOwn": false,
+            "kind": "Unit",
+            "name": "Brute"
+          },
+          "attackerDefeatedByDefender": false,
+          "attackingCivilizationName": null,
+          "damageReceived": 14,
+          "defender": {
+            "instanceName": null,
+            "isOwn": true,
+            "kind": "Unit",
+            "name": "Pikeman"
+          },
+          "enemyDamage": null,
+          "enemyDestroyed": null,
+          "enemyUnit": null,
+          "hitOurTerritory": null,
+          "id": "report12",
+          "improvementName": null,
+          "isAttacking": null,
+          "kind": "ObservedAttackResult",
+          "locations": [
+            {
+              "x": -3,
+              "y": -3
+            },
+            {
+              "x": -4,
+              "y": -4
+            }
+          ],
+          "ourDamage": null,
+          "ourDestroyed": null,
+          "ourUnit": null,
+          "outcome": "Survived",
+          "retaliationDamage": 63,
+          "showZeroDamage": true,
+          "text": "An enemy Brute (-63 HP) has attacked our Pikeman (-14 HP)",
+          "turn": 60,
+          "unitType": null,
+          "weaponType": null
+        }
+      ],
+      "economy": {
+        "cityConnections": [
+          {
+            "capital": false,
+            "connectedToCapital": false,
+            "name": "Orleans",
+            "position": {
+              "x": -5,
+              "y": -1
+            }
+          },
+          {
+            "capital": true,
+            "connectedToCapital": true,
+            "name": "Paris",
+            "position": {
+              "x": -1,
+              "y": 1
+            }
+          }
+        ],
+        "goldBreakdown": [
+          {
+            "amount": 3,
+            "source": "Buildings"
+          },
+          {
+            "amount": -5,
+            "source": "Maintenance"
+          },
+          {
+            "amount": 11,
+            "source": "Tile yields"
+          },
+          {
+            "amount": -2,
+            "source": "Transportation upkeep"
+          }
+        ],
+        "goldPerTurn": 7,
+        "goldenAge": {
+          "happinessRequired": 341,
+          "storedHappiness": 77,
+          "turnsRemaining": 0
+        },
+        "happiness": -1,
+        "happinessBreakdown": [
+          {
+            "amount": 9,
+            "source": "Base happiness"
+          },
+          {
+            "amount": -6,
+            "source": "Cities"
+          },
+          {
+            "amount": 4,
+            "source": "Luxury resources"
+          },
+          {
+            "amount": 1,
+            "source": "Policies"
+          },
+          {
+            "amount": -9,
+            "source": "Population"
+          }
+        ],
+        "resources": [
+          {
+            "available": 0,
+            "breakdown": [],
+            "citiesCelebrating": 0,
+            "citiesDemanding": 0,
+            "exported": 0,
+            "imported": 0,
+            "name": "Gems",
+            "offered": 0,
+            "type": "Luxury",
+            "unimprovedTiles": 1,
+            "used": 0
+          },
+          {
+            "available": 1,
+            "breakdown": [
+              {
+                "amount": 1,
+                "source": "Tiles"
+              }
+            ],
+            "citiesCelebrating": 0,
+            "citiesDemanding": 0,
+            "exported": 0,
+            "imported": 0,
+            "name": "Gold Ore",
+            "offered": 0,
+            "type": "Luxury",
+            "unimprovedTiles": 0,
+            "used": 0
+          },
+          {
+            "available": 0,
+            "breakdown": [],
+            "citiesCelebrating": 0,
+            "citiesDemanding": 1,
+            "exported": 0,
+            "imported": 0,
+            "name": "Pearls",
+            "offered": 0,
+            "type": "Luxury",
+            "unimprovedTiles": 1,
+            "used": 0
+          },
+          {
+            "available": 0,
+            "breakdown": [],
+            "citiesCelebrating": 0,
+            "citiesDemanding": 1,
+            "exported": 0,
+            "imported": 0,
+            "name": "Spices",
+            "offered": 0,
+            "type": "Luxury",
+            "unimprovedTiles": 0,
+            "used": 0
+          },
+          {
+            "available": 0,
+            "breakdown": [],
+            "citiesCelebrating": 0,
+            "citiesDemanding": 0,
+            "exported": 0,
+            "imported": 0,
+            "name": "Horses",
+            "offered": 0,
+            "type": "Strategic",
+            "unimprovedTiles": 2,
+            "used": 0
+          }
+        ],
+        "treasury": 440,
+        "unitMaintenance": 0,
+        "unitSupply": {
+          "base": 5,
+          "deficit": 0,
+          "fromCities": 4,
+          "fromPopulation": 4,
+          "inUse": 3,
+          "productionPenaltyPercent": 0,
+          "total": 13
+        }
+      },
+      "turnReview": {
+        "actions": [],
+        "units": [
+          {
+            "handle": "unit7",
+            "idle": true,
+            "legalDestinations": 13,
+            "movement": "2/2",
+            "name": "Worker",
+            "position": {
+              "x": -2,
+              "y": 1
+            }
+          },
+          {
+            "handle": "unit9",
+            "idle": false,
+            "legalDestinations": 9,
+            "movement": "2/2",
+            "name": "Pikeman",
+            "position": {
+              "x": -3,
+              "y": -3
+            }
+          },
+          {
+            "handle": "unit10",
+            "idle": true,
+            "legalDestinations": 7,
+            "movement": "2/2",
+            "name": "Worker",
+            "position": {
+              "x": -6,
+              "y": -2
+            }
+          }
+        ],
+        "id": "review1"
+      },
+      "epoch": "g1",
+      "revision": "rev1"
+    }
+  }
+}

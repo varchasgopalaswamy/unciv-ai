@@ -452,6 +452,7 @@ class FakeHost:
                     }
                 )
                 + "\n",
+                summaryData={"turn": status["gameTurn"]},
                 summary=f"# {civilization} turn {status['gameTurn']}\n"
                 + (
                     "Rolled back the unfinished attempt.\n"

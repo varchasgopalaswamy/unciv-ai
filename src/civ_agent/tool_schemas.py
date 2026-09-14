@@ -4,8 +4,21 @@ from typing import Annotated, Literal
 
 from pydantic import Field
 
-from civ_agent.protocol import JsonObject
+from civ_agent.memory_records import (
+    HistoryReadResult,
+    Intent,
+    MemoryRead,
+    MemoryReadResult,
+    MemorySearch,
+    MemorySearchResult,
+    MemoryUpdate,
+    MemoryUpdateResult,
+)
 from civ_agent.schemas import BoundaryModel, NonnegativeInt
+
+
+class WithIntent(BoundaryModel):
+    intent: Intent
 
 
 class Partner(BoundaryModel):
@@ -25,7 +38,7 @@ class TradeItem(BoundaryModel):
     duration: int
 
 
-class TradeOffer(Partner):
+class TradeOffer(Partner, WithIntent):
     give: Annotated[list[TradeItem], Field(max_length=64)]
     receive: Annotated[list[TradeItem], Field(max_length=64)]
     # Defaults make these fields optional without accepting explicit JSON null.
@@ -33,7 +46,7 @@ class TradeOffer(Partner):
     proposal: str = ""
 
 
-class TradeDecision(Proposal):
+class TradeDecision(Proposal, WithIntent):
     decision: Literal["accept", "decline", "withdraw"]
 
 
@@ -51,9 +64,10 @@ class ChatSend(BoundaryModel):
     text: str
     to: str = ""
     mentions: list[str] = Field(default_factory=list)
+    intent: Intent | None = None
 
 
-class CommitmentOffer(BoundaryModel):
+class CommitmentOffer(WithIntent):
     participants: list[str]
     terms: str
     conditions: str
@@ -63,30 +77,20 @@ class CommitmentOffer(BoundaryModel):
     proposal: str = ""
 
 
-class CommitmentDecision(Proposal):
+class CommitmentDecision(Proposal, WithIntent):
     decision: Literal["accept", "withdraw", "reconsider"]
     reason: str = ""
 
 
-class MemoryRead(BoundaryModel):
-    keys: Annotated[list[str], Field(max_length=20)]
-
-
-class MemoryChange(BoundaryModel):
-    key: str
-    category: Literal["policy", "plan", "belief"]
-    body: JsonObject
-
-
-class MemoryUpdate(BoundaryModel):
-    changes: Annotated[list[MemoryChange], Field(max_length=20)]
+class FriendshipOffer(Partner, WithIntent):
+    pass
 
 
 TOOL_MODELS: dict[str, type[BoundaryModel]] = {
     "trade_options": Partner,
     "trade_read": Proposal,
     "trade_offer": TradeOffer,
-    "friendship_offer": Partner,
+    "friendship_offer": FriendshipOffer,
     "trade_decide": TradeDecision,
     "history_read": HistoryRead,
     "chat_read": BoundaryModel,
@@ -95,5 +99,13 @@ TOOL_MODELS: dict[str, type[BoundaryModel]] = {
     "commitment_offer": CommitmentOffer,
     "commitment_decide": CommitmentDecision,
     "memory_read": MemoryRead,
+    "memory_search": MemorySearch,
     "memory_update": MemoryUpdate,
+}
+
+TOOL_OUTPUT_MODELS: dict[str, type[BoundaryModel]] = {
+    "history_read": HistoryReadResult,
+    "memory_read": MemoryReadResult,
+    "memory_search": MemorySearchResult,
+    "memory_update": MemoryUpdateResult,
 }

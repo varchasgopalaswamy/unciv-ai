@@ -16,7 +16,11 @@ import java.util.Locale
 data class TilePosition(val x: Int, val y: Int)
 
 @Serializable
-data class VisibleUnit(val name: String, val civilization: String, val health: Int)
+data class VisibleUnit(val name: String, val civilization: String, val health: Int, val military: Boolean, val atWar: Boolean)
+
+/** Proximity is a warning, not a prediction of enemy movement or an exhaustive danger map. */
+@Serializable
+data class NearbyHostile(val position: TilePosition, val unit: VisibleUnit, val distance: Int)
 
 @Serializable
 data class ObservedTile(
@@ -58,6 +62,8 @@ data class OwnedUnit(
     val displayName: String,
     val position: TilePosition,
     val health: Int,
+    val military: Boolean,
+    val nearbyHostiles: List<NearbyHostile>,
     val movement: String,
     val idle: Boolean,
     val movementSupported: Boolean,
@@ -84,6 +90,10 @@ internal fun observeMap(player: Civilization, state: TurnSessionState, canAct: B
     val operations = PlayerUnitOperations(player)
     val active = canAct && PlayerOperations(player).canAct()
     val format = DecimalFormat("0.#", DecimalFormatSymbols(Locale.ROOT))
+    val visibleHostiles = tiles.flatMap { tile ->
+        tile.getUnits().filter { it.isVisibleTo(player) && it.baseUnit.isMilitary && player.isAtWarWith(it.civ) }
+            .map { tile to VisibleUnit(it.name, it.civ.civName, it.health, military = true, atWar = true) }.toList()
+    }
     return MapObservation(
         tiles = detached(
             tiles.map { tile ->
@@ -114,7 +124,7 @@ internal fun observeMap(player: Civilization, state: TurnSessionState, canAct: B
                     yields = observeTileYields(player, tile),
                     units = detached(
                         tile.getUnits().filter { it.civ === player || it.isVisibleTo(player) }
-                            .map { VisibleUnit(it.name, it.civ.civName, it.health) }
+                            .map { VisibleUnit(it.name, it.civ.civName, it.health, it.baseUnit.isMilitary, player.isAtWarWith(it.civ)) }
                             .sortedWith(compareBy({ it.civilization }, { it.name }, { it.health })).toList(),
                     ),
                 )
@@ -133,6 +143,13 @@ internal fun observeMap(player: Civilization, state: TurnSessionState, canAct: B
                     displayName = unit.displayName(),
                     position = unit.currentTile.position.dto(),
                     health = unit.health,
+                    military = unit.baseUnit.isMilitary,
+                    nearbyHostiles = detached(
+                        visibleHostiles.mapNotNull { (tile, hostile) ->
+                            val distance = unit.currentTile.aerialDistanceTo(tile)
+                            if (distance <= 2) NearbyHostile(tile.position.dto(), hostile, distance) else null
+                        },
+                    ),
                     movement = unit.getMovementString(),
                     idle = unit.isIdle(),
                     movementSupported = operations.supportsMovement(unit),

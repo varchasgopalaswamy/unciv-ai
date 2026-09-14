@@ -81,6 +81,7 @@ class ReadableHistoryTest(unittest.TestCase):
             )
             + "\n",
             summary="Settled Rome to gain access to fresh water. " + secret,
+            summaryData={"turn": 0},
         )
         history.publish_archive(archive)
         restored = self.history(secrets=(secret,))
@@ -98,7 +99,13 @@ class ReadableHistoryTest(unittest.TestCase):
 
     def test_wrong_player_turn_or_corrupt_archive_leaves_existing_mirror_untouched(self):
         history = self.history()
-        valid = dict(civilization="Rome", gameTurn=0, commands='{"receipt":"accepted"}\n', summary="Turn completed.\n")
+        valid = dict(
+            civilization="Rome",
+            gameTurn=0,
+            commands='{"receipt":"accepted"}\n',
+            summary="Turn completed.\n",
+            summaryData={"turn": 0},
+        )
         history.publish_archive(valid)
         assert history.turn_directory is not None
         for changes in (
@@ -151,5 +158,7 @@ class ReadableHistoryTest(unittest.TestCase):
         assert history.turn_directory is not None
         (history.turn_directory / "summary.md").symlink_to(outside)
         with self.assertRaises(HistoryError):
-            history.publish_archive(dict(civilization="Rome", gameTurn=0, commands="", summary="new summary"))
+            history.publish_archive(
+                dict(civilization="Rome", gameTurn=0, commands="", summary="new summary", summaryData={"turn": 0})
+            )
         self.assertEqual(outside.read_text(), "PRIVATE CONTENT")

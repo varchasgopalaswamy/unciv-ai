@@ -113,7 +113,7 @@ class Jobs:
 def test_chat_batches_and_replies_while_planning_job_is_held(tmp_path, monkeypatch):
     async def run():
         host = MailboxHost()
-        monkeypatch.setattr("civ_agent.chat_runtime.HostConnection", lambda *args: host)
+        monkeypatch.setattr("civ_agent.chat_runtime.HostConnection", lambda *args, **kwargs: host)
         jobs = Jobs()
         service = AgentService(
             "Rome",

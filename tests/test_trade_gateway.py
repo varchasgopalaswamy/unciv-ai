@@ -70,7 +70,12 @@ def test_game_command_waits_outside_dispatch_and_requires_a_new_decision(tmp_pat
             await asyncio.wait_for(host.waiting.wait(), 1)
             assert not pending.done() and not gateway.dispatch.locked() and not host.executed
             await gateway.call(chat, "trade_read", {"proposal": "d1"}, "read")
-            await gateway.call(chat, "trade_decide", {"proposal": "d1", "decision": "accept"}, "accept")
+            await gateway.call(
+                chat,
+                "trade_decide",
+                {"proposal": "d1", "decision": "accept", "intent": {"reason": "Advance the test objective"}},
+                "accept",
+            )
             result = await asyncio.wait_for(pending, 1)
             assert result["error"] == "OBSERVATION_REQUIRED" and result["applied"] is False
             assert host.executed == []
@@ -95,6 +100,7 @@ def test_interrupted_offer_wait_replays_receipt_without_reopening_negotiation(tm
                 "partner": "Greece",
                 "give": [{"type": "Gold", "name": "Gold", "amount": 1, "duration": -1}],
                 "receive": [],
+                "intent": {"reason": "Advance the test objective"},
             }
             pending = asyncio.create_task(gateway.call(game, "trade_offer", arguments, "offer"))
             await asyncio.wait_for(host.waiting.wait(), 1)
@@ -106,7 +112,12 @@ def test_interrupted_offer_wait_replays_receipt_without_reopening_negotiation(tm
             host.trade.update(author="Greece", partner="Rome", version=2)
             chat = await gateway.open("chat", "communication", "g1", host, {})
             await gateway.call(chat, "trade_read", {"proposal": "d1"}, "read")
-            await gateway.call(chat, "trade_decide", {"proposal": "d1", "decision": "accept"}, "accept")
+            await gateway.call(
+                chat,
+                "trade_decide",
+                {"proposal": "d1", "decision": "accept", "intent": {"reason": "Advance the test objective"}},
+                "accept",
+            )
             result = await gateway.call(game, "trade_offer", arguments, "offer")
             assert result["trade"]["status"] == "ENACTED" and result["trade"]["version"] == 2
             assert result["outcome"]["action"] == "ENACT_TRADE"
@@ -182,7 +193,12 @@ def test_trade_acceptance_uses_the_jobs_inspected_version_despite_other_reads(tm
             old = await gateway.open("old", "gameplay", "g1", host, {})
             chat = await gateway.open("chat", "communication", "g1", host, {})
             with pytest.raises(StateConflict, match="trade_read"):
-                await gateway.call(old, "trade_decide", {"proposal": "d1", "decision": "accept"}, "unseen")
+                await gateway.call(
+                    old,
+                    "trade_decide",
+                    {"proposal": "d1", "decision": "accept", "intent": {"reason": "Advance the test objective"}},
+                    "unseen",
+                )
             shown = await gateway.call(old, "trade_read", {"proposal": "d1"}, "read")
             assert shown["trade"]["clauses"][0]["item"]["amount"] == 20
             host.trade["version"] = 2
@@ -190,16 +206,32 @@ def test_trade_acceptance_uses_the_jobs_inspected_version_despite_other_reads(tm
             await gateway.call(chat, "trade_read", {"proposal": "d1"}, "new-read")
             # An unrelated ledger refresh must not select another job's newer terms.
             await gateway.call(old, "chat_read", {}, "greeting")
-            stale = await gateway.call(old, "trade_decide", {"proposal": "d1", "decision": "accept"}, "accept")
+            stale = await gateway.call(
+                old,
+                "trade_decide",
+                {"proposal": "d1", "decision": "accept", "intent": {"reason": "Advance the test objective"}},
+                "accept",
+            )
             assert stale == {"error": "STALE_REVISION"}
             assert host.writes[-1]["version"] == 1
             assert host.writes[-1].keys() == {"op", "epoch", "requestId", "proposal", "version", "decision"}
-            accepted = await gateway.call(chat, "trade_decide", {"proposal": "d1", "decision": "accept"}, "accept")
+            accepted = await gateway.call(
+                chat,
+                "trade_decide",
+                {"proposal": "d1", "decision": "accept", "intent": {"reason": "Advance the test objective"}},
+                "accept",
+            )
             assert accepted["outcome"]["confirmation"]["source"] == "engine"
             assert host.writes[-1]["version"] == 2
             assert old.trades["d1"]["clauses"] == shown["trade"]["clauses"]
             assert (
-                await gateway.call(chat, "trade_decide", {"proposal": "d1", "decision": "accept"}, "accept") == accepted
+                await gateway.call(
+                    chat,
+                    "trade_decide",
+                    {"proposal": "d1", "decision": "accept", "intent": {"reason": "Advance the test objective"}},
+                    "accept",
+                )
+                == accepted
             )
             assert len(host.writes) == 2
             assert old.trades["d1"]["clauses"][0]["item"]["amount"] == 20
@@ -209,19 +241,20 @@ def test_trade_acceptance_uses_the_jobs_inspected_version_despite_other_reads(tm
                 {
                     "changes": [
                         {
-                            "key": "relationships/Greece",
-                            "category": "belief",
-                            "body": {
-                                "text": "Greece originally offered 20 gold",
+                            "op": "create",
+                            "content": {
+                                "type": "belief",
+                                "claim": "Greece originally offered 20 gold",
                                 "uncertainty": "low",
                                 "sources": ["observation:trade/d1"],
+                                "subjects": ["Greece"],
                             },
                         }
                     ]
                 },
                 "remember",
             )
-            note = memory.snapshot("gameplay")["records"]["relationships/Greece"]["body"]
+            note = next(r["body"] for r in memory.snapshot("gameplay")["records"].values() if r["category"] == "belief")
             assert note["_evidence"][0]["version"] == 1
         finally:
             await io.close()
@@ -239,8 +272,8 @@ def test_trade_tools_keep_decisions_small_and_do_not_grant_gameplay(tmp_path):
             job = await gateway.open("chat", "communication", "g1", host, {})
             tools = {tool["name"]: tool for tool in await gateway.tools(job)}
             assert "player_command" not in tools
-            assert tools["friendship_offer"]["inputSchema"]["required"] == ["partner"]
-            assert set(tools["friendship_offer"]["inputSchema"]["properties"]) == {"partner"}
+            assert tools["friendship_offer"]["inputSchema"]["required"] == ["intent", "partner"]
+            assert set(tools["friendship_offer"]["inputSchema"]["properties"]) == {"partner", "intent"}
             assert set(tools["trade_offer"]["inputSchema"]["$defs"]["TradeItem"]["properties"]["type"]["enum"]) == {
                 "Gold",
                 "Gold_Per_Turn",
@@ -251,20 +284,42 @@ def test_trade_tools_keep_decisions_small_and_do_not_grant_gameplay(tmp_path):
                 "Embassy",
                 "City",
             }
-            assert tools["trade_decide"]["inputSchema"]["required"] == ["proposal", "decision"]
-            assert set(tools["trade_decide"]["inputSchema"]["properties"]) == {"proposal", "decision"}
+            assert tools["trade_decide"]["inputSchema"]["required"] == ["intent", "proposal", "decision"]
+            assert set(tools["trade_decide"]["inputSchema"]["properties"]) == {"proposal", "decision", "intent"}
             await gateway.call(job, "trade_read", {"proposal": "d1"}, "read")
             with pytest.raises(ValueError):
                 await gateway.call(
-                    job, "trade_decide", {"proposal": "d1", "decision": "accept", "version": 2}, "version"
+                    job,
+                    "trade_decide",
+                    {
+                        "proposal": "d1",
+                        "decision": "accept",
+                        "version": 2,
+                        "intent": {"reason": "Advance the test objective"},
+                    },
+                    "version",
                 )
             with pytest.raises(ValueError):
                 await gateway.call(
-                    job, "trade_decide", {"proposal": "d1", "decision": "accept", "clauses": []}, "terms"
+                    job,
+                    "trade_decide",
+                    {
+                        "proposal": "d1",
+                        "decision": "accept",
+                        "clauses": [],
+                        "intent": {"reason": "Advance the test objective"},
+                    },
+                    "terms",
                 )
             with pytest.raises(StateConflict, match="GAMEPLAY_NOT_PERMITTED"):
                 await gateway.call(job, "player_command", {"kind": "END_TURN"}, "move")
-            offer = {"proposal": "d1", "partner": "Greece", "give": [], "receive": [host.trade["clauses"][0]["item"]]}
+            offer = {
+                "proposal": "d1",
+                "partner": "Greece",
+                "give": [],
+                "receive": [host.trade["clauses"][0]["item"]],
+                "intent": {"reason": "Advance the test objective"},
+            }
             await gateway.call(job, "trade_offer", offer, "counter")
             assert host.writes[-1]["version"] == 1
             assert host.writes[-1]["partner"] == "Greece"
@@ -298,13 +353,25 @@ def test_friendship_proposal_uses_the_same_small_decision_and_durable_request_pa
         host = FriendshipHost()
         try:
             job = await gateway.open("chat", "communication", "g1", host, {})
-            offered = await gateway.call(job, "friendship_offer", {"partner": "Greece"}, "offer")
+            offered = await gateway.call(
+                job, "friendship_offer", {"partner": "Greece", "intent": {"reason": "Build friendship"}}, "offer"
+            )
             assert offered["trade"]["friendship"] == {"name": "Declaration of Friendship", "duration": 30}
             assert set(host.writes[-1]) == {"op", "epoch", "requestId", "partner"}
-            assert await gateway.call(job, "friendship_offer", {"partner": "Greece"}, "offer") == offered
+            assert (
+                await gateway.call(
+                    job, "friendship_offer", {"partner": "Greece", "intent": {"reason": "Build friendship"}}, "offer"
+                )
+                == offered
+            )
             assert len(host.writes) == 1
             with pytest.raises(ValueError):
-                await gateway.call(job, "friendship_offer", {"partner": "Greece", "duration": 999}, "forged")
+                await gateway.call(
+                    job,
+                    "friendship_offer",
+                    {"partner": "Greece", "duration": 999, "intent": {"reason": "Invalid test"}},
+                    "forged",
+                )
             host.trade = {
                 "proposal": "d1",
                 "version": 1,
@@ -315,7 +382,12 @@ def test_friendship_proposal_uses_the_same_small_decision_and_durable_request_pa
                 "status": "PENDING",
             }
             await gateway.call(job, "trade_read", {"proposal": "d1"}, "inspect")
-            result = await gateway.call(job, "trade_decide", {"proposal": "d1", "decision": "accept"}, "accept")
+            result = await gateway.call(
+                job,
+                "trade_decide",
+                {"proposal": "d1", "decision": "accept", "intent": {"reason": "Advance the test objective"}},
+                "accept",
+            )
             assert result["outcome"]
             assert set(host.writes[-1]) == {"op", "epoch", "requestId", "proposal", "version", "decision"}
             assert job.trades["d1"]["friendship"]["duration"] == 30
@@ -340,22 +412,36 @@ def test_new_economic_policy_invalidates_an_outstanding_trade_decision(tmp_path)
                 "memory_update",
                 {
                     "changes": [
-                        {"key": "economy", "category": "policy", "body": {"text": "Reserve resources for construction"}}
+                        {
+                            "op": "create",
+                            "content": {
+                                "type": "plan",
+                                "objective": "Reserve resources for construction",
+                                "approach": "Carry out the stated objective",
+                                "successCriteria": "Objective achieved",
+                                "subjects": ["economy"],
+                            },
+                        }
                     ]
                 },
                 "policy",
             )
-            stale = await gateway.call(chat, "trade_decide", {"proposal": "d1", "decision": "accept"}, "accept")
+            stale = await gateway.call(
+                chat, "trade_decide", {"proposal": "d1", "decision": "accept", "intent": {"plan": "mem1"}}, "accept"
+            )
             assert stale["error"] == "STALE_ASSUMPTIONS" and stale["recoverable"] and not stale["applied"]
-            assert stale["changedRecords"] == ["economy"]
+            assert stale["changedRecords"] == ["mem1"]
             assert stale["recovery"]["reads"] == [
-                {"tool": "memory_read", "arguments": {"keys": ["economy"]}},
+                {"tool": "memory_read", "arguments": {"ids": ["mem1"], "includeRetired": True}},
                 {"tool": "trade_read", "arguments": {"proposal": "d1"}},
             ]
             assert not host.writes
-            await gateway.call(chat, "memory_read", {"keys": ["economy"]}, "reconsider")
+            await gateway.call(chat, "memory_read", {"ids": ["mem1"], "includeRetired": True}, "reconsider")
             assert "outcome" in await gateway.call(
-                chat, "trade_decide", {"proposal": "d1", "decision": "accept"}, "fresh-decision"
+                chat,
+                "trade_decide",
+                {"proposal": "d1", "decision": "accept", "intent": {"plan": "mem1"}},
+                "fresh-decision",
             )
         finally:
             await io.close()
@@ -384,7 +470,12 @@ def test_trade_receipt_reconciliation_after_response_loss(tmp_path, enacted):
             job = await gateway.open("chat", "communication", "g1", host, {})
             await gateway.call(job, "trade_read", {"proposal": "d1"}, "read")
             with pytest.raises(TimeoutError):
-                await gateway.call(job, "trade_decide", {"proposal": "d1", "decision": "accept"}, "accept")
+                await gateway.call(
+                    job,
+                    "trade_decide",
+                    {"proposal": "d1", "decision": "accept", "intent": {"reason": "Advance the test objective"}},
+                    "accept",
+                )
             assert job.closed and len(memory.pending()) == 1
             restarted = CivilizationState(tmp_path / "private", "Rome")
             runtime = ChatRuntime(SimpleNamespace(io=io, memory=restarted))

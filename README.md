@@ -93,9 +93,12 @@ For automatic turns, start one HTTPS service per civilization and run the superv
 See [automatic turns and HTTPS setup](docs/Automatic-turns.md) for commands, limits,
 pause/resume, and separate-machine configuration.
 Player archives use readable paths such as `agents/Rome/turn_0/`: `commands.jsonl`
-contains detailed calls and receipts, while `summary.md` contains the API's turn
-number and the agent's brief public report, such as `# Turn 0` followed by its
-actions and reasons. Fresh conversations use selected private memory and new events.
+contains detailed calls and receipts. `summary.json` stores typed decisions,
+confirmed outcomes and memory assessments; `summary.md` renders these in at most
+200 words under the API's turn number. Final model prose stays in the transcript.
+Fresh conversations use selected private memory and new events. See the
+[structured memory plan](docs/Structured-memory-plan.md) and
+[memory tools](docs/Structured-memory.md) for lifecycle and intent examples.
 Normal recovery retains confirmed actions, messages and notes, then reconciles
 uncertain responses before starting fresh computation. Explicit `match rollback`
 restores all players and the game to a coordinated round checkpoint under a new

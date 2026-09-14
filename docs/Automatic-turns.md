@@ -55,8 +55,7 @@ intentional negotiation deadline and native-save verification.
 
 Agents aim to win using the enabled victory conditions in `player_turn.rules`.
 Prepared exercises instead supply `player_turn.scenario.instructions`.
-The common prompt also covers gameplay rules, receipt/retry handling, and the current turn review. Request
-ID examples use the actual game turn and an increasing action number. The service
+The common prompt also covers gameplay rules, receipt/retry handling, and the current turn review. The service owns request IDs and
 adds archive and final-summary instructions once, then selected notes and new events.
 Restart agent services after changing their prompt code; already running services
 continue using the version they loaded.
@@ -65,6 +64,12 @@ Before handing off, agents read `player_turn.turnReview`, which lists confirmed
 actions and remaining movement. `END_TURN` includes the current review ID. Leaving
 idle units with legal destinations also requires a short `deferReason`, so an agent
 must act or explain its choice. Changes require a fresh observation and review.
+The service also puts `tacticalReview` and `strategyReview` before the detailed
+snapshot. These highlight confirmed losses, the military roster, visible hostile
+units, nearby civilian risks, available city bombardments and plans needing review.
+An unused bombardment, a civilian near a visible hostile, or an injured military
+unit near one requires acting or giving `deferReason` before ending. This permits
+intentional restraint; it never requires an attack. See [tactical review](Tactical-review.md).
 `previousTurnReview` carries the prior review and deferred choices into the next turn
 alongside the agent's own summaries.
 
@@ -128,6 +133,7 @@ STATE_DIR/agents/
     turn_0/
       commands.jsonl   Dense commands, observations and receipts from retained attempts
       summary.md       Short account of actions, reasons and outcomes
+      summary.json     Typed decisions, receipts and memory assessments
       attempts/
         attempt_1/
           commands.jsonl   That attempt's commands and receipts
@@ -156,22 +162,22 @@ Explicit whole-match restoration archives the abandoned epoch's histories.
 See [chat, memory and recovery](Chat-memory-and-recovery.md) for the current
 concurrency, context and recovery contract.
 
-Each summary contains one heading with the turn number returned by the player API,
-followed by the agent's brief public report. For example, `turn_0/summary.md` contains:
+Each summary has one heading with the turn number returned by the player API.
+`summary.json` records typed decisions, confirmed outcomes, observations and memory
+assessments; `summary.md` renders these in at most 200 words. For example:
 
 ```markdown
 # Turn 0
 
-Moved the scout east to explore. Continue toward the coast next turn.
+- Queued Granary in c1: Improve the capital's food supply.
 ```
 
-After a successful `END_TURN`, the agent immediately returns its summary as its
-final response, without further tool calls or creating or editing turn files.
-The service writes the files automatically. The report is limited to 200 words.
-If there is no final report, the service uses
-the last available public note, or just the heading if no note was captured.
-Receipt counts, handoff status, retry information and debugging labels stay in
-the detailed attempt records. Full messages remain in each attempt's event log.
+After `END_TURN` succeeds, the agent returns its final report without further tool
+calls. The report remains in the transcript. Summaries come from committed records
+and receipts, including after interruption or reconciliation without a final
+response. Retry information and debugging labels remain in detailed attempt files.
+See [structured memory](Structured-memory.md) for typed records, retirement, source
+references and the intent field on consequential actions.
 
 Canonical memory lives in private SQLite records. Markdown files are projections;
 edits to these copies cannot change the next job's context.

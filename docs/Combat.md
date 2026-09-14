@@ -16,6 +16,11 @@ Attack previews contain the target and origin coordinates, path, movement cost,
 rounded displayed strengths, modifiers and health-capped damage ranges. They do not
 expose the random value that will resolve an attack.
 
+Agent services add a [tactical review](Tactical-review.md) and copyable `command`
+arguments to combat, order and promotion offers. It highlights available city shots
+even if no units are idle. City commands omit the preview's `attackFrom`; unit
+attacks require it. Pydantic validates each command's argument shape before dispatch.
+
 | Command | Choice source | Desktop source |
 | --- | --- | --- |
 | `ATTACK` | Owned unit's `combat.attacks`; copy both `destination` and `attackFrom` | BattleTable |

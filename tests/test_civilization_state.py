@@ -13,16 +13,24 @@ def state(tmp_path):
 
 def test_concurrent_memory_updates_preserve_independent_results(tmp_path):
     memory = state(tmp_path)
+    memory.start_job("setup", "gameplay", {})
+    content = {"type": "plan", "objective": "Attack Greece", "approach": "Advance", "successCriteria": "Capture a city"}
+    memory.patch("setup", [{"op": "create", "content": content}])
     memory.start_job("planning", "gameplay", {})
     memory.start_job("chat", "communication", {})
-
-    def patch(key, text):
-        return {"key": key, "category": "plan", "body": {"text": text}}
-
-    memory.patch("chat", [patch("STRATEGY", "Peace accepted; redeploy to the west")])
-    result = memory.patch("planning", [patch("STRATEGY", "Attack Greece"), patch("economy", "Build a market")])
+    memory.patch(
+        "chat",
+        [{"op": "revise", "id": "mem1", "content": {**content, "objective": "Peace accepted; redeploy to the west"}}],
+    )
+    result = memory.patch(
+        "planning",
+        [
+            {"op": "revise", "id": "mem1", "content": content},
+            {"op": "create", "content": {"type": "note", "text": "Build a market"}},
+        ],
+    )
     assert [entry["accepted"] for entry in result["changes"]] == [False, True]
-    assert memory.snapshot("gameplay")["records"]["STRATEGY"]["body"]["text"].startswith("Peace accepted")
+    assert memory.snapshot("gameplay")["records"]["mem1"]["body"]["objective"].startswith("Peace accepted")
 
 
 def test_misleading_speech_cannot_replace_observation_and_cursor_is_durable(tmp_path):
@@ -68,17 +76,17 @@ def test_outgoing_identity_exact_retry_and_crash_recovery(tmp_path):
 def test_round_restore_fences_jobs_and_regenerates_projections(tmp_path):
     memory = state(tmp_path)
     memory.start_job("job", "gameplay", {})
-    memory.patch("job", [{"key": "SOUL", "category": "policy", "body": {"text": "Develop peacefully"}}])
+    memory.patch("job", [{"op": "create", "content": {"type": "soul", "text": "Develop peacefully"}}])
     path = tmp_path / "rounds" / "one.sqlite3"
     checksum = memory.backup(path)
-    memory.patch("job", [{"key": "SOUL", "category": "policy", "body": {"text": "Invade"}}])
+    memory.patch("job", [{"op": "revise", "id": "mem1", "content": {"type": "soul", "text": "Invade"}}])
     memory.ingest("g1", [{"id": 1, "kind": "message", "body": {"text": "Abandoned future"}}], 1)
     memory.restore(path, checksum, "g2")
     memory.pause(False)
     workspace = tmp_path / "view"
     workspace.mkdir(mode=0o700)
     memory.export(workspace)
-    assert (workspace / "SOUL.md").read_text().strip() == "Develop peacefully"
+    assert "Develop peacefully" in (workspace / "SOUL.md").read_text()
     assert (workspace / "chat.jsonl").read_text() == ""
     with pytest.raises(StateConflict):
         memory.queue("job", "player_command", {}, {}, "late")

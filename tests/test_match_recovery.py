@@ -87,12 +87,12 @@ def test_partial_restore_remains_paused_then_repeats_same_epoch_without_refundin
     host, players, state, coordinator = setup(tmp_path)
     for player in players.values():
         player.memory.start_job("initial", "gameplay", {})
-        player.memory.patch("initial", [{"key": "SOUL", "category": "policy", "body": {"text": "Build peacefully"}}])
+        player.memory.patch("initial", [{"op": "create", "content": {"type": "soul", "text": "Build peacefully"}}])
     coordinator.capture({"epoch": "g1", "turn": 0}, state)
     manifest = json.loads(next(coordinator.root.glob("*-round-*.json")).read_text())
     host.world["gold"] = 999
     for player in players.values():
-        player.memory.patch("initial", [{"key": "SOUL", "category": "policy", "body": {"text": "Invade"}}])
+        player.memory.patch("initial", [{"op": "revise", "id": "mem1", "content": {"type": "soul", "text": "Invade"}}])
         player.memory.ingest(
             "g1", [{"id": 1, "kind": "message", "wake": True, "body": {"text": "Abandoned future"}}], 1
         )
@@ -112,7 +112,7 @@ def test_partial_restore_remains_paused_then_repeats_same_epoch_without_refundin
     assert (coordinator.root / ("abandoned-" + epoch) / "history" / "old-timeline.txt").exists()
     for player in players.values():
         snapshot = player.memory.snapshot("gameplay")
-        assert snapshot["records"]["SOUL"]["body"]["text"] == "Build peacefully"
+        assert snapshot["records"]["mem1"]["body"]["text"] == "Build peacefully"
         assert not snapshot["events"] and snapshot["epoch"] == epoch
         assert "cancel_jobs" in player.calls
     assert json.loads((coordinator.root / "restore.json").read_text())["complete"]

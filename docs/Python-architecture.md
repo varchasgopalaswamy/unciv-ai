@@ -46,6 +46,13 @@ forwarded. Engine tool schemas still come from the host, which validates game
 commands against the actual state. Identity, authorization, stale assumptions,
 memory provenance and durable receipts remain explicit domain checks.
 
+[memory_records.py](../src/civ_agent/memory_records.py) provides Pydantic models for
+typed plans, beliefs, notes, SOUL, decision intent and memory responses. SQLite
+revisions retain lifecycle and provenance; [memory_history.py](../src/civ_agent/memory_history.py)
+builds validated summaries from receipts. [memory_exports.py](../src/civ_agent/memory_exports.py)
+regenerates Markdown and removes stale managed projections. The
+[structured memory guide](Structured-memory.md) documents the tool contract.
+
 [host_connection.py](../src/civ_agent/host_connection.py) uses the official MCP
 client with a pooled, authenticated HTTPS client. One background task owns the SDK
 context; requests can run concurrently across the event listener and tool handlers.
@@ -55,6 +62,32 @@ The client negotiates using `initialize`, the protocol implemented by the Kotlin
 host. It rejects redirects, verifies the configured CA and hostname, and sanitizes
 SDK wire diagnostics. A failed command is never automatically resubmitted: the
 gateway reconciles its durable request ID and receipt with the host.
+
+Each agent service also writes operator diagnostics to
+`agent-services/<Civilization>/diagnostics.jsonl`, announced at startup. The
+standard-library logging queue keeps file writes off the HTTPS event loop;
+rotation retains the current 5 MiB file and three backups, all owner-only.
+Diagnostics remain outside the model workspace and are not part of memory or
+round rollback. They append across restarts, with a new service instance ID and
+the Python, MCP, HTTP and Pydantic versions recorded at startup.
+
+For `HOST_PROTOCOL_ERROR`, find `host_call_failed` and follow its `connectionId`
+and `requestId`. Gameplay calls include the activation ID and game turn. The
+surrounding `host_http_request` / `host_http_response` records show MCP request
+IDs, HTTP status, response content type/length and header latency. Call records
+show total elapsed time, the failure stage, or success/rejection; session records
+show initialization, reconnection and shutdown. `mcp_event` preserves SDK failure
+details before the public error is sanitized. Exceptions retain their types,
+causes, exception groups, stack locations, OS/TLS/MCP error numbers, and JSON or
+validation diagnostics. Raw exception messages, source lines, local variables,
+headers, credentials and game/chat payloads are excluded. Public tool errors
+remain unchanged.
+
+A failed response does not establish whether a command was enacted. Compare its
+request ID with the durable receipt; receipt reads also appear in this log. This
+instrumentation adds no command retries or model calls. Diagnostic records are
+best-effort troubleshooting data; native checkpoints and receipts remain the
+authority for what happened in the game.
 
 The gateway's HTTPS server remains in aiohttp. Its request IDs participate in the
 durable tool-call cache. Codex's app-server connection also remains separate: it
@@ -102,6 +135,13 @@ serializes short state operations and drains accepted writes during cancellation
 Formal trade negotiation pauses gameplay while communication jobs continue; the
 wait happens in code. Checkpoint and rollback behavior is described in
 [Chat, memory and recovery](Chat-memory-and-recovery.md).
+
+Pydantic command variants in `game_commands.py` define each action's arguments and
+reject invalid combinations before dispatch. `tactical_review.py` validates compact
+reviews derived from permitted observations. The host supplies visible hostile
+proximity using engine map distances; the Python gateway adds combat command
+arguments, review prompts and explicit tactical deferral. See
+[tactical and strategic review](Tactical-review.md) for behavior and regression coverage.
 
 Library references: [Pydantic strict validation](https://pydantic.dev/docs/validation/latest/concepts/strict_mode/),
 [MCP client transports](https://github.com/modelcontextprotocol/python-sdk/blob/main/docs/client/transports.md),

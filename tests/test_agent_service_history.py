@@ -290,4 +290,5 @@ class ServiceHistoryTests(unittest.IsolatedAsyncioTestCase):
             await self.service.active_task
         self.assertEqual("COMPLETED", self.service.status()["phase"])
         self.assertEqual("COMPLETED", json.loads(record_path.read_text())["phase"])
-        self.assertIn("The final report is durable.", (self.root / "workspace/turn_0/summary.md").read_text())
+        self.assertNotIn("The final report is durable.", (self.root / "workspace/turn_0/summary.md").read_text())
+        self.assertTrue((self.root / "workspace/turn_0/summary.json").exists())

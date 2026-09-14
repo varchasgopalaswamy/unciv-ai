@@ -12,12 +12,24 @@ from typing import Any, Protocol
 
 import aiohttp
 from aiohttp import web
+from pydantic import ValidationError
 
-from civ_agent.civilization_state import CivilizationState, StaleAssumptions, StateConflict, encode
+from civ_agent.civilization_state import CivilizationState, StaleAssumptions, StateConflict
+from civ_agent.game_commands import add_combat_commands, command_arguments, command_error, command_schema
+from civ_agent.memory_records import (
+    REQUIRED_COMMANDS,
+    REQUIRED_TOOLS,
+    Intent,
+    MemoryReadResult,
+    MemorySearchResult,
+    MemoryUpdateResult,
+    public_record,
+)
 from civ_agent.protocol import JsonObject
 from civ_agent.schemas import validate
 from civ_agent.service_io import ServiceIO
-from civ_agent.tool_schemas import TOOL_MODELS
+from civ_agent.tactical_review import TacticalReviewRequired, strategy_review, tactical_review
+from civ_agent.tool_schemas import TOOL_MODELS, TOOL_OUTPUT_MODELS
 
 BOOKKEEPING = {"requestId", "epoch", "revision", "reviewId", "socialVersion"}
 READ_TOOLS = {
@@ -58,7 +70,7 @@ def public_result(value: Any) -> Any:
                 else item
             )
             for key, item in value.items()
-            if key not in BOOKKEEPING and key not in {"peaceVersion", "_evidence"}
+            if key not in BOOKKEEPING and key not in {"peaceVersion", "_evidence", "_assumptions", "_pinned"}
         }
     if isinstance(value, list):
         return [public_result(item) for item in value]
@@ -67,7 +79,7 @@ def public_result(value: Any) -> Any:
 
 def tool_result(value: JsonObject) -> JsonObject:
     return {
-        "content": [{"type": "text", "text": encode(value)}],
+        "content": [{"type": "text", "text": json.dumps(value, ensure_ascii=False, separators=(",", ":"))}],
         "structuredContent": value,
         "isError": "error" in value,
     }
@@ -120,9 +132,10 @@ class ProposalGateway:
         game_turn: int | None = None,
         *,
         owns_connection: bool = False,
+        memory_snapshot: JsonObject | None = None,
     ) -> JobAccess:
         await self.io.call(self.memory.bind, epoch)
-        snapshot = await self.io.call(self.memory.start_job, id, purpose, settings, game_turn)
+        snapshot = await self.io.call(self.memory.start_job, id, purpose, settings, game_turn, memory_snapshot)
         job = JobAccess(id, purpose, epoch, connection, snapshot, owns_connection=owns_connection)
         self.jobs[job.token] = job
         return job
@@ -150,21 +163,16 @@ class ProposalGateway:
                 entry = copy.deepcopy(tool)
                 if tool["name"] == "player_turn":
                     entry["description"] = (
-                        "Read current permitted game state, full popups and diplomatic terms, legal action choices, and turnReview. Re-observe after each command. Read confirmation consequences before acknowledging them."
+                        "Read current permitted game state. Start with tacticalReview and strategyReview, then inspect full popups, diplomatic terms, legal offers and turnReview. Re-observe after each command. Read confirmation consequences before acknowledging them."
                         if job.purpose == "gameplay"
                         else "Read the full permitted gameplay view only when a question needs map, city or other detail absent from chat_read. Routine negotiation uses chat_read, trade_read and trade_options."
                     )
                 tools.append(entry)
             elif tool["name"] == "player_command" and job.purpose == "gameplay":
                 entry = copy.deepcopy(tool)
-                schema = entry["inputSchema"]
-                schema["properties"] = {
-                    key: value for key, value in schema["properties"].items() if key not in BOOKKEEPING
-                }
-                schema["required"] = [key for key in schema.get("required", []) if key not in BOOKKEEPING]
-                schema["additionalProperties"] = False
+                entry["inputSchema"] = command_schema()
                 entry["description"] = (
-                    "Propose one offered game action. The service handles authentication, request identity, observation versions and retries. Re-read player_turn after each action and read full alerts and confirmations before acknowledging. END_TURN requires reading turnReview and a deferReason for intentionally idle mobile units. Supply gameplay choices only."
+                    "Propose one offered game action using the schema for its kind. Combat offers include a copyable command; add intent, never preview fields. CITY_ATTACK omits attackFrom; ATTACK requires it. Consequential choices require intent: a brief reason or an active plan ID; optional expectedOutcome and assumptions. The service records intent and handles request bookkeeping. Re-read player_turn after each action and read full alerts and confirmations before acknowledging. END_TURN requires reading turnReview and a deferReason for intentionally idle mobile units or deferred tactical concerns."
                 )
                 tools.append(entry)
 
@@ -175,13 +183,23 @@ class ProposalGateway:
                     "description": description,
                     "annotations": {
                         "readOnlyHint": name
-                        in {"history_read", "chat_read", "chat_history", "memory_read", "trade_options", "trade_read"},
+                        in {
+                            "history_read",
+                            "chat_read",
+                            "chat_history",
+                            "memory_read",
+                            "memory_search",
+                            "trade_options",
+                            "trade_read",
+                        },
                         "destructiveHint": False,
                         "openWorldHint": False,
                     },
                     "inputSchema": TOOL_MODELS[name].model_json_schema(),
                 }
             )
+            if name in TOOL_OUTPUT_MODELS:
+                tools[-1]["outputSchema"] = TOOL_OUTPUT_MODELS[name].model_json_schema()
 
         add(
             "trade_options",
@@ -229,11 +247,15 @@ class ProposalGateway:
         )
         add(
             "memory_read",
-            "Read selected private records. Observations are evidence at an earlier time; beliefs include uncertainty; player statements do not establish world facts.",
+            "Read current records by ID. Active records by default; includeRetired explicitly to inspect or replace retired records. Observations describe earlier facts; statements are claims, not world facts.",
+        )
+        add(
+            "memory_search",
+            "Search private records by type, subject, state or text, 20 per page. Active only by default. history=true explicitly reads reachable revisions as historical evidence, never active instructions. Use nextOffset for another page.",
         )
         add(
             "memory_update",
-            "Propose private notes; the service merges only records that have not changed since you read them. keys: SOUL, STRATEGY, economy, relationships/<civilization>, note/<name>. category: policy, plan, belief. body.text is concise prose. Beliefs require sources (message IDs read with chat_read, observation:game for the full player_turn result, or observation:communication for the ledger read with chat_read) and uncertainty=low/medium/high. Notes cannot replace authoritative observations or commitments.",
+            "Create, revise, replace or retire typed private plans, beliefs, notes and SOUL principles. Code assigns IDs and turn metadata. Read before changing existing records. Retirement removes active context, retaining history; it does not cancel a promise. Sources must have been read: record/message IDs, observation:game or observation:communication. Assumptions with source are ongoing dependencies; sources alone are historical evidence. Revise a plan after reviewing changed assumptions before reusing it for intent. Use subjects such as economy, Greece or entity handles for relevant context selection.",
         )
         return tools
 
@@ -274,7 +296,17 @@ class ProposalGateway:
                 reads = []
                 private = [key for key in conflict.keys if not key.startswith("observation:")]
                 if private:
-                    reads.append({"tool": "memory_read", "arguments": {"keys": private}})
+                    evidence = await self.io.call(self.memory.review_evidence, private)
+                    for offset in range(0, len(private + evidence), 20):
+                        reads.append(
+                            {
+                                "tool": "memory_read",
+                                "arguments": {
+                                    "ids": (private + evidence)[offset : offset + 20],
+                                    "includeRetired": True,
+                                },
+                            }
+                        )
                 if any(key.startswith("observation:") for key in conflict.keys):
                     reads.append({"tool": "player_turn", "arguments": {}})
                 if name in {"trade_offer", "trade_decide", "friendship_offer"}:
@@ -351,6 +383,7 @@ class ProposalGateway:
 
     async def _call(self, job: JobAccess, name: str, arguments: JsonObject, call_id: str) -> JsonObject:
         self.check(job)
+        arguments = copy.deepcopy(arguments)
         if not job.verified:
             identity = await job.connection.tool("player_communication", {"op": "state", "epoch": job.epoch})
             if identity.get("civilization") != self.memory.civilization or identity.get("epoch") != job.epoch:
@@ -358,8 +391,27 @@ class ProposalGateway:
             job.verified = True
         if BOOKKEEPING & arguments.keys():
             raise ValueError("Supply gameplay choices only; the service manages request bookkeeping.")
+        kind = arguments.get("kind")
+        needs_intent = (
+            name in REQUIRED_TOOLS or name == "player_command" and isinstance(kind, str) and kind in REQUIRED_COMMANDS
+        )
+        if needs_intent and not arguments.get("intent"):
+            return {
+                "error": "INTENT_REQUIRED",
+                "applied": False,
+                "recoverable": True,
+                "instruction": "Nothing was dispatched. Supply intent with a brief reason or an active plan ID.",
+            }
         if name in TOOL_MODELS:
             arguments = validate(TOOL_MODELS[name], arguments).model_dump(by_alias=True, exclude_unset=True)
+        if name == "player_command":
+            try:
+                arguments = command_arguments(arguments)
+            except ValidationError as error:
+                return command_error(arguments, error)
+        intent = arguments.pop("intent", None)
+        if intent is not None:
+            intent = validate(Intent, intent).model_dump()
         if name == "history_read":
             return public_result(await self.io.call(self.memory.history, arguments["turn"], arguments.get("offset", 0)))
         self.check(job)
@@ -391,9 +443,16 @@ class ProposalGateway:
                 # Persist the complete interface evidence returned to this job,
                 # including attributed social records and confirmed outcomes.
                 value = {**value, "communication": await self.read_social(job)}
+                add_combat_commands(value)
+                if "map" in value and "combatReports" in value:
+                    value = {"tacticalReview": tactical_review(value).model_dump(exclude_none=True), **value}
                 observed = await self.io.call(self.memory.observe_player, value, job.id)
                 job.memory["records"].update(observed)
                 job.observation = value
+                latest = await self.io.call(self.memory.snapshot, job.purpose)
+                value = {"strategyReview": strategy_review(latest["records"]).model_dump(), **value}
+            elif "error" not in value:
+                await self.io.call(self.memory.observe, name, value, job.id)
             return public_result(value)
         if name == "chat_read":
             social = await self.read_social(job)
@@ -410,18 +469,36 @@ class ProposalGateway:
             )
             return public_result(page)
         if name == "memory_read":
-            chosen = await self.io.call(self.memory.refresh_memory, job.id, arguments["keys"])
+            chosen = await self.io.call(
+                self.memory.refresh_memory,
+                job.id,
+                arguments["ids"],
+                include_retired=arguments.get("includeRetired", False),
+            )
             job.memory["records"].update(chosen)
             return public_result(
-                {key: {"category": record["category"], "body": record["body"]} for key, record in chosen.items()}
+                MemoryReadResult.model_validate(
+                    {"records": [public_record(key, record) for key, record in chosen.items()]}
+                ).model_dump(exclude_unset=True)
             )
+        if name == "memory_search":
+            result = await self.io.call(self.memory.search_memory, job.id, arguments)
+            if not arguments.get("history"):
+                chosen = await self.io.call(
+                    self.memory.refresh_memory,
+                    job.id,
+                    [r["id"] for r in result["records"]],
+                    include_retired=arguments.get("state") in {"all", "retired"},
+                )
+                job.memory["records"].update(chosen)
+            return public_result(MemorySearchResult.model_validate(result).model_dump(exclude_unset=True))
         if name == "memory_update":
-            result = await self.io.call(self.memory.patch, job.id, arguments["changes"])
-            accepted = [change["key"] for change in result["changes"] if change["accepted"]]
-            refreshed = await self.io.call(self.memory.refresh_memory, job.id, accepted)
+            result = await self.io.call(self.memory.patch, job.id, arguments["changes"], call_id)
+            accepted = [change["id"] for change in result["changes"] if change["accepted"]]
+            refreshed = await self.io.call(self.memory.refresh_memory, job.id, accepted, include_retired=True)
             job.memory["records"].update(refreshed)
             await self.io.call(self.memory.export, self.workspace)
-            return result
+            return MemoryUpdateResult.model_validate(result).model_dump(exclude_unset=True)
         if name == "player_command":
             if job.purpose != "gameplay":
                 raise StateConflict("GAMEPLAY_NOT_PERMITTED")
@@ -429,6 +506,14 @@ class ProposalGateway:
                 raise StateConflict("Read player_turn and its full content before proposing another action.")
             payload = {**arguments, "epoch": job.epoch, "revision": job.observation["revision"]}
             if arguments.get("kind") == "END_TURN":
+                tactics = job.observation.get("tacticalReview", {})
+                concerns = [
+                    key
+                    for key in ("cityBombardments", "civiliansNearHostiles", "injuredMilitaryNearHostiles")
+                    if tactics.get(key)
+                ]
+                if concerns and not arguments.get("deferReason", "").strip():
+                    return TacticalReviewRequired.model_validate({"concerns": concerns}).model_dump()
                 payload["reviewId"] = job.observation.get("turnReview", {}).get("id")
             if arguments.get("kind") in HOSTILE:
                 payload["socialVersion"] = job.social["peaceVersion"]
@@ -463,13 +548,11 @@ class ProposalGateway:
             transport = "player_communication"
         else:
             raise ValueError("TOOL_NOT_PERMITTED")
-        policy_keys = {"SOUL", "STRATEGY"}
-        if name in {"trade_offer", "trade_decide", "friendship_offer"}:
-            policy_keys.add("economy")
+        policy_keys = set()
         if transport == "player_command":
             policy_keys.add("observation:turn")
             if arguments.get("kind") in ECONOMIC:
-                policy_keys.update({"economy", "observation:economy"})
+                policy_keys.add("observation:economy")
             if arguments.get("kind") in {"SET_RESEARCH_QUEUE", "CHOOSE_FREE_TECHNOLOGY"}:
                 policy_keys.add("observation:research")
             if arguments.get("kind") in {"ADOPT_POLICY", "DISMISS_POLICY_PICKER"}:
@@ -482,14 +565,14 @@ class ProposalGateway:
         if name == "trade_decide":
             selected = job.trades[arguments["proposal"]]
             other = selected["partner"] if selected["author"] == self.memory.civilization else selected["author"]
-        if other:
-            policy_keys.add("relationships/" + str(other))
+        if other and "observation:diplomacy/" + str(other) in job.memory["records"]:
+            policy_keys.add("observation:diplomacy/" + str(other))
         dependencies = {key: job.memory["records"].get(key, {}).get("version", 0) for key in policy_keys}
         # State validation and persistence are short. Network execution is
         # serialized separately, never monopolizing the event inbox.
         async with self.dispatch:
             self.check(job)
-            request = await self.io.call(self.memory.queue, job.id, transport, payload, dependencies, call_id)
+            request = await self.io.call(self.memory.queue, job.id, transport, payload, dependencies, call_id, intent)
             if request["result"] is not None:
                 return public_result(json.loads(request["result"]))
             self.check(job)
@@ -501,6 +584,7 @@ class ProposalGateway:
                 # A new call ID cannot duplicate a possibly committed action.
                 # Recovery checks the durable request with the host first.
                 job.closed = True
+                await self.io.call(self.memory.uncertain, request["id"])
                 raise
             finally:
                 self.in_flight -= 1

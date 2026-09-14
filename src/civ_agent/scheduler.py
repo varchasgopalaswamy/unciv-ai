@@ -371,13 +371,16 @@ def player_prompt(civilization, game_turn=None):
         "Read player_capabilities and player_turn. Play one ACTIVE turn using offered actions. "
         "Follow scenario.instructions when present; otherwise your objective is to win the game. "
         "Choose a strategy using the enabled victory conditions in player_turn.rules. "
+        "Check tacticalReview: losses, nearby hostiles, exposed civilians and city bombardments matter even without idle units. "
         "Read and briefly note full popups, declaration warnings and diplomatic messages/terms before responding. "
         "Re-observe after commands; select entity handles exactly. The service handles credentials, request IDs, "
         "versions and retries. Read command receipts to verify actual outcomes. "
         "STALE_REVISION applied nothing: re-observe, reconsider, retry once if legal; stop on repetition. "
         + RECOVERY_INSTRUCTIONS
         + "Read turnReview before END_TURN; act with mobile units or give a deferReason for intentionally idling them. "
-        "Keep concise private strategy and plans with memory_update before ending. Chat replies arrive asynchronously; do not poll. "
+        "Keep separate defense, expansion and economy plans with measurable successCriteria and reviewAfterTurn; "
+        "review stalled progress and flagged goals, or explain deferral. "
+        "Use memory_update before ending. Chat replies arrive asynchronously; do not poll. "
         + "End when legal, including while awaiting an offer response. Stop after handoff, unsupported decisions, "
         "uncertain failures or a paused/finished game. "
     )

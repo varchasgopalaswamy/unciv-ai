@@ -2,6 +2,7 @@ import asyncio
 import copy
 
 import pytest
+from jsonschema import Draft202012Validator
 
 from civ_agent.civilization_state import CivilizationState, StateConflict
 from civ_agent.proposal_gateway import ProposalGateway
@@ -67,11 +68,12 @@ def test_gateway_owns_bookkeeping_and_retries_exact_call(tmp_path):
         host = Host()
         job = await gateway.open("planning", "gameplay", "g1", host, {})
         tool = (await gateway.tools(job))[0]
-        assert tool["inputSchema"]["required"] == ["kind"]
-        assert set(tool["inputSchema"]["properties"]) == {"kind", "target"}
+        validator = Draft202012Validator(tool["inputSchema"])
+        assert validator.is_valid({"kind": "MOVE_UNIT", "target": "unit1", "destination": {"x": 1, "y": 0}})
+        assert not validator.is_valid({"kind": "MOVE_UNIT", "target": "unit1"})
         view = await gateway.call(job, "player_turn", {}, "1")
         assert "revision" not in view and "epoch" not in view
-        action = {"kind": "MOVE_UNIT", "target": "unit1"}
+        action = {"kind": "MOVE_UNIT", "target": "unit1", "destination": {"x": 1, "y": 0}}
         result = await gateway.call(job, "player_command", action, "2")
         assert await gateway.call(job, "player_command", action, "2") == result
         assert len(host.executed) == 1 and host.executed[0]["revision"] == "rev1"
@@ -95,11 +97,30 @@ def test_commitment_change_rejects_attack_but_greeting_preserves_economic_job(tm
         job = await gateway.open("planning", "gameplay", "g1", host, {})
         await gateway.call(job, "player_turn", {}, "1")
         host.peace += 1
-        rejected = await gateway.call(job, "player_command", {"kind": "ATTACK", "target": "unit1"}, "2")
+        rejected = await gateway.call(
+            job,
+            "player_command",
+            {
+                "kind": "ATTACK",
+                "target": "unit1",
+                "destination": {"x": 1, "y": 0},
+                "attackFrom": {"x": 0, "y": 0},
+                "intent": {"reason": "Advance the test objective"},
+            },
+            "2",
+        )
         assert "error" in rejected and not host.executed
         memory.ingest("g1", [{"id": 1, "kind": "message", "body": {"text": "Hello"}}], 1)
         result = await gateway.call(
-            job, "player_command", {"kind": "QUEUE_CONSTRUCTION", "target": "city1", "selection": "Market"}, "3"
+            job,
+            "player_command",
+            {
+                "kind": "QUEUE_CONSTRUCTION",
+                "target": "city1",
+                "selection": "Market",
+                "intent": {"reason": "Advance the test objective"},
+            },
+            "3",
         )
         assert result["done"] and len(host.executed) == 1
         communication = await gateway.open("chat", "communication", "g1", host, {})
@@ -131,7 +152,11 @@ def test_slow_game_dispatch_does_not_block_mailbox_or_memory(tmp_path):
             return await original(name, args)
 
         host.tool = slow
-        task = asyncio.create_task(gateway.call(game, "player_command", {"kind": "MOVE_UNIT", "target": "unit1"}, "2"))
+        task = asyncio.create_task(
+            gateway.call(
+                game, "player_command", {"kind": "MOVE_UNIT", "target": "unit1", "destination": {"x": 1, "y": 0}}, "2"
+            )
+        )
         await began.wait()
         await asyncio.wait_for(
             io.call(memory.ingest, "g1", [{"id": 1, "kind": "message", "wake": True, "body": {"text": "Hello"}}], 1), 1
@@ -144,12 +169,13 @@ def test_slow_game_dispatch_does_not_block_mailbox_or_memory(tmp_path):
                 {
                     "changes": [
                         {
-                            "key": "relationships/Greece",
-                            "category": "belief",
-                            "body": {
-                                "text": "Friendly greeting; motives uncertain",
+                            "op": "create",
+                            "content": {
+                                "type": "belief",
+                                "claim": "Friendly greeting; motives uncertain",
                                 "sources": ["event:1"],
                                 "uncertainty": "high",
+                                "subjects": ["Greece"],
                             },
                         }
                     ]
@@ -181,7 +207,20 @@ def test_wrong_player_credential_cannot_supply_evidence_or_change_memory(tmp_pat
                 ("player_turn", {}),
                 (
                     "memory_update",
-                    {"changes": [{"key": "economy", "category": "plan", "body": {"text": "Spend Greek gold"}}]},
+                    {
+                        "changes": [
+                            {
+                                "op": "create",
+                                "content": {
+                                    "type": "plan",
+                                    "objective": "Spend Greek gold",
+                                    "approach": "Carry out the stated objective",
+                                    "successCriteria": "Objective achieved",
+                                    "subjects": ["economy"],
+                                },
+                            }
+                        ]
+                    },
                 ),
             ):
                 with pytest.raises(StateConflict, match="PLAYER_CREDENTIAL_MISMATCH"):
@@ -218,7 +257,14 @@ def test_game_and_chat_observations_preserve_the_full_ledger_shown_to_the_model(
             shown = await gateway.call(job, "player_turn", {}, "read")
             stored = memory.snapshot("gameplay")["records"]["observation:game"]["body"]
             assert stored["communication"]["offers"] == shown["communication"]["offers"] == ledger["offers"]
-            ledger["consents"].append({"proposal": "p1", "author": "Greece", "decision": "accept"})
+            ledger["consents"].append(
+                {
+                    "proposal": "p1",
+                    "author": "Greece",
+                    "decision": "accept",
+                    "intent": {"reason": "Advance the test objective"},
+                }
+            )
             await gateway.call(job, "chat_read", {}, "new-consent")
             await gateway.call(
                 job,
@@ -226,12 +272,13 @@ def test_game_and_chat_observations_preserve_the_full_ledger_shown_to_the_model(
                 {
                     "changes": [
                         {
-                            "key": "relationships/Greece",
-                            "category": "belief",
-                            "body": {
-                                "text": "Greece accepted the pact; future conduct is uncertain",
+                            "op": "create",
+                            "content": {
+                                "type": "belief",
+                                "claim": "Greece accepted the pact; future conduct is uncertain",
                                 "uncertainty": "medium",
                                 "sources": ["observation:game", "observation:communication"],
+                                "subjects": ["Greece"],
                             },
                         }
                     ]
@@ -241,7 +288,7 @@ def test_game_and_chat_observations_preserve_the_full_ledger_shown_to_the_model(
             records = memory.snapshot("gameplay")["records"]
             assert records["observation:game"]["body"]["communication"]["consents"] == []
             assert records["observation:communication"]["body"]["consents"] == ledger["consents"]
-            assert [r["key"] for r in records["relationships/Greece"]["body"]["_evidence"]] == [
+            assert [r["key"] for r in records["mem1"]["body"]["_evidence"]] == [
                 "observation:game",
                 "observation:communication",
             ]

@@ -220,7 +220,9 @@ class SchedulerServiceTest(unittest.TestCase):
             for turn in (0, 1):
                 archive = self.state_dir / "agents" / civilization / f"turn_{turn}"
                 self.assertTrue((archive / "commands.jsonl").exists())
-                self.assertIn("Settled and chose research.", (archive / "summary.md").read_text())
+                self.assertNotIn("Settled and chose research.", (archive / "summary.md").read_text())
+                self.assertIn("End turn", (archive / "summary.md").read_text())
+                self.assertEqual(json.loads((archive / "summary.json").read_text())["turn"], turn)
             self.assertFalse((self.state_dir / "agents" / civilization / "token.json").exists())
         settings = self.saved()["sessions"]
         for civilization in ("Rome", "Greece"):

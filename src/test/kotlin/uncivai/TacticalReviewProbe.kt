@@ -1,0 +1,154 @@
+package uncivai
+
+import com.unciv.json.json
+import com.unciv.logic.GameStarter
+import com.unciv.logic.civilization.PlayerType
+import com.unciv.logic.map.HexCoord
+import com.unciv.logic.map.MapParameters
+import com.unciv.logic.map.MapSize
+import com.unciv.logic.map.mapunit.MapUnit
+import com.unciv.logic.map.mapunit.UnitSettlement
+import com.unciv.models.metadata.BaseRuleset
+import com.unciv.models.metadata.GameParameters
+import com.unciv.models.metadata.GameSetupInfo
+import com.unciv.models.metadata.Player
+import uncivai.player.PlayerHost
+import uncivai.player.TilePosition
+import uncivai.player.TurnCommandKind
+import uncivai.player.TurnCommandReceipt
+import uncivai.player.TurnCommandRequest
+import java.nio.file.Path
+import java.util.UUID
+import kotlin.math.abs
+
+/** The France failure pattern: no army, a worker beside a Brute, and an unused city shot. */
+object TacticalReviewProbe {
+    @JvmStatic
+    fun main(args: Array<String>) {
+        val root = Path.of(args[0])
+        if (args[1] == "wrap") {
+            wrapping(root)
+            return
+        }
+        val checkpoint = root.resolve("checkpoint.json")
+        var workerId = -1
+        lateinit var shotRequest: TurnCommandRequest
+        lateinit var shotReceipt: TurnCommandReceipt
+        HeadlessRuntime.createVanillaGame(root.resolve("initial"), 412L).use { runtime ->
+            val game = runtime.game
+            for (tile in game.tileMap.tileList) {
+                tile.baseTerrain = "Grassland"
+                tile.setTerrainFeatures(emptyList())
+                tile.naturalWonder = null
+                tile.tileResource = null
+                tile.improvement = null
+                tile.setTerrainTransients()
+            }
+            for ((name, position) in listOf("Rome" to HexCoord(4, 0), "Greece" to HexCoord(0, 5), "France" to HexCoord(-5, -1))) {
+                val civ = game.getCivilization(name)
+                val settler = civ.units.getCivUnits().single { it.name == "Settler" }
+                place(settler, position)
+                checkNotNull(UnitSettlement.tryFoundCity(settler))
+                if (name == "France") civ.units.getCivUnits().toList().forEach { it.destroy() }
+            }
+            val france = game.getCivilization("France")
+            val barbarians = game.getCivilization("Barbarians")
+            val city = france.cities.single()
+            city.name = "Orleans"
+            val worker = checkNotNull(game.tileMap.placeUnitNearTile(HexCoord(-6, -2), "Worker", france))
+            place(worker, HexCoord(-6, -2))
+            workerId = worker.id
+            val brute = checkNotNull(game.tileMap.placeUnitNearTile(HexCoord(-6, -1), "Brute", barbarians))
+            place(brute, HexCoord(-6, -1))
+            brute.health = 32
+            // Enemy civilians do not threaten capture; an unseen military unit must not leak.
+            val captive = checkNotNull(game.tileMap.placeUnitNearTile(HexCoord(-6, -1), "Worker", barbarians))
+            place(captive, HexCoord(-6, -1))
+            france.cache.updateViewableTiles()
+            val remote = game.tileMap.tileList.first { !it.isVisible(france) && it.aerialDistanceTo(worker.currentTile) > 5 && it.isLand }
+            val hidden = checkNotNull(game.tileMap.placeUnitNearTile(remote.position, "Brute", barbarians))
+            remote.setExplored(france, true)
+            game.turns = 60
+            game.currentPlayer = "France"
+            game.currentPlayerCiv = france
+            runtime.executor.enableCheckpoints(checkpoint)
+            GameplayTestApi(runtime, root.resolve("tls"), mapOf("France" to "F".repeat(43))).use { api ->
+                api.acquire()
+                val token = checkNotNull(api.activate().playerToken)
+                val before = api.readAlerts(token)
+                val ours = before.map.units.single()
+                check(!ours.military && ours.nearbyHostiles.single().unit.name == "Brute")
+                check(ours.nearbyHostiles.single().distance == 1)
+                check(before.map.tiles.flatMap { it.units }.any { !it.military && it.atWar })
+                check(before.map.tiles.none { tile -> tile.position == TilePosition(hidden.currentTile.position.x, hidden.currentTile.position.y) && tile.units.isNotEmpty() })
+                val offered = before.cities.single().attacks.single { it.destination == TilePosition(-6, -1) }
+                val nativeBefore = json().toJson(game)
+                shotRequest = TurnCommandRequest(UUID.randomUUID().toString(), before.epoch, before.revision, TurnCommandKind.CITY_ATTACK, before.cities.single().handle, destination = offered.destination)
+                api.reject(token, shotRequest.copy(requestId = UUID.randomUUID().toString(), attackFrom = offered.attackFrom), "INVALID_ARGUMENT")
+                check(json().toJson(game) == nativeBefore)
+                shotReceipt = api.execute(token, shotRequest)
+                val combat = checkNotNull(shotReceipt.combat)
+                check(combat.attacked && combat.damageToDefender > 0)
+                check(brute.health < 32 || brute.isDestroyed)
+                check(api.execute(token, shotRequest) == shotReceipt)
+                val after = api.turn(token)
+                check(after.cities.single().attacks.isEmpty())
+                val move = after.map.units.single().moves.single { it.destination == TilePosition(-5, -1) }
+                api.execute(token, TurnCommandRequest(UUID.randomUUID().toString(), after.epoch, after.revision, TurnCommandKind.MOVE_UNIT, ours.handle, destination = move.destination))
+                check(worker.civ === france && worker.currentTile === city.getCenterTile())
+                // End through the barbarian turn, then verify protection in the native state.
+                api.finishTurn(token)
+                check(game.turns == 61 && worker.civ === france && worker.currentTile === city.getCenterTile())
+            }
+        }
+        HeadlessRuntime.loadCheckpoint(checkpoint, root.resolve("restored")).use { runtime ->
+            val france = runtime.game.getCivilization("France")
+            val worker = france.units.getCivUnits().single { it.id == workerId }
+            check(worker.currentTile === france.cities.single().getCenterTile())
+            check(PlayerHost(runtime).bindPlayer("France").completedReceipt(shotRequest) == shotReceipt)
+        }
+    }
+
+    private fun wrapping(root: Path) {
+        HeadlessRuntime.create(root.resolve("wrap")) {
+            val parameters = GameParameters().apply {
+                baseRuleset = BaseRuleset.Civ_V_Vanilla.fullName
+                numberOfCityStates = 0
+                players = arrayListOf(Player("Rome", PlayerType.Human), Player("Greece", PlayerType.Human))
+            }
+            val map = MapParameters().apply {
+                baseRuleset = parameters.baseRuleset
+                mapSize = MapSize.Tiny
+                worldWrap = true
+                seed = 412L
+            }
+            GameStarter.startNewGame(GameSetupInfo(parameters, map))
+        }.use { runtime ->
+            val game = runtime.game
+            val rome = game.getCivilization("Rome")
+            val barbarians = game.getCivilization("Barbarians")
+            val edge = game.tileMap.tileList.first { tile -> tile.neighbors.any { abs(it.position.x - tile.position.x) > 2 } }
+            val across = edge.neighbors.first { abs(it.position.x - edge.position.x) > 2 }
+            for (tile in listOf(edge, across)) {
+                tile.baseTerrain = "Grassland"
+                tile.setTerrainFeatures(emptyList())
+                tile.setTerrainTransients()
+            }
+            val settler = rome.units.getCivUnits().single { it.name == "Settler" }
+            place(settler, edge.position)
+            val brute = checkNotNull(game.tileMap.placeUnitNearTile(across.position, "Brute", barbarians))
+            place(brute, across.position)
+            rome.cache.updateViewableTiles()
+            val snapshot = PlayerHost(runtime).bindPlayer("Rome").turn()
+            val seen = snapshot.map.units.single { it.name == "Settler" }.nearbyHostiles.single()
+            check(seen.distance == 1 && seen.position == TilePosition(across.position.x, across.position.y))
+        }
+    }
+
+    private fun place(unit: MapUnit, position: HexCoord) {
+        unit.removeFromTile()
+        unit.putInTile(unit.civ.gameInfo.tileMap[position])
+        unit.currentMovement = unit.getMaxMovement().toFloat()
+        unit.updateVisibleTiles()
+    }
+}

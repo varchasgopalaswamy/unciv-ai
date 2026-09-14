@@ -31,7 +31,7 @@ civilization's service to be running; it no longer connects the model directly
 to the host.
 
 Tools include `chat_read`, `chat_history`, `chat_send`, `commitment_offer`,
-`commitment_decide`, `memory_read`, `memory_update` and `history_read`, alongside
+`commitment_decide`, `memory_read`, `memory_search`, `memory_update` and `history_read`, alongside
 the existing player observations and validated gameplay commands. The
 [economic trade tools](Asynchronous-trade.md) allow both job types to inspect,
 propose and decide exact binding terms. Only the current player opens a formal
@@ -100,7 +100,7 @@ Acceptance displays the exact terms for human confirmation. Run each command wit
 `agent-services/Rome/civilization/memory.sqlite3` is authoritative private memory.
 Events, immutable record revisions, pending requests, receipts and jobs are
 transactional. The service generates `agents/Rome/SOUL.md`, `STRATEGY.md`,
-`economy.md`, relationship files and a memory index from accepted notes. Editing
+`economy.md`, relationship files and a memory index from active typed records. Editing
 these projections does not change canonical memory; use `memory_update`.
 
 Observations retain their turn and source. Beliefs require observed sources and
@@ -108,14 +108,21 @@ uncertainty, with the service pinning evidence revisions. Private plans and
 authenticated player statements remain distinct. “My army is nowhere near your
 border” records a claim by its author, without erasing an earlier unit observation.
 
-Fresh jobs receive selected core notes and new events, rather than every prior
-turn summary. Older evidence is available through memory/history tools.
-`agents/Rome/turn_0/summary.md` remains a concise account of turn 0;
+Fresh jobs receive selected active records and new events, with a default 12,000-character
+private-memory allowance, rather than every prior turn summary. Older evidence is available through memory/history tools.
+`agents/Rome/turn_0/summary.json` stores typed decisions and outcomes; `summary.md`
+renders a concise account of turn 0 from those records, independently of final model prose;
 `commands.jsonl` records detailed calls and controller-confirmed receipts, and
 `receipts.jsonl` contains the exact persisted requests and responses. Communication
 history is under `agents/Rome/communication/`, with permitted incoming events in
 `chat.jsonl`. Public Codex reasoning summaries are recorded, not hidden reasoning.
 The supervisor mirrors gameplay history under `runner/history/`.
+
+Memory can be created, revised, replaced and retired. Consequential actions require
+intent with a reason or an active, reviewed plan. Retirement removes current context
+and Markdown while preserving revision history. See [structured memory](Structured-memory.md)
+for schemas, examples and the [approved plan](Structured-memory-plan.md). This format
+requires a fresh match; the previous freeform store is rejected.
 
 ## Interruption and emergency restore
 

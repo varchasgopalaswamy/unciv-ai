@@ -311,10 +311,19 @@ class EventHistory:
                 records.append(clean(record, self.secrets))
         except (ValueError, UnicodeError):
             raise HistoryError("Player command archive is not valid JSONL.") from None
+        from civ_agent.memory_records import TurnSummary
+
+        try:
+            data = TurnSummary.model_validate(archive["summaryData"]).model_dump(exclude_none=True)
+            if data.get("turn") != archive["gameTurn"]:
+                raise ValueError()
+        except (KeyError, ValueError):
+            raise HistoryError("Invalid structured turn summary") from None
         commands = "".join(json.dumps(record, ensure_ascii=True, separators=(",", ":")) + "\n" for record in records)
         summary = clean(archive["summary"], self.secrets)
         atomic_text(self.turn_directory / "commands.jsonl", commands)
         atomic_text(self.turn_directory / "summary.md", summary)
+        atomic_text(self.turn_directory / "summary.json", json.dumps(clean(data, self.secrets), indent=2) + "\n")
 
     @property
     def cursor(self):

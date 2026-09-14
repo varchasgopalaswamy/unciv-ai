@@ -14,6 +14,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
+from civ_agent.memory_history import action_text, summary_markdown
+from civ_agent.memory_records import TurnSummary
 from civ_agent.protocol import JsonObject
 from civ_agent.tls import private_directory, regular_file, write_private, write_private_json
 
@@ -262,7 +264,18 @@ class TurnArchive:
         except (ValueError, UnicodeError):
             raise TurnArchiveError("Turn archive event file is corrupt.") from None
 
-    def update(self, game_turn, activation_id, events, *, phase=None, handoff=None, aborted=False, terminal=False):
+    def update(
+        self,
+        game_turn,
+        activation_id,
+        events,
+        *,
+        phase=None,
+        handoff=None,
+        aborted=False,
+        terminal=False,
+        structured_summary=None,
+    ):
         """Replace one attempt from its complete trusted event log, then regenerate artifacts.
 
         ``handoff`` is the scheduler's confirmed committed counter, never a model
@@ -327,6 +340,14 @@ class TurnArchive:
             write_private(turn_path / f"attempt_{attempt['attempt']}.jsonl", _jsonl(normalized).encode())
             write_private_json(turn_path / "attempts.json", attempts)
             artifacts = self._render(game_turn, turn_path, attempts)
+            if structured_summary is not None:
+                data = TurnSummary.model_validate(_sanitize(structured_summary, self.secrets)).model_dump(
+                    exclude_none=True
+                )
+                if data["turn"] != game_turn:
+                    raise TurnArchiveError("Summary turn does not match archive")
+                artifacts["summaryData"] = data
+                artifacts["summary"] = summary_markdown(data)
             attempt_artifacts = self._render(game_turn, turn_path, [attempt], include_aborted=True)
             attempt_metadata = {
                 **self.binding,
@@ -346,7 +367,10 @@ class TurnArchive:
                 _directory(root)
                 write_private(root / "commands.jsonl", artifacts["commands"].encode())
                 write_private(root / "summary.md", artifacts["summary"].encode())
-                metadata = {key: value for key, value in artifacts.items() if key not in {"commands", "summary"}}
+                write_private_json(root / "summary.json", artifacts["summaryData"])
+                metadata = {
+                    key: value for key, value in artifacts.items() if key not in {"commands", "summary", "summaryData"}
+                }
                 if root != turn_path:
                     metadata["attempts"] = [
                         {key: value for key, value in item.items() if key != "handoff"}
@@ -400,6 +424,7 @@ class TurnArchive:
                 else f"{aborted_count} failed attempt(s) were rolled back; debugging details are in attempts/.\n"
             )
         dense = []
+        structured = TurnSummary(turn=game_turn).model_dump()
         for attempt in attempts:
             if attempt.get("aborted") and not include_aborted:
                 continue
@@ -452,6 +477,17 @@ class TurnArchive:
                     outcome = "failed: " + failure if failure else "uncertain: no matching successful host receipt"
                 category = "failed" if outcome.startswith("failed:") else outcome
                 outcomes[(category, command_kind)] += 1
+                if outcome == "host confirmed success":
+                    structured["actions"].append(
+                        {
+                            "decision": f"action{len(structured['actions']) + 1}",
+                            "action": action_text(arguments, receipt),
+                            "reason": arguments.get("intent", {}).get("reason", ""),
+                            "outcome": "confirmed",
+                            "command": arguments,
+                            "receipt": receipt,
+                        }
+                    )
                 if outcome == "host confirmed success" and detail and len(examples) < 6:
                     examples.append(label)
                 if outcome.startswith(("failed:", "uncertain:")) and len(failures) < 3:
@@ -500,33 +536,10 @@ class TurnArchive:
             "gameTurn": game_turn,
             "turn": game_turn,
             "commands": _jsonl(dense),
-            "summary": "\n".join(summary) if include_aborted else self._summary(game_turn, turn_path, attempts),
+            "summary": "\n".join(summary) if include_aborted else summary_markdown(structured),
+            "summaryData": structured,
             "attempts": public_attempts,
         }
-
-    def _summary(self, game_turn, turn_path, attempts):
-        """Player memory contains gameplay notes; execution diagnostics stay in attempt files."""
-        heading = f"# Turn {game_turn}\n"
-        latest = next((attempt for attempt in reversed(attempts) if not attempt.get("aborted")), None)
-        if latest is None:
-            return heading
-        messages = [
-            event["data"]
-            for event in self._read_events(turn_path, latest)
-            if event["kind"] == "assistant_message"
-            and not event.get("incompleteChunk")
-            and isinstance(event["data"].get("text"), str)
-            and event["data"]["text"].strip()
-        ]
-        if not messages:
-            return heading
-        finals = [message for message in messages if message.get("phase") == "final_answer"]
-        report = (finals or messages)[-1]["text"].strip()
-        words = list(re.finditer(r"\S+", report))
-        limit = min(words[200].start() if len(words) > 200 else len(report), 2400)
-        if limit < len(report):
-            report = report[:limit].rstrip() + "…"
-        return heading + "\n" + report + "\n"
 
     @staticmethod
     def _quote(text, limit=200):

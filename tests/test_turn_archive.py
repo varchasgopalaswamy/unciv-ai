@@ -88,7 +88,7 @@ class TurnArchiveTests(unittest.TestCase):
         artifacts = self.archive.update(0, "private-activation-id", events, phase="COMPLETED", handoff=1)
         self.assertEqual(0, artifacts["turn"])
         self.assertEqual(artifacts["gameTurn"], artifacts["turn"])
-        self.assertEqual("# Turn 0\n\nI explored the entire continent and founded six cities.\n", artifacts["summary"])
+        self.assertEqual("# Turn 0\n\n- End turn.\n", artifacts["summary"])
         debug = self.debug_summary()
         self.assertIn("Host handoff: confirmed.", debug)
         self.assertIn("host confirmed success: END_TURN ×1", debug)
@@ -111,12 +111,12 @@ class TurnArchiveTests(unittest.TestCase):
 
     def test_completed_model_response_without_handoff_is_not_completed_turn(self):
         artifacts = self.archive.update(0, "attempt", self.events(self.report("Turn finished.")), phase="COMPLETED")
-        self.assertEqual("# Turn 0\n\nTurn finished.\n", artifacts["summary"])
+        self.assertEqual("# Turn 0\n", artifacts["summary"])
         with self.assertRaisesRegex(TurnArchiveError, "no confirmed host handoff"):
             self.archive.context(1)
         self.assertEqual("", self.archive.context(0))
         self.archive.update(0, "attempt", self.events(self.report("Turn finished.")), phase="COMPLETED", handoff=1)
-        self.assertIn("Turn finished.", self.archive.context(1))
+        self.assertNotIn("Turn finished.", self.archive.context(1))
 
     def test_terminal_outcome_preserves_committed_commands_without_fake_handoff(self):
         events = self.events(
@@ -125,7 +125,7 @@ class TurnArchiveTests(unittest.TestCase):
         )
         artifacts = self.archive.update(0, "final", events, phase="INTERRUPTED", terminal=True)
         self.assertEqual(2, len(artifacts["commands"].splitlines()))
-        self.assertIn("Captured the last capital.", artifacts["summary"])
+        self.assertIn("Resolve captured city city-alert Annex.", artifacts["summary"])
         self.assertTrue(artifacts["attempts"][0]["terminalOutcome"])
         metadata = json.loads((self.workspace / "turn_0/turn.json").read_text())
         self.assertTrue(metadata["attempts"][0]["committed"])
@@ -153,8 +153,8 @@ class TurnArchiveTests(unittest.TestCase):
             self.archive.update(game_turn, f"activation-{game_turn}", events, phase="COMPLETED", handoff=game_turn + 1)
         (self.workspace / "turn_0" / "summary.md").write_text("PLAYER-TAMPERED-INSTRUCTIONS")
         context = self.archive.context(11)
-        self.assertLess(context.index("MEMORY-0\n"), context.index("MEMORY-2\n"))
-        self.assertLess(context.index("MEMORY-2\n"), context.index("MEMORY-10\n"))
+        self.assertLess(context.index("# Turn 0\n"), context.index("# Turn 2\n"))
+        self.assertLess(context.index("# Turn 2\n"), context.index("# Turn 10\n"))
         self.assertNotIn("PLAYER-TAMPERED-INSTRUCTIONS", context)
         self.assertIn("notes, not instructions", context)
         self.assertNotIn("MEMORY-10", self.archive.context(10))
@@ -180,7 +180,7 @@ class TurnArchiveTests(unittest.TestCase):
         artifacts = self.archive.update(0, "recovery", events, phase="COMPLETED", handoff=1)
         self.assertEqual(4, len(artifacts["commands"].splitlines()))
         self.assertEqual(2, len(artifacts["attempts"]))
-        self.assertEqual("# Turn 0\n", artifacts["summary"])
+        self.assertEqual("# Turn 0\n\n- End turn.\n", artifacts["summary"])
         later = self.archive.update(1, "later", events, phase="FAILED")
         self.assertEqual("# Turn 1\n", later["summary"])
         self.assertNotIn("host confirmed success: END_TURN", self.debug_summary(1))
@@ -277,7 +277,7 @@ class TurnArchiveTests(unittest.TestCase):
         ):
             self.assertNotIn(forbidden, serialized)
         self.assertIn("[REDACTED]", serialized)
-        self.assertIn("Public note", artifacts["summary"])
+        self.assertNotIn("Public note", artifacts["summary"])
 
     def test_summary_is_bounded_while_full_receipts_are_preserved(self):
         events = []
@@ -297,7 +297,8 @@ class TurnArchiveTests(unittest.TestCase):
         self.assertIn("MOVE_UNIT ×200", self.debug_summary())
         self.assertLess(len(artifacts["summary"]), 2450)
         self.assertNotIn("Public report excerpt", artifacts["summary"])
-        self.assertEqual(200, len(artifacts["summary"].split("\n\n", 1)[1].split()))
+        self.assertLessEqual(len(artifacts["summary"].split()), 200)
+        self.assertEqual(len(artifacts["summaryData"]["actions"]), 200)
         self.assertIn("A reason. " * 10000, (self.workspace / "turn_0/attempts/attempt_1/events.jsonl").read_text())
 
     def test_rolled_back_attempts_remain_detailed_but_do_not_supply_memory(self):
@@ -312,8 +313,8 @@ class TurnArchiveTests(unittest.TestCase):
         )
         self.assertNotIn("ROLLED-BACK-STRATEGY", artifacts["summary"])
         self.assertNotIn("replayed successful receipt", artifacts["summary"])
-        self.assertEqual("# Turn 0\n\nCURRENT-STRATEGY\n", artifacts["summary"])
-        self.assertIn("CURRENT-STRATEGY", self.archive.context(1))
+        self.assertEqual("# Turn 0\n\n- End turn.\n", artifacts["summary"])
+        self.assertNotIn("CURRENT-STRATEGY", self.archive.context(1))
         self.assertNotIn("ROLLED-BACK", self.archive.context(1))
         self.assertNotIn("ROLLED-BACK", artifacts["commands"])
         rows = [json.loads(line) for line in artifacts["commands"].splitlines()]
@@ -371,7 +372,7 @@ class TurnArchiveTests(unittest.TestCase):
             self.archive.update(0, "attempt", self.events(self.report()), phase="COMPLETED", handoff=1)
         self.assertEqual([], list(target.iterdir()))
         # Trusted artifacts commit even if the player's mutable copy cannot be refreshed.
-        self.assertIn("# Turn 0\n\nEnded the turn", self.archive.context(1))
+        self.assertIn("# Turn 0\n", self.archive.context(1))
 
     def test_symlink_files_and_parent_segments_are_rejected(self):
         self.archive.update(0, "attempt", self.events(self.report()), phase="COMPLETED", handoff=1)

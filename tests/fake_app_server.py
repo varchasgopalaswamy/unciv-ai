@@ -24,11 +24,15 @@ async def exercise_trade(civilization, communication, view, call):
     peace = (
         [{"type": "Treaty", "name": "Peace Treaty", "amount": 1, "duration": 10}] if view.get("testPeaceTrade") else []
     )
-    counter = {"proposal": "d1", "partner": "Rome", "give": peace + [gpt, gold], "receive": peace + [silk]}
+    counter = {
+        "proposal": "d1",
+        "partner": "Rome",
+        "give": peace + [gpt, gold],
+        "receive": peace + [silk],
+        "intent": {"reason": "Advance the test objective"},
+    }
     if communication:
-        await call(
-            "memory_read", {"keys": ["economy", "relationships/" + ("Greece" if civilization == "Rome" else "Rome")]}
-        )
+        await call("memory_search", {"type": "plan"})
         await call("trade_read", {"proposal": "d1"})
         if civilization == "Greece":
             await call(
@@ -36,9 +40,14 @@ async def exercise_trade(civilization, communication, view, call):
                 {
                     "changes": [
                         {
-                            "key": "relationships/Rome",
-                            "category": "plan",
-                            "body": {"text": "Counteroffer prepared; gameplay resumes after settlement."},
+                            "op": "create",
+                            "content": {
+                                "type": "plan",
+                                "objective": "Counteroffer prepared; gameplay resumes after settlement.",
+                                "approach": "Carry out the stated objective",
+                                "successCriteria": "Objective achieved",
+                                "subjects": ["Rome"],
+                            },
                         }
                     ]
                 },
@@ -46,13 +55,22 @@ async def exercise_trade(civilization, communication, view, call):
             await call("trade_offer", counter)
             await call("chat_send", {"to": "Rome", "text": "Counteroffer prepared"})
         else:
-            accepted = await call("trade_decide", {"proposal": "d1", "decision": "accept"})
+            accepted = await call(
+                "trade_decide",
+                {"proposal": "d1", "decision": "accept", "intent": {"reason": "Advance the test objective"}},
+            )
             assert accepted["trade"]["status"] == "ENACTED"
         return {"behavior": "complete"}
     if view["turn"] == 0:
         if civilization == "Rome":
             settled = await call(
-                "trade_offer", {"partner": "Greece", "give": peace + [silk], "receive": peace + [{**gpt, "amount": 4}]}
+                "trade_offer",
+                {
+                    "partner": "Greece",
+                    "give": peace + [silk],
+                    "receive": peace + [{**gpt, "amount": 4}],
+                    "intent": {"reason": "Advance the test objective"},
+                },
             )
             assert settled["trade"]["status"] == "ENACTED"
         else:
