@@ -40,12 +40,12 @@ class ConcurrentTradeHost:
             if civ == "Greece" and gameplay:
                 assert self.enacted is not None
             return {
-                "testConcurrentTrade": True,
-                "testPeaceTrade": self.peace,
+                "scenario": {"name": "CONCURRENT_TRADE_TEST", "peace": self.peace},
                 "civilization": civ,
                 "epoch": host.epoch,
                 "turn": host.handoff // 2,
                 "phase": host.phase,
+                "canEndTurn": True,
                 "revision": "rev1",
                 "turnReview": {"id": "review1"},
             }
@@ -64,12 +64,13 @@ class ConcurrentTradeHost:
             return {"negotiation": {"active": self.trade is not None and self.trade["status"] == "PENDING"}}
         if op == "state":
             return {
-                "testConcurrentTrade": True,
-                "testPeaceTrade": self.peace,
                 "epoch": host.epoch,
                 "civilization": civ,
                 "peaceVersion": 0,
-                "context": {"turn": host.handoff // 2, "scenario": {"name": "CONCURRENT_TRADE_TEST"}},
+                "context": {
+                    "turn": host.handoff // 2,
+                    "scenario": {"name": "CONCURRENT_TRADE_TEST", "peace": self.peace},
+                },
                 "offers": [],
                 "consents": [],
                 "outcomes": [],

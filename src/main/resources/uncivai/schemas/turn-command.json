@@ -34,6 +34,7 @@
         "CHOOSE_FREE_GREAT_PERSON",
         "RENAME_CITY",
         "ACKNOWLEDGE_ALERT",
+        "DISMISS_NOTIFICATIONS",
         "RESPOND_FRIENDSHIP",
         "DECLARE_WAR",
         "MOVE_UNIT",
@@ -263,6 +264,13 @@
         }
       ],
       "description": "Code-owned version of social commitments used to check planning assumptions."
+    },
+    "targets": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "\\S" },
+      "maxItems": 256,
+      "uniqueItems": true,
+      "description": "Only DISMISS_NOTIFICATIONS: nonempty list of notice handles whose full text was read in the current player_turn."
     },
     "queue": {
       "type": "array",

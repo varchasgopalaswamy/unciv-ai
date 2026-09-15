@@ -143,6 +143,11 @@ proximity using engine map distances; the Python gateway adds combat command
 arguments, review prompts and explicit tactical deferral. See
 [tactical and strategic review](Tactical-review.md) for behavior and regression coverage.
 
+`observations.py` defines Pydantic overview and detail schemas. The gateway returns
+the compact overview, then serves targeted reads from its permitted snapshot cache.
+Only returned projections count as delivered evidence. See
+[compact observations](Compact-observations.md) for query and confirmation behavior.
+
 Library references: [Pydantic strict validation](https://pydantic.dev/docs/validation/latest/concepts/strict_mode/),
 [MCP client transports](https://github.com/modelcontextprotocol/python-sdk/blob/main/docs/client/transports.md),
 and [cryptography certificate verification](https://cryptography.io/en/stable/x509/verification/).

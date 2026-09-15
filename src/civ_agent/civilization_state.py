@@ -16,6 +16,7 @@ from civ_agent.memory_exports import export_files, projection_files
 from civ_agent.memory_history import action_record, build_summary, summary_markdown
 from civ_agent.memory_records import MEMORY_TYPES, HistoryReadResult, Intent, MemoryUpdate, public_record
 from civ_agent.memory_store import REACHABLE, RecordStore, encode, select_context, semantic
+from civ_agent.observations import DetailQuery, project_detail
 from civ_agent.protocol import JsonObject
 from civ_agent.schemas import validate
 from civ_agent.tls import private_directory, write_private_json
@@ -240,7 +241,7 @@ class CivilizationState:
                     subjects.extend(offer.get("participants", []))
         store.flag(keys=[key], subjects=subjects, reason=f"Changed {key}; reconsider assumptions")
 
-    def observe_player(self, body: JsonObject, job: str):
+    def observe_player(self, body: JsonObject, job: str, compact: JsonObject | None = None):
         """Independent evidence versions; the host still validates the full view too."""
         scopes = {
             "game": body,
@@ -254,6 +255,8 @@ class CivilizationState:
         }
         if "tacticalReview" in body:
             scopes["tactics"] = body["tacticalReview"]
+        if compact is not None:
+            scopes["overview"] = compact
         for kind, entities in (("unit", body.get("map", {}).get("units", [])), ("city", body.get("cities", []))):
             for entity in entities:
                 scopes[f"{kind}/{entity['handle']}"] = {"turn": body.get("turn"), "entity": entity}
@@ -266,12 +269,18 @@ class CivilizationState:
             previous_records = self._records(db)
             for key, previous in previous_records.items():
                 scope = key.removeprefix("observation:")
+                if scope.startswith("detail/"):
+                    scopes[scope] = project_detail(body, DetailQuery.model_validate(previous["body"]["query"]))
                 if scope.startswith(("unit/", "city/")) and scope not in scopes and not previous["body"].get("absent"):
                     scopes[scope] = {"turn": body.get("turn"), "absent": True}
             observed = {}
+            # A cached host read can invalidate assumptions without claiming the
+            # model has read all of its entity details or refreshed projections.
+            delivered = set(scopes) if compact is None else {"overview", "turn", "tactics", "policy"}
             for key, value in scopes.items():
+                delivered_job = job if key in delivered else None
                 key = "observation:" + key
-                version = self._record(db, key, "observation", value, job)
+                version = self._record(db, key, "observation", value, delivered_job)
                 self._changed_observation(db, key, value, previous_records.get(key))
                 observed[key] = {"version": version, "category": "observation", "body": value}
             tactics = body.get("tacticalReview")
@@ -297,7 +306,10 @@ class CivilizationState:
                         keys=["observation:tactics"],
                         reason="Owned city count fell: reconsider territorial and economic plans",
                     )
-            self._deliver(snapshot, observed)
+            self._deliver(
+                snapshot,
+                {key: value for key, value in observed.items() if key.removeprefix("observation:") in delivered},
+            )
             db.execute("UPDATE jobs SET snapshot=? WHERE id=?", (encode(snapshot), job))
             return observed
 

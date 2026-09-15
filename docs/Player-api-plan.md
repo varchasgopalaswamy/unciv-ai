@@ -11,6 +11,16 @@ concurrent computation behind serialized approval, and preserves confirmed work
 on normal recovery. Whole-match rollback is an explicit operator action using
 coordinated round checkpoints. See [current operation](Chat-memory-and-recovery.md).
 
+The [compact observation slice](Compact-observations.md) provides a turn overview,
+on-demand detail queries with explicit evidence delivery, and victory-screen
+milestone progress. Targeted reads reuse the current permitted snapshot. Full
+blocking-popup content remains mandatory. Long-game strategic reliability and
+full information/action parity remain separate acceptance work.
+
+[Ordinary notifications](Ordinary-notifications.md) now appear in full in the
+overview and support validated batch dismissal, durable receipts and rollback.
+Agents decide whether messages warrant changes to private assessments or plans.
+
 ## Contract
 
 Players receive every ordinary Unciv action and information surface as structured

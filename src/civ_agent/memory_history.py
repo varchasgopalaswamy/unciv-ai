@@ -12,6 +12,8 @@ def action_text(command, receipt, settlement=None):
     selection = command.get("selection") or ""
     if kind == "QUEUE_CONSTRUCTION":
         return f"Queued {selection} in {target}".strip()
+    if kind == "DISMISS_NOTIFICATIONS":
+        return f"Dismissed {len(command['targets'])} ordinary notifications"
     if kind in {"trade_offer", "trade_decide", "friendship_offer"}:
         result = settlement or receipt or {}
         trade = result.get("trade", {})

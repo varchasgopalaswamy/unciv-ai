@@ -112,6 +112,8 @@ internal fun confirmedAction(request: TurnCommandRequest, before: PlayerTurnSnap
             "Read and acknowledged ${alert.content!!.title}."
         }
 
+        TurnCommandKind.DISMISS_NOTIFICATIONS -> "Dismissed ${request.targets.size} ordinary notifications."
+
         TurnCommandKind.SET_RESEARCH_QUEUE -> "Research queue: ${after.researchQueue.joinToString(", ")}."
 
         TurnCommandKind.QUEUE_CONSTRUCTION, TurnCommandKind.REMOVE_CONSTRUCTION, TurnCommandKind.MOVE_CONSTRUCTION -> {

@@ -143,6 +143,8 @@ class FakeHost:
                                     result = {"granted": True}
                             elif name == "player_turn":
                                 result = {
+                                    "turn": owner.status()["turn"],
+                                    "canEndTurn": owner.phase == "ACTIVE",
                                     "epoch": owner.epoch,
                                     "revision": "rev1",
                                     "turnReview": {"id": "review1"},
@@ -889,7 +891,7 @@ class SchedulerTest(unittest.TestCase):
         self.assertIn("historical evidence and plans, not current state", prompt)
         self.assertIn("Follow scenario.instructions", prompt)
         self.assertIn("otherwise your objective is to win the game", prompt)
-        self.assertIn("player_turn.rules", prompt)
+        self.assertIn("victory_progress", prompt)
         self.assertNotIn("CLOSE_START_DIPLOMACY", prompt)
         self.assertNotIn("requestId", prompt)
         self.assertNotIn("t11a1", player_prompt("Rome", game_turn=11))

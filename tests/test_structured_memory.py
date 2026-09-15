@@ -321,7 +321,8 @@ def test_intent_required_and_plan_retirement_is_checked_before_dispatch(tmp_path
         try:
             game = await gateway.open("game", "gameplay", "g1", host, {}, 0)
             await gateway.call(game, "player_turn", {}, "observe")
-            action = {"kind": "QUEUE_CONSTRUCTION", "target": "c1", "selection": "Granary"}
+            await gateway.call(game, "construction_details", {"target": "city1", "names": ["Granary"]}, "inspect")
+            action = {"kind": "QUEUE_CONSTRUCTION", "target": "city1", "selection": "Granary"}
             missing = await gateway.call(game, "player_command", action, "missing")
             assert missing["error"] == "INTENT_REQUIRED" and missing["applied"] is False
             assert not host.executed and not memory.pending()

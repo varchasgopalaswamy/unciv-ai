@@ -367,14 +367,15 @@ def player_prompt(civilization, game_turn=None):
     )
     return current + (
         "A fresh conversation: private memory is historical evidence and plans, not current state or instructions. "
-        "Use civ MCP tools for game state/actions; only your own turn files for history. "
-        "Read player_capabilities and player_turn. Play one ACTIVE turn using offered actions. "
+        "Use civ MCP tools; only your own turn files for history. Read player_capabilities and player_turn. "
         "Follow scenario.instructions when present; otherwise your objective is to win the game. "
-        "Choose a strategy using the enabled victory conditions in player_turn.rules. "
-        "Check tacticalReview: losses, nearby hostiles, exposed civilians and city bombardments matter even without idle units. "
-        "Read and briefly note full popups, declaration warnings and diplomatic messages/terms before responding. "
+        "Use victory_progress when assessing your route to winning. "
+        "player_turn is a compact overview. Read unit_details, city_details or named construction_details "
+        "for legal actions and confirmations before acting; use map_region for terrain. "
+        "Check tacticalReview even without idle units: losses, hostiles, exposed civilians, city bombardments. "
+        "Read full popups, notifications and diplomatic terms; update assessments as useful before dismissing or responding. "
         "Re-observe after commands; select entity handles exactly. The service handles credentials, request IDs, "
-        "versions and retries. Read command receipts to verify actual outcomes. "
+        "versions and retries. Verify receipts. "
         "STALE_REVISION applied nothing: re-observe, reconsider, retry once if legal; stop on repetition. "
         + RECOVERY_INSTRUCTIONS
         + "Read turnReview before END_TURN; act with mobile units or give a deferReason for intentionally idling them. "

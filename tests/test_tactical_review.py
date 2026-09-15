@@ -78,6 +78,7 @@ def test_command_schemas_cover_every_host_action_and_reject_cross_action_fields(
         "target": "unit1",
         "selection": "Worker",
         "queue": ["Mining"],
+        "targets": ["notice1"],
         "destination": {"x": 0, "y": 1},
         "attackFrom": {"x": 0, "y": 0},
         "worked": False,
@@ -128,8 +129,9 @@ def test_gateway_reports_shape_errors_before_dispatch_and_requires_deliberate_ta
                 "economy",
             ]
             encoded = tool_result(view)["content"][0]["text"]
-            assert encoded.index('"tacticalReview"') < encoded.index('"map"')
-            shot = next(c for c in view["cities"] if c["handle"] == "city2")["attacks"][0]
+            assert encoded.index('"tacticalReview"') < encoded.index('"cities"')
+            city = await gateway.call(job, "city_details", {"target": "city2"}, "inspect")
+            shot = city["data"]["entity"]["attacks"][0]
             result = await gateway.call(
                 job,
                 "player_command",

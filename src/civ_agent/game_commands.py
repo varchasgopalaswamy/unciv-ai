@@ -155,6 +155,21 @@ class DismissPolicy(Command):
     kind: Literal["DISMISS_POLICY_PICKER"]
 
 
+class DismissNotifications(Command):
+    kind: Literal["DISMISS_NOTIFICATIONS"]
+    targets: Annotated[
+        list[Annotated[str, Field(min_length=1, max_length=128, pattern=r"\S")]],
+        Field(min_length=1, max_length=256, json_schema_extra={"uniqueItems": True}),
+    ]
+
+    @field_validator("targets")
+    @classmethod
+    def unique_targets(cls, value):
+        if len(set(value)) != len(value):
+            raise ValueError("Choose each notification only once")
+        return value
+
+
 PlayerCommand = Annotated[
     ResearchQueue
     | Choice
@@ -174,7 +189,8 @@ PlayerCommand = Annotated[
     | FoundCity
     | DeclareWar
     | EndTurn
-    | DismissPolicy,
+    | DismissPolicy
+    | DismissNotifications,
     Field(discriminator="kind"),
 ]
 COMMANDS = TypeAdapter(PlayerCommand)

@@ -6,6 +6,10 @@ It remains an incomplete player API.
 Use `player_capabilities` to inspect its operations and recovery guarantees.
 Authentication fixes the player's civilization; tool arguments cannot override it.
 
+This page describes the host wire protocol. Agent sessions use the civilization
+service's [compact overview and detail queries](Compact-observations.md); trusted
+code supplies request IDs, credentials and revisions for their commands.
+
 ## Tools
 
 - `player_capabilities`: supported commands, protocol version, incomplete-coverage
@@ -33,6 +37,12 @@ Authentication fixes the player's civilization; tool arguments cannot override i
   Every supported informational alert also includes `content`: `title`, ordered
   `paragraphs`, nullable `quote`, and the `acknowledgement` label. This contains the
   full popup prose; technology descriptions use the observing civilization's context.
+  `notifications` contains ordinary messages with full translated text, category,
+  icons, event locations, short notice handles, and `canDismiss`. Read these before
+  `DISMISS_NOTIFICATIONS` with `targets=[notice handles]`; the receipt retains the
+  exact dismissed content. Messages are cleared from the API pending list while
+  native notification history is preserved. They do not block end turn. See
+  [ordinary notifications](Ordinary-notifications.md).
   `diplomacy.knownCivilizations` lists met, surviving major civilizations with their
   identity, leader caption, status, peace treaty duration, legal war/peace actions,
   unavailable reasons and confirmation warnings. Peace trade options and incoming/

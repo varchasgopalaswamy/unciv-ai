@@ -59,7 +59,7 @@ agreements and checkpoint restarts. These shared records contain no
 reader-relative "you" fields. Current `trade_options.relationship` and
 `player_turn` views describe the player making the query.
 Start a fresh match after updating: these typed confirmations use checkpoint
-format version 3.
+format version 4.
 
 City terms use shared short trade IDs such as `tc1`, stable through ownership
 changes and restart. These differ from an owned city's gameplay handle. The trade

@@ -14,6 +14,7 @@ from civ_agent.memory_records import (
     MemoryUpdate,
     MemoryUpdateResult,
 )
+from civ_agent.observations import DETAIL_MODELS, DetailResult
 from civ_agent.schemas import BoundaryModel, NonnegativeInt
 
 
@@ -87,6 +88,7 @@ class FriendshipOffer(Partner, WithIntent):
 
 
 TOOL_MODELS: dict[str, type[BoundaryModel]] = {
+    **DETAIL_MODELS,
     "trade_options": Partner,
     "trade_read": Proposal,
     "trade_offer": TradeOffer,
@@ -104,6 +106,7 @@ TOOL_MODELS: dict[str, type[BoundaryModel]] = {
 }
 
 TOOL_OUTPUT_MODELS: dict[str, type[BoundaryModel]] = {
+    **dict.fromkeys(DETAIL_MODELS, DetailResult),
     "history_read": HistoryReadResult,
     "memory_read": MemoryReadResult,
     "memory_search": MemorySearchResult,

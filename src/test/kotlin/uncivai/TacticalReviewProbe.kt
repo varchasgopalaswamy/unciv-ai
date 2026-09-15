@@ -140,6 +140,16 @@ object TacticalReviewProbe {
             place(brute, across.position)
             rome.cache.updateViewableTiles()
             val snapshot = PlayerHost(runtime).bindPlayer("Rome").turn()
+            val wrap = checkNotNull(snapshot.map.wrapOffset)
+            // The agent's region query can reproduce actual map distance from this public offset.
+            for (tile in game.tileMap.tileList) {
+                val distance = (-1..1).minOf { offset ->
+                    val dx = tile.position.x - edge.position.x + offset * wrap.x
+                    val dy = tile.position.y - edge.position.y + offset * wrap.y
+                    maxOf(abs(dx), abs(dy), abs(dx - dy))
+                }
+                check(distance == tile.aerialDistanceTo(edge))
+            }
             val seen = snapshot.map.units.single { it.name == "Settler" }.nearbyHostiles.single()
             check(seen.distance == 1 && seen.position == TilePosition(across.position.x, across.position.y))
         }

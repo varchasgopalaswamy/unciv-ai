@@ -9,7 +9,7 @@ import java.util.Collections
 data class PlayerCapabilities(
     val protocolVersion: Int = 1,
     val completeGameplay: Boolean = false,
-    val queries: List<String> = listOf("player_capabilities", "player_summary", "owned_cities", "free_great_person_choice", "player_turn", "player_result", "research_details", "policy_details"),
+    val queries: List<String> = listOf("player_capabilities", "player_summary", "owned_cities", "free_great_person_choice", "player_turn", "player_result", "research_details", "policy_details", "victory_progress"),
     val commands: List<TurnCommandKind> = TurnCommandKind.entries.toList(),
     val durableRecovery: Boolean = false,
     val legacyMutationsSupported: Boolean = true,
@@ -25,6 +25,7 @@ enum class TurnCommandKind {
     CHOOSE_FREE_GREAT_PERSON,
     RENAME_CITY,
     ACKNOWLEDGE_ALERT,
+    DISMISS_NOTIFICATIONS,
     RESPOND_FRIENDSHIP,
     DECLARE_WAR,
     MOVE_UNIT,
@@ -106,6 +107,7 @@ data class PlayerTurnSnapshot(
     val combatReports: List<CombatReport> = emptyList(),
     val pending: List<PendingTurnDecision>,
     val alerts: List<PlayerAlert>,
+    val notifications: List<PlayerNotification> = emptyList(),
     val cities: List<TurnCity>,
     val researchQueue: List<String>,
     val researchOptions: List<String>,
@@ -145,6 +147,7 @@ data class TurnCommandRequest(
     val confirmAction: Boolean = false,
     val enabled: Boolean? = null,
     val socialVersion: Long? = null,
+    val targets: List<String> = emptyList(),
 )
 
 @Serializable
@@ -160,6 +163,7 @@ data class TurnCommandReceipt(
     val economy: EconomyOutcome? = null,
     val cityManagement: CityManagementOutcome? = null,
     val greatPerson: GreatPersonOutcome? = null,
+    val dismissedNotifications: List<PlayerNotification> = emptyList(),
 )
 
 object PlayerTurnJson {
@@ -174,9 +178,11 @@ object PlayerTurnJson {
 /** Deserialized checkpoint collections and caller-owned lists must never enter the receipt cache. */
 internal fun TurnCommandRequest.detached(): TurnCommandRequest = copy(
     queue = Collections.unmodifiableList(queue.toList()),
+    targets = Collections.unmodifiableList(targets.toList()),
 )
 
 internal fun TurnCommandReceipt.detached(): TurnCommandReceipt = copy(
+    dismissedNotifications = Collections.unmodifiableList(dismissedNotifications.map { it.detached() }),
     greatPerson = greatPerson?.detached(),
     cityManagement = cityManagement?.detached(),
     economy = economy?.copy(units = Collections.unmodifiableList(economy.units.toList())),

@@ -37,6 +37,7 @@ def test_lost_response_is_reconciled_without_executing_another_action(tmp_path, 
         try:
             job = await gateway.open("old", "gameplay", "g1", host, {}, 0)
             await gateway.call(job, "player_turn", {}, "observe")
+            await gateway.call(job, "unit_details", {"target": "unit1"}, "inspect")
             with pytest.raises(TimeoutError):
                 await gateway.call(
                     job,
@@ -114,6 +115,7 @@ def test_new_private_policy_requires_reconsideration_but_own_updates_are_immedia
             planning = await gateway.open("planning", "gameplay", "g1", host, {})
             chat = await gateway.open("chat", "communication", "g1", host, {})
             await gateway.call(planning, "player_turn", {}, "observe")
+            await gateway.call(planning, "unit_details", {"target": "unit1"}, "inspect")
             change = {
                 "op": "create",
                 "content": {

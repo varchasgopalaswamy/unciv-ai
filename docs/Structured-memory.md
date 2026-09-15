@@ -40,15 +40,16 @@ does not duplicate records.
 ## Sources and assumptions
 
 `sources` cite records or messages already delivered to this job, including
-`observation:game` from `player_turn`, `observation:communication` from `chat_read`,
-or a scope such as `observation:city/c1`. Beliefs also accept
+`observation:overview` from `player_turn`, `observation:communication` from `chat_read`,
+or the `evidence` ID returned by a detail query. Cached raw snapshots are not
+delivered evidence until explicitly read. Beliefs also accept
 `contradictingSources`. The service pins each source revision. Historical search
 returns evidence handles for referring to the specific revision that was read.
 
 Plans optionally declare ongoing `assumptions`, for example:
 
 ```json
-{"text":"This city remains available for development","source":"observation:city/c1"}
+{"text":"This city remains available for development","source":"<evidence from city_details>"}
 ```
 
 A historical sighting does not become false when the unit moves. An ongoing
@@ -62,6 +63,8 @@ military unit flags defense, and a fall in city count also flags expansion.
 coverage; use `memory_read` before revising a listed record. `observation:tactics`
 records the delivered tactical review. These flags and deadlines are versioned in
 SQLite and participate in the existing restart and rollback mechanism.
+See [compact observations](Compact-observations.md) for detail-query delivery and
+selective invalidation when a new snapshot arrives.
 
 ## Retirement and retrieval
 

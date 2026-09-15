@@ -82,6 +82,7 @@ data class MapObservation(
     val tiles: List<ObservedTile> = emptyList(),
     val frontier: List<TilePosition> = emptyList(),
     val units: List<OwnedUnit> = emptyList(),
+    val wrapOffset: TilePosition? = null,
 )
 
 internal fun observeMap(player: Civilization, state: TurnSessionState, canAct: Boolean = true): MapObservation {
@@ -95,6 +96,7 @@ internal fun observeMap(player: Civilization, state: TurnSessionState, canAct: B
             .map { tile to VisibleUnit(it.name, it.civ.civName, it.health, military = true, atWar = true) }.toList()
     }
     return MapObservation(
+        wrapOffset = player.gameInfo.tileMap.takeIf { it.mapParameters.worldWrap }?.getUnwrappedPosition(HexCoord.Zero)?.dto(),
         tiles = detached(
             tiles.map { tile ->
                 val visible = tile.isVisible(player)

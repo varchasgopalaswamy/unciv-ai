@@ -140,6 +140,7 @@ class GameExecutor internal constructor(
             // A handoff or terminal result and dropping its rollback point are one commit.
             if (turnStart?.handoff != handoff || gameFinished(game)) turnStart = null
             checkpointStore?.write(CheckpointStore.capture(game, epoch, paused, turnSessions, handoff, scheduled, turnStart, communicationState, communicationPaused))
+            turnSessions.values.forEach { it.checkpointRevision = it.revision }
             communicationChanges.committed(communicationState)
         } catch (failure: Throwable) {
             haltAfterMutation(failure)
@@ -278,13 +279,19 @@ class GameExecutor internal constructor(
         for ((civilization, saved) in players) {
             val player = game.civilizations.single { it.civID == civilization }
             check(saved.alertHandles.size == player.popupAlerts.size) { "Checkpoint alert state is inconsistent" }
+            check(saved.notificationHandles.size == player.notifications.size) { "Checkpoint notification state is inconsistent" }
             turnSessions[civilization] = TurnSessionState(saved.identifiers).apply {
                 cityHandles.putAll(saved.cityHandles)
                 unitHandles.putAll(saved.unitHandles)
                 player.popupAlerts.forEachIndexed { index, alert ->
                     saved.alertHandles[index]?.let { alertHandles[alert] = it }
                 }
+                player.notifications.forEachIndexed { index, notification ->
+                    saved.notificationHandles[index]?.let { notificationHandles[notification] = it }
+                }
+                dismissedNotifications.addAll(saved.dismissedNotifications)
                 revision = saved.revision
+                checkpointRevision = saved.revision
                 fingerprint = saved.fingerprint
                 reviewTurn = saved.reviewTurn
                 reviewActions.addAll(saved.reviewActions)

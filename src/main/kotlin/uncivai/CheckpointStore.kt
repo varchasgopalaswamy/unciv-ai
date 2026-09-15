@@ -28,7 +28,7 @@ import java.nio.file.StandardOpenOption
 /** Trusted full-state artifact. Never serve this file through a player endpoint. */
 @Serializable
 internal data class GameCheckpoint(
-    val formatVersion: Int = 3,
+    val formatVersion: Int = 4,
     val epoch: String,
     val paused: Boolean,
     val gameJson: String,
@@ -60,6 +60,8 @@ internal data class SavedPlayerState(
     val identifiers: Map<PlayerIdentifier, Long>,
     val cityHandles: Map<String, String>,
     val alertHandles: List<String?>,
+    val notificationHandles: List<String?>,
+    val dismissedNotifications: Set<String>,
     val revision: String,
     val fingerprint: PlayerTurnSnapshot?,
     val receipts: List<SavedReceipt>,
@@ -114,7 +116,7 @@ internal class CheckpointStore(
     fun read(): GameCheckpoint {
         acquire()
         val document = checkpointJson.parseToJsonElement(Files.readString(path))
-        require(document.jsonObject["formatVersion"]?.jsonPrimitive?.intOrNull == 3) { "Unsupported checkpoint version; start a new game" }
+        require(document.jsonObject["formatVersion"]?.jsonPrimitive?.intOrNull == 4) { "Unsupported checkpoint version; start a new game" }
         val saved = checkpointJson.decodeFromJsonElement<GameCheckpoint>(document)
         require(saved.epoch.isNotEmpty()) { "Invalid checkpoint epoch" }
         return saved
@@ -162,6 +164,8 @@ internal class CheckpointStore(
                     cityHandles = state.cityHandles.toMap(),
                     unitHandles = state.unitHandles.toMap(),
                     alertHandles = player.popupAlerts.map { state.alertHandles[it] },
+                    notificationHandles = player.notifications.map { state.notificationHandles[it] },
+                    dismissedNotifications = state.dismissedNotifications.toSet(),
                     revision = state.revision,
                     fingerprint = state.fingerprint,
                     receipts = state.receipts.values.map { SavedReceipt(it.first, it.second) },

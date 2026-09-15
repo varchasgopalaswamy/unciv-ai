@@ -25,6 +25,16 @@ from civ_agent.memory_records import (
     MemoryUpdateResult,
     public_record,
 )
+from civ_agent.observations import (
+    DETAIL_MODELS,
+    DetailQuery,
+    TurnOverview,
+    detail_satisfies,
+    detail_scope,
+    overview,
+    project_detail,
+    required_detail,
+)
 from civ_agent.protocol import JsonObject
 from civ_agent.schemas import validate
 from civ_agent.service_io import ServiceIO
@@ -38,11 +48,12 @@ READ_TOOLS = {
     "player_result",
     "research_details",
     "policy_details",
+    "victory_progress",
     "player_summary",
     "owned_cities",
     "free_great_person_choice",
 }
-COMMUNICATION_READ_TOOLS = {"player_turn", "player_result"}
+COMMUNICATION_READ_TOOLS = {"player_turn", "player_result", "victory_progress"}
 RECOVERY_INSTRUCTIONS = (
     "STALE_ASSUMPTIONS applied nothing: follow recovery.reads, reconsider only the affected action, "
     "then make a fresh decision or skip it if another job already handled it. "
@@ -101,6 +112,9 @@ class JobAccess:
     token: str = field(default_factory=lambda: secrets.token_urlsafe(32))
     observation: JsonObject | None = None
     social: JsonObject | None = None
+    social_read: bool = False
+    detail_revision: str | None = None
+    details_read: list[DetailQuery] = field(default_factory=list)
     trades: dict[str, JsonObject] = field(default_factory=dict)
     closed: bool = False
     verified: bool = False
@@ -163,16 +177,15 @@ class ProposalGateway:
                 entry = copy.deepcopy(tool)
                 if tool["name"] == "player_turn":
                     entry["description"] = (
-                        "Read current permitted game state. Start with tacticalReview and strategyReview, then inspect full popups, diplomatic terms, legal offers and turnReview. Re-observe after each command. Read confirmation consequences before acknowledging them."
-                        if job.purpose == "gameplay"
-                        else "Read the full permitted gameplay view only when a question needs map, city or other detail absent from chat_read. Routine negotiation uses chat_read, trade_read and trade_options."
+                        "Read a compact current overview: tactics, strategy review, city/unit roster, pending choices and full alert/ordinary notification text. Notifications include category, icons and event locations. Read them, update private assessments as useful, then dismiss selected notice handles with DISMISS_NOTIFICATIONS. Read this overview after each action. Inspect targets with unit_details, city_details or construction_details for legal offers and confirmation consequences before acting; map_region and player_details provide other detail from this snapshot. Use chat_read for commitment terms."
                     )
+                    entry["outputSchema"] = TurnOverview.model_json_schema()
                 tools.append(entry)
             elif tool["name"] == "player_command" and job.purpose == "gameplay":
                 entry = copy.deepcopy(tool)
                 entry["inputSchema"] = command_schema()
                 entry["description"] = (
-                    "Propose one offered game action using the schema for its kind. Combat offers include a copyable command; add intent, never preview fields. CITY_ATTACK omits attackFrom; ATTACK requires it. Consequential choices require intent: a brief reason or an active plan ID; optional expectedOutcome and assumptions. The service records intent and handles request bookkeeping. Re-read player_turn after each action and read full alerts and confirmations before acknowledging. END_TURN requires reading turnReview and a deferReason for intentionally idle mobile units or deferred tactical concerns."
+                    "Propose one offered game action using the schema for its kind. Combat offers include a copyable command; add intent, never preview fields. CITY_ATTACK omits attackFrom; ATTACK requires it. Consequential choices require intent: a brief reason or an active plan ID; optional expectedOutcome and assumptions. The service records intent and handles request bookkeeping. Re-read player_turn after each action and read full alerts and confirmations before acknowledging. DISMISS_NOTIFICATIONS takes targets=[notice handles] already read in player_turn; it clears only those pending messages and retains their contents in receipts. END_TURN requires reading turnReview and a deferReason for intentionally idle mobile units or deferred tactical concerns."
                 )
                 tools.append(entry)
 
@@ -183,7 +196,8 @@ class ProposalGateway:
                     "description": description,
                     "annotations": {
                         "readOnlyHint": name
-                        in {
+                        in set(DETAIL_MODELS)
+                        | {
                             "history_read",
                             "chat_read",
                             "chat_history",
@@ -200,6 +214,15 @@ class ProposalGateway:
             )
             if name in TOOL_OUTPUT_MODELS:
                 tools[-1]["outputSchema"] = TOOL_OUTPUT_MODELS[name].model_json_schema()
+
+        for name, description in {
+            "unit_details": "Read an owned unit's full current moves, combat previews, orders, promotions, worker jobs, abilities and confirmations. target is its handle in player_turn.units. Read again after an action.",
+            "city_details": "Read one owned city's full development, citizen controls, construction, purchases, bombardment previews and confirmation text. target is its handle in player_turn.cities.",
+            "construction_details": "Inspect construction in an owned city. Omit names for a compact catalogue; supply up to 16 names for descriptions, costs, eligibility, queue progress and purchase confirmations. Read the named option before queueing or buying.",
+            "map_region": "Read explored tiles and frontier within radius 0–4 of an observed coordinate, respecting world wrap. Hidden tiles have no data. Read player_details(map_index) to locate distant regions.",
+            "player_details": "Read full economy, diplomacy (including war consequences), research progress, policy choices, current/previous turn receipts, or map coordinate index. Details reuse the latest player_turn snapshot; refresh that after actions. Returned evidence identifies exactly what was read.",
+        }.items():
+            add(name, description)
 
         add(
             "trade_options",
@@ -255,21 +278,22 @@ class ProposalGateway:
         )
         add(
             "memory_update",
-            "Create, revise, replace or retire typed private plans, beliefs, notes and SOUL principles. Code assigns IDs and turn metadata. Read before changing existing records. Retirement removes active context, retaining history; it does not cancel a promise. Sources must have been read: record/message IDs, observation:game or observation:communication. Assumptions with source are ongoing dependencies; sources alone are historical evidence. Revise a plan after reviewing changed assumptions before reusing it for intent. Use subjects such as economy, Greece or entity handles for relevant context selection.",
+            "Create, revise, replace or retire typed private plans, beliefs, notes and SOUL principles. Code assigns IDs and turn metadata. Read before changing existing records. Retirement removes active context, retaining history; it does not cancel a promise. Sources must have been read: record/message IDs, observation:overview, a detail response's evidence ID, or observation:communication after chat_read. Assumptions with source are ongoing dependencies; sources alone are historical evidence. Revise a plan after reviewing changed assumptions before reusing it for intent. Use subjects such as economy, Greece or entity handles for relevant context selection.",
         )
         return tools
 
-    async def read_social(self, job: JobAccess):
+    async def read_social(self, job: JobAccess, delivered: bool = True):
         result = await job.connection.tool("player_communication", {"op": "state", "epoch": job.epoch})
         if "error" in result:
             raise StateConflict("COMMUNICATION_UNAVAILABLE")
         self.check(job)
-        version = await self.io.call(self.memory.observe, "communication", result, job.id)
+        version = await self.io.call(self.memory.observe, "communication", result, job.id if delivered else None)
         job.memory["records"]["observation:communication"] = {
             "version": version,
             "category": "observation",
             "body": result,
         }
+        job.social_read = delivered or (job.social_read and result == job.social)
         job.social = result
         return result
 
@@ -370,14 +394,16 @@ class ProposalGateway:
         return result
 
     @staticmethod
-    def reobserve_after_negotiation() -> JsonObject:
+    def reobserve_after_negotiation(
+        instruction: str = "Negotiation closed. Read the changed game state and make a fresh decision.",
+    ) -> JsonObject:
         return {
             "error": "OBSERVATION_REQUIRED",
             "applied": False,
             "recoverable": True,
             "recovery": {
                 "reads": [{"tool": "player_turn", "arguments": {}}],
-                "instruction": "Negotiation closed. Read the changed game state and make a fresh decision.",
+                "instruction": instruction,
             },
         }
 
@@ -415,6 +441,21 @@ class ProposalGateway:
         if name == "history_read":
             return public_result(await self.io.call(self.memory.history, arguments["turn"], arguments.get("offset", 0)))
         self.check(job)
+        if name in DETAIL_MODELS:
+            if job.observation is None:
+                return self.reobserve_after_negotiation("Read player_turn before requesting details.")
+            query = DetailQuery.model_validate({"tool": name, "arguments": arguments})
+            value = project_detail(job.observation, query)
+            scope = detail_scope(query)
+            version = await self.io.call(self.memory.observe, scope, value, job.id)
+            job.memory["records"]["observation:" + scope] = {
+                "version": version,
+                "category": "observation",
+                "body": value,
+            }
+            if value["available"] and query not in job.details_read:
+                job.details_read.append(query)
+            return public_result(value)
         if name in {"trade_options", "trade_read"}:
             key = "partner" if name == "trade_options" else "proposal"
             value = await job.connection.tool("player_communication", {**arguments, "op": name, "epoch": job.epoch})
@@ -440,18 +481,28 @@ class ProposalGateway:
             self.check(job)
             if name == "player_turn" and "error" not in value:
                 job.observation = None
-                # Persist the complete interface evidence returned to this job,
-                # including attributed social records and confirmed outcomes.
-                value = {**value, "communication": await self.read_social(job)}
+                revision = value.get("revision")
+                if not isinstance(revision, str):
+                    raise StateConflict("INVALID_HOST_REVISION")
+                # Cache the permitted host snapshot; only the returned projection
+                # is delivered evidence. Full details require an explicit read.
+                value = {**value, "communication": await self.read_social(job, delivered=False)}
                 add_combat_commands(value)
                 if "map" in value and "combatReports" in value:
                     value = {"tacticalReview": tactical_review(value).model_dump(exclude_none=True), **value}
-                observed = await self.io.call(self.memory.observe_player, value, job.id)
+                compact = public_result(overview(value))
+                compact.pop("strategyReview", None)  # Private plans are not game observations.
+                observed = await self.io.call(self.memory.observe_player, value, job.id, compact)
                 job.memory["records"].update(observed)
                 job.observation = value
+                if job.detail_revision != revision:
+                    job.details_read.clear()
+                job.detail_revision = revision
                 latest = await self.io.call(self.memory.snapshot, job.purpose)
-                value = {"strategyReview": strategy_review(latest["records"]).model_dump(), **value}
+                value = {**compact, "strategyReview": strategy_review(latest["records"]).model_dump()}
             elif "error" not in value:
+                if name == "player_capabilities":
+                    value = {**value, "queries": list(dict.fromkeys(value.get("queries", []) + list(DETAIL_MODELS)))}
                 await self.io.call(self.memory.observe, name, value, job.id)
             return public_result(value)
         if name == "chat_read":
@@ -504,6 +555,17 @@ class ProposalGateway:
                 raise StateConflict("GAMEPLAY_NOT_PERMITTED")
             if job.observation is None or job.social is None:
                 raise StateConflict("Read player_turn and its full content before proposing another action.")
+            needed = required_detail(arguments)
+            if needed is not None and not any(detail_satisfies(read, needed) for read in job.details_read):
+                return {
+                    "error": "DETAIL_REQUIRED",
+                    "applied": False,
+                    "recoverable": True,
+                    "recovery": {
+                        "reads": [needed.model_dump()],
+                        "instruction": "Read this action's full offer and consequences, then make a fresh decision.",
+                    },
+                }
             payload = {**arguments, "epoch": job.epoch, "revision": job.observation["revision"]}
             if arguments.get("kind") == "END_TURN":
                 tactics = job.observation.get("tacticalReview", {})
@@ -534,7 +596,7 @@ class ProposalGateway:
                 payload["op"] = "revise" if arguments.get("proposal") else "offer"
             else:
                 payload["op"] = payload.pop("decision")
-                if job.social is None:
+                if job.social is None or not job.social_read:
                     raise StateConflict("Read the current terms with chat_read before deciding.")
                 offers = [offer for offer in job.social["offers"] if offer["proposal"] == arguments.get("proposal")]
                 if not offers:

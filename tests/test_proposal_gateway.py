@@ -6,6 +6,7 @@ from jsonschema import Draft202012Validator
 
 from civ_agent.civilization_state import CivilizationState, StateConflict
 from civ_agent.proposal_gateway import ProposalGateway
+from civ_agent.protocol import JsonObject
 from civ_agent.service_io import ServiceIO
 
 
@@ -16,6 +17,35 @@ class Host:
         self.peace = 0
         self.executed = []
         self.seen = {}
+        self.view: JsonObject = {
+            "turn": 0,
+            "canEndTurn": True,
+            "cities": [
+                {
+                    "handle": "city1",
+                    "name": "Rome",
+                    "constructionQueue": [],
+                    "puppet": False,
+                    "constructionOptions": ["Market", "Granary"],
+                }
+            ],
+            "map": {
+                "units": [
+                    {
+                        "handle": "unit1",
+                        "name": "Warrior",
+                        "position": {"x": 0, "y": 0},
+                        "health": 100,
+                        "movement": "2",
+                        "military": True,
+                        "idle": True,
+                        "movementSupported": True,
+                        "canFoundCity": False,
+                        "moves": [],
+                    }
+                ]
+            },
+        }
 
     async def close(self):
         pass
@@ -35,7 +65,13 @@ class Host:
 
     async def tool(self, name, args):
         if name == "player_turn":
-            return {"epoch": "g1", "revision": self.revision, "phase": "ACTIVE", "turnReview": {"id": "review1"}}
+            return {
+                **copy.deepcopy(self.view),
+                "epoch": "g1",
+                "revision": self.revision,
+                "phase": "ACTIVE",
+                "turnReview": {"id": "review1"},
+            }
         if name == "player_communication":
             if args["op"] == "negotiation":
                 return {"negotiation": {"active": False}}
@@ -73,6 +109,7 @@ def test_gateway_owns_bookkeeping_and_retries_exact_call(tmp_path):
         assert not validator.is_valid({"kind": "MOVE_UNIT", "target": "unit1"})
         view = await gateway.call(job, "player_turn", {}, "1")
         assert "revision" not in view and "epoch" not in view
+        await gateway.call(job, "unit_details", {"target": "unit1"}, "inspect")
         action = {"kind": "MOVE_UNIT", "target": "unit1", "destination": {"x": 1, "y": 0}}
         result = await gateway.call(job, "player_command", action, "2")
         assert await gateway.call(job, "player_command", action, "2") == result
@@ -96,6 +133,8 @@ def test_commitment_change_rejects_attack_but_greeting_preserves_economic_job(tm
         host = Host()
         job = await gateway.open("planning", "gameplay", "g1", host, {})
         await gateway.call(job, "player_turn", {}, "1")
+        await gateway.call(job, "unit_details", {"target": "unit1"}, "unit")
+        await gateway.call(job, "city_details", {"target": "city1"}, "city")
         host.peace += 1
         rejected = await gateway.call(
             job,
@@ -142,6 +181,7 @@ def test_slow_game_dispatch_does_not_block_mailbox_or_memory(tmp_path):
         game = await gateway.open("planning", "gameplay", "g1", host, {})
         chat = await gateway.open("chat", "communication", "g1", host, {})
         await gateway.call(game, "player_turn", {}, "1")
+        await gateway.call(game, "unit_details", {"target": "unit1"}, "inspect")
         began, release = asyncio.Event(), asyncio.Event()
         original = host.tool
 
@@ -234,7 +274,7 @@ def test_wrong_player_credential_cannot_supply_evidence_or_change_memory(tmp_pat
     asyncio.run(run())
 
 
-def test_game_and_chat_observations_preserve_the_full_ledger_shown_to_the_model(tmp_path):
+def test_game_overview_and_chat_read_deliver_distinct_evidence(tmp_path):
     async def run():
         io = ServiceIO()
         memory = CivilizationState(tmp_path / "private", "Rome")
@@ -256,7 +296,9 @@ def test_game_and_chat_observations_preserve_the_full_ledger_shown_to_the_model(
         try:
             shown = await gateway.call(job, "player_turn", {}, "read")
             stored = memory.snapshot("gameplay")["records"]["observation:game"]["body"]
-            assert stored["communication"]["offers"] == shown["communication"]["offers"] == ledger["offers"]
+            assert stored["communication"]["offers"] == ledger["offers"]
+            assert shown["communication"]["commitments"] == [{"proposal": "p1"}]
+            assert "No attacks" not in str(shown)
             ledger["consents"].append(
                 {
                     "proposal": "p1",
@@ -277,7 +319,7 @@ def test_game_and_chat_observations_preserve_the_full_ledger_shown_to_the_model(
                                 "type": "belief",
                                 "claim": "Greece accepted the pact; future conduct is uncertain",
                                 "uncertainty": "medium",
-                                "sources": ["observation:game", "observation:communication"],
+                                "sources": ["observation:overview", "observation:communication"],
                                 "subjects": ["Greece"],
                             },
                         }
@@ -289,7 +331,7 @@ def test_game_and_chat_observations_preserve_the_full_ledger_shown_to_the_model(
             assert records["observation:game"]["body"]["communication"]["consents"] == []
             assert records["observation:communication"]["body"]["consents"] == ledger["consents"]
             assert [r["key"] for r in records["mem1"]["body"]["_evidence"]] == [
-                "observation:game",
+                "observation:overview",
                 "observation:communication",
             ]
         finally:

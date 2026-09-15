@@ -63,6 +63,8 @@ interface PlayerSession {
 
     fun policyDetails(names: List<String> = emptyList()): PolicyDetails
 
+    fun victoryProgress(names: List<String> = emptyList()): VictoryProgress
+
     /** Read a receipt only when every field matches this player's completed request. */
     fun completedReceipt(request: TurnCommandRequest): TurnCommandReceipt?
 
@@ -108,6 +110,8 @@ private class BoundPlayerSession(
     override fun researchDetails(names: List<String>) = playerOperation { turnSession.researchDetails(names) }
 
     override fun policyDetails(names: List<String>) = playerOperation { turnSession.policyDetails(names) }
+
+    override fun victoryProgress(names: List<String>) = playerOperation { turnSession.victoryProgress(names) }
 
     override fun completedReceipt(request: TurnCommandRequest) = playerOperation { turnSession.completedReceipt(request) }
 

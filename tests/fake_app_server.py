@@ -22,7 +22,9 @@ async def exercise_trade(civilization, communication, view, call):
     gpt = {"type": "Gold_Per_Turn", "name": "Gold per turn", "amount": 2, "duration": 25}
     gold = {"type": "Gold", "name": "Gold", "amount": 20, "duration": -1}
     peace = (
-        [{"type": "Treaty", "name": "Peace Treaty", "amount": 1, "duration": 10}] if view.get("testPeaceTrade") else []
+        [{"type": "Treaty", "name": "Peace Treaty", "amount": 1, "duration": 10}]
+        if (view.get("scenario") or view.get("context", {}).get("scenario", {})).get("peace")
+        else []
     )
     counter = {
         "proposal": "d1",
@@ -185,7 +187,8 @@ async def main():
                         return value
 
                 view = await call("chat_read" if communication else "player_turn", {})
-                if view.get("testConcurrentTrade"):
+                scenario = view.get("scenario") or view.get("context", {}).get("scenario", {})
+                if scenario.get("name") == "CONCURRENT_TRADE_TEST":
                     assert "recovery.reads" in text
                     result = await exercise_trade(match.group(1), communication, view, call)
                 else:
