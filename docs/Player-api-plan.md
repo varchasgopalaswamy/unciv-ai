@@ -285,8 +285,8 @@ are validated at enactment; city references stay short and stable while ownershi
 changes. Traded-city disposition and friendship popups expose their content and
 validated choices. Scripted checks cover prerequisites, off-turn consent, funding,
 ownership and fog, restart replay and coordinated rollback. Third-party war terms
-are delivered in the slice below. An enacted-agreement expiration/cancellation
-workflow remains the next sprint. Live-model and human acceptance runs remain
+are delivered in the slice below. Enacted-agreement inspection and native ending
+history are covered by the current lifecycle slice. Live-model and human acceptance runs remain
 separate verification gates.
 
 The [`trade-cycle` scenario](Trade-cycle-scenario.md) now combines all supported
@@ -311,6 +311,22 @@ counteroffers, stale consent, pending and settled restarts, scheduled handoffs,
 checkpoint failures and rollback. Introductions remain mod-only, and mediated
 peace with a human target remains unavailable without that target's consent.
 Live-model and graphical desktop acceptance remain separate checks.
+
+## Current slice: enacted agreement lifecycle
+
+The [agreement lifecycle](Agreement-lifecycle.md) exposes player-local stable
+references through `agreement_list` and `agreement_read`. Native trade rows and
+friendship, research, defensive-pact and embassy effects have separate records.
+Per-owner durations and durable ending events follow native scheduled turns,
+resource interruption and war; original proposals remain historical `ENACTED`
+agreements. Recipient events update private evidence and flag relevant plans.
+The native UI offers no direct cancellation of these enacted agreements, so this
+slice introduces no cancellation action or change to the game rules.
+
+The registry, native save and recipient events share atomic host checkpoints.
+Exact retries preserve history; coordinated recovery restores agreement records
+and recipient streams together. See the slice inventory for actual validation
+results and remaining live/desktop gates.
 
 ## Verification gates
 

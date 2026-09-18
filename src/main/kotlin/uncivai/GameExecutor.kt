@@ -85,6 +85,7 @@ class GameExecutor internal constructor(
             if (outermost) {
                 scheduler?.expireIfNeeded()
                 communication.trades.expireIfNeeded()
+                if (communication.agreements.synchronize(game)) commitCheckpoint()
             }
             block(game)
         }
@@ -138,6 +139,7 @@ class GameExecutor internal constructor(
 
     internal fun commitCheckpoint() {
         try {
+            communication.agreements.synchronize(game)
             // A handoff or terminal result and dropping its rollback point are one commit.
             if (turnStart?.handoff != handoff || gameFinished(game)) turnStart = null
             checkpointStore?.write(CheckpointStore.capture(game, epoch, paused, turnSessions, handoff, scheduled, turnStart, communicationState, communicationPaused))

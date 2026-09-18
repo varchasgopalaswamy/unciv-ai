@@ -20,10 +20,12 @@ peace and economic consideration use the same proposal and consent flow. See
 Engine declarations of friendship use the same stored proposal and decision flow.
 The [third-party war slice](Third-party-war-trades.md) also supports paid and joint
 declarations against mutually known major civilizations using these same proposals.
-City-states, mediated peace with human targets, mod-only terms and an agreement
-expiration/cancellation notification and memory workflow remain out of scope.
-Native engine durations still tick normally. The existing proposal deadline and
-withdrawal of an unaccepted proposal are distinct from cancelling an enacted deal.
+The [agreement lifecycle](Agreement-lifecycle.md) tracks native durations, endings
+and remaining relationship effects with durable events and private-memory review.
+City-states, mediated peace with human targets and mod-only terms remain outside
+this slice. The existing proposal deadline and withdrawal of an unaccepted
+proposal are distinct from an enacted deal ending; no native control allows
+voluntary early cancellation of these enacted agreements.
 
 ## Player tools
 
@@ -31,6 +33,8 @@ withdrawal of an unaccepted proposal are distinct from cancelling an enacted dea
 | --- | --- |
 | `trade_options(partner)` | Current trade-table maxima, engine durations, unavailable reasons and active agreements |
 | `trade_read(proposal)` | Full canonical terms, consent, status, execution outcome and previous versions |
+| `agreement_list()` | Player-local references, status and remaining turns for observed enacted rows and relationships |
+| `agreement_read(agreement)` | Current and originally observed terms, native ending history and actual bilateral effects |
 | `trade_offer(partner, give, receive, …)` | Publish terms; optionally counteroffer/revise an inspected proposal |
 | `friendship_offer(partner)` | Publish consent to the engine's fixed Declaration of Friendship |
 | `trade_decide(proposal, decision)` | Accept, decline, or (as author) withdraw the inspected terms |

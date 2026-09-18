@@ -205,6 +205,8 @@ class ProposalGateway:
                             "memory_search",
                             "trade_options",
                             "trade_read",
+                            "agreement_list",
+                            "agreement_read",
                         },
                         "destructiveHint": False,
                         "openWorldHint": False,
@@ -233,6 +235,14 @@ class ProposalGateway:
             "Read a host-owned binding trade before accepting, declining, withdrawing or counteroffering. Every clause has an explicit from/to direction, identical for both players. Pending deal IDs appear in chat_read. Re-read after changed terms; never poll.",
         )
         add(
+            "agreement_list",
+            "List your observed enacted trade rows and native relationships, including ended agreements, stable IDs, remaining turns and native cancellation availability. These are separate from pending proposals and social promises. Read agreement_read for exact current terms and ending history. The returned evidence ID can support private memory.",
+        )
+        add(
+            "agreement_read",
+            "Read one of your enacted agreements by its agreement ID: first-observed and current give/receive terms, remaining turns, ending reasons and effects. give/receive are from your perspective. NATIVE_RELATIONSHIP terms represent one relationship; their amount is not a signing price. Use the returned evidence ID for private memory; review affected plans after lifecycle events. Fixed-duration agreements have no voluntary cancellation control in the native UI.",
+        )
+        add(
             "trade_offer",
             "Publish exact binding terms from trade_options and your consent. Only the current player can initiate; invite them in chat otherwise. The offer pauses all gameplay. Gameplay calls return after settlement; communication jobs handle replies without waiting. Copy the offered name, amount and duration for Embassy, Agreement, City, Treaty and WarDeclaration. WarDeclaration in give makes YOU declare; in receive makes the PARTNER declare. Both sides can declare on the same target for joint war. Inspect your declaration warnings; declaring or sponsoring war requires reconsidering conflicting peace promises first. Treaties must match on both sides; at war include mutual Peace Treaty. Research Agreement amount is each player's signing cost after immediate gold transfers. give/receive are from YOUR perspective. Set proposal to counter a trade inspected with trade_read, within counteroffersRemaining. No effect until acceptance. Do not automatically reopen closed negotiations.",
         )
@@ -250,7 +260,7 @@ class ProposalGateway:
         )
         add(
             "chat_read",
-            "Read compact current context (turn, your scenario instructions, economy and known diplomatic relations), messages, social commitments and binding trade IDs once. Inspect a binding proposal with trade_read before deciding. Incoming private messages, trades and public mentions wake communication work automatically; never poll or wait for replies.",
+            "Read compact current context (turn, your scenario instructions, economy and known diplomatic relations), messages, social commitments, binding trade IDs and enacted agreement summaries once. Inspect a binding proposal with trade_read before deciding, or agreement_read for enacted terms and ending history. Incoming private messages, trades, agreement changes and public mentions wake communication work automatically; never poll or wait for replies.",
         )
         add(
             "chat_history",
@@ -317,7 +327,7 @@ class ProposalGateway:
             except StaleAssumptions as conflict:
                 # Nothing was queued or sent. Cache the rejection too: replaying
                 # this call after a read must never execute an old decision.
-                reads = []
+                reads: list[JsonObject] = []
                 private = [key for key in conflict.keys if not key.startswith("observation:")]
                 if private:
                     evidence = await self.io.call(self.memory.review_evidence, private)
@@ -331,7 +341,15 @@ class ProposalGateway:
                                 },
                             }
                         )
-                if any(key.startswith("observation:") for key in conflict.keys):
+                agreement_keys = [key for key in conflict.keys if key.startswith("observation:agreement/")]
+                for key in agreement_keys:
+                    reads.append({"tool": "agreement_read", "arguments": {"agreement": key.split("/", 1)[1]}})
+                if "observation:agreements" in conflict.keys:
+                    reads.append({"tool": "agreement_list", "arguments": {}})
+                if any(
+                    key.startswith("observation:") and key not in agreement_keys and key != "observation:agreements"
+                    for key in conflict.keys
+                ):
                     reads.append({"tool": "player_turn", "arguments": {}})
                 if name in {"trade_offer", "trade_decide", "friendship_offer"}:
                     reads.append(
@@ -456,12 +474,20 @@ class ProposalGateway:
             if value["available"] and query not in job.details_read:
                 job.details_read.append(query)
             return public_result(value)
-        if name in {"trade_options", "trade_read"}:
-            key = "partner" if name == "trade_options" else "proposal"
+        if name in {"trade_options", "trade_read", "agreement_list", "agreement_read"}:
             value = await job.connection.tool("player_communication", {**arguments, "op": name, "epoch": job.epoch})
             self.check(job)
             if "error" not in value:
-                scope = ("trade_options/" if name == "trade_options" else "trade/") + arguments[key]
+                if name == "agreement_list":
+                    scope = "agreements"
+                elif name == "agreement_read":
+                    scope = "agreement/" + arguments["agreement"]
+                elif name == "trade_options":
+                    scope = "trade_options/" + arguments["partner"]
+                else:
+                    scope = "trade/" + arguments["proposal"]
+                if name.startswith("agreement_"):
+                    value["evidence"] = "observation:" + scope
                 version = await self.io.call(self.memory.observe, scope, value, job.id)
                 job.memory["records"]["observation:" + scope] = {
                     "version": version,

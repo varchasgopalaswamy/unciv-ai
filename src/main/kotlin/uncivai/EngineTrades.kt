@@ -198,8 +198,8 @@ internal class EngineTrades(private val runtime: GameExecutor) {
                         "currentlyFunded" to (a.gold >= researchCost && b.gold >= researchCost),
                         "rule" to "Both players pay the exact treaty amount after immediate gold transfers. Include funding in the deal if needed; gold per turn cannot fund the signing cost.",
                     ),
-                    "activeAgreements" to a.getDiplomacyManager(b)!!.trades.map { trade ->
-                        obj("clauses" to json.encodeToJsonElement(clauses(a.civID, b.civID, trade.ourOffers.map(::selection), trade.theirOffers.map(::selection))))
+                    "activeAgreements" to a.getDiplomacyManager(b)!!.trades.mapIndexed { index, trade ->
+                        obj("agreement" to runtime.communication.agreements.reference(a.civID, b.civID, index), "clauses" to json.encodeToJsonElement(clauses(a.civID, b.civID, trade.ourOffers.map(::selection), trade.theirOffers.map(::selection))))
                     },
                 )
             }

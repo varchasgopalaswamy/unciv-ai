@@ -46,6 +46,8 @@ Each player aims to win; see the [ordinary-game setup](Vanilla-game.md).
 `--scenario trade-cycle` instead selects the prepared Rome/Greece trade exercise.
 `--scenario war-paid` and `--scenario war-joint` select the three-player
 [guided war exercises](War-trades-live-scenario.md), with private negotiating roles.
+`--scenario agreement-lifecycle` selects the three-player
+[agreement expiry and resource-interruption exercise](Agreement-lifecycle-live-scenario.md).
 Later launches resume `exploration.json` and retain the same credentials; an
 explicit scenario option also checks that the saved game belongs to that exercise.
 Missing credentials for an existing checkpoint must be restored or supplied with
@@ -97,8 +99,10 @@ checkout. Agent commands, match control, history export, and
 ## Choose a match or resume a conversation
 
 The default is an [ordinary three-player Vanilla game](Vanilla-game.md).
-The only scripted exercise is [the complete trade cycle](Trade-cycle-scenario.md),
-selected with `--scenario trade-cycle`. The host
+Prepared exercises include [the complete trade cycle](Trade-cycle-scenario.md),
+[three-cornered war](War-trades-live-scenario.md), and
+[agreement lifecycle](Agreement-lifecycle-live-scenario.md), selected with
+`--scenario`. The host
 prints the loaded scenario before `MCP-READY`, and `player_turn.scenario` supplies
 its objectives to the agents. The default prompt follows those objectives without
 instructions from earlier exercises. See [automatic turns](Automatic-turns.md)

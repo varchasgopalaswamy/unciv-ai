@@ -66,6 +66,8 @@ class RecordStore:
             if len(matches) != 1:
                 raise ValueError("SOURCE_NOT_DELIVERED: read the evidence before referencing it")
             key, record = matches[0]
+            if record["body"].get("requiresRefresh"):
+                raise ValueError("SOURCE_NEEDS_REFRESH: read the current agreement before referencing it")
             evidence.append({"key": key, "version": record["version"], "category": record["category"]})
         return evidence
 
@@ -221,7 +223,9 @@ def select_context(snapshot, limit, topics=()):
     for event in snapshot["events"]:
         body = event.get("body", {})
         subjects.update(body.get("participants", []))
-        subjects.update(v for v in (body.get("author"), body.get("from"), body.get("to")) if isinstance(v, str))
+        subjects.update(
+            v for v in (body.get("author"), body.get("from"), body.get("to"), body.get("partner")) if isinstance(v, str)
+        )
     candidates = [
         (key, value)
         for key, value in snapshot["records"].items()

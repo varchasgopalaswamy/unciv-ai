@@ -19,6 +19,7 @@ import java.security.SecureRandom
 @Serializable
 internal data class CommunicationState(
     val trades: EngineTradeState = EngineTradeState(),
+    val agreements: AgreementState = AgreementState(),
     val streams: MutableMap<String, MutableList<CommunicationEvent>> = mutableMapOf(),
     val offers: MutableMap<String, MutableList<SocialOffer>> = mutableMapOf(),
     val consents: MutableList<SocialConsent> = mutableListOf(),
@@ -56,6 +57,7 @@ internal fun obj(vararg pairs: Pair<String, Any?>): JsonObject = buildJsonObject
 
 internal class Communication(private val runtime: GameExecutor) {
     internal val trades = EngineTrades(runtime)
+    internal val agreements = AgreementLifecycle(runtime)
     private val random = SecureRandom()
     private val state get() = runtime.communicationState
     private fun fail(): Nothing = throw PlayerSessionException(PlayerSessionFailure.INVALID_ARGUMENT)
@@ -94,6 +96,10 @@ internal class Communication(private val runtime: GameExecutor) {
                 "state" -> return@accessGame view(civilization, participants)
 
                 "trade_options", "trade_read" -> return@accessGame trades.read(civilization, request)
+
+                "agreement_list" -> return@accessGame obj("agreements" to agreements.summaries(civilization))
+
+                "agreement_read" -> return@accessGame agreements.read(civilization, checkNotNull(request.agreement))
 
                 "job_claim", "job_heartbeat", "job_release" -> return@accessGame job(civilization, request)
             }
@@ -226,6 +232,7 @@ internal class Communication(private val runtime: GameExecutor) {
             "consents" to state.consents.filter { civilization in it.participants }.map { it.recordJson() },
             "outcomes" to state.outcomes.filter { civilization in it.participants }.map { it.recordJson() },
             "trades" to trades.summaries(civilization), "negotiation" to trades.negotiation(civilization),
+            "agreements" to agreements.summaries(civilization),
         )
     }
 

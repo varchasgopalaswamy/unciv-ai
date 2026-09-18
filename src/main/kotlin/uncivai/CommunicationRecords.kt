@@ -24,6 +24,7 @@ internal data class CommunicationRequest(
     val text: String? = null,
     val mentions: List<String> = emptyList(),
     val proposal: String? = null,
+    val agreement: String? = null,
     val version: Int? = null,
     val participants: List<String> = emptyList(),
     val terms: String? = null,

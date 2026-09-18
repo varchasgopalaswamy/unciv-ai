@@ -15,6 +15,26 @@ import java.util.concurrent.TimeUnit
 
 class GameLaunchIntegrationTest {
     @Test
+    fun `agreement lifecycle CLI creates resumes and rejects a mismatched scenario`() {
+        val root = Files.createTempDirectory("agreement-lifecycle-launch-")
+        try {
+            val checkpoint = root.resolve("checkpoint.json")
+            launch(root, "create", listOf("--new-game", "--checkpoint", checkpoint.toString(), "--scenario", "agreement-lifecycle"), 0)
+            val original = Files.readString(checkpoint)
+            val saved = Json.parseToJsonElement(original).jsonObject
+            val game = Json.parseToJsonElement(saved.getValue("gameJson").jsonPrimitive.content).jsonObject
+            assertEquals(AgreementLifecycleScenarioSetup.MAP_NAME, game.getValue("tileMap").jsonObject.getValue("mapParameters").jsonObject.getValue("name").jsonPrimitive.content)
+            launch(root, "resume", listOf("--resume-checkpoint", checkpoint.toString(), "--scenario", "agreement-lifecycle"), 0)
+            assertEquals(original, Files.readString(checkpoint))
+            launch(root, "mismatch", listOf("--resume-checkpoint", checkpoint.toString(), "--scenario", "war-paid"), 1)
+            assertTrue(Files.readString(root.resolve("mismatch.log")).contains("Checkpoint scenario does not match"))
+            assertEquals(original, Files.readString(checkpoint))
+        } finally {
+            deleteTreeWithoutFollowingLinks(root)
+        }
+    }
+
+    @Test
     fun `default CLI creates a Quick Vanilla three player game and resumes scheduled play`() {
         val root = Files.createTempDirectory("vanilla-launch-")
         try {

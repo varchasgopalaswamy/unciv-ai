@@ -11,6 +11,7 @@ import com.unciv.logic.trade.TradeOfferType
 import com.unciv.models.translations.tr
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonObject
+import uncivai.GameExecutor
 import uncivai.bilateralStatus
 import uncivai.supportedTradeTerm
 import java.util.Collections
@@ -40,7 +41,7 @@ data class DiplomacyTradeTerm(
 
 /** Current trade overview rows, including paid one-time consideration while a treaty remains. */
 @Serializable
-data class TradeAgreement(val give: List<DiplomacyTradeTerm>, val receive: List<DiplomacyTradeTerm>)
+data class TradeAgreement(val give: List<DiplomacyTradeTerm>, val receive: List<DiplomacyTradeTerm>, val agreement: String? = null)
 
 /** Imported engine requests retain readable content but are outside the shared proposal flow. */
 @Serializable
@@ -81,7 +82,8 @@ internal fun observeFirstContact(operations: PlayerOperations, alert: PopupAlert
     FirstContactDetails(it.civilizationId, it.civilizationName, it.leaderName, it.message.tr(), it.acknowledgement.tr())
 }
 
-internal fun observeDiplomacy(player: Civilization, active: Boolean, communicationAvailable: Boolean): DiplomacyObservation {
+internal fun observeDiplomacy(player: Civilization, active: Boolean, communicationAvailable: Boolean, runtime: GameExecutor): DiplomacyObservation {
+    runtime.communication.agreements.synchronize(player.gameInfo)
     val diplomacy = PlayerDiplomacyOperations(player)
     val peace = PlayerPeaceOperations(player)
     fun action(reasons: List<String>) = DiplomaticAction(
@@ -139,7 +141,7 @@ internal fun observeDiplomacy(player: Civilization, active: Boolean, communicati
                     options.status.name, options.peaceTreatyTurns, action(options.declareWar.unavailableReasons),
                     immutable(options.declarationConfirmation.map { it.tr() }),
                     DiplomaticAction(peaceReason == null, immutable(listOfNotNull(peaceReason?.tr()))),
-                    immutable(peace.activeAgreements(other).map { TradeAgreement(terms(it.ourOffers), terms(it.theirOffers)) }),
+                    immutable(peace.activeAgreements(other).mapIndexed { index, trade -> TradeAgreement(terms(trade.ourOffers), terms(trade.theirOffers), runtime.communication.agreements.reference(player.civID, other.civID, index)) }),
                     bilateralStatus(player, other),
                 )
             },

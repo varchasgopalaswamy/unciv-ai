@@ -500,7 +500,7 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
             // Support is a capability even while paused or waiting; action flags require an active turn.
             pending.add(PendingTurnDecision("PopupAlerts", alerts.all { it.second }))
         }
-        val diplomacy = observeDiplomacy(player, active = ordinaryActions, communicationAvailable = !runtime.communicationPaused && !gameHasResult(game))
+        val diplomacy = observeDiplomacy(player, active = ordinaryActions, communicationAvailable = !runtime.communicationPaused && !gameHasResult(game), runtime = runtime)
         if (player.tradeRequests.isNotEmpty()) {
             // Canonical proposals never create engine requests. Imported UI requests are explicit blockers.
             pending.add(PendingTurnDecision("TradeRequests", false))

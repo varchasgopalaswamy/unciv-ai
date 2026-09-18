@@ -430,7 +430,24 @@ object S06McpProbe {
                 }
             } else if (name == "player_communication") {
                 check(tool.inputSchema.required == listOf("request"))
-                check(properties.getValue("request").jsonObject.getValue("oneOf").jsonArray.size == 18)
+                val branches = properties.getValue("request").jsonObject.getValue("oneOf").jsonArray.map { it.jsonObject }
+                val operations = branches.associateBy { it.getValue("properties").jsonObject.getValue("op").jsonObject.string("const") }
+                val expectedOperations = setOf(
+                    "state", "negotiation", "read", "receipt", "trade_options", "trade_read",
+                    "job_claim", "job_heartbeat", "job_release", "send", "offer", "revise",
+                    "accept", "withdraw", "reconsider", "trade_offer", "friendship_offer", "trade_decide",
+                    "agreement_list", "agreement_read",
+                )
+                check(operations.keys == expectedOperations && branches.size == expectedOperations.size) {
+                    "Unexpected communication operations: ${operations.keys}"
+                }
+                // Enacted agreements currently expose native inspection only, with no cancel operation.
+                for ((operation, fields) in mapOf("agreement_list" to setOf("op", "epoch"), "agreement_read" to setOf("op", "epoch", "agreement"))) {
+                    val schema = operations.getValue(operation)
+                    check(schema.getValue("properties").jsonObject.keys == fields)
+                    check(schema.strings("required").toSet() == fields)
+                    check(!schema.boolean("additionalProperties"))
+                }
             } else if (name in setOf("research_details", "policy_details", "victory_progress")) {
                 check(tool.inputSchema.required.orEmpty().isEmpty())
                 check(properties.getValue("names").jsonObject.string("type") == "array")

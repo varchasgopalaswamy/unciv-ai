@@ -122,4 +122,4 @@ declaration warning, with 16 inspected screenshots and exact settlement checks.
 Introductions require a mod-only option in the bundled rulesets.
 The native mediated-peace offer explicitly excludes human targets because their
 consent is unknown; that action remains unsupported. See the
-[next sprint](Sprints.md#next-sprint-enacted-agreement-lifecycle) for agreement endings.
+[agreement lifecycle slice](Agreement-lifecycle.md) for agreement endings.

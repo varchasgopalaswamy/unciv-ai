@@ -12,6 +12,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
+from civ_agent.agreement_memory import affected_subjects, lifecycle_terms
 from civ_agent.memory_exports import export_files, projection_files
 from civ_agent.memory_history import action_record, build_summary, summary_markdown
 from civ_agent.memory_records import MEMORY_TYPES, HistoryReadResult, Intent, MemoryUpdate, public_record
@@ -128,17 +129,24 @@ class CivilizationState:
             if self._meta(db, "epoch") != epoch:
                 raise StateConflict("STALE_EPOCH")
             for event in events:
-                self._advance_turn(db, event.get("turn", event.get("body", {}).get("turn")))
                 source = epoch + ":" + str(event["id"])
                 db.execute(
                     "INSERT OR IGNORE INTO events(source,kind,body,wake) VALUES (?,?,?,?)",
                     (source, event["kind"], encode(event), bool(event.get("wake"))),
                 )
-                db.execute("INSERT OR IGNORE INTO inbox SELECT id FROM events WHERE source=?", (source,))
+                inserted = db.execute("INSERT OR IGNORE INTO inbox SELECT id FROM events WHERE source=?", (source,))
+                if not inserted.rowcount:
+                    # Reconnect replay must not reflag plans already reconsidered.
+                    # The first durable event body remains the source of truth.
+                    continue
+                self._advance_turn(db, event.get("turn", event.get("body", {}).get("turn")))
                 # Preserve an utterance as an authenticated statement, never a
                 # world observation inferred from that utterance's content.
                 self._record(
-                    db, "event:" + str(event["id"]), "observation" if event["kind"] == "engine" else "statement", event
+                    db,
+                    "event:" + str(event["id"]),
+                    "observation" if event["kind"] in {"engine", "agreement"} else "statement",
+                    event,
                 )
                 if event["kind"] in {"engine", "consent"}:
                     body = event.get("body", {})
@@ -150,6 +158,63 @@ class CivilizationState:
                     RecordStore(db, self._meta(db, "gameTurn")).flag(
                         subjects=sorted(subjects),
                         reason=f"Diplomatic event {event['id']} needs review",
+                        review_keys=["event:" + str(event["id"])],
+                    )
+                elif event["kind"] == "agreement":
+                    body = event.get("body", {})
+                    store = RecordStore(db, self._meta(db, "gameTurn"))
+                    keys = []
+                    if isinstance(body.get("agreement"), str):
+                        listing = store.all().get("observation:agreements")
+                        if listing is not None:
+                            versions = {
+                                row["agreement"]: row.get("version", 0) for row in listing["body"].get("agreements", [])
+                            }
+                            required = listing["body"].get("latestVersions", {})
+                            latest = max(versions.get(body["agreement"], 0), required.get(body["agreement"], 0))
+                            if body.get("version", 0) > latest:
+                                keys.append("observation:agreements")
+                                store.write(
+                                    "observation:agreements",
+                                    "observation",
+                                    {
+                                        **listing["body"],
+                                        "requiresRefresh": True,
+                                        "latestVersions": {**required, body["agreement"]: body["version"]},
+                                    },
+                                )
+                        key = "observation:agreement/" + body["agreement"]
+                        keys.append(key)
+                        prior = store.all().get(key)
+                        if prior is not None:
+                            native_version = max(
+                                prior["body"].get("agreement", {}).get("version", 0),
+                                prior["body"].get("latestVersion", 0),
+                            )
+                            if body.get("version", 0) <= native_version:
+                                # A read can race ahead of subscription delivery.
+                                store.flag(
+                                    keys=keys[:-1],
+                                    reason=f"Agreement event {event['id']} needs review",
+                                    review_keys=["event:" + str(event["id"])],
+                                )
+                                continue
+                            store.write(
+                                key,
+                                "observation",
+                                {
+                                    **prior["body"],
+                                    "requiresRefresh": True,
+                                    "latestVersion": body["version"],
+                                    "changedBy": "event:" + str(event["id"]),
+                                },
+                            )
+                    if isinstance(body.get("partner"), str):
+                        keys.append("observation:trade_options/" + body["partner"])
+                    store.flag(
+                        keys=keys,
+                        subjects=sorted(affected_subjects(body)),
+                        reason=f"Agreement event {event['id']} needs review",
                         review_keys=["event:" + str(event["id"])],
                     )
             self._set(db, "cursor", max(cursor, self._meta(db, "cursor", 0)))
@@ -182,6 +247,19 @@ class CivilizationState:
             self._advance_turn(db, body.get("context", {}).get("turn") if key == "communication" else body.get("turn"))
             key = "observation:" + key
             prior = self._records(db).get(key)
+            if (
+                key.startswith("observation:agreement/")
+                and prior
+                and body.get("agreement", {}).get("version", 0)
+                < max(prior["body"].get("agreement", {}).get("version", 0), prior["body"].get("latestVersion", 0))
+            ):
+                raise StateConflict("AGREEMENT_CHANGED: refresh with agreement_read")
+            if key == "observation:agreements" and prior:
+                versions = {row["agreement"]: row.get("version", 0) for row in body.get("agreements", [])}
+                if any(
+                    versions.get(id, 0) < version for id, version in prior["body"].get("latestVersions", {}).items()
+                ):
+                    raise StateConflict("AGREEMENT_CHANGED: refresh with agreement_list")
             version = self._record(db, key, "observation", body, job)
             self._changed_observation(db, key, body, prior)
             if key.startswith("observation:trade/"):
@@ -224,6 +302,10 @@ class CivilizationState:
         if not prior or semantic(prior["body"]) == semantic(value):
             return
         subjects = []
+        if key.startswith("observation:agreement/"):
+            before, after = prior["body"].get("agreement", {}), value.get("agreement", {})
+            if lifecycle_terms(before) != lifecycle_terms(after):
+                subjects.extend(affected_subjects({**after, "before": before, "after": after}))
         if key.startswith("observation:diplomacy/") or value.get("absent"):
             subjects.append(key.split("/", 1)[1])
         if key == "observation:communication":

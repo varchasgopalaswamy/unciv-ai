@@ -13,6 +13,7 @@ from civ_agent.commands import (
     host,
     inspect,
     trade,
+    verify_agreement_scenario,
     verify_trade_cycle,
     verify_war_scenario,
 )
@@ -80,6 +81,13 @@ def parser() -> argparse.ArgumentParser:
         help="Audit three-cornered war milestones against receipts and native state",
     )
     verify_war.set_defaults(handler=verify_war_scenario.run)
+
+    verify_agreements = matches.add_parser(
+        "verify-agreement-scenario",
+        parents=[verify_agreement_scenario.parser(add_help=False)],
+        help="Audit agreement expiry, resource interruption and restart preservation",
+    )
+    verify_agreements.set_defaults(handler=verify_agreement_scenario.run)
 
     histories = groups.add_parser("history", help="Export recorded player conversations").add_subparsers(required=True)
     export = histories.add_parser(

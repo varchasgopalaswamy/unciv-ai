@@ -150,10 +150,12 @@ class HostLauncherTest(unittest.TestCase):
     def test_resume_forwards_scenario_for_checkpoint_validation(self):
         self.checkpoint()
         self.write_players()
-        self.assertEqual(0, self.run_launcher("--scenario", "trade-cycle"))
-        command = self.execute.call_args.args[1]
-        self.assertIn("--resume-checkpoint", command)
-        self.assertEqual("trade-cycle", command[command.index("--scenario") + 1])
+        for scenario in ("trade-cycle", "war-paid", "war-joint", "agreement-lifecycle"):
+            with self.subTest(scenario=scenario):
+                self.assertEqual(0, self.run_launcher("--scenario", scenario))
+                command = self.execute.call_args.args[1]
+                self.assertIn("--resume-checkpoint", command)
+                self.assertEqual(scenario, command[command.index("--scenario") + 1])
 
     def test_removed_scenarios_are_rejected_without_creating_state(self):
         for scenario in (

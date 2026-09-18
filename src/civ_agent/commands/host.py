@@ -66,7 +66,7 @@ def parser(*, add_help: bool = True) -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--scenario",
-        choices=["trade-cycle", "war-paid", "war-joint"],
+        choices=["trade-cycle", "war-paid", "war-joint", "agreement-lifecycle"],
         help="prepared exercise (default: Vanilla Rome/Greece/France); on resume, verify the saved scenario",
     )
     parser.add_argument(

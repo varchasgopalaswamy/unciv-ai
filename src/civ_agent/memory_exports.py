@@ -50,7 +50,7 @@ def projection_files(records, events):
             elif re.fullmatch(r"[A-Z][A-Za-z0-9_ -]{0,100}", subject):
                 groups.setdefault(f"relationships/{subject}.md", []).append(rendered)
     social = records.get("observation:communication", {}).get("body", {})
-    ledger = {key: social.get(key, []) for key in ("offers", "consents", "outcomes", "trades")}
+    ledger = {key: social.get(key, []) for key in ("offers", "consents", "outcomes", "trades", "agreements")}
     if any(ledger.values()):
         files["communication/ledger.json"] = json.dumps(ledger, ensure_ascii=False, indent=2) + "\n"
         participants = {
@@ -62,6 +62,7 @@ def projection_files(records, events):
         participants.update(
             name for row in ledger["trades"] for name in (row.get("author"), row.get("partner")) if name
         )
+        participants.update(row["partner"] for row in ledger["agreements"] if row.get("partner"))
         for name in participants:
             if re.fullmatch(r"[A-Z][A-Za-z0-9_ -]{0,100}", name):
                 groups.setdefault(f"relationships/{name}.md", []).append(

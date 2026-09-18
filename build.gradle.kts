@@ -119,6 +119,15 @@ tasks.register<JavaExec>("verifyWarScenario") {
     args(providers.gradleProperty("warScenarioDir").orElse(layout.buildDirectory.dir("generated/war-scenario").map { it.asFile.absolutePath }).get())
 }
 
+tasks.register<JavaExec>("verifyAgreementLifecycleScenario") {
+    group = "verification"
+    description = "Drives the live agreement fixture through native expiry, restart and a legal resource raid without model calls."
+    dependsOn(tasks.testClasses)
+    classpath = sourceSets.test.get().runtimeClasspath
+    mainClass = "uncivai.AgreementLifecycleScenarioProbe"
+    args(providers.gradleProperty("agreementScenarioDir").orElse(layout.buildDirectory.dir("generated/agreement-lifecycle-scenario").map { it.asFile.absolutePath }).get())
+}
+
 val s04UiScenarios = layout.buildDirectory.dir("generated/s04-ui")
 val generateS04UiScenarios by tasks.registering(JavaExec::class) {
     group = "verification"
@@ -205,6 +214,23 @@ tasks.register<JavaExec>("runWarTradeDesktop") {
     doFirst {
         val output = providers.gradleProperty("warDesktopDir")
         require(output.isPresent) { "runWarTradeDesktop requires -PwarDesktopDir=<new absolute directory>" }
+        args(output.get())
+    }
+}
+
+tasks.register<JavaExec>("runAgreementLifecycleDesktop") {
+    group = "verification"
+    description = "Compares player agreement records with rendered native trade rows and lifecycle notices."
+    dependsOn(tasks.testClasses, prepareInspectionUiAssets)
+    classpath = sourceSets.test.get().output + sourceSets.main.get().output + uiRuntime
+    mainClass = "uncivai.AgreementLifecycleDesktopProbe"
+    workingDir = inspectionUiDirectory.get().dir("runtime-engine/android/assets").asFile
+    systemProperty("uncivai.assetsDir", workingDir.absolutePath)
+    systemProperty("java.awt.headless", "false")
+    doFirst {
+        val output = providers.gradleProperty("agreementDesktopDir")
+        require(output.isPresent) { "runAgreementLifecycleDesktop requires -PagreementDesktopDir=<new absolute directory>" }
+        systemProperty("uncivai.engineRevision", uncivRevision.get())
         args(output.get())
     }
 }

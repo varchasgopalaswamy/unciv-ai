@@ -8,6 +8,16 @@ import java.util.concurrent.TimeUnit
 
 class CommunicationIntegrationTest {
     @Test
+    fun `live agreement scenario expires trades and interrupts resources through ordinary commands`() {
+        runProbe("uncivai.AgreementLifecycleScenarioProbe")
+    }
+
+    @Test
+    fun `enacted agreements track native durations endings privacy and recovery`() {
+        runProbe("uncivai.AgreementLifecycleProbe")
+    }
+
+    @Test
     fun `third party wars preserve native effects private consent and recovery`() {
         runProbe("uncivai.ThirdPartyTradeProbe")
     }

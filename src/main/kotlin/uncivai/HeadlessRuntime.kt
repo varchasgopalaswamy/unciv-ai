@@ -104,6 +104,8 @@ class HeadlessRuntime private constructor(
 
         fun createWarExercise(dataDirectory: Path, variant: String, seed: Long = 413L): HeadlessRuntime = create(dataDirectory) { WarScenarioMap.create(seed, WarScenarioSetup.mapName(variant)) }.also { WarScenarioSetup.seedHistory(it.executor, variant) }
 
+        fun createAgreementLifecycleExercise(dataDirectory: Path, seed: Long = 414L): HeadlessRuntime = create(dataDirectory) { AgreementLifecycleScenarioSetup.create(seed) }
+
         fun createVanillaGame(dataDirectory: Path, seed: Long = System.currentTimeMillis()): HeadlessRuntime = create(dataDirectory) { VanillaGameSetup.create(seed) }
 
         /** Trusted creation hook; fixture builders live in the test source set. */

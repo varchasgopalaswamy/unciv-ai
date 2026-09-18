@@ -503,6 +503,42 @@
         "decision"
       ],
       "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "op": {
+          "const": "agreement_list"
+        },
+        "epoch": {
+          "$ref": "#/$defs/epoch"
+        }
+      },
+      "required": [
+        "op",
+        "epoch"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "op": {
+          "const": "agreement_read"
+        },
+        "epoch": {
+          "$ref": "#/$defs/epoch"
+        },
+        "agreement": {
+          "$ref": "#/$defs/proposal"
+        }
+      },
+      "required": [
+        "op",
+        "epoch",
+        "agreement"
+      ],
+      "additionalProperties": false
     }
   ],
   "$defs": {

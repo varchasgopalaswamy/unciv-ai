@@ -30,6 +30,10 @@ class Proposal(BoundaryModel):
     proposal: str
 
 
+class Agreement(BoundaryModel):
+    agreement: str
+
+
 class TradeItem(BoundaryModel):
     type: Literal[
         "Gold",
@@ -99,6 +103,8 @@ TOOL_MODELS: dict[str, type[BoundaryModel]] = {
     **DETAIL_MODELS,
     "trade_options": Partner,
     "trade_read": Proposal,
+    "agreement_list": BoundaryModel,
+    "agreement_read": Agreement,
     "trade_offer": TradeOffer,
     "friendship_offer": FriendshipOffer,
     "trade_decide": TradeDecision,
