@@ -5,6 +5,9 @@ of concept, not a compatibility constraint. Progress is recorded in
 [the coverage ledger](Player-api-coverage.md); working smoke tests never imply full
 gameplay coverage or a complete privacy boundary.
 
+The [sprint handoff](Sprints.md) records the current delivery and the next bounded
+implementation slice.
+
 The [asynchronous chat, structured memory and emergency recovery slice](Async-chat-and-memory-plan.md)
 is implemented. It replaces summary concatenation with selected memory, allows
 concurrent computation behind serialized approval, and preserves confirmed work
@@ -281,17 +284,33 @@ Declarations of Friendship. Treaty costs and both sides' matching obligations
 are validated at enactment; city references stay short and stable while ownership
 changes. Traded-city disposition and friendship popups expose their content and
 validated choices. Scripted checks cover prerequisites, off-turn consent, funding,
-ownership and fog, restart replay and coordinated rollback. Remaining trade work
-is third-party clauses and an enacted-agreement expiration/cancellation workflow;
-neither is part of this implementation. Live-model and human acceptance runs remain
+ownership and fog, restart replay and coordinated rollback. Third-party war terms
+are delivered in the slice below. An enacted-agreement expiration/cancellation
+workflow remains the next sprint. Live-model and human acceptance runs remain
 separate verification gates.
 
 The [`trade-cycle` scenario](Trade-cycle-scenario.md) now combines all supported
-trade items and terminal negotiation paths in eleven stages with compact current
+bilateral trade items and terminal negotiation paths in eleven stages with compact current
 instructions. Its scripted HTTPS probe verifies exact native effects, pending
 negotiation restarts, replay and rollback. `match verify-trade-cycle` audits a
 live run from native checkpoints, canonical receipts and round snapshots. A live
 model run of this combined scenario remains to be performed.
+
+## Delivered slice: third-party war trades
+
+The [third-party war slice](Third-party-war-trades.md) adds paid declarations,
+joining an existing war and joint declarations against a mutually known major.
+It uses the desktop's existing trade operations and per-player declaration
+warnings. Both signers' private peace commitments govern consent, including
+sponsorship; the target receives the native war result without the private deal.
+The gateway tracks target relations and flags related plans after confirmed wars.
+
+Scripted HTTPS regressions compare native diplomacy, gold, popups, notifications
+and visibility, exercise both bundled rulesets, and cover private proposals,
+counteroffers, stale consent, pending and settled restarts, scheduled handoffs,
+checkpoint failures and rollback. Introductions remain mod-only, and mediated
+peace with a human target remains unavailable without that target's consent.
+Live-model and graphical desktop acceptance remain separate checks.
 
 ## Verification gates
 

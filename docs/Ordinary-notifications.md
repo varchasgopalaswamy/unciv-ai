@@ -43,6 +43,12 @@ requests replay their original receipts. Turn and round rollback restore the
 pending list, and discarded handles are not reissued. Older host checkpoint
 formats require a new game.
 
+Native loading can append a notice while rebuilding caches, such as a captured
+city becoming disconnected from the capital. Restore validates saved handles
+against the original serialized notices and verifies that loading preserved their
+order and content. Appended notices receive fresh handles on observation; missing
+or reordered saved notices and inconsistent handle counts still fail recovery.
+
 The turn query also checkpoints a refreshed revision after a rejected command;
 an internal validation read must not cause the subsequent public read to skip
 persisting newly issued references.
@@ -50,5 +56,7 @@ persisting newly issued references.
 `NotificationsIntegrationTest` exercises the native game over HTTPS through
 separate process restarts, including private messages, batch validation,
 duplicate content, late arrivals, receipt replay, turn rollback, and native
-history preservation. `tests/test_notifications.py` checks the Pydantic schemas,
+history preservation. It also checks appended load notices and corrupt/reordered
+notification state; the conquest regression verifies an actual native
+city-disconnection notice across restart. `tests/test_notifications.py` checks the Pydantic schemas,
 full model-facing content, agent-authored evidence, and durable receipt history.

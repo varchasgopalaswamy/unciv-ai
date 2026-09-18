@@ -68,15 +68,18 @@ class HeadlessRuntime private constructor(
         private var activeRuntime: HeadlessRuntime? = null
 
         /** Restores both the engine save and command receipts from one trusted checkpoint. */
-        fun loadCheckpoint(checkpointPath: Path, dataDirectory: Path): HeadlessRuntime = loadCheckpoint(CheckpointStore(checkpointPath), dataDirectory)
+        fun loadCheckpoint(checkpointPath: Path, dataDirectory: Path, expectedMapName: String? = null): HeadlessRuntime = loadCheckpoint(CheckpointStore(checkpointPath), dataDirectory, expectedMapName)
 
-        internal fun loadCheckpoint(store: CheckpointStore, dataDirectory: Path): HeadlessRuntime {
+        internal fun loadCheckpoint(store: CheckpointStore, dataDirectory: Path, expectedMapName: String? = null): HeadlessRuntime {
             val temporary = Files.createTempFile("unciv-checkpoint-load-", ".json")
             try {
                 val checkpoint = store.read()
                 Files.writeString(temporary, checkpoint.gameJson)
                 val runtime = load(temporary, dataDirectory)
                 try {
+                    require(expectedMapName == null || runtime.game.tileMap.mapParameters.name == expectedMapName) {
+                        "Checkpoint scenario does not match the requested exercise. Choose a fresh --state-dir."
+                    }
                     runtime.executor.restore(checkpoint, store)
                     return runtime
                 } catch (failure: Throwable) {
@@ -98,6 +101,8 @@ class HeadlessRuntime private constructor(
         fun load(saveFile: Path, dataDirectory: Path): HeadlessRuntime = open(saveFile, dataDirectory, null)
 
         fun createTradeCycleExercise(dataDirectory: Path, seed: Long = 412L): HeadlessRuntime = create(dataDirectory) { TradeCycleScenarioSetup.create(seed) }
+
+        fun createWarExercise(dataDirectory: Path, variant: String, seed: Long = 413L): HeadlessRuntime = create(dataDirectory) { WarScenarioMap.create(seed, WarScenarioSetup.mapName(variant)) }.also { WarScenarioSetup.seedHistory(it.executor, variant) }
 
         fun createVanillaGame(dataDirectory: Path, seed: Long = System.currentTimeMillis()): HeadlessRuntime = create(dataDirectory) { VanillaGameSetup.create(seed) }
 

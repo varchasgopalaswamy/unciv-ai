@@ -86,6 +86,10 @@ internal data class ProposalReference(val proposal: String, val version: Int)
 @Serializable
 internal data class TradedCityOwner(val city: String, val owner: String)
 
+/** Only the declared relationship; no target's private agreements or military state. */
+@Serializable
+internal data class ConfirmedTradeWar(val declaringCivilization: String, val targetCivilization: String, val atWar: Boolean)
+
 @Serializable
 internal data class EngineOutcome(
     val action: String,
@@ -98,13 +102,21 @@ internal data class EngineOutcome(
     val version: Int? = null,
     val relatedProposals: List<ProposalReference> = emptyList(),
     val clauses: List<TradeClause> = emptyList(),
+    val wars: List<ConfirmedTradeWar> = emptyList(),
     val friendship: FriendshipTerms? = null,
     val cities: List<TradedCityOwner> = emptyList(),
     val feedback: AlertContent? = null,
 )
 
 @Serializable
-internal data class CommunicationAudit(val handoff: Long, val activeCivilization: String, val timeMillis: Long)
+internal data class CommunicationAudit(val handoff: Long, val activeCivilization: String, val timeMillis: Long, val settlement: TradeSettlementAudit? = null)
+
+/** Operator-only evidence in the checkpoint, never included in a player response or event. */
+@Serializable
+internal data class TradeSettlementState(val gold: Map<String, Int>, val wars: List<ConfirmedTradeWar>)
+
+@Serializable
+internal data class TradeSettlementAudit(val before: TradeSettlementState, val after: TradeSettlementState)
 
 @Serializable
 internal data class CommunicationReceipt(val request: JsonObject, val response: JsonObject, val audit: CommunicationAudit)

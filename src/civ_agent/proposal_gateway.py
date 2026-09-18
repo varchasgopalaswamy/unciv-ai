@@ -226,7 +226,7 @@ class ProposalGateway:
 
         add(
             "trade_options",
-            "Inspect bilateral trade terms, city names/populations, eligibility, unavailable reasons, research funding, friendship and active agreements with a met player. give/receive are from your perspective. City names in terms are short trade IDs. Available during either player's turn.",
+            "Inspect trade terms, city names/populations, eligibility, unavailable reasons, research funding, friendship and active agreements with a met player. WarDeclaration names a third civilization both players know; give commits you to war and receive asks the partner to declare. Your own declaration warnings are included. give/receive are from your perspective. City names in terms are short trade IDs. Available during either player's turn.",
         )
         add(
             "trade_read",
@@ -234,7 +234,7 @@ class ProposalGateway:
         )
         add(
             "trade_offer",
-            "Publish exact binding terms from trade_options and your consent. Only the current player can initiate; invite them in chat otherwise. The offer pauses all gameplay. Gameplay calls return after settlement; communication jobs handle replies without waiting. Copy the offered name, amount and duration for Embassy, Agreement, City and Treaty. Treaties must match on both sides; at war include mutual Peace Treaty. Research Agreement amount is each player's signing cost after immediate gold transfers. give/receive are from YOUR perspective. Set proposal to counter a trade inspected with trade_read, within counteroffersRemaining. No effect until acceptance. Do not automatically reopen closed negotiations.",
+            "Publish exact binding terms from trade_options and your consent. Only the current player can initiate; invite them in chat otherwise. The offer pauses all gameplay. Gameplay calls return after settlement; communication jobs handle replies without waiting. Copy the offered name, amount and duration for Embassy, Agreement, City, Treaty and WarDeclaration. WarDeclaration in give makes YOU declare; in receive makes the PARTNER declare. Both sides can declare on the same target for joint war. Inspect your declaration warnings; declaring or sponsoring war requires reconsidering conflicting peace promises first. Treaties must match on both sides; at war include mutual Peace Treaty. Research Agreement amount is each player's signing cost after immediate gold transfers. give/receive are from YOUR perspective. Set proposal to counter a trade inspected with trade_read, within counteroffersRemaining. No effect until acceptance. Do not automatically reopen closed negotiations.",
         )
         add(
             "friendship_offer",
@@ -624,11 +624,18 @@ class ProposalGateway:
                 if key in job.memory["records"]:
                     policy_keys.add(key)
         other = arguments.get("to") or arguments.get("target") or arguments.get("partner")
+        war_terms = []
+        if name == "trade_offer":
+            war_terms = arguments.get("give", []) + arguments.get("receive", [])
         if name == "trade_decide":
             selected = job.trades[arguments["proposal"]]
             other = selected["partner"] if selected["author"] == self.memory.civilization else selected["author"]
-        if other and "observation:diplomacy/" + str(other) in job.memory["records"]:
-            policy_keys.add("observation:diplomacy/" + str(other))
+            war_terms = [clause["item"] for clause in selected.get("clauses", [])]
+        diplomatic_subjects = {other} | {item["name"] for item in war_terms if item.get("type") == "WarDeclaration"}
+        for subject in diplomatic_subjects:
+            key = "observation:diplomacy/" + str(subject)
+            if subject and key in job.memory["records"]:
+                policy_keys.add(key)
         dependencies = {key: job.memory["records"].get(key, {}).get("version", 0) for key in policy_keys}
         # State validation and persistence are short. Network execution is
         # serialized separately, never monopolizing the event inbox.

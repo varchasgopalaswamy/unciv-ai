@@ -7,6 +7,7 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import uncivai.GameExecutor
 import uncivai.TradeCycleScenarioSetup
+import uncivai.WarScenarioSetup
 import uncivai.bilateralStatus
 import uncivai.obj
 
@@ -35,4 +36,4 @@ internal fun communicationContext(runtime: GameExecutor, game: GameInfo, player:
 }
 
 /** One source of private communication roles for both gameplay and conversation views. */
-internal fun communicationScenario(runtime: GameExecutor, game: GameInfo, player: Civilization): GameplayScenario? = if (game.tileMap.mapParameters.name == TradeCycleScenarioSetup.MAP_NAME) TradeCycleScenarioSetup.scenario(runtime, game, player.civID) else null
+internal fun communicationScenario(runtime: GameExecutor, game: GameInfo, player: Civilization): GameplayScenario? = if (game.tileMap.mapParameters.name == TradeCycleScenarioSetup.MAP_NAME) TradeCycleScenarioSetup.scenario(runtime, game, player.civID) else WarScenarioSetup.scenario(runtime, game, player)

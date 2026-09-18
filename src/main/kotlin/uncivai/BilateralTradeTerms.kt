@@ -13,7 +13,7 @@ import kotlinx.serialization.json.JsonObject
 
 internal fun supportedTradeTerm(type: TradeOfferType, name: String): Boolean = when (type) {
     TradeOfferType.Gold, TradeOfferType.Gold_Per_Turn, TradeOfferType.Luxury_Resource,
-    TradeOfferType.Strategic_Resource, TradeOfferType.City,
+    TradeOfferType.Strategic_Resource, TradeOfferType.City, TradeOfferType.WarDeclaration,
     -> true
 
     TradeOfferType.Treaty -> name in setOf(Constants.peaceTreaty, Constants.researchAgreement, Constants.defensivePact)

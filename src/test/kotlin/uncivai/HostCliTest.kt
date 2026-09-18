@@ -20,6 +20,13 @@ class HostCliTest {
             assertEquals(null, parsed.scenario)
             assertEquals(null, parsed.seed)
             assertEquals(5, parsed.tradeCounteroffers)
+            for (variant in listOf("war-paid", "war-joint")) {
+                HostCli { parsed = it }.parse(listOf("--new-game", "--checkpoint", directory.resolve("game.json").toString(), "--data-dir", directory.toString(), "--scenario", variant, "--trade-counteroffers", "5"))
+                assertEquals(variant, parsed.scenario)
+            }
+            assertThrows(UsageError::class.java) {
+                HostCli { error("Invalid scenario reached startup") }.parse(listOf("--new-game", "--checkpoint", directory.resolve("game.json").toString(), "--data-dir", directory.toString(), "--scenario", "war-paid", "--trade-counteroffers", "0"))
+            }
             assertThrows(UsageError::class.java) {
                 HostCli { error("Invalid scenario reached startup") }.parse(listOf("--new-game", "--checkpoint", directory.resolve("game.json").toString(), "--data-dir", directory.toString(), "--scenario", "trade-cycle", "--trade-counteroffers", "5"))
             }

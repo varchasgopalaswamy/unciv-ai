@@ -1,5 +1,6 @@
 package uncivai
 
+import com.unciv.json.json
 import com.unciv.logic.GameInfo
 import com.unciv.logic.files.UncivFiles
 import com.unciv.view.GameView
@@ -165,7 +166,7 @@ class GameExecutor internal constructor(
                 "Checkpoint turn-start state is inconsistent"
             }
         }
-        restorePlayers(checkpoint.players)
+        restorePlayers(checkpoint.players, checkpoint.gameJson)
         checkpointStore = store
         if (scheduled) commitCheckpoint()
     }
@@ -207,7 +208,7 @@ class GameExecutor internal constructor(
             handoff = saved.handoff
             turnStart = null
             turnSessions.clear()
-            restorePlayers(saved.players)
+            restorePlayers(saved.players, saved.gameJson)
             val restoredCommunication = kotlinx.serialization.json.Json.decodeFromString<CommunicationState>(kotlinx.serialization.json.Json.encodeToString(saved.communication))
             communicationState = restoredCommunication.copy(
                 jobs = accounting.jobs, invocations = accounting.invocations,
@@ -257,7 +258,7 @@ class GameExecutor internal constructor(
             paused = true
             val issued = turnSessions.mapValues { it.value.identifiers.snapshot() }
             turnSessions.clear()
-            restorePlayers(saved.players)
+            restorePlayers(saved.players, saved.gameJson)
             for ((civilization, counters) in issued) {
                 turnSessions.getOrPut(civilization) { TurnSessionState() }.identifiers.retainIssued(counters)
             }
@@ -275,11 +276,22 @@ class GameExecutor internal constructor(
         }
     }
 
-    private fun restorePlayers(players: Map<String, SavedPlayerState>) {
+    private fun restorePlayers(players: Map<String, SavedPlayerState>, gameJson: String) {
+        // Rebuilding engine caches can append notices, for example about a captured
+        // city's connection. Validate handles against the original save, then require
+        // that loading preserved its entire notification prefix before binding them.
+        val serializer = json()
+        val original = serializer.fromJson(GameInfo::class.java, gameJson)
         for ((civilization, saved) in players) {
             val player = game.civilizations.single { it.civID == civilization }
+            val originalNotifications = original.civilizations.single { it.civID == civilization }.notifications
             check(saved.alertHandles.size == player.popupAlerts.size) { "Checkpoint alert state is inconsistent" }
-            check(saved.notificationHandles.size == player.notifications.size) { "Checkpoint notification state is inconsistent" }
+            check(saved.notificationHandles.size == originalNotifications.size) { "Checkpoint notification state is inconsistent" }
+            check(
+                player.notifications.size >= originalNotifications.size && originalNotifications.indices.all {
+                    serializer.toJson(originalNotifications[it]) == serializer.toJson(player.notifications[it])
+                },
+            ) { "Loading changed saved notifications" }
             turnSessions[civilization] = TurnSessionState(saved.identifiers).apply {
                 cityHandles.putAll(saved.cityHandles)
                 unitHandles.putAll(saved.unitHandles)
@@ -287,7 +299,7 @@ class GameExecutor internal constructor(
                     saved.alertHandles[index]?.let { alertHandles[alert] = it }
                 }
                 player.notifications.forEachIndexed { index, notification ->
-                    saved.notificationHandles[index]?.let { notificationHandles[notification] = it }
+                    saved.notificationHandles.getOrNull(index)?.let { notificationHandles[notification] = it }
                 }
                 dismissedNotifications.addAll(saved.dismissedNotifications)
                 revision = saved.revision

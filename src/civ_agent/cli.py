@@ -14,6 +14,7 @@ from civ_agent.commands import (
     inspect,
     trade,
     verify_trade_cycle,
+    verify_war_scenario,
 )
 
 
@@ -72,6 +73,13 @@ def parser() -> argparse.ArgumentParser:
         help="Audit every trade-cycle step against canonical receipts and the native save",
     )
     verify_trade.set_defaults(handler=verify_trade_cycle.run)
+
+    verify_war = matches.add_parser(
+        "verify-war-scenario",
+        parents=[verify_war_scenario.parser(add_help=False)],
+        help="Audit three-cornered war milestones against receipts and native state",
+    )
+    verify_war.set_defaults(handler=verify_war_scenario.run)
 
     histories = groups.add_parser("history", help="Export recorded player conversations").add_subparsers(required=True)
     export = histories.add_parser(

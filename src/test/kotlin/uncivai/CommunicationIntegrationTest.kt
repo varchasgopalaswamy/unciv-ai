@@ -8,6 +8,11 @@ import java.util.concurrent.TimeUnit
 
 class CommunicationIntegrationTest {
     @Test
+    fun `third party wars preserve native effects private consent and recovery`() {
+        runProbe("uncivai.ThirdPartyTradeProbe")
+    }
+
+    @Test
     fun `complete trade scenario settles every supported item and terminal path across restart`() {
         runProbe("uncivai.TradeCycleProbe")
     }

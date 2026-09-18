@@ -18,7 +18,9 @@ be empty for a gift. During war, both sides must include the offered Peace Treat
 peace and economic consideration use the same proposal and consent flow. See
 [war and peace](War-and-peace.md) for treaty rules.
 Engine declarations of friendship use the same stored proposal and decision flow.
-City-states, third-party clauses, mod-only terms and an agreement
+The [third-party war slice](Third-party-war-trades.md) also supports paid and joint
+declarations against mutually known major civilizations using these same proposals.
+City-states, mediated peace with human targets, mod-only terms and an agreement
 expiration/cancellation notification and memory workflow remain out of scope.
 Native engine durations still tick normally. The existing proposal deadline and
 withdrawal of an unaccepted proposal are distinct from cancelling an enacted deal.
@@ -179,7 +181,7 @@ player's memory together under the existing new-epoch recovery protocol.
 ## Playable verification scenario
 
 [`--scenario trade-cycle`](Trade-cycle-scenario.md) is the only gameplay scenario.
-It covers eleven staged negotiations, every supported item, intentional
+It covers eleven staged negotiations, every supported bilateral item, intentional
 decline/withdrawal/expiry, three counters, funded research and a two-way city
 exchange. Its runbook includes launch commands, the checkpoint verifier and
 scripted recovery checks.

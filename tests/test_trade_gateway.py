@@ -163,13 +163,62 @@ class TradeHost(Host):
         return await super().tool(name, args)
 
 
-@pytest.mark.parametrize("kind", ["economic", "peace", "bilateral"])
+def test_war_consent_rechecks_observed_target_relations_before_dispatch(tmp_path):
+    async def run():
+        io = ServiceIO()
+        memory = CivilizationState(tmp_path / "private", "Rome")
+        gateway = ProposalGateway(memory, io, tmp_path / "workspace")
+        host = TradeHost()
+        host.trade["clauses"].append(
+            {
+                "from": "Rome",
+                "to": "Greece",
+                "item": {"type": "WarDeclaration", "name": "France", "amount": 1, "duration": -1},
+            }
+        )
+        host.view["diplomacy"] = {"knownCivilizations": [{"civilizationId": "France", "atWar": False}]}
+        try:
+            old = await gateway.open("old", "communication", "g1", host, {})
+            observer = await gateway.open("observer", "gameplay", "g1", host, {})
+            await gateway.call(old, "player_turn", {}, "observe")
+            await gateway.call(old, "trade_read", {"proposal": "d1"}, "terms")
+            host.view["diplomacy"]["knownCivilizations"][0]["atWar"] = True
+            host.revision = "after-war"
+            await gateway.call(observer, "player_turn", {}, "new-observation")
+            result = await gateway.call(
+                old,
+                "trade_decide",
+                {"proposal": "d1", "decision": "accept", "intent": {"reason": "Join the war"}},
+                "accept",
+            )
+            assert result["error"] == "STALE_ASSUMPTIONS" and result["applied"] is False
+            assert not host.writes
+            assert result["changedRecords"] == ["observation:diplomacy/France"]
+            assert {"tool": "player_turn", "arguments": {}} in result["recovery"]["reads"]
+        finally:
+            await io.close()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("kind", ["economic", "peace", "bilateral", "third_party"])
 def test_trade_acceptance_uses_the_jobs_inspected_version_despite_other_reads(tmp_path, kind):
     async def run():
         io = ServiceIO()
         memory = CivilizationState(tmp_path / "private", "Rome")
         gateway = ProposalGateway(memory, io, tmp_path / "workspace")
         host = TradeHost()
+        if kind == "third_party":
+            host.trade["clauses"].append(
+                {
+                    "from": "Rome",
+                    "to": "Greece",
+                    "item": {"type": "WarDeclaration", "name": "France", "amount": 1, "duration": -1},
+                }
+            )
+            host.trade["yourWarDeclarations"] = [
+                {"targetCivilization": "France", "confirmation": ["Declare war on France?"]}
+            ]
         if kind == "bilateral":
             host.trade["clauses"] += [
                 {"from": a, "to": b, "item": {"type": "Treaty", "name": name, "amount": amount, "duration": 25}}
@@ -203,6 +252,11 @@ def test_trade_acceptance_uses_the_jobs_inspected_version_despite_other_reads(tm
             assert shown["trade"]["clauses"][0]["item"]["amount"] == 20
             host.trade["version"] = 2
             host.trade["clauses"][0]["item"]["amount"] = 40
+            if kind == "third_party":
+                host.trade["clauses"][1]["item"]["name"] = "Egypt"
+                host.trade["yourWarDeclarations"] = [
+                    {"targetCivilization": "Egypt", "confirmation": ["Declare war on Egypt?"]}
+                ]
             await gateway.call(chat, "trade_read", {"proposal": "d1"}, "new-read")
             # An unrelated ledger refresh must not select another job's newer terms.
             await gateway.call(old, "chat_read", {}, "greeting")
@@ -283,6 +337,7 @@ def test_trade_tools_keep_decisions_small_and_do_not_grant_gameplay(tmp_path):
                 "Agreement",
                 "Embassy",
                 "City",
+                "WarDeclaration",
             }
             assert tools["trade_decide"]["inputSchema"]["required"] == ["intent", "proposal", "decision"]
             assert set(tools["trade_decide"]["inputSchema"]["properties"]) == {"proposal", "decision", "intent"}
@@ -485,6 +540,50 @@ def test_trade_receipt_reconciliation_after_response_loss(tmp_path, enacted):
             assert len(host.writes) == int(enacted)
             receipt = json.loads(restarted.requests_for_job("chat")[0]["result"])
             assert ("outcome" in receipt) == enacted
+        finally:
+            await io.close()
+
+    asyncio.run(run())
+
+
+def test_duplicate_offer_rejection_with_null_trade_is_durable_and_does_not_break_settlement(tmp_path):
+    class BusyHost(HoldingHost):
+        async def tool(self, name, args):
+            if name == "player_communication" and args["op"] == "trade_offer" and self.active:
+                return {
+                    "error": "TRADE_UNAVAILABLE",
+                    "reason": "A negotiation is already holding gameplay.",
+                    "trade": None,
+                }
+            return await super().tool(name, args)
+
+    async def run():
+        io = ServiceIO()
+        memory = CivilizationState(tmp_path / "private", "Rome")
+        gateway = ProposalGateway(memory, io, tmp_path / "workspace")
+        host = BusyHost()
+        try:
+            chat = await gateway.open("chat", "communication", "g1", host, {})
+            game = await gateway.open("game", "gameplay", "g1", host, {}, game_turn=0)
+            args = {
+                "partner": "Greece",
+                "give": [{"type": "Gold", "name": "Gold", "amount": 30, "duration": -1}],
+                "receive": [],
+                "intent": {"reason": "Make the opening offer"},
+            }
+            assert (await gateway.call(chat, "trade_offer", args, "first"))["trade"]["status"] == "PENDING"
+            rejected = await gateway.call(game, "trade_offer", args, "duplicate")
+            assert rejected["error"] == "TRADE_UNAVAILABLE" and rejected["trade"] is None
+            assert not memory.pending()
+            assert await gateway.call(game, "trade_offer", args, "duplicate") == rejected
+            assert len(host.writes) == 1
+            # A later terminal read walks earlier receipts, including the null rejection.
+            host.trade.update(status="ENACTED", outcome={"action": "ENACT_TRADE"})
+            host.active = False
+            await gateway.call(chat, "trade_read", {"proposal": "d1"}, "settled")
+            summary = memory.summary(job="game")
+            assert summary["actions"][0]["outcome"] == "rejected"
+            assert summary["actions"][0].get("settlement") is None
         finally:
             await io.close()
 

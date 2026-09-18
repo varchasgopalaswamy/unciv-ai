@@ -48,6 +48,11 @@ code supplies request IDs, credentials and revisions for their commands.
   unavailable reasons and confirmation warnings. Peace trade options and incoming/
   outgoing offers include permitted terms and full leader text; see [war and peace](War-and-peace.md).
   Unmet identities and hidden locations, plans and third-party requests are excluded.
+
+  Binding trade proposals also support `WarDeclaration` terms against a mutually
+  known major: `from` declares war on `item.name`. Own warnings accompany trade
+  options and `trade_read`; the target receives a separate war event without the
+  private proposal or payment. See [third-party war trades](Third-party-war-trades.md).
 - `player_command`: submit exactly one command using the latest turn snapshot.
 - `player_result`: your victory/defeat result and pending combat reports, also available
   after scheduling stops. Combat fields, orders and capture choices are documented in

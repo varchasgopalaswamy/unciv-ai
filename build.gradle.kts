@@ -110,6 +110,15 @@ tasks.register<JavaExec>("verifyTradeCycle") {
     args(providers.gradleProperty("tradeCycleDir").orElse(layout.buildDirectory.dir("generated/trade-cycle").map { it.asFile.absolutePath }).get())
 }
 
+tasks.register<JavaExec>("verifyWarScenario") {
+    group = "verification"
+    description = "Drives the prepared war exercises and retains settlement checkpoints without model calls."
+    dependsOn(tasks.testClasses)
+    classpath = sourceSets.test.get().runtimeClasspath
+    mainClass = "uncivai.WarScenarioProbe"
+    args(providers.gradleProperty("warScenarioDir").orElse(layout.buildDirectory.dir("generated/war-scenario").map { it.asFile.absolutePath }).get())
+}
+
 val s04UiScenarios = layout.buildDirectory.dir("generated/s04-ui")
 val generateS04UiScenarios by tasks.registering(JavaExec::class) {
     group = "verification"

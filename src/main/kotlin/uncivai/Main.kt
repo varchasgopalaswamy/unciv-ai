@@ -14,20 +14,23 @@ private fun launchHost(options: CliOptions) {
         val players = options.mcpConfig?.let(::loadMcpPlayerConfig)
         val operatorToken = options.operatorConfig?.let(::loadOperatorConfig)
         val tls = options.tlsConfig?.let(::loadHostTls)
+        val expectedMap = options.scenario?.let { if (it == "trade-cycle") TradeCycleScenarioSetup.MAP_NAME else WarScenarioSetup.mapName(it) }
         val loaded = if (options.newGame) {
             if (options.scenario == "trade-cycle") {
                 HeadlessRuntime.createTradeCycleExercise(options.dataDirectory, options.seed ?: 412L)
+            } else if (options.scenario in setOf("war-paid", "war-joint")) {
+                HeadlessRuntime.createWarExercise(options.dataDirectory, checkNotNull(options.scenario), options.seed ?: 413L)
             } else {
                 HeadlessRuntime.createVanillaGame(options.dataDirectory, options.seed ?: System.currentTimeMillis())
             }
         } else if (options.resumeCheckpoint != null) {
-            HeadlessRuntime.loadCheckpoint(options.resumeCheckpoint, options.dataDirectory)
+            HeadlessRuntime.loadCheckpoint(options.resumeCheckpoint, options.dataDirectory, expectedMap)
         } else {
             HeadlessRuntime.load(checkNotNull(options.saveFile), options.dataDirectory)
         }
         loaded.use { runtime ->
-            require(options.scenario == null || runtime.game.tileMap.mapParameters.name == TradeCycleScenarioSetup.MAP_NAME) {
-                "Checkpoint is not the trade-cycle scenario. Choose a fresh --state-dir and --scenario trade-cycle."
+            require(expectedMap == null || runtime.game.tileMap.mapParameters.name == expectedMap) {
+                "Checkpoint is not the ${options.scenario} scenario. Choose a fresh --state-dir."
             }
             runtime.executor.accessGame {
                 options.tradeCounteroffers?.let { runtime.executor.communicationState.trades.counterofferLimit = it }

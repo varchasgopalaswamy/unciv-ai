@@ -41,7 +41,7 @@ internal class HostCli(private val launch: (CliOptions) -> Unit) : CliktCommand(
     private val resume by option("--resume-checkpoint", help = "Restore a host checkpoint.").path(mustExist = true, canBeDir = false)
     private val newGame by option("--new-game", help = "Create a Quick Vanilla Rome/Greece/France game; --scenario selects a prepared exercise.").flag()
     private val seed by option("--seed", help = "New-game random seed.").long()
-    private val scenario by option("--scenario", help = "Create the trade-cycle exercise or verify its identity on resume.").choice("trade-cycle")
+    private val scenario by option("--scenario", help = "Create a prepared exercise or verify its identity on resume.").choice("trade-cycle", "war-paid", "war-joint")
     private val counteroffers by option("--trade-counteroffers", help = "Counteroffer limit per negotiation.").int().restrictTo(0, 100)
     private val timeout by option("--trade-timeout", help = "Negotiation deadline in seconds.").int().restrictTo(1, 86400)
 
@@ -56,7 +56,8 @@ internal class HostCli(private val launch: (CliOptions) -> Unit) : CliktCommand(
         requireOption(port == null || players != null, "--port requires --mcp-config")
         requireOption(operator == null || players != null, "--operator-config requires --mcp-config")
         requireOption((tls != null) == (players != null), "Serving requires both --mcp-config and --tls-config (HTTPS only)")
-        requireOption(scenario == null || counteroffers == null || counteroffers == 3, "The trade-cycle exercise requires --trade-counteroffers 3")
+        requireOption(scenario != "trade-cycle" || counteroffers == null || counteroffers == 3, "The trade-cycle exercise requires --trade-counteroffers 3")
+        requireOption(scenario != "war-paid" || counteroffers?.let { it > 0 } != false, "The paid-war exercise requires at least one counteroffer")
         launch(CliOptions(save, data, players, port ?: 8765, checkpoint, resume, newGame, scenario, seed, operator, tls, counteroffers, timeout))
     }
 }

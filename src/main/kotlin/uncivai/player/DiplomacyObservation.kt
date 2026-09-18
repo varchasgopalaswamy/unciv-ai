@@ -91,7 +91,10 @@ internal fun observeDiplomacy(player: Civilization, active: Boolean, communicati
     val resources = player.getCivResourcesByName()
     fun terms(terms: List<PeaceTradeTerm>): List<DiplomacyTradeTerm> = immutable(
         terms.map { term ->
-            val supported = supportedTradeTerm(term.type, term.name)
+            // Imported requests may contain targets that this reader has never met.
+            // Supporting the category does not authorize revealing those identities.
+            val supported = supportedTradeTerm(term.type, term.name) &&
+                (term.type != TradeOfferType.WarDeclaration || player.getKnownCivs().any { it.isMajorCiv() && it.civID == term.name })
             val resource = term.type in setOf(TradeOfferType.Luxury_Resource, TradeOfferType.Strategic_Resource)
             // In particular, never resolve a raw city ID via the global desktop game singleton.
             // Unsupported offers are described without revealing private identifiers.

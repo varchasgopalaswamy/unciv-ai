@@ -143,8 +143,12 @@ class CivilizationState:
                 if event["kind"] in {"engine", "consent"}:
                     body = event.get("body", {})
                     participants = body.get("participants", [])
+                    subjects = set(participants)
+                    if event["kind"] == "engine":
+                        for war in body.get("wars", []):
+                            subjects.update((war["declaringCivilization"], war["targetCivilization"]))
                     RecordStore(db, self._meta(db, "gameTurn")).flag(
-                        subjects=participants,
+                        subjects=sorted(subjects),
                         reason=f"Diplomatic event {event['id']} needs review",
                         review_keys=["event:" + str(event["id"])],
                     )
@@ -591,13 +595,13 @@ class CivilizationState:
                 self._record(db, row["decision"], "decision", {**record["body"], "outcome": "uncertain"}, row["job"])
 
     def _settle_trade(self, db, value):
-        trade = value.get("trade", {})
+        trade = value.get("trade") or {}
         if trade.get("status") in {None, "PENDING"}:
             return
         records = self._records(db)
         for row in db.execute("SELECT o.* FROM outbox o JOIN outgoing a ON o.id=a.id WHERE result IS NOT NULL"):
             receipt = json.loads(row["result"])
-            if receipt.get("trade", {}).get("proposal") == trade.get("proposal"):
+            if (receipt.get("trade") or {}).get("proposal") == trade.get("proposal"):
                 record = records[row["decision"]]
                 self._record(db, row["decision"], "decision", {**record["body"], "settlement": value}, row["job"])
 
@@ -648,7 +652,7 @@ class CivilizationState:
                 row["job"],
             )
             self._settle_trade(db, result)
-            trade = result.get("trade", {})
+            trade = result.get("trade") or {}
             if trade.get("status") == "ENACTED" and (trade.get("outcome") or result.get("outcome")):
                 RecordStore(db, self._meta(db, "gameTurn")).flag(
                     subjects=[trade.get("author"), trade.get("partner")],

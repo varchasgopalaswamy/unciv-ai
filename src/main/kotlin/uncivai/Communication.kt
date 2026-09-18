@@ -103,6 +103,14 @@ internal class Communication(private val runtime: GameExecutor) {
                 if (it.request != arguments) throw PlayerSessionException(PlayerSessionFailure.REQUEST_ID_CONFLICT)
                 return@accessGame it.response
             }
+            fun settlementState(): TradeSettlementState {
+                val majors = game.civilizations.filter { it.isMajorCiv() }.sortedBy { it.civID }
+                return TradeSettlementState(
+                    majors.associate { it.civID to it.gold },
+                    majors.flatMap { a -> majors.filter { it !== a }.map { b -> ConfirmedTradeWar(a.civID, b.civID, a.isAtWarWith(b)) } },
+                )
+            }
+            val beforeSettlement = if (request.op == "trade_decide" && request.decision == "accept") settlementState() else null
             val response = when (request.op) {
                 "trade_offer", "trade_decide", "friendship_offer" -> trades.mutate(civilization, request)
 
@@ -152,7 +160,16 @@ internal class Communication(private val runtime: GameExecutor) {
                     obj("decision" to request.op, "proposal" to proposal, "version" to version, "accepted" to accepted(offer, game.turns))
                 }
             }
-            state.requests[requestKey] = CommunicationReceipt(arguments, response, CommunicationAudit(runtime.handoff, game.currentPlayer, System.currentTimeMillis()))
+            state.requests[requestKey] = CommunicationReceipt(
+                arguments,
+                response,
+                CommunicationAudit(
+                    runtime.handoff,
+                    game.currentPlayer,
+                    System.currentTimeMillis(),
+                    if (beforeSettlement != null && response["outcome"] is JsonObject) TradeSettlementAudit(beforeSettlement, settlementState()) else null,
+                ),
+            )
             runtime.commitCheckpoint()
             response
         }
@@ -215,26 +232,32 @@ internal class Communication(private val runtime: GameExecutor) {
     fun validate(civilization: String, request: TurnCommandRequest, opponent: String?, turn: Int) {
         if (request.socialVersion != null && request.socialVersion != (state.peaceVersions[civilization] ?: 0)) throw PlayerSessionException(PlayerSessionFailure.STALE_REVISION)
         if (request.kind !in setOf(TurnCommandKind.ATTACK, TurnCommandKind.CITY_ATTACK, TurnCommandKind.DECLARE_WAR) || opponent == null) return
-        if (state.offers.values.flatten().any {
-                state.acceptedVersions[it.proposal] == it.version && it.kind == "peace" && civilization in it.participants && opponent in it.participants && accepted(it, turn)
-            }
-        ) {
+        if (hasPeaceCommitment(civilization, opponent, turn)) {
             throw PlayerSessionException(PlayerSessionFailure.COMMAND_UNAVAILABLE)
         }
     }
 
+    internal fun hasPeaceCommitment(civilization: String, opponent: String, turn: Int): Boolean = state.offers.values.flatten().any {
+        state.acceptedVersions[it.proposal] == it.version && it.kind == "peace" && civilization in it.participants && opponent in it.participants && accepted(it, turn)
+    }
+
     fun enacted(civilization: String, opponent: String?, receipt: TurnCommandReceipt) {
         if (opponent == null || receipt.kind !in setOf(TurnCommandKind.DECLARE_WAR, TurnCommandKind.RESPOND_FRIENDSHIP)) return
+        diplomacyEnacted(civilization, opponent, if (receipt.kind == TurnCommandKind.RESPOND_FRIENDSHIP) "DECLARE_FRIENDSHIP" else receipt.kind.name, receipt.turn)
+    }
+
+    /** The affected pair learns the engine result, without a private trade's terms or sponsor. */
+    internal fun diplomacyEnacted(civilization: String, opponent: String, action: String, turn: Int) {
         val audience = listOf(civilization, opponent)
         trades.invalidateDiplomacy(civilization, opponent)
         val player = runtime.accessGame { it.getCivilization(civilization) }
         val other = player.gameInfo.getCivilization(opponent)
         val record = EngineOutcome(
             outcome = shortId("o"),
-            action = if (receipt.kind == TurnCommandKind.RESPOND_FRIENDSHIP) "DECLARE_FRIENDSHIP" else receipt.kind.name,
+            action = action,
             author = civilization,
             participants = audience,
-            turn = receipt.turn,
+            turn = turn,
             confirmation = bilateralConfirmation(player, other),
             relatedProposals = state.offers.values.map { it.last() }.filter { it.participants.toSet() == audience.toSet() }.map { ProposalReference(it.proposal, it.version) },
         )

@@ -95,6 +95,40 @@ object NotificationsProbe {
         check(runCatching { (detached.notifications.first().locations as MutableList).clear() }.exceptionOrNull() is UnsupportedOperationException)
         runtime.executor.accessGame { runtime.executor.commitCheckpoint() }
         write(root, NotificationRecovery(before, request))
+        verifyLoadNotices(root, runtime, before)
+    }
+
+    private fun verifyLoadNotices(root: Path, runtime: HeadlessRuntime, before: PlayerTurnSnapshot) {
+        val saved = CheckpointStore.capture(runtime.game, runtime.epoch, false, runtime.executor.turnSessions)
+        for (mode in listOf("append", "missing", "reordered", "bad-handles")) {
+            val loaded = runtime.game.clone().apply { setTransients() }
+            val player = loaded.getCivilization("Rome")
+            when (mode) {
+                "append" -> player.addNotification("New engine notice during load", NotificationCategory.General)
+                "missing" -> player.notifications.removeAt(0)
+                "reordered" -> java.util.Collections.swap(player.notifications, 0, 1)
+            }
+            val checkpoint = if (mode == "bad-handles") {
+                val state = saved.players.getValue("Rome")
+                saved.copy(players = saved.players + ("Rome" to state.copy(notificationHandles = state.notificationHandles.dropLast(1))))
+            } else {
+                saved
+            }
+            GameExecutor(loaded).use { executor ->
+                CheckpointStore(root.resolve("load-$mode.json")).use { store ->
+                    val result = runCatching { executor.restore(checkpoint, store) }
+                    if (mode != "append") {
+                        check(result.isFailure) { "Accepted $mode notification state" }
+                    } else {
+                        result.getOrThrow()
+                        val restored = PlayerHost(executor).bindPlayer("Rome").turn()
+                        check(restored.notifications.take(3) == before.notifications)
+                        check(restored.notifications.last().let { it.handle == "notice4" && it.text == "New engine notice during load" })
+                        check(restored.revision != before.revision)
+                    }
+                }
+            }
+        }
     }
 
     private fun dismiss(root: Path, runtime: HeadlessRuntime, api: GameplayTestApi) {

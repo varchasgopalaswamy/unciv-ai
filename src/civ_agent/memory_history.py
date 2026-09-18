@@ -16,7 +16,7 @@ def action_text(command, receipt, settlement=None):
         return f"Dismissed {len(command['targets'])} ordinary notifications"
     if kind in {"trade_offer", "trade_decide", "friendship_offer"}:
         result = settlement or receipt or {}
-        trade = result.get("trade", {})
+        trade = result.get("trade") or {}
         if trade.get("status") == "ENACTED" and (trade.get("outcome") or result.get("outcome")):
             return "Engine agreement enacted"
         return f"Diplomatic proposal {trade.get('status', 'recorded').lower()}"

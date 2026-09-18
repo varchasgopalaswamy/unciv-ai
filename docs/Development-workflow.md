@@ -65,18 +65,18 @@ uv run ruff check .
 uv run ruff format --check .
 uv run pyrefly check
 uv run pytest
-uv build
 ```
 
 Ruff checks and formats Python; Pyrefly checks the package and tests; pytest runs
 the launcher, scheduler, history, and HTTPS regression suites. Those tests use
 temporary match directories and fake model processes. They do not require a live
 game or model account. The existing unittest test cases run under pytest alongside
-new pytest tests. `uv build` produces a wheel and source archive in `dist/`.
+new pytest tests. Routine validation uses the source checkout; producing a wheel
+or source archive is not a required check.
 
 Add dependencies with `uv add PACKAGE`, or development tools with `uv add --dev
 PACKAGE`, and include both metadata and lockfile changes. Apply formatting with
-`uv run ruff format .`. CI runs the locked checks and package build; the local
+`uv run ruff format .`. CI runs the locked checks; the local
 prek hooks check Python formatting, lint, and types when relevant files change.
 
 Host commands discover the JVM checkout from the working directory or editable

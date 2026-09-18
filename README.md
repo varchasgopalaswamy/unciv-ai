@@ -27,9 +27,14 @@ opens negotiation and gameplay pauses until it closes. The default limit is thre
 shared counteroffers and five minutes; configure `--trade-counteroffers` and
 `--trade-timeout` at host launch. Chat and communication jobs stay responsive. Use
 `--scenario trade-cycle` for the [complete trade exercise](docs/Trade-cycle-scenario.md),
-including counteroffers, terminal decisions, paid peace, every supported item,
+including counteroffers, terminal decisions, paid peace, every supported bilateral item,
 and native-save verification with `civ-agent match verify-trade-cycle`.
 `civ-agent trade` provides human inspection and decisions.
+
+[Third-party war trades](docs/Third-party-war-trades.md) add paid and joint
+declarations against mutually known majors, with private consent, native war
+effects and durable target notifications. The [sprint handoff](docs/Sprints.md)
+records this delivery and the next sprint: enacted agreement expiration/cancellation.
 
 Read [AGENTS.md](AGENTS.md) for confidentiality and contribution instructions, and [Development workflow](docs/Development-workflow.md) for engine branches, local overrides and dependency updates.
 

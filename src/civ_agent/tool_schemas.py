@@ -32,7 +32,15 @@ class Proposal(BoundaryModel):
 
 class TradeItem(BoundaryModel):
     type: Literal[
-        "Gold", "Gold_Per_Turn", "Luxury_Resource", "Strategic_Resource", "Treaty", "Agreement", "Embassy", "City"
+        "Gold",
+        "Gold_Per_Turn",
+        "Luxury_Resource",
+        "Strategic_Resource",
+        "Treaty",
+        "Agreement",
+        "Embassy",
+        "City",
+        "WarDeclaration",
     ]
     name: str
     amount: Annotated[int, Field(ge=1)]

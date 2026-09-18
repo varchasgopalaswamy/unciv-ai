@@ -42,7 +42,5 @@ jobs:
         run: uv run --locked pyrefly check
       - name: Test Python package
         run: uv run --locked pytest
-      - name: Build Python distribution
-        run: uv build
       - name: Build and test
         run: ./gradlew --no-daemon engineInfo build

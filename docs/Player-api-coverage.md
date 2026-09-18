@@ -23,8 +23,8 @@ test, and UI comparison evidence. Unsupported items remain explicit.
 | Research | Tree, descriptions, progress, costs, prerequisites, queues, free choices, repeatable tech | Shared queue validation/free choices, displayed science and technology costs/progress/turn estimates; on-demand tree catalogues, selected desktop descriptions, prerequisites, ordered research paths and unavailable reasons; full visual tree parity not established |
 | Policies | Branches, requirements, costs, adoption, free choices, postponement | Shared adoption and picker dismissal; on-demand culture/costs, branches, prerequisites, era requirements, selected desktop benefits and completion effects |
 | Great people | Points and thresholds, free choices, placement failure, special actions, Maya restrictions | Shared free choices with revision and durable receipts; city specialist yields, points per turn, empire accumulated points, thresholds and source rows; shared research/construction/culture abilities, Golden Ages and instant improvements with effects, reasons and durable receipts; city-state missions, remaining expansion actions and overview details incomplete |
-| Diplomacy | Known civilizations, relations, modifiers, war/peace, treaties, denunciations, promises, demands | Met major identities/captions, status and peace treaty turns, legal war/peace actions and unavailable reasons, shared war confirmations and declarations; friendship, demands, denunciation, modifiers and broader information missing |
-| Trade | Offers, counteroffers, validity, resource/gold/city transfers, acceptance/rejection, expiry | Peace negotiation plus canonical economic gold/GPT/luxury/strategic-resource proposals, explicit version consent, asynchronous acceptance/counteroffers, decline/withdrawal, expiry, current engine agreements and durable receipts; city transfers, third-party and other trades missing |
+| Diplomacy | Known civilizations, relations, modifiers, war/peace, treaties, denunciations, promises, demands | Met major identities/captions, status, treaty durations, legal war/peace actions, shared war confirmations, declarations and friendship; paid/joint third-party wars with per-signer private peace checks; demands, denunciation, full modifiers and broader information missing |
+| Trade | Offers, counteroffers, validity, resource/gold/city transfers, acceptance/rejection, expiry | Canonical gold/GPT/resources, peace, embassies, borders, research, defensive pacts, city transfers and paid/joint wars; explicit version consent, asynchronous counters/decisions, proposal expiry, current engine agreements and durable receipts; enacted-agreement lifecycle controls, mediated peace and other trades missing |
 | City-states | Influence, quests, gifts, protection, bullying, war/peace, allies | Not implemented |
 | Religion | Pantheon, founding/enhancing/reforming, beliefs, pressure, conversion, religious units | Not implemented |
 | Espionage | Spy status, assignment, promotion, stealing technologies, elections, coups, reports | Not implemented |
@@ -82,6 +82,13 @@ UI delegation and two-player HTTPS saved-state, growth, rollback and restart che
 The [Great People slice](Great-people.md) covers both players' abilities and
 on-demand research/policy observations, with native-state, generation, rollback,
 restart and retry verification. Live-model and visual desktop acceptance remain separate.
+
+The [third-party war inventory](Third-party-war-trades.md) covers paid/joint
+declarations, own warnings, imported-request identity filtering, private peace
+commitments, canonical outcomes and target events. HTTPS checks compare native
+effects, including defensive pacts, through consent, scheduled turns, restart,
+rollback and interrupted checkpoint writes. The [sprint handoff](Sprints.md)
+records enacted agreement lifecycle work as the next slice.
 
 The [chat, memory and recovery slice](Chat-memory-and-recovery.md) adds asynchronous
 communication, provenance-aware private notes, scoped proposal approval and explicit

@@ -156,6 +156,23 @@ def test_old_store_rejected_without_migration(tmp_path):
         CivilizationState(directory, "Rome")
 
 
+def test_sponsored_war_flags_plans_about_the_target_without_treating_chat_as_fact(tmp_path):
+    memory = setup(tmp_path)
+    target = create(memory, plan(subjects=["France"]))
+    unrelated = create(memory, plan(subjects=["Egypt"]))
+    body = {
+        "participants": ["Rome", "Greece"],
+        "action": "ENACT_TRADE",
+        "wars": [{"declaringCivilization": "Greece", "targetCivilization": "France", "atWar": True}],
+        "turn": 4,
+    }
+    memory.ingest("g1", [{"id": 1, "kind": "message", "body": body}], 1)
+    assert not current(memory, target)["needsReview"]
+    memory.ingest("g1", [{"id": 2, "kind": "engine", "body": body}], 2)
+    assert current(memory, target)["needsReview"]
+    assert not current(memory, unrelated)["needsReview"]
+
+
 def test_search_pages_and_short_memory_ids_do_not_collide_with_messages(tmp_path):
     memory = setup(tmp_path)
     memory.ingest("g1", [{"id": 1, "kind": "message", "body": {"message": "m1", "text": "Hello"}}], 1)

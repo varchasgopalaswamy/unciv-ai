@@ -44,6 +44,8 @@ The default match directory is `~/.local/state/unciv-host/demo`, or the value of
 credentials and starts a Quick Vanilla game between Rome, Greece, and France.
 Each player aims to win; see the [ordinary-game setup](Vanilla-game.md).
 `--scenario trade-cycle` instead selects the prepared Rome/Greece trade exercise.
+`--scenario war-paid` and `--scenario war-joint` select the three-player
+[guided war exercises](War-trades-live-scenario.md), with private negotiating roles.
 Later launches resume `exploration.json` and retain the same credentials; an
 explicit scenario option also checks that the saved game belongs to that exercise.
 Missing credentials for an existing checkpoint must be restored or supplied with

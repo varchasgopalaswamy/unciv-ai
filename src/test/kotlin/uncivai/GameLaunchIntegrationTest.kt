@@ -39,7 +39,7 @@ class GameLaunchIntegrationTest {
             launch(root, "create", listOf("--new-game", "--checkpoint", checkpoint.toString(), "--scenario", "trade-cycle"), 0)
             val original = Files.readString(checkpoint)
             val saved = Json.parseToJsonElement(original).jsonObject
-            assertEquals("3", saved.getValue("formatVersion").jsonPrimitive.content)
+            assertEquals("4", saved.getValue("formatVersion").jsonPrimitive.content)
             val game = Json.parseToJsonElement(saved.getValue("gameJson").jsonPrimitive.content).jsonObject
             val map = game.getValue("tileMap").jsonObject
             val parameters = map.getValue("mapParameters").jsonObject
@@ -58,7 +58,7 @@ class GameLaunchIntegrationTest {
             val otherSaved = JsonObject(saved + ("gameJson" to JsonPrimitive(otherGame.toString())))
             Files.writeString(other, otherSaved.toString())
             launch(root, "mismatch", listOf("--resume-checkpoint", other.toString(), "--scenario", "trade-cycle"), 1)
-            assertTrue(Files.readString(root.resolve("mismatch.log")).contains("Checkpoint is not the trade-cycle scenario"))
+            assertTrue(Files.readString(root.resolve("mismatch.log")).contains("Checkpoint scenario does not match"))
             assertEquals(otherSaved.toString(), Files.readString(other))
             val legacy = root.resolve("legacy.json")
             val legacySaved = JsonObject(saved + ("formatVersion" to JsonPrimitive(2))).toString()
@@ -66,6 +66,24 @@ class GameLaunchIntegrationTest {
             launch(root, "legacy", listOf("--resume-checkpoint", legacy.toString()), 1)
             assertTrue(Files.readString(root.resolve("legacy.log")).contains("Unsupported checkpoint version; start a new game"))
             assertEquals(legacySaved, Files.readString(legacy))
+        } finally {
+            deleteTreeWithoutFollowingLinks(root)
+        }
+    }
+
+    @Test
+    fun `war exercises preserve private history and negotiate native wars`() {
+        val root = Files.createTempDirectory("war-launch-")
+        try {
+            launch(root, "war-probe", listOf(root.toString()), 0, "uncivai.WarScenarioProbe")
+            val checkpoint = root.resolve("war-paid/exploration.json")
+            val original = Files.readString(checkpoint)
+            launch(root, "mismatched-war", listOf("--resume-checkpoint", checkpoint.toString(), "--scenario", "war-joint"), 1)
+            assertEquals(original, Files.readString(checkpoint))
+            launch(root, "resume-war", listOf("--resume-checkpoint", checkpoint.toString(), "--scenario", "war-paid"), 0)
+            // A valid scheduled restart intentionally persists the paused state.
+            val expected = JsonObject(Json.parseToJsonElement(original).jsonObject + ("paused" to JsonPrimitive(true)))
+            assertEquals(expected, Json.parseToJsonElement(Files.readString(checkpoint)))
         } finally {
             deleteTreeWithoutFollowingLinks(root)
         }
