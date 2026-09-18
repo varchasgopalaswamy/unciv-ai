@@ -114,9 +114,11 @@ A live model exercise, graphical desktop acceptance and full trade parity remain
 separate gates. [Three-Cornered War](War-trades-live-scenario.md) provides a guided live
 Rome/Greece/France exercise with prepared launchers and a checkpoint verifier.
 The [September 18 live results](War-trades-live-results.md) confirm all three
-declaration forms and restart preservation; both runs reached their wall-time
-limits before completing the second continuation round. Graphical acceptance
-has not been performed.
+declaration forms, restart preservation and two continuation rounds. Both saved
+runs completed after resuming from their initial wall-time limits.
+[Desktop acceptance](War-trades-desktop-acceptance.md) also passed for the three
+Vanilla war-trade forms, native acceptance/notification screens and the shared
+declaration warning, with 16 inspected screenshots and exact settlement checks.
 Introductions require a mod-only option in the bundled rulesets.
 The native mediated-peace offer explicitly excludes human targets because their
 consent is unknown; that action remains unsupported. See the

@@ -193,6 +193,22 @@ tasks.register<JavaExec>("runInspectUi") {
     }
 }
 
+tasks.register<JavaExec>("runWarTradeDesktop") {
+    group = "verification"
+    description = "Captures real desktop war-trade screens and accepts native requests in isolated fixtures."
+    dependsOn(tasks.testClasses, prepareInspectionUiAssets)
+    classpath = sourceSets.test.get().output + sourceSets.main.get().output + uiRuntime
+    mainClass = "uncivai.WarTradeDesktopProbe"
+    workingDir = inspectionUiDirectory.get().dir("runtime-engine/android/assets").asFile
+    systemProperty("uncivai.assetsDir", workingDir.absolutePath)
+    systemProperty("java.awt.headless", "false")
+    doFirst {
+        val output = providers.gradleProperty("warDesktopDir")
+        require(output.isPresent) { "runWarTradeDesktop requires -PwarDesktopDir=<new absolute directory>" }
+        args(output.get())
+    }
+}
+
 tasks.register("engineInfo") {
     group = "help"
     description = "Shows the engine checkout, revision and runtime assets selected for this build."

@@ -37,13 +37,21 @@ for Roman entry. A separate joint-war run enacted both declarations with a
 planned restart preservation passed. The first attempted run exposed the fixed
 receipt-handler failure and is preserved separately.
 
-Both one-hour runs stopped during their second continuation round: Run A with
-Rome active at handoff 6, Run B with France active at handoff 8. The full live
-exercise therefore remains unverified. Their checkpoints are paused and services
-stopped. Two initial 300-second Roman activations in Run A timed out with confirmed
-work retained; later activations used 600 seconds without extending either run's
-overall budget. Desktop acceptance remains separate. Any follow-up continuation
-needs an explicit new wall-time budget and must retain the existing deals.
+Both initial one-hour runs stopped during their second continuation round. At the
+user's request, the original saved games resumed with additional windows of
+30 minutes for Run A and 15 minutes for Run B. Both reached native turn 3 and
+handoff 9 within those windows; every verifier check now passes, including two
+rounds after Run A's planned restart. Original deals, outcomes and all prior
+communication receipts remain unchanged. Final checkpoints are paused and all
+services are stopped.
+
+[Desktop acceptance](War-trades-desktop-acceptance.md) also passed: 16 actual
+rendered screenshots, native offer/acceptance buttons, target war notices,
+relationships and the shared native promise/pact warning. A reusable
+`runWarTradeDesktop` task captures isolated Vanilla fixtures and checks native
+balances and wars. Targeted compilation and formatting passed. Prepared draft
+terms and direct-declaration warning inspection are explicit limits of this UI
+exercise; it does not establish full player-API parity.
 
 ## Next sprint: enacted agreement lifecycle
 

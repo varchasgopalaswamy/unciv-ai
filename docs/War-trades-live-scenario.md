@@ -1,8 +1,9 @@
 # Live scenario: Three-Cornered War
 
-Status: both scripted engine scenarios pass. The September 18 live runs enacted
-all three declaration forms and verified restart preservation, but both exhausted
-their wall-time budgets before finishing the second continuation round. See the
+Status: both scripted engine scenarios and both September 18 live runs pass,
+including two continuation rounds and restart preservation. The initially
+interrupted runs completed after resuming their saved games with additional time.
+[Desktop acceptance](War-trades-desktop-acceptance.md) also passed. See the
 [live results and evidence](War-trades-live-results.md).
 The launcher accepts `war-paid` and `war-joint` alongside `trade-cycle`.
 
@@ -115,6 +116,11 @@ and four rounds and 48 invocations for Run B. Allow up to one hour per run and
 The first live attempt used 300 seconds per activation; two Roman jobs timed out
 before handoff, so the activation limit was raised without extending the overall
 wall-time or invocation budgets. These limits are not cost estimates.
+Both initial runs later needed continuation: the user authorized completion, with
+additional windows of 30 minutes for Run A and 15 minutes for Run B. They finished
+within those windows using the original saves and deals. On a later resume,
+`--max-seconds` must cover elapsed time since the original run start plus the new
+allowance, because downtime counts toward the cumulative wall-time limit.
 Use the players' configured models.
 Report unmet milestones before extending limits. No package-distribution build
 is required for preparing or running the exercise.
