@@ -51,6 +51,15 @@ class HostLauncherTest(unittest.TestCase):
         checkpoint.write_text("existing checkpoint", encoding="utf-8")
         return checkpoint
 
+    def test_mixed_game_distinguishes_humans_without_granting_native_ai_credentials(self):
+        self.assertEqual(0, self.run_launcher("--scenario", "mixed-diplomacy"))
+        players = json.loads((self.state / "players.json").read_text())["players"]
+        self.assertEqual(
+            {entry["civilizationId"]: entry.get("controller", "AGENT") for entry in players},
+            {"Rome": "AGENT", "Greece": "AGENT", "France": "HUMAN", "Egypt": "HUMAN"},
+        )
+        self.assertEqual(4, len({entry["token"] for entry in players}))
+
     def test_new_game_creates_private_distinct_credentials_and_executes_argv(self):
         self.assertEqual(0, self.run_launcher("--scenario", "trade-cycle", "--seed", "42", "--port", "8766"))
         players_path = self.state / "players.json"

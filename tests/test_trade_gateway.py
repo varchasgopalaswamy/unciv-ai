@@ -338,6 +338,7 @@ def test_trade_tools_keep_decisions_small_and_do_not_grant_gameplay(tmp_path):
                 "Embassy",
                 "City",
                 "WarDeclaration",
+                "PeaceProposal",
             }
             assert tools["trade_decide"]["inputSchema"]["required"] == ["intent", "proposal", "decision"]
             assert set(tools["trade_decide"]["inputSchema"]["properties"]) == {"proposal", "decision", "intent"}

@@ -37,7 +37,11 @@ internal data class CommunicationRequest(
     val give: List<TradeSelection> = emptyList(),
     val receive: List<TradeSelection> = emptyList(),
     val decision: String? = null,
+    val nativeAction: NativeDiplomaticAction? = null,
 )
+
+@Serializable
+internal data class NativeDiplomaticAction(val kind: String, val target: String, val revision: String, val selection: String? = null)
 
 @Serializable
 internal data class ModelUsage(
@@ -62,7 +66,7 @@ internal data class CommunicationJob(val civilization: String, val purpose: Stri
 internal data class CommunicationEvent(val id: Int, val kind: String, val body: JsonObject, val wake: Boolean)
 
 @Serializable
-internal data class ChatMessage(val message: String, val author: String, val participants: List<String>, val public: Boolean, val text: String, val mentions: List<String>, val turn: Int)
+internal data class ChatMessage(val message: String, val author: String, val participants: List<String>, val public: Boolean, val text: String, val mentions: List<String>, val turn: Int, val nativeAction: NativeDiplomaticAction? = null)
 
 @Serializable
 internal data class SocialOffer(

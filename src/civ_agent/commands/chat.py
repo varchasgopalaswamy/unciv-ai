@@ -18,6 +18,9 @@ def parser(*, add_help=True):
     result.add_argument("--state-dir", type=Path, required=True)
     result.add_argument("--to", help="Private recipient; omit for public chat")
     result.add_argument("--text")
+    result.add_argument("--native-action", choices=("DENOUNCE", "ISSUE_DEMAND", "RESPOND_DIPLOMACY"))
+    result.add_argument("--target", help="Civilization for a native action, or an owned diplomacy alert handle")
+    result.add_argument("--selection", help="Native demand kind or offered diplomatic response")
     result.add_argument("--mention", action="append", default=[])
     result.add_argument("--proposal")
     result.add_argument("--participants", nargs="+")
@@ -45,6 +48,23 @@ async def perform(args):
             fields.update(op="send", text=args.text, mentions=args.mention)
             if args.to:
                 fields["to"] = args.to
+            if getattr(args, "native_action", None):
+                if not args.target:
+                    raise ValueError("--target is required for native actions")
+                fields["nativeAction"] = {
+                    "kind": args.native_action,
+                    "target": args.target,
+                    "revision": state["revision"],
+                }
+                if args.selection:
+                    fields["nativeAction"]["selection"] = args.selection
+                print(
+                    json.dumps(
+                        public_result({"diplomacy": state.get("diplomacy"), "alerts": state.get("alerts")}), indent=2
+                    )
+                )
+                if input("Execute this native diplomatic action with the message? [y/N] ").strip().lower() != "y":
+                    return
         elif action == "offer":
             if not args.terms or not args.participants:
                 raise ValueError("--terms and --participants are required")

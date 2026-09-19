@@ -23,8 +23,8 @@ test, and UI comparison evidence. Unsupported items remain explicit.
 | Research | Tree, descriptions, progress, costs, prerequisites, queues, free choices, repeatable tech | Shared queue validation/free choices, displayed science and technology costs/progress/turn estimates; on-demand tree catalogues, selected desktop descriptions, prerequisites, ordered research paths and unavailable reasons; full visual tree parity not established |
 | Policies | Branches, requirements, costs, adoption, free choices, postponement | Shared adoption and picker dismissal; on-demand culture/costs, branches, prerequisites, era requirements, selected desktop benefits and completion effects |
 | Great people | Points and thresholds, free choices, placement failure, special actions, Maya restrictions | Shared free choices with revision and durable receipts; city specialist yields, points per turn, empire accumulated points, thresholds and source rows; shared research/construction/culture abilities, Golden Ages and instant improvements with effects, reasons and durable receipts; city-state missions, remaining expansion actions and overview details incomplete |
-| Diplomacy | Known civilizations, relations, modifiers, war/peace, treaties, denunciations, promises, demands | Met major identities/captions, status, treaty durations, legal war/peace actions, shared war confirmations, declarations and friendship; paid/joint third-party wars with private nonblocking social-promise advice; demands, denunciation, full modifiers and broader information missing |
-| Trade | Offers, counteroffers, validity, resource/gold/city transfers, acceptance/rejection, expiry | Canonical gold/GPT/resources, peace, embassies, borders, research, defensive pacts, city transfers and paid/joint wars; explicit version consent, asynchronous counters/decisions, proposal expiry, stable enacted agreement references, native ending history and durable receipts; mediated peace and other trades missing. No native control permits voluntary early cancellation of these enacted deals. |
+| Diplomacy | Known civilizations, relations, modifiers, war/peace, treaties, denunciations, promises, demands | Met major identities/captions, status, treaties, native AI opinion modifiers, native promises and denunciation durations; war/peace/friendship, explicit chat denunciations/demands and owned native responses, including major-player city-state incident messages; nonblocking social peace advice. Full information parity and direct city-state interaction remain outstanding; see [mixed-player diplomacy](Mixed-player-diplomacy.md). |
+| Trade | Offers, counteroffers, validity, resource/gold/city transfers, acceptance/rejection, expiry | Canonical gold/GPT/resources, peace, embassies, borders, research, defensive pacts, city transfers, paid/joint wars and native-permitted mediated peace with an AI third party; exact version consent, counters/decisions, expiry, stable enacted agreement references and native ending history. Agent–AI native offers/friendship queue across turns with durable outcomes; human–agent trades use shared negotiation. Unsupported or hidden native terms are decline-only. No native control permits voluntary early cancellation of these enacted deals. |
 | City-states | Influence, quests, gifts, protection, bullying, war/peace, allies | Not implemented |
 | Religion | Pantheon, founding/enhancing/reforming, beliefs, pressure, conversion, religious units | Not implemented |
 | Espionage | Spy status, assignment, promotion, stealing technologies, elections, coups, reports | Not implemented |
@@ -46,8 +46,11 @@ an embedded human player connected to the authoritative host.
 The [encounter inventory](Encounter-and-diplomacy.md) records the first-contact
 implementation, initial diplomacy observations, scheduled encounter/restart tests,
 and each remaining popup's UI behavior and coverage gap. First contact and war messages can be
-acknowledged. The [war and peace slice](War-and-peace.md) supports negotiated peace;
-remaining unsupported diplomatic decisions still block turn advancement.
+acknowledged. The [war and peace slice](War-and-peace.md) supports negotiated peace.
+The [mixed-player slice](Mixed-player-diplomacy.md) adds native major-player
+demands, denunciation and incident responses, plus the agent–AI offer bridge.
+Unsupported decisions still block turn advancement; these slices do not establish
+full city-state, mod or embedded-human gameplay coverage.
 
 ## Known architectural gaps
 

@@ -202,6 +202,33 @@ tasks.register<JavaExec>("runInspectUi") {
     }
 }
 
+tasks.register<JavaExec>("verifyMixedDiplomacyScenario") {
+    group = "verification"
+    description = "Exercises mixed-controller diplomacy, native AI turns and pending-request recovery over HTTPS."
+    dependsOn(tasks.testClasses)
+    classpath = sourceSets.test.get().runtimeClasspath
+    mainClass = "uncivai.MixedDiplomacyProbe"
+    workingDir = uncivAssets
+    systemProperty("uncivai.assetsDir", uncivAssets.absolutePath)
+    args(providers.gradleProperty("mixedScenarioDir").orElse(layout.buildDirectory.dir("verification/mixed-diplomacy").map { it.asFile.absolutePath }).get())
+}
+
+tasks.register<JavaExec>("runMixedDiplomacyDesktop") {
+    group = "verification"
+    description = "Captures native demands, responses, denunciation and delayed AI offers through desktop controls."
+    dependsOn(tasks.testClasses, prepareInspectionUiAssets)
+    classpath = sourceSets.test.get().output + sourceSets.main.get().output + uiRuntime
+    mainClass = "uncivai.MixedDiplomacyDesktopProbe"
+    workingDir = inspectionUiDirectory.get().dir("runtime-engine/android/assets").asFile
+    systemProperty("uncivai.assetsDir", workingDir.absolutePath)
+    systemProperty("java.awt.headless", "false")
+    doFirst {
+        val output = providers.gradleProperty("mixedDesktopDir")
+        require(output.isPresent) { "runMixedDiplomacyDesktop requires -PmixedDesktopDir=<new absolute directory>" }
+        args(output.get())
+    }
+}
+
 tasks.register<JavaExec>("runWarTradeDesktop") {
     group = "verification"
     description = "Captures real desktop war-trade screens and accepts native requests in isolated fixtures."

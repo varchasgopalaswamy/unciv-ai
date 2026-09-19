@@ -103,7 +103,7 @@ def test_models_do_not_echo_private_inputs_and_optional_tool_fields_stay_omitted
         assert validate(TOOL_MODELS[name], arguments).model_dump(by_alias=True, exclude_unset=True) == arguments
 
 
-def test_war_trade_terms_are_supported_but_unconsented_third_party_peace_is_excluded():
+def test_war_and_mediated_peace_terms_use_trade_but_introductions_remain_excluded():
     terms = {
         "partner": "Greece",
         "give": [],
@@ -113,7 +113,9 @@ def test_war_trade_terms_are_supported_but_unconsented_third_party_peace_is_excl
     schema = TOOL_MODELS["trade_offer"].model_json_schema()
     assert Draft202012Validator(schema).is_valid(terms)
     assert validate(TOOL_MODELS["trade_offer"], terms).model_dump(exclude_unset=True) == terms
-    for kind in ("PeaceProposal", "Introduction"):
+    terms["receive"][0]["type"] = "PeaceProposal"
+    assert Draft202012Validator(schema).is_valid(terms)
+    for kind in ("Introduction",):
         terms["receive"][0]["type"] = kind
         assert not Draft202012Validator(schema).is_valid(terms)
         with pytest.raises(ValueError, match="INVALID_ARGUMENT"):

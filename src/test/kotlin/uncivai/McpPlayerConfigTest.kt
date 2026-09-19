@@ -35,6 +35,18 @@ class McpPlayerConfigTest {
     }
 
     @Test
+    fun `trusted human controller assignment is explicit and rejects malformed values`() = withConfig { file ->
+        Files.writeString(file, configuration(player("Rome", tokenA), """{"civilizationId":"France","token":"$tokenB","controller":"HUMAN"}"""))
+        assertEquals(listOf("AGENT", "HUMAN"), loadMcpPlayerConfig(file).map { it.controller })
+        for (value in listOf("null", "{}", "[]", "true", "123", "\"AI\"", "\"human\"")) {
+            Files.writeString(file, configuration("""{"civilizationId":"France","token":"$tokenB","controller":$value}"""))
+            val failure = runCatching { loadMcpPlayerConfig(file) }.exceptionOrNull()
+            assertEquals("Invalid MCP player configuration", failure?.message)
+            assertNull(failure?.cause)
+        }
+    }
+
+    @Test
     fun `invalid configuration cannot quote credentials or silently change the binding schema`() = withConfig { file ->
         val invalidConfigurations = listOf(
             """{"players":[{"civilizationId":"Rome","token":"$tokenA"""",

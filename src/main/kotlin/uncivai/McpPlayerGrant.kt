@@ -10,7 +10,7 @@ import java.nio.file.attribute.PosixFileAttributeView
 import java.nio.file.attribute.PosixFilePermission
 
 /** Trusted configuration only; deliberately has no generated toString containing credentials. */
-internal class McpPlayerGrant(val civilizationId: String, val token: String)
+internal class McpPlayerGrant(val civilizationId: String, val token: String, val controller: String = "AGENT")
 
 internal fun privateConfigurationBytes(path: Path, maxBytes: Int = 65_536): ByteArray {
     require(path.isAbsolute) { "MCP configuration path must be absolute" }
@@ -51,12 +51,14 @@ internal fun loadMcpPlayerConfig(path: Path): List<McpPlayerGrant> {
         require(entries != null && entries.size in 1..64)
         entries.map { entry ->
             val player = entry as? JsonObject
-            require(player != null && player.keys == setOf("civilizationId", "token"))
+            require(player != null && player.keys.containsAll(setOf("civilizationId", "token")) && player.keys.all { it in setOf("civilizationId", "token", "controller") })
             val civilizationId = player["civilizationId"] as? JsonPrimitive
             val token = player["token"] as? JsonPrimitive
             require(civilizationId != null && civilizationId.isString && civilizationId.content.isNotBlank())
             require(token != null && token.isString && tokenPattern.matches(token.content))
-            McpPlayerGrant(civilizationId.content, token.content)
+            val controller = player["controller"] as? JsonPrimitive
+            require("controller" !in player || (controller != null && controller.isString && controller.content in setOf("HUMAN", "AGENT")))
+            McpPlayerGrant(civilizationId.content, token.content, controller?.content ?: "AGENT")
         }
     } catch (_: Exception) {
         throw IllegalArgumentException("Invalid MCP player configuration")

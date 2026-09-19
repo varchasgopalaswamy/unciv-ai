@@ -145,13 +145,17 @@ class CivilizationState:
                 self._record(
                     db,
                     "event:" + str(event["id"]),
-                    "observation" if event["kind"] in {"engine", "agreement"} else "statement",
+                    "observation" if event["kind"] in {"engine", "agreement", "diplomacy"} else "statement",
                     event,
                 )
-                if event["kind"] in {"engine", "consent"}:
+                if event["kind"] in {"engine", "consent", "diplomacy"}:
                     body = event.get("body", {})
                     participants = body.get("participants", [])
                     subjects = set(participants)
+                    if event["kind"] == "diplomacy":
+                        subjects.update(
+                            value for key in ("author", "target") if isinstance(value := body.get(key), str)
+                        )
                     if event["kind"] == "engine":
                         for war in body.get("wars", []):
                             subjects.update((war["declaringCivilization"], war["targetCivilization"]))

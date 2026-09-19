@@ -132,7 +132,7 @@ object DiplomacyCommandsProbe {
             val snapshot = rome.turn()
             val offered = snapshot.diplomacy.incomingRequests.single()
             check(offered.give.single().name == null && offered.receive.single().name == null)
-            check(offered.message.isNotBlank() && offered.unavailableReason.isNotBlank())
+            check(offered.message.isNotBlank() && !offered.unavailableReason.isNullOrBlank())
             check("SECRET-CITY-ID" !in PlayerTurnJson.encode(snapshot))
             check(hidden.civID !in PlayerTurnJson.encode(snapshot))
             check(!snapshot.canEndTurn && !snapshot.pending.single { it.kind == "TradeRequests" }.supported)

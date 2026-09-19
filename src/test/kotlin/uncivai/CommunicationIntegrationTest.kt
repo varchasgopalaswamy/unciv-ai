@@ -8,6 +8,11 @@ import java.util.concurrent.TimeUnit
 
 class CommunicationIntegrationTest {
     @Test
+    fun `mixed diplomacy routes native AI requests without pausing and survives restart`() {
+        runProbe("uncivai.MixedDiplomacyProbe")
+    }
+
+    @Test
     fun `live agreement scenario expires trades and interrupts resources through ordinary commands`() {
         runProbe("uncivai.AgreementLifecycleScenarioProbe")
     }

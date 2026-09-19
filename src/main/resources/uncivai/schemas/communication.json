@@ -212,6 +212,9 @@
         },
         "mentions": {
           "$ref": "#/$defs/mentions"
+        },
+        "nativeAction": {
+          "$ref": "#/$defs/nativeAction"
         }
       },
       "required": [
@@ -805,6 +808,62 @@
         "accept",
         "decline",
         "withdraw"
+      ]
+    },
+    "nativeAction": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "enum": [
+            "DENOUNCE",
+            "ISSUE_DEMAND",
+            "RESPOND_DIPLOMACY"
+          ]
+        },
+        "target": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "revision": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "selection": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        }
+      },
+      "required": [
+        "kind",
+        "target",
+        "revision"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "DENOUNCE"
+              }
+            }
+          },
+          "then": {
+            "not": {
+              "required": [
+                "selection"
+              ]
+            }
+          },
+          "else": {
+            "required": [
+              "selection"
+            ]
+          }
+        }
       ]
     }
   }

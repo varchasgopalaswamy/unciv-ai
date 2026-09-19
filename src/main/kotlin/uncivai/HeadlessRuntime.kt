@@ -106,6 +106,8 @@ class HeadlessRuntime private constructor(
 
         fun createAgreementLifecycleExercise(dataDirectory: Path, seed: Long = 414L): HeadlessRuntime = create(dataDirectory) { AgreementLifecycleScenarioSetup.create(seed) }
 
+        fun createMixedDiplomacyExercise(dataDirectory: Path, seed: Long = 415L): HeadlessRuntime = create(dataDirectory) { MixedDiplomacyScenario.create(seed) }.also { it.executor.communicationState.humanPlayers.addAll(MixedDiplomacyScenario.humanPlayers) }
+
         fun createVanillaGame(dataDirectory: Path, seed: Long = System.currentTimeMillis()): HeadlessRuntime = create(dataDirectory) { VanillaGameSetup.create(seed) }
 
         /** Trusted creation hook; fixture builders live in the test source set. */

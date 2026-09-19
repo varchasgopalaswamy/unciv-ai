@@ -66,7 +66,7 @@ def parser(*, add_help: bool = True) -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--scenario",
-        choices=["trade-cycle", "war-paid", "war-joint", "agreement-lifecycle"],
+        choices=["trade-cycle", "war-paid", "war-joint", "agreement-lifecycle", "mixed-diplomacy"],
         help="prepared exercise (default: Vanilla Rome/Greece/France); on resume, verify the saved scenario",
     )
     parser.add_argument(
@@ -82,7 +82,7 @@ def absolute_path(value):
     return Path(value).expanduser().absolute()
 
 
-def ensure_players(path, resuming, civilizations):
+def ensure_players(path, resuming, civilizations, humans=()):
     """Create credentials exclusively; existing credentials are never changed."""
     if not path.exists() and not path.is_symlink():
         if resuming:
@@ -98,7 +98,13 @@ def ensure_players(path, resuming, civilizations):
             while token in tokens:
                 token = secrets.token_urlsafe(32)
             tokens.add(token)
-            players["players"].append({"civilizationId": civilization, "token": token})
+            players["players"].append(
+                {
+                    "civilizationId": civilization,
+                    "token": token,
+                    **({"controller": "HUMAN"} if civilization in humans else {}),
+                }
+            )
         try:
             descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         except FileExistsError:
@@ -136,7 +142,11 @@ def launch(options):
         raise ValueError("A custom TLS configuration already supplies listenHost and publicHost.")
 
     civilizations = ("Rome", "Greece") if options.scenario == "trade-cycle" else ("Rome", "Greece", "France")
-    ensure_players(players, resuming, civilizations)
+    if options.scenario == "mixed-diplomacy":
+        civilizations = ("Rome", "Greece", "France", "Egypt")
+    ensure_players(
+        players, resuming, civilizations, ("France", "Egypt") if options.scenario == "mixed-diplomacy" else ()
+    )
     ensure_operator(operator, players)
     state_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     checkpoint.parent.mkdir(mode=0o700, parents=True, exist_ok=True)

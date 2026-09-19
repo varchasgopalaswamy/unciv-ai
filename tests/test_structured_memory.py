@@ -173,6 +173,22 @@ def test_sponsored_war_flags_plans_about_the_target_without_treating_chat_as_fac
     assert not current(memory, unrelated)["needsReview"]
 
 
+def test_native_diplomatic_receipts_refresh_related_plans_but_plain_chat_does_not(tmp_path):
+    memory = setup(tmp_path)
+    target = create(memory, plan(subjects=["Greece"]))
+    unrelated = create(memory, plan(subjects=["Egypt"]))
+    body = {"author": "Rome", "target": "Greece", "kind": "DENOUNCE", "status": "ENACTED", "turn": 4}
+    memory.ingest("g1", [{"id": 1, "kind": "message", "body": body}], 1)
+    assert not current(memory, target)["needsReview"]
+    memory.ingest("g1", [{"id": 2, "kind": "diplomacy", "body": body}], 2)
+    restored = CivilizationState(tmp_path / "private", "Rome")
+    records = restored.snapshot("gameplay")["records"]
+    assert records["event:1"]["category"] == "statement"
+    assert records["event:2"]["category"] == "observation"
+    assert current(restored, target)["needsReview"] == ["Diplomatic event 2 needs review"]
+    assert not current(restored, unrelated)["needsReview"]
+
+
 def test_search_pages_and_short_memory_ids_do_not_collide_with_messages(tmp_path):
     memory = setup(tmp_path)
     memory.ingest("g1", [{"id": 1, "kind": "message", "body": {"message": "m1", "text": "Hello"}}], 1)

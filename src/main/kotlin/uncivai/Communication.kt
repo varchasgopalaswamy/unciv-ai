@@ -36,6 +36,8 @@ internal data class CommunicationState(
     var restorePending: Boolean = false,
     val revokedCredentials: MutableSet<String> = mutableSetOf(),
     val playerCredentials: MutableMap<String, String> = mutableMapOf(),
+    // Trusted controller configuration. Existing matches use agent controllers by default.
+    val humanPlayers: MutableSet<String> = mutableSetOf(),
 )
 
 internal fun obj(vararg pairs: Pair<String, Any?>): JsonObject = buildJsonObject {
@@ -122,12 +124,14 @@ internal class Communication(private val runtime: GameExecutor) {
 
                 "send" -> {
                     val target = request.to
-                    if (target != null && (target !in participants || target == civilization)) fail()
+                    val nativeRecipient = game.civilizations.firstOrNull { it.civID == target && it.isAI() && it.isMajorCiv() && game.getCivilization(civilization).knows(it) }
+                    if (target != null && (target == civilization || (target !in participants && (nativeRecipient == null || request.nativeAction == null)))) fail()
                     val audience = if (target == null) participants else listOf(civilization, target)
                     if (request.mentions.any { it !in audience }) fail()
-                    val message = ChatMessage(shortId("m"), civilization, audience, target == null, checkNotNull(request.text), request.mentions, game.turns)
+                    val nativeResult = request.nativeAction?.let { uncivai.player.TurnSession(runtime, civilization).executeDiplomaticAction(it, target) }
+                    val message = ChatMessage(shortId("m"), civilization, audience, target == null, checkNotNull(request.text), request.mentions, game.turns, request.nativeAction)
                     emit(audience, "message", message.recordJson(), (if (target != null) setOf(target) else request.mentions.toSet()) - civilization)
-                    obj("message" to message.recordJson())
+                    obj("message" to message.recordJson(), "nativeOutcome" to nativeResult)
                 }
 
                 "offer", "revise" -> {

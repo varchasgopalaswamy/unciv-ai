@@ -72,6 +72,7 @@ data class PlayerAlert(
     val content: AlertContent? = null,
     val capture: CaptureDecision? = null,
     val friendship: FriendshipDecision? = null,
+    val nativeDiplomacy: NativeDiplomaticDecision? = null,
 )
 
 @Serializable

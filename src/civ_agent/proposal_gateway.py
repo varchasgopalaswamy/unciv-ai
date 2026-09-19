@@ -244,11 +244,11 @@ class ProposalGateway:
         )
         add(
             "trade_offer",
-            "Publish exact binding terms from trade_options and your consent. Only the current player can initiate; invite them in chat otherwise. The offer pauses all gameplay. Gameplay calls return after settlement; communication jobs handle replies without waiting. Copy the offered name, amount and duration for Embassy, Agreement, City, Treaty and WarDeclaration. WarDeclaration in give makes YOU declare; in receive makes the PARTNER declare. Both sides can declare on the same target for joint war. Inspect your native declaration warnings. Social promises never restrict legal game actions. Treaties must match on both sides; at war include mutual Peace Treaty. Research Agreement amount is each player's signing cost after immediate gold transfers. give/receive are from YOUR perspective. Set proposal to counter a trade inspected with trade_read, within counteroffersRemaining. No effect until acceptance. Do not automatically reopen closed negotiations.",
+            "Publish exact binding terms from trade_options and your consent. Only the current player can initiate; invite them in chat otherwise. For human/agent partners the offer pauses all gameplay. For a built-in AI, NATIVE_AI requests stay pending until its turn and gameplay continues. Gameplay calls for shared negotiations return after settlement; communication jobs handle replies without waiting. Copy the offered name, amount and duration for Embassy, Agreement, City, Treaty and WarDeclaration. WarDeclaration in give makes YOU declare; in receive makes the PARTNER declare. Both sides can declare on the same target for joint war. Inspect your native declaration warnings. Social promises never restrict legal game actions. Treaties must match on both sides; at war include mutual Peace Treaty. Research Agreement amount is each player's signing cost after immediate gold transfers. give/receive are from YOUR perspective. Set proposal to counter a trade inspected with trade_read, within counteroffersRemaining. No effect until acceptance. Do not automatically reopen closed negotiations.",
         )
         add(
             "friendship_offer",
-            "As the current player, propose an engine Declaration of Friendship with a met player using the fixed terms shown by trade_options. This pauses gameplay until the other player accepts or declines through trade_decide, or the deadline. Your gameplay call waits in code while communication jobs handle replies. It is separate from a verbal promise and unlocks eligible research agreements and defensive pacts.",
+            "As the current player, propose an engine Declaration of Friendship with a met player using the fixed terms shown by trade_options. With a human/agent partner this pauses gameplay until acceptance, decline or the deadline. With a built-in AI it queues a native friendship request and gameplay continues until the AI decides on its turn. Shared-negotiation gameplay calls wait in code while communication jobs handle replies. It is separate from a verbal promise and unlocks eligible research agreements and defensive pacts.",
         )
         add(
             "trade_decide",
@@ -268,7 +268,7 @@ class ProposalGateway:
         )
         add(
             "chat_send",
-            "Send authenticated text. Omit to for public chat; mention players explicitly to notify them. This creates no in-game contact.",
+            "Send authenticated text. Omit to for public chat; mention players to notify them. Optional nativeAction explicitly executes DENOUNCE or ISSUE_DEMAND against target civilization, or RESPOND_DIPLOMACY against an owned alert handle with an offered selection. Read player_turn first: native diplomacy requires your active turn and current observations. Inspect nativeDiplomacy.options and consequences before responding. Ordinary text has no game effects. Built-in AI only understands explicit native requests. Trade and peace use trade tools.",
         )
         add(
             "commitment_offer",
@@ -395,6 +395,12 @@ class ProposalGateway:
         if job.purpose != "gameplay":
             return result
         if name in {"trade_offer", "friendship_offer"} and "error" not in result and result.get("trade"):
+            if result["trade"].get("mode") == "NATIVE_AI":
+                job.observation = None
+                return {
+                    **result,
+                    "instruction": "Native request queued. Continue gameplay; the built-in AI decides on its turn. A later event reports the outcome. Do not wait or poll.",
+                }
             await self.wait_for_gameplay(job)
             job.observation = None
             # Return the settled canonical terms, even when this is recovery of a lost offer response.
@@ -616,6 +622,18 @@ class ProposalGateway:
             payload = {**arguments, "epoch": job.epoch}
             if name == "chat_send":
                 payload["op"] = "send"
+                if payload.get("nativeAction") is not None:
+                    if job.observation is None:
+                        raise StateConflict("Read player_turn and the native diplomatic options before acting.")
+                    native_action = arguments["nativeAction"]
+                    if not isinstance(native_action, dict):
+                        raise ValueError("INVALID_ARGUMENT")
+                    payload["nativeAction"] = {
+                        **native_action,
+                        "revision": job.observation["revision"],
+                    }
+                else:
+                    payload.pop("nativeAction", None)
             elif name == "commitment_offer":
                 payload["op"] = "revise" if arguments.get("proposal") else "offer"
             else:
@@ -635,6 +653,8 @@ class ProposalGateway:
         else:
             raise ValueError("TOOL_NOT_PERMITTED")
         policy_keys = set()
+        if name == "chat_send" and arguments.get("nativeAction"):
+            policy_keys.add("observation:turn")
         if transport == "player_command":
             policy_keys.add("observation:turn")
             if arguments.get("kind") in ECONOMIC:
@@ -647,7 +667,12 @@ class ProposalGateway:
                 key = "observation:" + scope + str(arguments.get("target"))
                 if key in job.memory["records"]:
                     policy_keys.add(key)
-        other = arguments.get("to") or arguments.get("target") or arguments.get("partner")
+        other = (
+            (arguments.get("nativeAction") or {}).get("target")
+            or arguments.get("to")
+            or arguments.get("target")
+            or arguments.get("partner")
+        )
         war_terms = []
         if name == "trade_offer":
             war_terms = arguments.get("give", []) + arguments.get("receive", [])
@@ -682,7 +707,10 @@ class ProposalGateway:
             finally:
                 self.in_flight -= 1
             if (
-                transport == "player_command" or name == "trade_decide" and value.get("outcome")
+                transport == "player_command"
+                or name == "trade_decide"
+                and value.get("outcome")
+                or value.get("nativeOutcome")
             ) and "error" not in value:
                 job.observation = None
             return public_result(value)

@@ -41,7 +41,7 @@ internal class HostCli(private val launch: (CliOptions) -> Unit) : CliktCommand(
     private val resume by option("--resume-checkpoint", help = "Restore a host checkpoint.").path(mustExist = true, canBeDir = false)
     private val newGame by option("--new-game", help = "Create a Quick Vanilla Rome/Greece/France game; --scenario selects a prepared exercise.").flag()
     private val seed by option("--seed", help = "New-game random seed.").long()
-    private val scenario by option("--scenario", help = "Create a prepared exercise or verify its identity on resume.").choice("trade-cycle", "war-paid", "war-joint", "agreement-lifecycle")
+    private val scenario by option("--scenario", help = "Create a prepared exercise or verify its identity on resume.").choice("trade-cycle", "war-paid", "war-joint", "agreement-lifecycle", "mixed-diplomacy")
     private val counteroffers by option("--trade-counteroffers", help = "Counteroffer limit per negotiation.").int().restrictTo(0, 100)
     private val timeout by option("--trade-timeout", help = "Negotiation deadline in seconds.").int().restrictTo(1, 86400)
 

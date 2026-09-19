@@ -186,7 +186,7 @@ def overview(snapshot: JsonObject) -> JsonObject:
         {
             key: item
             for key, item in relation.items()
-            if key in {"civilizationId", "civilizationName", "status", "atWar", "peaceTreatyTurns"}
+            if key in {"civilizationId", "civilizationName", "status", "atWar", "peaceTreatyTurns", "native"}
         }
         for relation in snapshot.get("diplomacy", {}).get("knownCivilizations", [])
     ]

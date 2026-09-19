@@ -85,7 +85,8 @@ class GameExecutor internal constructor(
             if (outermost) {
                 scheduler?.expireIfNeeded()
                 communication.trades.expireIfNeeded()
-                if (communication.agreements.synchronize(game)) commitCheckpoint()
+                val nativeChanged = communication.trades.nativeBridge.synchronize(game)
+                if (communication.agreements.synchronize(game) || nativeChanged) commitCheckpoint()
             }
             block(game)
         }
@@ -98,7 +99,11 @@ class GameExecutor internal constructor(
         synchronized(game) {
             if (outermost) {
                 scheduler?.expireIfNeeded()
-                if (mutationFailure == null) communication.trades.expireIfNeeded()
+                if (mutationFailure == null) {
+                    communication.trades.expireIfNeeded()
+                    val nativeChanged = communication.trades.nativeBridge.synchronize(game)
+                    if (communication.agreements.synchronize(game) || nativeChanged) commitCheckpoint()
+                }
             }
             block(game)
         }
@@ -139,6 +144,7 @@ class GameExecutor internal constructor(
 
     internal fun commitCheckpoint() {
         try {
+            communication.trades.nativeBridge.synchronize(game)
             communication.agreements.synchronize(game)
             // A handoff or terminal result and dropping its rollback point are one commit.
             if (turnStart?.handoff != handoff || gameFinished(game)) turnStart = null

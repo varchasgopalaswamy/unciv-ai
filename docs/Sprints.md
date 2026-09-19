@@ -5,17 +5,24 @@ and [coverage ledger](Player-api-coverage.md) retain the broader contract.
 
 ## Close-out status
 
-The social-promises sprint is complete as of September 19, 2026. It delivers
+The [mixed-player diplomacy sprint](Mixed-player-diplomacy.md) is complete as of
+September 19, 2026. It delivers explicit native chat actions, owned diplomatic
+responses and observations, and the agent–built-in-AI native offer bridge. Human–agent
+trades retain shared negotiation. Automated, scoped desktop and live acceptance
+passed; the live run completed two rounds with all 11 model invocations using
+`gpt-5.6-luna` and medium reasoning. France/Egypt were scripted human-controller
+stand-ins. The final match is paused and all services are stopped.
+
+The preceding social-promises sprint is also complete. It delivers
 private, nonblocking peace-promise advice while preserving native game rules,
 exact trade consent and recovery. Automated regressions and the scoped live
 exercise passed; see [the implementation](Social-commitments.md) and
 [live acceptance](Social-promises-live-results.md) for the evidence and limits.
 The preceding enacted-agreement lifecycle sprint is also complete.
 
-No next sprint has been selected. Human-facing chat acceptance and automatic
-advice for promise types beyond peace remain follow-ups. The current change adds
-no desktop UI; it makes no new visual-desktop acceptance claim. Live unit attacks
-and city bombardments did not occur; their behavior is covered by scripted tests.
+No subsequent sprint has been selected. Direct city-state interactions, embedded
+human desktop play, human-facing browser chat, and automatic advice for promise
+types beyond peace remain follow-ups. The coverage ledger retains the wider gaps.
 
 ## Previous delivery: third-party war trades
 

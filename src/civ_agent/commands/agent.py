@@ -54,7 +54,12 @@ def player_credentials(path, requested):
             raise ValueError()
         names, tokens = set(), set()
         for player in players:
-            if not isinstance(player, dict) or set(player) != {"civilizationId", "token"}:
+            if (
+                not isinstance(player, dict)
+                or not {"civilizationId", "token"} <= set(player)
+                or not set(player) <= {"civilizationId", "token", "controller"}
+                or player.get("controller", "AGENT") not in {"HUMAN", "AGENT"}
+            ):
                 raise ValueError()
             name, token = player["civilizationId"], player["token"]
             if not isinstance(name, str) or not name.strip():

@@ -55,6 +55,60 @@ internal class TurnSessionState(savedIdentifiers: Map<PlayerIdentifier, Long> = 
 }
 
 internal class TurnSession(private val runtime: GameExecutor, private val civilizationId: String) {
+    /** Communication owns the request receipt and commits the message and native effect together. */
+    fun executeDiplomaticAction(action: uncivai.NativeDiplomaticAction, recipient: String? = null): kotlinx.serialization.json.JsonObject = runtime.accessGame { game ->
+        runtime.requireRunning()
+        val player = player(game)
+        if (game.currentPlayer != civilizationId) fail(PlayerSessionFailure.NOT_YOUR_TURN)
+        val state = state()
+        val before = snapshot(game, player, state)
+        if (action.revision != before.revision) fail(PlayerSessionFailure.STALE_REVISION)
+        if (state.observedRevision != before.revision) fail(PlayerSessionFailure.OBSERVATION_REQUIRED)
+        if (before.phase != "ACTIVE" || gameHasResult(game) || player.hasCaptureDecision()) fail(PlayerSessionFailure.COMMAND_UNAVAILABLE)
+        val operations = com.unciv.logic.civilization.PlayerDiplomaticCommunicationOperations(player)
+        val alert = if (action.kind == "RESPOND_DIPLOMACY") state.alertHandles.entries.singleOrNull { it.value == action.target }?.key else null
+        val decision = alert?.let { operations.decision(it) }
+        val otherId = if (action.kind == "RESPOND_DIPLOMACY") decision?.civilizationId ?: fail(PlayerSessionFailure.OPTION_UNAVAILABLE) else action.target
+        if (recipient != null && recipient != otherId) fail(PlayerSessionFailure.INVALID_ARGUMENT)
+        val other = game.civilizations.firstOrNull { it.civID == otherId && it.isMajorCiv() && player.knows(it) } ?: fail(PlayerSessionFailure.OPTION_UNAVAILABLE)
+        val demand = com.unciv.logic.civilization.diplomacy.Demand.entries.firstOrNull { it.name == action.selection }
+        val available = when (action.kind) {
+            "DENOUNCE" -> operations.denounceOption(other)?.available == true
+            "ISSUE_DEMAND" -> demand != null && operations.demands(other).any { it.name == demand.name && it.action.available }
+            "RESPOND_DIPLOMACY" -> decision?.options?.any { it.name == action.selection && it.available } == true
+            else -> false
+        }
+        if (!available) fail(PlayerSessionFailure.OPTION_UNAVAILABLE)
+        val wasAtWar = player.isAtWarWith(other)
+        try {
+            check(
+                when (action.kind) {
+                    "DENOUNCE" -> operations.tryDenounce(other)
+                    "ISSUE_DEMAND" -> operations.tryDemand(other, checkNotNull(demand))
+                    else -> operations.tryRespond(checkNotNull(alert), checkNotNull(action.selection))
+                },
+            )
+            game.checkForVictory()
+            if (!wasAtWar && player.isAtWarWith(other)) runtime.communication.diplomacyEnacted(civilizationId, otherId, "DECLARE_WAR", game.turns)
+            state.invalidate()
+            val after = snapshot(game, player, state)
+            val outcome = uncivai.obj(
+                "action" to action.kind,
+                "author" to civilizationId,
+                "target" to otherId,
+                "selection" to action.selection,
+                "turn" to game.turns,
+                "revision" to after.revision,
+                "status" to if (action.kind == "ISSUE_DEMAND") "QUEUED" else "ENACTED",
+                "atWar" to player.isAtWarWith(other),
+            )
+            runtime.communication.emit(listOf(civilizationId, otherId), "diplomacy", outcome, setOf(otherId))
+            outcome
+        } catch (failure: Throwable) {
+            runtime.haltAfterMutation(failure)
+        }
+    }
+
     fun completedReceipt(request: TurnCommandRequest): TurnCommandReceipt? = runtime.accessGame {
         val completed = runtime.turnSessions[civilizationId]?.receipts?.get(request.requestId)
         if (completed?.first == request.detached()) completed.second.detached() else null
@@ -476,7 +530,8 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
                 )
             }
             val informational = alert.type in PlayerOperations.informationalAlerts && content != null
-            val supported = informational || capture != null || friendship != null
+            val nativeDiplomacy = nativeDecision(player, alert, ordinaryActions, runtime)
+            val supported = informational || capture != null || friendship != null || nativeDiplomacy != null
             PlayerAlert(
                 handle = state.alertHandles.getOrPut(alert) { state.identifiers.next(PlayerIdentifier.ALERT) },
                 kind = alert.type.name,
@@ -490,6 +545,7 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
                 content = content,
                 capture = capture,
                 friendship = friendship,
+                nativeDiplomacy = nativeDiplomacy,
             ) to supported
         }
         if (alerts.isNotEmpty()) {
@@ -498,8 +554,7 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
         }
         val diplomacy = observeDiplomacy(player, active = ordinaryActions, communicationAvailable = !runtime.communicationPaused && !gameHasResult(game), runtime = runtime)
         if (player.tradeRequests.isNotEmpty()) {
-            // Canonical proposals never create engine requests. Imported UI requests are explicit blockers.
-            pending.add(PendingTurnDecision("TradeRequests", false))
+            pending.add(PendingTurnDecision("TradeRequests", player.tradeRequests.all { runtime.communication.trades.nativeBridge.handles(player, it) }))
         }
         if (player.shouldShowDiplomaticVotingResults()) pending.add(PendingTurnDecision("DiplomaticVotingResults", false))
         val map = observeMap(player, state, canAct = ordinaryActions)

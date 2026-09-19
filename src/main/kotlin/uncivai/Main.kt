@@ -16,13 +16,16 @@ private fun launchHost(options: CliOptions) {
         val tls = options.tlsConfig?.let(::loadHostTls)
         val expectedMap = options.scenario?.let {
             when (it) {
+                "mixed-diplomacy" -> MixedDiplomacyScenario.MAP_NAME
                 "trade-cycle" -> TradeCycleScenarioSetup.MAP_NAME
                 "agreement-lifecycle" -> AgreementLifecycleScenarioSetup.MAP_NAME
                 else -> WarScenarioSetup.mapName(it)
             }
         }
         val loaded = if (options.newGame) {
-            if (options.scenario == "trade-cycle") {
+            if (options.scenario == "mixed-diplomacy") {
+                HeadlessRuntime.createMixedDiplomacyExercise(options.dataDirectory, options.seed ?: 415L)
+            } else if (options.scenario == "trade-cycle") {
                 HeadlessRuntime.createTradeCycleExercise(options.dataDirectory, options.seed ?: 412L)
             } else if (options.scenario == "agreement-lifecycle") {
                 HeadlessRuntime.createAgreementLifecycleExercise(options.dataDirectory, options.seed ?: 414L)
@@ -41,6 +44,12 @@ private fun launchHost(options: CliOptions) {
                 "Checkpoint is not the ${options.scenario} scenario. Choose a fresh --state-dir."
             }
             runtime.executor.accessGame {
+                if (players != null) {
+                    val humans = players.filter { it.controller == "HUMAN" }.map { it.civilizationId }.toSet()
+                    require(options.resumeCheckpoint == null || humans == runtime.executor.communicationState.humanPlayers) { "Player controller assignments differ from the checkpoint." }
+                    runtime.executor.communicationState.humanPlayers.clear()
+                    runtime.executor.communicationState.humanPlayers.addAll(humans)
+                }
                 options.tradeCounteroffers?.let { runtime.executor.communicationState.trades.counterofferLimit = it }
                 options.tradeTimeoutSeconds?.let { runtime.executor.communicationState.trades.timeoutSeconds = it }
                 runtime.executor.commitCheckpoint()

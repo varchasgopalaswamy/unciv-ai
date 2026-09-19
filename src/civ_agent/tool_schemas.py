@@ -45,6 +45,7 @@ class TradeItem(BoundaryModel):
         "Embassy",
         "City",
         "WarDeclaration",
+        "PeaceProposal",
     ]
     name: str
     amount: Annotated[int, Field(ge=1)]
@@ -73,11 +74,31 @@ class ChatHistory(BoundaryModel):
     query: str = ""
 
 
+class NativeDenouncement(BoundaryModel):
+    kind: Literal["DENOUNCE"]
+    target: str
+
+
+class NativeDemand(BoundaryModel):
+    kind: Literal["ISSUE_DEMAND"]
+    target: str
+    selection: Literal["DoNotSettleNearUs", "DoNotSpreadReligion", "DontSpyOnUs"]
+
+
+class NativeDiplomaticResponse(BoundaryModel):
+    kind: Literal["RESPOND_DIPLOMACY"]
+    target: str
+    selection: str
+
+
 class ChatSend(BoundaryModel):
     text: str
     to: str = ""
     mentions: list[str] = Field(default_factory=list)
     intent: Intent | None = None
+    nativeAction: (
+        Annotated[NativeDenouncement | NativeDemand | NativeDiplomaticResponse, Field(discriminator="kind")] | None
+    ) = None
 
 
 class CommitmentOffer(WithIntent):
