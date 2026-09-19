@@ -7,7 +7,7 @@ reading any information outside the returned projection.
 import copy
 import hashlib
 import json
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import Field
 
@@ -125,6 +125,7 @@ class TurnOverview(BoundaryModel):
     economy: JsonObject = Field(default_factory=dict)
     diplomacy: list[JsonObject] = Field(default_factory=list)
     communication: JsonObject = Field(default_factory=dict)
+    socialAdvisories: list[JsonObject] = Field(default_factory=list)
     turnReview: JsonObject = Field(default_factory=dict)
     mapSummary: JsonObject = Field(default_factory=dict)
     evidence: str = "observation:overview"
@@ -208,6 +209,19 @@ def overview(snapshot: JsonObject) -> JsonObject:
         "frontierTiles": len(snapshot.get("map", {}).get("frontier", [])),
     }
     return TurnOverview.model_validate(value).model_dump(exclude_none=True)
+
+
+def native_observation(value: Any) -> Any:
+    """Keep social reminders out of native-state evidence and freshness checks.
+
+    The displayed reminders repeat the player's own terms. The communication
+    ledger remains the citeable source for those social statements.
+    """
+    if isinstance(value, dict):
+        return {key: native_observation(part) for key, part in value.items() if key != "socialAdvisories"}
+    if isinstance(value, list):
+        return [native_observation(part) for part in value]
+    return value
 
 
 def detail_scope(query: DetailQuery) -> str:

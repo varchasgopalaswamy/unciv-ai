@@ -54,13 +54,13 @@ the version inspected by that job. Invalid targets, quantities, durations,
 duplicates, active peace treaties, defeated targets and stale engine eligibility
 transfer nothing. Acceptance revalidates before any native effect.
 
-An accepted private peace commitment blocks both directly declaring and sponsoring
-a war against that player until the signer deliberately reconsiders it. The host
-checks the author before publication and the other signer on acceptance. A failed
-private check does not publish that signer's promise or alter the pending offer.
-The author's consent also expires if their peace commitments change while waiting;
-the other signer receives only a generic request for renewed consent. Private
-commitment counters stay in the checkpoint and never appear in player responses.
+An accepted private peace commitment supplies a nonblocking `socialAdvisories`
+reminder when declaring or sponsoring war against another participant. War options
+include the reader's reminders under `war`; trade reads include only that reader's
+relevant promises. Another signer's promises stay private. The terms and conditions
+are quoted for the player to interpret; no reconsideration or override is required.
+Changing a social promise does not invalidate consent to the exact trade version.
+Native peace treaties and other engine eligibility checks still apply.
 
 The target receives native war popups and notifications plus a durable engine
 event concerning the declaring civilization and the target. This event contains no
@@ -88,7 +88,7 @@ do not establish an engine war result.
 | Declaration warnings | `PlayerDiplomacyOperations.declarationConfirmation` | Own warnings; another signer's known pact partner hidden from the reader |
 | Paid, joint and joining wars | Desktop `TradeLogic.acceptTrade`, `DeclareWar` | Gold, full diplomacy state, popups, notifications and visibility compared with the native trade operation on cloned fixtures; successful reversed-author counteroffer |
 | Human authority and privacy | Fixed player sessions, `EngineTrades`, `Communication` | Off-turn initiation rejected; off-turn acceptance; target cannot read private proposals; private research/production orders and treasury do not affect permitted observations |
-| Consent and memory | `ProposalGateway`, `CivilizationState`, `Communication` | Inspected-version pinning, changed-target observations, private peace checks for both signers, sponsorship and target-plan review |
+| Consent and memory | `ProposalGateway`, `CivilizationState`, `Communication` | Inspected-version pinning, changed-target observations, private nonblocking promise advice for both signers, sponsorship and target-plan review |
 | Persistence and turn continuation | Checkpoints, operator scheduling, receipts | Pending-offer restart, settled restart, four-player turn handoffs, exact retries, rollback and storage failure before/after replacement |
 
 `ThirdPartyTradeProbe` exercises these cases through authenticated HTTPS and native

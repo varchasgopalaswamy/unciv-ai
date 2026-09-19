@@ -75,10 +75,15 @@ The host stores three separate records: exact statements/offers, explicit consen
 to particular terms, and confirmed engine outcomes. Offering terms constitutes
 the author's consent. Everyone else must accept explicitly. Proposed amendments
 retain the existing accepted promise until new terms receive mutual consent.
-An accepted social peace promise prevents conflicting attacks; withdrawal or
-explicit reconsideration records a deliberate change of intent. Conditions are
-recorded text, not automatically interpreted predicates. Social consent never
-creates an engine treaty or transfers resources.
+Accepted social peace promises produce private, nonblocking `socialAdvisories`
+in turn overviews and relevant war-trade reads. The advice quotes the accepted
+terms and conditions so the player can judge the conflict. Players may proceed
+with any native-legal action without withdrawing or reconsidering a promise.
+Optional withdrawal or reconsideration records a stated change of intent.
+Conditions are recorded text, not automatically interpreted predicates. Social
+consent never creates an engine treaty, transfers resources, changes action
+availability, or invalidates native game revisions or consent to a trade.
+See [the host rule boundary](Social-commitments.md).
 
 Human commands handle authentication and request IDs too:
 

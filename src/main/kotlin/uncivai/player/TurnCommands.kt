@@ -122,6 +122,7 @@ data class PlayerTurnSnapshot(
     val research: ResearchDevelopment? = null,
     val diplomacy: DiplomacyObservation = DiplomacyObservation(),
     val economy: EconomyObservation? = null,
+    val socialAdvisories: List<uncivai.SocialPromiseAdvisory> = emptyList(),
 )
 
 /** Fields unused by the selected command must be absent or have their default value. */
@@ -146,6 +147,7 @@ data class TurnCommandRequest(
     val attackFrom: TilePosition? = null,
     val confirmAction: Boolean = false,
     val enabled: Boolean? = null,
+    // Retained for old requests/receipts; social intent never fences native game commands.
     val socialVersion: Long? = null,
     val targets: List<String> = emptyList(),
 )

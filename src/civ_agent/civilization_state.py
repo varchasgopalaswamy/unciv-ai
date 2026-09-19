@@ -17,7 +17,7 @@ from civ_agent.memory_exports import export_files, projection_files
 from civ_agent.memory_history import action_record, build_summary, summary_markdown
 from civ_agent.memory_records import MEMORY_TYPES, HistoryReadResult, Intent, MemoryUpdate, public_record
 from civ_agent.memory_store import REACHABLE, RecordStore, encode, select_context, semantic
-from civ_agent.observations import DetailQuery, project_detail
+from civ_agent.observations import DetailQuery, native_observation, project_detail
 from civ_agent.protocol import JsonObject
 from civ_agent.schemas import validate
 from civ_agent.tls import private_directory, write_private_json
@@ -239,6 +239,7 @@ class CivilizationState:
         snapshot.setdefault("delivered", {}).update({key: record["version"] for key, record in chosen.items()})
 
     def observe(self, key: str, body: JsonObject, job: str | None = None):
+        body = native_observation(body)
         with self.transaction() as db:
             if self._meta(db, "paused", False):
                 raise StateConflict("STATE_PAUSED")
@@ -329,6 +330,8 @@ class CivilizationState:
 
     def observe_player(self, body: JsonObject, job: str, compact: JsonObject | None = None):
         """Independent evidence versions; the host still validates the full view too."""
+        body = native_observation(body)
+        compact = native_observation(compact)
         scopes = {
             "game": body,
             "turn": {key: body.get(key) for key in ("epoch", "turn", "phase", "pending", "alerts")},

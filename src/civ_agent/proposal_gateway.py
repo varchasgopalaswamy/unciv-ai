@@ -31,6 +31,7 @@ from civ_agent.observations import (
     TurnOverview,
     detail_satisfies,
     detail_scope,
+    native_observation,
     overview,
     project_detail,
     required_detail,
@@ -59,7 +60,6 @@ RECOVERY_INSTRUCTIONS = (
     "then make a fresh decision or skip it if another job already handled it. "
     "If it conflicts again, defer that action and continue other work; do not stop the gameplay turn for this. "
 )
-HOSTILE = {"ATTACK", "CITY_ATTACK", "DECLARE_WAR"}
 ECONOMIC = {
     "BUY_CONSTRUCTION",
     "BUY_TILE",
@@ -177,7 +177,7 @@ class ProposalGateway:
                 entry = copy.deepcopy(tool)
                 if tool["name"] == "player_turn":
                     entry["description"] = (
-                        "Read a compact current overview: tactics, strategy review, city/unit roster, pending choices and full alert/ordinary notification text. Notifications include category, icons and event locations. Read them, update private assessments as useful, then dismiss selected notice handles with DISMISS_NOTIFICATIONS. Read this overview after each action. Inspect targets with unit_details, city_details or construction_details for legal offers and confirmation consequences before acting; map_region and player_details provide other detail from this snapshot. Use chat_read for commitment terms."
+                        "Read a compact current overview: tactics, strategy review, city/unit roster, pending choices and full alert/ordinary notification text. Notifications include category, icons and event locations. Read them, update private assessments as useful, then dismiss selected notice handles with DISMISS_NOTIFICATIONS. Read this overview after each action. Inspect targets with unit_details, city_details or construction_details for legal offers and confirmation consequences before acting; map_region and player_details provide other detail from this snapshot. Weigh socialAdvisories about possibly relevant accepted promises; they are not host judgments of breach and never restrict legal actions or require an extra confirmation. Use chat_read for other commitment terms."
                     )
                     entry["outputSchema"] = TurnOverview.model_json_schema()
                 tools.append(entry)
@@ -228,11 +228,11 @@ class ProposalGateway:
 
         add(
             "trade_options",
-            "Inspect trade terms, city names/populations, eligibility, unavailable reasons, research funding, friendship and active agreements with a met player. WarDeclaration names a third civilization both players know; give commits you to war and receive asks the partner to declare. Your own declaration warnings are included. give/receive are from your perspective. City names in terms are short trade IDs. Available during either player's turn.",
+            "Inspect trade terms, city names/populations, eligibility, unavailable reasons, research funding, friendship and active agreements with a met player. WarDeclaration names a third civilization both players know; give commits you to war and receive asks the partner to declare. Your own native declaration warnings and possibly relevant social promises are included. Weigh socialAdvisories when choosing; they never restrict legal actions. give/receive are from your perspective. City names in terms are short trade IDs. Available during either player's turn.",
         )
         add(
             "trade_read",
-            "Read a host-owned binding trade before accepting, declining, withdrawing or counteroffering. Every clause has an explicit from/to direction, identical for both players. Pending deal IDs appear in chat_read. Re-read after changed terms; never poll.",
+            "Read a host-owned binding trade before accepting, declining, withdrawing or counteroffering. Every clause has an explicit from/to direction, identical for both players. Pending deal IDs appear in chat_read. Interpret socialAdvisories yourself; they are reminders, not native restrictions or host judgments of breach. Re-read after changed terms; never poll.",
         )
         add(
             "agreement_list",
@@ -244,7 +244,7 @@ class ProposalGateway:
         )
         add(
             "trade_offer",
-            "Publish exact binding terms from trade_options and your consent. Only the current player can initiate; invite them in chat otherwise. The offer pauses all gameplay. Gameplay calls return after settlement; communication jobs handle replies without waiting. Copy the offered name, amount and duration for Embassy, Agreement, City, Treaty and WarDeclaration. WarDeclaration in give makes YOU declare; in receive makes the PARTNER declare. Both sides can declare on the same target for joint war. Inspect your declaration warnings; declaring or sponsoring war requires reconsidering conflicting peace promises first. Treaties must match on both sides; at war include mutual Peace Treaty. Research Agreement amount is each player's signing cost after immediate gold transfers. give/receive are from YOUR perspective. Set proposal to counter a trade inspected with trade_read, within counteroffersRemaining. No effect until acceptance. Do not automatically reopen closed negotiations.",
+            "Publish exact binding terms from trade_options and your consent. Only the current player can initiate; invite them in chat otherwise. The offer pauses all gameplay. Gameplay calls return after settlement; communication jobs handle replies without waiting. Copy the offered name, amount and duration for Embassy, Agreement, City, Treaty and WarDeclaration. WarDeclaration in give makes YOU declare; in receive makes the PARTNER declare. Both sides can declare on the same target for joint war. Inspect your native declaration warnings. Social promises never restrict legal game actions. Treaties must match on both sides; at war include mutual Peace Treaty. Research Agreement amount is each player's signing cost after immediate gold transfers. give/receive are from YOUR perspective. Set proposal to counter a trade inspected with trade_read, within counteroffersRemaining. No effect until acceptance. Do not automatically reopen closed negotiations.",
         )
         add(
             "friendship_offer",
@@ -272,11 +272,11 @@ class ProposalGateway:
         )
         add(
             "commitment_offer",
-            "Propose exact social terms. This is not an engine trade or peace treaty. Everyone must explicitly consent. kind=peace fences conflicting attacks until deliberate reconsideration. conditions describes when the promise applies; use 'Unconditional' if applicable.",
+            "Propose exact social terms. This is not an engine trade or peace treaty. Everyone must explicitly consent. Social promises, including kind=peace, record stated intentions and never restrict legal game actions or impose penalties. Terms and conditions may be ambiguous; players can negotiate or disagree about their meaning. conditions describes when the promise applies; use 'Unconditional' if applicable.",
         )
         add(
             "commitment_decide",
-            "Accept terms you read with chat_read, withdraw consent, or explicitly reconsider a promise before breaking it. Changing terms requires a new offer and consent. No engine action is implicit.",
+            "Accept terms you read with chat_read, withdraw consent, or voluntarily record that you reconsidered a promise. No decision here is required before a legal game action. Changing terms requires a new offer and consent. No engine action is implicit.",
         )
         add(
             "memory_read",
@@ -301,7 +301,7 @@ class ProposalGateway:
         job.memory["records"]["observation:communication"] = {
             "version": version,
             "category": "observation",
-            "body": result,
+            "body": native_observation(result),
         }
         job.social_read = delivered or (job.social_read and result == job.social)
         job.social = result
@@ -469,7 +469,7 @@ class ProposalGateway:
             job.memory["records"]["observation:" + scope] = {
                 "version": version,
                 "category": "observation",
-                "body": value,
+                "body": native_observation(value),
             }
             if value["available"] and query not in job.details_read:
                 job.details_read.append(query)
@@ -492,7 +492,7 @@ class ProposalGateway:
                 job.memory["records"]["observation:" + scope] = {
                     "version": version,
                     "category": "observation",
-                    "body": value,
+                    "body": native_observation(value),
                 }
                 if name == "trade_read":
                     job.trades[arguments["proposal"]] = copy.deepcopy(value["trade"])
@@ -579,7 +579,7 @@ class ProposalGateway:
         if name == "player_command":
             if job.purpose != "gameplay":
                 raise StateConflict("GAMEPLAY_NOT_PERMITTED")
-            if job.observation is None or job.social is None:
+            if job.observation is None:
                 raise StateConflict("Read player_turn and its full content before proposing another action.")
             needed = required_detail(arguments)
             if needed is not None and not any(detail_satisfies(read, needed) for read in job.details_read):
@@ -603,8 +603,6 @@ class ProposalGateway:
                 if concerns and not arguments.get("deferReason", "").strip():
                     return TacticalReviewRequired.model_validate({"concerns": concerns}).model_dump()
                 payload["reviewId"] = job.observation.get("turnReview", {}).get("id")
-            if arguments.get("kind") in HOSTILE:
-                payload["socialVersion"] = job.social["peaceVersion"]
             transport = "player_command"
         elif name in {"trade_offer", "trade_decide", "friendship_offer"}:
             payload = {**arguments, "op": name, "epoch": job.epoch}

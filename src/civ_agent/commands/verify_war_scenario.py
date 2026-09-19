@@ -171,34 +171,10 @@ def audit(root: Path, checkpoint_path: Path | None = None, before_restart: Path 
                 "payments": [c for c in final["clauses"] if c["item"]["type"] == "Gold"],
             }
         )
-    reconsidered = variant != "war-paid"
-    if variant == "war-paid" and ids and len(proposals[ids[0]]) > 1:
-        counters = [
-            r
-            for r in ledger["requests"].values()
-            if r["request"]["op"] == "trade_offer"
-            and r["request"].get("proposal") == ids[0]
-            and "error" not in r["response"]
-        ]
-        promises = {
-            p["proposal"]
-            for versions in ledger["offers"].values()
-            for p in versions
-            if set(p["participants"]) == {"Greece", "France"} and p["kind"] == "peace"
-        }
-        reconsidered = bool(counters) and any(
-            key.startswith("Greece:")
-            and r["request"]["op"] == "reconsider"
-            and r["request"]["proposal"] in promises
-            and "error" not in r["response"]
-            and r["audit"]["timeMillis"] <= min(c["audit"]["timeMillis"] for c in counters)
-            for key, r in ledger["requests"].items()
-        )
     checks = {
         "allMilestones": all(r["status"] == "PASSED" for r in reports),
         "noExtraProposals": len(ids) == len(steps) and set(ids) == set(proposals),
         "noOpenNegotiation": ledger["trades"].get("activeProposal") is None,
-        "reconsideredBeforeCounter": reconsidered,
         "nativeWars": len(civs) == 3
         and all(_at_war(civs, a, "France") and _at_war(civs, "France", a) for a in ("Rome", "Greece")),
         "alliesAtPeace": len(civs) == 3 and not _at_war(civs, "Rome", "Greece") and not _at_war(civs, "Greece", "Rome"),

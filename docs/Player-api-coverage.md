@@ -9,7 +9,7 @@ test, and UI comparison evidence. Unsupported items remain explicit.
 | Surface | Required information and actions | Current coverage |
 | --- | --- | --- |
 | Player identity | Fixed civilization, session lifetime, turn ownership, elimination | Authenticated fixed-civilization sessions, player-scoped revisions, turn fencing and revocable activation credentials; broader controller lifecycle incomplete |
-| Turn flow | Pending choices, actionable options, optional prompts, end turn, automation timing | Shared requirements, choices and end turn tested for both bundled rulesets; automation timing and broader decisions incomplete |
+| Turn flow | Pending choices, actionable options, optional prompts, end turn, automation timing | Shared ordinary requirements, choices and end turn tested for both bundled rulesets; explicit native context-menu Next Turn deferral, automation timing and broader decisions incomplete |
 | Map | Exploration, fog, remembered improvements, terrain, rivers, resources, ownership, yields | Explored tiles, visibility, terrain/features, rivers, revealed resources, ownership, remembered improvement names and visible units; live yields on visible tiles; full tile breakdowns outstanding |
 | Tile inspection | Yield breakdowns, resource reveal, city and unit details, work status | Visible map yields, owned city workable-tile yields/work/lock state, worker progress/options; full tooltip coverage outstanding |
 | Unit movement | Own units, paths, movement costs, movement plans, embarkation, transport | Own units with durable handles, displayed movement, current-turn previews and validated movement; UI single-turn paths share operations. Future orders, aircraft/paradrops and complete transport coverage outstanding |
@@ -23,7 +23,7 @@ test, and UI comparison evidence. Unsupported items remain explicit.
 | Research | Tree, descriptions, progress, costs, prerequisites, queues, free choices, repeatable tech | Shared queue validation/free choices, displayed science and technology costs/progress/turn estimates; on-demand tree catalogues, selected desktop descriptions, prerequisites, ordered research paths and unavailable reasons; full visual tree parity not established |
 | Policies | Branches, requirements, costs, adoption, free choices, postponement | Shared adoption and picker dismissal; on-demand culture/costs, branches, prerequisites, era requirements, selected desktop benefits and completion effects |
 | Great people | Points and thresholds, free choices, placement failure, special actions, Maya restrictions | Shared free choices with revision and durable receipts; city specialist yields, points per turn, empire accumulated points, thresholds and source rows; shared research/construction/culture abilities, Golden Ages and instant improvements with effects, reasons and durable receipts; city-state missions, remaining expansion actions and overview details incomplete |
-| Diplomacy | Known civilizations, relations, modifiers, war/peace, treaties, denunciations, promises, demands | Met major identities/captions, status, treaty durations, legal war/peace actions, shared war confirmations, declarations and friendship; paid/joint third-party wars with per-signer private peace checks; demands, denunciation, full modifiers and broader information missing |
+| Diplomacy | Known civilizations, relations, modifiers, war/peace, treaties, denunciations, promises, demands | Met major identities/captions, status, treaty durations, legal war/peace actions, shared war confirmations, declarations and friendship; paid/joint third-party wars with private nonblocking social-promise advice; demands, denunciation, full modifiers and broader information missing |
 | Trade | Offers, counteroffers, validity, resource/gold/city transfers, acceptance/rejection, expiry | Canonical gold/GPT/resources, peace, embassies, borders, research, defensive pacts, city transfers and paid/joint wars; explicit version consent, asynchronous counters/decisions, proposal expiry, stable enacted agreement references, native ending history and durable receipts; mediated peace and other trades missing. No native control permits voluntary early cancellation of these enacted deals. |
 | City-states | Influence, quests, gifts, protection, bullying, war/peace, allies | Not implemented |
 | Religion | Pantheon, founding/enhancing/reforming, beliefs, pressure, conversion, religious units | Not implemented |
@@ -32,7 +32,7 @@ test, and UI comparison evidence. Unsupported items remain explicit.
 | Overviews | Cities, units, trades, resources, religion, demographics, rankings, wonders, victory progress | Own economy/resource overview rows, resource reveal and luxury demands/celebrations; remaining overviews and full information parity outstanding |
 | Notifications | Per-player alerts, transient combat/movement history, popups, choices, navigation targets | StartIntro, TechResearched, WonderBuilt, GoldenAge, FirstContact and WarDeclaration expose shared popup prose/quotes and require observation before acknowledgement; peace requests expose full leader text/terms and validated choices; other consequential alerts fail closed; filtered durable combat reports and terminal result delivery; [ordinary notifications](Ordinary-notifications.md) expose full current text, category, icons and event locations with validated batch dismissal and preserved native history; historical notification browsing and UI navigation execution remain incomplete |
 | Civilopedia | Public bundled rules, searchable entries, descriptions and links, no hidden game data | Not implemented |
-| Victory and defeat | Conditions, results, scores, permitted postgame information, resignation | Public victory types and turn limit, own integer score, on-demand victory-screen milestone headers and spaceship progress, permitted rival next milestones, shared victory/defeat text and terminal result delivery; full step-button details, rankings, resignation and postgame exploration missing |
+| Victory and defeat | Conditions, results, scores, permitted postgame information, resignation | Public victory types and turn limit, own integer score, on-demand victory-screen milestone headers and spaceship progress, permitted rival next milestones, shared victory/defeat text and terminal result delivery; full step-button details, rankings, resignation, native One more turn and postgame exploration missing |
 | Lifecycle | Supported setup validation, create/load/save/pause, checkpoints, reconnect, controller replacement | Fixed Vanilla duel creation, load, checkpoint/resume, serialized execution, operator pause, player-scoped references and durable command receipts; general setup and controller management incomplete |
 | Player communication | Public/private channels, permitted history, social proposals and consent | Authenticated public/private chat, mentions, recipient-specific delivery, exact version social consent and binding economic proposals, withdrawal/reconsideration and distinct engine outcomes; human chat/trade CLI available, browser integration and broader trade outstanding |
 | Agent runner | Codex conversations, private notes, turn scheduling, budgets, isolation | HTTPS supervisor and responsive per-civilization services, concurrent gameplay/chat jobs, structured private memory, service-owned request bookkeeping, durable receipts, shared invocation limits and coordinated whole-match recovery; hard spending caps, OS isolation and completed live-match acceptance outstanding |
@@ -62,6 +62,11 @@ remaining unsupported diplomatic decisions still block turn advancement.
 - The desktop currently clones a game while advancing turns. An embedded host must
   coordinate authoritative game replacement; keeping a stale game reference is unsafe.
 - Agent filesystem isolation and completed match acceptance have not been established.
+- The native [Next Turn context menu](../vendor/Unciv/core/src/com/unciv/ui/screens/worldscreen/status/NextTurnMenu.kt)
+  exposes explicit advancement past ordinary research/construction/policy picker
+  prompts. The API currently implements the ordinary turn-button flow only.
+  Adding deferral must respect native menu accessibility and modal capture/alert
+  blockers, rather than blindly skipping every pending decision.
 
 The [exploration slice inventory](Exploration-and-settlement.md) records implemented
 fields, source callers, tests and remaining limits. Its scripted MCP scenario reaches
@@ -85,11 +90,13 @@ restart and retry verification. Live-model and visual desktop acceptance remain 
 
 The [third-party war inventory](Third-party-war-trades.md) covers paid/joint
 declarations, own warnings, imported-request identity filtering, private peace
-commitments, canonical outcomes and target events. HTTPS checks compare native
+commitment advice, canonical outcomes and target events. HTTPS checks compare native
 effects, including defensive pacts, through consent, scheduled turns, restart,
 rollback and interrupted checkpoint writes. The [sprint handoff](Sprints.md)
-records [enacted agreement lifecycle](Agreement-lifecycle.md) as the current slice,
-including its separate automated, live model and desktop acceptance results.
+records the completed [enacted agreement lifecycle](Agreement-lifecycle.md),
+including its separate automated, live model and desktop acceptance results,
+and the completed [social-promise correction](Social-commitments.md) with its
+scoped automated and live acceptance.
 
 The [chat, memory and recovery slice](Chat-memory-and-recovery.md) adds asynchronous
 communication, provenance-aware private notes, scoped proposal approval and explicit

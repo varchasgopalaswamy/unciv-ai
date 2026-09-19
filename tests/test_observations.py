@@ -1,4 +1,5 @@
 import asyncio
+import copy
 import json
 
 import pytest
@@ -31,11 +32,15 @@ def query(tool, **arguments):
 def test_compact_snapshot_keeps_decisions_and_all_details_remain_reachable():
     snapshot = reviewed()
     snapshot["alerts"] = [{"handle": "alert1", "kind": "WonderBuilt", "content": {"paragraphs": ["Important " * 1000]}}]
+    snapshot["socialAdvisories"] = [
+        {"proposal": "p1", "terms": "No attacks before turn 8", "conditions": "Unconditional"}
+    ]
     compact = overview(snapshot)
     TurnOverview.model_validate(compact)
     assert compact["alerts"] == snapshot["alerts"]
     assert compact["combatReports"] == snapshot["combatReports"]
     assert compact["tacticalReview"] == snapshot["tacticalReview"]
+    assert compact["socialAdvisories"] == snapshot["socialAdvisories"]
     assert compact["turnReview"]["units"] == (snapshot.get("turnReview") or {}).get("units", [])
     assert "map" not in compact and "purchases" not in compact["cities"][0]
     assert "moves" not in compact["units"][0]
@@ -184,6 +189,102 @@ def test_only_changed_detail_invalidates_its_assumptions_and_survives_restart(tm
             stored = restarted.snapshot("gameplay")["records"][detail["evidence"]]["body"]
             assert not stored["available"] and stored["data"] == {}
         finally:
+            await io.close()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    "name,arguments,source",
+    [
+        ("player_turn", {}, "observation:overview"),
+        ("trade_options", {"partner": "Greece"}, "observation:trade_options/Greece"),
+        ("trade_read", {"proposal": "d1"}, "observation:trade/d1"),
+    ],
+)
+def test_social_advisories_are_shown_without_staling_native_evidence(tmp_path, name, arguments, source):
+    async def run():
+        memory, io, host = CivilizationState(tmp_path / "private", "Rome"), ServiceIO(), Host()
+        gateway = ProposalGateway(memory, io, tmp_path / "workspace")
+        original = host.tool
+        advisories = []
+        host.view["socialAdvisories"] = advisories
+        host.offers = [
+            {
+                "proposal": "p1",
+                "version": 1,
+                "participants": ["Rome", "Greece"],
+                "kind": "peace",
+                "terms": "No attacks before turn 8",
+                "effective": True,
+            }
+        ]
+
+        async def with_trade_advisories(name, args):
+            if name == "player_communication" and args["op"] == "trade_options":
+                return {"give": [{"type": "WarDeclaration", "war": {"socialAdvisories": copy.deepcopy(advisories)}}]}
+            if name == "player_communication" and args["op"] == "trade_read":
+                return {
+                    "trade": {"proposal": "d1", "version": 1, "socialAdvisories": copy.deepcopy(advisories)},
+                    "history": [{"version": 1, "socialAdvisories": copy.deepcopy(advisories)}],
+                }
+            return await original(name, args)
+
+        host.tool = with_trade_advisories
+        game = await gateway.open("game", "gameplay", "g1", host, {})
+        chat = await gateway.open("chat", "communication", "g1", host, {})
+        try:
+            await gateway.call(game, "player_turn", {}, "turn")
+            await gateway.call(game, "unit_details", {"target": "unit1"}, "unit")
+            await gateway.call(game, name, arguments, "initial")
+            key = create(
+                memory,
+                plan(assumptions=[{"text": "The native situation is unchanged", "source": source}]),
+                job=game.id,
+            )
+            before = memory.snapshot("gameplay")["records"][source]
+            advisories.append(
+                {
+                    "proposal": "p1",
+                    "version": 1,
+                    "participants": ["Rome", "Greece"],
+                    "terms": "No attacks before turn 8",
+                    "conditions": "Unconditional",
+                    "relevantActions": ["ATTACK", "DECLARE_WAR"],
+                    "message": "Consider this promise when choosing; legal actions remain available.",
+                }
+            )
+            shown = await gateway.call(chat, name, arguments, "advisory")
+            assert "Consider this promise" in json.dumps(shown)
+            assert memory.snapshot("gameplay")["records"][source] == before
+            assert not current(memory, key)["needsReview"]
+            # The gameplay job can still use its native evidence and chosen plan
+            # without reading the annotation or declaring a social override.
+            result = await gateway.call(
+                game,
+                "player_command",
+                {
+                    "kind": "ATTACK",
+                    "target": "unit1",
+                    "destination": {"x": 1, "y": 0},
+                    "attackFrom": {"x": 0, "y": 0},
+                    "intent": {"plan": key},
+                },
+                "act",
+            )
+            assert result["done"]
+            # Terms remain available as ordinary communication evidence for
+            # remembering or discussing the promise itself.
+            await gateway.call(chat, "chat_read", {}, "ledger")
+            social = create(memory, plan(sources=["observation:communication"]), job=chat.id)
+            assert current(memory, social)["_evidence"][0]["key"] == "observation:communication"
+            assert (
+                memory.snapshot("communication")["records"]["observation:communication"]["body"]["offers"]
+                == host.offers
+            )
+        finally:
+            await gateway.close(game, True)
+            await gateway.close(chat, True)
             await io.close()
 
     asyncio.run(run())

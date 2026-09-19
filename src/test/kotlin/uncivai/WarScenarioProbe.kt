@@ -1,7 +1,9 @@
 package uncivai
 
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import uncivai.player.PlayerHost
 import java.nio.file.Files
 import java.nio.file.Path
@@ -44,16 +46,15 @@ object WarScenarioProbe {
                 val settled: JsonObject
                 if (variant == "war-paid") {
                     check(runtime.executor.communicationState.streams["Rome"].orEmpty().none { it.kind == "offer" })
-                    read("Greece", pending)
-                    val blocked = call("Greece", "trade_offer", "partner" to "Rome", "give" to listOf(war), "receive" to listOf(gold(45)), "proposal" to pending["proposal"], "version" to pending["version"])
-                    check(blocked["error"] != null)
                     val promise = runtime.executor.communicationState.offers.values.single().single()
-                    call("Greece", "reconsider", "proposal" to promise.proposal, "version" to promise.version, "reason" to "Change foreign policy for this exercise")
+                    val advice = read("Greece", pending)["trade"]!!.jsonObject["socialAdvisories"]!!.jsonArray.single().jsonObject
+                    check(advice["proposal"]!!.jsonPrimitive.content == promise.proposal)
                     check(context("Rome") == romeWithOffer)
                     check(context("France") == initialFrance)
                     val counter = offer("Greece", listOf(war), listOf(gold(45)), pending)
                     settled = accept("Rome", counter)
                     check(money() == listOf(455, 545, 500) && wars() == listOf(false, true))
+                    check(runtime.executor.communicationState.consents.all { it.decision == "accept" })
                 } else {
                     settled = accept("Greece", pending)
                     check(money() == listOf(470, 530, 500) && wars() == listOf(true, true))

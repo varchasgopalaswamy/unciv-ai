@@ -68,8 +68,8 @@ internal data class EngineTradeState(
     // Shared short references stay bound to the same engine city across transfer and restart.
     // This private lookup is never part of a player response.
     val cityHandles: MutableMap<String, String> = mutableMapOf(),
-    // A signer's private peace commitments may change while a negotiation waits.
-    // These counters are never serialized into proposals or player observations.
+    // Retained only for checkpoints written before social promises stopped gating trades.
+    // These legacy counters have no effect on consent or native trade legality.
     val warConsentVersions: MutableMap<String, Long> = mutableMapOf(),
     var activeProposal: String? = null,
     var openedAtMillis: Long = 0,
@@ -152,6 +152,7 @@ internal class EngineTrades(private val runtime: GameExecutor) {
                 "targetCivilization" to item.name,
                 "displayText" to item.offer().getOfferText(),
                 "yourDeclarationConfirmation" to if (owner === reader) warConfirmation(reader, item.name) else null,
+                "socialAdvisories" to json.encodeToJsonElement(runtime.communication.peaceAdvisories(reader.civID, item.name)),
             )
         } else {
             null
@@ -161,11 +162,6 @@ internal class EngineTrades(private val runtime: GameExecutor) {
 
     private fun warConfirmation(player: Civilization, target: String) = PlayerDiplomacyOperations(player).declarationConfirmation(player.gameInfo.getCivilization(target)).orEmpty().map { it.tr() }
     private fun warClauses(proposal: EngineTradeProposal) = proposal.clauses.filter { it.item.type == TradeOfferType.WarDeclaration }
-    private fun peaceVersion(civilization: String) = runtime.communicationState.peaceVersions[civilization] ?: 0L
-    private fun warConsentBlocked(civilization: String, proposal: EngineTradeProposal): Boolean = warClauses(proposal).any {
-        // Sponsoring another civilization's attack is also a hostile commitment.
-        runtime.communication.hasPeaceCommitment(civilization, it.item.name, runtime.accessGame { game -> game.turns })
-    }
 
     fun read(civilization: String, request: CommunicationRequest): JsonObject {
         val referencesBefore = state.cityHandles.size
@@ -239,6 +235,13 @@ internal class EngineTrades(private val runtime: GameExecutor) {
                 "yourWarDeclarations" to warClauses(proposal).filter { it.from == civilization }.map {
                     obj("targetCivilization" to it.item.name, "confirmation" to warConfirmation(player(civilization), it.item.name))
                 },
+                // Social promises inform this reader's choice without changing native
+                // availability or sharing either signer's private promises with the other.
+                "socialAdvisories" to json.encodeToJsonElement(
+                    warClauses(proposal).flatMap {
+                        runtime.communication.peaceAdvisories(civilization, it.item.name)
+                    }.distinctBy { it.proposal to it.version },
+                ),
             ),
         )
     }
@@ -278,10 +281,8 @@ internal class EngineTrades(private val runtime: GameExecutor) {
         val id = previous?.proposal ?: generateSequence { "d" + java.lang.Long.toUnsignedString(random.nextLong(), 36).take(8) }.first { it !in state.proposals }
         val proposal = EngineTradeProposal(id, (previous?.version ?: 0) + 1, civilization, b.civID, clauses(civilization, b.civID, give, receive), previous?.deadlineMillis ?: (runtime.clockMillis() + state.timeoutSeconds * 1000L), previous?.counterofferLimit ?: state.counterofferLimit, now, listOf(TradeConsent(civilization, "accept", now)), friendship = if (friendship) FriendshipTerms() else null)
         legality(proposal)?.let { return unavailable(it) }
-        if (warConsentBlocked(civilization, proposal)) return unavailable("Reconsider your accepted peace commitments before declaring or sponsoring this war.")
         if (previous != null) replace(previous.copy(status = "SUPERSEDED"), civilization)
         state.proposals.getOrPut(id) { mutableListOf() }.add(proposal)
-        if (warClauses(proposal).isNotEmpty()) state.warConsentVersions[id] = peaceVersion(civilization) else state.warConsentVersions.remove(id)
         if (previous == null) {
             runtime.communicationState.coordinatedRecovery = true
             state.activeProposal = id
@@ -306,14 +307,6 @@ internal class EngineTrades(private val runtime: GameExecutor) {
             val updated = proposal.copy(status = if (decision == "decline") "DECLINED" else "WITHDRAWN", consents = proposal.consents + TradeConsent(civilization, decision, now))
             replace(updated, civilization)
             return obj("trade" to view(updated, civilization))
-        }
-        if (warConsentBlocked(civilization, proposal)) return unavailable("Reconsider your accepted peace commitments before declaring or sponsoring this war.", proposal, civilization)
-        if (warClauses(proposal).isNotEmpty() && state.warConsentVersions[proposal.proposal] != peaceVersion(proposal.author)) {
-            // Tell the other participant only that consent expired, never which private
-            // commitment changed. Queries do not expose the signer's private counters.
-            val invalid = proposal.copy(status = "INVALID", failure = "The author's consent must be renewed. Publish a new proposal.")
-            replace(invalid, civilization)
-            return unavailable(checkNotNull(invalid.failure), invalid, civilization)
         }
         legality(proposal)?.let { reason ->
             val invalid = proposal.copy(status = "INVALID", failure = reason)
@@ -353,7 +346,6 @@ internal class EngineTrades(private val runtime: GameExecutor) {
             replace(updated, civilization)
             if (trade.isPeaceTreaty() || proposal.friendship != null) {
                 invalidateDiplomacy(a.civID, b.civID)
-                runtime.communication.bumpPeace(proposal.participants())
             }
             runtime.communicationState.outcomes.add(outcome)
             runtime.communication.emit(proposal.participants(), "engine", outcome.recordJson(), proposal.participants().toSet() - civilization)
@@ -454,7 +446,6 @@ internal class EngineTrades(private val runtime: GameExecutor) {
             state.activeProposal = null
             proposal.participants().forEach { runtime.turnSessions[it]?.invalidate() }
         }
-        if (proposal.status !in setOf("PENDING", "SUPERSEDED")) state.warConsentVersions.remove(proposal.proposal)
         publish(proposal, actor)
     }
     private fun publish(proposal: EngineTradeProposal, actor: String) {

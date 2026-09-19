@@ -14,7 +14,8 @@ class Host:
     def __init__(self):
         self.civilization = "Rome"
         self.revision = "rev1"
-        self.peace = 0
+        self.offers = []
+        self.consents = []
         self.executed = []
         self.seen = {}
         self.view: JsonObject = {
@@ -79,16 +80,13 @@ class Host:
                 return {
                     "civilization": self.civilization,
                     "epoch": "g1",
-                    "peaceVersion": self.peace,
-                    "offers": [],
-                    "consents": [],
+                    "offers": copy.deepcopy(self.offers),
+                    "consents": copy.deepcopy(self.consents),
                     "outcomes": [],
                 }
             return {"sent": True}
         if args["requestId"] in self.seen:
             return self.seen[args["requestId"]]
-        if args.get("socialVersion", self.peace) != self.peace:
-            return {"error": "STALE_COMMITMENT"}
         self.executed.append(copy.deepcopy(args))
         self.revision = "rev" + str(len(self.executed) + 1)
         result = {"requestId": args["requestId"], "revision": self.revision, "kind": args["kind"], "done": True}
@@ -125,7 +123,109 @@ def test_gateway_owns_bookkeeping_and_retries_exact_call(tmp_path):
     asyncio.run(run())
 
 
-def test_commitment_change_rejects_attack_but_greeting_preserves_economic_job(tmp_path):
+@pytest.mark.parametrize("new_consent", [False, True])
+@pytest.mark.parametrize(
+    "action,detail,arguments",
+    [
+        (
+            {
+                "kind": "ATTACK",
+                "target": "unit1",
+                "destination": {"x": 1, "y": 0},
+                "attackFrom": {"x": 0, "y": 0},
+            },
+            "unit_details",
+            {"target": "unit1"},
+        ),
+        (
+            {"kind": "CITY_ATTACK", "target": "city1", "destination": {"x": 1, "y": 0}},
+            "city_details",
+            {"target": "city1"},
+        ),
+        (
+            {"kind": "DECLARE_WAR", "target": "Greece", "confirmWar": True},
+            "player_details",
+            {"section": "diplomacy"},
+        ),
+    ],
+)
+def test_social_promises_do_not_restrict_hostile_commands(tmp_path, action, detail, arguments, new_consent):
+    async def run():
+        io = ServiceIO()
+        memory = CivilizationState(tmp_path / "private", "Rome")
+        gateway = ProposalGateway(memory, io, tmp_path / "workspace")
+        host = Host()
+        host.offers.append(
+            {
+                "proposal": "p1",
+                "version": 1,
+                "participants": ["Rome", "Greece"],
+                "kind": "peace",
+                "terms": "No attacks before turn 8",
+                "effective": not new_consent,
+            }
+        )
+        job = await gateway.open("planning", "gameplay", "g1", host, {})
+        try:
+            await gateway.call(
+                job,
+                "memory_update",
+                {
+                    "changes": [
+                        {
+                            "op": "create",
+                            "content": {
+                                "type": "plan",
+                                "objective": "Keep peace with Greece",
+                                "approach": "Honor the stated promise",
+                                "successCriteria": "No attacks before turn 8",
+                                "subjects": ["Greece"],
+                            },
+                        }
+                    ]
+                },
+                "plan",
+            )
+            await gateway.call(job, "player_turn", {}, "observe")
+            await gateway.call(job, detail, arguments, "inspect")
+            if new_consent:
+                host.offers[0]["effective"] = True
+                host.consents.append({"proposal": "p1", "author": "Greece", "decision": "accept"})
+                memory.ingest(
+                    "g1",
+                    [
+                        {
+                            "id": 1,
+                            "kind": "consent",
+                            "body": {**host.consents[0], "participants": ["Rome", "Greece"]},
+                        }
+                    ],
+                    1,
+                )
+                assert memory.snapshot("gameplay")["records"]["mem1"]["body"]["needsReview"]
+            result = await gateway.call(
+                job,
+                "player_command",
+                {**action, "intent": {"reason": "Choose war despite the social promise"}},
+                "act",
+            )
+            assert result["done"] and len(host.executed) == 1
+            assert host.executed[0]["kind"] == action["kind"]
+            assert host.executed[0]["revision"] == "rev1"
+            assert "socialVersion" not in host.executed[0]
+            assert host.offers[0]["effective"]
+            # A changed promise can flag related memory, but an independent
+            # decision remains legal without rewriting or withdrawing that plan.
+            if new_consent:
+                assert memory.snapshot("gameplay")["records"]["mem1"]["body"]["needsReview"]
+        finally:
+            await gateway.close(job, True)
+            await io.close()
+
+    asyncio.run(run())
+
+
+def test_greeting_preserves_economic_job_and_chat_cannot_issue_gameplay(tmp_path):
     async def run():
         io = ServiceIO()
         memory = CivilizationState(tmp_path / "private", "Rome")
@@ -133,22 +233,7 @@ def test_commitment_change_rejects_attack_but_greeting_preserves_economic_job(tm
         host = Host()
         job = await gateway.open("planning", "gameplay", "g1", host, {})
         await gateway.call(job, "player_turn", {}, "1")
-        await gateway.call(job, "unit_details", {"target": "unit1"}, "unit")
         await gateway.call(job, "city_details", {"target": "city1"}, "city")
-        host.peace += 1
-        rejected = await gateway.call(
-            job,
-            "player_command",
-            {
-                "kind": "ATTACK",
-                "target": "unit1",
-                "destination": {"x": 1, "y": 0},
-                "attackFrom": {"x": 0, "y": 0},
-                "intent": {"reason": "Advance the test objective"},
-            },
-            "2",
-        )
-        assert "error" in rejected and not host.executed
         memory.ingest("g1", [{"id": 1, "kind": "message", "body": {"text": "Hello"}}], 1)
         result = await gateway.call(
             job,

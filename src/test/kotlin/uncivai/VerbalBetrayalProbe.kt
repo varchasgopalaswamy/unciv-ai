@@ -1,12 +1,12 @@
 package uncivai
 
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.boolean
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import uncivai.player.PlayerHost
 import uncivai.player.PlayerSession
-import uncivai.player.PlayerSessionException
 import uncivai.player.TurnCommandKind
 import uncivai.player.TurnCommandRequest
 import java.nio.file.Path
@@ -71,7 +71,9 @@ object VerbalBetrayalProbe {
             finishTurn(rome)
             val before = greece.turn()
             check(before.turn == 1 && before.phase == "ACTIVE")
-            val stale =
+            check(before.socialAdvisories.single().let { it.proposal == proposal && it.terms == PACT_TERMS && it.conditions == PACT_CONDITIONS })
+            check(before.diplomacy.knownCivilizations.single().declareWar.available)
+            val request =
                 TurnCommandRequest(
                     "war",
                     before.epoch,
@@ -79,17 +81,8 @@ object VerbalBetrayalProbe {
                     TurnCommandKind.DECLARE_WAR,
                     target = "Rome",
                     confirmWar = true,
+                    socialVersion = Long.MAX_VALUE, // Historical clients cannot turn a chat counter into a rule.
                 )
-            check(runCatching { greece.execute(stale) }.exceptionOrNull() is PlayerSessionException)
-            chat(
-                "Greece",
-                "reconsider",
-                "proposal" to proposal,
-                "version" to 1,
-                "reason" to "I deliberately choose to violate my unexpired promise; Rome has not released me.",
-            )
-            val observed = greece.turn()
-            val request = stale.copy(revision = observed.revision)
             val receipt = greece.execute(request)
             check(greece.execute(request) == receipt) { "Retry declared war twice" }
             check(runtime.game.getCivilization("Rome").isAtWarWith(runtime.game.getCivilization("Greece")))
@@ -105,6 +98,8 @@ object VerbalBetrayalProbe {
                     2,
             )
             check(events["outcomes"]!!.jsonArray.single().jsonObject["author"]!!.jsonPrimitive.content == "Greece")
+            check(events["offers"]!!.jsonArray.single().jsonObject["effective"]!!.jsonPrimitive.boolean)
+            check(events["consents"]!!.jsonArray.all { it.jsonObject["decision"]!!.jsonPrimitive.content == "accept" })
             check(rome.turn().diplomacy.knownCivilizations.single().atWar)
         }
         HeadlessRuntime.loadCheckpoint(checkpoint, root.resolve("restarted")).use { runtime ->
@@ -115,6 +110,35 @@ object VerbalBetrayalProbe {
             check(outcome.confirmation.relationships.getValue("Rome").let { it.otherCivilizationId == "Greece" && it.atWar })
             check(outcome.confirmation.relationships.getValue("Greece").let { it.otherCivilizationId == "Rome" && it.atWar })
             check(PlayerHost(runtime).bindPlayer("Rome").turn().scenario == null)
+            check(PlayerHost(runtime).bindPlayer("Rome").turn().socialAdvisories.single().terms == PACT_TERMS)
+        }
+        attacksDespitePromise(root.resolve("combat"))
+    }
+
+    private fun attacksDespitePromise(root: Path) {
+        HeadlessRuntime.createDuel(root, combatScenario = true).use { runtime ->
+            val rome = PlayerHost(runtime).bindPlayer("Rome")
+            val greece = PlayerHost(runtime).bindPlayer("Greece")
+            val before = rome.turn()
+            val proposal = rome.communication(obj("op" to "offer", "epoch" to before.epoch, "requestId" to "ceasefire", "participants" to listOf("Rome", "Greece"), "kind" to "peace", "terms" to "Stop all attacks", "conditions" to "Unconditional", "expiresTurn" to 8))["offer"]!!.jsonObject
+            greece.communication(obj("op" to "accept", "epoch" to before.epoch, "requestId" to "accept-ceasefire", "proposal" to proposal["proposal"], "version" to 1))
+            val advised = rome.turn()
+            check(advised.revision == before.revision)
+            check(advised.socialAdvisories.single().terms == "Stop all attacks")
+            check(advised.map == before.map && advised.cities == before.cities) { "Social promises changed native combat options" }
+            val unit = before.map.units.first { it.combat!!.attacks.any { option -> !option.defenderIsCity } }
+            val attack = unit.combat!!.attacks.first { !it.defenderIsCity }
+            val command = TurnCommandRequest("attack", before.epoch, before.revision, TurnCommandKind.ATTACK, target = unit.handle, destination = attack.destination, attackFrom = attack.attackFrom, socialVersion = 0)
+            val receipt = rome.execute(command)
+            check(receipt.combat!!.attacked)
+            check(rome.execute(command) == receipt)
+            val next = rome.turn()
+            val city = next.cities.first { it.attacks.isNotEmpty() }
+            val cityAttack = TurnCommandRequest("city-attack", next.epoch, next.revision, TurnCommandKind.CITY_ATTACK, target = city.handle, destination = city.attacks.first().destination)
+            check(rome.execute(cityAttack).combat!!.attacked)
+            val ledger = rome.communication(obj("op" to "state", "epoch" to before.epoch))
+            check(ledger["offers"]!!.jsonArray.single().jsonObject["effective"]!!.jsonPrimitive.boolean)
+            check(ledger["consents"]!!.jsonArray.all { it.jsonObject["decision"]!!.jsonPrimitive.content == "accept" })
         }
     }
 

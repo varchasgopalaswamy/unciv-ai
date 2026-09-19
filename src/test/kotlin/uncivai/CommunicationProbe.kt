@@ -10,11 +10,8 @@ import kotlinx.serialization.json.int
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
-import kotlinx.serialization.json.long
 import uncivai.player.PlayerHost
 import uncivai.player.PlayerSessionException
-import uncivai.player.TurnCommandKind
-import uncivai.player.TurnCommandRequest
 import java.nio.file.Path
 
 object CommunicationProbe {
@@ -85,24 +82,13 @@ object CommunicationProbe {
                 )["offer"]!!.jsonObject
                 val proposal = offered["proposal"]!!.jsonPrimitive.content
                 check(state("Egypt")["offers"]!!.jsonArray.isEmpty())
-                val version = state("Rome")["peaceVersion"]!!.jsonPrimitive.long
-                val attack =
-                    TurnCommandRequest(
-                        "attack",
-                        executor.epoch,
-                        "rev1",
-                        TurnCommandKind.DECLARE_WAR,
-                        target = "Greece",
-                        socialVersion = version,
-                    )
+                val beforeConsent = players.getValue("Rome").turn()
                 command("Greece", "accept", "proposal" to proposal, "version" to 1)
-                check(
-                    runCatching {
-                        executor.communication.validate("Rome", attack, "Greece", 0)
-                    }.exceptionOrNull() is PlayerSessionException,
-                )
-                val economicCommand = attack.copy(kind = TurnCommandKind.QUEUE_CONSTRUCTION, socialVersion = null)
-                executor.communication.validate("Rome", economicCommand, null, 0)
+                val afterConsent = players.getValue("Rome").turn()
+                check(afterConsent.revision == beforeConsent.revision) { "Social consent changed native action freshness" }
+                check(afterConsent.socialAdvisories.single().proposal == proposal)
+                check(afterConsent.diplomacy == beforeConsent.diplomacy) { "A social promise changed native diplomatic options" }
+                check(players.getValue("Egypt").turn().socialAdvisories.isEmpty())
                 val accepted = state("Rome")["consents"]!!.jsonArray.size
                 command("Greece", "accept", "proposal" to proposal, "version" to 1)
                 check(state("Rome")["consents"]!!.jsonArray.size == accepted)
@@ -113,12 +99,7 @@ object CommunicationProbe {
                     "version" to 1,
                     "reason" to "They violated the agreement; reconsidering deliberately",
                 )
-                executor.communication.validate(
-                    "Rome",
-                    attack.copy(socialVersion = state("Rome")["peaceVersion"]!!.jsonPrimitive.long),
-                    "Greece",
-                    0,
-                )
+                check(players.getValue("Rome").turn().socialAdvisories.isEmpty())
                 command(
                     "Rome",
                     "revise",
@@ -131,12 +112,7 @@ object CommunicationProbe {
                 )
                 check(runCatching { command("Greece", "accept", "proposal" to proposal, "version" to 1) }.isFailure)
                 command("Greece", "accept", "proposal" to proposal, "version" to 2)
-                executor.communication.validate(
-                    "Rome",
-                    attack.copy(socialVersion = state("Rome")["peaceVersion"]!!.jsonPrimitive.long),
-                    "Greece",
-                    5,
-                )
+                check(players.getValue("Rome").turn().socialAdvisories.single().version == 2)
                 command(
                     "Rome",
                     "revise",
@@ -146,25 +122,11 @@ object CommunicationProbe {
                     "terms" to "Discuss borders; replace the previous promise",
                     "conditions" to "Unconditional",
                 )
-                check(
-                    runCatching {
-                        executor.communication.validate(
-                            "Rome",
-                            attack.copy(socialVersion = state("Rome")["peaceVersion"]!!.jsonPrimitive.long),
-                            "Greece",
-                            0,
-                        )
-                    }.isFailure,
-                ) {
+                check(players.getValue("Rome").turn().socialAdvisories.single().version == 2) {
                     "Proposing new terms must not silently dissolve the accepted peace promise"
                 }
                 command("Greece", "accept", "proposal" to proposal, "version" to 3)
-                executor.communication.validate(
-                    "Rome",
-                    attack.copy(socialVersion = state("Rome")["peaceVersion"]!!.jsonPrimitive.long),
-                    "Greece",
-                    0,
-                )
+                check(players.getValue("Rome").turn().socialAdvisories.isEmpty())
                 val lease = "test-lease"
                 control.handle(OperatorRequest("acquire", lease))
                 control.handle(OperatorRequest("barrier", lease))

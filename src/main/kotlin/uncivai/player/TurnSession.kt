@@ -104,7 +104,6 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
         if (game.currentPlayer != player.civID || game.currentPlayerCiv !== player) fail(PlayerSessionFailure.NOT_YOUR_TURN)
         val before = snapshot(game, player, state)
         if (request.revision != before.revision) fail(PlayerSessionFailure.STALE_REVISION)
-        runtime.communication.validate(player.civID, request, request.target?.takeIf { request.kind == TurnCommandKind.DECLARE_WAR }, game.turns)
         if (before.phase != "ACTIVE") fail(PlayerSessionFailure.COMMAND_UNAVAILABLE)
         if (gameHasResult(game) && request.kind != TurnCommandKind.RESOLVE_CAPTURED_CITY) fail(PlayerSessionFailure.COMMAND_UNAVAILABLE)
         if (player.hasCaptureDecision() && request.kind !in setOf(TurnCommandKind.RESOLVE_CAPTURED_CITY, TurnCommandKind.ACKNOWLEDGE_ALERT)) fail(PlayerSessionFailure.TURN_BLOCKED)
@@ -180,10 +179,7 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
             }
             val option = offered.singleOrNull { it.destination == request.destination && (request.kind == TurnCommandKind.CITY_ATTACK || it.attackFrom == request.attackFrom) }
                 ?: fail(PlayerSessionFailure.OPTION_UNAVAILABLE)
-            game.tileMap[com.unciv.logic.map.HexCoord(option.destination.x, option.destination.y)].also { tile ->
-                val defender = if (tile.isCityCenter()) tile.getCity()?.civ else (tile.militaryUnit ?: tile.civilianUnit)?.civ
-                runtime.communication.validate(player.civID, request, defender?.civID, game.turns)
-            }
+            game.tileMap[com.unciv.logic.map.HexCoord(option.destination.x, option.destination.y)]
         } else if (request.kind in tileCommands) {
             val option = before.cities.single { it.handle == request.target }.development!!.tiles
                 .singleOrNull { it.position == request.destination } ?: fail(PlayerSessionFailure.OPTION_UNAVAILABLE)
@@ -565,7 +561,12 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
             state.fingerprint = fingerprint
             state.revision = state.identifiers.next(PlayerIdentifier.REVISION)
         }
-        return fingerprint.copy(revision = state.revision, turnReview = fingerprint.turnReview?.copy(id = state.revision))
+        // Chat advice is current but does not invalidate a native action already inspected.
+        return fingerprint.copy(
+            revision = state.revision,
+            turnReview = fingerprint.turnReview?.copy(id = state.revision),
+            socialAdvisories = runtime.communication.peaceAdvisories(civilizationId),
+        )
     }
 
     private fun player(game: GameInfo): Civilization = game.civilizations.singleOrNull {

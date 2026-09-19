@@ -6,6 +6,9 @@ interrupted runs completed after resuming their saved games with additional time
 [Desktop acceptance](War-trades-desktop-acceptance.md) also passed. See the
 [live results and evidence](War-trades-live-results.md).
 The launcher accepts `war-paid` and `war-joint` alongside `trade-cycle`.
+The [September 19 social-promise run](Social-promises-live-results.md) separately
+passed the updated advisory contract using Run A, including unchanged promise
+consent at settlement and continuation after restart.
 
 Use guided diplomatic milestones with live agents negotiating prices, reading
 their own observations and choosing military orders. The exercise has two short
@@ -44,7 +47,7 @@ or detecting the private promise.
 | Milestone | Private player objectives | Observable result |
 | --- | --- | --- |
 | Offer paid war | On its first turn, Rome offers 30 Gold for Greece to declare war on France, with a private spending limit of 60. Greece privately requires at least 40 Gold. | The original offer is pending. No payment or declaration occurs yet. |
-| Reconsider, counter and settle | Greece explicitly reconsiders its accepted promise to France, then counters at a price in the 40–60 Gold range. Publishing a counteroffer itself records consent, so reconsideration must happen first. Rome reads and accepts the counter; both players inspect their own warnings. | The agreed payment and Greece–France war occur once. Rome remains at peace with France. France receives the reconsideration and native declaration, without automatic access to the hiring contract. |
+| Weigh the promise, counter and settle | Greece reads its accepted promise and advisory, explains its interpretation of “good neighbors” to France, and counters at a price in the 40–60 Gold range. France replies with its own interpretation; agreement or a reply is not required before settlement. The exercise asks Greece to leave the original promise and consent unchanged when proceeding. Rome reads and accepts the counter; both players inspect their own warnings. | The agreed payment and Greece–France war occur once while the social promise remains recorded as accepted. Rome remains at peace with France. France receives the native declaration and any messages actually sent, without automatic access to the hiring contract. |
 | Recruit Rome | During a subsequent Greek gameplay turn, Greece offers Rome 10–20 Gold to join the existing war. Rome is willing to join within that range. | Rome declares on France through a one-sided war clause. The engine reports that Rome joined Greece; France now faces both. |
 | Continue after restart | Stop at a completed round after both deals, preserve the audit snapshot, restart the host and services, and resume for two more rounds. | The agents acknowledge their own alerts, update sourced plans, continue military play and preserve completed deals across fresh jobs. |
 
@@ -53,8 +56,11 @@ refer to the final inspected counteroffer. A refusal or expired proposal is a
 valid engine result but leaves the corresponding live feature objective unmet;
 the report must say so instead of calling the run a success.
 
-The social promise is a deliberate exercise of the host's reconsideration rule.
-France may learn that Greece revoked its promise and may infer Roman involvement.
+The social promise exercises nonblocking advice and the players' own interpretation
+of their words. Its terms do not change legal actions. Leaving consent unchanged
+is a guided test objective, not a host restriction: ordinary players may still
+withdraw or reconsider voluntarily. France may regard Greece's action as breaking
+its promise and may infer Roman involvement; the host does not decide either claim.
 It may also obtain information through voluntary chat. Record those sources;
 privacy does not require France to remain unaware of things it can legitimately
 learn or infer.
@@ -80,8 +86,11 @@ player's own event stream, together with the reasoning and memory records:
   actual native war status and gold transfer at settlement.
 - Rome's neutrality after the first paid war, Roman entry after recruitment, and
   both declarations from the single joint-war acceptance in Run B.
-- Greece's explicit reconsideration in Run A and both players' treatment of the
-  final counteroffer and declaration warnings.
+- Greece's treatment of its social promise in Run A and both players' treatment
+  of the final counteroffer and declaration warnings. For the social-advice
+  exercise, verify that advice reached Greece before consent, the players
+  exchanged interpretations, and settlement occurred with the promise still
+  accepted. Explicit reconsideration is never a gameplay prerequisite.
 - France's full native notices and its knowledge sources. Payments and private
   proposal identifiers must not appear through an unauthorized observation.
   Native joining and joint-war notices legitimately identify both allies.
@@ -140,7 +149,7 @@ uv run pytest tests/test_verify_war_scenario.py tests/test_launch_host.py
 ```
 
 The probe needs a fresh output directory. It checks both production openings,
-blocked consent before reconsideration, direct/joining/joint declarations, immediate
+nonblocking private promise advice, direct/joining/joint declarations, immediate
 balances, player context privacy, turn ownership, and checkpoint reloads. It runs
 no models. The test suite also checks scenario identity on resume.
 

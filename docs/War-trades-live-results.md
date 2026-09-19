@@ -1,5 +1,9 @@
 # Three-Cornered War live validation — September 18, 2026
 
+These historical runs preceded the [social-promise correction](Social-commitments.md).
+Their recorded reconsiderations remain historical facts; current social promises
+provide advice and do not block legal attacks or war trades.
+
 The implementation, scripted engine checks, both live exercises and the scoped
 [desktop acceptance](War-trades-desktop-acceptance.md) pass. Both live verifiers
 now report `verified: true` at game turn 3, handoff 9, including the required two

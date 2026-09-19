@@ -41,7 +41,7 @@ flowchart TB
     subgraph Host["Trusted Kotlin host"]
         OperatorAPI["Operator API · HTTPS /operator"]
         PlayerAPI["Authenticated player API · HTTPS /mcp<br/>Permitted observations and recipient-filtered events"]
-        Executor["GameExecutor<br/>Serialized state changes, turn authority,<br/>engine legality and commitment checks"]
+        Executor["GameExecutor<br/>Serialized state changes, turn authority,<br/>engine legality and visibility checks"]
         Game["Unciv game state"]
         Ledger["Communication state<br/>Statements and offers<br/>Explicit consent<br/>Confirmed engine outcomes"]
         Checkpoint[("Atomic host checkpoint<br/>Native game, shared ledger and command receipts")]

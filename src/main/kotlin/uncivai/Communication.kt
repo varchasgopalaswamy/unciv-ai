@@ -11,7 +11,6 @@ import uncivai.player.PlayerSessionException
 import uncivai.player.PlayerSessionFailure
 import uncivai.player.TurnCommandKind
 import uncivai.player.TurnCommandReceipt
-import uncivai.player.TurnCommandRequest
 import uncivai.player.communicationContext
 import java.security.SecureRandom
 
@@ -25,6 +24,7 @@ internal data class CommunicationState(
     val consents: MutableList<SocialConsent> = mutableListOf(),
     val outcomes: MutableList<EngineOutcome> = mutableListOf(),
     val requests: MutableMap<String, CommunicationReceipt> = mutableMapOf(),
+    // Decode existing checkpoints; social changes no longer fence game commands.
     val peaceVersions: MutableMap<String, Long> = mutableMapOf(),
     val acceptedVersions: MutableMap<String, Int> = mutableMapOf(),
     val jobs: MutableMap<String, CommunicationJob> = mutableMapOf(),
@@ -145,7 +145,6 @@ internal class Communication(private val runtime: GameExecutor) {
                     state.offers.getOrPut(proposalId) { mutableListOf() }.add(offer)
                     emit(audience, "offer", offer.recordJson(), audience.toSet() - civilization)
                     consent(civilization, offer, "accept", "Published these terms", game.turns)
-                    bumpPeace(audience)
                     obj("offer" to offer.recordJson())
                 }
 
@@ -160,7 +159,6 @@ internal class Communication(private val runtime: GameExecutor) {
                     val existing = decisions(offer)[civilization]
                     if (existing?.decision != request.op) {
                         consent(civilization, offer, request.op, reason, game.turns)
-                        bumpPeace(offer.participants)
                     }
                     if (accepted(offer, game.turns)) state.acceptedVersions[proposal] = version
                     obj("decision" to request.op, "proposal" to proposal, "version" to version, "accepted" to accepted(offer, game.turns))
@@ -217,15 +215,10 @@ internal class Communication(private val runtime: GameExecutor) {
     private fun withdrawn(offer: SocialOffer) = decisions(offer).values.any { it.decision in setOf("withdraw", "reconsider") }
     private fun accepted(offer: SocialOffer, turn: Int): Boolean = !expired(offer, turn) && !withdrawn(offer) && offer.participants.all { decisions(offer)[it]?.decision == "accept" }
 
-    internal fun bumpPeace(participants: List<String>) {
-        participants.forEach { state.peaceVersions[it] = (state.peaceVersions[it] ?: 0) + 1 }
-    }
-
     fun view(civilization: String, participants: List<String>): JsonObject = runtime.accessGame { game ->
         obj(
             "epoch" to runtime.epoch, "civilization" to civilization,
             "context" to communicationContext(runtime, game, game.getCivilization(civilization)), "channels" to participants,
-            "peaceVersion" to (state.peaceVersions[civilization] ?: 0),
             "offers" to state.offers.values.flatten().filter { civilization in it.participants }.map { offer ->
                 JsonObject(offer.recordJson() + obj("effective" to (state.acceptedVersions[offer.proposal] == offer.version && accepted(offer, game.turns))))
             },
@@ -236,16 +229,16 @@ internal class Communication(private val runtime: GameExecutor) {
         )
     }
 
-    fun validate(civilization: String, request: TurnCommandRequest, opponent: String?, turn: Int) {
-        if (request.socialVersion != null && request.socialVersion != (state.peaceVersions[civilization] ?: 0)) throw PlayerSessionException(PlayerSessionFailure.STALE_REVISION)
-        if (request.kind !in setOf(TurnCommandKind.ATTACK, TurnCommandKind.CITY_ATTACK, TurnCommandKind.DECLARE_WAR) || opponent == null) return
-        if (hasPeaceCommitment(civilization, opponent, turn)) {
-            throw PlayerSessionException(PlayerSessionFailure.COMMAND_UNAVAILABLE)
-        }
-    }
-
-    internal fun hasPeaceCommitment(civilization: String, opponent: String, turn: Int): Boolean = state.offers.values.flatten().any {
-        state.acceptedVersions[it.proposal] == it.version && it.kind == "peace" && civilization in it.participants && opponent in it.participants && accepted(it, turn)
+    /** Advice uses only the reader's own accepted statements; it never changes game legality. */
+    internal fun peaceAdvisories(civilization: String, opponent: String? = null): List<SocialPromiseAdvisory> = runtime.accessGame { game ->
+        java.util.Collections.unmodifiableList(
+            state.offers.values.flatten().filter {
+                state.acceptedVersions[it.proposal] == it.version && it.kind == "peace" &&
+                    civilization in it.participants && (opponent == null || opponent in it.participants) && accepted(it, game.turns)
+            }.map {
+                SocialPromiseAdvisory(it.proposal, it.version, java.util.Collections.unmodifiableList(it.participants.toList()), it.terms, it.conditions, it.expiresTurn)
+            },
+        )
     }
 
     fun enacted(civilization: String, opponent: String?, receipt: TurnCommandReceipt) {
@@ -270,6 +263,5 @@ internal class Communication(private val runtime: GameExecutor) {
         )
         state.outcomes.add(record)
         emit(audience, "engine", record.recordJson(), audience.toSet() - civilization)
-        bumpPeace(audience)
     }
 }

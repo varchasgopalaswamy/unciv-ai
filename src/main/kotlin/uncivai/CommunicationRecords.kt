@@ -84,6 +84,19 @@ internal data class SocialConsent(val proposal: String, val version: Int, val au
 @Serializable
 internal data class ProposalReference(val proposal: String, val version: Int)
 
+/** A private reminder of stated intent, never a native restriction or a verdict on free-text conditions. */
+@Serializable
+data class SocialPromiseAdvisory(
+    val proposal: String,
+    val version: Int,
+    val participants: List<String>,
+    val terms: String,
+    val conditions: String,
+    val expiresTurn: Int?,
+    val relevantActions: List<String> = java.util.Collections.unmodifiableList(listOf("DECLARE_WAR", "ATTACK", "CITY_ATTACK", "WAR_TRADE")),
+    val message: String = "Hostile action against another participant may conflict with this accepted social peace promise. Consider its terms and conditions; you may proceed without withdrawing or reconsidering it. Native game rules still apply.",
+)
+
 @Serializable
 internal data class TradedCityOwner(val city: String, val owner: String)
 

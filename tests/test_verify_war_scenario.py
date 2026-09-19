@@ -148,7 +148,8 @@ def test_launcher_accepts_war_variants(variant, tmp_path):
     assert args.scenario == variant
 
 
-def test_paid_counter_join_and_restart_archive(joint):
+@pytest.mark.parametrize("reconsider_time", [None, 20, 25])
+def test_paid_counter_join_and_restart_archive_does_not_require_reconsideration(joint, reconsider_time):
     root, saved = joint
     game = json.loads(saved["gameJson"])
     game["tileMap"]["mapParameters"]["name"] = "Three-Cornered War: paid"
@@ -212,11 +213,12 @@ def test_paid_counter_join_and_restart_archive(joint):
             "response": {"trade": final, "outcome": final["outcome"]},
             "audit": {"activeCivilization": active, "handoff": handoff, "timeMillis": 30},
         }
-    ledger["requests"]["Greece:reconsider"] = {
-        "request": {"op": "reconsider", "proposal": "p1"},
-        "response": {"decision": "reconsider"},
-        "audit": {"timeMillis": 20},
-    }
+    if reconsider_time is not None:
+        ledger["requests"]["Greece:reconsider"] = {
+            "request": {"op": "reconsider", "proposal": "p1"},
+            "response": {"decision": "reconsider"},
+            "audit": {"timeMillis": reconsider_time},
+        }
     first = {"gold": {"Rome": 500, "Greece": 500, "France": 500}, "wars": []}
     middle = {
         "gold": {"Rome": 453, "Greece": 547, "France": 500},
@@ -237,7 +239,6 @@ def test_paid_counter_join_and_restart_archive(joint):
     ledger["requests"]["join-accept"]["audit"]["settlement"] = {"before": middle, "after": final}
     report = audit(joint)
     assert report["checks"]["allMilestones"]
-    assert report["checks"]["reconsideredBeforeCounter"]
     assert not report["verified"]  # An archive is mandatory for the paid variant.
     archived = copy.deepcopy(saved)
     archived["gameJson"] = json.dumps(dict(game, turns=1))
@@ -251,8 +252,6 @@ def test_paid_counter_join_and_restart_archive(joint):
     assert not continued["checks"]["twoRoundsAfterRestartArchive"]
     assert not continued["verified"]
     saved["gameJson"] = json.dumps(game)
-    ledger["requests"]["Greece:reconsider"]["audit"]["timeMillis"] = 25
-    assert not audit(joint)["checks"]["reconsideredBeforeCounter"]
     # Sponsorship must leave Rome neutral at the first settlement.
     middle["wars"].append({"declaringCivilization": "Rome", "targetCivilization": "France", "atWar": True})
     assert not audit(joint)["checks"]["allMilestones"]

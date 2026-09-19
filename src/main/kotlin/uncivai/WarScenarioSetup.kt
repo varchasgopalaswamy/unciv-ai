@@ -27,7 +27,7 @@ internal object WarScenarioSetup {
                 "participants" to listOf("Greece", "France"),
                 "kind" to "peace",
                 "terms" to "Prepared background: Greece and France promise not to attack each other.",
-                "conditions" to "Until explicitly reconsidered. This is prepared history, not a live negotiation.",
+                "conditions" to "While we remain good neighbors. This is prepared history, not a live negotiation.",
             ),
         ).getValue("offer").jsonObject
         communication.handle(
@@ -53,7 +53,16 @@ internal object WarScenarioSetup {
             "Read your own full native alerts and communication records. Update private plans with sources; distinguish observations, messages and inferences. Scenario instructions are objectives, not evidence that an event happened.",
         )
         // Do this before accessing the negotiators' private records, including their phase labels.
-        if (player.civID == "France") return GameplayScenario("FRONTIER_EXERCISE", if (player.isAtWar()) "DEFEND" else "PREPARE", common + "Protect your frontier and maintain diplomatic awareness. Read and handle your own notices and commitments. Negotiate and communicate as you see fit; infer intentions only from information available to you.")
+        if (player.civID == "France") {
+            return GameplayScenario(
+                "FRONTIER_EXERCISE",
+                if (player.isAtWar()) "DEFEND" else "PREPARE",
+                common + listOfNotNull(
+                    "Protect your frontier and maintain diplomatic awareness. Read and handle your own notices and commitments. Negotiate and communicate as you see fit; infer intentions only from information available to you.",
+                    if (variant == "war-paid") "Read your recorded promise with Greece. If Greece discusses its ambiguous conditions, reply with your own interpretation. You need not agree. Treat messages as attributed statements, not proof of an automatic breach ruling." else null,
+                ),
+            )
+        }
         if (player.civID !in setOf("Rome", "Greece")) return null
         val state = runtime.communicationState
         val ids = state.streams[player.civID].orEmpty().filter { it.kind == "trade" }.map { it.body.getValue("proposal").jsonPrimitive.content }.distinct()
@@ -73,7 +82,7 @@ internal object WarScenarioSetup {
             "OBJECTIVE_UNMET" -> "A negotiation ended without enactment or extra proposals were opened. Do not silently replace it or claim success. Record the unmet objective and continue ordinary play for operator review."
             "CONTINUE" -> "The negotiated deals are enacted. Inspect their canonical outcomes and your native relationships. Continue limited military play; do not repeat deals after a restart."
             "JOINT_WAR" -> "Rome initiates a joint declaration against France with Greece. Negotiate any immediate Gold payment yourselves. One proposal must include a WarDeclaration against France from BOTH parties. Read trade_options, all warnings and the final trade_read before consenting."
-            "PAID_WAR" -> if (player.civID == "Rome") "On your first turn offer Greece 30 immediate Gold for Greece alone to declare war on France. Your private spending cap is 60 Gold. Negotiate with Greece and accept an affordable final counter after reading it. Remain neutral yourself for this deal." else "Your private minimum payment to declare war on France is 40 Gold. Read Rome's offer and negotiate a counter in the 40–60 Gold range. First read your existing accepted peace promise with France and explicitly reconsider it with a reason BEFORE publishing a counter: a counter already records your consent. You alone declare war in this deal."
+            "PAID_WAR" -> if (player.civID == "Rome") "On your first turn offer Greece 30 immediate Gold for Greece alone to declare war on France. Your private spending cap is 60 Gold. Negotiate with Greece and accept an affordable final counter after reading it. Remain neutral yourself for this deal." else "Your private minimum payment to declare war on France is 40 Gold. Read Rome's offer and negotiate a counter in the 40–60 Gold range. Read your accepted peace promise with France, its conditions and the social advisory. Send France a brief explanation of how you interpret 'good neighbors'; you need not agree or wait for a reply before proceeding. For this exercise, enact the negotiated native-legal war while leaving the original promise and consent unchanged: do not withdraw, reconsider or revise it. Explain your decision in your private plan. You alone declare war in this deal."
             else -> if (player.civID == "Greece") "During your next Greek gameplay turn, offer Rome 10–20 immediate Gold to join your existing war against France. Negotiate the price yourselves. Request a one-sided WarDeclaration by Rome; you are already at war. Do not open this follow-up during Rome's suspended gameplay turn." else "Greece seeks your participation in its existing war against France. You are willing to join for 10–20 immediate Gold. Wait for Greece's offer on its gameplay turn, read it and negotiate the final terms. The WarDeclaration is by you alone."
         }
         return GameplayScenario(

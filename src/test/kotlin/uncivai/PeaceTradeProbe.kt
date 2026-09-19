@@ -75,8 +75,7 @@ object PeaceTradeProbe {
                 val before = api.turn(token)
                 val warrior = before.map.units.single { it.name == "Warrior" }
                 val attack = warrior.combat!!.attacks.first()
-                val socialVersion = runtime.executor.communicationState.peaceVersions["Rome"] ?: 0
-                val staleAttack = TurnCommandRequest("stale-attack", epoch, before.revision, TurnCommandKind.ATTACK, target = warrior.handle, destination = attack.destination, attackFrom = attack.attackFrom, socialVersion = socialVersion)
+                val staleAttack = TurnCommandRequest("stale-attack", epoch, before.revision, TurnCommandKind.ATTACK, target = warrior.handle, destination = attack.destination, attackFrom = attack.attackFrom)
                 val initial = offer(listOf(treaty, silk), listOf(treaty, JsonObject(gpt + obj("amount" to 4))))["trade"]!!.jsonObject
                 val counter = command("Greece", "trade_offer", "partner" to "Rome", "proposal" to initial["proposal"], "version" to initial["version"], "give" to listOf(treaty, gpt, gold), "receive" to listOf(treaty, silk))["trade"]!!.jsonObject
                 check(decide("Greece", initial)["error"] != null)
@@ -116,7 +115,7 @@ object PeaceTradeProbe {
                 check(api.communicate(api.playerToken("Rome"), accepted) == receipt)
                 api.reject(token, staleAttack, "STALE_REVISION")
                 val after = api.turn(token)
-                api.reject(token, staleAttack.copy(revision = after.revision), "STALE_REVISION") // Diplomacy fence too.
+                api.reject(token, staleAttack.copy(revision = after.revision), "OPTION_UNAVAILABLE") // Native peace removed the attack option.
                 check(after.map.units.all { it.combat!!.attacks.isEmpty() })
                 check(after.diplomacy.knownCivilizations.single().let { !it.declareWar.available && it.peaceTreatyTurns > 0 })
                 check(listOf(rome, greece).map { it.units.getCivUnits().single().health } == health)

@@ -101,7 +101,10 @@ civilization memory:
 
 Changing terms requires fresh consent. Natural-language interpretation never
 establishes another player's acceptance. A social commitment does not itself
-enact peace or transfer resources.
+enact peace or transfer resources. Accepted promises provide nonblocking advice;
+they never prohibit native-legal actions or require an explicit release before
+breaking one's word. The host may enforce visibility and privacy beyond engine
+checks, but it must not invent gameplay rules.
 
 ## 3. Proposal approval and feature integration
 
@@ -111,11 +114,11 @@ communication, commitment decisions and memory updates.
 - Supply mandatory dependencies by proposal type; models may add assumptions but
   cannot omit required checks.
 - Version structured records independently: turn authority, relevant units/cities,
-  economic state, diplomatic status, accepted commitments and applicable private
-  policies.
+  economic state, native diplomatic status and applicable private policies.
+  Social records retain their own history without fencing native game actions.
 - Validate on result arrival and immediately before dispatch. The host checks
   authoritative dependencies and legality atomically with execution.
-- Accepted peace invalidates a conflicting attack proposal. An unrelated greeting
+- Accepted native peace invalidates a conflicting attack proposal. An unrelated greeting
   does not invalidate economic work or restart the turn.
 - Preserve independent valid results from partially stale jobs. Reconsider only
   affected proposals.
@@ -128,8 +131,10 @@ communication, commitment decisions and memory updates.
   bilateral-consent path for supported economic transfers and peace treaties. Ordinary gameplay
   commands remain turn-bound. Never switch Unciv's active player to bypass checks.
 
-Conflicting old proposals are invalidated by social commitments. A fresh decision
-may explicitly reconsider and break a promise; record that choice.
+Social commitments do not invalidate game commands or consent to native trades.
+Players can voluntarily explain a change of intent or proceed with a conflicting
+action. The communication ledger preserves their statements; native receipts
+record what actually happened.
 
 War declarations and shared economic/peace trades publish permitted outcomes into
 this system. Further trade categories, friendship and demands reuse its version,

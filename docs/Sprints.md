@@ -3,6 +3,20 @@
 Use this page to resume implementation; the [player API plan](Player-api-plan.md)
 and [coverage ledger](Player-api-coverage.md) retain the broader contract.
 
+## Close-out status
+
+The social-promises sprint is complete as of September 19, 2026. It delivers
+private, nonblocking peace-promise advice while preserving native game rules,
+exact trade consent and recovery. Automated regressions and the scoped live
+exercise passed; see [the implementation](Social-commitments.md) and
+[live acceptance](Social-promises-live-results.md) for the evidence and limits.
+The preceding enacted-agreement lifecycle sprint is also complete.
+
+No next sprint has been selected. Human-facing chat acceptance and automatic
+advice for promise types beyond peace remain follow-ups. The current change adds
+no desktop UI; it makes no new visual-desktop acceptance claim. Live unit attacks
+and city bombardments did not occur; their behavior is covered by scripted tests.
+
 ## Previous delivery: third-party war trades
 
 The September 14, 2026 sprint adds paid and joint war declarations through the
@@ -10,7 +24,7 @@ existing versioned trade flow. See [scope, inventory and verification](Third-par
 It follows the delivered trade, compact-observation and ordinary-notification slices.
 
 The implementation includes shared native trade options and effects, per-player
-declaration warnings, peace-commitment checks for both signers, private receipts,
+declaration warnings, private receipts,
 target notifications, memory invalidation, scheduled turns and checkpoint recovery.
 The engine already provides the trade-screen operations; this delivery uses the
 recorded engine revision without new engine changes. Live-model and visual desktop
@@ -53,7 +67,7 @@ balances and wars. Targeted compilation and formatting passed. Prepared draft
 terms and direct-declaration warning inspection are explicit limits of this UI
 exercise; it does not establish full player-API parity.
 
-## Current sprint: enacted agreement lifecycle
+## Completed sprint: enacted agreement lifecycle
 
 Make the end of an enacted agreement inspectable and actionable through the same
 player, notification and memory surfaces as its creation.
@@ -101,6 +115,21 @@ The sprint's automated, scoped desktop and live acceptance gates are complete.
 
 Keep city-states, mod-only introductions, three-way consent for mediated peace,
 embedded desktop play and operating-system isolation in the wider backlog.
+
+## Completed sprint: social promises are advisory
+
+The [host rule boundary](Social-commitments.md) keeps chat promises as stated
+intent. Direct attacks and declaring or sponsoring war no longer require a
+social promise to be withdrawn or reconsidered. Private, nonblocking reminders
+quote relevant accepted peace terms so players can choose whether to honor them.
+Native treaty restrictions, visibility/privacy, authority and recovery checks
+remain in force. This corrects the earlier social-peace enforcement; it does not
+change the recorded outcomes of the previous live runs.
+
+The [September 19 live exercise](Social-promises-live-results.md) passed with
+Rome, Greece and France: advice before consent, discussion of ambiguous terms,
+negotiated war while the original social promise remained accepted, and three
+rounds including restart recovery. No live unit or city attacks occurred.
 
 ## Completion gates
 

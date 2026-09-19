@@ -301,8 +301,8 @@ model run of this combined scenario remains to be performed.
 The [third-party war slice](Third-party-war-trades.md) adds paid declarations,
 joining an existing war and joint declarations against a mutually known major.
 It uses the desktop's existing trade operations and per-player declaration
-warnings. Both signers' private peace commitments govern consent, including
-sponsorship; the target receives the native war result without the private deal.
+warnings. Both signers receive private, nonblocking reminders of relevant social
+peace commitments, including sponsorship; the target receives the native war result without the private deal.
 The gateway tracks target relations and flags related plans after confirmed wars.
 
 Scripted HTTPS regressions compare native diplomacy, gold, popups, notifications

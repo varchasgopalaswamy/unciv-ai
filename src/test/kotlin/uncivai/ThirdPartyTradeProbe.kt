@@ -34,7 +34,7 @@ object ThirdPartyTradeProbe {
         val root = Path.of(args.single())
         lifecycle(root.resolve("lifecycle"))
         privacyAndLegality(root.resolve("privacy"))
-        commitments(root.resolve("commitments"))
+        for (mode in listOf("sponsor", "paid", "joint")) commitments(root.resolve("commitments-$mode"), mode)
         for (mode in listOf("joint", "join", "defensive", "counter")) nativeEffects(root.resolve(mode), mode)
         nativeEffects(root.resolve("gnk"), "joint", BaseRuleset.Civ_V_GnK)
         for (afterReplace in listOf(false, true)) storageFailure(root.resolve("failure-$afterReplace"), afterReplace)
@@ -195,36 +195,56 @@ object ThirdPartyTradeProbe {
         }
     }
 
-    private fun commitments(root: Path) {
+    private fun commitments(root: Path, mode: String) {
         create(root).use { runtime ->
             GameplayTestApi(runtime, root.resolve("tls"), tokens).use { api ->
                 val calls = Calls(runtime, api)
-                fun promise(civ: String): JsonObject {
-                    val result = calls.command(civ, "offer", "participants" to listOf(civ, "France"), "kind" to "peace", "terms" to "Do not attack", "conditions" to "Unconditional").getValue("offer").jsonObject
-                    calls.command("France", "accept", "proposal" to result["proposal"], "version" to 1)
+                fun promise(civ: String, prior: JsonObject? = null): JsonObject {
+                    val reference = if (prior == null) emptyArray() else arrayOf("proposal" to prior["proposal"])
+                    val result = calls.command(civ, if (prior == null) "offer" else "revise", "participants" to listOf(civ, "France"), "kind" to "peace", "terms" to "Do not attack", "conditions" to if (prior == null) "Unconditional" else "Our renewed promise", *reference).getValue("offer").jsonObject
+                    check(calls.command("France", "accept", "proposal" to result["proposal"], "version" to result["version"])["accepted"]!!.jsonPrimitive.boolean)
                     return result
                 }
-                fun reconsider(civ: String, offer: JsonObject) = calls.command(civ, "reconsider", "proposal" to offer["proposal"], "version" to 1, "reason" to "Deliberately change our foreign policy")
-                val sponsorPromise = promise("Rome")
-                check(calls.offer()["error"] != null) // Hiring a proxy cannot bypass a peace commitment.
-                reconsider("Rome", sponsorPromise)
-                val pending = calls.offer().getValue("trade").jsonObject
+                val romePromise = promise("Rome")
+                val greecePromise = promise("Greece")
+                for (side in listOf("give", "receive")) {
+                    val warOption = calls.options()[side]!!.jsonArray.single { it.jsonObject["type"]!!.jsonPrimitive.content == "WarDeclaration" }.jsonObject
+                    check(warOption["available"]!!.jsonPrimitive.boolean)
+                    val advice = warOption["war"]!!.jsonObject["socialAdvisories"]!!.jsonArray.single().jsonObject
+                    check(advice["proposal"] == romePromise["proposal"] && advice["version"] == romePromise["version"])
+                    check(!warOption.toString().contains(greecePromise["proposal"]!!.jsonPrimitive.content))
+                }
+                val give = when (mode) {
+                    "paid" -> listOf(war)
+                    "joint" -> listOf(gold, war)
+                    else -> listOf(gold)
+                }
+                val receive = if (mode == "paid") listOf(gold) else listOf(war)
+                val pending = calls.offer(give, receive).getValue("trade").jsonObject
+                // A private promise made before or during negotiation cannot change
+                // native legality, invalidate consent, or disclose its terms to the partner.
                 val before = calls.query("Rome", "trade_read", "proposal" to pending["proposal"])
-                val signerPromise = promise("Greece")
+                val renewedGreece = promise("Greece", greecePromise)
                 check(calls.query("Rome", "trade_read", "proposal" to pending["proposal"]) == before)
-                check(calls.decide(pending)["error"] != null)
-                check(calls.query("Rome", "trade_read", "proposal" to pending["proposal"]) == before)
-                reconsider("Greece", signerPromise)
-                val renewedPromise = promise("Rome")
-                check(calls.decide(pending)["error"] != null) // The author's earlier consent is fenced.
-                val closed = calls.query("Greece", "trade_read", "proposal" to pending["proposal"])
-                check(closed["trade"]!!.jsonObject["status"]!!.jsonPrimitive.content == "INVALID")
-                check(!closed.toString().contains(renewedPromise["proposal"]!!.jsonPrimitive.content))
-                check(!closed.toString().contains("Do not attack"))
-                check(runtime.game.getCivilization("Rome").gold == 1000)
-                reconsider("Rome", renewedPromise)
-                val fresh = calls.offer().getValue("trade").jsonObject
-                check(calls.decide(fresh)["outcome"] != null)
+                val beforeRomeRenewal = calls.query("Greece", "trade_read", "proposal" to pending["proposal"])
+                val renewedRome = promise("Rome", romePromise)
+                check(calls.query("Greece", "trade_read", "proposal" to pending["proposal"]) == beforeRomeRenewal)
+                val refreshedRome = calls.query("Rome", "trade_read", "proposal" to pending["proposal"])["trade"]!!.jsonObject
+                check(refreshedRome["socialAdvisories"]!!.jsonArray.single().jsonObject["version"] == renewedRome["version"])
+                check(refreshedRome - "socialAdvisories" == before["trade"]!!.jsonObject - "socialAdvisories")
+                check(!before.toString().contains(renewedGreece["proposal"]!!.jsonPrimitive.content))
+                check(!beforeRomeRenewal.toString().contains(renewedRome["proposal"]!!.jsonPrimitive.content))
+                val expected = nativeTrade(runtime.game, give, receive)
+                val enacted = calls.decide(pending)
+                check(enacted["trade"]!!.jsonObject["status"]!!.jsonPrimitive.content == "ENACTED") { enacted.toString() }
+                sameEffects(expected, runtime.game)
+                check(runtime.game.getCivilization("Rome").isAtWarWith(runtime.game.getCivilization("France")) == (mode != "sponsor"))
+                check(runtime.game.getCivilization("Greece").isAtWarWith(runtime.game.getCivilization("France")) == (mode != "paid"))
+                // The conversation records the promise unchanged; players assess betrayal.
+                for ((civ, renewed) in listOf("Rome" to renewedRome, "Greece" to renewedGreece)) {
+                    val offers = calls.query(civ, "state")["offers"]!!.jsonArray.map { it.jsonObject }
+                    check(offers.single { it["proposal"] == renewed["proposal"] && it["version"] == renewed["version"] }["effective"]!!.jsonPrimitive.boolean)
+                }
             }
         }
     }
