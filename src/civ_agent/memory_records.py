@@ -2,10 +2,10 @@
 
 from typing import Annotated, Literal
 
-from pydantic import Field, model_validator
+from pydantic import Field, ValidationError, model_validator
 
 from civ_agent.protocol import JsonObject
-from civ_agent.schemas import BoundaryModel, NonnegativeInt
+from civ_agent.schemas import BoundaryModel, NonnegativeInt, argument_issues, argument_shape
 
 Text = Annotated[str, Field(min_length=1, max_length=2000)]
 Source = Annotated[str, Field(min_length=1, max_length=160)]
@@ -46,7 +46,11 @@ class Belief(Content):
 class Note(Content):
     type: Literal["note"]
     text: Text
-    plan: str = Field(default="", max_length=160)
+    plan: str = Field(
+        default="",
+        max_length=160,
+        description="Optional existing plan record ID already read. Omit when unrelated to a plan; never put prose here.",
+    )
 
 
 class Soul(Content):
@@ -77,6 +81,29 @@ class Retire(BoundaryModel):
 
 class MemoryUpdate(BoundaryModel):
     changes: Annotated[list[Annotated[Create | Revise | Retire, Field(discriminator="op")]], Field(max_length=20)]
+
+
+def memory_argument_error(arguments: JsonObject, error: ValidationError) -> JsonObject:
+    models = {"plan": Plan, "belief": Belief, "note": Note, "soul": Soul}
+    shapes = {}
+    changes = arguments.get("changes")
+    for change in changes if isinstance(changes, list) else []:
+        content = change.get("content") if isinstance(change, dict) else None
+        kind = content.get("type") if isinstance(content, dict) else None
+        if isinstance(kind, str) and kind in models:
+            schema = models[kind].model_json_schema()
+            shapes[kind] = argument_shape(schema, schema.get("$defs", {}))
+    return {
+        "error": "INVALID_ARGUMENT",
+        "applied": False,
+        "recoverable": True,
+        "invalidFields": argument_issues(error, MemoryUpdate.model_json_schema()),
+        "contentSchemas": shapes,
+        "instruction": "No memory changes were applied. Use the selected content type's fields. "
+        "Notes accept text and optional plan (an existing plan ID), not sources. "
+        "Beliefs require claim, uncertainty and sources already delivered to this job. "
+        "After chat_read, observation:communication is a usable source. Game state need not be refreshed for this error.",
+    }
 
 
 class MemoryRead(BoundaryModel):

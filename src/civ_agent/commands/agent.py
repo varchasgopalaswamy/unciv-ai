@@ -12,7 +12,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from civ_agent.agent_settings import add_settings_arguments, player_tool_arguments
+from civ_agent.agent_settings import add_settings_arguments, player_mcp_configuration, player_tool_arguments
 from civ_agent.tls import (
     TLSConfigError,
     codex_trust_environment,
@@ -157,9 +157,7 @@ def run(args: argparse.Namespace) -> int:
         origin, ca_file = endpoint_configuration(state_dir, args.url, args.ca_file, args.port)
         endpoint = origin + "/mcp"
         # A per-invocation override; never write ~/.codex/config.toml or put a token in argv.
-        configuration = (
-            "mcp_servers.civ={url=" + json.dumps(endpoint) + ',bearer_token_env_var="UNCIV_PLAYER_TOKEN",required=true}'
-        )
+        configuration = player_mcp_configuration(endpoint)
         command = [codex, "--cd", str(workspace), "-c", configuration, *player_tool_arguments()]
         if args.model:
             command += ["--model", args.model]
@@ -192,11 +190,7 @@ def run(args: argparse.Namespace) -> int:
                 if name.startswith("UNCIV_"):
                     del environment[name]
             environment["UNCIV_PLAYER_TOKEN"] = job["token"]
-            command[command.index("-c") + 1] = (
-                "mcp_servers.civ={url="
-                + json.dumps(job["url"])
-                + ',bearer_token_env_var="UNCIV_PLAYER_TOKEN",required=true,default_tools_approval_mode="approve"}'
-            )
+            command[command.index("-c") + 1] = player_mcp_configuration(job["url"])
             if job["context"]:
                 command[-1] += "\n\n" + job["context"]
             print(f"Launching Codex as {civilization} through its HTTPS proposal gateway", flush=True)

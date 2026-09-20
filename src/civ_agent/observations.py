@@ -11,13 +11,18 @@ from typing import Annotated, Any, Literal
 
 from pydantic import Field
 
+from civ_agent.action_templates import add_city_commands, add_construction_commands, add_unit_commands
+from civ_agent.entity_sections import (
+    CITY_COMMAND_SECTIONS,
+    UNIT_COMMAND_SECTIONS,
+    CityDetails,
+    EntityDetails,
+    UnitDetails,
+    project_entity,
+)
 from civ_agent.game_commands import Position
 from civ_agent.protocol import JsonObject
 from civ_agent.schemas import BoundaryModel
-
-
-class EntityDetails(BoundaryModel):
-    target: Annotated[str, Field(min_length=1, max_length=128)]
 
 
 class ConstructionDetails(EntityDetails):
@@ -55,8 +60,8 @@ class DetailResult(BoundaryModel):
 
 
 DETAIL_MODELS: dict[str, type[BoundaryModel]] = {
-    "city_details": EntityDetails,
-    "unit_details": EntityDetails,
+    "city_details": CityDetails,
+    "unit_details": UnitDetails,
     "construction_details": ConstructionDetails,
     "map_region": MapRegion,
     "player_details": PlayerDetails,
@@ -114,6 +119,7 @@ class PlayerNotification(BoundaryModel):
 
 
 class TurnOverview(BoundaryModel):
+    stateId: str | None = None
     turn: int
     phase: str
     canEndTurn: bool
@@ -197,7 +203,9 @@ def overview(snapshot: JsonObject) -> JsonObject:
                 "availableAttacks": len(combat.get("attacks", [])),
                 "order": (combat.get("order") or {}).get("action"),
                 "workerJob": (unit.get("worker") or {}).get("currentJob"),
-                "availablePromotions": len(combat.get("promotions", [])),
+                "availablePromotions": sum(
+                    p.get("available", False) for p in (combat.get("promotions") or {}).get("choices", [])
+                ),
                 "greatPersonAbilities": len((unit.get("greatPerson") or {}).get("abilities", [])),
                 "canGiftToCityState": ((unit.get("cityStateGift") or {}).get("action") or {}).get("available", False),
                 "canAssembleSpaceshipPart": (unit.get("spaceshipAssembly") or {}).get("available", False),
@@ -295,8 +303,13 @@ def project_detail(snapshot: JsonObject, query: DetailQuery) -> JsonObject:
         entity = next((e for e in entities if e["handle"] == args["target"]), None)
         available = entity is not None
         if entity is not None:
-            data = {"entity": entity}
-            if name == "construction_details":
+            if name != "construction_details":
+                data = {"entity": project_entity(entity, name, args.get("sections", ["all"]))}
+                if name == "unit_details":
+                    add_unit_commands(data["entity"])
+                else:
+                    add_city_commands(data["entity"])
+            else:
                 purchases = {p["name"]: p for p in (entity.get("purchases") or {}).get("constructions", [])}
                 progress = (entity.get("development") or {}).get("constructions", [])
                 options = entity.get("constructionOptions", [])
@@ -323,6 +336,8 @@ def project_detail(snapshot: JsonObject, query: DetailQuery) -> JsonObject:
                     ],
                     "descriptionsIncluded": bool(names),
                 }
+                data = copy.deepcopy(data)
+                add_construction_commands(data)
     elif name in {"movement_preview", "mission_preview"}:
         # Native pathfinding cannot be reconstructed from a cached turn projection.
         available = False
@@ -386,30 +401,23 @@ def required_detail(command: JsonObject) -> DetailQuery | None:
         return None  # Full decision content is always in the overview.
     if kind in {"QUEUE_CONSTRUCTION", "BUY_CONSTRUCTION"}:
         return DetailQuery(tool="construction_details", arguments={"target": target, "names": [command["selection"]]})
-    unit_kinds = {
-        "MOVE_UNIT",
-        "CANCEL_UNIT_MOVEMENT",
-        "CREATE_WATER_IMPROVEMENT",
-        "ATTACK",
-        "SET_UNIT_ORDER",
-        "PROMOTE_UNIT",
-        "UPGRADE_UNIT",
-        "PILLAGE",
-        "DISBAND_UNIT",
-        "ACTIVATE_GREAT_PERSON",
-        "ADD_SPACESHIP_PART",
-        "GIFT_UNIT",
-        "FOUND_CITY",
-        "START_WORKER_JOB",
-        "STOP_WORKER_JOB",
-    }
-    return DetailQuery(tool="unit_details" if kind in unit_kinds else "city_details", arguments={"target": target})
+    unit = kind in UNIT_COMMAND_SECTIONS
+    section = (UNIT_COMMAND_SECTIONS if unit else CITY_COMMAND_SECTIONS).get(kind, "all")
+    return DetailQuery(
+        tool="unit_details" if unit else "city_details", arguments={"target": target, "sections": [section]}
+    )
 
 
 def detail_satisfies(read: DetailQuery, required: DetailQuery) -> bool:
     if required.tool == "construction_details" and read.arguments.get("target") == required.arguments["target"]:
-        return read.tool == "city_details" or (
+        sections = set(read.arguments.get("sections", ["all"]))
+        return (read.tool == "city_details" and ("all" in sections or {"production", "purchases"} <= sections)) or (
             read.tool == "construction_details"
             and set(required.arguments["names"]) <= set(read.arguments.get("names", []))
+        )
+    if read.tool == required.tool and read.tool in {"unit_details", "city_details"}:
+        sections = set(read.arguments.get("sections", ["all"]))
+        return read.arguments.get("target") == required.arguments.get("target") and (
+            "all" in sections or set(required.arguments.get("sections", ["all"])) <= sections
         )
     return read == required

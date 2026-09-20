@@ -28,7 +28,7 @@ from pydantic import ValidationError
 from civ_agent import service_recovery
 from civ_agent.agent_history import HISTORY_METHODS, HistoryStore
 from civ_agent.agent_results import PlayerResultStore, ResultError, validate_result
-from civ_agent.agent_settings import player_tool_arguments, valid_setting
+from civ_agent.agent_settings import player_mcp_configuration, player_tool_arguments, valid_setting
 from civ_agent.chat_runtime import ChatRuntime
 from civ_agent.civilization_state import CivilizationState
 from civ_agent.diagnostics import Diagnostics
@@ -94,11 +94,7 @@ class CodexProcess:
             if name.startswith("UNCIV_"):
                 del environment[name]
         environment["UNCIV_PLAYER_TOKEN"] = token
-        config = (
-            "mcp_servers.civ={url="
-            + json.dumps(self.mcp_url)
-            + ',bearer_token_env_var="UNCIV_PLAYER_TOKEN",required=true,default_tools_approval_mode="approve",tool_timeout_sec=86400}'
-        )
+        config = player_mcp_configuration(self.mcp_url, tool_timeout_seconds=86400)
         # Models use player tools and private memory tools. Disable general host
         # inspection/execution surfaces in these narrowly scoped jobs.
         arguments = [

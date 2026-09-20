@@ -52,7 +52,7 @@ def test_native_offer_returns_pending_without_waiting_for_the_next_ai_turn(tmp_p
                 args.update(give=[{"type": "Gold", "name": "Gold", "amount": 25, "duration": -1}], receive=[])
             result = await asyncio.wait_for(gateway.call(job, tool, args, "offer"), 1)
             assert result["trade"]["status"] == "PENDING" and "outcome" not in result
-            assert job.observation is None
+            assert job.observation is not None and result["stateUpdate"]["kind"] == "delta"
             assert not any(r.get("waitSeconds") for r in host.waits)
             assert await gateway.call(job, tool, args, "offer") == result
             assert len(host.writes) == 1

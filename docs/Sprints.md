@@ -15,6 +15,23 @@ Implementation and acceptance are in progress; a completed full game remains req
 evaluated for gameplay and communication. Discovery text shrank substantially;
 the recorded total-input improvements are modest and do not establish lower cost.
 
+The [efficiency follow-ups](Agent-efficiency.md) record response deduplication as
+implemented and live evaluated: 44 complete printed responses matched their audit
+records with no duplicate JSON blocks. Their envelopes were 50–53% smaller for
+identical payloads; total turn input did not decrease in those runs.
+
+Selective state reads and copyable commands (tasks 2 and 5) are also implemented
+and live evaluated. A matched Luna/medium opening used focused unit/city sections
+and named research/construction reads, with no malformed commands; model requests
+fell from 35 to 22. Communication completed without memory retries (5 requests
+versus 9). These single runs show working behavior, not a stable cost improvement.
+Task 4 is also complete: [command state updates](Command-state-updates.md) return
+deterministic overview changes and retain unchanged inspections. The next matched
+opening used one explicit overview read instead of seven, with 19 model requests
+and no rejected calls. Six deltas reconstructed permitted snapshots exactly;
+509 tests plus 90 subtests pass. **Next: resume the longer Vanilla playthrough**
+with accounting and checkpoints. Full-game completion remains outstanding.
+
 ## Completed sprint: air warfare and special military actions
 
 The [air warfare sprint](Air-gameplay.md) adds rebasing/carrier transport, strikes

@@ -112,6 +112,8 @@ def test_detail_tools_cache_reads_require_refresh_and_cannot_acknowledge_unread_
             value = await original(name, args)
             if name == "player_communication" and args["op"] == "state":
                 value["offers"] = [{"proposal": "p1", "version": 1, "terms": "No attacks"}]
+            if name == "player_command" and args.get("kind") == "MOVE_UNIT":
+                host.view["map"]["units"][0]["position"] = args["destination"]
             return value
 
         host.tool = counted
@@ -145,10 +147,7 @@ def test_detail_tools_cache_reads_require_refresh_and_cannot_acknowledge_unread_
             assert await gateway.call(job, "player_command", action, "missing") == rejected
             receipt = await gateway.call(job, "player_command", action, "move")
             assert receipt["done"] and len(host.executed) == 1
-            assert (await gateway.call(job, "unit_details", {"target": "unit1"}, "stale"))[
-                "error"
-            ] == "OBSERVATION_REQUIRED"
-            await gateway.call(job, "player_turn", {}, "refresh")
+            assert receipt["stateUpdate"]["kind"] == "delta"
             assert (await gateway.call(job, "player_command", action, "again"))["error"] == "DETAIL_REQUIRED"
             assert await gateway.call(job, "player_command", action, "move") == receipt
             await gateway.call(job, "unit_details", {"target": "unit1"}, "updated")

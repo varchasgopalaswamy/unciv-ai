@@ -9,6 +9,7 @@ import stat
 from collections.abc import Iterable
 from pathlib import Path
 
+from civ_agent.mcp_results import canonical_tool_result
 from civ_agent.protocol import EventPage
 from civ_agent.tls import private_directory, regular_file, write_private
 
@@ -38,36 +39,6 @@ def plain_text(value):
 
 def encoded(value):
     return json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-
-
-def canonical_tool_result(result):
-    """Keep structured JSON once, preserving distinct text and annotated blocks.
-
-    This only normalizes the audit record; the live MCP response is unchanged.
-    Compare JSON encodings so values such as true and 1 remain distinct.
-    """
-    if (
-        not isinstance(result, dict)
-        or not isinstance(result.get("structuredContent"), dict)
-        or not isinstance(result.get("content"), list)
-    ):
-        return result
-    structured = json.dumps(result["structuredContent"], sort_keys=True, ensure_ascii=False)
-    content = []
-    for block in result["content"]:
-        if (
-            isinstance(block, dict)
-            and set(block) == {"type", "text"}
-            and block["type"] == "text"
-            and isinstance(block["text"], str)
-        ):
-            try:
-                if json.dumps(json.loads(block["text"]), sort_keys=True, ensure_ascii=False) == structured:
-                    continue
-            except ValueError:
-                pass
-        content.append(block)
-    return {**result, "content": content}
 
 
 def visible_item(method, params):

@@ -44,8 +44,12 @@ def test_advertised_schema_and_runtime_reject_invalid_input_before_mutation(tmp_
             job = await gateway.open("test", "gameplay", "g1", host, {})
             schema = next(item["inputSchema"] for item in await gateway.tools(job) if item["name"] == tool)
             assert not Draft202012Validator(schema).is_valid(arguments)
-            with pytest.raises(ValueError, match="^INVALID_ARGUMENT$"):
-                await gateway.call(job, tool, arguments, "one")
+            if tool == "memory_update":
+                result = await gateway.call(job, tool, arguments, "one")
+                assert result["error"] == "INVALID_ARGUMENT" and not result["applied"]
+            else:
+                with pytest.raises(ValueError, match="^INVALID_ARGUMENT$"):
+                    await gateway.call(job, tool, arguments, "one")
             assert host.executed == []
             assert memory.pending() == []
         finally:

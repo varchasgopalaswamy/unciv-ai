@@ -76,12 +76,20 @@ class RecordStore:
             raise ValueError("MEMORY_TOO_LARGE")
         sources = content.get("sources", []) + content.get("contradictingSources", [])
         assumptions = [a["source"] for a in content.get("assumptions", []) if a.get("source")]
-        if content.get("plan"):
-            assumptions.append(content["plan"])
         evidence = self.pin(snapshot, sources)
         pinned = self.pin(snapshot, assumptions)
-        if content.get("plan") and pinned[-1]["category"] != "plan":
-            raise ValueError("RELATED_PLAN_REQUIRED")
+        if content.get("plan"):
+            try:
+                related = self.pin(snapshot, [content["plan"]])
+            except ValueError:
+                raise ValueError(
+                    "RELATED_PLAN_REQUIRED: note.plan must be an existing plan ID already read with memory_read or memory_search. Omit plan for an unrelated note; put prose in text."
+                ) from None
+            if related[0]["category"] != "plan":
+                raise ValueError(
+                    "RELATED_PLAN_REQUIRED: note.plan must reference a plan record. Omit plan for an unrelated note."
+                )
+            pinned.extend(related)
         current = self.all()
         for ref in pinned:
             if current.get(ref["key"], {}).get("version") != ref["version"]:

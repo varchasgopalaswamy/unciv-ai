@@ -1,6 +1,23 @@
 """Explicit Codex settings shared by interactive and scheduled player launchers."""
 
 import argparse
+import json
+
+from civ_agent.mcp_results import RESULT_FORMAT_HEADER, STRUCTURED_RESULT_FORMAT
+
+
+def player_mcp_configuration(url: str, *, tool_timeout_seconds: int | None = None) -> str:
+    """Configure Codex's player gateway with single-payload results, including resume."""
+    fields = [
+        "url=" + json.dumps(url),
+        'bearer_token_env_var="UNCIV_PLAYER_TOKEN"',
+        "required=true",
+        'default_tools_approval_mode="approve"',
+        "http_headers={" + json.dumps(RESULT_FORMAT_HEADER) + "=" + json.dumps(STRUCTURED_RESULT_FORMAT) + "}",
+    ]
+    if tool_timeout_seconds is not None:
+        fields.append("tool_timeout_sec=" + str(tool_timeout_seconds))
+    return "mcp_servers.civ={" + ",".join(fields) + "}"
 
 
 def player_tool_arguments():

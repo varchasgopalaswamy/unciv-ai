@@ -5,6 +5,7 @@ from typing import Annotated
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, ValidationError
 
 from civ_agent.agent_settings import valid_setting
+from civ_agent.protocol import JsonObject
 
 
 class BoundaryModel(BaseModel):
@@ -61,6 +62,41 @@ def validate[M: BoundaryModel](model: type[M], payload: object) -> M:
         return model.model_validate(payload)
     except ValidationError:
         raise ValueError("INVALID_ARGUMENT") from None
+
+
+def argument_shape(shape: JsonObject, definitions: JsonObject) -> JsonObject:
+    """Inline this argument's references, without unrelated union variants or titles."""
+    if "$ref" in shape:
+        return argument_shape(definitions[shape["$ref"].rsplit("/", 1)[1]], definitions)
+    return {
+        key: argument_shape(value, definitions)
+        if isinstance(value, dict)
+        else [argument_shape(item, definitions) if isinstance(item, dict) else item for item in value]
+        if isinstance(value, list)
+        else value
+        for key, value in shape.items()
+        if key not in {"title", "$defs"}
+    }
+
+
+def argument_issues(error: ValidationError, schema: JsonObject) -> list[JsonObject]:
+    """Report error codes and schema-owned names, never invalid values or arbitrary keys."""
+    names: set[str] = set()
+
+    def collect(value):
+        if isinstance(value, dict):
+            names.update(value.get("properties", {}))
+            for part in value.values():
+                collect(part)
+        elif isinstance(value, list):
+            for part in value:
+                collect(part)
+
+    collect(schema)
+    return [
+        {"fields": [part for part in issue["loc"] if isinstance(part, int) or part in names], "code": issue["type"]}
+        for issue in error.errors(include_input=False, include_context=False, include_url=False)[:20]
+    ]
 
 
 def start_error(error: ValidationError) -> str:

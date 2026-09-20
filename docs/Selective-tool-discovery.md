@@ -17,7 +17,8 @@ for subsequent model requests. See the
 Character counts describe payload size; provider usage measures actual tokens.
 
 This plan covers tool discovery. Response deduplication, selective game-state
-reads, and incremental command updates are separate efficiency work.
+reads, incremental command updates, and copyable commands are tracked in the
+[efficiency follow-ups](Agent-efficiency.md).
 
 ## Current flow
 
@@ -229,8 +230,11 @@ signature does not convey every command's argument shape. Two argument failures
 remain in the final gameplay trial. Improving that presentation is separate work;
 this change does not remove schema information or weaken validation.
 
-Large game-state responses and duplicated response envelopes still dominate much
-of the context. Their optimization remains outside this discovery change.
+Large game-state responses and duplicated response envelopes dominated much of
+the context in this comparison. Subsequent
+[response deduplication](Agent-efficiency.md#1-deliver-each-response-once) is now
+implemented and live evaluated. Focused observations and command updates remain
+outside this discovery change.
 
 ## Reproduction and automated validation
 

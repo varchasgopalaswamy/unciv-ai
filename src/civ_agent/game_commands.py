@@ -6,7 +6,7 @@ from pydantic import Field, TypeAdapter, ValidationError, field_validator
 
 from civ_agent.memory_records import Intent
 from civ_agent.protocol import JsonObject
-from civ_agent.schemas import BoundaryModel, NonnegativeInt
+from civ_agent.schemas import BoundaryModel, NonnegativeInt, argument_issues, argument_shape
 
 Name = Annotated[str, Field(min_length=1)]
 
@@ -232,9 +232,12 @@ class InvalidCommandArguments(BoundaryModel):
     requiredFields: list[str]
     allowedFields: list[str]
     missingFields: list[str]
+    invalidFields: list[JsonObject]
+    expectedArguments: JsonObject
     instruction: str = (
-        "Use the schema for this kind or copy an offer's command and add intent. "
-        "CITY_ATTACK takes target and destination; only ATTACK takes attackFrom. Nothing was dispatched."
+        'Copy an inspected offer\'s command and add intent as an object, e.g. {"reason":"your reason"}. '
+        "Otherwise use expectedArguments for this kind. Supply confirmations only after reading consequences. "
+        "Nothing was dispatched; this argument error alone does not require another player_turn."
     )
 
 
@@ -245,10 +248,15 @@ def command_error(arguments: JsonObject, error: ValidationError) -> JsonObject:
     variant = schema["discriminator"]["mapping"].get(kind) if isinstance(kind, str) else None
     shape: JsonObject = schema["$defs"][variant.rsplit("/", 1)[1]] if variant else {}
     allowed = set(shape.get("properties", {}))
+    expected = argument_shape(shape, schema.get("$defs", {}))
+    if variant:
+        expected["properties"]["kind"] = {"const": kind}
     return InvalidCommandArguments(
         requiredFields=shape.get("required", ["kind"]),
         allowedFields=sorted(allowed),
         missingFields=sorted({str(e["loc"][-1]) for e in error.errors() if e["type"] == "missing"} & allowed),
+        invalidFields=argument_issues(error, {**shape, "$defs": schema.get("$defs", {})}),
+        expectedArguments=expected or {"instruction": "Use a kind from the player_command schema."},
     ).model_dump()
 
 

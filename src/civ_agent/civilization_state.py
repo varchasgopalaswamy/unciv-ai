@@ -8,6 +8,7 @@ import hashlib
 import json
 import secrets
 import sqlite3
+from collections.abc import Callable
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
@@ -333,6 +334,27 @@ class CivilizationState:
         store.flag(keys=[key], subjects=subjects, reason=f"Changed {key}; reconsider assumptions")
 
     def observe_player(self, body: JsonObject, job: str, compact: JsonObject | None = None):
+        with self.transaction() as db:
+            return self._observe_player(db, body, job, compact)
+
+    def deliver_player(
+        self,
+        body: JsonObject,
+        job: str,
+        compact: JsonObject,
+        call_id: str,
+        name: str,
+        arguments: JsonObject,
+        respond: Callable[[JsonObject], JsonObject],
+    ):
+        """Commit delivered evidence and its replayable response in one transaction."""
+        with self.transaction() as db:
+            observed = self._observe_player(db, body, job, compact)
+            result = respond(self._records(db))
+            self._call_record(db, job, call_id, name, arguments, result)
+            return observed, result
+
+    def _observe_player(self, db, body: JsonObject, job: str, compact: JsonObject | None):
         """Independent evidence versions; the host still validates the full view too."""
         body = native_observation(body)
         compact = native_observation(compact)
@@ -357,62 +379,61 @@ class CivilizationState:
             "cityStates", []
         ):
             scopes["diplomacy/" + relation["civilizationId"]] = {"turn": body.get("turn"), "relation": relation}
-        with self.transaction() as db:
-            self._validate(db, job, {})
-            self._advance_turn(db, body.get("turn"))
-            snapshot = json.loads(db.execute("SELECT snapshot FROM jobs WHERE id=?", (job,)).fetchone()[0])
-            previous_records = self._records(db)
-            for key, previous in previous_records.items():
-                scope = key.removeprefix("observation:")
-                if scope.startswith("detail/"):
-                    query = DetailQuery.model_validate(previous["body"]["query"])
-                    if query.tool in {"movement_preview", "mission_preview"} and previous["body"].get(
-                        "revision"
-                    ) == body.get("revision"):
-                        scopes[scope] = previous["body"]
-                    else:
-                        scopes[scope] = project_detail(body, query)
-                if scope.startswith(("unit/", "city/")) and scope not in scopes and not previous["body"].get("absent"):
-                    scopes[scope] = {"turn": body.get("turn"), "absent": True}
-            observed = {}
-            # A cached host read can invalidate assumptions without claiming the
-            # model has read all of its entity details or refreshed projections.
-            delivered = set(scopes) if compact is None else {"overview", "turn", "tactics", "policy"}
-            for key, value in scopes.items():
-                delivered_job = job if key in delivered else None
-                key = "observation:" + key
-                version = self._record(db, key, "observation", value, delivered_job)
-                self._changed_observation(db, key, value, previous_records.get(key))
-                observed[key] = {"version": version, "category": "observation", "body": value}
-            tactics = body.get("tacticalReview")
-            if tactics is not None:
-                previous = previous_records.get("observation:tactics", {}).get("body", {})
-                old_losses = {loss["report"] for loss in previous.get("recentLosses", [])}
-                store = RecordStore(db, self._meta(db, "gameTurn"))
-                if any(loss["report"] not in old_losses for loss in tactics["recentLosses"]):
-                    store.flag(
-                        subjects=["defense", "economy"],
-                        keys=["observation:tactics"],
-                        reason="New confirmed losses: reconsider defense and civilian protection",
-                    )
-                if tactics["militaryCount"] == 0 and previous.get("militaryCount") != 0:
-                    store.flag(
-                        subjects=["defense"],
-                        keys=["observation:tactics"],
-                        reason="No military units remain: reconsider defense",
-                    )
-                if "cityCount" in previous and tactics["cityCount"] < previous["cityCount"]:
-                    store.flag(
-                        subjects=["defense", "expansion", "economy"],
-                        keys=["observation:tactics"],
-                        reason="Owned city count fell: reconsider territorial and economic plans",
-                    )
-            self._deliver(
-                snapshot,
-                {key: value for key, value in observed.items() if key.removeprefix("observation:") in delivered},
-            )
-            db.execute("UPDATE jobs SET snapshot=? WHERE id=?", (encode(snapshot), job))
-            return observed
+        self._validate(db, job, {})
+        self._advance_turn(db, body.get("turn"))
+        snapshot = json.loads(db.execute("SELECT snapshot FROM jobs WHERE id=?", (job,)).fetchone()[0])
+        previous_records = self._records(db)
+        for key, previous in previous_records.items():
+            scope = key.removeprefix("observation:")
+            if scope.startswith("detail/"):
+                query = DetailQuery.model_validate(previous["body"]["query"])
+                if query.tool in {"movement_preview", "mission_preview"} and previous["body"].get(
+                    "revision"
+                ) == body.get("revision"):
+                    scopes[scope] = previous["body"]
+                else:
+                    scopes[scope] = project_detail(body, query)
+            if scope.startswith(("unit/", "city/")) and scope not in scopes and not previous["body"].get("absent"):
+                scopes[scope] = {"turn": body.get("turn"), "absent": True}
+        observed = {}
+        # A cached host read can invalidate assumptions without claiming the
+        # model has read all of its entity details or refreshed projections.
+        delivered = set(scopes) if compact is None else {"overview", "turn", "tactics", "policy"}
+        for key, value in scopes.items():
+            delivered_job = job if key in delivered else None
+            key = "observation:" + key
+            version = self._record(db, key, "observation", value, delivered_job)
+            self._changed_observation(db, key, value, previous_records.get(key))
+            observed[key] = {"version": version, "category": "observation", "body": value}
+        tactics = body.get("tacticalReview")
+        if tactics is not None:
+            previous = previous_records.get("observation:tactics", {}).get("body", {})
+            old_losses = {loss["report"] for loss in previous.get("recentLosses", [])}
+            store = RecordStore(db, self._meta(db, "gameTurn"))
+            if any(loss["report"] not in old_losses for loss in tactics["recentLosses"]):
+                store.flag(
+                    subjects=["defense", "economy"],
+                    keys=["observation:tactics"],
+                    reason="New confirmed losses: reconsider defense and civilian protection",
+                )
+            if tactics["militaryCount"] == 0 and previous.get("militaryCount") != 0:
+                store.flag(
+                    subjects=["defense"],
+                    keys=["observation:tactics"],
+                    reason="No military units remain: reconsider defense",
+                )
+            if "cityCount" in previous and tactics["cityCount"] < previous["cityCount"]:
+                store.flag(
+                    subjects=["defense", "expansion", "economy"],
+                    keys=["observation:tactics"],
+                    reason="Owned city count fell: reconsider territorial and economic plans",
+                )
+        self._deliver(
+            snapshot,
+            {key: value for key, value in observed.items() if key.removeprefix("observation:") in delivered},
+        )
+        db.execute("UPDATE jobs SET snapshot=? WHERE id=?", (encode(snapshot), job))
+        return observed
 
     def has_wake(self) -> bool:
         with self.transaction() as db:
@@ -766,14 +787,17 @@ class CivilizationState:
 
     def call(self, job, id, name, arguments, result=None):
         with self.transaction() as db:
-            self._validate(db, job, {})
-            prior = db.execute("SELECT * FROM calls WHERE job=? AND id=?", (job, id)).fetchone()
-            if prior and (prior["name"] != name or prior["arguments"] != encode(arguments)):
-                raise StateConflict("CALL_CONFLICT")
-            db.execute("INSERT OR IGNORE INTO calls VALUES (?,?,?,?,NULL)", (job, id, name, encode(arguments)))
-            if result is not None:
-                db.execute("UPDATE calls SET result=? WHERE job=? AND id=?", (encode(result), job, id))
-            return json.loads(prior["result"]) if prior and prior["result"] else None
+            return self._call_record(db, job, id, name, arguments, result)
+
+    def _call_record(self, db, job, id, name, arguments, result=None):
+        self._validate(db, job, {})
+        prior = db.execute("SELECT * FROM calls WHERE job=? AND id=?", (job, id)).fetchone()
+        if prior and (prior["name"] != name or prior["arguments"] != encode(arguments)):
+            raise StateConflict("CALL_CONFLICT")
+        db.execute("INSERT OR IGNORE INTO calls VALUES (?,?,?,?,NULL)", (job, id, name, encode(arguments)))
+        if result is not None:
+            db.execute("UPDATE calls SET result=? WHERE job=? AND id=?", (encode(result), job, id))
+        return json.loads(prior["result"]) if prior and prior["result"] else None
 
     def refresh_memory(self, job, keys, cursor=None, include_retired=False):
         with self.transaction() as db:

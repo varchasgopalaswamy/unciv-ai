@@ -5,7 +5,7 @@ import pytest
 from jsonschema import Draft202012Validator
 from pydantic import ValidationError
 
-from civ_agent.civilization_state import CivilizationState, StateConflict
+from civ_agent.civilization_state import CivilizationState
 from civ_agent.game_commands import command_arguments, command_schema
 from civ_agent.observations import TurnOverview
 from civ_agent.proposal_gateway import ProposalGateway
@@ -47,8 +47,9 @@ def test_notifications_are_delivered_in_full_and_remain_evidence_after_dismissal
         job = await gateway.open("notification-test", "gameplay", "g1", host, {}, 0)
         try:
             arguments = {"kind": "DISMISS_NOTIFICATIONS", "targets": ["notice1"]}
-            with pytest.raises(StateConflict, match="Read player_turn"):
-                await gateway.call(job, "player_command", arguments, "unread")
+            rejected = await gateway.call(job, "player_command", arguments, "unread")
+            assert rejected["error"] == "OBSERVATION_REQUIRED" and not rejected["applied"]
+            assert rejected["recovery"]["reads"] == [{"tool": "player_turn", "arguments": {}}]
             assert not host.executed
             shown = await gateway.call(job, "player_turn", {}, "read")
             TurnOverview.model_validate(shown)

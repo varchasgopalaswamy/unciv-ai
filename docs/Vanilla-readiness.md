@@ -118,8 +118,13 @@ observation of command results. A longer playthrough should measure improvements
 against this baseline.
 
 The [selective discovery implementation and comparison](Selective-tool-discovery.md)
-now record the first efficiency change. Response deduplication, focused state reads,
-and command-update changes remain separate work.
+now record the first efficiency change. The
+[efficiency follow-ups](Agent-efficiency.md) also record implemented and live
+evaluated response deduplication, focused state reads and copyable command
+arguments. [Command updates](Command-state-updates.md) are also implemented and
+live evaluated, including deterministic changes and receipt recovery. The latest
+opening used one model-facing overview read while seven host reads maintained
+fresh state. Single-turn improvements do not close the full-game acceptance task.
 
 ## Acceptance
 

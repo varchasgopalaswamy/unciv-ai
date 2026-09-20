@@ -109,6 +109,13 @@ def verify(root: Path, sessions: Path):
         for name, _, result in calls
         if result and "error" in json.loads(result)
     ]
+    metrics["rejectedMemoryChanges"] = [
+        {"reason": change.get("reason")}
+        for name, _, result in calls
+        if name == "memory_update" and result
+        for change in json.loads(result).get("changes", [])
+        if change.get("accepted") is False
+    ]
     metrics["turnOverviewCalls"] = sum(name == "player_turn" for name, _, _ in calls)
     metrics["toolsUsed"] = sorted({name for name, _, _ in calls})
     if record["purpose"] == "communication":

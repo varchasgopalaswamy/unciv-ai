@@ -3,12 +3,14 @@ import io
 import json
 import os
 import tempfile
+import tomllib
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
 from civ_agent import cli
 from civ_agent.commands import agent as agent
+from civ_agent.mcp_results import RESULT_FORMAT_HEADER, STRUCTURED_RESULT_FORMAT
 
 
 class LaunchAgentTest(unittest.TestCase):
@@ -79,6 +81,8 @@ class LaunchAgentTest(unittest.TestCase):
             self.assertEqual(binary, "/tools/codex")
             self.assertIn('bearer_token_env_var="UNCIV_PLAYER_TOKEN"', command[command.index("-c") + 1])
             self.assertIn("required=true", command[command.index("-c") + 1])
+            config = tomllib.loads(command[command.index("-c") + 1])["mcp_servers"]["civ"]
+            self.assertEqual(config["http_headers"], {RESULT_FORMAT_HEADER: STRUCTURED_RESULT_FORMAT})
         self.assertEqual(original, self.players.read_bytes())
 
     def test_dry_run_exposes_no_token_and_does_not_create_workspace(self):
@@ -124,6 +128,8 @@ class LaunchAgentTest(unittest.TestCase):
         self.assertEqual(command[command.index("--model") + 1], "chosen-model")
         self.assertIn('model_reasoning_effort="high"', command)
         self.assertNotIn("--last", command)
+        config = tomllib.loads(command[command.index("-c") + 1])["mcp_servers"]["civ"]
+        self.assertEqual(config["http_headers"], {RESULT_FORMAT_HEADER: STRUCTURED_RESULT_FORMAT})
 
     def test_reasoning_alias_is_quoted_and_unset_settings_leave_codex_configuration(self):
         code, execute, _ = self.launch("Rome", "--reasoning", "custom-level")

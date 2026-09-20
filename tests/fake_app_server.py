@@ -155,7 +155,8 @@ async def main():
                 )
             )
             mcp = next(argument for argument in arguments if argument.startswith("mcp_servers"))
-            gateway_url = tomllib.loads(mcp)["mcp_servers"]["civ"]["url"]
+            gateway = tomllib.loads(mcp)["mcp_servers"]["civ"]
+            gateway_url = gateway["url"]
             async with ClientSession() as client:
                 rpc_id = 0
 
@@ -165,7 +166,7 @@ async def main():
                     async with client.post(
                         gateway_url,
                         ssl=context,
-                        headers={"Authorization": "Bearer " + token},
+                        headers={**gateway.get("http_headers", {}), "Authorization": "Bearer " + token},
                         json={
                             "jsonrpc": "2.0",
                             "id": rpc_id,
@@ -174,7 +175,9 @@ async def main():
                         },
                     ) as response:
                         response.raise_for_status()
-                        value = (await response.json())["result"]["structuredContent"]
+                        result = (await response.json())["result"]
+                        assert result["content"] == [], "The configured model must receive each payload once"
+                        value = result["structuredContent"]
                         record(
                             "test/tool",
                             {
