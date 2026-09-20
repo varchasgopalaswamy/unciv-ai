@@ -39,6 +39,7 @@ from civ_agent.schemas import StartRequest, start_error
 from civ_agent.service_io import ServiceIO
 from civ_agent.telemetry import JobAccounting
 from civ_agent.tls import codex_trust_environment, https_url, private_directory, regular_file, write_private_json
+from civ_agent.tool_discovery import tool_discovery_instructions
 from civ_agent.turn_archive import TurnArchive
 
 TERMINAL = {"COMPLETED", "INTERRUPTED", "FAILED"}
@@ -653,7 +654,10 @@ class AgentService:
                 self.match = {"epoch": payload["epoch"]}
                 await self.io.call(write_private_json, self.match_file, dict(self.match))
             prompt = (
-                payload["prompt"] + f"\n\nTurn {payload['gameTurn']}; files: turn_{payload['gameTurn']}/. "
+                tool_discovery_instructions("gameplay")
+                + "\n\n"
+                + payload["prompt"]
+                + f"\n\nTurn {payload['gameTurn']}; files: turn_{payload['gameTurn']}/. "
                 "Use history_read only when earlier detailed commands or receipts are needed. "
                 "The service writes all turn files. Do not create or edit them. "
                 "After END_TURN succeeds, make no further tool calls; immediately return your concise turn summary "

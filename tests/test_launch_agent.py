@@ -101,6 +101,8 @@ class LaunchAgentTest(unittest.TestCase):
             self.assertNotIn("Rome declares war", prompt)
             self.assertNotIn("reviewId=", prompt)
             self.assertIn("deferReason", prompt)
+            self.assertEqual(prompt.count("Civ tool discovery:"), 1)
+            self.assertIn('"mcp__civ__player_turn"', prompt)
 
     def test_resume_is_explicit_and_keeps_player_configuration(self):
         code, execute, _ = self.launch(
@@ -116,7 +118,9 @@ class LaunchAgentTest(unittest.TestCase):
         )
         self.assertEqual(code, 0)
         command = execute.call_args.args[1]
-        self.assertEqual(command[-4:], ["resume", "--", "conversation-id", "Continue my turn"])
+        self.assertEqual(command[-4:-1], ["resume", "--", "conversation-id"])
+        self.assertTrue(command[-1].endswith("\n\nContinue my turn"))
+        self.assertEqual(command[-1].count("Civ tool discovery:"), 1)
         self.assertEqual(command[command.index("--model") + 1], "chosen-model")
         self.assertIn('model_reasoning_effort="high"', command)
         self.assertNotIn("--last", command)
@@ -142,10 +146,14 @@ class LaunchAgentTest(unittest.TestCase):
     def test_prompt_and_session_values_cannot_become_codex_options(self):
         code, execute, _ = self.launch("Rome", "--prompt=--help")
         self.assertEqual(code, 0)
-        self.assertEqual(execute.call_args.args[1][-2:], ["--", "--help"])
+        command = execute.call_args.args[1]
+        self.assertEqual(command[-2], "--")
+        self.assertTrue(command[-1].endswith("\n\n--help"))
         code, execute, _ = self.launch("Rome", "--resume=--last", "--prompt=--help")
         self.assertEqual(code, 0)
-        self.assertEqual(execute.call_args.args[1][-4:], ["resume", "--", "--last", "--help"])
+        command = execute.call_args.args[1]
+        self.assertEqual(command[-4:-1], ["resume", "--", "--last"])
+        self.assertTrue(command[-1].endswith("\n\n--help"))
 
     def test_invalid_unknown_or_missing_credentials_prevent_launch(self):
         code, execute, _ = self.launch("Unknown")

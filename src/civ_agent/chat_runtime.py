@@ -15,6 +15,7 @@ from civ_agent.proposal_gateway import RECOVERY_INSTRUCTIONS
 from civ_agent.protocol import JsonObject
 from civ_agent.schemas import ConnectRequest, validate
 from civ_agent.tls import private_directory, write_private_json
+from civ_agent.tool_discovery import tool_discovery_instructions
 
 
 class ChatRuntime:
@@ -212,7 +213,9 @@ class ChatRuntime:
         )
         self.jobs[id] = (job, process)
         prompt = (
-            f"Handle {service.civilization}'s newly received communication. Ordinary gameplay is handled separately. "
+            tool_discovery_instructions("communication")
+            + "\n\n"
+            + f"Handle {service.civilization}'s newly received communication. Ordinary gameplay is handled separately. "
             "Read chat_read and relevant memory once. Its context includes the turn, economy, diplomatic status and "
             "your scenario.instructions. Use player_turn only if a specific question needs additional gameplay detail. "
             "Follow scenario.instructions when present; otherwise your objective is to win the game. "

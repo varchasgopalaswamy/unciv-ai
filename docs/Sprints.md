@@ -11,6 +11,10 @@ Egypt controlled by native AI, and two city-states. It adds durable per-turn tok
 API-call and timing records plus a native final winner and all-player scores.
 Implementation and acceptance are in progress; a completed full game remains required.
 
+[Selective tool discovery](Selective-tool-discovery.md) is implemented and live
+evaluated for gameplay and communication. Discovery text shrank substantially;
+the recorded total-input improvements are modest and do not establish lower cost.
+
 ## Completed sprint: air warfare and special military actions
 
 The [air warfare sprint](Air-gameplay.md) adds rebasing/carrier transport, strikes

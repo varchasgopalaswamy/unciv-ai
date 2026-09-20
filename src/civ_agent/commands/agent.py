@@ -20,6 +20,7 @@ from civ_agent.tls import (
     private_directory,
     verify_https_connection,
 )
+from civ_agent.tool_discovery import tool_discovery_instructions
 from civ_agent.turn_archive import civilization_directory_name
 
 
@@ -168,7 +169,8 @@ def run(args: argparse.Namespace) -> int:
             command += ["resume", "--", args.resume]
         else:
             command += ["--"]
-        command += [args.prompt if args.prompt is not None else initial_prompt(civilization)]
+        prompt = args.prompt if args.prompt is not None else initial_prompt(civilization)
+        command += [tool_discovery_instructions("gameplay") + "\n\n" + prompt]
         if args.dry_run:
             print(f"Player: {civilization}; token supplied through UNCIV_PLAYER_TOKEN (not shown).")
             print(f"HTTPS trust: {ca_file or 'system certificate authorities'}")

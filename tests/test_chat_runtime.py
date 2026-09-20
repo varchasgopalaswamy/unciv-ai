@@ -167,6 +167,11 @@ def test_chat_batches_and_replies_while_planning_job_is_held(tmp_path, monkeypat
             host.post("Let me know what you need.")
             await asyncio.wait_for(jobs.replied.wait(), 3)
             assert jobs.purposes == ["gameplay", "communication"]
+            assert all(prompt.count("Civ tool discovery:") == 1 for prompt in jobs.prompts)
+            assert '"mcp__civ__player_capabilities"' in jobs.prompts[0]
+            assert '"mcp__civ__chat_read"' in jobs.prompts[1]
+            assert '"mcp__civ__chat_send"' in jobs.prompts[1]
+            assert '"mcp__civ__player_capabilities"' not in jobs.prompts[1]
             assert "otherwise your objective is to win the game" in jobs.prompts[1]
             assert host.sent == ["I will consider your offer."]
             assert service.status()["phase"] == "RUNNING"  # Long planning still in progress.

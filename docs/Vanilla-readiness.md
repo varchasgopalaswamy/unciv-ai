@@ -117,6 +117,10 @@ Any change must preserve player-visible information, native legality, and reliab
 observation of command results. A longer playthrough should measure improvements
 against this baseline.
 
+The [selective discovery implementation and comparison](Selective-tool-discovery.md)
+now record the first efficiency change. Response deduplication, focused state reads,
+and command-update changes remain separate work.
+
 ## Acceptance
 
 - Automated coverage: real HTTPS rejected/accepted/replayed calls; cached service
