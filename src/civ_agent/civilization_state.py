@@ -338,7 +338,7 @@ class CivilizationState:
         compact = native_observation(compact)
         scopes = {
             "game": body,
-            "turn": {key: body.get(key) for key in ("epoch", "turn", "phase", "pending", "alerts")},
+            "turn": {key: body.get(key) for key in ("epoch", "turn", "phase", "pending", "alerts", "victory")},
             "economy": {"turn": body.get("turn"), "economy": body.get("economy")},
             "research": {
                 key: body.get(key)

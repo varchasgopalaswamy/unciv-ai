@@ -26,9 +26,9 @@ data class PlayerResult(
 )
 
 @Serializable
-data class PlayerFinalState(val epoch: String, val civilization: String, val result: PlayerResult?, val combatReports: List<CombatReport>, val messages: List<AlertContent> = emptyList())
+data class PlayerFinalState(val epoch: String, val civilization: String, val result: PlayerResult?, val combatReports: List<CombatReport>, val messages: List<AlertContent> = emptyList(), val victory: VictoryDecisions = VictoryDecisions())
 
-internal fun PlayerTurnSnapshot.finalState(civilizationId: String) = PlayerFinalState(epoch, civilizationId, result, combatReports, frozen(alerts.mapNotNull { it.content }))
+internal fun PlayerTurnSnapshot.finalState(civilizationId: String) = PlayerFinalState(epoch, civilizationId, result, combatReports, frozen(alerts.mapNotNull { it.content }), victory)
 
 internal fun com.unciv.logic.civilization.CaptureOption.observation(active: Boolean) = CaptureOption(
     choice.name,

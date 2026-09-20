@@ -26,7 +26,7 @@ class ResearchQueue(Command):
 
 
 class Choice(Command):
-    kind: Literal["CHOOSE_FREE_TECHNOLOGY", "ADOPT_POLICY", "CHOOSE_FREE_GREAT_PERSON"]
+    kind: Literal["CHOOSE_FREE_TECHNOLOGY", "ADOPT_POLICY", "CHOOSE_FREE_GREAT_PERSON", "CAST_DIPLOMATIC_VOTE"]
     selection: Name
 
 
@@ -57,7 +57,7 @@ class EconomicChoice(Command):
 
 
 class TargetCommand(Command):
-    kind: Literal["ACKNOWLEDGE_ALERT", "STOP_WORKER_JOB", "RESET_CITIZENS"]
+    kind: Literal["ACKNOWLEDGE_ALERT", "STOP_WORKER_JOB", "RESET_CITIZENS", "ADD_SPACESHIP_PART"]
     target: Name
 
 
@@ -152,7 +152,7 @@ class EndTurn(Command):
 
 
 class DismissPolicy(Command):
-    kind: Literal["DISMISS_POLICY_PICKER"]
+    kind: Literal["DISMISS_POLICY_PICKER", "ABSTAIN_DIPLOMATIC_VOTE", "ACKNOWLEDGE_DIPLOMATIC_RESULTS"]
 
 
 class DismissNotifications(Command):

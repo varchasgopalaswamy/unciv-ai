@@ -69,6 +69,7 @@ ECONOMIC = {
     "QUEUE_CONSTRUCTION",
     "FOUND_CITY",
     "ACTIVATE_GREAT_PERSON",
+    "ADD_SPACESHIP_PART",
 }
 
 
@@ -185,7 +186,7 @@ class ProposalGateway:
                 entry = copy.deepcopy(tool)
                 entry["inputSchema"] = command_schema()
                 entry["description"] = (
-                    "Propose one offered game action using the schema for its kind. Combat offers include a copyable command; add intent, never preview fields. CITY_ATTACK omits attackFrom; ATTACK requires it. Consequential choices require intent: a brief reason or an active plan ID; optional expectedOutcome and assumptions. The service records intent and handles request bookkeeping. Re-read player_turn after each action and read full alerts and confirmations before acknowledging. DISMISS_NOTIFICATIONS takes targets=[notice handles] already read in player_turn; it clears only those pending messages and retains their contents in receipts. END_TURN requires reading turnReview and a deferReason for intentionally idle mobile units or deferred tactical concerns."
+                    "Propose one offered game action using the schema for its kind. Combat offers include a copyable command; add intent, never preview fields. CITY_ATTACK omits attackFrom; ATTACK requires it. Consequential choices require intent: a brief reason or an active plan ID; optional expectedOutcome and assumptions. The service records intent and handles request bookkeeping. For victory, inspect unit_details.spaceshipAssembly before ADD_SPACESHIP_PART (unit target). Read victory.ballot in player_turn: CAST_DIPLOMATIC_VOTE uses selection=candidate civilizationId; ABSTAIN_DIPLOMATIC_VOTE takes no other fields except intent. Read victory.votingResults before ACKNOWLEDGE_DIPLOMATIC_RESULTS, which has no target or selection. Re-read player_turn after each action and read full alerts and confirmations before acknowledging. DISMISS_NOTIFICATIONS takes targets=[notice handles] already read in player_turn; it clears only those pending messages and retains their contents in receipts. END_TURN requires reading turnReview and a deferReason for intentionally idle mobile units or deferred tactical concerns."
                 )
                 tools.append(entry)
 

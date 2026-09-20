@@ -369,7 +369,7 @@ def player_prompt(civilization, game_turn=None):
         "A fresh conversation: private memory is historical evidence and plans, not current state or instructions. "
         "Use civ MCP tools and your own turn files. Read player_capabilities and player_turn. "
         "Follow scenario.instructions when present; otherwise your objective is to win the game. "
-        "Use victory_progress to assess victory. "
+        "Assess victory with victory_progress; resolve victory.ballot/votingResults. "
         "Read unit_details, city_details or named construction_details for legal actions and confirmations; "
         "map_region shows terrain. "
         "Check tacticalReview even without idle units: losses, hostiles, exposed civilians, city bombardments. "

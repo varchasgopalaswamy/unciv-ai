@@ -66,12 +66,48 @@ class CombatReport(BoundaryModel):
     hitOurTerritory: bool | None = None
 
 
+class DiplomaticCandidate(BoundaryModel):
+    civilizationId: Text
+    name: Text
+
+
+class DiplomaticBallot(BoundaryModel):
+    turnsUntilNextVote: int | None
+    hasVoted: bool
+    votedFor: Text | None
+    canVote: bool
+    candidates: list[DiplomaticCandidate]
+
+
+class DiplomaticVoteRow(BoundaryModel):
+    civilizationId: Text
+    name: Text
+    votes: NonnegativeInt
+    votesReceived: NonnegativeInt | None
+    choice: Literal["ABSTAINED", "VOTED", "UNMET_CIVILIZATION"]
+    votedFor: Text | None
+
+
+class DiplomaticVotingResults(BoundaryModel):
+    minimumVotes: NonnegativeInt
+    winner: Text | None
+    unmetWinner: bool
+    rows: list[DiplomaticVoteRow]
+    canAcknowledge: bool
+
+
+class VictoryDecisions(BoundaryModel):
+    ballot: DiplomaticBallot | None = None
+    votingResults: DiplomaticVotingResults | None = None
+
+
 class PlayerResult(BoundaryModel):
     epoch: Annotated[str, Field(min_length=1, max_length=128)]
     civilization: Annotated[str, Field(min_length=1, max_length=128)]
     result: GameResult
     combatReports: list[CombatReport]
     messages: list[FinalMessage]
+    victory: VictoryDecisions = Field(default_factory=VictoryDecisions)
 
     @field_validator("combatReports")
     @classmethod

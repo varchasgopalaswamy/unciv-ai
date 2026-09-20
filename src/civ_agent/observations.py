@@ -86,6 +86,7 @@ class UnitSummary(BoundaryModel):
     workerJob: str | None = None
     availablePromotions: int
     greatPersonAbilities: int
+    canAssembleSpaceshipPart: bool = False
 
 
 class PlayerNotification(BoundaryModel):
@@ -110,6 +111,7 @@ class TurnOverview(BoundaryModel):
     rules: JsonObject = Field(default_factory=dict)
     scenario: JsonObject | None = None
     result: JsonObject | None = None
+    victory: JsonObject = Field(default_factory=dict)
     negotiation: JsonObject = Field(default_factory=dict)
     cities: list[CitySummary] = Field(default_factory=list)
     units: list[UnitSummary] = Field(default_factory=list)
@@ -175,6 +177,7 @@ def overview(snapshot: JsonObject) -> JsonObject:
                 "workerJob": (unit.get("worker") or {}).get("currentJob"),
                 "availablePromotions": len(combat.get("promotions", [])),
                 "greatPersonAbilities": len((unit.get("greatPerson") or {}).get("abilities", [])),
+                "canAssembleSpaceshipPart": (unit.get("spaceshipAssembly") or {}).get("available", False),
             }
         )
     value["economy"] = {
@@ -332,6 +335,7 @@ def required_detail(command: JsonObject) -> DetailQuery | None:
         "PILLAGE",
         "DISBAND_UNIT",
         "ACTIVATE_GREAT_PERSON",
+        "ADD_SPACESHIP_PART",
         "FOUND_CITY",
         "START_WORKER_JOB",
         "STOP_WORKER_JOB",

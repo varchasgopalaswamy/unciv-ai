@@ -81,6 +81,14 @@ internal fun confirmedAction(request: TurnCommandRequest, before: PlayerTurnSnap
 
         TurnCommandKind.PROMOTE_UNIT -> "${unit!!.name} gained ${request.selection}."
 
+        TurnCommandKind.ADD_SPACESHIP_PART -> "Assembled ${unit!!.name} in the capital; consumed the unit."
+
+        TurnCommandKind.CAST_DIPLOMATIC_VOTE -> "Voted for ${request.selection} as world leader."
+
+        TurnCommandKind.ABSTAIN_DIPLOMATIC_VOTE -> "Abstained in the world leader election."
+
+        TurnCommandKind.ACKNOWLEDGE_DIPLOMATIC_RESULTS -> "Reviewed the world leader election results."
+
         TurnCommandKind.RESOLVE_CAPTURED_CITY -> "Resolved ${before.alerts.single { it.handle == request.target }.capture!!.title}: ${request.selection}."
 
         TurnCommandKind.RESPOND_FRIENDSHIP -> "${request.selection} friendship with ${before.alerts.single { it.handle == request.target }.friendship!!.civilizationId}."

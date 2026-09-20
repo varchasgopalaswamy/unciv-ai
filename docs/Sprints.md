@@ -5,6 +5,19 @@ and [coverage ledger](Player-api-coverage.md) retain the broader contract.
 
 ## Close-out status
 
+The [victory and turn decisions sprint](Victory-and-turn-blockers.md) is complete.
+It implements native spaceship assembly, world-leader voting/abstention and
+results acknowledgement, fixes repeated election processing, and checks the
+ordinary Vanilla blockers and five victory paths. Automated regression checks and
+the eight-screen native desktop exercise passed. The [live victory exercises](Victory-live-results.md)
+also passed: all six parts produced/transported/assembled for Rome's Scientific
+Victory, and a failed election followed by Greece's Diplomatic Victory. All 64
+model activations used `gpt-5.6-luna` with medium reasoning; all 51 artifact checks
+passed and all services are stopped. Engine commit
+`31524759eb456734da1048cdec2eecd8131ed9d6` is merged and published on
+`experimental-changes`, and the host pins that revision. The slice and
+live-results documents record the evidence and limits.
+
 The [mixed-player diplomacy sprint](Mixed-player-diplomacy.md) is complete as of
 September 19, 2026. It delivers explicit native chat actions, owned diplomatic
 responses and observations, and the agent–built-in-AI native offer bridge. Human–agent
@@ -20,7 +33,7 @@ exercise passed; see [the implementation](Social-commitments.md) and
 [live acceptance](Social-promises-live-results.md) for the evidence and limits.
 The preceding enacted-agreement lifecycle sprint is also complete.
 
-No subsequent sprint has been selected. Direct city-state interactions, embedded
+Direct city-state interactions, embedded
 human desktop play, human-facing browser chat, and automatic advice for promise
 types beyond peace remain follow-ups. The coverage ledger retains the wider gaps.
 

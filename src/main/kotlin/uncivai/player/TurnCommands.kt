@@ -41,6 +41,10 @@ enum class TurnCommandKind {
     PILLAGE,
     DISBAND_UNIT,
     ACTIVATE_GREAT_PERSON,
+    ADD_SPACESHIP_PART,
+    CAST_DIPLOMATIC_VOTE,
+    ABSTAIN_DIPLOMATIC_VOTE,
+    ACKNOWLEDGE_DIPLOMATIC_RESULTS,
     FOUND_CITY,
     START_WORKER_JOB,
     STOP_WORKER_JOB,
@@ -123,6 +127,7 @@ data class PlayerTurnSnapshot(
     val research: ResearchDevelopment? = null,
     val diplomacy: DiplomacyObservation = DiplomacyObservation(),
     val economy: EconomyObservation? = null,
+    val victory: VictoryDecisions = VictoryDecisions(),
     val socialAdvisories: List<uncivai.SocialPromiseAdvisory> = emptyList(),
 )
 
@@ -166,6 +171,7 @@ data class TurnCommandReceipt(
     val economy: EconomyOutcome? = null,
     val cityManagement: CityManagementOutcome? = null,
     val greatPerson: GreatPersonOutcome? = null,
+    val victory: VictoryOutcome? = null,
     val dismissedNotifications: List<PlayerNotification> = emptyList(),
 )
 
@@ -187,6 +193,7 @@ internal fun TurnCommandRequest.detached(): TurnCommandRequest = copy(
 internal fun TurnCommandReceipt.detached(): TurnCommandReceipt = copy(
     dismissedNotifications = Collections.unmodifiableList(dismissedNotifications.map { it.detached() }),
     greatPerson = greatPerson?.detached(),
+    victory = victory?.detached(),
     cityManagement = cityManagement?.detached(),
     economy = economy?.copy(units = Collections.unmodifiableList(economy.units.toList())),
     feedback = feedback?.let {

@@ -101,6 +101,17 @@ tasks.register<JavaExec>("generateS01Scenarios") {
     args(layout.buildDirectory.dir("generated/s01-scenarios").get().asFile.absolutePath)
 }
 
+tasks.register<JavaExec>("generateVictoryLiveFixtures") {
+    group = "verification"
+    description = "Creates fresh late-game checkpoints for opt-in live spaceship and election acceptance."
+    dependsOn(tasks.testClasses)
+    classpath = sourceSets.test.get().runtimeClasspath
+    mainClass = "uncivai.VictoryLiveFixtures"
+    doFirst {
+        args(providers.gradleProperty("victoryLiveDir").get())
+    }
+}
+
 tasks.register<JavaExec>("verifyTradeCycle") {
     group = "verification"
     description = "Drives the complete trade exercise over HTTPS without model calls and retains native checkpoints."
@@ -225,6 +236,22 @@ tasks.register<JavaExec>("runMixedDiplomacyDesktop") {
     doFirst {
         val output = providers.gradleProperty("mixedDesktopDir")
         require(output.isPresent) { "runMixedDiplomacyDesktop requires -PmixedDesktopDir=<new absolute directory>" }
+        args(output.get())
+    }
+}
+
+tasks.register<JavaExec>("runVictoryDesktop") {
+    group = "verification"
+    description = "Exercises rendered world-leader voting, results and spaceship assembly controls."
+    dependsOn(tasks.testClasses, prepareInspectionUiAssets)
+    classpath = sourceSets.test.get().output + sourceSets.main.get().output + uiRuntime
+    mainClass = "uncivai.VictoryDesktopProbe"
+    workingDir = inspectionUiDirectory.get().dir("runtime-engine/android/assets").asFile
+    systemProperty("uncivai.assetsDir", workingDir.absolutePath)
+    systemProperty("java.awt.headless", "false")
+    doFirst {
+        val output = providers.gradleProperty("victoryDesktopDir")
+        require(output.isPresent) { "runVictoryDesktop requires -PvictoryDesktopDir=<new absolute directory>" }
         args(output.get())
     }
 }

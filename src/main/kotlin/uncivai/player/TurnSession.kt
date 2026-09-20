@@ -19,6 +19,7 @@ import com.unciv.logic.civilization.PlayerTurnRequirements
 import com.unciv.logic.civilization.PlayerUnitEconomyOperations
 import com.unciv.logic.civilization.PlayerUnitOperations
 import com.unciv.logic.civilization.PlayerUnitOrders
+import com.unciv.logic.civilization.PlayerVictoryOperations
 import com.unciv.logic.civilization.PlayerWorkerOperations
 import com.unciv.logic.civilization.PopupAlert
 import uncivai.GameExecutor
@@ -163,6 +164,17 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
         if (player.hasCaptureDecision() && request.kind !in setOf(TurnCommandKind.RESOLVE_CAPTURED_CITY, TurnCommandKind.ACKNOWLEDGE_ALERT)) fail(PlayerSessionFailure.TURN_BLOCKED)
         val operations = PlayerOperations(player)
         val captures = PlayerCaptureOperations(player)
+        if (request.kind in victoryCommands) {
+            if (state.observedRevision != before.revision) fail(PlayerSessionFailure.OBSERVATION_REQUIRED)
+            val available = when (request.kind) {
+                TurnCommandKind.ADD_SPACESHIP_PART -> before.map.units.singleOrNull { it.handle == request.target }?.spaceshipAssembly?.available == true
+                TurnCommandKind.CAST_DIPLOMATIC_VOTE -> before.victory.ballot?.let { ballot -> ballot.canVote && ballot.candidates.any { it.civilizationId == request.selection } } == true
+                TurnCommandKind.ABSTAIN_DIPLOMATIC_VOTE -> before.victory.ballot?.canVote == true
+                TurnCommandKind.ACKNOWLEDGE_DIPLOMATIC_RESULTS -> before.victory.votingResults?.canAcknowledge == true
+                else -> false
+            }
+            if (!available) fail(PlayerSessionFailure.OPTION_UNAVAILABLE)
+        }
         if (request.kind == TurnCommandKind.RESPOND_FRIENDSHIP) {
             val decision = before.alerts.singleOrNull { it.handle == request.target }?.friendship ?: fail(PlayerSessionFailure.OPTION_UNAVAILABLE)
             if (request.selection !in setOf("Accept", "Decline") || (request.selection == "Accept" && !decision.accept.available) || !decision.canDecline) fail(PlayerSessionFailure.OPTION_UNAVAILABLE)
@@ -370,6 +382,14 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
 
                 TurnCommandKind.ACTIVATE_GREAT_PERSON -> PlayerGreatPersonOperations(player).tryActivate(unit!!, request.selection!!)
 
+                TurnCommandKind.ADD_SPACESHIP_PART -> PlayerVictoryOperations(player).tryAddSpaceshipPart(unit!!)
+
+                TurnCommandKind.CAST_DIPLOMATIC_VOTE -> PlayerVictoryOperations(player).tryVote(request.selection!!)
+
+                TurnCommandKind.ABSTAIN_DIPLOMATIC_VOTE -> PlayerVictoryOperations(player).tryVote(null)
+
+                TurnCommandKind.ACKNOWLEDGE_DIPLOMATIC_RESULTS -> PlayerVictoryOperations(player).tryAcknowledgeResults()
+
                 TurnCommandKind.BUY_CONSTRUCTION -> PlayerPurchaseOperations(player).tryBuyConstruction(city!!, request.selection!!)
 
                 TurnCommandKind.BUY_TILE -> PlayerPurchaseOperations(player).tryBuyTile(city!!, destination!!)
@@ -484,6 +504,13 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
                 economy = economyResult,
                 cityManagement = if (request.kind in cityManagementCommands) cityManagementOutcome(before, after) else null,
                 greatPerson = if (request.kind == TurnCommandKind.ACTIVATE_GREAT_PERSON) greatPersonOutcome(request, before, after, player.policies.storedCulture - cultureBefore) else null,
+                victory = when (request.kind) {
+                    TurnCommandKind.ADD_SPACESHIP_PART -> VictoryOutcome(part = unit!!.name, assembled = player.victoryManager.currentsSpaceshipParts[unit.name])
+                    TurnCommandKind.CAST_DIPLOMATIC_VOTE -> VictoryOutcome(votedFor = request.selection)
+                    TurnCommandKind.ABSTAIN_DIPLOMATIC_VOTE -> VictoryOutcome(abstained = true)
+                    TurnCommandKind.ACKNOWLEDGE_DIPLOMATIC_RESULTS -> VictoryOutcome(acknowledgedResults = before.victory.votingResults)
+                    else -> null
+                },
                 dismissedNotifications = dismissed,
             )
             state.receipts[request.requestId] = detachedRequest to receipt
@@ -556,7 +583,7 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
         if (player.tradeRequests.isNotEmpty()) {
             pending.add(PendingTurnDecision("TradeRequests", player.tradeRequests.all { runtime.communication.trades.nativeBridge.handles(player, it) }))
         }
-        if (player.shouldShowDiplomaticVotingResults()) pending.add(PendingTurnDecision("DiplomaticVotingResults", false))
+        if (player.shouldShowDiplomaticVotingResults()) pending.add(PendingTurnDecision("DiplomaticVotingResults", true))
         val map = observeMap(player, state, canAct = ordinaryActions)
         val fingerprint = PlayerTurnSnapshot(
             epoch = runtime.epoch,
@@ -597,6 +624,7 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
             research = observeResearchDevelopment(player),
             diplomacy = diplomacy,
             economy = observeEconomy(player),
+            victory = observeVictoryDecisions(player, ordinaryActions),
             turnReview = if (phase == "ACTIVE") {
                 TurnReview(
                     id = "",
@@ -651,6 +679,7 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
             TurnCommandKind.UNASSIGN_SPECIALIST,
             TurnCommandKind.SELL_BUILDING,
             TurnCommandKind.ACTIVATE_GREAT_PERSON,
+            TurnCommandKind.CAST_DIPLOMATIC_VOTE,
         )
         if (needsTarget != (request.target != null) || needsSelection != (request.selection != null) ||
             request.target?.isEmpty() == true || request.selection?.isEmpty() == true || request.revision.isEmpty() ||
@@ -682,13 +711,15 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
         private val cityManagementCommands = setOf(TurnCommandKind.SET_CITY_FOCUS, TurnCommandKind.SET_AVOID_GROWTH, TurnCommandKind.SET_MANUAL_SPECIALISTS, TurnCommandKind.ASSIGN_SPECIALIST, TurnCommandKind.UNASSIGN_SPECIALIST, TurnCommandKind.RESET_CITIZENS, TurnCommandKind.SELL_BUILDING, TurnCommandKind.REASSIGN_CITY_TILE)
         private val tileCommands = setOf(TurnCommandKind.SET_WORKED_TILE, TurnCommandKind.SET_TILE_LOCKED, TurnCommandKind.BUY_TILE, TurnCommandKind.REASSIGN_CITY_TILE)
         private val cityCommands = tileCommands + cityManagementCommands + setOf(TurnCommandKind.RENAME_CITY, TurnCommandKind.QUEUE_CONSTRUCTION, TurnCommandKind.REMOVE_CONSTRUCTION, TurnCommandKind.MOVE_CONSTRUCTION, TurnCommandKind.CITY_ATTACK, TurnCommandKind.MANAGE_CAPTURED_CITY, TurnCommandKind.BUY_CONSTRUCTION)
-        private val unitCommands = setOf(TurnCommandKind.MOVE_UNIT, TurnCommandKind.FOUND_CITY, TurnCommandKind.START_WORKER_JOB, TurnCommandKind.STOP_WORKER_JOB, TurnCommandKind.ATTACK, TurnCommandKind.SET_UNIT_ORDER, TurnCommandKind.PROMOTE_UNIT, TurnCommandKind.UPGRADE_UNIT, TurnCommandKind.PILLAGE, TurnCommandKind.DISBAND_UNIT, TurnCommandKind.ACTIVATE_GREAT_PERSON)
+        private val unitCommands = setOf(TurnCommandKind.MOVE_UNIT, TurnCommandKind.FOUND_CITY, TurnCommandKind.START_WORKER_JOB, TurnCommandKind.STOP_WORKER_JOB, TurnCommandKind.ATTACK, TurnCommandKind.SET_UNIT_ORDER, TurnCommandKind.PROMOTE_UNIT, TurnCommandKind.UPGRADE_UNIT, TurnCommandKind.PILLAGE, TurnCommandKind.DISBAND_UNIT, TurnCommandKind.ACTIVATE_GREAT_PERSON, TurnCommandKind.ADD_SPACESHIP_PART)
+        private val victoryCommands = setOf(TurnCommandKind.ADD_SPACESHIP_PART, TurnCommandKind.CAST_DIPLOMATIC_VOTE, TurnCommandKind.ABSTAIN_DIPLOMATIC_VOTE, TurnCommandKind.ACKNOWLEDGE_DIPLOMATIC_RESULTS)
         private val economicCommands = setOf(TurnCommandKind.BUY_CONSTRUCTION, TurnCommandKind.BUY_TILE, TurnCommandKind.UPGRADE_UNIT, TurnCommandKind.PILLAGE, TurnCommandKind.DISBAND_UNIT, TurnCommandKind.SELL_BUILDING)
         private val supportedRequirements = setOf(
             PlayerTurnRequirements.Kind.FreeGreatPerson,
             PlayerTurnRequirements.Kind.Construction,
             PlayerTurnRequirements.Kind.Research,
             PlayerTurnRequirements.Kind.Policy,
+            PlayerTurnRequirements.Kind.DiplomaticVote,
         )
     }
 }

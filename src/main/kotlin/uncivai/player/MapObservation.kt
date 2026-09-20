@@ -74,6 +74,7 @@ data class OwnedUnit(
     val combat: UnitCombat? = null,
     val economy: UnitEconomy? = null,
     val greatPerson: GreatPersonUnit? = null,
+    val spaceshipAssembly: SpaceshipAssembly? = null,
 )
 
 /** Coordinates use Unciv's axial x/y grid. No tile data is returned for unexplored coordinates. */
@@ -171,6 +172,7 @@ internal fun observeMap(player: Civilization, state: TurnSessionState, canAct: B
                     combat = observeUnitCombat(player, unit, active),
                     economy = observeUnitEconomy(player, unit, active),
                     greatPerson = observeGreatPerson(player, unit, active),
+                    spaceshipAssembly = observeSpaceshipAssembly(player, unit, active),
                 )
             }.toList(),
         ),
