@@ -7,6 +7,7 @@ import com.unciv.logic.civilization.PlayerOperations
 import com.unciv.logic.map.mapunit.MapUnit
 import uncivai.GameExecutor
 import uncivai.HeadlessRuntime
+import uncivai.PlayerApiAccounting
 import uncivai.RuntimeClosedException
 import uncivai.RuntimeHaltedException
 import uncivai.RuntimePausedException
@@ -90,8 +91,12 @@ private class BoundPlayerSession(
     private val civilizationId: String,
     private val cityRenamer: (City, String) -> Unit,
     private val greatPersonChooser: (Civilization, String) -> MapUnit?,
-) : PlayerSession {
+) : PlayerSession,
+    PlayerApiAccounting {
     private val turnSession = TurnSession(runtime, civilizationId)
+
+    override fun beginApiCall(tool: String, arguments: kotlinx.serialization.json.JsonObject?) = playerOperation { runtime.telemetry.startCall(civilizationId, tool, arguments) }
+    override fun finishApiCall(id: String, outcome: String) = runtime.telemetry.finishCall(id, outcome)
 
     override fun communicationChanges() = playerOperation {
         runtime.accessGame { runtime.communicationChanges.forPlayer(civilizationId) }

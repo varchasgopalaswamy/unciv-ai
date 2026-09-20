@@ -1,0 +1,106 @@
+import asyncio
+import json
+
+from civ_agent.civilization_state import CivilizationState
+from civ_agent.proposal_gateway import ProposalGateway
+from civ_agent.service_io import ServiceIO
+from civ_agent.telemetry import JobAccounting
+
+
+def record(id="job", **changes):
+    return {
+        "activationId": id,
+        "phase": "RUNNING",
+        "usage": {"input_tokens": 100, "cached_input_tokens": 20, "output_tokens": 30, "reasoning_output_tokens": 10},
+        "usageReported": True,
+        "usageComplete": False,
+        "effectiveSettings": {"model": "gpt-5.6-luna", "reasoningEffort": "medium"},
+        **changes,
+    }
+
+
+def test_reports_survive_lost_acknowledgement_and_do_not_drop_newer_counts(tmp_path):
+    store = JobAccounting(tmp_path)
+    store.start("job", "epoch1", True)
+    store.sample(record())
+    first = store.pending()[0]
+    store.sample(record(phase="COMPLETED", usageComplete=True))
+    store.acknowledge("job", first["telemetry"]["sequence"])
+    final = store.pending()[0]
+    assert final["telemetry"]["sequence"] > first["telemetry"]["sequence"]
+    restored = JobAccounting(tmp_path)
+    assert restored.pending() == [final]
+    restored.acknowledge("job", final["telemetry"]["sequence"])
+    assert restored.pending() == []
+    assert final["usage"]["input_tokens"] + final["usage"]["output_tokens"] == 130
+    assert final["telemetry"]["usageComplete"]
+
+
+def test_service_crash_preserves_spending_and_uncertain_call(tmp_path):
+    store = JobAccounting(tmp_path)
+    store.start("job", "epoch1", True)
+    store.sample(record())
+    store.begin_call("job", "player_command", {"kind": "END_TURN", "secret": "not in telemetry"})
+    restored = JobAccounting(tmp_path)
+    report = restored.pending()[0]
+    assert report["telemetry"]["phase"] == "FAILED"
+    assert report["usage"]["input_tokens"] == 100
+    assert not report["telemetry"]["usageComplete"]
+    assert report["telemetry"]["apiCalls"]["command:END_TURN"]["incomplete"] == 1
+    assert "secret" not in json.dumps(report)
+
+
+def test_missing_usage_and_chat_are_separate_from_completed_gameplay(tmp_path):
+    store = JobAccounting(tmp_path)
+    store.start("gameplay", "old_epoch", True)
+    store.sample(record("gameplay", phase="COMPLETED", usageReported=False, usage={}))
+    store.start("chat", "new_epoch", True)
+    store.sample(record("chat", phase="COMPLETED", usageComplete=True))
+    gameplay, chat = store.pending()
+    assert not gameplay["telemetry"]["usageComplete"]
+    assert chat["telemetry"]["usageComplete"]
+    assert gameplay["epoch"] != chat["epoch"]
+
+
+def test_gateway_counts_cached_tools_replays_and_rejections(tmp_path):
+    class Connection:
+        async def close(self):
+            pass
+
+        async def list_tools(self):
+            return []
+
+        async def tool(self, name, arguments):
+            if name == "player_communication" and arguments["op"] == "state":
+                return {"civilization": "Rome", "epoch": "epoch1"}
+            if name == "player_communication" and arguments["op"] == "negotiation":
+                return {"negotiation": {"active": False}}
+            raise AssertionError("These tools are entirely local")
+
+    async def run():
+        memory = CivilizationState(tmp_path / "memory", "Rome")
+        io = ServiceIO()
+        try:
+            gateway = ProposalGateway(memory, io, tmp_path / "workspace")
+            store = JobAccounting(tmp_path / "accounting")
+            gateway.accounting = store
+            store.start("job", "epoch1", True)
+            job = await gateway.open("job", "gameplay", "epoch1", Connection(), {})
+            first = await gateway.call(job, "memory_read", {"ids": ["missing"]}, "a")
+            assert await gateway.call(job, "memory_read", {"ids": ["missing"]}, "a") == first
+            try:
+                await gateway.call(job, "unknown_tool", {}, "bad")
+            except ValueError:
+                pass
+            else:
+                raise AssertionError("Unknown tool accepted")
+            store.sample(record(phase="COMPLETED", usageComplete=True))
+            calls = store.pending()[0]["telemetry"]["apiCalls"]
+            assert calls["tool:memory_read"]["calls"] == 2
+            assert calls["tool:memory_read"]["replayed"] == 1
+            assert calls["tool:unknown_tool"]["errors"] == 1
+            await gateway.close(job, True)
+        finally:
+            await io.close()
+
+    asyncio.run(run())

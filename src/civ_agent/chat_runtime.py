@@ -60,6 +60,7 @@ class ChatRuntime:
                 self.running = False
                 raise StateConflict("PLAYER_CREDENTIAL_MISMATCH")
             await self.reconcile()
+            await service.flush_telemetry()
             await service.io.call(service.memory.allow_communication_retry)
             if await service.io.call(service.memory.has_wake):
                 self.pending.set()
@@ -146,6 +147,7 @@ class ChatRuntime:
 
     async def compute(self, id):
         service = self.service
+        await service.io.call(service.accounting.start, id, self.epoch, True)
         job = await service.gateway.open(id, "communication", self.epoch, self.connection, self.settings)
         record = {
             "activationId": id,
@@ -162,6 +164,20 @@ class ChatRuntime:
         final = ""
         expected_turn = None
         early = {}
+        early_usage = {}
+
+        def record_usage(usage):
+            from civ_agent.agent_service import USAGE_KEYS
+
+            total = usage.get("total", {})
+            if not isinstance(total, dict) or any(
+                type(total.get(field, 0)) is not int or total.get(field, 0) < 0 for field in USAGE_KEYS.values()
+            ):
+                return
+            record["usage"] = {
+                key: max(record["usage"].get(key, 0), total.get(field, 0)) for key, field in USAGE_KEYS.items()
+            }
+            record["usageReported"] = all(field in total for field in USAGE_KEYS.values())
 
         async def notification(method, params):
             nonlocal final, completed
@@ -176,10 +192,13 @@ class ChatRuntime:
                     else:
                         early[turn.get("id")] = turn.get("status")
                 elif method == "thread/tokenUsage/updated":
-                    from civ_agent.agent_service import USAGE_KEYS
-
-                    total = params.get("tokenUsage", {}).get("total", {})
-                    record["usage"] = {key: total.get(field, 0) for key, field in USAGE_KEYS.items()}
+                    usage = params.get("tokenUsage", {})
+                    if isinstance(usage, dict):
+                        if expected_turn is None:
+                            early_usage[params.get("turnId")] = usage
+                        elif params.get("turnId") == expected_turn:
+                            record_usage(usage)
+                            await service.io.call(service.accounting.sample, record)
                 elif method == "item/completed":
                     item = params.get("item", {})
                     if item.get("type") == "agentMessage":
@@ -264,6 +283,10 @@ class ChatRuntime:
             )
             expected_turn = turn["turn"]["id"]
             await service.io.call(service.history.bind_turn, id, expected_turn)
+            record["phase"] = "RUNNING"
+            if expected_turn in early_usage:
+                record_usage(early_usage[expected_turn])
+            await service.io.call(service.accounting.sample, record)
             if expected_turn in early:
                 completed = early[expected_turn] == "completed"
                 done.set()
@@ -274,6 +297,8 @@ class ChatRuntime:
                 except TimeoutError:
                     if time.monotonic() >= deadline:
                         break
+                    await service.io.call(service.accounting.sample, record, job.waiting_seconds())
+                    await service.flush_telemetry()
                     grant = await self.social("job_heartbeat", job=id, usage=record["usage"])
                     if not grant["granted"]:
                         break
@@ -283,6 +308,8 @@ class ChatRuntime:
             await service.gateway.close(job, completed)
             record["phase"] = "COMPLETED" if completed else "INTERRUPTED"
             record["summary"] = final[:2400]
+            record["usageComplete"] = completed and record.get("usageReported", False)
+            await service.io.call(service.accounting.sample, record, job.waiting_seconds())
             await service.io.call(service.history.lifecycle, record)
             await service.io.call(export_history)
             await service.io.call(
@@ -291,6 +318,7 @@ class ChatRuntime:
                 record,
             )
             with contextlib.suppress(OSError, ValueError, TimeoutError, aiohttp.ClientError):
+                await service.flush_telemetry()
                 await self.social("job_release", job=id, usage=record["usage"])
             self.jobs.pop(id, None)
 
@@ -303,5 +331,7 @@ class ChatRuntime:
                     await task
         self.listener = self.worker = None
         if self.connection is not None:
+            with contextlib.suppress(OSError, ValueError, TimeoutError, aiohttp.ClientError):
+                await self.service.flush_telemetry()
             await self.connection.close()
             self.connection = None

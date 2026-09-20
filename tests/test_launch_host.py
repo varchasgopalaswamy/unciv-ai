@@ -24,6 +24,7 @@ class HostLauncherTest(unittest.TestCase):
         self.errors = io.StringIO()
         self.addCleanup(patch.stopall)
         self.build = patch.object(host.subprocess, "run").start()
+        patch.object(host.subprocess, "check_output", return_value="test-revision").start()
         self.execute = patch.object(host.os, "execv").start()
         self.tls = patch.object(
             host,
@@ -59,6 +60,22 @@ class HostLauncherTest(unittest.TestCase):
             {"Rome": "AGENT", "Greece": "AGENT", "France": "HUMAN", "Egypt": "HUMAN"},
         )
         self.assertEqual(4, len({entry["token"] for entry in players}))
+
+    def test_ordinary_game_adds_native_ai_without_credentials(self):
+        self.assertEqual(0, self.run_launcher("--new", "--built-in-ai", "Egypt", "--city-states", "2"))
+        players = json.loads((self.state / "players.json").read_text())["players"]
+        self.assertEqual(["Rome", "Greece", "France"], [entry["civilizationId"] for entry in players])
+        command = self.execute.call_args.args[1]
+        self.assertEqual("Egypt", command[command.index("--built-in-ai") + 1])
+
+    def test_native_ai_option_cannot_change_a_saved_game(self):
+        self.checkpoint()
+        self.assertEqual(2, self.run_launcher("--built-in-ai", "Egypt"))
+        self.build.assert_not_called()
+
+    def test_native_ai_option_rejects_duplicate_agent_nation(self):
+        self.assertEqual(2, self.run_launcher("--built-in-ai", "Rome"))
+        self.build.assert_not_called()
 
     def test_new_game_creates_private_distinct_credentials_and_executes_argv(self):
         self.assertEqual(0, self.run_launcher("--scenario", "trade-cycle", "--seed", "42", "--port", "8766"))

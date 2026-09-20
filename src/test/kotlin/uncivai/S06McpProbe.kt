@@ -449,7 +449,7 @@ object S06McpProbe {
                 val operations = branches.associateBy { it.getValue("properties").jsonObject.getValue("op").jsonObject.string("const") }
                 val expectedOperations = setOf(
                     "state", "negotiation", "read", "receipt", "trade_options", "trade_read",
-                    "job_claim", "job_heartbeat", "job_release", "send", "offer", "revise",
+                    "job_claim", "job_heartbeat", "job_release", "job_report", "send", "offer", "revise",
                     "accept", "withdraw", "reconsider", "trade_offer", "friendship_offer", "trade_decide",
                     "agreement_list", "agreement_read",
                 )

@@ -3,6 +3,14 @@
 Use this page to resume implementation; the [player API plan](Player-api-plan.md)
 and [coverage ledger](Player-api-coverage.md) retain the broader contract.
 
+## Current sprint: Vanilla full-game readiness and accounting
+
+The [accepted sprint](Vanilla-readiness.md) runs an ordinary Ancient-start match
+with Rome, Greece and France controlled by `gpt-5.6-luna` at medium reasoning,
+Egypt controlled by native AI, and two city-states. It adds durable per-turn token,
+API-call and timing records plus a native final winner and all-player scores.
+Implementation and acceptance are in progress; a completed full game remains required.
+
 ## Completed sprint: air warfare and special military actions
 
 The [air warfare sprint](Air-gameplay.md) adds rebasing/carrier transport, strikes

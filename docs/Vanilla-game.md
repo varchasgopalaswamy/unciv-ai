@@ -12,6 +12,11 @@ Diplomatic, and Time. Quick's time victory limit is 330 turns. Barbarians, ruins
 and natural wonders use ordinary engine settings. City-states default to zero;
 `--city-states NUMBER` includes native city-states in a new ordinary game. Mods
 are disabled.
+Use `--built-in-ai Egypt` on the initial host command to add Egypt under native
+AI control. The option may be repeated for other distinct major civilizations;
+these opponents receive no agent credentials. Omit it on resume, which preserves
+the saved player roster. The [readiness sprint](Vanilla-readiness.md) combines this
+setup with per-turn accounting and unscripted live acceptance.
 Each civilization starts with the engine's normal Settler and Warrior, treasury,
 and starting technology. All three occupy Human slots, so the host waits for their
 agents instead of substituting Unciv's civilization AI. Rome acts first, then

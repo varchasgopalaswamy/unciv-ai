@@ -160,6 +160,9 @@
         },
         "usage": {
           "$ref": "#/$defs/usage"
+        },
+        "telemetry": {
+          "$ref": "#/$defs/telemetry"
         }
       },
       "required": [
@@ -183,6 +186,9 @@
         },
         "usage": {
           "$ref": "#/$defs/usage"
+        },
+        "telemetry": {
+          "$ref": "#/$defs/telemetry"
         }
       },
       "required": [
@@ -542,6 +548,34 @@
         "agreement"
       ],
       "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "op": {
+          "const": "job_report"
+        },
+        "epoch": {
+          "$ref": "#/$defs/epoch"
+        },
+        "job": {
+          "$ref": "#/$defs/job"
+        },
+        "usage": {
+          "$ref": "#/$defs/usage"
+        },
+        "telemetry": {
+          "$ref": "#/$defs/telemetry"
+        }
+      },
+      "required": [
+        "op",
+        "epoch",
+        "job",
+        "usage",
+        "telemetry"
+      ],
+      "additionalProperties": false
     }
   ],
   "$defs": {
@@ -865,6 +899,140 @@
           }
         }
       ]
+    },
+    "apiCounts": {
+      "type": "object",
+      "properties": {
+        "calls": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9223372036854775807
+        },
+        "succeeded": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9223372036854775807
+        },
+        "errors": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9223372036854775807
+        },
+        "replayed": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9223372036854775807
+        },
+        "incomplete": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9223372036854775807
+        },
+        "elapsedMs": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9223372036854775807
+        }
+      },
+      "required": [
+        "calls",
+        "succeeded",
+        "errors",
+        "replayed",
+        "incomplete",
+        "elapsedMs"
+      ],
+      "additionalProperties": false
+    },
+    "telemetry": {
+      "type": "object",
+      "properties": {
+        "sequence": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9223372036854775807
+        },
+        "startedAtMs": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9223372036854775807
+        },
+        "elapsedMs": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9223372036854775807
+        },
+        "negotiationWaitMs": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9223372036854775807
+        },
+        "endedAtMs": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9223372036854775807
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "phase": {
+          "enum": [
+            "STARTING",
+            "RUNNING",
+            "COMPLETED",
+            "INTERRUPTED",
+            "FAILED"
+          ]
+        },
+        "usageReported": {
+          "type": "boolean"
+        },
+        "usageComplete": {
+          "type": "boolean"
+        },
+        "model": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 256
+        },
+        "reasoningEffort": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 256
+        },
+        "apiCalls": {
+          "type": "object",
+          "maxProperties": 512,
+          "propertyNames": {
+            "maxLength": 160
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/apiCounts"
+          }
+        }
+      },
+      "required": [
+        "sequence",
+        "startedAtMs",
+        "elapsedMs",
+        "negotiationWaitMs",
+        "endedAtMs",
+        "phase",
+        "usageReported",
+        "usageComplete",
+        "model",
+        "reasoningEffort",
+        "apiCalls"
+      ],
+      "additionalProperties": false
     }
   }
 }

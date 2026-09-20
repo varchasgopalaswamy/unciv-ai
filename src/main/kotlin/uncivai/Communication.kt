@@ -17,6 +17,7 @@ import java.security.SecureRandom
 /** Shared records and recipient streams are part of the same commit as game receipts. */
 @Serializable
 internal data class CommunicationState(
+    val telemetry: TelemetryState = TelemetryState(),
     val trades: EngineTradeState = EngineTradeState(),
     val agreements: AgreementState = AgreementState(),
     val streams: MutableMap<String, MutableList<CommunicationEvent>> = mutableMapOf(),
@@ -103,7 +104,7 @@ internal class Communication(private val runtime: GameExecutor) {
 
                 "agreement_read" -> return@accessGame agreements.read(civilization, checkNotNull(request.agreement))
 
-                "job_claim", "job_heartbeat", "job_release" -> return@accessGame job(civilization, request)
+                "job_claim", "job_heartbeat", "job_release", "job_report" -> return@accessGame job(civilization, request)
             }
             if (runtime.communicationPaused) throw PlayerSessionException(PlayerSessionFailure.COMMAND_UNAVAILABLE)
             val requestKey = "$civilization:${checkNotNull(request.requestId)}"
@@ -196,15 +197,36 @@ internal class Communication(private val runtime: GameExecutor) {
             ) {
                 return obj("granted" to false)
             }
-            state.jobs[id] = CommunicationJob(civilization, purpose, now + 90000)
+            state.jobs[id] = runtime.accessGame { game -> CommunicationJob(civilization, purpose, now + 90000, epoch = runtime.epoch, handoff = runtime.handoff, gameTurn = game.turns, claimedAtMs = now) }
             state.invocations++
         } else if (prior != null) {
-            if (request.op != "job_release" && prior.expires <= now) return obj("granted" to false)
+            if (request.op !in setOf("job_release", "job_report") && prior.expires <= now) return obj("granted" to false)
             if (request.op == "job_claim" && prior.purpose != request.purpose) fail()
-            state.jobs[id] = prior.copy(expires = if (request.op == "job_release") 0 else now + 90000, usage = request.usage ?: prior.usage)
+            val report = request.telemetry
+            val oldReport = prior.telemetry
+            if (report != null && oldReport != null && report.sequence < oldReport.sequence) return obj("granted" to true)
+            if (report != null && oldReport != null && report.sequence == oldReport.sequence && (report != oldReport || request.usage != prior.reportedUsage)) fail()
+            if (report != null && request.usage != null && prior.reportedUsage != null && listOf("input_tokens", "cached_input_tokens", "output_tokens", "reasoning_output_tokens").any { request.usage.tokens(it) < prior.reportedUsage.tokens(it) }) fail()
+            if (report != null) {
+                if (report.usageComplete && (!report.usageReported || request.usage == null || report.endedAtMs == null)) fail()
+                if (oldReport != null && (report.elapsedMs < oldReport.elapsedMs || (oldReport.usageComplete && !report.usageComplete) || oldReport.apiCalls.any { (name, count) -> (report.apiCalls[name]?.calls ?: 0) < count.calls })) fail()
+            }
+            state.jobs[id] = prior.copy(
+                expires = if (request.op == "job_release") {
+                    0
+                } else if (request.op == "job_report") {
+                    prior.expires
+                } else {
+                    now + 90000
+                },
+                usage = mergeUsage(prior.usage, request.usage),
+                telemetry = report ?: prior.telemetry,
+                reportedUsage = if (report != null) request.usage else prior.reportedUsage,
+            )
         } else {
             fail()
         }
+        runtime.telemetry.changed()
         runtime.commitCheckpoint()
         return obj("granted" to true)
     }
@@ -268,4 +290,10 @@ internal class Communication(private val runtime: GameExecutor) {
         state.outcomes.add(record)
         emit(audience, "engine", record.recordJson(), audience.toSet() - civilization)
     }
+}
+
+private fun mergeUsage(old: ModelUsage?, current: ModelUsage?): ModelUsage? {
+    if (old == null) return current
+    if (current == null) return old
+    return ModelUsage(maxOf(old.inputTokens, current.inputTokens), maxOf(old.cachedInputTokens, current.cachedInputTokens), maxOf(old.outputTokens, current.outputTokens), maxOf(old.reasoningOutputTokens, current.reasoningOutputTokens))
 }

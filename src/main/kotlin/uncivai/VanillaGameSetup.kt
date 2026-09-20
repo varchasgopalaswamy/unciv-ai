@@ -14,7 +14,7 @@ import com.unciv.models.ruleset.RulesetCache
 
 /** Ordinary engine creation, with human slots so external players retain control. */
 internal object VanillaGameSetup {
-    fun create(seed: Long, cityStates: Int = 0): GameInfo {
+    fun create(seed: Long, cityStates: Int = 0, builtInAI: List<String> = emptyList()): GameInfo {
         val parameters = GameParameters().apply {
             baseRuleset = BaseRuleset.Civ_V_Vanilla.fullName
             difficulty = "Prince"
@@ -24,6 +24,8 @@ internal object VanillaGameSetup {
             shufflePlayerOrder = false
             players = arrayListOf(Player("Rome", PlayerType.Human), Player("Greece", PlayerType.Human), Player("France", PlayerType.Human))
             val ruleset = RulesetCache.getComplexRuleset(this)
+            require(builtInAI.distinct().size == builtInAI.size && builtInAI.all { it !in setOf("Rome", "Greece", "France") && ruleset.nations[it]?.isMajorCiv == true }) { "Built-in AI civilizations must be distinct major nations other than Rome, Greece and France" }
+            players.addAll(builtInAI.map { Player(it, PlayerType.AI) })
             victoryTypes = ArrayList(ruleset.victories.keys)
             maxTurns = ruleset.speeds.getValue(speed).numTotalTurns()
         }

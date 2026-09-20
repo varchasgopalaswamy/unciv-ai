@@ -199,9 +199,9 @@ object EconomyRunProbe {
     private fun restore(runtime: HeadlessRuntime, api: GameplayTestApi, root: Path) {
         val saved = expected(root)
         check(facts(runtime) == saved.after)
-        val stable = Files.readString(root.resolve("checkpoint.json"))
+        val stable = gameplayCheckpoint(root.resolve("checkpoint.json"))
         for (action in saved.actions) check(api.execute(api.playerToken("Rome"), action.request) == action.receipt)
-        check(Files.readString(root.resolve("checkpoint.json")) == stable)
+        check(gameplayCheckpoint(root.resolve("checkpoint.json")) == stable)
         api.acquire()
         val status = api.status()
         api.operator(OperatorRequest("rollback", api.lease, status.epoch, status.serverInstance, status.handoff, "Rome", saved.activationId))
@@ -219,12 +219,12 @@ object EconomyRunProbe {
     private fun verify(runtime: HeadlessRuntime, api: GameplayTestApi, root: Path) {
         val saved = expected(root)
         check(facts(runtime) == saved.after)
-        val before = Files.readString(root.resolve("checkpoint.json"))
+        val before = gameplayCheckpoint(root.resolve("checkpoint.json"))
         for (action in saved.actions) {
             check(api.execute(api.playerToken("Rome"), action.request) == action.receipt)
             api.reject(api.playerToken("Greece"), action.request, "COMMAND_UNAVAILABLE")
         }
-        check(Files.readString(root.resolve("checkpoint.json")) == before)
+        check(gameplayCheckpoint(root.resolve("checkpoint.json")) == before)
         api.acquire()
         api.finishTurn(checkNotNull(api.activate().playerToken))
         check(api.status().activeCivilization == "Greece")

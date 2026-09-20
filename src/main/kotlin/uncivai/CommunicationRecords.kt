@@ -20,6 +20,7 @@ internal data class CommunicationRequest(
     val job: String? = null,
     val purpose: String? = null,
     val usage: ModelUsage? = null,
+    val telemetry: JobTelemetry? = null,
     val to: String? = null,
     val text: String? = null,
     val mentions: List<String> = emptyList(),
@@ -60,7 +61,18 @@ internal data class ModelUsage(
 }
 
 @Serializable
-internal data class CommunicationJob(val civilization: String, val purpose: String, val expires: Long, val usage: ModelUsage? = null)
+internal data class CommunicationJob(
+    val civilization: String,
+    val purpose: String,
+    val expires: Long,
+    val usage: ModelUsage? = null,
+    val epoch: String? = null,
+    val handoff: Long? = null,
+    val gameTurn: Int? = null,
+    val claimedAtMs: Long? = null,
+    val telemetry: JobTelemetry? = null,
+    val reportedUsage: ModelUsage? = null,
+)
 
 @Serializable
 internal data class CommunicationEvent(val id: Int, val kind: String, val body: JsonObject, val wake: Boolean)

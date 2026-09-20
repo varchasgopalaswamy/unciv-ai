@@ -58,6 +58,13 @@ def parser(*, add_help: bool = True) -> argparse.ArgumentParser:
     )
     parser.add_argument("--seed", type=seed_number, help="map seed for a new game only")
     parser.add_argument(
+        "--built-in-ai",
+        action="append",
+        default=[],
+        metavar="CIVILIZATION",
+        help="add a native AI major to a new ordinary game; may be repeated",
+    )
+    parser.add_argument(
         "--trade-counteroffers",
         type=int,
         choices=range(101),
@@ -145,6 +152,12 @@ def launch(options):
         raise ValueError("--seed applies only to a new game; this checkpoint will be resumed.")
     if options.city_states is not None and (resuming or options.scenario is not None):
         raise ValueError("--city-states applies only to a new ordinary game.")
+    if options.built_in_ai and (resuming or options.scenario is not None):
+        raise ValueError("--built-in-ai applies only to a new ordinary game.")
+    if len(set(options.built_in_ai)) != len(options.built_in_ai) or any(
+        civ in ("Rome", "Greece", "France") for civ in options.built_in_ai
+    ):
+        raise ValueError("Built-in AI civilizations must be distinct from the agent players.")
     if bool(options.tls_config) != bool(options.ca_file):
         raise ValueError("--tls-config and --ca-file must be supplied together.")
     if options.tls_config and (options.listen_host or options.public_host):
@@ -169,6 +182,7 @@ def launch(options):
         tls_config, ca_file = ensure_host_tls(state_dir, options.listen_host or "127.0.0.1", public_host)
     origin = host_origin(public_host, options.port)
     build_command = [str(repo_dir / "gradlew"), "installDist", "--console=plain"]
+    engine = repo_dir / "vendor/Unciv"
     if options.unciv_dir:
         engine = Path(options.unciv_dir).expanduser()
         if not engine.is_absolute():
@@ -188,6 +202,8 @@ def launch(options):
         command.extend(["--new-game", "--checkpoint", str(checkpoint)])
         if options.city_states is not None:
             command.extend(["--city-states", str(options.city_states)])
+        for civilization in options.built_in_ai:
+            command.extend(["--built-in-ai", civilization])
         if options.seed is not None:
             command.extend(["--seed", str(options.seed)])
     if options.scenario is not None:
@@ -207,6 +223,16 @@ def launch(options):
         ]
     )
     write_private_json(state_dir / "endpoints.json", {"hostUrl": origin, "caFile": str(ca_file)})
+    for variable, checkout in (
+        ("UNCIV_HOST_REVISION", repo_dir),
+        ("UNCIV_ENGINE_REVISION", engine),
+    ):
+        try:
+            revision = subprocess.check_output(["git", "-C", str(checkout), "rev-parse", "HEAD"], text=True).strip()
+            dirty = subprocess.check_output(["git", "-C", str(checkout), "status", "--porcelain"], text=True).strip()
+            os.environ[variable] = revision + ("+dirty" if dirty else "")
+        except (OSError, subprocess.CalledProcessError):
+            os.environ[variable] = "unknown"
     action = "Resuming" if resuming else f"Starting {options.scenario or 'Vanilla Rome/Greece/France'}"
     print(f"{action} game: {checkpoint}", flush=True)
     print(f"Wait for MCP-READY:{origin}/mcp, then launch each agent in another terminal.", flush=True)

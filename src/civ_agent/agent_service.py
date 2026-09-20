@@ -37,6 +37,7 @@ from civ_agent.proposal_gateway import ProposalGateway
 from civ_agent.protocol import AgentProcess, JsonObject, Notification
 from civ_agent.schemas import StartRequest, start_error
 from civ_agent.service_io import ServiceIO
+from civ_agent.telemetry import JobAccounting
 from civ_agent.tls import codex_trust_environment, https_url, private_directory, regular_file, write_private_json
 from civ_agent.turn_archive import TurnArchive
 
@@ -284,6 +285,9 @@ class AgentService:
         self.memory = CivilizationState(self.state_dir / "civilization", civilization, memory_context_chars)
         self.memory.export(self.workspace)
         self.gateway = ProposalGateway(self.memory, self.io, self.workspace)
+        self.accounting = JobAccounting(self.state_dir / "telemetry")
+        self.gateway.accounting = self.accounting
+        self.telemetry_lock = asyncio.Lock()
         self.gateway.paused = self.memory.is_paused()
         self.gateway_url, self.gateway_ca_file = gateway_url, gateway_ca_file
         if (self.state_dir / "restore.json").exists():
@@ -321,6 +325,7 @@ class AgentService:
         self.diagnostics = Diagnostics(self.state_dir, self.civilization)
 
     def _persist(self, record, *, refresh=False):
+        self.accounting.sample(record, record.get("negotiationWaitSeconds", 0))
         self.history.lifecycle(record)
         if refresh:
             self._refresh(record)
@@ -696,11 +701,25 @@ class AgentService:
             self.active_task = asyncio.create_task(self._run(payload))
             return self.status()
 
+    async def flush_telemetry(self):
+        if self.chat.connection is None:
+            return
+        async with self.telemetry_lock:
+            for report in await self.io.call(self.accounting.pending):
+                response = await self.chat.social(
+                    "job_report", job=report["job"], usage=report["usage"], telemetry=report["telemetry"]
+                )
+                if response.get("granted") is not True:
+                    raise ServiceError("TELEMETRY_NOT_ACCEPTED", 503)
+                await self.io.call(self.accounting.acknowledge, report["job"], report["telemetry"]["sequence"])
+
     async def heartbeat(self, activation_id):
         status = self.status(activation_id)
         if activation_id == self.active_id and status["phase"] not in TERMINAL:
             self.last_heartbeat = time.monotonic()
             if self.chat.running and self.gameplay_permit == activation_id:
+                await self.io.call(self.accounting.sample, self.records[activation_id])
+                await self.flush_telemetry()
                 grant = await self.chat.social("job_heartbeat", job=activation_id)
                 if not grant["granted"]:
                     self.failure = "JOB_PERMIT_EXPIRED"
@@ -795,6 +814,7 @@ class AgentService:
         for key in USAGE_KEYS:
             prior[key] = max(prior[key], record["baseline"][key] + record["usage"][key])
         record["threadTotals"] = dict(prior)
+        record["usageReported"] = all(field in total for field in USAGE_KEYS.values())
         await self._save(record)
 
     async def _run(self, payload: JsonObject) -> None:
@@ -891,6 +911,12 @@ class AgentService:
                 ]:
                     await asyncio.sleep(1)
                 self.gameplay_permit = record["activationId"]
+            await self.io.call(
+                self.accounting.start,
+                record["activationId"],
+                record["epoch"],
+                self.gameplay_permit == record["activationId"],
+            )
             await process.start(job.token, selected["model"])
             options: JsonObject = {"cwd": str(workspace), "approvalPolicy": "never", "sandbox": "workspace-write"}
             if selected["model"] is not None:
@@ -1007,6 +1033,7 @@ class AgentService:
                 if self.failure == "INTERRUPTED" or self.completion == "interrupted"
                 else "FAILED"
             )
+            finished["usageComplete"] = self.completion == "completed" and finished.get("usageReported", False)
             if self.failure:
                 finished["error"] = self.failure
             # Never publish a terminal phase until the process has stopped and
@@ -1022,6 +1049,7 @@ class AgentService:
             await self.gateway.close(job, finished["phase"] == "COMPLETED")
             if self.chat.running:
                 with contextlib.suppress(OSError, ValueError, TimeoutError, aiohttp.ClientError):
+                    await self.flush_telemetry()
                     await self.chat.social("job_release", job=record["activationId"], usage=finished["usage"])
             self.process = None
             self.gameplay_permit = None

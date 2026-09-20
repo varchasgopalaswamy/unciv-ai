@@ -36,6 +36,7 @@ class GameExecutor internal constructor(
     internal val turnSessions = HashMap<String, TurnSessionState>()
     internal var communicationState = CommunicationState()
     internal val communication = Communication(this)
+    internal val telemetry = Telemetry(this)
     internal val communicationChanges = CommunicationChanges()
     internal var communicationPaused = false
     internal var clockMillis: () -> Long = System::currentTimeMillis
@@ -136,6 +137,7 @@ class GameExecutor internal constructor(
         try {
             store.writeInitial(CheckpointStore.capture(game, epoch, paused, turnSessions, handoff, scheduled, communication = communicationState))
             checkpointStore = store
+            telemetry.export(game, store.path)
         } catch (failure: Throwable) {
             store.close()
             throw failure
@@ -146,11 +148,13 @@ class GameExecutor internal constructor(
         try {
             communication.trades.nativeBridge.synchronize(game)
             communication.agreements.synchronize(game)
+            telemetry.synchronize(game)
             // A handoff or terminal result and dropping its rollback point are one commit.
             if (turnStart?.handoff != handoff || gameFinished(game)) turnStart = null
             checkpointStore?.write(CheckpointStore.capture(game, epoch, paused, turnSessions, handoff, scheduled, turnStart, communicationState, communicationPaused))
             turnSessions.values.forEach { it.checkpointRevision = it.revision }
             communicationChanges.committed(communicationState)
+            checkpointStore?.let { telemetry.export(game, it.path) }
         } catch (failure: Throwable) {
             haltAfterMutation(failure)
         }
@@ -160,6 +164,8 @@ class GameExecutor internal constructor(
         check(checkpointStore == null && turnSessions.isEmpty()) { "Restore before binding players" }
         epoch = checkpoint.epoch
         communicationState = checkpoint.communication
+        val pendingTelemetry = communicationState.telemetry.pendingCalls.isNotEmpty()
+        telemetry.restored()
         communicationState.trades.activeProposal?.let {
             scheduleTradeDeadline(communicationState.trades.proposals.getValue(it).last().deadlineMillis)
         }
@@ -176,7 +182,7 @@ class GameExecutor internal constructor(
         }
         restorePlayers(checkpoint.players, checkpoint.gameJson)
         checkpointStore = store
-        if (scheduled) commitCheckpoint()
+        if (scheduled || pendingTelemetry) commitCheckpoint() else telemetry.export(game, store.path)
     }
 
     /** Capture before issuing any activation credential, and retain it across retries. */
@@ -189,7 +195,10 @@ class GameExecutor internal constructor(
         } else if (activationId == null || activationId == turnStart?.activationId) {
             return@accessGame
         }
-        if (activationId != null) turnStart = checkNotNull(turnStart).copy(activationId = activationId)
+        if (activationId != null) {
+            turnStart = checkNotNull(turnStart).copy(activationId = activationId)
+            telemetry.beginTurn(game, activationId)
+        }
         commitCheckpoint()
     }
 
@@ -220,6 +229,7 @@ class GameExecutor internal constructor(
             val restoredCommunication = kotlinx.serialization.json.Json.decodeFromString<CommunicationState>(kotlinx.serialization.json.Json.encodeToString(saved.communication))
             communicationState = restoredCommunication.copy(
                 jobs = accounting.jobs, invocations = accounting.invocations,
+                telemetry = accounting.telemetry,
                 maxInvocations = accounting.maxInvocations, maxConcurrent = accounting.maxConcurrent, maxPerCivilization = accounting.maxPerCivilization,
                 coordinatedRecovery = true,
                 restorePending = true,

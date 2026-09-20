@@ -19,6 +19,7 @@ import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonObject
 import uncivai.InputSchema
 import uncivai.InputSchemas
+import uncivai.PlayerApiAccounting
 import uncivai.awaitCommunication
 import uncivai.player.ChooseFreeGreatPersonRequest
 import uncivai.player.MovementPreview
@@ -49,7 +50,7 @@ internal fun createPlayerToolsServer(session: PlayerSession): Server = Server(
         inputSchema = TURN_COMMAND_INPUT_SCHEMA,
         toolAnnotations = QUERY_ANNOTATIONS,
     ) { request ->
-        playerResult {
+        measuredPlayerResult(session, "player_receipt", request.arguments) {
             val arguments = request.arguments ?: throw InvalidToolArgumentsException()
             val command = InputSchemas.turnCommand.decode(TurnCommandRequest.serializer(), arguments)
             session.completedReceipt(command)?.let(PlayerTurnJson::encode) ?: "{\"error\":\"NOT_ENACTED\"}"
@@ -61,7 +62,7 @@ internal fun createPlayerToolsServer(session: PlayerSession): Server = Server(
         inputSchema = COMMUNICATION_INPUT_SCHEMA,
         toolAnnotations = COMMAND_ANNOTATIONS,
     ) { request ->
-        playerResult {
+        measuredPlayerResult(session, "player_communication", request.arguments) {
             val arguments = request.arguments?.get("request") as? JsonObject ?: throw InvalidToolArgumentsException()
             session.awaitCommunication(arguments).toString()
         }
@@ -73,7 +74,7 @@ internal fun createPlayerToolsServer(session: PlayerSession): Server = Server(
         inputSchema = NO_ARGUMENTS_SCHEMA,
         toolAnnotations = QUERY_ANNOTATIONS,
     ) { request ->
-        playerResult {
+        measuredPlayerResult(session, "player_capabilities", request.arguments) {
             request.arguments.requireNoArguments()
             PlayerTurnJson.encode(session.capabilities())
         }
@@ -85,7 +86,7 @@ internal fun createPlayerToolsServer(session: PlayerSession): Server = Server(
         inputSchema = NO_ARGUMENTS_SCHEMA,
         toolAnnotations = QUERY_ANNOTATIONS,
     ) { request ->
-        playerResult {
+        measuredPlayerResult(session, "player_turn", request.arguments) {
             request.arguments.requireNoArguments()
             PlayerTurnJson.encode(session.turn())
         }
@@ -97,7 +98,7 @@ internal fun createPlayerToolsServer(session: PlayerSession): Server = Server(
         inputSchema = TURN_COMMAND_INPUT_SCHEMA,
         toolAnnotations = COMMAND_ANNOTATIONS,
     ) { request ->
-        playerResult {
+        measuredPlayerResult(session, "player_command", request.arguments) {
             val arguments = request.arguments ?: throw InvalidToolArgumentsException()
             val command = InputSchemas.turnCommand.decode(TurnCommandRequest.serializer(), arguments)
             PlayerTurnJson.encode(session.execute(command))
@@ -110,7 +111,7 @@ internal fun createPlayerToolsServer(session: PlayerSession): Server = Server(
         inputSchema = NO_ARGUMENTS_SCHEMA,
         toolAnnotations = QUERY_ANNOTATIONS,
     ) { request ->
-        playerResult {
+        measuredPlayerResult(session, "player_result", request.arguments) {
             request.arguments.requireNoArguments()
             PlayerTurnJson.json.encodeToString(PlayerFinalState.serializer(), session.result())
         }
@@ -122,7 +123,7 @@ internal fun createPlayerToolsServer(session: PlayerSession): Server = Server(
         inputSchema = InputSchemas.missionPreview.toolSchema(),
         toolAnnotations = QUERY_ANNOTATIONS,
     ) { request ->
-        playerResult {
+        measuredPlayerResult(session, "mission_preview", request.arguments) {
             val preview = InputSchemas.missionPreview.decode(uncivai.player.MissionPreviewRequest.serializer(), request.arguments ?: throw InvalidToolArgumentsException())
             PlayerTurnJson.json.encodeToString(uncivai.player.MissionPreview.serializer(), session.missionPreview(preview))
         }
@@ -134,7 +135,7 @@ internal fun createPlayerToolsServer(session: PlayerSession): Server = Server(
         inputSchema = InputSchemas.movementPreview.toolSchema(),
         toolAnnotations = QUERY_ANNOTATIONS,
     ) { request ->
-        playerResult {
+        measuredPlayerResult(session, "movement_preview", request.arguments) {
             val preview = InputSchemas.movementPreview.decode(MovementPreviewRequest.serializer(), request.arguments ?: throw InvalidToolArgumentsException())
             PlayerTurnJson.json.encodeToString(MovementPreview.serializer(), session.movementPreview(preview))
         }
@@ -146,7 +147,7 @@ internal fun createPlayerToolsServer(session: PlayerSession): Server = Server(
         inputSchema = DETAIL_INPUT_SCHEMA,
         toolAnnotations = QUERY_ANNOTATIONS,
     ) { request ->
-        playerResult {
+        measuredPlayerResult(session, "research_details", request.arguments) {
             PlayerTurnJson.json.encodeToString(ResearchDetails.serializer(), session.researchDetails(request.arguments.detailNames()))
         }
     }
@@ -157,7 +158,7 @@ internal fun createPlayerToolsServer(session: PlayerSession): Server = Server(
         inputSchema = DETAIL_INPUT_SCHEMA,
         toolAnnotations = QUERY_ANNOTATIONS,
     ) { request ->
-        playerResult {
+        measuredPlayerResult(session, "policy_details", request.arguments) {
             PlayerTurnJson.json.encodeToString(PolicyDetails.serializer(), session.policyDetails(request.arguments.detailNames()))
         }
     }
@@ -168,7 +169,7 @@ internal fun createPlayerToolsServer(session: PlayerSession): Server = Server(
         inputSchema = DETAIL_INPUT_SCHEMA,
         toolAnnotations = QUERY_ANNOTATIONS,
     ) { request ->
-        playerResult {
+        measuredPlayerResult(session, "victory_progress", request.arguments) {
             PlayerTurnJson.json.encodeToString(VictoryProgress.serializer(), session.victoryProgress(request.arguments.detailNames()))
         }
     }
@@ -179,7 +180,7 @@ internal fun createPlayerToolsServer(session: PlayerSession): Server = Server(
         inputSchema = NO_ARGUMENTS_SCHEMA,
         toolAnnotations = QUERY_ANNOTATIONS,
     ) { request ->
-        playerResult {
+        measuredPlayerResult(session, "player_summary", request.arguments) {
             request.arguments.requireNoArguments()
             PlayerSummaryJson.encode(session.summary())
         }
@@ -191,7 +192,7 @@ internal fun createPlayerToolsServer(session: PlayerSession): Server = Server(
         inputSchema = NO_ARGUMENTS_SCHEMA,
         toolAnnotations = QUERY_ANNOTATIONS,
     ) { request ->
-        playerResult {
+        measuredPlayerResult(session, "owned_cities", request.arguments) {
             request.arguments.requireNoArguments()
             PlayerCommandJson.encode(session.cities())
         }
@@ -203,7 +204,7 @@ internal fun createPlayerToolsServer(session: PlayerSession): Server = Server(
         inputSchema = RENAME_CITY_INPUT_SCHEMA,
         toolAnnotations = COMMAND_ANNOTATIONS,
     ) { request ->
-        playerResult {
+        measuredPlayerResult(session, "rename_city", request.arguments) {
             val renameRequest = InputSchemas.renameCity.decode(RenameCityRequest.serializer(), request.arguments ?: throw InvalidToolArgumentsException())
             PlayerCommandJson.encode(session.renameCity(renameRequest))
         }
@@ -215,7 +216,7 @@ internal fun createPlayerToolsServer(session: PlayerSession): Server = Server(
         inputSchema = NO_ARGUMENTS_SCHEMA,
         toolAnnotations = QUERY_ANNOTATIONS,
     ) { request ->
-        playerResult {
+        measuredPlayerResult(session, "free_great_person_choice", request.arguments) {
             request.arguments.requireNoArguments()
             PlayerCommandJson.encode(session.freeGreatPersonChoice())
         }
@@ -227,7 +228,7 @@ internal fun createPlayerToolsServer(session: PlayerSession): Server = Server(
         inputSchema = CHOOSE_FREE_GREAT_PERSON_INPUT_SCHEMA,
         toolAnnotations = COMMAND_ANNOTATIONS,
     ) { request ->
-        playerResult {
+        measuredPlayerResult(session, "choose_free_great_person", request.arguments) {
             val choiceRequest = InputSchemas.chooseGreatPerson.decode(ChooseFreeGreatPersonRequest.serializer(), request.arguments ?: throw InvalidToolArgumentsException())
             PlayerCommandJson.encode(session.chooseFreeGreatPerson(choiceRequest))
         }
@@ -310,3 +311,19 @@ private fun errorResult(code: String, message: String): CallToolResult {
 }
 
 private class InvalidToolArgumentsException : IllegalArgumentException()
+
+/** Count at the authenticated MCP boundary, including rejected calls and uncertain cancellations. */
+private suspend inline fun measuredPlayerResult(session: PlayerSession, name: String, arguments: JsonObject?, operation: () -> String): CallToolResult {
+    var id: String? = null
+    var outcome = "incomplete"
+    try {
+        return playerResult {
+            id = (session as? PlayerApiAccounting)?.beginApiCall(name, arguments)
+            val body = operation()
+            outcome = if ((runCatching { Json.parseToJsonElement(body) }.getOrNull() as? JsonObject)?.containsKey("error") == true) "error" else "success"
+            body
+        }.also { if (it.isError == true) outcome = "error" }
+    } finally {
+        id?.let { (session as? PlayerApiAccounting)?.finishApiCall(it, outcome) }
+    }
+}

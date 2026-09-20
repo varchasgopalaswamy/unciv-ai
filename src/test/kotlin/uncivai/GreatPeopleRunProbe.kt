@@ -260,9 +260,9 @@ object GreatPeopleRunProbe {
     private fun names(names: List<String>) = JsonObject(mapOf("names" to JsonArray(names.map(::JsonPrimitive))))
     private fun command(turn: PlayerTurnSnapshot, kind: TurnCommandKind, target: String? = null, selection: String? = null) = TurnCommandRequest(UUID.randomUUID().toString(), turn.epoch, turn.revision, kind, target, selection)
     private fun replay(api: GameplayTestApi, root: Path, actions: List<GreatPersonAction>) {
-        val checkpoint = Files.readString(root.resolve("checkpoint.json"))
+        val checkpoint = gameplayCheckpoint(root.resolve("checkpoint.json"))
         for (action in actions) check(api.execute(api.playerToken(action.civilization), action.request) == action.receipt)
-        check(checkpoint == Files.readString(root.resolve("checkpoint.json"))) { "Receipt replay rewrote the checkpoint" }
+        check(checkpoint == gameplayCheckpoint(root.resolve("checkpoint.json"))) { "Receipt replay rewrote the checkpoint" }
     }
     private fun facts(runtime: HeadlessRuntime): String = runtime.game.civilizations.filter { it.isMajorCiv() }.joinToString("\n") { player ->
         listOf(

@@ -4,6 +4,7 @@ import com.github.ajalt.clikt.core.CliktCommand
 import com.github.ajalt.clikt.core.UsageError
 import com.github.ajalt.clikt.parameters.options.default
 import com.github.ajalt.clikt.parameters.options.flag
+import com.github.ajalt.clikt.parameters.options.multiple
 import com.github.ajalt.clikt.parameters.options.option
 import com.github.ajalt.clikt.parameters.options.required
 import com.github.ajalt.clikt.parameters.types.choice
@@ -28,6 +29,7 @@ internal data class CliOptions(
     val tradeCounteroffers: Int?,
     val tradeTimeoutSeconds: Int?,
     val cityStates: Int? = null,
+    val builtInAI: List<String> = emptyList(),
 )
 
 /** Parsing and help belong to Clikt; cross-option host requirements stay here. */
@@ -43,6 +45,7 @@ internal class HostCli(private val launch: (CliOptions) -> Unit) : CliktCommand(
     private val newGame by option("--new-game", help = "Create a Quick Vanilla Rome/Greece/France game; --scenario selects a prepared exercise.").flag()
     private val seed by option("--seed", help = "New-game random seed.").long()
     private val cityStates by option("--city-states", help = "Number of city-states in a new ordinary Vanilla game (default: 0).").int().restrictTo(0, 41)
+    private val builtInAI by option("--built-in-ai", help = "Add a built-in AI major civilization to a new ordinary game; repeat for multiple opponents.").multiple()
     private val scenario by option("--scenario", help = "Create a prepared exercise or verify its identity on resume.").choice("trade-cycle", "war-paid", "war-joint", "agreement-lifecycle", "mixed-diplomacy")
     private val counteroffers by option("--trade-counteroffers", help = "Counteroffer limit per negotiation.").int().restrictTo(0, 100)
     private val timeout by option("--trade-timeout", help = "Negotiation deadline in seconds.").int().restrictTo(1, 86400)
@@ -55,12 +58,13 @@ internal class HostCli(private val launch: (CliOptions) -> Unit) : CliktCommand(
         requireOption(checkpoint == null || save != null || newGame, "--checkpoint requires --save or --new-game")
         requireOption(!newGame || checkpoint != null, "--new-game requires --checkpoint to persist the new game")
         requireOption(cityStates == null || (newGame && scenario == null), "--city-states requires an ordinary --new-game")
+        requireOption(builtInAI.isEmpty() || (newGame && scenario == null), "--built-in-ai requires an ordinary --new-game")
         requireOption(seed == null || newGame, "--seed requires --new-game")
         requireOption(port == null || players != null, "--port requires --mcp-config")
         requireOption(operator == null || players != null, "--operator-config requires --mcp-config")
         requireOption((tls != null) == (players != null), "Serving requires both --mcp-config and --tls-config (HTTPS only)")
         requireOption(scenario != "trade-cycle" || counteroffers == null || counteroffers == 3, "The trade-cycle exercise requires --trade-counteroffers 3")
         requireOption(scenario != "war-paid" || counteroffers?.let { it > 0 } != false, "The paid-war exercise requires at least one counteroffer")
-        launch(CliOptions(save, data, players, port ?: 8765, checkpoint, resume, newGame, scenario, seed, operator, tls, counteroffers, timeout, cityStates))
+        launch(CliOptions(save, data, players, port ?: 8765, checkpoint, resume, newGame, scenario, seed, operator, tls, counteroffers, timeout, cityStates, builtInAI))
     }
 }

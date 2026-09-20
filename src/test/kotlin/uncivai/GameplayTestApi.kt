@@ -23,6 +23,13 @@ import java.nio.file.Path
 import java.time.Duration
 import java.util.UUID
 
+/** Gameplay and receipts must be unchanged by retries; operator API-call accounting still advances. */
+internal fun gameplayCheckpoint(path: Path): JsonObject {
+    val checkpoint = Json.parseToJsonElement(Files.readString(path)).jsonObject
+    val communication = checkpoint.getValue("communication").jsonObject
+    return JsonObject(checkpoint + ("communication" to JsonObject(communication - "telemetry")))
+}
+
 /** Authenticated HTTPS player and operator client for scripted gameplay fixtures. */
 internal class GameplayTestApi(runtime: HeadlessRuntime, tlsRoot: Path, private val tokens: Map<String, String> = mapOf("Rome" to "R".repeat(43), "Greece" to "G".repeat(43))) : AutoCloseable {
     private val tls = TlsTestFixture(Files.createDirectories(tlsRoot))

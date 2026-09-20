@@ -102,8 +102,9 @@ class GameLaunchIntegrationTest {
             assertEquals(original, Files.readString(checkpoint))
             launch(root, "resume-war", listOf("--resume-checkpoint", checkpoint.toString(), "--scenario", "war-paid"), 0)
             // A valid scheduled restart intentionally persists the paused state.
-            val expected = JsonObject(Json.parseToJsonElement(original).jsonObject + ("paused" to JsonPrimitive(true)))
-            assertEquals(expected, Json.parseToJsonElement(Files.readString(checkpoint)))
+            val expected = communicationJson.decodeFromString<GameCheckpoint>(original).copy(paused = true)
+            expected.communication.telemetry.turns.values.filter { it.endedAtMs == null }.forEach { it.timingComplete = false }
+            assertEquals(communicationJson.encodeToJsonElement(GameCheckpoint.serializer(), expected), Json.parseToJsonElement(Files.readString(checkpoint)))
         } finally {
             deleteTreeWithoutFollowingLinks(root)
         }

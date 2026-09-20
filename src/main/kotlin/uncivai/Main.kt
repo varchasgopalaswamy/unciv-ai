@@ -32,7 +32,7 @@ private fun launchHost(options: CliOptions) {
             } else if (options.scenario in setOf("war-paid", "war-joint")) {
                 HeadlessRuntime.createWarExercise(options.dataDirectory, checkNotNull(options.scenario), options.seed ?: 413L)
             } else {
-                HeadlessRuntime.createVanillaGame(options.dataDirectory, options.seed ?: System.currentTimeMillis(), options.cityStates ?: 0)
+                HeadlessRuntime.createVanillaGame(options.dataDirectory, options.seed ?: System.currentTimeMillis(), options.cityStates ?: 0, options.builtInAI)
             }
         } else if (options.resumeCheckpoint != null) {
             HeadlessRuntime.loadCheckpoint(options.resumeCheckpoint, options.dataDirectory, expectedMap)

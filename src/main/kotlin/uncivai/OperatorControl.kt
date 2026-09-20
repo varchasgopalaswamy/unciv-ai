@@ -53,6 +53,7 @@ internal data class OperatorStatus(
     val modelUsage: Map<String, Long> = emptyMap(),
     val negotiationWaitMillis: Long = 0,
     val negotiationTimeoutSeconds: Int = 300,
+    val telemetryExportError: String? = null,
 )
 
 @Serializable
@@ -316,7 +317,12 @@ class OperatorControl internal constructor(
     private inner class GuardedSession(
         private val delegate: PlayerSession,
         private val check: (Boolean) -> Unit,
-    ) : PlayerSession {
+    ) : PlayerSession,
+        PlayerApiAccounting {
+        override fun beginApiCall(tool: String, arguments: kotlinx.serialization.json.JsonObject?) = guarded { (delegate as? PlayerApiAccounting)?.beginApiCall(tool, arguments) }
+        override fun finishApiCall(id: String, outcome: String) {
+            (delegate as? PlayerApiAccounting)?.finishApiCall(id, outcome)
+        }
         private fun <T> guarded(mutation: Boolean = false, block: () -> T): T = runtime.accessOperatorGame {
             check(mutation)
             block()
@@ -363,6 +369,7 @@ class OperatorControl internal constructor(
         leaseId = leaseId,
         leaseExpiresInMs = if (leaseId == null) 0 else (expiresAt - clockMillis()).coerceAtLeast(0),
         modelInvocations = runtime.communicationState.invocations,
+        telemetryExportError = runtime.telemetry.exportError,
         modelUsage = listOf("input_tokens", "cached_input_tokens", "output_tokens", "reasoning_output_tokens").associateWith { key ->
             runtime.communicationState.jobs.values.sumOf { job ->
                 job.usage?.tokens(key) ?: 0L

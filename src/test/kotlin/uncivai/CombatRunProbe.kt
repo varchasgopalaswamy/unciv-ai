@@ -482,7 +482,7 @@ object CombatRunProbe {
         val status = api.status()
         check(status.scheduled && status.phase == "FINISHED")
         val before = json().toJson(runtime.game)
-        val checkpoint = Files.readString(root.resolve("checkpoint.json"))
+        val checkpoint = gameplayCheckpoint(root.resolve("checkpoint.json"))
         for (entry in saved.commands) {
             val owner = api.playerToken(entry.civilization)
             val opponent = api.playerToken(if (entry.civilization == "Rome") "Greece" else "Rome")
@@ -494,7 +494,7 @@ object CombatRunProbe {
         }
         check(json().toJson(runtime.game) == before)
         check(api.status().handoff == status.handoff)
-        check(Files.readString(root.resolve("checkpoint.json")) == checkpoint) { "Terminal retries or fenced commands changed the checkpoint" }
+        check(gameplayCheckpoint(root.resolve("checkpoint.json")) == checkpoint) { "Terminal retries or fenced commands changed gameplay or receipts in the checkpoint" }
         verifyTerminalRollback(runtime, api, root, checkNotNull(saved.activationId))
     }
 

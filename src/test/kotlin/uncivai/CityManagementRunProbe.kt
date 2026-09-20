@@ -271,9 +271,9 @@ object CityManagementRunProbe {
     }
 
     private fun replay(api: GameplayTestApi, root: Path, actions: List<CityManagementAction>) {
-        val before = Files.readString(root.resolve("checkpoint.json"))
+        val before = gameplayCheckpoint(root.resolve("checkpoint.json"))
         for (action in actions) check(api.execute(api.playerToken(action.civilization), action.request) == action.receipt)
-        check(Files.readString(root.resolve("checkpoint.json")) == before) { "Receipt replay changed the checkpoint" }
+        check(gameplayCheckpoint(root.resolve("checkpoint.json")) == before) { "Receipt replay changed gameplay or receipts in the checkpoint" }
     }
 
     private fun facts(runtime: HeadlessRuntime): CityManagementFacts {

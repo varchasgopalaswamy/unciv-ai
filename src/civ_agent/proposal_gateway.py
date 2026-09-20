@@ -40,6 +40,7 @@ from civ_agent.protocol import JsonObject
 from civ_agent.schemas import validate
 from civ_agent.service_io import ServiceIO
 from civ_agent.tactical_review import TacticalReviewRequired, strategy_review, tactical_review
+from civ_agent.telemetry import JobAccounting
 from civ_agent.tool_schemas import TOOL_MODELS, TOOL_OUTPUT_MODELS
 
 BOOKKEEPING = {"requestId", "epoch", "revision", "reviewId", "socialVersion"}
@@ -141,6 +142,7 @@ class ProposalGateway:
         self.dispatch = asyncio.Lock()
         self.in_flight = 0
         self.deferred_completions = []
+        self.accounting: JobAccounting | None = None
 
     async def open(
         self,
@@ -314,20 +316,37 @@ class ProposalGateway:
         return result
 
     async def call(self, job: JobAccess, name: str, arguments: JsonObject, call_id: str) -> JsonObject:
+        accounting = self.accounting
+        counted = await self.io.call(accounting.begin_call, job.id, name, arguments) if accounting else None
+        outcome, replayed = "incomplete", False
+        try:
+            result, replayed = await self._call_once(job, name, arguments, call_id)
+            outcome = "error" if "error" in result else "success"
+            return result
+        except (ValueError, KeyError):
+            outcome = "error"
+            raise
+        finally:
+            if accounting and counted:
+                await self.io.call(accounting.end_call, counted, outcome, replayed)
+
+    async def _call_once(
+        self, job: JobAccess, name: str, arguments: JsonObject, call_id: str
+    ) -> tuple[JsonObject, bool]:
         self.check(job)
         if not isinstance(name, str) or not isinstance(arguments, dict):
             raise ValueError("INVALID_ARGUMENT")
         async with job.lock:
             previous = await self.io.call(self.memory.call, job.id, call_id, name, arguments)
             if previous is not None:
-                return previous
+                return previous, True
             # The action receipt may be durable even if a barrier interrupted
             # saving the MCP response. Replay it without needing a new observation.
             receipt = await self.io.call(self.memory.call_receipt, job.id, call_id)
             if receipt is not None:
                 result = await self.settle_gameplay(job, name, public_result(receipt))
                 await self.io.call(self.memory.call, job.id, call_id, name, arguments, result)
-                return result
+                return result, True
             try:
                 result = await self._call(job, name, arguments, call_id)
             except StaleAssumptions as conflict:
@@ -372,7 +391,7 @@ class ProposalGateway:
                 }
             result = await self.settle_gameplay(job, name, result)
             await self.io.call(self.memory.call, job.id, call_id, name, arguments, result)
-            return result
+            return result, False
 
     async def wait_for_gameplay(self, job: JobAccess) -> bool:
         """Long-poll in code, outside dispatch and the memory actor. Chat jobs remain runnable."""
