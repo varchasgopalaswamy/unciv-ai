@@ -44,7 +44,7 @@ internal fun confirmedAction(request: TurnCommandRequest, before: PlayerTurnSnap
     val city = before.cities.singleOrNull { it.handle == request.target }
     fun TilePosition.text() = "($x, $y)"
     val description = when (request.kind) {
-        TurnCommandKind.MOVE_UNIT, TurnCommandKind.SET_UNIT_DESTINATION -> {
+        TurnCommandKind.MOVE_UNIT, TurnCommandKind.SET_UNIT_DESTINATION, TurnCommandKind.REBASE_UNIT, TurnCommandKind.PARADROP -> {
             val moved = after.map.units.singleOrNull { it.handle == request.target }
             if (moved == null) {
                 // Entering a tile can trigger effects that remove or replace the original unit.
@@ -62,6 +62,9 @@ internal fun confirmedAction(request: TurnCommandRequest, before: PlayerTurnSnap
         TurnCommandKind.CANCEL_UNIT_MOVEMENT -> "${unit!!.name}: cancelled destination order."
 
         TurnCommandKind.CREATE_WATER_IMPROVEMENT -> "${unit!!.name}: created ${request.selection} at ${unit.position.text()}; builder consumed."
+
+        TurnCommandKind.AIR_SWEEP, TurnCommandKind.NUCLEAR_STRIKE ->
+            "${unit!!.name}: ${request.kind.mission()} at ${request.destination!!.text()}; inspect mission receipt and combat reports for effects."
 
         TurnCommandKind.ATTACK, TurnCommandKind.CITY_ATTACK -> {
             val name = unit?.name ?: city!!.name

@@ -366,7 +366,9 @@ class CivilizationState:
                 scope = key.removeprefix("observation:")
                 if scope.startswith("detail/"):
                     query = DetailQuery.model_validate(previous["body"]["query"])
-                    if query.tool == "movement_preview" and previous["body"].get("revision") == body.get("revision"):
+                    if query.tool in {"movement_preview", "mission_preview"} and previous["body"].get(
+                        "revision"
+                    ) == body.get("revision"):
                         scopes[scope] = previous["body"]
                     else:
                         scopes[scope] = project_detail(body, query)

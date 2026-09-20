@@ -46,6 +46,8 @@ internal class TurnSessionState(savedIdentifiers: Map<PlayerIdentifier, Long> = 
     var observedRevision: String? = null
     var movementPreviewRevision: String? = null
     val movementPreviews = HashSet<MovementPreviewRequest>()
+    var missionPreviewRevision: String? = null
+    val missionPreviews = HashSet<MissionPreviewRequest>()
     var reviewTurn: Int? = null
     val reviewActions = ArrayList<ConfirmedTurnAction>()
     var previousTurnReview: CompletedTurnReview? = null
@@ -55,6 +57,7 @@ internal class TurnSessionState(savedIdentifiers: Map<PlayerIdentifier, Long> = 
     fun invalidate() {
         fingerprint = null
         movementPreviews.clear()
+        missionPreviews.clear()
     }
 
     fun cityHandle(cityId: String): String = cityHandles.getOrPut(cityId) { identifiers.next(PlayerIdentifier.CITY) }
@@ -129,6 +132,21 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
             if (state.checkpointRevision != state.revision) runtime.commitCheckpoint()
             state.observedRevision = it.revision
         }
+    }
+
+    fun missionPreview(request: MissionPreviewRequest): MissionPreview = runtime.accessGame { game ->
+        val state = state()
+        val player = player(game)
+        val turn = snapshot(game, player, state)
+        val unitId = state.unitHandles.entries.singleOrNull { it.value == request.target }?.key
+        val unit = player.units.getCivUnits().singleOrNull { it.id == unitId && !it.isDestroyed }
+            ?: fail(PlayerSessionFailure.UNIT_UNAVAILABLE)
+        val preview = observeMissionPreview(player, unit, turn, request)
+        if (state.checkpointRevision != state.revision) runtime.commitCheckpoint()
+        if (state.missionPreviewRevision != turn.revision) state.missionPreviews.clear()
+        state.missionPreviewRevision = turn.revision
+        if (preview.available) state.missionPreviews.add(request)
+        preview
     }
 
     fun movementPreview(request: MovementPreviewRequest): MovementPreview = runtime.accessGame { game ->
@@ -271,7 +289,14 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
         ) {
             fail(PlayerSessionFailure.OPTION_UNAVAILABLE)
         }
-        val destination = if (request.kind == TurnCommandKind.SET_UNIT_DESTINATION) {
+        val destination = if (request.kind in missionCommands) {
+            val query = MissionPreviewRequest(request.target!!, request.kind.mission()!!, request.destination!!)
+            if (state.observedRevision != before.revision || state.missionPreviewRevision != before.revision || query !in state.missionPreviews) fail(PlayerSessionFailure.OBSERVATION_REQUIRED)
+            val preview = observeMissionPreview(player, unit!!, before, query)
+            if (!preview.available) fail(PlayerSessionFailure.OPTION_UNAVAILABLE)
+            if (preview.confirmation != null && !request.confirmAction) fail(PlayerSessionFailure.INVALID_ARGUMENT)
+            game.tileMap[com.unciv.logic.map.HexCoord(request.destination.x, request.destination.y)]
+        } else if (request.kind == TurnCommandKind.SET_UNIT_DESTINATION) {
             val query = MovementPreviewRequest(request.target!!, request.destination!!)
             if (state.observedRevision != before.revision || state.movementPreviewRevision != before.revision || query !in state.movementPreviews) fail(PlayerSessionFailure.OBSERVATION_REQUIRED)
             if (!observeMovementPreview(player, unit!!, before, query).available) fail(PlayerSessionFailure.OPTION_UNAVAILABLE)
@@ -399,7 +424,17 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
             val cultureBefore = player.policies.storedCulture
             runtime.captureCombatReports()
             var combatResult: CombatOutcome? = null
+            var missionResult: com.unciv.logic.civilization.PlayerAirOperations.Result? = null
             val accepted = when (request.kind) {
+                TurnCommandKind.REBASE_UNIT, TurnCommandKind.PARADROP, TurnCommandKind.AIR_SWEEP, TurnCommandKind.NUCLEAR_STRIKE -> {
+                    missionResult = com.unciv.logic.civilization.PlayerAirOperations(player).tryExecuteWithResult(
+                        unit!!,
+                        com.unciv.logic.civilization.PlayerAirOperations.Mission.valueOf(request.kind.mission()!!.name),
+                        destination!!,
+                    )
+                    missionResult != null
+                }
+
                 TurnCommandKind.ATTACK -> {
                     val origin = request.attackFrom!!
                     combatResult = PlayerCombatOperations(player).tryAttack(unit!!, destination!!, game.tileMap[com.unciv.logic.map.HexCoord(origin.x, origin.y)])?.observation()
@@ -564,6 +599,7 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
                     else -> null
                 },
                 combat = combatResult,
+                mission = if (request.kind in missionCommands) missionOutcome(request, before, after, missionResult?.resolution?.name) else null,
                 economy = economyResult,
                 movement = if (request.kind in movementCommands) movementOutcome(request, before, after) else null,
                 waterImprovement = if (request.kind == TurnCommandKind.CREATE_WATER_IMPROVEMENT) waterImprovementOutcome(request, before, after) else null,
@@ -755,7 +791,7 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
             request.queue.size > 1024 || request.queue.any { it.isEmpty() } ||
             (request.kind == TurnCommandKind.DISMISS_NOTIFICATIONS) != request.targets.isNotEmpty() ||
             request.targets.size > 256 || request.targets.any { it.isBlank() || it.length > 128 } || request.targets.distinct().size != request.targets.size ||
-            (request.kind in setOf(TurnCommandKind.MOVE_UNIT, TurnCommandKind.SET_UNIT_DESTINATION, TurnCommandKind.ATTACK, TurnCommandKind.CITY_ATTACK) || request.kind in tileCommands) != (request.destination != null) ||
+            (request.kind in setOf(TurnCommandKind.MOVE_UNIT, TurnCommandKind.SET_UNIT_DESTINATION, TurnCommandKind.ATTACK, TurnCommandKind.CITY_ATTACK) || request.kind in tileCommands || request.kind in missionCommands) != (request.destination != null) ||
             (request.kind == TurnCommandKind.ATTACK) != (request.attackFrom != null) ||
             (request.kind == TurnCommandKind.SET_WORKED_TILE) != (request.worked != null) ||
             (request.kind == TurnCommandKind.SET_TILE_LOCKED) != (request.locked != null) ||
@@ -764,7 +800,7 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
             (request.kind == TurnCommandKind.MOVE_CONSTRUCTION) != (request.toIndex != null) ||
             (request.index != null && request.index < 0) || (request.toIndex != null && request.toIndex < 0) ||
             (request.confirmBreakPromise && request.kind != TurnCommandKind.FOUND_CITY) ||
-            (request.confirmAction && request.kind !in economicCommands && request.kind != TurnCommandKind.CITY_STATE_ACTION) ||
+            (request.confirmAction && request.kind !in economicCommands && request.kind !in setOf(TurnCommandKind.CITY_STATE_ACTION, TurnCommandKind.NUCLEAR_STRIKE)) ||
             (request.kind == TurnCommandKind.DECLARE_WAR) != request.confirmWar ||
             (request.kind != TurnCommandKind.END_TURN && (request.reviewId != null || request.deferReason != null)) ||
             (request.reviewId != null && request.reviewId.length !in 1..128) ||
@@ -780,7 +816,8 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
         private val tileCommands = setOf(TurnCommandKind.SET_WORKED_TILE, TurnCommandKind.SET_TILE_LOCKED, TurnCommandKind.BUY_TILE, TurnCommandKind.REASSIGN_CITY_TILE)
         private val cityCommands = tileCommands + cityManagementCommands + setOf(TurnCommandKind.RENAME_CITY, TurnCommandKind.QUEUE_CONSTRUCTION, TurnCommandKind.REMOVE_CONSTRUCTION, TurnCommandKind.MOVE_CONSTRUCTION, TurnCommandKind.CITY_ATTACK, TurnCommandKind.MANAGE_CAPTURED_CITY, TurnCommandKind.BUY_CONSTRUCTION)
         private val movementCommands = setOf(TurnCommandKind.MOVE_UNIT, TurnCommandKind.SET_UNIT_DESTINATION, TurnCommandKind.CANCEL_UNIT_MOVEMENT)
-        private val unitCommands = movementCommands + setOf(TurnCommandKind.CREATE_WATER_IMPROVEMENT, TurnCommandKind.GIFT_UNIT, TurnCommandKind.MOVE_UNIT, TurnCommandKind.FOUND_CITY, TurnCommandKind.START_WORKER_JOB, TurnCommandKind.STOP_WORKER_JOB, TurnCommandKind.ATTACK, TurnCommandKind.SET_UNIT_ORDER, TurnCommandKind.PROMOTE_UNIT, TurnCommandKind.UPGRADE_UNIT, TurnCommandKind.PILLAGE, TurnCommandKind.DISBAND_UNIT, TurnCommandKind.ACTIVATE_GREAT_PERSON, TurnCommandKind.ADD_SPACESHIP_PART)
+        private val missionCommands = setOf(TurnCommandKind.REBASE_UNIT, TurnCommandKind.PARADROP, TurnCommandKind.AIR_SWEEP, TurnCommandKind.NUCLEAR_STRIKE)
+        private val unitCommands = movementCommands + missionCommands + setOf(TurnCommandKind.CREATE_WATER_IMPROVEMENT, TurnCommandKind.GIFT_UNIT, TurnCommandKind.MOVE_UNIT, TurnCommandKind.FOUND_CITY, TurnCommandKind.START_WORKER_JOB, TurnCommandKind.STOP_WORKER_JOB, TurnCommandKind.ATTACK, TurnCommandKind.SET_UNIT_ORDER, TurnCommandKind.PROMOTE_UNIT, TurnCommandKind.UPGRADE_UNIT, TurnCommandKind.PILLAGE, TurnCommandKind.DISBAND_UNIT, TurnCommandKind.ACTIVATE_GREAT_PERSON, TurnCommandKind.ADD_SPACESHIP_PART)
         private val victoryCommands = setOf(TurnCommandKind.ADD_SPACESHIP_PART, TurnCommandKind.CAST_DIPLOMATIC_VOTE, TurnCommandKind.ABSTAIN_DIPLOMATIC_VOTE, TurnCommandKind.ACKNOWLEDGE_DIPLOMATIC_RESULTS)
         private val economicCommands = setOf(TurnCommandKind.BUY_CONSTRUCTION, TurnCommandKind.BUY_TILE, TurnCommandKind.UPGRADE_UNIT, TurnCommandKind.PILLAGE, TurnCommandKind.DISBAND_UNIT, TurnCommandKind.SELL_BUILDING)
         private val supportedRequirements = setOf(

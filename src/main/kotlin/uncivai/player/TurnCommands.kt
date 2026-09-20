@@ -9,7 +9,7 @@ import java.util.Collections
 data class PlayerCapabilities(
     val protocolVersion: Int = 1,
     val completeGameplay: Boolean = false,
-    val queries: List<String> = listOf("player_capabilities", "player_summary", "owned_cities", "free_great_person_choice", "player_turn", "player_result", "research_details", "policy_details", "victory_progress", "movement_preview"),
+    val queries: List<String> = listOf("player_capabilities", "player_summary", "owned_cities", "free_great_person_choice", "player_turn", "player_result", "research_details", "policy_details", "victory_progress", "movement_preview", "mission_preview"),
     val commands: List<TurnCommandKind> = TurnCommandKind.entries.toList(),
     val durableRecovery: Boolean = false,
     val legacyMutationsSupported: Boolean = true,
@@ -34,6 +34,10 @@ enum class TurnCommandKind {
     SET_UNIT_DESTINATION,
     CANCEL_UNIT_MOVEMENT,
     CREATE_WATER_IMPROVEMENT,
+    REBASE_UNIT,
+    PARADROP,
+    AIR_SWEEP,
+    NUCLEAR_STRIKE,
     ATTACK,
     CITY_ATTACK,
     SET_UNIT_ORDER,
@@ -180,6 +184,7 @@ data class TurnCommandReceipt(
     val cityState: CityStateOutcome? = null,
     val movement: MovementOutcome? = null,
     val waterImprovement: WaterImprovementOutcome? = null,
+    val mission: MissionOutcome? = null,
     val dismissedNotifications: List<PlayerNotification> = emptyList(),
 )
 
@@ -201,6 +206,7 @@ internal fun TurnCommandRequest.detached(): TurnCommandRequest = copy(
 internal fun TurnCommandReceipt.detached(): TurnCommandReceipt = copy(
     dismissedNotifications = Collections.unmodifiableList(dismissedNotifications.map { it.detached() }),
     greatPerson = greatPerson?.detached(),
+    mission = mission?.detached(),
     victory = victory?.detached(),
     cityState = cityState?.detached(),
     cityManagement = cityManagement?.detached(),

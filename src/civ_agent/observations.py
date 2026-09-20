@@ -35,7 +35,13 @@ class PlayerDetails(BoundaryModel):
 
 class DetailQuery(BoundaryModel):
     tool: Literal[
-        "city_details", "unit_details", "construction_details", "map_region", "player_details", "movement_preview"
+        "city_details",
+        "unit_details",
+        "construction_details",
+        "map_region",
+        "player_details",
+        "movement_preview",
+        "mission_preview",
     ]
     arguments: JsonObject
 
@@ -92,6 +98,10 @@ class UnitSummary(BoundaryModel):
     canGiftToCityState: bool = False
     movementOrder: JsonObject | None = None
     canCreateWaterImprovement: bool = False
+    missions: list[str] = Field(default_factory=list)
+    transported: bool = False
+    carriedUnits: list[str] = Field(default_factory=list)
+    interceptionReady: bool = False
 
 
 class PlayerNotification(BoundaryModel):
@@ -178,6 +188,10 @@ def overview(snapshot: JsonObject) -> JsonObject:
                     )
                 },
                 "movementOrder": unit.get("movementOrder"),
+                "missions": [m["mission"] for m in (unit.get("air") or {}).get("missions", []) if m.get("available")],
+                "transported": (unit.get("air") or {}).get("transported", False),
+                "carriedUnits": (unit.get("air") or {}).get("carriedUnits", []),
+                "interceptionReady": ((unit.get("air") or {}).get("interception") or {}).get("ready", False),
                 "canCreateWaterImprovement": (unit.get("waterImprovement") or {}).get("available", False),
                 "legalDestinations": len(unit.get("moves", [])),
                 "availableAttacks": len(combat.get("attacks", [])),
@@ -309,7 +323,7 @@ def project_detail(snapshot: JsonObject, query: DetailQuery) -> JsonObject:
                     ],
                     "descriptionsIncluded": bool(names),
                 }
-    elif name == "movement_preview":
+    elif name in {"movement_preview", "mission_preview"}:
         # Native pathfinding cannot be reconstructed from a cached turn projection.
         available = False
         data = {"requiresRefresh": True}
@@ -355,6 +369,15 @@ def project_detail(snapshot: JsonObject, query: DetailQuery) -> JsonObject:
 
 def required_detail(command: JsonObject) -> DetailQuery | None:
     kind, target = command["kind"], command.get("target")
+    if kind in {"REBASE_UNIT", "PARADROP", "AIR_SWEEP", "NUCLEAR_STRIKE"}:
+        return DetailQuery(
+            tool="mission_preview",
+            arguments={
+                "target": target,
+                "mission": "REBASE" if kind == "REBASE_UNIT" else kind,
+                "destination": command["destination"],
+            },
+        )
     if kind == "SET_UNIT_DESTINATION":
         return DetailQuery(tool="movement_preview", arguments={"target": target, "destination": command["destination"]})
     if kind in {"DECLARE_WAR", "CITY_STATE_ACTION"}:

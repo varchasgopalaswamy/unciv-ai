@@ -34,6 +34,7 @@ data class AttackOption(
     val maxDamageToAttacker: Int,
     val minDamageToDefender: Int,
     val maxDamageToDefender: Int,
+    val interceptionWarning: String? = null,
 )
 
 @Serializable
@@ -46,6 +47,7 @@ data class CombatOutcome(
     val attackerDestroyed: Boolean,
     val defenderDestroyed: Boolean,
     val defenderCaptured: Boolean,
+    val resolution: String? = null,
 )
 
 @Serializable
@@ -128,9 +130,10 @@ internal fun PlayerCombatOperations.AttackPreview.observation(): AttackOption = 
     maxDamageToAttacker = maxDamageToAttacker,
     minDamageToDefender = minDamageToDefender,
     maxDamageToDefender = maxDamageToDefender,
+    interceptionWarning = if ((attacker as? com.unciv.logic.battle.MapUnitCombatant)?.unit?.baseUnit?.isAirUnit() == true) "Damage estimates exclude interception, which can stop the strike. Inspect combat reports for actual effects." else null,
 )
 
-internal fun PlayerCombatOperations.AttackResult.observation() = CombatOutcome(attacked, damageToAttacker, damageToDefender, attackerHealth, defenderHealth, attackerDestroyed, defenderDestroyed, defenderCaptured)
+internal fun PlayerCombatOperations.AttackResult.observation() = CombatOutcome(attacked, damageToAttacker, damageToDefender, attackerHealth, defenderHealth, attackerDestroyed, defenderDestroyed, defenderCaptured, resolution?.name)
 
 internal fun observeUnitCombat(player: Civilization, unit: MapUnit, active: Boolean): UnitCombat {
     val combat = PlayerCombatOperations(player)

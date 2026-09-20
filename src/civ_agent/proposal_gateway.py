@@ -49,6 +49,7 @@ READ_TOOLS = {
     "player_result",
     "research_details",
     "movement_preview",
+    "mission_preview",
     "policy_details",
     "victory_progress",
     "player_summary",
@@ -190,7 +191,7 @@ class ProposalGateway:
                 entry = copy.deepcopy(tool)
                 entry["inputSchema"] = command_schema()
                 entry["description"] = (
-                    "Propose one offered game action using the schema for its kind. Combat offers include a copyable command; add intent, never preview fields. CITY_ATTACK omits attackFrom; ATTACK requires it. Consequential choices require intent: a brief reason or an active plan ID; optional expectedOutcome and assumptions. The service records intent and handles request bookkeeping. For city-states, read player_details(section=diplomacy): CITY_STATE_ACTION uses target=civilizationId and selection=an available actions.name; confirmAction=true when confirmation is present. DECLARE_WAR also accepts city-states. Read unit_details.cityStateGift before GIFT_UNIT, or greatPerson.abilities before ACTIVATE_GREAT_PERSON trade missions. Inspect receipt.cityState for actual influence and alliance changes. For distant moves read movement_preview(target,destination), then SET_UNIT_DESTINATION with the same choices and intent; native orders resume at the start of your turns. Inspect unit_details.movementOrder or CANCEL_UNIT_MOVEMENT to stop. CREATE_WATER_IMPROVEMENT uses an available unit_details.waterImprovement name and consumes the Work Boat. Read receipt.movement and receipt.waterImprovement for actual effects. For victory, inspect unit_details.spaceshipAssembly before ADD_SPACESHIP_PART (unit target). Read victory.ballot in player_turn: CAST_DIPLOMATIC_VOTE uses selection=candidate civilizationId; ABSTAIN_DIPLOMATIC_VOTE takes no other fields except intent. Read victory.votingResults before ACKNOWLEDGE_DIPLOMATIC_RESULTS, which has no target or selection. Re-read player_turn after each action and read full alerts and confirmations before acknowledging. DISMISS_NOTIFICATIONS takes targets=[notice handles] already read in player_turn; it clears only those pending messages and retains their contents in receipts. END_TURN requires reading turnReview and a deferReason for intentionally idle mobile units or deferred tactical concerns."
+                    "Propose one offered game action using the schema for its kind. Combat offers include a copyable command; add intent, never preview fields. CITY_ATTACK omits attackFrom; ATTACK requires it. Consequential choices require intent: a brief reason or an active plan ID; optional expectedOutcome and assumptions. The service records intent and handles request bookkeeping. For city-states, read player_details(section=diplomacy): CITY_STATE_ACTION uses target=civilizationId and selection=an available actions.name; confirmAction=true when confirmation is present. DECLARE_WAR also accepts city-states. Read unit_details.cityStateGift before GIFT_UNIT, or greatPerson.abilities before ACTIVATE_GREAT_PERSON trade missions. Inspect receipt.cityState for actual influence and alliance changes. For distant moves read movement_preview(target,destination), then SET_UNIT_DESTINATION with the same choices and intent; native orders resume at the start of your turns. Inspect unit_details.movementOrder or CANCEL_UNIT_MOVEMENT to stop. CREATE_WATER_IMPROVEMENT uses an available unit_details.waterImprovement name and consumes the Work Boat. Read receipt.movement and receipt.waterImprovement for actual effects. For air and special actions read unit_details.air for missions, native ranges, bases/capacity, carried units and automatic interception readiness. Call mission_preview(target,mission,destination) using REBASE, PARADROP, AIR_SWEEP or NUCLEAR_STRIKE, then issue REBASE_UNIT, PARADROP, AIR_SWEEP or NUCLEAR_STRIKE with matching target/destination and intent. Nuclear strikes require confirmAction=true after reading the preview consequences; visible victims and declarations may be incomplete. Ordinary air and guided-missile strikes use ATTACK; damage previews exclude interception. Read receipt.mission and combatReports for actual effects. Interception is automatic; preserve native readiness by leaving the unit unused or skipping it. For victory, inspect unit_details.spaceshipAssembly before ADD_SPACESHIP_PART (unit target). Read victory.ballot in player_turn: CAST_DIPLOMATIC_VOTE uses selection=candidate civilizationId; ABSTAIN_DIPLOMATIC_VOTE takes no other fields except intent. Read victory.votingResults before ACKNOWLEDGE_DIPLOMATIC_RESULTS, which has no target or selection. Re-read player_turn after each action and read full alerts and confirmations before acknowledging. DISMISS_NOTIFICATIONS takes targets=[notice handles] already read in player_turn; it clears only those pending messages and retains their contents in receipts. END_TURN requires reading turnReview and a deferReason for intentionally idle mobile units or deferred tactical concerns."
                 )
                 tools.append(entry)
 
@@ -511,8 +512,10 @@ class ProposalGateway:
         if name in READ_TOOLS:
             if job.purpose == "communication" and name not in COMMUNICATION_READ_TOOLS:
                 raise StateConflict("TOOL_NOT_PERMITTED")
-            if name == "movement_preview" and job.observation is None:
-                return self.reobserve_after_negotiation("Read player_turn before requesting movement previews.")
+            if name in {"movement_preview", "mission_preview"} and job.observation is None:
+                return self.reobserve_after_negotiation(
+                    "Read player_turn before requesting mission or movement previews."
+                )
             value = await job.connection.tool(name, arguments)
             while name == "player_turn" and job.purpose == "gameplay" and value.get("negotiation", {}).get("active"):
                 await self.wait_for_gameplay(job)
@@ -539,12 +542,12 @@ class ProposalGateway:
                 job.detail_revision = revision
                 latest = await self.io.call(self.memory.snapshot, job.purpose)
                 value = {**compact, "strategyReview": strategy_review(latest["records"]).model_dump()}
-            elif name == "movement_preview" and "error" not in value:
+            elif name in {"movement_preview", "mission_preview"} and "error" not in value:
                 if value.get("revision") != job.detail_revision:
                     return self.reobserve_after_negotiation(
-                        "The game changed. Read player_turn, then request a fresh movement_preview."
+                        "The game changed. Read player_turn, then request a fresh preview."
                     )
-                query = DetailQuery(tool="movement_preview", arguments=arguments)
+                query = DetailQuery(tool=name, arguments=arguments)
                 scope = detail_scope(query)
                 value = {**value, "evidence": "observation:" + scope, "query": query.model_dump()}
                 version = await self.io.call(self.memory.observe, scope, value, job.id)

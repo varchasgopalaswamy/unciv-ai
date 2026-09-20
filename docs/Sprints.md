@@ -3,6 +3,23 @@
 Use this page to resume implementation; the [player API plan](Player-api-plan.md)
 and [coverage ledger](Player-api-coverage.md) retain the broader contract.
 
+## Completed sprint: air warfare and special military actions
+
+The [air warfare sprint](Air-gameplay.md) adds rebasing/carrier transport, strikes
+and sweeps, automatic interception information, guided/nuclear missiles,
+paradrops and aircraft economy. Native rules, visibility-safe previews and durable
+commands are covered by 493 native regressions, 103 host tests and 447 Python
+tests plus 90 subtests. The 16-screen desktop comparison passed.
+
+The [live exercise](Air-live-results.md) completed three rounds and nine handoffs
+across a restart, with all 30 artifact checks passing. All 15 model jobs used
+`gpt-5.6-luna`, medium reasoning. Services are stopped and permits released.
+
+Scoped acceptance is complete. Engine commit
+`f2408cde26543e404ea2844b18c1e648fa97691d` is merged and published on
+`experimental-changes`. The host pins that exact revision; the default build
+against the pin passes all 103 host tests.
+
 ## Completed sprint: naval gameplay and destination orders
 
 The [naval sprint](Naval-gameplay.md) implements native ship combat/economy,
@@ -14,8 +31,8 @@ with four rounds, twelve handoffs and all 27 artifact checks passing. All 22 liv
 model jobs used `gpt-5.6-luna` with medium reasoning; services are stopped.
 
 Engine commits `ddbb694c9` (destination orders) and `b89aea260` (naval operations)
-are merged and published on `experimental-changes`. The host pins
-`b89aea26089ccc0efbcaca8a63b76896352cbbe7`. No further scoped acceptance task remains.
+are merged and published on `experimental-changes`. The air sprint's current
+dependency pin includes both. No further scoped acceptance task remains.
 
 ## Close-out status
 
@@ -30,7 +47,7 @@ three rounds with a restart: all 12 model jobs used `gpt-5.6-luna` with medium
 reasoning, all 24 artifact checks passed, and all services stopped. The 13-screen
 desktop comparison passed. Engine commit
 `10f810a7b3b7700df6f35850e8572d0a44e1a898` is merged and published on
-`experimental-changes`; the naval sprint's dependency pin includes it.
+`experimental-changes`; the current dependency pin includes it.
 
 The [victory and turn decisions sprint](Victory-and-turn-blockers.md) is complete.
 It implements native spaceship assembly, world-leader voting/abstention and
@@ -42,7 +59,7 @@ Victory, and a failed election followed by Greece's Diplomatic Victory. All 64
 model activations used `gpt-5.6-luna` with medium reasoning; all 51 artifact checks
 passed and all services are stopped. Engine commit
 `31524759eb456734da1048cdec2eecd8131ed9d6` is merged and published on
-`experimental-changes`; the host now pins the later naval revision above. The slice and
+`experimental-changes`; the host now pins the later air revision above. The slice and
 live-results documents record the evidence and limits.
 
 The [mixed-player diplomacy sprint](Mixed-player-diplomacy.md) is complete as of

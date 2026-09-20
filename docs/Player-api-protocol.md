@@ -1,7 +1,7 @@
 # Player protocol
 
 The current interface covers turn management, exploration, settlement, basic city development,
-first contact, war declarations, negotiated peace, land/naval combat and empire economy.
+first contact, war declarations, negotiated peace, land/naval/air combat and empire economy.
 It remains an incomplete player API.
 Use `player_capabilities` to inspect its operations and recovery guarantees.
 Authentication fixes the player's civilization; tool arguments cannot override it.
@@ -112,8 +112,8 @@ objects or authorize stale commands. Older checkpoint formats require a new game
 | `MANAGE_CAPTURED_CITY` | `target`: owned city; `selection`: available `captureOptions` name after reading current options |
 | `BUY_CONSTRUCTION` | `target`: owned city; `selection`: available name from `purchases.constructions` |
 | `BUY_TILE` | `target`: owned city; `destination`: available position from `purchases.tiles` |
-| `UPGRADE_UNIT` | `target`: owned land/naval unit; `selection`: available `targetName` from `economy.upgrades` |
-| `PILLAGE`, `DISBAND_UNIT` | `target`: owned land/naval unit with the corresponding available `economy` option |
+| `UPGRADE_UNIT` | `target`: owned land/naval/air unit; `selection`: available `targetName` from `economy.upgrades` |
+| `PILLAGE`, `DISBAND_UNIT` | `target`: owned land/naval/air unit with the corresponding available `economy` option |
 | `FOUND_CITY` | `target`: settler handle; `confirmBreakPromise: true` only when accepting its listed settlement promises |
 | `START_WORKER_JOB` | `target`: worker handle; `selection`: available name from `worker.options` |
 | `STOP_WORKER_JOB` | `target`: worker handle; `worker.canStop` must be true |
@@ -276,11 +276,12 @@ The bounded scheduler does not establish complete-match coverage or agent filesy
 executor is independent of headless bootstrap, but the desktop has not been wired
 to that executor. Selected desktop pickers now share engine validation; the rest of
 the UI still has direct access paths. Turn snapshots intentionally cover only this
-slice, including only a subset of alert details and construction controls. Movement
-commands attempt one turn of an advertised path; they do not schedule future movement.
-Naval combat, aircraft relocation, paradrops, air/nuclear attacks and other special actions are absent.
-Worker automation, route-to-destination and non-Great-Person instant improvements are also absent.
-Citizen specialists, focus changes, tile purchases and construction purchases remain outstanding.
+slice, including only a subset of alert details and construction controls. `MOVE_UNIT` attempts a current-turn path; `SET_UNIT_DESTINATION` retains a native
+order for later turns. Aircraft relocation, paradrops and special combat use the
+mission operations below. Worker automation, road-connection orders and remaining
+instant improvements are outstanding. Citizen specialists, focus changes, tile
+purchases and Gold construction purchases are supported; other currencies and
+full city controls remain incomplete.
 Explored terrain and ownership follow the map UI's current data; improvement names
 use Unciv's remembered values. This is not a complete historical map snapshot. Consult
 the coverage ledger for the remaining work.
@@ -301,3 +302,30 @@ content, and do not mutate game state. See [Great People](Great-people.md) for
 semantics, current limits and the prepared exercise.
 
 See [naval gameplay and destination orders](Naval-gameplay.md) for continuation timing, speculative-route limits, progress/cancellation and actual movement/improvement receipts.
+
+## Air missions and special military actions
+
+Read `unit.air` for supported missions/ranges, candidate city/carrier bases and
+remaining slots, carried unit handles, transport state and automatic interception
+readiness. Reuse construction, promotions, upgrade and disband operations for
+ordinary aircraft. Native capacity and resources determine availability.
+
+Call `mission_preview` with `target`, `mission` (`REBASE`, `PARADROP`, `AIR_SWEEP`,
+`NUCLEAR_STRIKE`) and `destination: {x,y}`. Issue the matching command
+(`REBASE_UNIT`, `PARADROP`, `AIR_SWEEP`, `NUCLEAR_STRIKE`) with that same owned unit
+and destination after reading the current overview and preview. Do not send
+`mission` or `attackFrom` in these commands. A nuclear launch additionally needs
+`confirmAction:true` after reading its consequences and confirmation. A new
+revision or restart requires a fresh preview; completed requests replay unchanged.
+
+Nuclear previews list explored blast tiles, visible victims and known war
+warnings; unseen victims can change native legality or effects. Sweeps never
+predict unseen interceptors. `receipt.mission.resolution` distinguishes a completed
+combat mission from an intercepted nuclear launch. Relocations have no combat
+resolution. The receipt includes own unit movement/health/removal, new wars and
+new player-filtered combat reports. It never enumerates hidden casualties.
+
+Aircraft and guided missiles use existing `ATTACK` previews. These estimates
+exclude interception; `receipt.combat.resolution`, actual damage and subsequent
+combat reports describe what happened. Interception is automatic and does not
+need a separate order. See [air gameplay](Air-gameplay.md) for scope and validation.

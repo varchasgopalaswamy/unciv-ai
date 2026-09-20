@@ -110,6 +110,15 @@ tasks.register<JavaExec>("generateCityStateLiveFixture") {
     doFirst { args(providers.gradleProperty("cityStateLiveDir").get()) }
 }
 
+tasks.register<JavaExec>("generateAirLiveFixture") {
+    group = "verification"
+    description = "Creates a funded late-game checkpoint for air warfare acceptance."
+    dependsOn(tasks.testClasses)
+    classpath = sourceSets.test.get().runtimeClasspath
+    mainClass = "uncivai.AirFixtures"
+    doFirst { args(providers.gradleProperty("airLiveDir").get()) }
+}
+
 tasks.register<JavaExec>("generateNavalLiveFixture") {
     group = "verification"
     description = "Creates a coastal checkpoint for guided naval and destination-order acceptance."
@@ -287,6 +296,23 @@ tasks.register<JavaExec>("runNavalDesktop") {
     doFirst {
         val output = providers.gradleProperty("navalDesktopDir")
         require(output.isPresent) { "runNavalDesktop requires -PnavalDesktopDir=<new absolute directory>" }
+        args(output.get())
+    }
+}
+
+tasks.register<JavaExec>("runAirDesktop") {
+    group = "verification"
+    description = "Exercises rendered aircraft, paradrop and special combat controls."
+    dependsOn(tasks.testClasses, prepareInspectionUiAssets)
+    classpath = sourceSets.test.get().output + sourceSets.main.get().output + uiRuntime
+    mainClass = "uncivai.AirDesktopProbe"
+    environment("ALSOFT_DRIVERS", "null")
+    workingDir = inspectionUiDirectory.get().dir("runtime-engine/android/assets").asFile
+    systemProperty("uncivai.assetsDir", workingDir.absolutePath)
+    systemProperty("java.awt.headless", "false")
+    doFirst {
+        val output = providers.gradleProperty("airDesktopDir")
+        require(output.isPresent) { "runAirDesktop requires -PairDesktopDir=<new absolute directory>" }
         args(output.get())
     }
 }

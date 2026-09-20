@@ -59,6 +59,8 @@ interface PlayerSession {
 
     fun result(): PlayerFinalState
 
+    fun missionPreview(request: MissionPreviewRequest): MissionPreview
+
     fun movementPreview(request: MovementPreviewRequest): MovementPreview
 
     fun researchDetails(names: List<String> = emptyList()): ResearchDetails
@@ -110,6 +112,8 @@ private class BoundPlayerSession(
     override fun result() = playerOperation { turnSession.snapshot().finalState(civilizationId) }
 
     override fun movementPreview(request: MovementPreviewRequest) = playerOperation { turnSession.movementPreview(request) }
+
+    override fun missionPreview(request: MissionPreviewRequest) = playerOperation { turnSession.missionPreview(request) }
 
     override fun researchDetails(names: List<String>) = playerOperation { turnSession.researchDetails(names) }
 

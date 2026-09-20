@@ -23,6 +23,10 @@ class MovementPreview(EntityDetails):
     destination: Position
 
 
+class MissionPreview(MovementPreview):
+    mission: Literal["REBASE", "PARADROP", "AIR_SWEEP", "NUCLEAR_STRIKE"]
+
+
 class WithIntent(BoundaryModel):
     intent: Intent
 
@@ -128,6 +132,7 @@ class FriendshipOffer(Partner, WithIntent):
 TOOL_MODELS: dict[str, type[BoundaryModel]] = {
     **DETAIL_MODELS,
     "movement_preview": MovementPreview,
+    "mission_preview": MissionPreview,
     "trade_options": Partner,
     "trade_read": Proposal,
     "agreement_list": BoundaryModel,

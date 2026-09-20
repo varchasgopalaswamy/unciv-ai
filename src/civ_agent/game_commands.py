@@ -76,9 +76,16 @@ class EconomicCommand(Command):
 
 
 class MoveCommand(Command):
-    kind: Literal["MOVE_UNIT", "SET_UNIT_DESTINATION", "REASSIGN_CITY_TILE"]
+    kind: Literal["MOVE_UNIT", "SET_UNIT_DESTINATION", "REASSIGN_CITY_TILE", "REBASE_UNIT", "PARADROP", "AIR_SWEEP"]
     target: Name
     destination: Position
+
+
+class NuclearStrike(Command):
+    kind: Literal["NUCLEAR_STRIKE"]
+    target: Name
+    destination: Position
+    confirmAction: bool = False
 
 
 class CityAttack(Command):
@@ -186,6 +193,7 @@ PlayerCommand = Annotated[
     | TargetCommand
     | EconomicCommand
     | MoveCommand
+    | NuclearStrike
     | CityAttack
     | UnitAttack
     | BuyTile

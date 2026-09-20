@@ -4,7 +4,7 @@ The civilization service returns a compact `player_turn` overview. The Kotlin ho
 still creates the complete permission-filtered snapshot; the service caches it for
 the current job. This reduces model input, not the engine work needed to produce a
 snapshot. Projected entity details reuse the cache without another host request.
-Native pathfinding and tree/victory queries run on demand in the host.
+Native pathfinding, special-mission previews and tree/victory queries run on demand in the host.
 
 The overview includes tactical and strategy reviews, city and unit rosters,
 production queues, growth, empire totals, research/policy choices, known diplomatic
@@ -24,6 +24,7 @@ Confirmed-action bodies and detailed economic/map data move to explicit reads.
 | `player_details({section})` | `economy`, `diplomacy`, `research`, `policies`, `turn_history`, or `map_index` |
 | `research_details({names})`, `policy_details({names})` | Existing on-demand tree catalogues and selected UI descriptions |
 | `movement_preview({target,destination})` | Native adjacent route paths, estimated turn stops and costs; required before a matching `SET_UNIT_DESTINATION` |
+| `mission_preview({target,mission,destination})` | Native rebase, paradrop, air sweep or nuclear preview; required before a matching special-mission command |
 | `victory_progress({names})` | Victory-screen milestones, own score and turn limit, and permitted rival progress |
 
 For example, read `player_turn`, copy a unit handle from `units`, read
@@ -45,10 +46,10 @@ Pydantic defines the service's overview, detail input and detail result schemas.
 `evidence` ID for precisely that query and data. Cached raw data is not marked as
 delivered. Previously requested detail projections are recomputed when a new
 snapshot arrives so changed assumptions are flagged, without claiming the model
-read those changes. Movement previews are retained for an unchanged revision and
+read those changes. Movement and mission previews are retained for an unchanged revision and
 invalidated when the revision changes; they require a fresh native query rather
 than reconstruction from cached map data. The compact unit roster retains the
-active destination and Work Boat action availability. A greeting or a change to
+active destination, Work Boat action availability, available air missions, transport state and automatic interception readiness. Full `unit_details.air` adds bases, remaining slots and ranges. A greeting or a change to
 another entity does not invalidate
 a plan depending only on the inspected unit. Historical raw snapshots remain
 available through explicit memory reads. Restart and whole-match rollback use the

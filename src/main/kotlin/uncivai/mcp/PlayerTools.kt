@@ -117,6 +117,18 @@ internal fun createPlayerToolsServer(session: PlayerSession): Server = Server(
     }
 
     addTool(
+        name = "mission_preview",
+        description = "Preview REBASE, PARADROP, AIR_SWEEP or NUCLEAR_STRIKE for an owned unit target and destination x/y. Read unit.air for mission ranges, bases/capacity and automatic interception readiness. Read this preview at the current revision before REBASE_UNIT, PARADROP, AIR_SWEEP or NUCLEAR_STRIKE with matching target/destination. Nuclear strikes require confirmAction=true after reading consequences; known victims are not exhaustive. Sweeps never reveal interceptors in advance. Ordinary air/missile strikes use ATTACK and its offered preview; interception can prevent the strike. Read receipt.mission and player_turn combatReports for actual effects.",
+        inputSchema = InputSchemas.missionPreview.toolSchema(),
+        toolAnnotations = QUERY_ANNOTATIONS,
+    ) { request ->
+        playerResult {
+            val preview = InputSchemas.missionPreview.decode(uncivai.player.MissionPreviewRequest.serializer(), request.arguments ?: throw InvalidToolArgumentsException())
+            PlayerTurnJson.json.encodeToString(uncivai.player.MissionPreview.serializer(), session.missionPreview(preview))
+        }
+    }
+
+    addTool(
         name = "movement_preview",
         description = "Preview a destination using Unciv pathfinding. Supply an owned unit handle and destination x/y. Returns adjacent paths grouped by estimated turns; speculative paths can change as terrain and units become visible. Read this at the current revision before SET_UNIT_DESTINATION with the same target and destination. That command moves now and saves the native order for later turns. Inspect unit.movementOrder; CANCEL_UNIT_MOVEMENT stops it. Estimates are not promises of arrival.",
         inputSchema = InputSchemas.movementPreview.toolSchema(),

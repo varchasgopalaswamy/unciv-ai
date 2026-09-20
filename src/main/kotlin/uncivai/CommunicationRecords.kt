@@ -97,7 +97,7 @@ data class SocialPromiseAdvisory(
     val terms: String,
     val conditions: String,
     val expiresTurn: Int?,
-    val relevantActions: List<String> = java.util.Collections.unmodifiableList(listOf("DECLARE_WAR", "ATTACK", "CITY_ATTACK", "WAR_TRADE")),
+    val relevantActions: List<String> = java.util.Collections.unmodifiableList(listOf("DECLARE_WAR", "ATTACK", "CITY_ATTACK", "AIR_SWEEP", "NUCLEAR_STRIKE", "WAR_TRADE")),
     val message: String = "Hostile action against another participant may conflict with this accepted social peace promise. Consider its terms and conditions; you may proceed without withdrawing or reconsidering it. Native game rules still apply.",
 )
 
