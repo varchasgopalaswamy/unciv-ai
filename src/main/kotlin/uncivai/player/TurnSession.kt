@@ -9,6 +9,7 @@ import com.unciv.logic.civilization.Notification
 import com.unciv.logic.civilization.PlayerCaptureOperations
 import com.unciv.logic.civilization.PlayerCityManagementOperations
 import com.unciv.logic.civilization.PlayerCityOperations
+import com.unciv.logic.civilization.PlayerCityStateOperations
 import com.unciv.logic.civilization.PlayerCombatOperations
 import com.unciv.logic.civilization.PlayerDiplomacyOperations
 import com.unciv.logic.civilization.PlayerFriendshipOperations
@@ -203,11 +204,19 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
             emptyList()
         }
         val partner = if (request.kind == TurnCommandKind.DECLARE_WAR) {
-            val offered = before.diplomacy.knownCivilizations.singleOrNull { it.civilizationId == request.target }
-                ?: fail(PlayerSessionFailure.OPTION_UNAVAILABLE)
-            if (!offered.declareWar.available) fail(PlayerSessionFailure.OPTION_UNAVAILABLE)
+            val major = before.diplomacy.knownCivilizations.singleOrNull { it.civilizationId == request.target }
+            val minor = before.diplomacy.cityStates.singleOrNull { it.civilizationId == request.target }
+            if ((major?.declareWar ?: minor?.declareWar)?.available != true) fail(PlayerSessionFailure.OPTION_UNAVAILABLE)
             if (state.observedRevision != before.revision) fail(PlayerSessionFailure.OBSERVATION_REQUIRED)
-            game.getCivilization(offered.civilizationId)
+            game.getCivilization(request.target!!)
+        } else if (request.kind == TurnCommandKind.CITY_STATE_ACTION) {
+            val minor = before.diplomacy.cityStates.singleOrNull { it.civilizationId == request.target }
+                ?: fail(PlayerSessionFailure.OPTION_UNAVAILABLE)
+            val option = minor.actions.singleOrNull { it.name == request.selection && it.available }
+                ?: fail(PlayerSessionFailure.OPTION_UNAVAILABLE)
+            if (state.observedRevision != before.revision) fail(PlayerSessionFailure.OBSERVATION_REQUIRED)
+            if (option.confirmation.isNotEmpty() && !request.confirmAction) fail(PlayerSessionFailure.INVALID_ARGUMENT)
+            game.getCivilization(minor.civilizationId)
         } else if (request.kind == TurnCommandKind.RESPOND_FRIENDSHIP && request.selection == "Accept") {
             game.getCivilization(before.alerts.single { it.handle == request.target }.friendship!!.civilizationId)
         } else {
@@ -222,6 +231,16 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
             val unitId = state.unitHandles.entries.firstOrNull { it.value == handle }?.key
             player.units.getCivUnits().singleOrNull { it.id == unitId && it.civ === player && !it.isDestroyed }
                 ?: fail(PlayerSessionFailure.UNIT_UNAVAILABLE)
+        }
+        if (request.kind == TurnCommandKind.GIFT_UNIT) {
+            if (before.map.units.single { it.handle == request.target }.cityStateGift?.action?.available != true) fail(PlayerSessionFailure.OPTION_UNAVAILABLE)
+            if (state.observedRevision != before.revision) fail(PlayerSessionFailure.OBSERVATION_REQUIRED)
+        }
+        val affectedCityState = when (request.kind) {
+            TurnCommandKind.CITY_STATE_ACTION, TurnCommandKind.DECLARE_WAR -> partner?.takeIf { it.isCityState }?.civID
+            TurnCommandKind.GIFT_UNIT -> unit!!.currentTile.getOwner()!!.civID
+            TurnCommandKind.ACTIVATE_GREAT_PERSON -> unit!!.currentTile.getOwner()?.takeIf { it.isCityState && request.selection?.startsWith("mission") == true }?.civID
+            else -> null
         }
         val destination = if (request.kind == TurnCommandKind.MOVE_UNIT) {
             // Resolve only an advertised option, so arbitrary coordinates never probe hidden tiles.
@@ -449,7 +468,11 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
                     true
                 }
 
-                TurnCommandKind.DECLARE_WAR -> PlayerDiplomacyOperations(player).tryDeclareWar(partner!!)
+                TurnCommandKind.CITY_STATE_ACTION -> PlayerCityStateOperations(player).tryAct(partner!!, request.selection!!)
+
+                TurnCommandKind.GIFT_UNIT -> PlayerCityStateOperations(player).tryGiftUnit(unit!!)
+
+                TurnCommandKind.DECLARE_WAR -> if (partner!!.isCityState) PlayerCityStateOperations(player).tryAct(partner, "declareWar") else PlayerDiplomacyOperations(player).tryDeclareWar(partner)
 
                 TurnCommandKind.END_TURN -> {
                     state.previousTurnReview = CompletedTurnReview(
@@ -502,6 +525,7 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
                 },
                 combat = combatResult,
                 economy = economyResult,
+                cityState = affectedCityState?.let { cityStateOutcome(request, before, after, it) },
                 cityManagement = if (request.kind in cityManagementCommands) cityManagementOutcome(before, after) else null,
                 greatPerson = if (request.kind == TurnCommandKind.ACTIVATE_GREAT_PERSON) greatPersonOutcome(request, before, after, player.policies.storedCulture - cultureBefore) else null,
                 victory = when (request.kind) {
@@ -680,6 +704,7 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
             TurnCommandKind.SELL_BUILDING,
             TurnCommandKind.ACTIVATE_GREAT_PERSON,
             TurnCommandKind.CAST_DIPLOMATIC_VOTE,
+            TurnCommandKind.CITY_STATE_ACTION,
         )
         if (needsTarget != (request.target != null) || needsSelection != (request.selection != null) ||
             request.target?.isEmpty() == true || request.selection?.isEmpty() == true || request.revision.isEmpty() ||
@@ -696,7 +721,7 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
             (request.kind == TurnCommandKind.MOVE_CONSTRUCTION) != (request.toIndex != null) ||
             (request.index != null && request.index < 0) || (request.toIndex != null && request.toIndex < 0) ||
             (request.confirmBreakPromise && request.kind != TurnCommandKind.FOUND_CITY) ||
-            (request.confirmAction && request.kind !in economicCommands) ||
+            (request.confirmAction && request.kind !in economicCommands && request.kind != TurnCommandKind.CITY_STATE_ACTION) ||
             (request.kind == TurnCommandKind.DECLARE_WAR) != request.confirmWar ||
             (request.kind != TurnCommandKind.END_TURN && (request.reviewId != null || request.deferReason != null)) ||
             (request.reviewId != null && request.reviewId.length !in 1..128) ||
@@ -707,11 +732,11 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
     }
 
     companion object {
-        private val partnerCommands = setOf(TurnCommandKind.DECLARE_WAR)
+        private val partnerCommands = setOf(TurnCommandKind.DECLARE_WAR, TurnCommandKind.CITY_STATE_ACTION)
         private val cityManagementCommands = setOf(TurnCommandKind.SET_CITY_FOCUS, TurnCommandKind.SET_AVOID_GROWTH, TurnCommandKind.SET_MANUAL_SPECIALISTS, TurnCommandKind.ASSIGN_SPECIALIST, TurnCommandKind.UNASSIGN_SPECIALIST, TurnCommandKind.RESET_CITIZENS, TurnCommandKind.SELL_BUILDING, TurnCommandKind.REASSIGN_CITY_TILE)
         private val tileCommands = setOf(TurnCommandKind.SET_WORKED_TILE, TurnCommandKind.SET_TILE_LOCKED, TurnCommandKind.BUY_TILE, TurnCommandKind.REASSIGN_CITY_TILE)
         private val cityCommands = tileCommands + cityManagementCommands + setOf(TurnCommandKind.RENAME_CITY, TurnCommandKind.QUEUE_CONSTRUCTION, TurnCommandKind.REMOVE_CONSTRUCTION, TurnCommandKind.MOVE_CONSTRUCTION, TurnCommandKind.CITY_ATTACK, TurnCommandKind.MANAGE_CAPTURED_CITY, TurnCommandKind.BUY_CONSTRUCTION)
-        private val unitCommands = setOf(TurnCommandKind.MOVE_UNIT, TurnCommandKind.FOUND_CITY, TurnCommandKind.START_WORKER_JOB, TurnCommandKind.STOP_WORKER_JOB, TurnCommandKind.ATTACK, TurnCommandKind.SET_UNIT_ORDER, TurnCommandKind.PROMOTE_UNIT, TurnCommandKind.UPGRADE_UNIT, TurnCommandKind.PILLAGE, TurnCommandKind.DISBAND_UNIT, TurnCommandKind.ACTIVATE_GREAT_PERSON, TurnCommandKind.ADD_SPACESHIP_PART)
+        private val unitCommands = setOf(TurnCommandKind.GIFT_UNIT, TurnCommandKind.MOVE_UNIT, TurnCommandKind.FOUND_CITY, TurnCommandKind.START_WORKER_JOB, TurnCommandKind.STOP_WORKER_JOB, TurnCommandKind.ATTACK, TurnCommandKind.SET_UNIT_ORDER, TurnCommandKind.PROMOTE_UNIT, TurnCommandKind.UPGRADE_UNIT, TurnCommandKind.PILLAGE, TurnCommandKind.DISBAND_UNIT, TurnCommandKind.ACTIVATE_GREAT_PERSON, TurnCommandKind.ADD_SPACESHIP_PART)
         private val victoryCommands = setOf(TurnCommandKind.ADD_SPACESHIP_PART, TurnCommandKind.CAST_DIPLOMATIC_VOTE, TurnCommandKind.ABSTAIN_DIPLOMATIC_VOTE, TurnCommandKind.ACKNOWLEDGE_DIPLOMATIC_RESULTS)
         private val economicCommands = setOf(TurnCommandKind.BUY_CONSTRUCTION, TurnCommandKind.BUY_TILE, TurnCommandKind.UPGRADE_UNIT, TurnCommandKind.PILLAGE, TurnCommandKind.DISBAND_UNIT, TurnCommandKind.SELL_BUILDING)
         private val supportedRequirements = setOf(

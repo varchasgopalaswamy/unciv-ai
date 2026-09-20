@@ -353,7 +353,9 @@ class CivilizationState:
         for kind, entities in (("unit", body.get("map", {}).get("units", [])), ("city", body.get("cities", []))):
             for entity in entities:
                 scopes[f"{kind}/{entity['handle']}"] = {"turn": body.get("turn"), "entity": entity}
-        for relation in body.get("diplomacy", {}).get("knownCivilizations", []):
+        for relation in body.get("diplomacy", {}).get("knownCivilizations", []) + body.get("diplomacy", {}).get(
+            "cityStates", []
+        ):
             scopes["diplomacy/" + relation["civilizationId"]] = {"turn": body.get("turn"), "relation": relation}
         with self.transaction() as db:
             self._validate(db, job, {})

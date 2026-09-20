@@ -14,13 +14,13 @@ import com.unciv.models.ruleset.RulesetCache
 
 /** Ordinary engine creation, with human slots so external players retain control. */
 internal object VanillaGameSetup {
-    fun create(seed: Long): GameInfo {
+    fun create(seed: Long, cityStates: Int = 0): GameInfo {
         val parameters = GameParameters().apply {
             baseRuleset = BaseRuleset.Civ_V_Vanilla.fullName
             difficulty = "Prince"
             speed = "Quick"
             startingEra = "Ancient era"
-            numberOfCityStates = 0
+            numberOfCityStates = cityStates
             shufflePlayerOrder = false
             players = arrayListOf(Player("Rome", PlayerType.Human), Player("Greece", PlayerType.Human), Player("France", PlayerType.Human))
             val ruleset = RulesetCache.getComplexRuleset(this)

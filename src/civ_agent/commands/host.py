@@ -49,6 +49,13 @@ def parser(*, add_help: bool = True) -> argparse.ArgumentParser:
     parser.add_argument("--listen-host", help="HTTPS bind address (default: 127.0.0.1)")
     parser.add_argument("--public-host", help="HTTPS certificate hostname (default: localhost)")
     parser.add_argument("--new", action="store_true", help="require a new game; never overwrite a checkpoint")
+    parser.add_argument(
+        "--city-states",
+        type=int,
+        choices=range(42),
+        metavar="0-41",
+        help="city-states in a new ordinary game (default: 0)",
+    )
     parser.add_argument("--seed", type=seed_number, help="map seed for a new game only")
     parser.add_argument(
         "--trade-counteroffers",
@@ -136,6 +143,8 @@ def launch(options):
         raise ValueError(f"Checkpoint must be a regular file: {checkpoint}")
     if resuming and options.seed is not None:
         raise ValueError("--seed applies only to a new game; this checkpoint will be resumed.")
+    if options.city_states is not None and (resuming or options.scenario is not None):
+        raise ValueError("--city-states applies only to a new ordinary game.")
     if bool(options.tls_config) != bool(options.ca_file):
         raise ValueError("--tls-config and --ca-file must be supplied together.")
     if options.tls_config and (options.listen_host or options.public_host):
@@ -177,6 +186,8 @@ def launch(options):
         command.extend(["--resume-checkpoint", str(checkpoint)])
     else:
         command.extend(["--new-game", "--checkpoint", str(checkpoint)])
+        if options.city_states is not None:
+            command.extend(["--city-states", str(options.city_states)])
         if options.seed is not None:
             command.extend(["--seed", str(options.seed)])
     if options.scenario is not None:

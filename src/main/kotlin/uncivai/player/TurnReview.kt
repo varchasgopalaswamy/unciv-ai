@@ -131,6 +131,10 @@ internal fun confirmedAction(request: TurnCommandRequest, before: PlayerTurnSnap
 
         TurnCommandKind.RENAME_CITY -> "Renamed ${city!!.name} to ${after.cities.single { it.handle == city.handle }.name}."
 
+        TurnCommandKind.CITY_STATE_ACTION -> "${request.selection} with ${request.target}."
+
+        TurnCommandKind.GIFT_UNIT -> "Gifted ${unit!!.name} to ${unit.cityStateGift!!.civilizationId}."
+
         TurnCommandKind.DECLARE_WAR -> "Declared war on ${request.target}."
 
         TurnCommandKind.START_WORKER_JOB -> "${unit!!.name} started ${request.selection} at ${unit.position.text()}."

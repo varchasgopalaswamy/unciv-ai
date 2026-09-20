@@ -5,6 +5,19 @@ and [coverage ledger](Player-api-coverage.md) retain the broader contract.
 
 ## Close-out status
 
+The [city-state gameplay sprint](City-state-gameplay.md) is implemented and its
+scoped acceptance is complete. Known city-states expose native influence, allies,
+protection, bonuses, quests and action availability. Shared native operations cover
+Gold and improvement gifts, unit gifts, protection/revocation, tribute and
+war/peace; Great Merchant missions are enabled. Funding, visibility, retries and
+checkpoint recovery are covered. Ordinary new games can include city-states with
+`--city-states NUMBER`. The [live exercise](City-state-live-results.md) completed
+three rounds with a restart: all 12 model jobs used `gpt-5.6-luna` with medium
+reasoning, all 24 artifact checks passed, and all services stopped. The 13-screen
+desktop comparison passed. Engine commit
+`10f810a7b3b7700df6f35850e8572d0a44e1a898` is merged and published on
+`experimental-changes`, and the host pins that revision.
+
 The [victory and turn decisions sprint](Victory-and-turn-blockers.md) is complete.
 It implements native spaceship assembly, world-leader voting/abstention and
 results acknowledgement, fixes repeated election processing, and checks the
@@ -15,7 +28,7 @@ Victory, and a failed election followed by Greece's Diplomatic Victory. All 64
 model activations used `gpt-5.6-luna` with medium reasoning; all 51 artifact checks
 passed and all services are stopped. Engine commit
 `31524759eb456734da1048cdec2eecd8131ed9d6` is merged and published on
-`experimental-changes`, and the host pins that revision. The slice and
+`experimental-changes`; the host now pins the later city-state revision above. The slice and
 live-results documents record the evidence and limits.
 
 The [mixed-player diplomacy sprint](Mixed-player-diplomacy.md) is complete as of
@@ -33,8 +46,7 @@ exercise passed; see [the implementation](Social-commitments.md) and
 [live acceptance](Social-promises-live-results.md) for the evidence and limits.
 The preceding enacted-agreement lifecycle sprint is also complete.
 
-Direct city-state interactions, embedded
-human desktop play, human-facing browser chat, and automatic advice for promise
+Embedded human desktop play, human-facing browser chat, and automatic advice for promise
 types beyond peace remain follow-ups. The coverage ledger retains the wider gaps.
 
 ## Previous delivery: third-party war trades

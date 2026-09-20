@@ -28,6 +28,8 @@ enum class TurnCommandKind {
     DISMISS_NOTIFICATIONS,
     RESPOND_FRIENDSHIP,
     DECLARE_WAR,
+    CITY_STATE_ACTION,
+    GIFT_UNIT,
     MOVE_UNIT,
     ATTACK,
     CITY_ATTACK,
@@ -172,6 +174,7 @@ data class TurnCommandReceipt(
     val cityManagement: CityManagementOutcome? = null,
     val greatPerson: GreatPersonOutcome? = null,
     val victory: VictoryOutcome? = null,
+    val cityState: CityStateOutcome? = null,
     val dismissedNotifications: List<PlayerNotification> = emptyList(),
 )
 
@@ -194,6 +197,7 @@ internal fun TurnCommandReceipt.detached(): TurnCommandReceipt = copy(
     dismissedNotifications = Collections.unmodifiableList(dismissedNotifications.map { it.detached() }),
     greatPerson = greatPerson?.detached(),
     victory = victory?.detached(),
+    cityState = cityState?.detached(),
     cityManagement = cityManagement?.detached(),
     economy = economy?.copy(units = Collections.unmodifiableList(economy.units.toList())),
     feedback = feedback?.let {

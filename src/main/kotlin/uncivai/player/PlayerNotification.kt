@@ -30,9 +30,21 @@ internal fun observeNotifications(player: Civilization, state: TurnSessionState,
         player.notifications.mapNotNull { notification ->
             val handle = state.notificationHandles.getOrPut(notification) { state.identifiers.next(PlayerIdentifier.NOTIFICATION) }
             if (handle in state.dismissedNotifications) return@mapNotNull null
-            PlayerNotification(handle, notification.text.tr(), notification.category.name, frozen(notification.icons), notification.locations(), canDismiss)
+            PlayerNotification(handle, visibleNotificationText(player, notification.text).tr(), notification.category.name, frozen(notification.icons.filter { icon -> player.gameInfo.civilizations.none { it !== player && !player.knows(it) && (it.civName == icon || it.civID == icon) } }), notification.locations(), canDismiss)
         },
     )
+}
+
+/** Native city-state notifications may name an unmet ally or protector in a placeholder. */
+internal fun visibleNotificationText(player: Civilization, text: String): String {
+    var visible = text
+    for (civ in player.gameInfo.civilizations.filter { it !== player && !it.isBarbarian && !it.isSpectator() && !player.knows(it) }) {
+        for (name in setOf(civ.civName, civ.civID)) {
+            visible = visible.replace("[$name]", "[Unknown civilization]")
+                .replace("{$name}", "{Unknown civilization}")
+        }
+    }
+    return visible
 }
 
 private fun Notification.locations(): List<TilePosition> {

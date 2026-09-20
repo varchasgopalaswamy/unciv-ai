@@ -76,6 +76,7 @@ data class KnownCivilization(
 @Serializable
 data class DiplomacyObservation(
     val knownCivilizations: List<KnownCivilization> = emptyList(),
+    val cityStates: List<CityStateDetails> = emptyList(),
     val incomingRequests: List<UnhandledTradeRequest> = emptyList(),
     val outgoingRequests: List<UnhandledTradeRequest> = emptyList(),
 )
@@ -147,6 +148,7 @@ internal fun observeDiplomacy(player: Civilization, active: Boolean, communicati
         request(player.gameInfo.getCivilization(incoming.requestingCiv), trade, incoming.requestId)
     }
     return DiplomacyObservation(
+        cityStates = observeCityStates(player, active),
         knownCivilizations = immutable(
             known.mapNotNull { other ->
                 val options = diplomacy.options(other) ?: return@mapNotNull null

@@ -11,6 +11,29 @@ import java.nio.file.Files
 
 class HostCliTest {
     @Test
+    fun `city state count applies only to new ordinary games`() {
+        val directory = Files.createTempDirectory("host-cli-city-states-")
+        try {
+            val checkpoint = directory.resolve("game.json")
+            val base = listOf("--new-game", "--checkpoint", checkpoint.toString(), "--data-dir", directory.toString())
+            lateinit var parsed: CliOptions
+            HostCli { parsed = it }.parse(base)
+            assertEquals(null, parsed.cityStates)
+            HostCli { parsed = it }.parse(base + listOf("--city-states", "2"))
+            assertEquals(2, parsed.cityStates)
+            for (extra in listOf(listOf("--city-states", "-1"), listOf("--city-states", "42"), listOf("--city-states", "2", "--scenario", "war-paid"))) {
+                assertThrows(UsageError::class.java) { HostCli { error("Invalid count reached startup") }.parse(base + extra) }
+            }
+            Files.createFile(checkpoint)
+            assertThrows(UsageError::class.java) {
+                HostCli { error("Resume count reached startup") }.parse(listOf("--resume-checkpoint", checkpoint.toString(), "--data-dir", directory.toString(), "--city-states", "2"))
+            }
+        } finally {
+            deleteTreeWithoutFollowingLinks(directory)
+        }
+    }
+
+    @Test
     fun `ordinary game does not require a scenario or its counteroffer limit`() {
         val directory = Files.createTempDirectory("host-cli-ordinary-")
         try {

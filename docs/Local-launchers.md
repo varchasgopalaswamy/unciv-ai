@@ -43,6 +43,8 @@ The default match directory is `~/.local/state/unciv-host/demo`, or the value of
 `UNCIV_HOST_DIR` if set. On first launch, the host creates owner-only `players.json`
 credentials and starts a Quick Vanilla game between Rome, Greece, and France.
 Each player aims to win; see the [ordinary-game setup](Vanilla-game.md).
+Add `--city-states 2` when creating a new ordinary game to include two native
+city-states (default 0). Omit this option on resume.
 `--scenario trade-cycle` instead selects the prepared Rome/Greece trade exercise.
 `--scenario war-paid` and `--scenario war-joint` select the three-player
 [guided war exercises](War-trades-live-scenario.md), with private negotiating roles.

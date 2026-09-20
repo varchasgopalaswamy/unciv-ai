@@ -50,14 +50,14 @@ class TargetChoice(Command):
 
 
 class EconomicChoice(Command):
-    kind: Literal["BUY_CONSTRUCTION", "UPGRADE_UNIT", "SELL_BUILDING"]
+    kind: Literal["BUY_CONSTRUCTION", "UPGRADE_UNIT", "SELL_BUILDING", "CITY_STATE_ACTION"]
     target: Name
     selection: Name
     confirmAction: bool = False
 
 
 class TargetCommand(Command):
-    kind: Literal["ACKNOWLEDGE_ALERT", "STOP_WORKER_JOB", "RESET_CITIZENS", "ADD_SPACESHIP_PART"]
+    kind: Literal["ACKNOWLEDGE_ALERT", "STOP_WORKER_JOB", "RESET_CITIZENS", "ADD_SPACESHIP_PART", "GIFT_UNIT"]
     target: Name
 
 

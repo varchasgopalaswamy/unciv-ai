@@ -37,6 +37,8 @@
         "DISMISS_NOTIFICATIONS",
         "RESPOND_FRIENDSHIP",
         "DECLARE_WAR",
+        "CITY_STATE_ACTION",
+        "GIFT_UNIT",
         "MOVE_UNIT",
         "ATTACK",
         "CITY_ATTACK",
@@ -191,7 +193,7 @@
     },
     "confirmAction": {
       "type": "boolean",
-      "description": "For BUY_CONSTRUCTION, BUY_TILE, UPGRADE_UNIT, PILLAGE, DISBAND_UNIT or SELL_BUILDING: confirm the offered confirmation text after reading player_turn; required true when confirmation is non-null."
+      "description": "For BUY_CONSTRUCTION, BUY_TILE, UPGRADE_UNIT, PILLAGE, DISBAND_UNIT SELL_BUILDING or CITY_STATE_ACTION: confirm the offered confirmation text after reading player_turn; required true when confirmation is non-null."
     },
     "confirmWar": {
       "type": "boolean",

@@ -166,6 +166,22 @@ class HostLauncherTest(unittest.TestCase):
                 self.assertIn("--resume-checkpoint", command)
                 self.assertEqual(scenario, command[command.index("--scenario") + 1])
 
+    def test_new_game_forwards_city_state_count(self):
+        self.assertEqual(0, self.run_launcher("--new", "--city-states", "2"))
+        command = self.execute.call_args.args[1]
+        self.assertEqual("2", command[command.index("--city-states") + 1])
+        players = json.loads((self.state / "players.json").read_text())["players"]
+        self.assertEqual(["Rome", "Greece", "France"], [entry["civilizationId"] for entry in players])
+
+    def test_city_state_count_rejected_for_prepared_games_and_resume(self):
+        self.assertEqual(2, self.run_launcher("--scenario", "war-paid", "--city-states", "2"))
+        self.assertFalse(self.state.exists())
+        self.checkpoint()
+        self.write_players()
+        self.assertEqual(2, self.run_launcher("--city-states", "2"))
+        self.build.assert_not_called()
+        self.execute.assert_not_called()
+
     def test_removed_scenarios_are_rejected_without_creating_state(self):
         for scenario in (
             "city-management",

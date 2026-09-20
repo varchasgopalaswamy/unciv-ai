@@ -3,7 +3,6 @@ package uncivai.player
 import com.unciv.logic.civilization.Civilization
 import com.unciv.logic.civilization.PlayerGreatPersonOperations
 import com.unciv.logic.map.mapunit.MapUnit
-import com.unciv.models.UnitActionType
 import com.unciv.models.translations.tr
 import kotlinx.serialization.Serializable
 import java.util.Collections
@@ -57,10 +56,9 @@ internal fun observeGreatPerson(player: Civilization, unit: MapUnit, active: Boo
         unit.baseUnit.getShortDescription(),
         frozenGreatPeople(
             PlayerGreatPersonOperations(player).options(unit).map { option ->
-                val supported = option.kind != UnitActionType.ConductTradeMission
+                val supported = true
                 val reasons = option.reasons +
-                    (if (active) emptyList() else listOf("This player cannot act now")) +
-                    (if (supported) emptyList() else listOf("City-state trade missions are not supported by this player API yet"))
+                    (if (active) emptyList() else listOf("This player cannot act now"))
                 GreatPersonAbility(
                     option.name, option.kind.name, option.title.tr(), option.description.tr(), supported,
                     supported && active && option.available, frozenGreatPeople(reasons.distinct().map { it.tr() }),

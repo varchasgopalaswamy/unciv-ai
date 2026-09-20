@@ -87,6 +87,7 @@ class UnitSummary(BoundaryModel):
     availablePromotions: int
     greatPersonAbilities: int
     canAssembleSpaceshipPart: bool = False
+    canGiftToCityState: bool = False
 
 
 class PlayerNotification(BoundaryModel):
@@ -126,6 +127,7 @@ class TurnOverview(BoundaryModel):
     idleUnits: int = 0
     economy: JsonObject = Field(default_factory=dict)
     diplomacy: list[JsonObject] = Field(default_factory=list)
+    cityStates: list[JsonObject] = Field(default_factory=list)
     communication: JsonObject = Field(default_factory=dict)
     socialAdvisories: list[JsonObject] = Field(default_factory=list)
     turnReview: JsonObject = Field(default_factory=dict)
@@ -177,6 +179,7 @@ def overview(snapshot: JsonObject) -> JsonObject:
                 "workerJob": (unit.get("worker") or {}).get("currentJob"),
                 "availablePromotions": len(combat.get("promotions", [])),
                 "greatPersonAbilities": len((unit.get("greatPerson") or {}).get("abilities", [])),
+                "canGiftToCityState": ((unit.get("cityStateGift") or {}).get("action") or {}).get("available", False),
                 "canAssembleSpaceshipPart": (unit.get("spaceshipAssembly") or {}).get("available", False),
             }
         )
@@ -192,6 +195,28 @@ def overview(snapshot: JsonObject) -> JsonObject:
             if key in {"civilizationId", "civilizationName", "status", "atWar", "peaceTreatyTurns", "native"}
         }
         for relation in snapshot.get("diplomacy", {}).get("knownCivilizations", [])
+    ]
+    value["cityStates"] = [
+        {
+            key: item
+            for key, item in state.items()
+            if key
+            in {
+                "civilizationId",
+                "name",
+                "type",
+                "atWar",
+                "defeated",
+                "relationship",
+                "influence",
+                "decayPerTurn",
+                "turnsToRelationshipChange",
+                "ally",
+                "protecting",
+                "quests",
+            }
+        }
+        for state in snapshot.get("diplomacy", {}).get("cityStates", [])
     ]
     social = snapshot.get("communication", {})
     value["communication"] = {
@@ -320,7 +345,7 @@ def project_detail(snapshot: JsonObject, query: DetailQuery) -> JsonObject:
 
 def required_detail(command: JsonObject) -> DetailQuery | None:
     kind, target = command["kind"], command.get("target")
-    if kind == "DECLARE_WAR":
+    if kind in {"DECLARE_WAR", "CITY_STATE_ACTION"}:
         return DetailQuery(tool="player_details", arguments={"section": "diplomacy"})
     if kind in {"ACKNOWLEDGE_ALERT", "RESPOND_FRIENDSHIP", "RESOLVE_CAPTURED_CITY"} or target is None:
         return None  # Full decision content is always in the overview.
@@ -336,6 +361,7 @@ def required_detail(command: JsonObject) -> DetailQuery | None:
         "DISBAND_UNIT",
         "ACTIVATE_GREAT_PERSON",
         "ADD_SPACESHIP_PART",
+        "GIFT_UNIT",
         "FOUND_CITY",
         "START_WORKER_JOB",
         "STOP_WORKER_JOB",

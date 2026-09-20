@@ -9,7 +9,9 @@ The setup uses the bundled **Civ V - Vanilla** ruleset, **Quick** speed (the fas
 bundled speed), Prince difficulty, Ancient era, and a generated Small Pangaea map.
 All five native victory conditions are enabled: Scientific, Cultural, Domination,
 Diplomatic, and Time. Quick's time victory limit is 330 turns. Barbarians, ruins,
-and natural wonders use ordinary engine settings; city-states and mods are absent.
+and natural wonders use ordinary engine settings. City-states default to zero;
+`--city-states NUMBER` includes native city-states in a new ordinary game. Mods
+are disabled.
 Each civilization starts with the engine's normal Settler and Warrior, treasury,
 and starting technology. All three occupy Human slots, so the host waits for their
 agents instead of substituting Unciv's civilization AI. Rome acts first, then
@@ -54,6 +56,12 @@ does not add the missing player API features listed in the [coverage ledger](Pla
 the engine receives a fresh time-based seed. The host prints the seed and settings.
 Unciv also uses a random game ID for setup choices, so a terrain seed does not
 reproduce the entire initial state. Reuse the saved checkpoint for exact state.
+
+To include two city-states, add `--city-states 2` to the host's initial `--new`
+command. Native AI controls their turns. The [city-state API](City-state-gameplay.md)
+exposes met city-states and their ordinary interactions. This option is valid only
+for new ordinary games; omit it on resume, which retains the saved setup. Ordinary
+starting funds and units remain native; the guided acceptance fixture is separate.
 
 ## Resume and inspect
 
