@@ -55,8 +55,8 @@ internal class GameplayTestApi(runtime: HeadlessRuntime, tlsRoot: Path, private 
         }
         error("Alert budget exhausted")
     }
-    fun finishTurn(token: String) {
-        operator(OperatorRequest("heartbeat", lease))
+    fun finishTurn(token: String, heartbeat: Boolean = true) {
+        if (heartbeat) operator(OperatorRequest("heartbeat", lease))
         repeat(40) {
             val turn = readAlerts(token)
             val city = turn.cities.firstOrNull { !it.puppet && it.constructionQueue.isEmpty() }

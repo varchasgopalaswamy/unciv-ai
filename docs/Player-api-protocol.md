@@ -1,7 +1,7 @@
 # Player protocol
 
 The current interface covers turn management, exploration, settlement, basic city development,
-first contact, war declarations, negotiated peace, basic land combat and empire economy.
+first contact, war declarations, negotiated peace, land/naval combat and empire economy.
 It remains an incomplete player API.
 Use `player_capabilities` to inspect its operations and recovery guarantees.
 Authentication fixes the player's civilization; tool arguments cannot override it.
@@ -53,6 +53,7 @@ code supplies request IDs, credentials and revisions for their commands.
   known major: `from` declares war on `item.name`. Own warnings accompany trade
   options and `trade_read`; the target receives a separate war event without the
   private proposal or payment. See [third-party war trades](Third-party-war-trades.md).
+- `movement_preview`: inspect a native route for an owned `target` and `destination: {x, y}`. Returns adjacent paths grouped by estimated turns, movement costs and speculative flags. Read at the current revision before setting a multi-turn destination.
 - `player_command`: submit exactly one command using the latest turn snapshot.
 - `player_result`: your victory/defeat result and pending combat reports, also available
   after scheduling stops. Combat fields, orders and capture choices are documented in
@@ -100,6 +101,9 @@ objects or authorize stale commands. Older checkpoint formats require a new game
 | `RENAME_CITY` | `target`: city handle; `selection`: valid new name |
 | `ACKNOWLEDGE_ALERT` | `target`: handle of an informational alert with `canAcknowledge=true`; fetch and read its full `content` in `player_turn` at the submitted revision first |
 | `MOVE_UNIT` | `target`: owned unit handle; `destination`: `{ "x": ..., "y": ... }` copied from that unit's `moves` |
+| `SET_UNIT_DESTINATION` | `target`: owned unit; `destination`: exact coordinate from a current available `movement_preview`; moves now and persists the native order |
+| `CANCEL_UNIT_MOVEMENT` | `target`: owned unit with `movementOrder.canCancel=true`; no movement is spent |
+| `CREATE_WATER_IMPROVEMENT` | `target`: owned Work Boat; `selection`: available `waterImprovement.name`; consumes the unit |
 | `ATTACK` | `target`: owned unit; `destination` and `attackFrom`: exact pair from `combat.attacks` |
 | `CITY_ATTACK` | `target`: owned city; `destination`: offered city attack |
 | `SET_UNIT_ORDER` | `target`: owned unit; `selection`: available `combat.orders` name |
@@ -108,8 +112,8 @@ objects or authorize stale commands. Older checkpoint formats require a new game
 | `MANAGE_CAPTURED_CITY` | `target`: owned city; `selection`: available `captureOptions` name after reading current options |
 | `BUY_CONSTRUCTION` | `target`: owned city; `selection`: available name from `purchases.constructions` |
 | `BUY_TILE` | `target`: owned city; `destination`: available position from `purchases.tiles` |
-| `UPGRADE_UNIT` | `target`: owned land unit; `selection`: available `targetName` from `economy.upgrades` |
-| `PILLAGE`, `DISBAND_UNIT` | `target`: owned land unit with the corresponding available `economy` option |
+| `UPGRADE_UNIT` | `target`: owned land/naval unit; `selection`: available `targetName` from `economy.upgrades` |
+| `PILLAGE`, `DISBAND_UNIT` | `target`: owned land/naval unit with the corresponding available `economy` option |
 | `FOUND_CITY` | `target`: settler handle; `confirmBreakPromise: true` only when accepting its listed settlement promises |
 | `START_WORKER_JOB` | `target`: worker handle; `selection`: available name from `worker.options` |
 | `STOP_WORKER_JOB` | `target`: worker handle; `worker.canStop` must be true |
@@ -295,3 +299,5 @@ request specific entries for desktop descriptions and, for research, the complet
 ordered `prerequisiteQueue`. Details do not acknowledge unit abilities or popup
 content, and do not mutate game state. See [Great People](Great-people.md) for
 semantics, current limits and the prepared exercise.
+
+See [naval gameplay and destination orders](Naval-gameplay.md) for continuation timing, speculative-route limits, progress/cancellation and actual movement/improvement receipts.

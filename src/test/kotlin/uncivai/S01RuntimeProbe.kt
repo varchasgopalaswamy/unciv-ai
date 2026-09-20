@@ -48,7 +48,7 @@ object S01RuntimeProbe {
     private fun verifyRuntimeIsolation(dataDirectory: Path) {
         val settings = UncivGame.Current.settings
         check(!settings.autoAssignCityProduction) { "Runtime accepted auto production from disk" }
-        check(!settings.automatedUnitsMoveOnTurnStart) { "Runtime accepted auto movement from disk" }
+        check(settings.automatedUnitsMoveOnTurnStart) { "Runtime disabled native destination continuation" }
         check(!settings.automatedUnitsCanUpgrade) { "Runtime accepted auto upgrades from disk" }
         check(!settings.automatedUnitsChoosePromotions) { "Runtime accepted auto promotions from disk" }
         check(!settings.citiesAutoBombardAtEndOfTurn) { "Runtime accepted auto bombardment from disk" }

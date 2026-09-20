@@ -3,6 +3,20 @@
 Use this page to resume implementation; the [player API plan](Player-api-plan.md)
 and [coverage ledger](Player-api-coverage.md) retain the broader contract.
 
+## Completed sprint: naval gameplay and destination orders
+
+The [naval sprint](Naval-gameplay.md) implements native ship combat/economy,
+Work Boat improvements and multi-turn destination orders. The user explicitly
+requested destination pathfinding with a preview before acting and persistent
+orders. Scoped acceptance is complete: engine/HTTPS/Python checks, eleven rendered
+desktop screenshots and a [live Rome/Greece/France exercise](Naval-live-results.md)
+with four rounds, twelve handoffs and all 27 artifact checks passing. All 22 live
+model jobs used `gpt-5.6-luna` with medium reasoning; services are stopped.
+
+Engine commits `ddbb694c9` (destination orders) and `b89aea260` (naval operations)
+are merged and published on `experimental-changes`. The host pins
+`b89aea26089ccc0efbcaca8a63b76896352cbbe7`. No further scoped acceptance task remains.
+
 ## Close-out status
 
 The [city-state gameplay sprint](City-state-gameplay.md) is implemented and its
@@ -16,7 +30,7 @@ three rounds with a restart: all 12 model jobs used `gpt-5.6-luna` with medium
 reasoning, all 24 artifact checks passed, and all services stopped. The 13-screen
 desktop comparison passed. Engine commit
 `10f810a7b3b7700df6f35850e8572d0a44e1a898` is merged and published on
-`experimental-changes`, and the host pins that revision.
+`experimental-changes`; the naval sprint's dependency pin includes it.
 
 The [victory and turn decisions sprint](Victory-and-turn-blockers.md) is complete.
 It implements native spaceship assembly, world-leader voting/abstention and
@@ -28,7 +42,7 @@ Victory, and a failed election followed by Greece's Diplomatic Victory. All 64
 model activations used `gpt-5.6-luna` with medium reasoning; all 51 artifact checks
 passed and all services are stopped. Engine commit
 `31524759eb456734da1048cdec2eecd8131ed9d6` is merged and published on
-`experimental-changes`; the host now pins the later city-state revision above. The slice and
+`experimental-changes`; the host now pins the later naval revision above. The slice and
 live-results documents record the evidence and limits.
 
 The [mixed-player diplomacy sprint](Mixed-player-diplomacy.md) is complete as of

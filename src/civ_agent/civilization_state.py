@@ -365,7 +365,11 @@ class CivilizationState:
             for key, previous in previous_records.items():
                 scope = key.removeprefix("observation:")
                 if scope.startswith("detail/"):
-                    scopes[scope] = project_detail(body, DetailQuery.model_validate(previous["body"]["query"]))
+                    query = DetailQuery.model_validate(previous["body"]["query"])
+                    if query.tool == "movement_preview" and previous["body"].get("revision") == body.get("revision"):
+                        scopes[scope] = previous["body"]
+                    else:
+                        scopes[scope] = project_detail(body, query)
                 if scope.startswith(("unit/", "city/")) and scope not in scopes and not previous["body"].get("absent"):
                     scopes[scope] = {"turn": body.get("turn"), "absent": True}
             observed = {}

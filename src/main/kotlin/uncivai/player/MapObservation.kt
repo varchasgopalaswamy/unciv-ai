@@ -76,6 +76,8 @@ data class OwnedUnit(
     val greatPerson: GreatPersonUnit? = null,
     val cityStateGift: CityStateUnitGift? = null,
     val spaceshipAssembly: SpaceshipAssembly? = null,
+    val movementOrder: MovementOrder? = null,
+    val waterImprovement: WaterImprovement? = null,
 )
 
 /** Coordinates use Unciv's axial x/y grid. No tile data is returned for unexplored coordinates. */
@@ -175,6 +177,8 @@ internal fun observeMap(player: Civilization, state: TurnSessionState, canAct: B
                     greatPerson = observeGreatPerson(player, unit, active),
                     cityStateGift = observeCityStateGift(player, unit, active),
                     spaceshipAssembly = observeSpaceshipAssembly(player, unit, active),
+                    movementOrder = observeMovementOrder(player, unit, active),
+                    waterImprovement = observeWaterImprovement(player, unit, active),
                 )
             }.toList(),
         ),

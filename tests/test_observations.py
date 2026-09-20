@@ -315,6 +315,8 @@ def test_detail_input_schemas_and_every_command_have_a_deliberate_read_path():
     for kind, ref in schema["discriminator"]["mapping"].items():
         properties = schema["$defs"][ref.rsplit("/", 1)[1]]["properties"]
         command = {"kind": kind, "selection": "Worker", **({"target": "id"} if "target" in properties else {})}
+        if "destination" in properties:
+            command["destination"] = {"x": 6, "y": 0}
         assert (required_detail(command) is None) == (kind in no_target_detail), kind
     assert public_result({"epoch": "secret", "data": {"revision": "internal", "health": 100}}) == {
         "data": {"health": 100}

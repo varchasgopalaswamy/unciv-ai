@@ -9,7 +9,7 @@ import java.util.Collections
 data class PlayerCapabilities(
     val protocolVersion: Int = 1,
     val completeGameplay: Boolean = false,
-    val queries: List<String> = listOf("player_capabilities", "player_summary", "owned_cities", "free_great_person_choice", "player_turn", "player_result", "research_details", "policy_details", "victory_progress"),
+    val queries: List<String> = listOf("player_capabilities", "player_summary", "owned_cities", "free_great_person_choice", "player_turn", "player_result", "research_details", "policy_details", "victory_progress", "movement_preview"),
     val commands: List<TurnCommandKind> = TurnCommandKind.entries.toList(),
     val durableRecovery: Boolean = false,
     val legacyMutationsSupported: Boolean = true,
@@ -31,6 +31,9 @@ enum class TurnCommandKind {
     CITY_STATE_ACTION,
     GIFT_UNIT,
     MOVE_UNIT,
+    SET_UNIT_DESTINATION,
+    CANCEL_UNIT_MOVEMENT,
+    CREATE_WATER_IMPROVEMENT,
     ATTACK,
     CITY_ATTACK,
     SET_UNIT_ORDER,
@@ -175,6 +178,8 @@ data class TurnCommandReceipt(
     val greatPerson: GreatPersonOutcome? = null,
     val victory: VictoryOutcome? = null,
     val cityState: CityStateOutcome? = null,
+    val movement: MovementOutcome? = null,
+    val waterImprovement: WaterImprovementOutcome? = null,
     val dismissedNotifications: List<PlayerNotification> = emptyList(),
 )
 

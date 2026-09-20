@@ -40,6 +40,9 @@
         "CITY_STATE_ACTION",
         "GIFT_UNIT",
         "MOVE_UNIT",
+        "CREATE_WATER_IMPROVEMENT",
+        "CANCEL_UNIT_MOVEMENT",
+        "SET_UNIT_DESTINATION",
         "ATTACK",
         "CITY_ATTACK",
         "SET_UNIT_ORDER",
@@ -157,7 +160,7 @@
           "type": "null"
         }
       ],
-      "description": "Offered movement or attack destination, city development tile for SET_WORKED_TILE / SET_TILE_LOCKED, or purchases.tiles position for BUY_TILE."
+      "description": "Offered movement or attack destination, city development tile for SET_WORKED_TILE / SET_TILE_LOCKED, or purchases.tiles position for BUY_TILE. SET_UNIT_DESTINATION requires a current movement_preview for this destination."
     },
     "attackFrom": {
       "anyOf": [
@@ -273,7 +276,12 @@
     },
     "targets": {
       "type": "array",
-      "items": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "\\S" },
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128,
+        "pattern": "\\S"
+      },
       "maxItems": 256,
       "uniqueItems": true,
       "description": "Only DISMISS_NOTIFICATIONS: nonempty list of notice handles whose full text was read in the current player_turn."

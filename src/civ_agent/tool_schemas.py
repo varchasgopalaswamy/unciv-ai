@@ -4,6 +4,7 @@ from typing import Annotated, Literal
 
 from pydantic import Field
 
+from civ_agent.game_commands import Position
 from civ_agent.memory_records import (
     HistoryReadResult,
     Intent,
@@ -14,8 +15,12 @@ from civ_agent.memory_records import (
     MemoryUpdate,
     MemoryUpdateResult,
 )
-from civ_agent.observations import DETAIL_MODELS, DetailResult
+from civ_agent.observations import DETAIL_MODELS, DetailResult, EntityDetails
 from civ_agent.schemas import BoundaryModel, NonnegativeInt
+
+
+class MovementPreview(EntityDetails):
+    destination: Position
 
 
 class WithIntent(BoundaryModel):
@@ -122,6 +127,7 @@ class FriendshipOffer(Partner, WithIntent):
 
 TOOL_MODELS: dict[str, type[BoundaryModel]] = {
     **DETAIL_MODELS,
+    "movement_preview": MovementPreview,
     "trade_options": Partner,
     "trade_read": Proposal,
     "agreement_list": BoundaryModel,

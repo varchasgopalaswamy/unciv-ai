@@ -35,6 +35,7 @@ class TargetChoice(Command):
         "QUEUE_CONSTRUCTION",
         "RENAME_CITY",
         "START_WORKER_JOB",
+        "CREATE_WATER_IMPROVEMENT",
         "SET_UNIT_ORDER",
         "PROMOTE_UNIT",
         "RESOLVE_CAPTURED_CITY",
@@ -57,7 +58,14 @@ class EconomicChoice(Command):
 
 
 class TargetCommand(Command):
-    kind: Literal["ACKNOWLEDGE_ALERT", "STOP_WORKER_JOB", "RESET_CITIZENS", "ADD_SPACESHIP_PART", "GIFT_UNIT"]
+    kind: Literal[
+        "ACKNOWLEDGE_ALERT",
+        "STOP_WORKER_JOB",
+        "CANCEL_UNIT_MOVEMENT",
+        "RESET_CITIZENS",
+        "ADD_SPACESHIP_PART",
+        "GIFT_UNIT",
+    ]
     target: Name
 
 
@@ -68,7 +76,7 @@ class EconomicCommand(Command):
 
 
 class MoveCommand(Command):
-    kind: Literal["MOVE_UNIT", "REASSIGN_CITY_TILE"]
+    kind: Literal["MOVE_UNIT", "SET_UNIT_DESTINATION", "REASSIGN_CITY_TILE"]
     target: Name
     destination: Position
 

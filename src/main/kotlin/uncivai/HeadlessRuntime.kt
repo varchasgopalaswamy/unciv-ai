@@ -172,7 +172,8 @@ class HeadlessRuntime private constructor(
             autoBuildingRoads = false
             automatedWorkersReplaceImprovements = false
             stopAutomatedWorkersRemoveVegetation = true
-            automatedUnitsMoveOnTurnStart = false
+            // Native destination orders resume before the next observation of their owner's turn.
+            automatedUnitsMoveOnTurnStart = true
             automatedUnitsCanUpgrade = false
             automatedUnitsChoosePromotions = false
             citiesAutoBombardAtEndOfTurn = false

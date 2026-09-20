@@ -2,9 +2,9 @@
 
 A private headless host and MCP adapter project for agents playing Unciv, depending on a separately maintained Unciv fork. Agents must eventually have every ordinary human player action and information surface while receiving only information their player is allowed to know. Scope covers the bundled Vanilla and Gods & Kings rulesets; mod content is excluded.
 
-The repository provides a headless executable and authenticated HTTPS MCP server. The player interface supports explored-map observations, current-turn movement and settlement, worker jobs, city yields and citizen assignment, construction queues, research, policies, free Great People, informational alerts including first contact, known-civilization identity, validated war declarations and peace negotiations, and validated turn advancement. Checkpoints persist game state and command receipts together. A supervisor starts a fresh Codex conversation for each game turn through HTTPS agent services, carrying forward selected structured memory and following the host's committed turn changes.
+The repository provides a headless executable and authenticated HTTPS MCP server. The player interface supports explored-map observations, current-turn and multi-turn destination movement, settlement, naval combat and Work Boat improvements, worker jobs, city yields and citizen assignment, construction queues, research, policies, free Great People, informational alerts including first contact, known-civilization identity, validated war declarations and peace negotiations, and validated turn advancement. Checkpoints persist game state and command receipts together. A supervisor starts a fresh Codex conversation for each game turn through HTTPS agent services, carrying forward selected structured memory and following the host's committed turn changes.
 
-**This is an incomplete gameplay implementation.** Further city controls, multi-turn movement orders, special unit actions, naval/air combat, broader diplomacy, full desktop integration, and agent filesystem/network isolation remain outstanding. Consult the [coverage ledger](docs/Player-api-coverage.md) rather than treating a passing turn-flow test as full parity.
+**This is an incomplete gameplay implementation.** Further city controls, special unit actions, air combat, broader diplomacy, full desktop integration, and agent filesystem/network isolation remain outstanding. Consult the [coverage ledger](docs/Player-api-coverage.md) rather than treating a passing turn-flow test as full parity.
 
 The [encounter slice](docs/Encounter-and-diplomacy.md) lets players inspect and
 acknowledge first contact, then continue scheduled turns. It adds an initial view
@@ -127,6 +127,7 @@ To generate and load an internal lifecycle test fixture:
 - [City management](docs/City-management.md): focus/growth, specialists and great-person progress, building sales, shared tiles and a two-city exercise for each civilization.
 - [Great People](docs/Great-people.md): usable abilities, on-demand research/policy details, and an exercise for both players to generate and use people.
 - [Local launchers](docs/Local-launchers.md): start the host and interactive Codex players without copying tokens.
+- [Naval gameplay and destination orders](docs/Naval-gameplay.md): route previews, persistent movement and sea-resource improvements.
 - [Exploration and settlement](docs/Exploration-and-settlement.md): launch a fresh duel using existing player credentials, movement semantics, and validation.
 - [Implementation design](docs/Player-api-plan.md): responsibilities, milestones, and acceptance gates.
 - [Coverage ledger](docs/Player-api-coverage.md): implemented and outstanding action and information surfaces.

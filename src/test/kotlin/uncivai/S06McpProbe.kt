@@ -401,6 +401,7 @@ object S06McpProbe {
             "player_capabilities" to emptySet(),
             "player_turn" to emptySet(),
             "player_result" to emptySet(),
+            "movement_preview" to setOf("target", "destination"),
             "research_details" to setOf("names"),
             "policy_details" to setOf("names"),
             "victory_progress" to setOf("names"),
@@ -428,6 +429,14 @@ object S06McpProbe {
                     check(schema.getValue("minLength").jsonPrimitive.content == "1")
                     check(schema.getValue("maxLength").jsonPrimitive.content == maximum)
                 }
+            } else if (name == "movement_preview") {
+                check(tool.inputSchema.required.orEmpty().toSet() == expectedProperties)
+                check(properties.getValue("target").jsonObject.string("type") == "string")
+                val destination = properties.getValue("destination").jsonObject
+                check(destination.string("type") == "object")
+                check(destination.strings("required").toSet() == setOf("x", "y"))
+                check(destination.getValue("properties").jsonObject.values.all { it.jsonObject.string("type") == "integer" })
+                check(!destination.boolean("additionalProperties"))
             } else if (name == "player_communication") {
                 check(tool.inputSchema.required == listOf("request"))
                 val branches = properties.getValue("request").jsonObject.getValue("oneOf").jsonArray.map { it.jsonObject }
@@ -817,6 +826,7 @@ object S06McpProbe {
 
         override fun turn(): uncivai.player.PlayerTurnSnapshot = fail()
         override fun result(): uncivai.player.PlayerFinalState = fail()
+        override fun movementPreview(request: uncivai.player.MovementPreviewRequest): uncivai.player.MovementPreview = fail()
         override fun researchDetails(names: List<String>): uncivai.player.ResearchDetails = fail()
         override fun policyDetails(names: List<String>): uncivai.player.PolicyDetails = fail()
         override fun victoryProgress(names: List<String>): uncivai.player.VictoryProgress = fail()

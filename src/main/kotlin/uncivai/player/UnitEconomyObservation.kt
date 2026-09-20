@@ -53,13 +53,13 @@ data class UnitEconomy(
 )
 
 internal fun observeUnitEconomy(player: Civilization, unit: MapUnit, active: Boolean): UnitEconomy {
-    if (!unit.baseUnit.isLandUnit) return UnitEconomy(false, emptyList(), null, null)
     val operations = PlayerUnitEconomyOperations(player)
+    if (!operations.supports(unit)) return UnitEconomy(false, emptyList(), null, null)
     fun reasons(values: List<String>) = frozen((values + if (active) emptyList() else listOf("This player cannot act now")).distinct().map { it.tr() })
     return UnitEconomy(
         supported = true,
         upgrades = frozen(
-            operations.upgrades(unit).filter { player.gameInfo.ruleset.units.getValue(it.targetName).isLandUnit }.map {
+            operations.upgrades(unit).map {
                 UnitUpgradeOption(
                     it.targetName, it.title.tr(), it.description, it.strength, it.rangedStrength, it.movement, it.range,
                     frozen(it.requiredTechnologies), it.goldCost, Collections.unmodifiableMap(LinkedHashMap(it.resourceRequirements)),

@@ -34,7 +34,9 @@ class PlayerDetails(BoundaryModel):
 
 
 class DetailQuery(BoundaryModel):
-    tool: Literal["city_details", "unit_details", "construction_details", "map_region", "player_details"]
+    tool: Literal[
+        "city_details", "unit_details", "construction_details", "map_region", "player_details", "movement_preview"
+    ]
     arguments: JsonObject
 
 
@@ -88,6 +90,8 @@ class UnitSummary(BoundaryModel):
     greatPersonAbilities: int
     canAssembleSpaceshipPart: bool = False
     canGiftToCityState: bool = False
+    movementOrder: JsonObject | None = None
+    canCreateWaterImprovement: bool = False
 
 
 class PlayerNotification(BoundaryModel):
@@ -173,6 +177,8 @@ def overview(snapshot: JsonObject) -> JsonObject:
                         "canFoundCity",
                     )
                 },
+                "movementOrder": unit.get("movementOrder"),
+                "canCreateWaterImprovement": (unit.get("waterImprovement") or {}).get("available", False),
                 "legalDestinations": len(unit.get("moves", [])),
                 "availableAttacks": len(combat.get("attacks", [])),
                 "order": (combat.get("order") or {}).get("action"),
@@ -303,6 +309,10 @@ def project_detail(snapshot: JsonObject, query: DetailQuery) -> JsonObject:
                     ],
                     "descriptionsIncluded": bool(names),
                 }
+    elif name == "movement_preview":
+        # Native pathfinding cannot be reconstructed from a cached turn projection.
+        available = False
+        data = {"requiresRefresh": True}
     elif name == "map_region":
         map_view = snapshot.get("map", {})
         center, radius = args["center"], args.get("radius", 2)
@@ -345,6 +355,8 @@ def project_detail(snapshot: JsonObject, query: DetailQuery) -> JsonObject:
 
 def required_detail(command: JsonObject) -> DetailQuery | None:
     kind, target = command["kind"], command.get("target")
+    if kind == "SET_UNIT_DESTINATION":
+        return DetailQuery(tool="movement_preview", arguments={"target": target, "destination": command["destination"]})
     if kind in {"DECLARE_WAR", "CITY_STATE_ACTION"}:
         return DetailQuery(tool="player_details", arguments={"section": "diplomacy"})
     if kind in {"ACKNOWLEDGE_ALERT", "RESPOND_FRIENDSHIP", "RESOLVE_CAPTURED_CITY"} or target is None:
@@ -353,6 +365,8 @@ def required_detail(command: JsonObject) -> DetailQuery | None:
         return DetailQuery(tool="construction_details", arguments={"target": target, "names": [command["selection"]]})
     unit_kinds = {
         "MOVE_UNIT",
+        "CANCEL_UNIT_MOVEMENT",
+        "CREATE_WATER_IMPROVEMENT",
         "ATTACK",
         "SET_UNIT_ORDER",
         "PROMOTE_UNIT",

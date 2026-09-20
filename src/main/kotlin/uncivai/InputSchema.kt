@@ -43,6 +43,7 @@ internal object InputSchemas {
     val communication = InputSchema("communication")
     val turnCommand = InputSchema("turn-command")
     val details = InputSchema("details")
+    val movementPreview = InputSchema("movement-preview")
     val empty = InputSchema("empty")
     val renameCity = InputSchema("rename-city")
     val chooseGreatPerson = InputSchema("choose-great-person")

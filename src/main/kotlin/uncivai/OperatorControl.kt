@@ -326,6 +326,7 @@ class OperatorControl internal constructor(
         override fun communication(request: kotlinx.serialization.json.JsonObject) = guarded { delegate.communication(request) }
         override fun turn() = guarded { delegate.turn() }
         override fun result() = guarded { delegate.result() }
+        override fun movementPreview(request: uncivai.player.MovementPreviewRequest) = guarded { delegate.movementPreview(request) }
         override fun researchDetails(names: List<String>) = guarded { delegate.researchDetails(names) }
         override fun policyDetails(names: List<String>) = guarded { delegate.policyDetails(names) }
         override fun victoryProgress(names: List<String>) = guarded { delegate.victoryProgress(names) }
