@@ -281,7 +281,7 @@ async def main():
                 if scenario.get("testManyEvents") and not os.environ.get("CIV_TEST_MANY_EVENTS"):
                     await publish_history(common)
                 if scenario.get("name") == "CONCURRENT_TRADE_TEST":
-                    assert "recovery.reads" in text
+                    assert "recovery.reads" in current["instructions"]
                     result = await exercise_trade(match.group(1), communication, view, call)
                 else:
                     assert not communication
@@ -310,6 +310,7 @@ async def main():
                 result = {"userAgent": "unciv-test-fake-app-server"}
             elif method in {"thread/start", "thread/resume"}:
                 current["thread"] = params.get("threadId") or str(uuid.uuid4())
+                current["instructions"] = params["developerInstructions"]
                 result = {
                     "thread": {"id": current["thread"], "turns": []},
                     "model": params.get("model", "fake-configured-model"),

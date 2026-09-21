@@ -13,9 +13,8 @@ from civ_agent.civilization_state import StateConflict, job_id
 from civ_agent.host_connection import HostConnection
 from civ_agent.protocol import JsonObject
 from civ_agent.schemas import ConnectRequest, validate
-from civ_agent.startup_context import prepare_startup, startup_text
+from civ_agent.startup_context import prepare_startup, startup_prompt, startup_text
 from civ_agent.tls import private_directory, write_private_json
-from civ_agent.tool_discovery import tool_discovery_instructions
 
 
 class ChatRuntime:
@@ -212,21 +211,8 @@ class ChatRuntime:
             service.executable, workspace, service.gateway_url, service.gateway_ca_file, notification
         )
         self.jobs[id] = (job, process)
-        prompt = (
-            tool_discovery_instructions("communication")
-            + "\n\n"
-            + f"Handle {service.civilization}'s newly received communication. Ordinary gameplay is handled separately. "
-            "Follow scenario.instructions when present; otherwise your objective is to win the game.\n\n"
-            "1. Use prepared chat_read and relevant memory, or read them if absent. Use player_turn only for a specific missing gameplay "
-            "detail or required native-action inspection. Statements are attributed claims, not game facts.\n"
-            "2. Decide whether a useful response or agreement advances your strategy. Use chat_send for messages "
-            "and explicit nativeAction, commitment_offer/decide for social promises, trade tools for binding "
-            "trade/peace, and friendship_offer for engine friendship. Read trade_read before deciding or "
-            "counteroffering; follow each tool's turn and consent requirements. Never automatically reopen a "
-            "closed negotiation. Read agreement_read after an agreement changes and reconsider dependent plans.\n"
-            "3. Finish with a short summary; the service records receipts and typed memory.\n\n"
-            "Do not simulate another player or send repetitive acknowledgements.\n\n"
-            + service.memory.context(job.memory)
+        prompt = f"Handle {service.civilization}'s newly received communication.\n\n" + service.memory.context(
+            job.memory
         )
 
         def export_history():
@@ -242,16 +228,23 @@ class ChatRuntime:
 
         try:
             prepared = await prepare_startup(service.gateway, job)
-            context = startup_text(prepared)
+            startup = startup_prompt(prepared, "communication", prompt)
             record["startup"] = {
-                "characters": len(context),
+                "characters": len(startup_text(prepared)),
                 "coreTools": [tool["name"] for tool in prepared["coreTools"]],
                 "reads": list(prepared["reads"]),
+                **startup.metadata(),
             }
-            prompt += "\n\n" + context
-            await service.io.call(service.history.begin, record, prompt, job.token)
+            await service.io.call(service.history.begin, record, None, job.token)
+            await service.io.call(service.history.startup_context, id, startup.instructions, role="developer")
+            await service.io.call(service.history.startup_context, id, startup.user)
             await process.start(job.token, self.settings.get("model"))
-            options: JsonObject = {"cwd": str(workspace), "approvalPolicy": "never", "sandbox": "workspace-write"}
+            options: JsonObject = {
+                "cwd": str(workspace),
+                "approvalPolicy": "never",
+                "sandbox": "workspace-write",
+                "developerInstructions": startup.instructions,
+            }
             if self.settings.get("model"):
                 options["model"] = self.settings["model"]
             if self.settings.get("reasoningEffort"):
@@ -267,7 +260,7 @@ class ChatRuntime:
                 "turn/start",
                 {
                     "threadId": record["threadId"],
-                    "input": [{"type": "text", "text": prompt}],
+                    "input": [{"type": "text", "text": startup.user}],
                     "approvalPolicy": "never",
                     "summary": "auto",
                     **({"effort": self.settings["reasoningEffort"]} if self.settings.get("reasoningEffort") else {}),

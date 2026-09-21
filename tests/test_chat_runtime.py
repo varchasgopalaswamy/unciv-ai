@@ -60,6 +60,7 @@ class Jobs:
         self.service = None
         self.purposes = []
         self.prompts = []
+        self.instructions = []
         self.planning_started = asyncio.Event()
         self.replied = asyncio.Event()
 
@@ -76,6 +77,7 @@ class Jobs:
 
             async def request(self, method, parameters):
                 if method == "thread/start":
+                    owner.instructions.append(parameters["developerInstructions"])
                     return {"thread": {"id": workspace.name}, "model": "test-model", "reasoningEffort": "medium"}
                 if method == "turn/start":
                     owner.prompts.append(parameters["input"][0]["text"])
@@ -172,12 +174,13 @@ def test_chat_batches_and_replies_while_planning_job_is_held(tmp_path, monkeypat
             host.post("Let me know what you need.")
             await asyncio.wait_for(jobs.replied.wait(), 3)
             assert jobs.purposes == ["gameplay", "communication"]
-            assert all(prompt.count("Civ tool discovery:") == 1 for prompt in jobs.prompts)
-            assert '"mcp__civ__player_capabilities"' in jobs.prompts[0]
-            assert '"mcp__civ__chat_read"' in jobs.prompts[1]
-            assert '"mcp__civ__chat_send"' in jobs.prompts[1]
-            assert '"mcp__civ__player_capabilities"' not in jobs.prompts[1]
-            assert "otherwise your objective is to win the game" in jobs.prompts[1]
+            assert all(prompt.count("Civ tool discovery:") == 1 for prompt in jobs.instructions)
+            assert all("Civ tool discovery:" not in prompt for prompt in jobs.prompts)
+            assert '"mcp__civ__player_capabilities"' in jobs.instructions[0]
+            assert '"mcp__civ__chat_read"' in jobs.instructions[1]
+            assert '"mcp__civ__chat_send"' in jobs.instructions[1]
+            assert '"mcp__civ__player_capabilities"' not in jobs.instructions[1]
+            assert "otherwise your objective is to win the game" in jobs.instructions[1]
             assert host.sent == ["I will consider your offer."]
             assert service.status()["phase"] == "RUNNING"  # Long planning still in progress.
             await asyncio.sleep(0.1)

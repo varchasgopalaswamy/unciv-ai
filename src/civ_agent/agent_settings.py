@@ -39,6 +39,25 @@ def player_tool_arguments():
     return [*result, "-c", 'web_search="disabled"']
 
 
+def scheduled_prompt_arguments():
+    """Keep unrelated, machine-dependent context out of headless player prompts.
+
+    These controls affect prompt presentation, not sandbox enforcement. Each job
+    still has its own workspace, gateway credentials and approvalPolicy=never.
+    Interactive Codex sessions keep their normal environment instructions.
+    """
+    settings = (
+        "include_environment_context=false",
+        "include_permissions_instructions=false",
+        "include_apps_instructions=false",
+        "include_collaboration_mode_instructions=false",
+        "skills.include_instructions=false",
+        "features.plugins=false",
+        "project_doc_max_bytes=0",
+    )
+    return [argument for setting in settings for argument in ("-c", setting)]
+
+
 def valid_setting(value):
     return (
         isinstance(value, str)

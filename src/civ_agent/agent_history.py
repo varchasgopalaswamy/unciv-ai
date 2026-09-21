@@ -339,7 +339,8 @@ class HistoryStore:
             self.path(record["activationId"]), (self.service_token, player_token), auto_render=self.auto_render
         )
         self.logs[record["activationId"]] = log
-        log.append("user_message", {"text": prompt})
+        if prompt is not None:
+            log.append("user_message", {"text": prompt})
         self.lifecycle(record)
 
     def lifecycle(self, record):
@@ -358,9 +359,11 @@ class HistoryStore:
             log.append("lifecycle", data)
             log.last_lifecycle = data
 
-    def startup_context(self, activation_id, text):
+    def startup_context(self, activation_id, text, *, role="user"):
         """Retain the exact extra context supplied before the first model request."""
-        self.logs[activation_id].append("user_message", {"text": text, "source": "service_startup"})
+        if role not in {"developer", "user"}:
+            raise ValueError("INVALID_PROMPT_ROLE")
+        self.logs[activation_id].append(role + "_message", {"text": text, "source": "service_startup"})
 
     def handoff_response(self, activation_id, call_id, name, arguments, result):
         """Keep a response intentionally withheld to prevent another model request."""

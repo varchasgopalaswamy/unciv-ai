@@ -40,6 +40,13 @@ def summarize(jobs):
     )
     result: JsonObject = {key: sum(job[key] for job in jobs) for key in fields}
     result.update(jobs=len(jobs), usage=sum_usage(jobs))
+    for key in ("firstRequestUsage", "laterRequestUsage"):
+        result[key] = {name: sum(job[key][name] for job in jobs) for name in (*TOKEN_KEYS, "uncached_input_tokens")}
+        result[key]["cache_write_input_tokens"] = (
+            sum(job[key]["cache_write_input_tokens"] for job in jobs)
+            if all(job[key]["cache_write_input_tokens"] is not None for job in jobs)
+            else None
+        )
     for key in ("gameplayElapsedMs", "finalizationElapsedMs"):
         result[key] = sum(job[key] for job in jobs) if jobs and all(job.get(key) is not None for job in jobs) else None
     result["responseMetrics"] = {
@@ -131,6 +138,9 @@ def collect(root, sessions, require_updates=False):
             "purpose": job["purpose"],
             "gameTurn": job.get("gameTurn"),
             "usage": discovery["usage"],
+            "firstRequestUsage": discovery["firstRequestUsage"],
+            "laterRequestUsage": discovery["laterRequestUsage"],
+            "promptLayout": activation.get("startup"),
             "modelRequests": discovery["modelRequests"],
             "discoveryChars": discovery["discoveryChars"],
             "toolCalls": sum(value["calls"] for value in tool_calls.values()),

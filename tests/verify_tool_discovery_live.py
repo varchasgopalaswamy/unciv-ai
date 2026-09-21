@@ -6,8 +6,21 @@ import json
 import sqlite3
 from pathlib import Path
 
+from civ_agent.protocol import JsonObject
 from civ_agent.telemetry import TOKEN_KEYS
 from civ_agent.tls import write_private_json
+
+
+def request_usage(rows):
+    usage: JsonObject = {key: sum(row[key] for row in rows) for key in TOKEN_KEYS}
+    usage["uncached_input_tokens"] = usage["input_tokens"] - usage["cached_input_tokens"]
+    # Older provider traces omit cache-write usage. Absence is not a measured zero.
+    usage["cache_write_input_tokens"] = (
+        sum(row["cache_write_input_tokens"] for row in rows)
+        if all(isinstance(row.get("cache_write_input_tokens"), int) for row in rows)
+        else None
+    )
+    return usage
 
 
 def discovery_metrics(path: Path):
@@ -59,8 +72,8 @@ def discovery_metrics(path: Path):
             else:
                 lookup["otherChars"] += len(text)
     assert requests, "Provider per-request usage records are required for this comparison"
-    usage = {key: sum(row[key] for row in requests.values()) for key in TOKEN_KEYS}
-    usage["uncached_input_tokens"] = usage["input_tokens"] - usage["cached_input_tokens"]
+    ordered_usage = list(requests.values())
+    usage = request_usage(ordered_usage)
     seen = set()
     repeats = []
     for lookup in lookups.values():
@@ -70,6 +83,10 @@ def discovery_metrics(path: Path):
         "modelSettings": settings,
         "modelRequests": len(requests),
         "usage": usage,
+        # Fresh jobs have no earlier conversation. This distinguishes reuse
+        # across jobs from the usual savings on later requests within one job.
+        "firstRequestUsage": request_usage(ordered_usage[:1]),
+        "laterRequestUsage": request_usage(ordered_usage[1:]),
         "discoveryRequests": len({row["request"] for row in lookups.values()}),
         "discoveryChars": sum(
             row[k] for row in lookups.values() for k in ("indexChars", "definitionChars", "otherChars")

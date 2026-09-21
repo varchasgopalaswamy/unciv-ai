@@ -13,6 +13,7 @@ import sys
 from pathlib import Path
 
 from civ_agent.agent_settings import add_settings_arguments, player_mcp_configuration, player_tool_arguments
+from civ_agent.player_prompts import GAMEPLAY_WORKFLOW
 from civ_agent.tls import (
     TLSConfigError,
     codex_trust_environment,
@@ -92,8 +93,13 @@ def workspace_name(civilization):
 def initial_prompt(civilization):
     from civ_agent.scheduler import player_prompt
 
-    return player_prompt(civilization) + (
-        "Use memory_read/history_read for earlier evidence. After completing one turn, report the outcome to the human."
+    return (
+        GAMEPLAY_WORKFLOW
+        + "\n\n"
+        + player_prompt(civilization)
+        + (
+            "Use memory_read/history_read for earlier evidence. After completing one turn, report the outcome to the human."
+        )
     )
 
 

@@ -29,7 +29,12 @@ from pydantic import ValidationError
 from civ_agent import service_recovery
 from civ_agent.agent_history import HISTORY_METHODS, HistoryStore
 from civ_agent.agent_results import PlayerResultStore, ResultError, validate_result
-from civ_agent.agent_settings import player_mcp_configuration, player_tool_arguments, valid_setting
+from civ_agent.agent_settings import (
+    player_mcp_configuration,
+    player_tool_arguments,
+    scheduled_prompt_arguments,
+    valid_setting,
+)
 from civ_agent.chat_runtime import ChatRuntime
 from civ_agent.civilization_state import CivilizationState
 from civ_agent.diagnostics import Diagnostics
@@ -38,10 +43,9 @@ from civ_agent.proposal_gateway import ProposalGateway
 from civ_agent.protocol import AgentProcess, JsonObject, Notification
 from civ_agent.schemas import StartRequest, start_error
 from civ_agent.service_io import ServiceIO
-from civ_agent.startup_context import prepare_startup, startup_text
+from civ_agent.startup_context import prepare_startup, startup_prompt, startup_text
 from civ_agent.telemetry import JobAccounting
 from civ_agent.tls import codex_trust_environment, https_url, private_directory, regular_file, write_private_json
-from civ_agent.tool_discovery import tool_discovery_instructions
 from civ_agent.turn_archive import TurnArchive
 
 TERMINAL = {"COMPLETED", "INTERRUPTED", "FAILED"}
@@ -104,6 +108,7 @@ class CodexProcess:
             "-c",
             config,
             *player_tool_arguments(),
+            *scheduled_prompt_arguments(),
             "app-server",
             "--listen",
             "unix://" + str(socket_path),
@@ -691,16 +696,7 @@ class AgentService:
                 )
                 self.match = {"epoch": payload["epoch"]}
                 await self.io.call(write_private_json, self.match_file, dict(self.match))
-            prompt = (
-                tool_discovery_instructions("gameplay")
-                + "\n\n"
-                + payload["prompt"]
-                + f"\n\nTurn {payload['gameTurn']}; files: turn_{payload['gameTurn']}/. "
-                "Use history_read only when earlier detailed commands or receipts are needed. "
-                "The service writes all turn files. Do not create or edit them. "
-                "After END_TURN succeeds, make no further tool calls. The service ends the model job at the handoff "
-                "and generates summary.json and summary.md from receipts and typed memory; no final prose is needed."
-            )
+            prompt = payload["prompt"] + f"\n\nTurn {payload['gameTurn']}; files: turn_{payload['gameTurn']}/."
             if payload["threadId"] is None:
                 assert self.archive is not None
                 await self.io.call(self.memory.bind, payload["epoch"])
@@ -727,7 +723,8 @@ class AgentService:
                 record["effectiveSettings"] = dict(pinned[1])
             self.records[record["activationId"]] = record
             await self._save(record)
-            await self.io.call(self.history.begin, copy.deepcopy(record), payload["prompt"], payload["playerToken"])
+            # Record model input after preparation, in its actual developer/user order.
+            await self.io.call(self.history.begin, copy.deepcopy(record), None, payload["playerToken"])
             await self.io.call(self._refresh, copy.deepcopy(record))
             self.active_id = record["activationId"]
             self.stop_event = asyncio.Event()
@@ -991,16 +988,24 @@ class AgentService:
                 self.gameplay_permit == record["activationId"],
             )
             prepared = await prepare_startup(self.gateway, job)
-            context = startup_text(prepared)
+            prompt = startup_prompt(prepared, "gameplay", payload["prompt"])
             record["startup"] = {
-                "characters": len(context),
+                "characters": len(startup_text(prepared)),
                 "coreTools": [tool["name"] for tool in prepared["coreTools"]],
                 "reads": list(prepared["reads"]),
+                **prompt.metadata(),
             }
-            await self.io.call(self.history.startup_context, record["activationId"], context)
-            payload = {**payload, "prompt": payload["prompt"] + "\n\n" + context}
+            await self.io.call(
+                self.history.startup_context, record["activationId"], prompt.instructions, role="developer"
+            )
+            await self.io.call(self.history.startup_context, record["activationId"], prompt.user)
             await process.start(job.token, selected["model"])
-            options: JsonObject = {"cwd": str(workspace), "approvalPolicy": "never", "sandbox": "workspace-write"}
+            options: JsonObject = {
+                "cwd": str(workspace),
+                "approvalPolicy": "never",
+                "sandbox": "workspace-write",
+                "developerInstructions": prompt.instructions,
+            }
             if selected["model"] is not None:
                 options["model"] = selected["model"]
             if selected["reasoningEffort"] is not None:
@@ -1049,7 +1054,7 @@ class AgentService:
             self.accept_usage = True
             turn_options = {
                 "threadId": thread_id,
-                "input": [{"type": "text", "text": payload["prompt"]}],
+                "input": [{"type": "text", "text": prompt.user}],
                 "approvalPolicy": "never",
                 "summary": "auto",
                 "model": effective_settings["model"],

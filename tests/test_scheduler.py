@@ -649,7 +649,7 @@ class SchedulerTest(unittest.TestCase):
         self.assertEqual(0, len(self.host.rollbacks))
         self.assertEqual(0, len(self.host.abortions))
         self.assertEqual(1, self.host.plays[1]["effectsBefore"])
-        self.assertIn("fresh conversation", self.host.plays[1]["request"]["prompt"])
+        self.assertIn("numbered 0 in player_turn", self.host.plays[1]["request"]["prompt"])
 
     def test_lost_end_turn_response_uses_committed_handoff_without_replay(self):
         self.host.behaviors = ["lost_response", "complete"]
@@ -895,18 +895,12 @@ class SchedulerTest(unittest.TestCase):
     def test_new_activation_names_the_current_turn_without_replaying_historical_end_turn(self):
         prompt = player_prompt("Greece", game_turn=2)
         self.assertIn("numbered 2 in player_turn", prompt)
-        self.assertIn("fresh conversation", prompt)
-        self.assertIn("historical evidence and plans, not current state", prompt)
-        self.assertIn("Follow scenario.instructions", prompt)
-        self.assertIn("otherwise your objective is to win the game", prompt)
-        self.assertIn("victory_progress", prompt)
         self.assertNotIn("CLOSE_START_DIPLOMACY", prompt)
         self.assertNotIn("requestId", prompt)
         self.assertNotIn("t11a1", player_prompt("Rome", game_turn=11))
         self.assertNotIn("reviewId=", prompt)
-        self.assertIn("Read turnReview", prompt)
-        self.assertIn("deferReason", prompt)
-        self.assertLess(len(prompt.split()), 250)
+        self.assertNotIn("Read turnReview", prompt)  # Supplied once by the service's developer message.
+        self.assertLess(len(prompt.split()), 20)
 
     def test_old_service_gets_restart_guidance_without_changing_turn_scheduling(self):
         result = self.run_cli("--max-turns", "1", "--max-seconds", "30")

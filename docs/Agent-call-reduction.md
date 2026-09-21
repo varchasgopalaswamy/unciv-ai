@@ -4,6 +4,8 @@ Status: implemented; automated validation and the matched live measurement passe
 This is a new five-part follow-up to
 [prompt streamlining](Prompt-streamlining.md), with its own numbering. The
 [original efficiency tasks](Agent-efficiency.md) are already implemented.
+The follow-up [prompt-caching pass](Prompt-caching.md) separates reusable
+instructions from changing player context and adds opening-request cache metrics.
 
 ## Evidence and objective
 

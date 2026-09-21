@@ -12,6 +12,7 @@ from civ_agent.tls import TLSConfigError, private_directory, regular_file
 from civ_agent.turn_archive import civilization_directory_name
 
 KINDS = {
+    "developer_message",
     "user_message",
     "assistant_delta",
     "assistant_message",
@@ -199,8 +200,10 @@ class LiveOutput:
             if kind in {"assistant_message", "reasoning_summary"}:
                 self.finish_line()
             return
-        if kind == "user_message":
-            self.line("Instructions", str(data.get("text", "")))
+        if kind in {"developer_message", "user_message"}:
+            self.line(
+                "Developer instructions" if kind == "developer_message" else "Instructions", str(data.get("text", ""))
+            )
         elif kind in {"tool_call", "tool_result"}:
             label = "Tool call" if kind == "tool_call" else "Tool result"
             text = json.dumps(data, ensure_ascii=False, separators=(",", ":"))
@@ -376,8 +379,9 @@ class EventHistory:
                 blocks[indices[key]] = f"**{key[0]}**\n\n{messages.text[key]}"
                 continue
             data, kind = event.get("data", {}), event.get("kind")
-            if kind == "user_message":
-                blocks.append("**Instructions**\n\n" + str(data.get("text", "")))
+            if kind in {"developer_message", "user_message"}:
+                label = "Developer instructions" if kind == "developer_message" else "Instructions"
+                blocks.append(f"**{label}**\n\n" + str(data.get("text", "")))
             elif kind in {"tool_call", "tool_result", "lifecycle", "error"}:
                 text = json.dumps(data, ensure_ascii=False, indent=2)
                 fence = "`" * max(3, max((len(match.group()) + 1 for match in re.finditer(r"`+", text)), default=3))

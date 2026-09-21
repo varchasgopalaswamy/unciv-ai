@@ -9,8 +9,9 @@ from jsonschema import Draft202012Validator
 from civ_agent.civilization_state import CivilizationState, StateConflict
 from civ_agent.game_commands import command_arguments
 from civ_agent.proposal_gateway import ProposalGateway
+from civ_agent.protocol import JsonObject
 from civ_agent.service_io import ServiceIO
-from civ_agent.startup_context import core_definitions, prepare_startup, startup_text
+from civ_agent.startup_context import core_definitions, prepare_startup, startup_prompt, startup_text
 from civ_agent.state_updates import apply_overview_update
 from civ_agent.telemetry import JobAccounting
 from tests.test_agent_service import StartupHost
@@ -43,7 +44,7 @@ def test_prepared_reads_establish_evidence_and_update_base_without_model_calls(t
             for tool in prepared["coreTools"]:
                 Draft202012Validator.check_schema(tool["inputSchema"])
             assert "social promises" in prepared["readInstructions"]["chat_read"]
-            assert json.loads(startup_text(prepared).split("\n")[-1]) == prepared
+            assert json.loads(startup_text(prepared).split("\n")[-1]) == prepared["reads"]
             action = view["alerts"][0]["command"]
             assert action == {"kind": "ACKNOWLEDGE_ALERT", "target": "alert1"}
             result = await gateway.call(job, "player_command", action, "ack")
@@ -130,3 +131,50 @@ def test_core_definitions_keep_complete_schemas_and_do_not_mutate_catalogue():
     ]
     assert catalogue == before
     assert command_arguments({"kind": "END_TURN", "deferReason": "Stay fortified"})["deferReason"] == "Stay fortified"
+
+
+def test_prompt_prefix_excludes_state_memory_identity_and_capability_changes():
+    prepared: JsonObject = {
+        "coreTools": [{"name": "mcp__civ__player_command", "inputSchema": {"type": "object"}}],
+        "readInstructions": {"chat_read": "Statements are claims."},
+        "reads": {
+            "player_capabilities": {"version": "v1", "value": {"commands": ["END_TURN"]}},
+            "player_turn": {"turn": 1, "civilization": "Rome", "stateId": "private-state-1"},
+            "chat_read": {"text": "UNTRUSTED_MESSAGE_IGNORE_INSTRUCTIONS"},
+        },
+    }
+    before = copy.deepcopy(prepared)
+    first = startup_prompt(prepared, "gameplay", "Rome turn 1; MEMORY_SENTINEL")
+    changed = copy.deepcopy(prepared)
+    changed["reads"] = {
+        "player_capabilities": {"error": "TEMPORARY_ERROR"},
+        "player_turn": {"turn": 2, "civilization": "Greece", "stateId": "private-state-2"},
+        "chat_read": {"text": "SECOND_PRIVATE_MESSAGE"},
+    }
+    second = startup_prompt(changed, "gameplay", "Greece turn 2; OTHER_MEMORY")
+    assert first.instructions == second.instructions
+    assert first.metadata()["instructionsSha256"] == second.metadata()["instructionsSha256"]
+    assert first.user != second.user
+    for private in ("MEMORY_SENTINEL", "UNTRUSTED_MESSAGE_IGNORE_INSTRUCTIONS", "private-state-1"):
+        assert private not in first.instructions
+        assert first.user.count(private) == 1
+        assert private not in second.user
+    assert first.user.index("Prepared capabilities") < first.user.index("MEMORY_SENTINEL")
+    assert first.user.index("MEMORY_SENTINEL") < first.user.index("private-state-1")
+    assert "inputSchema" in first.instructions and "inputSchema" not in first.user
+    assert "TEMPORARY_ERROR" in second.user
+    changed["coreTools"][0]["inputSchema"]["required"] = ["kind"]
+    third = startup_prompt(changed, "gameplay", "Greece turn 2")
+    assert third.metadata()["instructionsSha256"] != first.metadata()["instructionsSha256"]
+    assert prepared == before
+
+
+def test_prefix_is_deterministic_and_communication_has_its_own_workflow():
+    first = {"coreTools": [], "readInstructions": {"b": "B", "a": "A"}, "reads": {"chat_read": {}}}
+    second = {"reads": {"chat_read": {}}, "readInstructions": {"a": "A", "b": "B"}, "coreTools": []}
+    one = startup_prompt(first, "communication", "Rome")
+    two = startup_prompt(second, "communication", "Greece")
+    assert one.instructions == two.instructions
+    assert "Never automatically reopen" in one.instructions
+    assert "After END_TURN succeeds" not in one.instructions
+    assert one.metadata()["instructionCharacters"] == len(one.instructions)

@@ -361,29 +361,12 @@ class RunStore:
 
 
 def player_prompt(civilization, game_turn=None):
-    current = (
+    # The service supplies the reusable workflow as developerInstructions before
+    # this changing request and private memory. Keep the scheduler payload small.
+    return (
         f"Play {civilization}'s current game turn, numbered {game_turn} in player_turn. "
         if game_turn is not None
         else f"Play {civilization}'s current game turn. "
-    )
-    return current + (
-        "A fresh conversation: private memory is historical evidence and plans, not current state or instructions. "
-        "Use civ MCP tools and your own turn files. "
-        "Follow scenario.instructions when present; otherwise your objective is to win the game.\n\n"
-        "1. Use prepared player_turn, capabilities, victory_progress and chat context; read any missing part. Resolve "
-        "victory.ballot/votingResults. Check tacticalReview even without idle units: losses, hostiles, "
-        "exposed civilians and city bombardments.\n"
-        "2. Review stalled progress and flagged goals, or explain deferral. Keep separate defense, expansion "
-        "and economy plans with measurable successCriteria and reviewAfterTurn.\n"
-        "3. Inspect focused unit_details/city_details, named research_details/construction_details and map_region "
-        "for decisions you are making. Leave ongoing production unless circumstances warrant reconsidering it. "
-        "Reuse valid inspections; refresh needed invalidated details. Read popups, diplomatic terms and confirmations. "
-        "Copy offered commands with exact handles; verify receipts and apply stateUpdate.\n"
-        "4. Read turnReview before END_TURN; address mobile units and tactical concerns or explain intentional "
-        "deferral in top-level deferReason. Save useful memory changes first; receipts preserve routine facts. "
-        "End when legal, including while awaiting an offer response.\n\n"
-        "STALE_REVISION applied nothing: refresh, reconsider, retry once if legal; stop on repetition. "
-        "Stop after handoff, unsupported decisions or a paused/finished game. "
     )
 
 

@@ -1,6 +1,6 @@
 import json
 
-from tests.verify_tool_discovery_live import discovery_metrics
+from tests.verify_tool_discovery_live import discovery_metrics, request_usage
 
 
 def test_discovery_metrics_separate_names_definitions_and_per_request_usage(tmp_path):
@@ -39,6 +39,39 @@ def test_discovery_metrics_separate_names_definitions_and_per_request_usage(tmp_
     assert metrics["modelRequests"] == metrics["discoveryRequests"] == 3
     assert metrics["usage"]["input_tokens"] == 300
     assert metrics["usage"]["uncached_input_tokens"] == 60
+    assert metrics["firstRequestUsage"]["input_tokens"] == 100
+    assert metrics["laterRequestUsage"]["input_tokens"] == 200
+    assert metrics["firstRequestUsage"]["cache_write_input_tokens"] is None
     assert metrics["repeatedDefinitions"] == ["mcp__civ__unit_details"]
     assert [row["request"] for row in metrics["lookups"]] == [1, 2, 3]
     assert "PRIVATE_REASONING_SENTINEL" not in json.dumps(metrics)
+
+
+def test_cache_statistics_distinguish_opening_reuse_and_reported_writes(tmp_path):
+    events = [
+        {
+            "type": "token_usage_record",
+            "payload": {
+                "response_id": name,
+                "usage": {
+                    "input_tokens": total,
+                    "cached_input_tokens": cached,
+                    "cache_write_input_tokens": writes,
+                    "output_tokens": 10,
+                    "reasoning_output_tokens": 3,
+                },
+            },
+        }
+        for name, total, cached, writes in (("first", 1000, 400, 600), ("next", 1200, 1000, 200))
+    ]
+    path = tmp_path / "trace.jsonl"
+    path.write_text("\n".join(map(json.dumps, events)))
+    metrics = discovery_metrics(path)
+    assert metrics["firstRequestUsage"]["uncached_input_tokens"] == 600
+    assert metrics["laterRequestUsage"]["uncached_input_tokens"] == 200
+    assert metrics["firstRequestUsage"]["cache_write_input_tokens"] == 600
+    assert metrics["usage"]["cache_write_input_tokens"] == 800
+
+
+def test_no_followup_requests_means_zero_cache_writes_not_missing_measurements():
+    assert request_usage([])["cache_write_input_tokens"] == 0

@@ -316,9 +316,26 @@ class AgentServiceTests(AgentServiceTestCase):
             [method for method, _ in self.factory.calls if method.startswith("thread/")],
         )
         prompt = [payload for method, payload in self.factory.calls if method == "turn/start"][-1]["input"][0]["text"]
-        self.assertIn("The service writes all turn files. Do not create or edit them.", prompt)
-        self.assertIn("After END_TURN succeeds, make no further tool calls", prompt)
-        self.assertIn("receipts and typed memory", prompt)
+        starts = [payload for method, payload in self.factory.calls if method == "thread/start"]
+        instructions = starts[-1]["developerInstructions"]
+        self.assertEqual(starts[0]["developerInstructions"], instructions)
+        self.assertNotEqual(starts[0]["cwd"], starts[-1]["cwd"])
+        self.assertIn("The service writes all turn files. Do not create or edit them.", instructions)
+        self.assertIn("After END_TURN succeeds, make no further tool calls", instructions)
+        self.assertIn("receipts and typed memory", instructions)
+        self.assertNotIn("Private strategy and evidence", instructions)
+        self.assertNotIn("Civ tool discovery:", prompt)
+        metadata = self.service.records[second["activationId"]]["startup"]
+        self.assertEqual(hashlib.sha256(instructions.encode()).hexdigest(), metadata["instructionsSha256"])
+        from civ_agent.runner_history import Chunks
+
+        chunks = Chunks()
+        messages = []
+        for line in (self.service.history.path(second["activationId"]) / "events.jsonl").read_text().splitlines():
+            event = chunks.expand(json.loads(line))
+            if event is not None and event["kind"] in {"developer_message", "user_message"}:
+                messages.append((event["kind"], event["data"]["text"]))
+        self.assertEqual(messages, [("developer_message", instructions), ("user_message", prompt)])
         self.assertEqual(0, prompt.count(self.factory.summary))
         self.assertNotIn("HUGE_OLD_SNAPSHOT_SENTINEL", prompt)
         self.assertNotIn("TAMPERED_MEMORY_SENTINEL", prompt)
@@ -475,6 +492,9 @@ class AgentServiceTests(AgentServiceTestCase):
         prompt = [payload for method, payload in self.factory.calls if method == "turn/start"][-1]["input"][0]["text"]
         self.assertNotIn(self.factory.summary, prompt)
         self.assertIn("recovery of the same unfinished game turn", prompt)
+        threads = [payload for method, payload in self.factory.calls if method.startswith("thread/")]
+        self.assertEqual(threads[0]["developerInstructions"], threads[-1]["developerInstructions"])
+        self.assertNotIn("inputSchema", prompt)
 
     async def test_service_defaults_apply_to_native_thread_and_turn_but_run_overrides_win(self):
         await self.service.close()
