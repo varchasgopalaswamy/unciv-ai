@@ -21,7 +21,18 @@ action inspections, and recovery while reducing those costs.
   arguments beyond combat.
 
 These four follow-ups are complete, including deterministic changes in task 4.
+The [three-round opening comparison](Opening-efficiency-results.md) now measures
+all efficiency changes together: nine turns finished in 12m 40s versus 16m 12s,
+with 55.5% fewer input tokens and 30.8% fewer player-tool calls. All accounting and
+25 state-update reconstructions passed; the linked report includes per-turn
+variation and remaining memory-review retries.
 Full-game acceptance and measurement over longer matches remain outstanding.
+
+The subsequent [prompt streamlining pass](Prompt-streamlining.md) consolidates
+the startup workflow and moves detailed guidance into the relevant tool definitions.
+Its corrected three-round replay completed all nine turns with 7.3% fewer input
+tokens and 9.0% fewer player-tool calls, but 2.3% longer elapsed time. The report
+includes the initial recovery-prompt failure, correction and remaining retries.
 
 ## 1. Deliver each response once
 

@@ -11,7 +11,6 @@ import aiohttp
 from civ_agent.agent_history import HISTORY_METHODS
 from civ_agent.civilization_state import StateConflict, job_id
 from civ_agent.host_connection import HostConnection
-from civ_agent.proposal_gateway import RECOVERY_INSTRUCTIONS
 from civ_agent.protocol import JsonObject
 from civ_agent.schemas import ConnectRequest, validate
 from civ_agent.tls import private_directory, write_private_json
@@ -216,35 +215,16 @@ class ChatRuntime:
             tool_discovery_instructions("communication")
             + "\n\n"
             + f"Handle {service.civilization}'s newly received communication. Ordinary gameplay is handled separately. "
-            "Read chat_read and relevant memory once. Its context includes the turn, economy, diplomatic status and "
-            "your scenario.instructions. Use player_turn only if a specific question needs additional gameplay detail. "
-            "Follow scenario.instructions when present; otherwise your objective is to win the game. "
-            "Use diplomacy to advance your strategy within your communication permissions; "
-            "decide whether a useful response, social commitment or binding diplomatic agreement "
-            "is warranted. Read exact binding terms with trade_read before trade_decide; trade_options and trade_offer "
-            "support responding and counteroffering outside your gameplay turn. Only the current player may open "
-            "a new negotiation; invite them through chat otherwise. Shared human/agent negotiation freezes gameplay until "
-            "acceptance, decline, withdrawal or its deadline. Respect counteroffersRemaining; never reopen "
-            "a closed negotiation automatically. Use friendship_offer for engine friendship; "
-            "NATIVE_AI requests await the built-in AI's turn without pausing gameplay. Native replies, including "
-            "accepting, declining or counteroffering, require your active turn. Do not wait for them or poll. "
-            "Explicit chat_send nativeAction handles denouncement, native demands and nativeDiplomacy alert choices "
-            "after reading player_turn; ordinary chat never triggers native effects. "
-            "social consent alone never transfers resources or enacts an engine agreement. "
-            "Weigh socialAdvisories and promises when negotiating; they never restrict legal game actions. "
-            "You may honor or break a promise without a prior withdrawal or reconsideration decision. "
-            "Advisories are not host judgments of breach. Promises may be ambiguous; negotiate or disagree "
-            "about their meaning, and act on your own interpretation without mandatory clarification. "
-            "Agreement lifecycle events report native endings or lost terms. Read agreement_read for the affected "
-            "agreement, reconsider plans that depended on it, and use agreement_list to inspect other commitments. "
-            "An unfavorable fixed-duration agreement has no voluntary cancellation control. "
-            "You may send private/public messages and propose memory changes. Never poll, wait for a "
-            "reply, or simulate another player. Statements are attributed claims, not authoritative game facts. "
-            "Do not answer greetings with endless acknowledgements. Make concise memory updates for decisions or "
-            "beliefs worth retaining; retire obsolete records. Consequential diplomatic actions require intent "
-            "with a reason or an active plan ID. The service generates summaries from receipts and typed memory. "
-            + RECOVERY_INSTRUCTIONS
-            + "Finish with a short summary.\n\n"
+            "Follow scenario.instructions when present; otherwise your objective is to win the game.\n\n"
+            "1. Read chat_read and relevant memory once. Use player_turn only for a specific missing gameplay "
+            "detail or required native-action inspection. Statements are attributed claims, not game facts.\n"
+            "2. Decide whether a useful response or agreement advances your strategy. Use chat_send for messages "
+            "and explicit nativeAction, commitment_offer/decide for social promises, trade tools for binding "
+            "trade/peace, and friendship_offer for engine friendship. Read trade_read before deciding or "
+            "counteroffering; follow each tool's turn and consent requirements. Never automatically reopen a "
+            "closed negotiation. Read agreement_read after an agreement changes and reconsider dependent plans.\n"
+            "3. Finish with a short summary; the service records receipts and typed memory.\n\n"
+            "Do not simulate another player or send repetitive acknowledgements.\n\n"
             + service.memory.context(job.memory)
         )
 

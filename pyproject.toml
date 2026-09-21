@@ -25,6 +25,7 @@ dev = ["pyrefly", "pytest", "ruff"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["."]
 addopts = "--import-mode=importlib -ra"
 
 [tool.ruff]
@@ -36,7 +37,7 @@ extend-exclude = ["vendor", "build"]
 select = ["E4", "E7", "E9", "F", "I", "UP", "B"]
 
 [tool.pyrefly]
-project-includes = ["src/civ_agent", "tests"]
+project-includes = ["src/civ_agent", "tests", "scripts"]
 search-path = ["src", "."]
 python-version = "3.12"
 python-platform = "linux"

@@ -64,6 +64,8 @@ or coordinate turns automatically.
 
 For repeated turns, use the [HTTPS agent services and automatic scheduler](Automatic-turns.md).
 The interactive commands on this page retain their one-turn behavior.
+The [full Vanilla launcher](Full-vanilla-run.md) starts all local services and
+runs a full match with generous timeouts and saved diagnostics in one command.
 
 Each player has its own working directory under `STATE_DIR/agents`, such as
 `agents/Rome` or `agents/Greece`. Unusual characters in civilization names are encoded

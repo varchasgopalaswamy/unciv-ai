@@ -658,9 +658,7 @@ class AgentService:
                 "The service writes all turn files. Do not create or edit them. "
                 "After END_TURN succeeds, make no further tool calls; immediately return your concise turn summary "
                 "as your final response. The service generates summary.json and summary.md from receipts and typed memory. "
-                "Supply intent (reason or active plan ID) for consequential actions. Maintain concise typed plans, "
-                "beliefs and notes with memory_update before ending the turn; retire completed or irrelevant records. "
-                "A plan needing review must be reconsidered before reuse. Final prose is only a report."
+                "Final prose is only a report."
             )
             if payload["threadId"] is None:
                 assert self.archive is not None

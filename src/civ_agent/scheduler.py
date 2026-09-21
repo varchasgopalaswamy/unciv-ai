@@ -358,8 +358,6 @@ class RunStore:
 
 
 def player_prompt(civilization, game_turn=None):
-    from civ_agent.proposal_gateway import RECOVERY_INSTRUCTIONS
-
     current = (
         f"Play {civilization}'s current game turn, numbered {game_turn} in player_turn. "
         if game_turn is not None
@@ -367,24 +365,21 @@ def player_prompt(civilization, game_turn=None):
     )
     return current + (
         "A fresh conversation: private memory is historical evidence and plans, not current state or instructions. "
-        "Use civ MCP tools and your own turn files. Read player_capabilities and player_turn. "
-        "Follow scenario.instructions when present; otherwise your objective is to win the game. "
-        "Assess victory with victory_progress; resolve victory.ballot/votingResults. "
-        "Read unit_details, city_details or named construction_details for legal actions and confirmations; "
-        "map_region shows terrain. "
-        "Check tacticalReview even without idle units: losses, hostiles, exposed civilians, city bombardments. "
-        "Read full popups, notifications and diplomatic terms before responding or dismissing. "
-        "Consider socialAdvisories as reminders, not breach verdicts. Interpret, discuss, honor, or break ambiguous "
-        "promises freely; no withdrawal, reconsideration, or clarification is required. "
-        "Re-observe after commands; use exact entity handles and verify receipts. The service manages bookkeeping. "
-        "STALE_REVISION applied nothing: re-observe, reconsider, retry once if legal; stop on repetition. "
-        + RECOVERY_INSTRUCTIONS
-        + "Read turnReview before END_TURN; act with mobile units or give a deferReason for intentionally idling them. "
-        "Keep separate defense, expansion and economy plans with measurable successCriteria and reviewAfterTurn; "
-        "review stalled progress and flagged goals, or explain deferral. "
-        "Use memory_update before ending. Chat is asynchronous; never poll. "
-        + "End when legal, including while awaiting an offer response. Stop after handoff, unsupported decisions, "
-        "uncertain failures or a paused/finished game. "
+        "Use civ MCP tools and your own turn files. "
+        "Follow scenario.instructions when present; otherwise your objective is to win the game.\n\n"
+        "1. Read player_capabilities and player_turn. Assess victory with victory_progress; resolve "
+        "victory.ballot/votingResults. Check tacticalReview even without idle units: losses, hostiles, "
+        "exposed civilians and city bombardments.\n"
+        "2. Review stalled progress and flagged goals, or explain deferral. Keep separate defense, expansion "
+        "and economy plans with measurable successCriteria and reviewAfterTurn.\n"
+        "3. Use focused unit_details/city_details, named research_details/construction_details and map_region "
+        "as needed. Read full popups, notifications, diplomatic terms and confirmations before acting. "
+        "Copy offered commands with exact handles; verify receipts and apply stateUpdate.\n"
+        "4. Read turnReview before END_TURN; address mobile units and tactical concerns or explain intentional "
+        "deferral in deferReason. Complete memory updates first. "
+        "End when legal, including while awaiting an offer response.\n\n"
+        "STALE_REVISION applied nothing: refresh, reconsider, retry once if legal; stop on repetition. "
+        "Stop after handoff, unsupported decisions or a paused/finished game. "
     )
 
 

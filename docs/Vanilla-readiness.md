@@ -71,6 +71,14 @@ Full telemetry and all-player scores remain operator data, outside player observ
 
 ## Live batches
 
+For an unattended full game, use the [local full-game launcher](Full-vanilla-run.md).
+It supplies generous timeouts, retains logs for each launch and stops for
+inspection when a gameplay turn cannot continue:
+
+```sh
+.venv/bin/python scripts/run_vanilla_game.py
+```
+
 The opt-in wrapper starts the host and all three services, runs the ordinary
 scheduler, and shuts services down in reverse order. It issues no game commands.
 For an initial three-round batch:
@@ -125,6 +133,13 @@ arguments. [Command updates](Command-state-updates.md) are also implemented and
 live evaluated, including deterministic changes and receipt recovery. The latest
 opening used one model-facing overview read while seven host reads maintained
 fresh state. Single-turn improvements do not close the full-game acceptance task.
+
+The [three-round rerun](Opening-efficiency-results.md) used the exact original
+opening and completed all nine handoffs. Gameplay wall time fell from 16m 12s to
+12m 40s, input from 6.16 million to 2.74 million tokens, and player-tool calls from
+208 to 144. Every turn used one explicit overview; all 25 deltas reconstructed
+correctly. All nine jobs' accounting reconciled. These results measure the combined
+efficiency changes in one matched opening, with different subsequent agent choices.
 
 ## Acceptance
 

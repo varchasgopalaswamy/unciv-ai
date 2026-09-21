@@ -192,7 +192,21 @@ class ProposalGateway:
                 entry = copy.deepcopy(tool)
                 if tool["name"] == "player_turn":
                     entry["description"] = (
-                        "Read a compact current overview: tactics, strategy review, city/unit roster, pending choices and full alert/ordinary notification text. Notifications include category, icons and event locations. Read them, update private assessments as useful, then dismiss selected notice handles with DISMISS_NOTIFICATIONS. Read this overview at startup or to resynchronize. Successful gameplay actions return stateUpdate; apply those changes instead of requesting this overview after every command. Inspect targets with unit_details, city_details or construction_details for legal offers and confirmation consequences before acting; map_region and player_details provide other detail from this snapshot. Weigh socialAdvisories about possibly relevant accepted promises; they are not host judgments of breach and never restrict legal actions or require an extra confirmation. Use chat_read for other commitment terms."
+                        "Read the current overview at turn startup or to resynchronize: tactics, strategy review, "
+                        "city/unit roster, pending decisions, full alerts and notifications. Inspect legal options and "
+                        "consequences with focused detail tools before acting; use chat_read for social promises.\n"
+                        "After successful gameplay actions, apply stateUpdate instead of reading player_turn again:\n"
+                        "- delta: baseStateId must match your stateId; adopt the new stateId. set replaces whole "
+                        "sections; top-level removed deletes fields. collections upsert replaces whole rows by key, "
+                        "removed drops IDs, and optional order sets row order. Omitted values stay unchanged. "
+                        "Removals mean absent from this view, not necessarily destroyed. Ignore an update already "
+                        "at your stateId; read player_turn for a missing/mismatched base.\n"
+                        "- full: replace the overview. unavailable: keep the successful receipt and read player_turn; "
+                        "refresh failure never undoes an action. Never repeat an applied action to refresh state.\n"
+                        "- turn_ended: stop immediately without further calls.\n"
+                        "Inspect new alerts and decisions. Reread relevant invalidatedDetails only when needed for "
+                        "the next action; unchanged inspections remain valid. An argument error with applied=false "
+                        "alone needs no refresh; follow recovery.reads when supplied."
                     )
                     entry["outputSchema"] = TurnOverview.model_json_schema()
                 elif tool["name"] in {"research_details", "policy_details"}:
@@ -201,15 +215,35 @@ class ProposalGateway:
                     )
                     entry["description"] += (
                         " Prefer names=[candidate names] from the overview for detailed relevant choices and copyable "
-                        "commands. Omit names only when you need the broader catalogue for planning. "
-                        "Research commands include the native prerequisite queue. Add your own intent to command."
+                        "commands; omit names for broader planning. Copy command and add intent."
+                    )
+                elif tool["name"] == "mission_preview":
+                    entry["description"] += (
+                        " Read unit_details sections=[air], then copy this preview's command and add intent. "
+                        "Interception is automatic; preserve readiness by leaving the unit unused or skipping it."
+                    )
+                elif tool["name"] == "movement_preview":
+                    entry["description"] += (
+                        " Copy this preview's SET_UNIT_DESTINATION command and add intent. "
+                        "Read unit_details sections=[movement] to inspect or cancel orders."
                     )
                 tools.append(entry)
             elif tool["name"] == "player_command" and job.purpose == "gameplay":
                 entry = copy.deepcopy(tool)
                 entry["inputSchema"] = command_schema()
                 entry["description"] = (
-                    "Propose one offered game action using the schema for its kind. Copy only an inspected option's command, never the surrounding preview fields. Add intent as an object, e.g. {reason: 'your reason'}, or an existing active plan ID in intent.plan. Add a confirmationField only after reading and choosing to accept its consequences; templates never provide consent. CITY_ATTACK omits attackFrom; ATTACK requires it. The service records intent and handles request bookkeeping. For city-states, read player_details(section=diplomacy): CITY_STATE_ACTION uses target=civilizationId and selection=an available actions.name; confirmAction=true when confirmation is present. DECLARE_WAR also accepts city-states. Read unit_details sections=[abilities] before GIFT_UNIT, ACTIVATE_GREAT_PERSON or ADD_SPACESHIP_PART. Inspect receipt.cityState for actual influence and alliance changes. For distant moves read movement_preview(target,destination), then copy its SET_UNIT_DESTINATION command; native orders resume at the start of your turns. Inspect unit_details sections=[movement] to cancel orders. Read sections=[work] for worker jobs and water improvements (which consume the Work Boat). Read receipt.movement and receipt.waterImprovement for actual effects. For air actions read sections=[air] for missions, native ranges, bases/capacity, carried units and automatic interception readiness. Call mission_preview(target,mission,destination) using REBASE, PARADROP, AIR_SWEEP or NUCLEAR_STRIKE, then copy its command with matching target/destination and your intent. Nuclear strikes require confirmAction=true after reading the preview consequences; visible victims and declarations may be incomplete. Ordinary air and guided-missile strikes use ATTACK; damage previews exclude interception. Read receipt.mission and combatReports for actual effects. Interception is automatic; preserve native readiness by leaving the unit unused or skipping it. Read victory.ballot in player_turn: CAST_DIPLOMATIC_VOTE uses selection=candidate civilizationId; ABSTAIN_DIPLOMATIC_VOTE takes no other fields except intent. Read victory.votingResults before ACKNOWLEDGE_DIPLOMATIC_RESULTS, which has no target or selection. Successful gameplay commands (including ACKNOWLEDGE_ALERT) return stateUpdate. Apply its overview changes, inspect new alerts, and reread only relevant invalidatedDetails before the next action. Omitted fields stay unchanged; collection upsert rows replace the whole row, and removed IDs leave this view without implying destruction. A missing/mismatched baseStateId requires player_turn. A failed refresh does not undo an action; keep its receipt and follow recovery. END_TURN returns turn_ended without querying another player. Argument errors with applied=false do not themselves require a refresh; follow recovery.reads when present. Read full alerts and confirmations before acknowledging. DISMISS_NOTIFICATIONS takes targets=[notice handles] already read in player_turn; it clears only those pending messages and retains their contents in receipts. END_TURN requires reading turnReview and a deferReason for intentionally idle mobile units or deferred tactical concerns."
+                    "Execute one game action: kind (e.g. FOUND_CITY) is an argument, not a tool name. Copy only an "
+                    "inspected option's command, add intent, and follow its required inspections. Add a "
+                    "confirmationField only after reading and accepting its consequences; templates never supply "
+                    "consent. Use the selected kind's schema for actions without templates. The service handles "
+                    "request bookkeeping. Verify the native receipt; apply stateUpdate as described by player_turn.\n"
+                    "Read full alerts before responding or acknowledging. DISMISS_NOTIFICATIONS takes "
+                    "targets=[read notice handles]; dismissed contents remain in receipts. "
+                    "CAST_DIPLOMATIC_VOTE uses selection=candidate civilizationId from victory.ballot. "
+                    "ABSTAIN_DIPLOMATIC_VOTE and ACKNOWLEDGE_DIPLOMATIC_RESULTS take only kind and intent; "
+                    "read victory.votingResults before acknowledging results. "
+                    "END_TURN requires reading turnReview and a deferReason for intentionally idle mobile units "
+                    "or deferred tactical concerns; complete memory updates before issuing it."
                 )
                 tools.append(entry)
 
@@ -242,11 +276,11 @@ class ProposalGateway:
                 tools[-1]["outputSchema"] = TOOL_OUTPUT_MODELS[name].model_json_schema()
 
         for name, description in {
-            "unit_details": "Inspect one owned unit by its player_turn handle. Prefer explicit sections for the next decision: movement (paths/orders), combat (attacks), orders, promotions, work (worker/water improvements), settlement (founding and native promises), economy (upgrade/pillage/disband), abilities (great people/spaceship/gifts), or air. Multiple sections are allowed. Omitted sections or [all] returns full details. Each section retains native availability, warnings and confirmations; only returned sections count as inspected. Copy an offered command and add your intent. Actions return stateUpdate and refresh the cache. Read relevant invalidatedDetails as needed; unchanged prior inspections remain valid.",
+            "unit_details": "Inspect one owned unit by its player_turn handle. Prefer explicit sections: movement (paths/orders; use movement_preview for distant destinations), combat (attacks), orders, promotions, work (worker/water improvements; Work Boats are consumed), settlement (founding and native promises), economy (upgrade/pillage/disband), abilities (great people/spaceship/gifts), or air (missions, bases/capacity, carried units and interception readiness; use mission_preview for special missions). Multiple sections are allowed; omitted sections or [all] returns full details. Only returned sections count as inspected. Read availability, warnings and confirmations; copy an offered command and add intent. Receipts report actual effects.",
             "city_details": "Inspect one owned city by its player_turn handle. Prefer explicit sections: status (capture choices), production (queue/progress/options), citizens (growth/work tiles/specialists/focus), economy (yields/buildings/sales), purchases, or combat (bombardment). Multiple sections are allowed. Omitted sections or [all] returns full details. Each section retains native consequences; unrelated sections do not count as inspected. Prefer construction_details(names=[candidates]) for queueing/buying specific buildings or units. Copy offered commands and add your intent.",
             "construction_details": "Inspect construction in an owned city. Supply up to 16 names for descriptions, costs, eligibility, queue progress, purchase confirmations and copyable commands. Omit names for a compact catalogue only when choosing candidates. Read the named option before queueing or buying; copy command and add your intent. Confirm purchases explicitly after reading consequences.",
             "map_region": "Read explored tiles and frontier within radius 0–4 of an observed coordinate, respecting world wrap. Hidden tiles have no data. Read player_details(map_index) to locate distant regions.",
-            "player_details": "Read full economy, diplomacy (including war consequences), research progress, policy choices, current/previous turn receipts, or map coordinate index. Details reuse the latest permitted snapshot, refreshed by player_turn and successful gameplay actions. Follow stateUpdate after acting. Returned evidence identifies exactly what was read.",
+            "player_details": "Read full economy, diplomacy (including war consequences), research progress, policy choices, current/previous turn receipts, or map coordinate index. Uses the latest permitted snapshot; returned evidence identifies what was read. For CITY_STATE_ACTION inspect section=diplomacy: target=civilizationId, selection=available actions.name, and confirmAction=true only after accepting any confirmation. DECLARE_WAR also accepts city-states. Inspect receipt.cityState for actual influence and alliance changes.",
         }.items():
             add(name, description)
 
@@ -256,7 +290,7 @@ class ProposalGateway:
         )
         add(
             "trade_read",
-            "Read a host-owned binding trade before accepting, declining, withdrawing or counteroffering. Every clause has an explicit from/to direction, identical for both players. Pending deal IDs appear in chat_read. Interpret socialAdvisories yourself; they are reminders, not native restrictions or host judgments of breach. Re-read after changed terms; never poll.",
+            "Read a host-owned binding trade before accepting, declining, withdrawing or counteroffering. Every clause has an explicit from/to direction, identical for both players. Pending deal IDs appear in chat_read. Interpret socialAdvisories yourself; they are reminders, not native restrictions or host judgments of breach. Re-read after changed terms; never poll. Replies to NATIVE_AI offers require your active turn; shared human/agent offers support off-turn replies.",
         )
         add(
             "agreement_list",
@@ -284,7 +318,7 @@ class ProposalGateway:
         )
         add(
             "chat_read",
-            "Read compact current context (turn, your scenario instructions, economy and known diplomatic relations), messages, social commitments, binding trade IDs and enacted agreement summaries once. Inspect a binding proposal with trade_read before deciding, or agreement_read for enacted terms and ending history. Incoming private messages, trades, agreement changes and public mentions wake communication work automatically; never poll or wait for replies.",
+            "Read current context (turn, scenario instructions, economy and known diplomacy), messages, social promises, trade IDs and enacted agreement summaries once. Inspect binding proposals with trade_read or enacted terms/history with agreement_read. Social consent has no native game effect. socialAdvisories are reminders, not breach judgments: interpret, discuss, honor or break ambiguous promises freely, without required withdrawal, reconsideration or clarification. Incoming private messages, trades, agreement changes and public mentions wake communication automatically; never poll or wait for replies.",
         )
         add(
             "chat_history",
@@ -312,7 +346,7 @@ class ProposalGateway:
         )
         add(
             "memory_update",
-            "Create, revise, replace or retire typed private plans, beliefs, notes and SOUL principles. Code assigns IDs and turn metadata. Read before changing existing records. Notes use text and optional plan: an existing plan record ID, never prose; omit it for unrelated notes. Notes do not accept sources. Beliefs require claim, uncertainty and sources. Sources must have been read: record/message IDs, observation:overview, a detail response's evidence ID, or observation:communication after chat_read. Assumptions with source are ongoing dependencies; sources alone are historical evidence. Revise a plan after reviewing changed assumptions before reusing it for intent. Retirement removes active context, retaining history; it does not cancel a promise. Use subjects such as economy, Greece or entity handles for relevant context selection.",
+            "Create, revise, replace or retire typed private plans, beliefs, notes and SOUL principles. Code assigns IDs and turn metadata. Read before changing existing records. Notes use text and optional plan: an existing plan record ID, never prose; omit it for unrelated notes. Notes do not accept sources. Beliefs require claim, uncertainty and sources. Sources must have been read: record/message IDs, observation:overview, a detail response's evidence ID, or observation:communication after chat_read. Assumptions with source are ongoing dependencies; sources alone are historical evidence. Revise a plan after reviewing changed assumptions before reusing it for intent. For a rejected change with STALE_ASSUMPTIONS, reread its record and changed dependencies before reconsidering. Retirement removes active context, retaining history; it does not cancel a promise. Use subjects such as economy, Greece or entity handles for relevant context selection.",
         )
         return tools
 

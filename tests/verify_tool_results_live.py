@@ -19,6 +19,21 @@ def encoded(value):
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
+def comparison_key(value):
+    """JavaScript prints integral JSON numbers without .0; booleans stay distinct."""
+
+    def normalize(item):
+        if isinstance(item, float) and item.is_integer():
+            return int(item)
+        if isinstance(item, list):
+            return [normalize(child) for child in item]
+        if isinstance(item, dict):
+            return {key: normalize(child) for key, child in item.items()}
+        return item
+
+    return encoded(normalize(value))
+
+
 def envelopes(value):
     """Find printed MCP envelopes inside batches; never descend into their payloads."""
     if isinstance(value, dict):
@@ -32,15 +47,33 @@ def envelopes(value):
             yield from envelopes(item)
 
 
+def plain_payloads(value, recorded):
+    """Recognize directly printed structuredContent without descending into it."""
+    if isinstance(value, dict):
+        if isinstance(value.get("structuredContent"), dict) and isinstance(value.get("content"), list):
+            return
+        if comparison_key(value) in recorded:
+            yield value
+        else:
+            for item in value.values():
+                yield from plain_payloads(item, recorded)
+    elif isinstance(value, list):
+        for item in value:
+            yield from plain_payloads(item, recorded)
+
+
 def result_metrics(path: Path, audited_results):
-    recorded = Counter(encoded(result) for result in audited_results)
+    recorded = Counter(comparison_key(result) for result in audited_results)
     observed = Counter()
+    wrapped = Counter()
     metrics = dict(
         printedStructuredResults=0,
+        printedPayloadResults=0,
         duplicateTextBlocks=0,
         errorResults=0,
         additionalContentBlocks=0,
         observedEnvelopeChars=0,
+        observedResultChars=0,
         equivalentLegacyChars=0,
         equivalentSinglePayloadChars=0,
         truncatedOutputs=0,
@@ -66,19 +99,31 @@ def result_metrics(path: Path, audited_results):
             for result in envelopes(value):
                 canonical = canonical_tool_result(result)
                 payload = result["structuredContent"]
-                observed[encoded(payload)] += 1
+                observed[comparison_key(payload)] += 1
+                wrapped[comparison_key(payload)] += 1
                 metrics["printedStructuredResults"] += 1
                 metrics["duplicateTextBlocks"] += len(result["content"]) - len(canonical["content"])
                 metrics["errorResults"] += result.get("isError") is True
                 metrics["additionalContentBlocks"] += len(canonical["content"])
                 metrics["observedEnvelopeChars"] += len(encoded(result))
+                metrics["observedResultChars"] += len(encoded(result))
+                legacy = tool_result(payload)
+                metrics["equivalentLegacyChars"] += len(encoded(legacy))
+                metrics["equivalentSinglePayloadChars"] += len(encoded(canonical_tool_result(legacy)))
+            for payload in plain_payloads(value, recorded):
+                observed[comparison_key(payload)] += 1
+                metrics["printedStructuredResults"] += 1
+                metrics["printedPayloadResults"] += 1
+                metrics["errorResults"] += "error" in payload
+                metrics["observedResultChars"] += len(encoded(payload))
                 legacy = tool_result(payload)
                 metrics["equivalentLegacyChars"] += len(encoded(legacy))
                 metrics["equivalentSinglePayloadChars"] += len(encoded(canonical_tool_result(legacy)))
     metrics["auditedResults"] = sum(recorded.values())
     metrics["matchedPrintedResults"] = sum((observed & recorded).values())
     metrics["unmatchedPrintedResults"] = sum((observed - recorded).values())
-    metrics["auditedResultsNotPrintedAsEnvelopes"] = sum((recorded - observed).values())
+    metrics["auditedResultsNotPrintedAsEnvelopes"] = sum((recorded - wrapped).values())
+    metrics["auditedResultsNotPrinted"] = sum((recorded - observed).values())
     return metrics
 
 
