@@ -184,16 +184,37 @@ edits to these copies cannot change the next job's context.
 
 ## Live output and saved history
 
-`civ-agent match start` prints civilization-prefixed assistant messages, status updates and
-errors as they arrive. Add `--verbose` to also display tool calls, results, streamed
-tool output and exposed reasoning summaries. Large tool results have short terminal
-previews. Full sanitized history is always saved, regardless of this flag, and each
-activation prints its local `history.md` path.
+`civ-agent match start` prints turn headers, consistent player colors, indented
+assistant messages and confirmed-action summaries from native receipts. Errors
+and warnings remain visible in normal output. One renderer coordinates messages
+and background bookkeeping, so another player's completion cannot run into a
+partially streamed message.
 
-Verbosity applies to the current invocation, so it can be changed on resume:
+Colors default to `--color auto`: enabled in terminals, disabled in redirected
+output. Use `--color always` or `--color never` to override detection; `NO_COLOR`
+disables colors in every mode. Labels remain readable without color. Output is
+append-only and stays in terminal scrollback.
+
+Completed turns show gameplay/bookkeeping time, game API calls, and input, cached,
+output and reasoning tokens. Cached tokens are part of input tokens; reasoning
+tokens are part of output tokens. Totals use a matching local host export from
+`telemetry/turns.jsonl`. Game API totals count host `tool:` calls once, excluding
+the overlapping `command:` breakdown. If the export is unavailable, timing and
+usage cover the finalized activation only and are labeled accordingly. Partial
+usage is marked partial. Missing counts display `unavailable`; model-request counts
+are currently available only in offline benchmark traces. Display adds no model
+requests or game API calls.
+
+Add `--verbose` to also display preloaded startup context, tool calls, results,
+streamed tool output and exposed reasoning summaries. Large tool results have
+short terminal previews. Full sanitized history is always saved without terminal
+formatting, regardless of verbosity, and each activation prints its local
+`history.md` path. Errors also print that path for inspection.
+
+Color and verbosity apply to the current invocation, so they can be changed on resume:
 
 ```sh
-uv run civ-agent match resume --state-dir /tmp/civ-economy-1 --verbose
+uv run civ-agent match resume --state-dir /tmp/civ-economy-1 --color never --verbose
 ```
 
 The agent service appends accepted events through one ordered background I/O

@@ -62,6 +62,9 @@ and `b89aea260` (naval operations) are merged and published on
 2. Call `movement_preview` with `target` and `destination: {x, y}`. It returns
    adjacent paths grouped by estimated turn, costs and speculative flags. The
    native planner treats unexplored terrain speculatively and ignores unseen units.
+   Founding units also receive [settlement diagnostics](Exploration-and-settlement.md#settlement-diagnostics)
+   for that destination. These distinguish route availability from city-site
+   eligibility, including the native distance rule for different continents.
 3. Issue `SET_UNIT_DESTINATION` with the same unit and destination. Both the host
    and agent gateway require the preview to match the current revision. The engine
    executes the first segment and stores its normal `moveTo` action.

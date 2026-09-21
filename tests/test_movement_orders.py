@@ -30,6 +30,8 @@ def test_naval_commands_have_explicit_shapes_and_offer_reads(command, read):
 
 
 class MovementHost(Host):
+    settlement = None
+
     async def tool(self, name, args):
         if name == "movement_preview":
             return {
@@ -40,6 +42,7 @@ class MovementHost(Host):
                 "available": args["destination"]["x"] >= 0,
                 "estimatedTurns": 4,
                 "turns": [{"destination": args["destination"], "path": [args["destination"]], "speculative": True}],
+                "settlement": self.settlement,
             }
         return await super().tool(name, args)
 
@@ -98,3 +101,27 @@ def test_overview_exposes_destination_progress_and_work_boat_offer():
     shown = overview(host.view)["units"][0]
     assert shown["movementOrder"] == host.view["map"]["units"][0]["movementOrder"]
     assert shown["canCreateWaterImprovement"]
+
+
+@pytest.mark.parametrize("status", ["BLOCKED", "UNKNOWN"])
+def test_settlement_advice_does_not_prevent_legal_movement(tmp_path, status):
+    async def run():
+        io = ServiceIO()
+        gateway = ProposalGateway(CivilizationState(tmp_path / "state", "Rome"), io, tmp_path / "workspace")
+        host = MovementHost()
+        host.settlement = {"siteStatus": status, "canFoundNow": None}
+        job = await gateway.open("game", "gameplay", "g1", host, {})
+        query = {"target": "unit1", "destination": {"x": 8, "y": 0}}
+        try:
+            await gateway.call(job, "player_turn", {}, "read")
+            preview = await gateway.call(job, "movement_preview", query, "preview")
+            assert preview["settlement"] == host.settlement
+            assert preview["command"] == {"kind": "SET_UNIT_DESTINATION", **query}
+            action = {**preview["command"], "intent": {"reason": "Scout beyond this blocked city site"}}
+            await gateway.call(job, "player_command", action, "move")
+            assert host.executed[-1]["destination"] == query["destination"]
+        finally:
+            await gateway.close(job, True)
+            await io.close()
+
+    asyncio.run(run())

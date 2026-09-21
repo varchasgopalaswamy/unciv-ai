@@ -79,6 +79,7 @@ data class OwnedUnit(
     val movementOrder: MovementOrder? = null,
     val waterImprovement: WaterImprovement? = null,
     val air: UnitAirStatus? = null,
+    val settlement: SettlementPreview? = null,
 )
 
 /** Coordinates use Unciv's axial x/y grid. No tile data is returned for unexplored coordinates. */
@@ -181,6 +182,7 @@ internal fun observeMap(player: Civilization, state: TurnSessionState, canAct: B
                     movementOrder = observeMovementOrder(player, unit, active),
                     waterImprovement = observeWaterImprovement(player, unit, active),
                     air = observeUnitAir(player, unit, state, active),
+                    settlement = observeSettlement(player, unit, unit.currentTile.position.dto(), active),
                 )
             }.toList(),
         ),

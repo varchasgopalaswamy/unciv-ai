@@ -100,6 +100,7 @@ class UnitSummary(BoundaryModel):
     legalDestinations: int
     availableAttacks: int
     canFoundCity: bool
+    settlementStatus: str | None = None
     order: str | None = None
     workerJob: str | None = None
     availablePromotions: int
@@ -201,6 +202,7 @@ def overview(snapshot: JsonObject) -> JsonObject:
                     )
                 },
                 "movementOrder": unit.get("movementOrder"),
+                "settlementStatus": (unit.get("settlement") or {}).get("siteStatus"),
                 "missions": [m["mission"] for m in (unit.get("air") or {}).get("missions", []) if m.get("available")],
                 "transported": (unit.get("air") or {}).get("transported", False),
                 "carriedUnits": (unit.get("air") or {}).get("carriedUnits", []),

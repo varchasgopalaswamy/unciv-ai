@@ -50,7 +50,7 @@ UNIT_FIELDS = {
     "orders": ("combat.order", "combat.orders"),
     "promotions": ("combat.promotions",),
     "work": ("worker", "waterImprovement"),
-    "settlement": ("canFoundCity", "settlementPromises", "nearbyHostiles"),
+    "settlement": ("canFoundCity", "settlementPromises", "settlement", "nearbyHostiles"),
     "economy": ("economy",),
     "abilities": ("greatPerson", "spaceshipAssembly", "cityStateGift"),
     "air": ("air",),

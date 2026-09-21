@@ -71,6 +71,47 @@ another site. Founding consumes the ordinary settler through the same engine eff
 as the UI. A retry with the same request ID and payload returns its original receipt,
 including after the settler disappears and after restart.
 
+### Settlement diagnostics
+
+For units with a founding ability, `movement_preview(target, destination)` includes
+`settlement` alongside the ordinary route. The route's `available` field describes
+movement. A reachable tile can still be an unsuitable city site.
+
+The agent overview includes a compact `settlementStatus` and a link to
+`unit_details(target, sections=["settlement"])`, even when `canFoundCity` is false.
+That section includes the same diagnostics for the unit's current tile:
+
+| Field | Meaning |
+| --- | --- |
+| `siteStatus` | `BLOCKED` when a player-visible native site restriction applies; `ELIGIBLE` when the surroundings are fully visible and no site restriction applies; otherwise `UNKNOWN`. |
+| `siteBlockers` | Native water, impassable terrain, foreign ownership, or city-spacing restrictions. Visible blocking cities include their name, position, distance, and required minimum distance. |
+| `unitBlockers` | Separate current requirements such as movement, a usable founding ability, or One City Challenge. |
+| `canFoundNow` | Native action availability at the occupied destination; `null` for other destinations. |
+| `minimumCityDistance`, `minimumCityDistanceOnDifferentContinents` | Required center-to-center distances from the selected engine's rules. Vanilla normally requires four hexes on the same continent and three across continents. |
+| `uncertainty` | Explains incomplete visibility. An unknown site can still permit the native founding action once occupied. |
+
+Waiting can restore movement; it does not remove city-spacing or foreign-ownership
+restrictions. Own territory and adjacent foreign settlers do not themselves forbid
+founding. Agent guidance recommends reconsidering repeatedly blocked sites and
+scouting or selecting another destination. It adds no movement or founding gate;
+Unciv revalidates the actual action normally. The existing settlement inspection
+and native promise-confirmation flow remain in place.
+
+Prospective previews include only owned or currently visible blocking cities.
+Incomplete surrounding visibility produces uncertainty regardless of whether an
+unseen city actually exists, preventing eligibility queries from becoming a hidden
+city detector. Unexplored and nonexistent destinations return unknown site details.
+The current-tile `canFoundNow` mirrors the existing native action availability;
+it does not identify an unseen cause. These filters apply to this diagnostic
+surface; the broader map-UI visibility limitations described above still apply.
+
+`UnitSettlementTest` covers native blockers, distances across continents, movement
+recovery, ownership, adjacent settlers, and retained UI actions.
+`SettlementPreviewIntegrationTest` checks authenticated previews and commands,
+read-only behavior, founding/retry effects, and hidden-city non-disclosure.
+Python selective-read and movement-order tests cover discovery and advisory-only
+behavior through the model-facing gateway.
+
 ## Slice inventory and evidence
 
 | Behavior | UI/engine source | Validation |

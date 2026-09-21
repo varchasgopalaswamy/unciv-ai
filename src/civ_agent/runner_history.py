@@ -5,9 +5,9 @@ import json
 import os
 import re
 import tempfile
-import unicodedata
 from pathlib import Path
 
+from civ_agent.terminal_output import TerminalOutput, visible_text
 from civ_agent.tls import TLSConfigError, private_directory, regular_file
 from civ_agent.turn_archive import civilization_directory_name
 
@@ -23,6 +23,7 @@ KINDS = {
     "tool_output",
     "lifecycle",
     "error",
+    "action",
 }
 PRIVATE_FIELDS = {
     "encrypted_content",
@@ -32,20 +33,10 @@ PRIVATE_FIELDS = {
     "reasoning_text",
     "reasoningText",
 }
-ANSI = re.compile(r"\x1b(?:\][^\x07\x1b]*(?:\x07|\x1b\\)|\[[0-?]*[ -/]*[@-~]|[@-_])")
 
 
 class HistoryError(Exception):
     pass
-
-
-def visible_text(value):
-    value = ANSI.sub("", value).replace("\r\n", "\n").replace("\r", "\n")
-    return "".join(
-        character
-        for character in value
-        if character in "\n\t" or unicodedata.category(character) not in {"Cc", "Cf", "Cs"}
-    )
 
 
 def clean(value, secrets):
@@ -155,31 +146,55 @@ class Messages:
 
 
 class LiveOutput:
-    def __init__(self, civilization, secrets=(), *, verbose=False):
+    def __init__(self, civilization, secrets=(), *, verbose=False, renderer=None, owner=None, history_path=None):
         self.civilization = visible_text(civilization)
         self.verbose = verbose
         self.messages = Messages()
-        self.open_key = None
         self.chunks = Chunks(secrets)
+        self.renderer = renderer or TerminalOutput()
+        self.owner = owner or object()
+        self.history_path = history_path
+        self.actions = set()
 
     def finish_line(self):
-        if self.open_key is not None:
-            print(flush=True)
-            self.open_key = None
+        self.renderer.finish_line(self.owner)
 
     def line(self, label, text):
-        self.finish_line()
-        for line in text.splitlines() or [""]:
-            print(f"[{self.civilization}] {label}: {line}", flush=True)
+        self.renderer.line(label, text, civilization=self.civilization)
+
+    def error(self, text):
+        self.line("Error", text)
+        if self.history_path is not None:
+            self.line("History", str(self.history_path))
 
     def consume(self, event, emit=True):
         event = self.chunks.expand(event)
         if event is None:
             return
         key, delta = self.messages.update(event)
+        data, kind = event.get("data", {}), event["kind"]
+        if kind == "action":
+            identity = data.get("itemId", event.get("sequence"))
+            if identity in self.actions:
+                return
+            self.actions.add(identity)
+            if emit:
+                self.line("Action", str(data.get("description", "Command confirmed.")))
+            return
         if not emit:
             return
-        data, kind = event.get("data", {}), event["kind"]
+        if kind == "tool_result":
+            result = data.get("result")
+            payload = result.get("structuredContent", {}) if isinstance(result, dict) else {}
+            failure = data.get("error") or (payload.get("error") if isinstance(payload, dict) else None)
+            if failure or (isinstance(result, dict) and result.get("isError")) or data.get("status") == "failed":
+                self.error(visible_text(json.dumps(failure or result or data, ensure_ascii=False))[:600])
+        if (
+            not self.verbose
+            and kind in {"developer_message", "user_message"}
+            and data.get("source") == "service_startup"
+        ):
+            return
         if not self.verbose and kind in {
             "tool_call",
             "tool_result",
@@ -189,16 +204,14 @@ class LiveOutput:
         }:
             return
         if key is not None:
-            if delta:
-                if self.open_key != key:
-                    self.finish_line()
-                for segment in delta.splitlines(keepends=True):
-                    if self.open_key is None:
-                        print(f"[{self.civilization}] {key[0]}: ", end="", flush=True)
-                    print(segment, end="", flush=True)
-                    self.open_key = None if segment.endswith("\n") else key
-            if kind in {"assistant_message", "reasoning_summary"}:
-                self.finish_line()
+            self.renderer.stream(
+                self.owner,
+                key,
+                self.civilization,
+                key[0],
+                delta or "",
+                final=kind in {"assistant_message", "reasoning_summary"},
+            )
             return
         if kind in {"developer_message", "user_message"}:
             self.line(
@@ -208,8 +221,14 @@ class LiveOutput:
             label = "Tool call" if kind == "tool_call" else "Tool result"
             text = json.dumps(data, ensure_ascii=False, separators=(",", ":"))
             self.line(label, text[:1200] + (" … (full result in history)" if len(text) > 1200 else ""))
-        elif kind in {"lifecycle", "error"}:
-            self.line("Status" if kind == "lifecycle" else "Error", json.dumps(data, ensure_ascii=False))
+        elif kind == "error":
+            self.error(json.dumps(data, ensure_ascii=False))
+        elif kind == "lifecycle":
+            phase = str(data.get("phase", "Status")).replace("_", " ").capitalize()
+            if data.get("error"):
+                self.error(phase + ": " + str(data["error"]))
+            else:
+                self.line("Status", phase)
 
 
 def history_file(path):
@@ -241,7 +260,9 @@ def bind_source(path, expected):
 
 
 class EventHistory:
-    def __init__(self, root, epoch, civilization, activation, secrets=(), *, game_turn=None, verbose=False):
+    def __init__(
+        self, root, epoch, civilization, activation, secrets=(), *, game_turn=None, verbose=False, renderer=None
+    ):
         def digest(value: str) -> str:
             return hashlib.sha256(value.encode()).hexdigest()
 
@@ -269,7 +290,14 @@ class EventHistory:
         self.jsonl = self.directory / "events.jsonl"
         self.markdown = self.directory / "history.md"
         self.secrets = tuple(secrets)
-        self.output = LiveOutput(civilization, secrets, verbose=verbose)
+        self.output = LiveOutput(
+            civilization,
+            secrets,
+            verbose=verbose,
+            renderer=renderer,
+            owner=(epoch, civilization, activation),
+            history_path=self.markdown,
+        )
         self.events = []
         bind_source(self.directory / "source.json", self.source)
         if self.jsonl.exists() or self.jsonl.is_symlink():
@@ -382,7 +410,7 @@ class EventHistory:
             if kind in {"developer_message", "user_message"}:
                 label = "Developer instructions" if kind == "developer_message" else "Instructions"
                 blocks.append(f"**{label}**\n\n" + str(data.get("text", "")))
-            elif kind in {"tool_call", "tool_result", "lifecycle", "error"}:
+            elif kind in {"tool_call", "tool_result", "lifecycle", "error", "action"}:
                 text = json.dumps(data, ensure_ascii=False, indent=2)
                 fence = "`" * max(3, max((len(match.group()) + 1 for match in re.finditer(r"`+", text)), default=3))
                 blocks.append(f"**{kind.replace('_', ' ').capitalize()}**\n\n{fence}json\n{text}\n{fence}")

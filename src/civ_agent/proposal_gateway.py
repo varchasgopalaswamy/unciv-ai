@@ -237,7 +237,9 @@ class ProposalGateway:
                 elif tool["name"] == "movement_preview":
                     entry["description"] += (
                         " Copy this preview's SET_UNIT_DESTINATION command and add intent. "
-                        "Read unit_details sections=[movement] to inspect or cancel orders."
+                        "Read unit_details sections=[movement] to inspect or cancel orders. "
+                        "For settlers, inspect settlement separately from route availability: waiting for movement "
+                        "does not fix city spacing or foreign ownership. Reconsider repeatedly blocked sites."
                     )
                 tools.append(entry)
             elif tool["name"] == "player_command" and job.purpose == "gameplay":
@@ -292,7 +294,7 @@ class ProposalGateway:
                 tools[-1]["outputSchema"] = TOOL_OUTPUT_MODELS[name].model_json_schema()
 
         for name, description in {
-            "unit_details": "Inspect one owned unit by its player_turn handle. Prefer explicit sections: movement (paths/orders; use movement_preview for distant destinations), combat (attacks), orders, promotions, work (worker/water improvements; Work Boats are consumed), settlement (founding and native promises), economy (upgrade/pillage/disband), abilities (great people/spaceship/gifts), or air (missions, bases/capacity, carried units and interception readiness; use mission_preview for special missions). Multiple sections are allowed; omitted sections or [all] returns full details. Only returned sections count as inspected. Read availability, warnings and confirmations; copy an offered command and add intent. Receipts report actual effects.",
+            "unit_details": "Inspect one owned unit by its player_turn handle. Prefer explicit sections: movement (paths/orders; use movement_preview for distant destinations), combat (attacks), orders, promotions, work (worker/water improvements; Work Boats are consumed), settlement (current-site native blockers, movement requirements and native promises; movement_preview also inspects prospective city sites), economy (upgrade/pillage/disband), abilities (great people/spaceship/gifts), or air (missions, bases/capacity, carried units and interception readiness; use mission_preview for special missions). Multiple sections are allowed; omitted sections or [all] returns full details. Only returned sections count as inspected. Read availability, warnings and confirmations; copy an offered command and add intent. Receipts report actual effects.",
             "city_details": "Inspect one owned city by its player_turn handle. Prefer explicit sections: status (capture choices), production (queue/progress/options), citizens (growth/work tiles/specialists/focus), economy (yields/buildings/sales), purchases, or combat (bombardment). Multiple sections are allowed. Omitted sections or [all] returns full details. Each section retains native consequences; unrelated sections do not count as inspected. Prefer construction_details(names=[candidates]) for queueing/buying specific buildings or units. Copy offered commands and add your intent.",
             "construction_details": "Inspect construction in an owned city. Supply up to 16 names for descriptions, costs, eligibility, queue progress, purchase confirmations and copyable commands. Omit names for a compact catalogue only when choosing candidates. Read the named option before queueing or buying; copy command and add your intent. Confirm purchases explicitly after reading consequences.",
             "map_region": "Read explored tiles and frontier within radius 0–4 of an observed coordinate, respecting world wrap. Hidden tiles have no data. Read player_details(map_index) to locate distant regions.",
@@ -394,6 +396,20 @@ class ProposalGateway:
         try:
             result, replayed = await self._call_once(job, name, arguments, call_id)
             outcome = "error" if "error" in result else "success"
+            if (
+                self.history is not None
+                and not replayed
+                and name == "player_command"
+                and outcome == "success"
+                and result.get("kind") == arguments.get("kind")
+                and isinstance(result.get("kind"), str)
+            ):
+                kind = result["kind"]
+                description = kind.replace("_", " ").capitalize() + " confirmed."
+                actions = (job.observation or {}).get("turnReview", {}).get("actions", [])
+                if kind != "END_TURN" and actions and actions[-1].get("kind") == kind:
+                    description = actions[-1].get("description") or description
+                await self.io.call(self.history.action, job.id, call_id, kind, description)
             ended = job.complete_on_handoff and result.get("stateUpdate", {}).get("kind") == "turn_ended"
             if ended:
                 job.gameplay_fenced = True

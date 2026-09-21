@@ -131,7 +131,7 @@ internal fun createPlayerToolsServer(session: PlayerSession): Server = Server(
 
     addTool(
         name = "movement_preview",
-        description = "Preview a destination using Unciv pathfinding. Supply an owned unit handle and destination x/y. Returns adjacent paths grouped by estimated turns; speculative paths can change as terrain and units become visible. Read this at the current revision before SET_UNIT_DESTINATION with the same target and destination. That command moves now and saves the native order for later turns. Inspect unit.movementOrder; CANCEL_UNIT_MOVEMENT stops it. Estimates are not promises of arrival.",
+        description = "Preview a destination using Unciv pathfinding. Supply an owned unit handle and destination x/y. Returns adjacent paths grouped by estimated turns; speculative paths can change as terrain and units become visible. Founding units also get settlement: siteStatus ELIGIBLE/BLOCKED/UNKNOWN, visible native siteBlockers, and separate unitBlockers such as NO_MOVEMENT. UNKNOWN means nearby visibility is incomplete; it does not prohibit movement or founding. canFoundNow applies only while occupying the destination. Movement availability is not settlement eligibility; inspect this before choosing a city site, then recheck unit_details sections=[settlement] on arrival. Read this at the current revision before SET_UNIT_DESTINATION with the same target and destination. That command moves now and saves the native order for later turns. Inspect unit.movementOrder; CANCEL_UNIT_MOVEMENT stops it. Estimates are not promises of arrival.",
         inputSchema = InputSchemas.movementPreview.toolSchema(),
         toolAnnotations = QUERY_ANNOTATIONS,
     ) { request ->

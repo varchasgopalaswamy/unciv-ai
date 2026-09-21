@@ -377,6 +377,13 @@ class HistoryStore:
         log.append("tool_call", {**item, "server": "civ", "tool": name, "arguments": arguments})
         log.append("tool_result", {**item, "result": {"content": [], "structuredContent": result, "isError": False}})
 
+    def action(self, activation_id, call_id, kind, description):
+        """Record a native receipt's description for observers, outside model context."""
+        self.logs[activation_id].append(
+            "action",
+            {"itemId": "action:" + call_id, "source": "service_receipt", "kind": kind, "description": description},
+        )
+
     def bind_turn(self, activation_id, turn_id):
         log = self.logs.get(activation_id)
         if log is not None:

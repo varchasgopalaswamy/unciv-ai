@@ -28,7 +28,7 @@ def add_overview_commands(value: JsonObject) -> None:
             "instruction": "Read turnReview and tacticalReview. Add intent and a top-level deferReason explaining any intentional deferral. Save useful memory changes before executing.",
         }
     for unit in value.get("units", []):
-        if unit.get("canFoundCity"):
+        if unit.get("canFoundCity") or unit.get("settlementStatus"):
             unit.setdefault("inspections", {})["FOUND_CITY"] = {
                 "tool": "unit_details",
                 "arguments": {"target": unit["handle"], "sections": ["settlement"]},
@@ -51,6 +51,14 @@ def add_unit_commands(unit: JsonObject) -> None:
         unit["foundCityCommand"] = command_arguments({"kind": "FOUND_CITY", "target": target})
         if unit.get("settlementPromises"):
             unit["foundCityConfirmationField"] = "confirmBreakPromise"
+    if unit.get("settlement") is not None:
+        unit["settlementInstruction"] = (
+            "For another site, read movement_preview(target, destination) and inspect its settlement field. "
+            "Movement availability does not imply founding eligibility. Waiting restores movement, not site eligibility. "
+            "Reconsider a repeatedly blocked site; scout or choose another location instead of assuming next turn fixes it. "
+            "UNKNOWN is not a rejection: recheck canFoundCity on arrival. Own territory and adjacent foreign settlers "
+            "do not by themselves prohibit founding."
+        )
     worker = unit.get("worker") or {}
     for option in worker.get("options", []):
         if available(option):

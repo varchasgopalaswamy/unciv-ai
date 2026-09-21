@@ -41,8 +41,17 @@ automatic restart loop. Normal recoverable tool errors can still be handled by
 the current agent within its turn, as before.
 
 Override limits with `--turn-timeout`, `--startup-timeout`, `--max-seconds`,
-`--max-turns` and `--max-invocations`. `--verbose` also prints detailed tool activity;
-the full service history is saved regardless. A new game accepts `--seed`.
+`--max-turns` and `--max-invocations`. A new game accepts `--seed`.
+
+Normal output shows colored launcher status, player labels, turn headers,
+messages, confirmed actions, errors and turn totals. Completion is green; interrupts
+and exhausted limits are yellow; failures are red. `--color auto|always|never`
+controls terminal colors;
+`auto` detects the launcher's terminal, and `NO_COLOR` disables color in every
+mode. Saved `console.log` and histories remain plain text. `--verbose` also prints
+preloaded startup context and detailed tool activity; the full service history is
+saved regardless. See [live output](Automatic-turns.md#live-output-and-saved-history)
+for accounting scope and unavailable metrics.
 
 ## Resume after inspection
 

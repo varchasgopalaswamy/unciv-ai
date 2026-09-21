@@ -22,6 +22,8 @@ from civ_agent.agent_results import ResultError, validate_result
 from civ_agent.agent_settings import add_settings_arguments, valid_setting
 from civ_agent.match_recovery import RoundCoordinator
 from civ_agent.runner_history import EventHistory, HistoryError
+from civ_agent.terminal_output import TerminalOutput
+from civ_agent.turn_display import display_turn
 from civ_agent.turn_finalization import finish_turn
 
 
@@ -371,9 +373,10 @@ def player_prompt(civilization, game_turn=None):
 
 
 class Scheduler:
-    def __init__(self, store, operator, agents, state, *, verbose=False):
+    def __init__(self, store, operator, agents, state, *, verbose=False, color="auto"):
         self.store, self.operator, self.agents, self.state = store, operator, agents, state
         self.verbose = verbose
+        self.output = TerminalOutput(color=color)
         self.lease = str(uuid.uuid4())
         self.owns_lease = False
         self.interrupted = False
@@ -398,8 +401,9 @@ class Scheduler:
                 secrets=(self.operator.token, agent.token, player_token),
                 game_turn=flight.get("gameTurn"),
                 verbose=self.verbose,
+                renderer=self.output,
             )
-            print(f"[{flight['civilization']}] Local history: {self.histories[key].markdown}", flush=True)
+            self.output.line("History", str(self.histories[key].markdown), civilization=flight["civilization"])
         return self.histories[key]
 
     def poll_events(self, flight, *, drain=False, player_token=None):
@@ -443,20 +447,24 @@ class Scheduler:
             }:
                 flight["eventsUnsupported"] = True
                 self.save()
-                print(
-                    f"[{flight['civilization']}] Live history is unavailable in this older service. Restart civ-agent agent-server start to enable it; turn scheduling continues.",
-                    flush=True,
+                self.output.line(
+                    "Warning",
+                    "Live history is unavailable in this older service. Restart civ-agent agent-server start to enable it; turn scheduling continues.",
+                    civilization=flight["civilization"],
                 )
                 return True
             elif key not in self.history_notices:
-                print(
-                    f"[{flight['civilization']}] Could not fetch live history; it remains on the service and will be retried.",
-                    flush=True,
+                self.output.line(
+                    "Warning",
+                    "Could not fetch live history; it remains on the service and will be retried.",
+                    civilization=flight["civilization"],
                 )
                 self.history_notices.add(key)
         except (HistoryError, OSError) as failure:
             if key not in self.history_notices:
-                print(f"[{flight['civilization']}] History mirror needs attention: {failure}", flush=True)
+                self.output.line(
+                    "Warning", f"History mirror needs attention: {failure}", civilization=flight["civilization"]
+                )
                 self.history_notices.add(key)
         return False
 
@@ -466,7 +474,10 @@ class Scheduler:
     def note(self, status, reason):
         self.state.update(status=status, reason=reason)
         self.save()
-        print(reason, flush=True)
+        self.output.notice(reason, level="Done" if status == "complete" else "Warning")
+
+    def display_turn(self, flight, status):
+        display_turn(self.output, self.store.root.parent, {**flight, "epoch": self.state["epoch"]}, status)
 
     def check_status(self, status):
         if status["epoch"] != self.state["epoch"]:
@@ -537,10 +548,11 @@ class Scheduler:
                 raise RunnerError("Agent service changed the conversation's model or reasoning effort.")
             session["effectiveSettings"] = settings
             changed = True
-            print(
-                f"[{flight['civilization']}] Model: {settings.get('model') or 'Codex config'}; "
+            self.output.line(
+                "Model",
+                f"{settings.get('model') or 'Codex config'}; "
                 f"reasoning: {settings.get('reasoningEffort') or 'Codex default'}.",
-                flush=True,
+                civilization=flight["civilization"],
             )
         usage = status.get("usage", {})
         if not isinstance(usage, dict):
@@ -590,7 +602,8 @@ class Scheduler:
             history.publish_archive(archive)
         except HistoryError as failure:
             raise RunnerError(f"Turn archive could not be mirrored: {failure}") from None
-        print(f"[{flight['civilization']}] Turn summary: {history.turn_directory / 'summary.md'}", flush=True)
+        self.display_turn(flight, finalized)
+        self.output.line("Summary", str(history.turn_directory / "summary.md"), civilization=flight["civilization"])
         session = self.state["sessions"][flight["civilization"]]
         session["completedTurn"] = flight["gameTurn"]
         self.state["handoffs"] += 1
@@ -648,7 +661,7 @@ class Scheduler:
                 self.state["pendingFinalizations"].remove(pending)
                 del self.finalizations[pending["activationId"]]
                 self.save()
-                print(f"[{pending['civilization']}] Turn archive finalized.", flush=True)
+                self.display_turn(pending, status)
             outstanding = [
                 p
                 for p in self.state["pendingFinalizations"]
@@ -691,9 +704,11 @@ class Scheduler:
         self.state["sessions"][flight["civilization"]]["completedTurn"] = flight["gameTurn"]
         self.state["inFlight"] = None
         self.save()
-        print(
-            f"[{flight['civilization']}] Game ended during the turn; confirmed actions are retained in {history.turn_directory}.",
-            flush=True,
+        self.display_turn(flight, finalized)
+        self.output.line(
+            "Result",
+            f"Game ended during the turn; confirmed actions are retained in {history.turn_directory}.",
+            civilization=flight["civilization"],
         )
 
     def complete_game(self, status):
@@ -745,7 +760,7 @@ class Scheduler:
             agent.result(payload)
             delivered.append(civilization)
             self.save()
-            print(f"[{civilization}] Final result delivered to result.json and result.md.", flush=True)
+            self.output.line("Result", "Delivered to result.json and result.md.", civilization=civilization)
         self.note("complete", "Game finished. Every player received its final result and permitted combat reports.")
 
     def reconcile(self, status):
@@ -780,7 +795,7 @@ class Scheduler:
                     "Host advanced but the agent activation record is missing; no turn summary was promoted."
                 )
             self.complete_turn(flight, status)
-            print("Confirmed the previous activation's committed handoff; continuing from host state.", flush=True)
+            self.output.notice("Confirmed the previous activation's committed handoff; continuing from host state.")
             return True
         # Confirmed actions and messages survive ordinary interruption. A fresh
         # job will inspect current state; its service reconciles durable requests.
@@ -795,9 +810,8 @@ class Scheduler:
         self.state["sessions"][flight["civilization"]]["threadId"] = None
         self.state["inFlight"] = None
         self.save()
-        print(
+        self.output.notice(
             f"Preserved {flight['civilization']}'s confirmed work; the next attempt uses a fresh conversation.",
-            flush=True,
         )
         return True
 
@@ -973,10 +987,8 @@ class Scheduler:
         prompt = player_prompt(civilization, status["turn"])
         remaining = max(1, int(self.state["deadline"] - time.time()))
         timeout = min(remaining, self.state["limits"]["activationSeconds"])
-        print(
-            f"Activating {civilization}: activation {self.state['invocations']}, game turn {status['turn']}.",
-            flush=True,
-        )
+        self.output.turn(civilization, status["turn"])
+        self.output.line("Status", f"Starting activation {self.state['invocations']}.", civilization=civilization)
         selected = session.get(
             "effectiveSettings",
             {"model": self.state.get("model"), "reasoningEffort": self.state.get("reasoningEffort")},
@@ -1070,7 +1082,12 @@ class Scheduler:
                         "Final agent history could not be mirrored. Resume to retry before the next activation."
                     )
                 self.complete_turn(flight, final_status)
-            print(f"Host confirmed {civilization}'s handoff.", flush=True)
+            self.output.line(
+                "Status",
+                "Handoff confirmed"
+                + ("; finishing bookkeeping." if agent_status.get("backgroundFinalization") else "."),
+                civilization=civilization,
+            )
             if interrupted in {"pause", "stop"}:
                 self.note("paused" if interrupted == "pause" else "stopped", "Operator requested " + interrupted + ".")
                 return False
@@ -1128,7 +1145,13 @@ def parser(*, add_help: bool = True) -> argparse.ArgumentParser:
     result.add_argument(
         "--verbose",
         action="store_true",
-        help="Show tool activity and exposed reasoning summaries in the terminal (always saved in history)",
+        help="Show startup context, tool activity and exposed reasoning summaries (always saved in history)",
+    )
+    result.add_argument(
+        "--color",
+        choices=("auto", "always", "never"),
+        default="auto",
+        help="Terminal colors (default: auto; respects NO_COLOR)",
     )
     result.add_argument("--max-turns", type=positive, help="Game rounds from start (default: 20; persisted on resume)")
     result.add_argument(
@@ -1200,6 +1223,7 @@ def extend_limits(state, options):
 def run(options: argparse.Namespace) -> int:
     store = None
     old_signals = {}
+    output = TerminalOutput(color=getattr(options, "color", "auto"))
     try:
         os.umask(0o077)
         state_dir = options.state_dir.expanduser().resolve()
@@ -1236,11 +1260,11 @@ def run(options: argparse.Namespace) -> int:
                         reason="Operator requested " + options.action + ".",
                     )
                     store.save(state)
-            print("Host mutations paused; requested scheduler " + options.action + ".")
+            output.notice("Host mutations paused; requested scheduler " + options.action + ".")
             return 0
         if options.action == "manual":
             operator.call("manual")
-            print("Host returned to manual player control.")
+            output.notice("Host returned to manual player control.")
             return 0
         store.acquire()
         agents = agent_services(state_dir, options.agents_config.expanduser() if options.agents_config else None)
@@ -1259,12 +1283,18 @@ def run(options: argparse.Namespace) -> int:
             store.save(state)
         if store.control.exists():
             store.control.unlink()
-        scheduler = Scheduler(store, operator, agents, state, verbose=options.verbose)
+        scheduler = Scheduler(
+            store, operator, agents, state, verbose=options.verbose, color=getattr(options, "color", "auto")
+        )
+        output = scheduler.output
         for signum in (signal.SIGINT, signal.SIGTERM):
             old_signals[signum] = signal.signal(signum, lambda _signum, _frame: setattr(scheduler, "interrupted", True))
         return scheduler.run()
     except (RunnerError, OSError) as failure:
-        print(f"civ-agent match: {failure}", file=sys.stderr)
+        output.finish_line()
+        TerminalOutput(color=getattr(options, "color", "auto"), file=sys.stderr).line(
+            "Error", f"civ-agent match: {failure}"
+        )
         return 2
     finally:
         for signum, handler in old_signals.items():

@@ -24,6 +24,7 @@ data class MovementPreview(
     val reasons: List<String>,
     val estimatedTurns: Int?,
     val turns: List<UnitMoveOption>,
+    val settlement: SettlementPreview? = null,
 )
 
 @Serializable
@@ -64,6 +65,7 @@ internal fun observeMovementPreview(player: Civilization, unit: MapUnit, turn: P
         turn.epoch, turn.revision, turn.turn, request.target, request.destination,
         route != null, if (route == null) listOf("No movement route is currently offered") else emptyList(),
         turns.size.takeIf { route != null }, Collections.unmodifiableList(turns),
+        observeSettlement(player, unit, request.destination, active),
     )
 }
 

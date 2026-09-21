@@ -33,6 +33,17 @@ def options_snapshot():
         moves=[{"destination": {"x": 1, "y": 0}, "path": [{"x": 1, "y": 0}], "movementCost": "1"}],
         nearbyHostiles=[{"name": "Warrior", "distance": 2}],
         canFoundCity=True,
+        settlement={
+            "destination": unit["position"],
+            "atDestination": True,
+            "canFoundNow": True,
+            "siteStatus": "ELIGIBLE",
+            "siteBlockers": [],
+            "unitBlockers": [],
+            "uncertainty": None,
+            "minimumCityDistance": 4,
+            "minimumCityDistanceOnDifferentContinents": 3,
+        },
         settlementPromises=[{"civilization": "Greece", "consequences": "Break native promise"}],
         combat={
             "promotions": {
@@ -88,9 +99,13 @@ def test_selective_reads_preserve_consequences_without_delivering_unrelated_fiel
     move = project_detail(snapshot, query("unit_details", "unit1", ["movement"]))["data"]["entity"]
     assert move["moves"][0]["path"] and move["nearbyHostiles"]
     assert move["moves"][0]["command"] == {"kind": "MOVE_UNIT", "target": "unit1", "destination": {"x": 1, "y": 0}}
-    assert not {"economy", "worker", "combat", "cityStateGift", "settlementPromises", "futureInformation"} & move.keys()
+    assert (
+        not {"economy", "worker", "combat", "cityStateGift", "settlementPromises", "settlement", "futureInformation"}
+        & move.keys()
+    )
     settlement = project_detail(snapshot, query("unit_details", "unit1", ["settlement"]))["data"]["entity"]
     assert settlement["settlementPromises"] == before["map"]["units"][0]["settlementPromises"]
+    assert settlement["settlement"] == before["map"]["units"][0]["settlement"]
     assert settlement["foundCityCommand"] == {"kind": "FOUND_CITY", "target": "unit1"}
     assert settlement["foundCityConfirmationField"] == "confirmBreakPromise"
     economy = project_detail(snapshot, query("city_details", "city1", ["economy"]))["data"]["entity"]
@@ -103,6 +118,32 @@ def test_selective_reads_preserve_consequences_without_delivering_unrelated_fiel
     assert len(json.dumps(move)) < len(json.dumps(full)) / 2
     assert snapshot == before
     assert overview(snapshot)["units"][0]["availablePromotions"] == 1
+
+
+@pytest.mark.parametrize("status", ["BLOCKED", "UNKNOWN", "ELIGIBLE"])
+def test_unavailable_founding_still_offers_inspection_without_exposing_full_details(status):
+    snapshot = options_snapshot()
+    unit = snapshot["map"]["units"][0]
+    unit["canFoundCity"] = False
+    unit["settlement"].update(
+        canFoundNow=False,
+        siteStatus=status,
+        siteBlockers=[{"code": "CITY_TOO_CLOSE", "city": "Rome", "distance": 3, "minimumDistance": 4}]
+        if status == "BLOCKED"
+        else [],
+        unitBlockers=[{"code": "NO_MOVEMENT"}],
+    )
+    shown = overview(snapshot)["units"][0]
+    assert shown["settlementStatus"] == status
+    assert not shown["canFoundCity"] and "settlement" not in shown
+    assert shown["inspections"]["FOUND_CITY"] == {
+        "tool": "unit_details",
+        "arguments": {"target": "unit1", "sections": ["settlement"]},
+    }
+    detail = project_detail(snapshot, query("unit_details", "unit1", ["settlement"]))["data"]["entity"]
+    assert detail["settlement"] == unit["settlement"]
+    assert "foundCityCommand" not in detail
+    assert "movement_preview" in detail["settlementInstruction"]
 
 
 @pytest.mark.parametrize(

@@ -7,6 +7,7 @@ import datetime as dt
 import json
 import os
 import shlex
+import shutil
 import signal
 import subprocess
 import sys
@@ -81,7 +82,17 @@ def arguments(argv=None):
         "--max-seconds", type=positive, help="Wall-time limit from original start, including pauses; default 604800"
     )
     parser.add_argument("--turn-timeout", type=positive, help="Seconds per agent turn; default 3600")
-    parser.add_argument("--verbose", action="store_true", help="Also print tool activity; full history is always saved")
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Also print startup context and tool activity; full history is always saved",
+    )
+    parser.add_argument(
+        "--color",
+        choices=("auto", "always", "never"),
+        default="auto",
+        help="Terminal colors (default: auto; respects NO_COLOR)",
+    )
     args = parser.parse_args(argv)
     args.state_dir = args.state_dir.expanduser().resolve()
     if args.port > 65532:
@@ -92,6 +103,8 @@ def arguments(argv=None):
 
 
 def launch_command(args, python):
+    from civ_agent.terminal_output import color_enabled
+
     root = args.state_dir
     checkpoint, runner = root / "exploration.json", root / "runner/run.json"
     previous = None
@@ -136,6 +149,8 @@ def launch_command(args, python):
         command += ["--" + option.replace("_", "-"), str(value)]
     if args.verbose:
         command.append("--verbose")
+    # The scheduler writes through a pipe. Resolve auto against the real terminal.
+    command += ["--color", "always" if color_enabled(args.color) else "never"]
     return command
 
 
@@ -166,6 +181,7 @@ def run_logged(command, repository, announce):
             errors="replace",
             bufsize=1,
             start_new_session=True,
+            env={**os.environ, "COLUMNS": str(shutil.get_terminal_size().columns)},
         )
         if interrupted:
             with contextlib.suppress(ProcessLookupError):
@@ -224,15 +240,21 @@ def stopped_state(root, child_code, interrupted) -> dict:
 def main(argv=None):
     args = arguments(argv)
     python = Path(sys.executable)
+    if not python.with_name("civ-agent").is_file():
+        print(
+            "Cannot start: Run with the project environment: .venv/bin/python scripts/run_vanilla_game.py (install dependencies with uv sync --locked first).",
+            file=sys.stderr,
+        )
+        return 2
+    from civ_agent.terminal_output import TerminalOutput, visible_text
+
+    output = TerminalOutput(color=args.color)
     try:
-        if not python.with_name("civ-agent").is_file():
-            raise ValueError(
-                "Run with the project environment: .venv/bin/python scripts/run_vanilla_game.py (install dependencies with uv sync --locked first)."
-            )
         command = launch_command(args, python)
     except (OSError, ValueError, KeyError, TypeError) as error:
-        print(f"Cannot start: {error}", file=sys.stderr)
+        TerminalOutput(color=args.color, file=sys.stderr).line("Error", f"Cannot start: {error}")
         return 2
+
     os.umask(0o077)
     root = args.state_dir
     launch = root / "launches" / (dt.datetime.now(dt.UTC).strftime("%Y%m%dT%H%M%SZ") + f"-{os.getpid()}")
@@ -240,16 +262,28 @@ def main(argv=None):
     started = time.time()
     with (launch / "console.log").open("w", buffering=1) as log:
         console_available = True
+        line_open = False
 
         def announce(message, end="\n"):
-            nonlocal console_available
-            log.write(message + end)
+            nonlocal console_available, line_open
+            plain = visible_text(message) + end
+            if plain:
+                line_open = not plain.endswith("\n")
+            log.write(plain)
             log.flush()
             if console_available:
                 try:
                     print(message, end=end, flush=True)
                 except BrokenPipeError:
                     console_available = False
+
+        def show(label, message, *, civilization=None):
+            # Use the shared renderer while retaining the same plain-log tee as child output.
+            if line_open:
+                announce("")
+            with output.console.capture() as capture:
+                output.line(label, message, civilization=civilization)
+            announce(capture.get(), end="")
 
         write_json(
             launch / "launch.json",
@@ -263,16 +297,22 @@ def main(argv=None):
                 "reasoningEffort": "medium",
             },
         )
-        announce(f"Match: {root}\nLaunch log: {launch / 'console.log'}")
-        announce("Players: Rome, Greece, France (gpt-5.6-luna, medium), native Egypt, two city-states.")
-        announce(
-            "Ctrl-C pauses and flushes the run (allow a minute). A blocked turn stops for inspection; this launcher does not restart it."
+        show("Status", "Resuming Vanilla game." if args.resume else "Starting Vanilla game.")
+        show("Match", str(root))
+        show("Log", str(launch / "console.log"))
+        for civilization in ("Rome", "Greece", "France"):
+            show("Player", "gpt-5.6-luna · medium reasoning", civilization=civilization)
+        show("Player", "Built-in AI", civilization="Egypt")
+        show("Setup", "Two city-states.")
+        show(
+            "Status",
+            "Ctrl-C pauses and flushes the run (allow a minute). A blocked turn stops for inspection; this launcher does not restart it.",
         )
-        announce("Command: " + shlex.join(command))
+        show("Command", shlex.join(command))
         try:
             child_code, interrupted = run_logged(command, REPOSITORY, announce)
         except Exception as error:
-            announce(f"Launcher failure: {type(error).__name__}: {error}")
+            show("Error", f"Launcher failure: {type(error).__name__}: {error}")
             child_code, interrupted = 2, False
         try:
             summary = stopped_state(root, child_code, interrupted)
@@ -280,12 +320,14 @@ def main(argv=None):
             summary = {"exitCode": 2, "childExitCode": child_code, "reason": f"Cannot read final state: {error}"}
         summary = {**summary, "startedAt": started, "endedAt": time.time(), "stateDirectory": str(root)}
         write_json(launch / "stop.json", summary)
-        announce(f"Stopped: {summary.get('runnerStatus') or 'startup failure'}; exit {summary['exitCode']}.")
+        level = "Done" if summary["exitCode"] == 0 else "Warning" if summary["exitCode"] in {3, 130} else "Error"
+        show(level, f"Stopped: {summary.get('runnerStatus') or 'startup failure'}; exit {summary['exitCode']}.")
         if summary.get("reason"):
-            announce(str(summary["reason"]))
+            show(level, str(summary["reason"]))
         if summary.get("result"):
-            announce("Native result: " + json.dumps(summary["result"]))
-        announce(f"Stop report: {launch / 'stop.json'}\nKeep the entire match directory for analysis: {root}")
+            show("Result", json.dumps(summary["result"]))
+        show("Report", str(launch / "stop.json"))
+        show("Status", f"Keep the entire match directory for analysis: {root}")
         return summary["exitCode"]
 
 

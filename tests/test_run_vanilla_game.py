@@ -96,28 +96,56 @@ def test_exit_status_distinguishes_blockers_from_native_completion(
     assert summary["result"] == result and summary["reason"] == "Saved reason"
 
 
-def test_launcher_captures_output_and_stop_report_without_restarting(tmp_path, monkeypatch):
+def test_launcher_captures_output_and_stop_report_without_restarting(tmp_path, monkeypatch, capsys):
+    monkeypatch.delenv("NO_COLOR", raising=False)
     root = tmp_path / "match with spaces"
     worker = tmp_path / "fake_worker.py"
     worker.write_text(
         "import json, sys\nfrom pathlib import Path\n"
         "root = Path(sys.argv[1]); (root/'runner').mkdir()\n"
         "(root/'runner/run.json').write_text(json.dumps({'status':'paused','reason':'Turn did not hand off'}))\n"
-        "print('stdout diagnostic', flush=True)\nprint('stderr diagnostic', file=sys.stderr, flush=True)\n"
+        "print('\\x1b[36mstdout diagnostic\\x1b[0m', flush=True)\n"
+        "print('stderr diagnostic', file=sys.stderr, end='', flush=True)\n"
     )
     monkeypatch.setattr(
         launcher, "launch_command", lambda args, python: [str(python), "-u", str(worker), str(args.state_dir)]
     )
-    assert launcher.main(["--state-dir", str(root)]) == 2
+    assert launcher.main(["--state-dir", str(root), "--color", "always"]) == 2
+    output = capsys.readouterr().out
+    assert "\x1b[" in output.split("\x1b[36mstdout diagnostic")[0]
+    assert "\x1b[36mstdout diagnostic\x1b[0m" in output
+    assert "\x1b[" in output.split("stderr diagnostic")[1]
     launches = list((root / "launches").iterdir())
     assert len(launches) == 1
     console = (launches[0] / "console.log").read_text()
     assert "stdout diagnostic" in console and "stderr diagnostic" in console
+    assert "\x1b" not in console
+    assert "[Rome] Player: gpt-5.6-luna" in console and "[Egypt] Player: Built-in AI" in console
+    assert "stderr diagnostic\n  Error: Stopped: paused; exit 2." in console
     stopped = launcher.read_json(launches[0] / "stop.json")
     assert stopped is not None
     assert stopped["childExitCode"] == 0 and stopped["exitCode"] == 2
     assert stopped["reason"] == "Turn did not hand off"
     assert (launches[0] / "stop.json").stat().st_mode & 0o777 == 0o600
+
+
+def test_launcher_resolves_color_before_piping_child_output(tmp_path, monkeypatch):
+    from io import StringIO
+
+    class Terminal(StringIO):
+        def isatty(self):
+            return True
+
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.setenv("TERM", "xterm-256color")
+    monkeypatch.setattr(sys, "stdout", Terminal())
+    args = launcher.arguments(["--state-dir", str(tmp_path)])
+    command = launcher.launch_command(args, Path(sys.executable))
+    assert command[command.index("--color") + 1] == "always"
+    monkeypatch.setenv("NO_COLOR", "1")
+    args.color = "always"
+    command = launcher.launch_command(args, Path(sys.executable))
+    assert command[command.index("--color") + 1] == "never"
 
 
 def test_term_signal_allows_child_to_flush_and_exit(tmp_path):
