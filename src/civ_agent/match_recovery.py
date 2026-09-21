@@ -138,6 +138,7 @@ class RoundCoordinator:
             epoch=epoch,
             initialTurn=min(scheduler["initialTurn"], restored["turn"]),
             inFlight=None,
+            pendingFinalizations=[],
             sessions={},
             handoffs=manifest["scheduler"].get("handoffs", 0),
             status="paused",

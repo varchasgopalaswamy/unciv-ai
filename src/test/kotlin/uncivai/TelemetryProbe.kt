@@ -21,7 +21,7 @@ object TelemetryProbe {
         val civilizations = listOf("Rome", "Greece", "France")
         val tokens = civilizations.associateWith { it.first().toString().repeat(43) }
         lateinit var originalEpoch: String
-        val finalReport = JobTelemetry(2, "COMPLETED", 1000, 2000, 1000, 50, true, true, "gpt-5.6-luna", "medium", mapOf("tool:unit_details" to ApiCounts(3, 2, 1)))
+        val finalReport = JobTelemetry(2, "COMPLETED", 1000, 2000, 1000, 50, true, true, "gpt-5.6-luna", "medium", mapOf("tool:unit_details" to ApiCounts(3, 2, 1), "startup:player_turn" to ApiCounts(1, 1)), gameplayElapsedMs = 850, finalizationElapsedMs = 150)
         HeadlessRuntime.createVanillaGame(root.resolve("initial"), 42, 2, listOf("Egypt")).use { runtime ->
             check(runtime.game.getCivilization("Egypt").isAI())
             check(runtime.game.civilizations.count { it.isCityState } == 2)
@@ -56,6 +56,9 @@ object TelemetryProbe {
                 val turns = Files.readAllLines(root.resolve("telemetry/turns.jsonl")).map { Json.parseToJsonElement(it).jsonObject }
                 check(turns.size == 3 && turns.all { it.getValue("usage").jsonObject.getValue("total_tokens").jsonPrimitive.long == 130L })
                 check(turns.all { it.getValue("accountingComplete").jsonPrimitive.boolean })
+                check(turns.all { it.getValue("gameplayElapsedMs").jsonPrimitive.long == 850L })
+                check(turns.all { it.getValue("finalizationElapsedMs").jsonPrimitive.long == 150L })
+                check(turns.all { it.getValue("agentCalls").jsonObject.getValue("startup:player_turn").jsonObject.getValue("calls").jsonPrimitive.long == 1L })
                 check(turns.all { it.getValue("agentCalls").jsonObject.getValue("tool:unit_details").jsonObject.getValue("calls").jsonPrimitive.long == 3L })
                 val allCalls = runtime.executor.communicationState.telemetry.windows.values.flatMap { it.actors.values }.flatMap { it.entries }
                 check(allCalls.filter { it.key == "command:FOUND_CITY" }.sumOf { it.value.errors } == 3L)

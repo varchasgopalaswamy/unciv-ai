@@ -338,7 +338,7 @@ class SchedulerServiceTest(unittest.TestCase):
             process.wait(timeout=10)
             self.assertEqual(process.returncode, 0, log.read_text())
 
-    def test_committed_handoff_allows_a_slow_final_report_to_finish(self):
+    def test_committed_handoff_stops_before_a_slow_final_report(self):
         self.host.behaviors = ["slow_report", "complete"]
         result = self.run_cli("--max-turns", "1", "--max-seconds", "60", "--turn-timeout", "15")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -348,7 +348,11 @@ class SchedulerServiceTest(unittest.TestCase):
         ]
         self.assertEqual(len(records), 2)
         self.assertTrue(all(record["phase"] == "COMPLETED" for record in records))
-        self.assertEqual(result.stdout.count("Settled and chose research."), 2)
+        self.assertEqual(result.stdout.count("Settled and chose research."), 0)
+        self.assertTrue(all(record["completionReason"] == "native_handoff" for record in records))
+        self.assertTrue(all(record["usageComplete"] for record in records))
+        self.assertTrue(all("finalizationElapsedMs" in record for record in records))
+        self.assertEqual(2, sum(row["method"] == "turn/interrupt" for row in self.records()))
 
     def test_gameplay_waits_while_chat_enacts_trade_and_scheduling_continues(self):
         self.exercise_concurrent_trade(peace=False)

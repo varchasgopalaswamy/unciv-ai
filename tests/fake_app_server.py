@@ -122,6 +122,90 @@ async def main():
                 )
             )
 
+        async def report_usage():
+            usage = dict(inputTokens=10, cachedInputTokens=2, outputTokens=3, reasoningOutputTokens=0, totalTokens=13)
+            turns = sum(
+                row.get("method") == "turn/start" and row.get("params", {}).get("threadId") == current["thread"]
+                for row in (json.loads(line) for line in trace.read_text().splitlines())
+            )
+            total = {key: value * turns for key, value in usage.items()}
+            await websocket.send_json(
+                dict(
+                    method="thread/tokenUsage/updated",
+                    params=dict(
+                        threadId=current["thread"],
+                        turnId=current["turn"],
+                        tokenUsage=dict(last=usage, total=total),
+                    ),
+                )
+            )
+
+        async def publish_history(common):
+            message_id = "message-" + current["turn"]
+            for delta in ("Settled ", "and chose research."):
+                await websocket.send_json(
+                    dict(method="item/agentMessage/delta", params=dict(**common, itemId=message_id, delta=delta))
+                )
+            await websocket.send_json(
+                dict(
+                    method="item/completed",
+                    params=dict(
+                        **common,
+                        item=dict(
+                            id=message_id,
+                            type="agentMessage",
+                            text="Settled and chose research.",
+                            phase="final_answer",
+                        ),
+                    ),
+                )
+            )
+            await websocket.send_json(
+                dict(
+                    method="item/completed",
+                    params=dict(
+                        **common,
+                        item=dict(
+                            id="summary-" + current["turn"],
+                            type="reasoning",
+                            summary=["Visible strategy summary."],
+                            content=["RAW_REASONING_SENTINEL"],
+                        ),
+                    ),
+                )
+            )
+            for number in range(130):
+                await websocket.send_json(
+                    dict(
+                        method="item/completed",
+                        params=dict(
+                            **common,
+                            item=dict(
+                                id=f"tool-{number}",
+                                type="mcpToolCall",
+                                status="completed",
+                                result={"position": number},
+                                error=None,
+                            ),
+                        ),
+                    )
+                )
+            await websocket.send_json(
+                dict(
+                    method="item/completed",
+                    params=dict(
+                        **common,
+                        item=dict(
+                            id="large-tool",
+                            type="mcpToolCall",
+                            status="completed",
+                            result={"largePayload": "z" * 200000},
+                            error=None,
+                        ),
+                    ),
+                )
+            )
+
         async def play(params):
             text = " ".join(item.get("text", "") for item in params["input"])
             match = re.search(r"Play (.*?)'s current game turn", text)
@@ -154,6 +238,9 @@ async def main():
                     ),
                 )
             )
+            await report_usage()
+            if os.environ.get("CIV_TEST_MANY_EVENTS"):
+                await publish_history(common)
             mcp = next(argument for argument in arguments if argument.startswith("mcp_servers"))
             gateway = tomllib.loads(mcp)["mcp_servers"]["civ"]
             gateway_url = gateway["url"]
@@ -191,12 +278,16 @@ async def main():
 
                 view = await call("chat_read" if communication else "player_turn", {})
                 scenario = view.get("scenario") or view.get("context", {}).get("scenario", {})
+                if scenario.get("testManyEvents") and not os.environ.get("CIV_TEST_MANY_EVENTS"):
+                    await publish_history(common)
                 if scenario.get("name") == "CONCURRENT_TRADE_TEST":
                     assert "recovery.reads" in text
                     result = await exercise_trade(match.group(1), communication, view, call)
                 else:
                     assert not communication
                     result = await call("player_command", {"kind": "END_TURN", "deferReason": current["thread"]})
+                if result.get("behavior") == "hang":
+                    await asyncio.Event().wait()
                 if "error" in result:
                     raise RuntimeError("Gateway rejected fake gameplay")
                 behavior = result["behavior"]
@@ -206,87 +297,6 @@ async def main():
                 await asyncio.sleep(4)
             if behavior == "crash":
                 os._exit(1)
-            message_id = "message-" + current["turn"]
-            for delta in ("Settled ", "and chose research."):
-                await websocket.send_json(
-                    dict(method="item/agentMessage/delta", params=dict(**common, itemId=message_id, delta=delta))
-                )
-            await websocket.send_json(
-                dict(
-                    method="item/completed",
-                    params=dict(
-                        **common,
-                        item=dict(
-                            id=message_id,
-                            type="agentMessage",
-                            text="Settled and chose research.",
-                            phase="final_answer",
-                        ),
-                    ),
-                )
-            )
-            await websocket.send_json(
-                dict(
-                    method="item/completed",
-                    params=dict(
-                        **common,
-                        item=dict(
-                            id="summary-" + current["turn"],
-                            type="reasoning",
-                            summary=["Visible strategy summary."],
-                            content=["RAW_REASONING_SENTINEL"],
-                        ),
-                    ),
-                )
-            )
-            if behavior == "many_events" or os.environ.get("CIV_TEST_MANY_EVENTS"):
-                for number in range(130):
-                    await websocket.send_json(
-                        dict(
-                            method="item/completed",
-                            params=dict(
-                                **common,
-                                item=dict(
-                                    id=f"tool-{number}",
-                                    type="mcpToolCall",
-                                    status="completed",
-                                    result={"position": number},
-                                    error=None,
-                                ),
-                            ),
-                        )
-                    )
-                await websocket.send_json(
-                    dict(
-                        method="item/completed",
-                        params=dict(
-                            **common,
-                            item=dict(
-                                id="large-tool",
-                                type="mcpToolCall",
-                                status="completed",
-                                result={"largePayload": "z" * 200000},
-                                error=None,
-                            ),
-                        ),
-                    )
-                )
-            usage = dict(inputTokens=10, cachedInputTokens=2, outputTokens=3, reasoningOutputTokens=0, totalTokens=13)
-            turns = sum(
-                row.get("method") == "turn/start" and row.get("params", {}).get("threadId") == current["thread"]
-                for row in (json.loads(line) for line in trace.read_text().splitlines())
-            )
-            total = {key: value * turns for key, value in usage.items()}
-            await websocket.send_json(
-                dict(
-                    method="thread/tokenUsage/updated",
-                    params=dict(
-                        threadId=current["thread"],
-                        turnId=current["turn"],
-                        tokenUsage=dict(last=usage, total=total),
-                    ),
-                )
-            )
             await complete("completed")
 
         async for message in websocket:

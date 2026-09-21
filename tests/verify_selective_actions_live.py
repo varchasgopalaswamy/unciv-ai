@@ -23,6 +23,8 @@ TEMPLATE_FIELDS = {
     "moveCommands",
     "confirmationField",
     "inspection",
+    "inspections",
+    "destinationInspection",
 }
 
 
@@ -101,11 +103,13 @@ def verify(root, sessions):
     with contextlib.closing(
         sqlite3.connect(f"file:{root / 'agent-services/Rome/civilization/memory.sqlite3'}?mode=ro", uri=True)
     ) as db:
-        calls = [
-            (name, json.loads(args), json.loads(result) if result else None)
-            for name, args, result in db.execute(
-                "SELECT name,arguments,result FROM calls WHERE job=? ORDER BY rowid", (record["activationId"],)
+        call_rows = list(
+            db.execute(
+                "SELECT id,name,arguments,result FROM calls WHERE job=? ORDER BY rowid", (record["activationId"],)
             )
+        )
+        calls = [
+            (name, json.loads(args), json.loads(result) if result else None) for _, name, args, result in call_rows
         ]
         snapshots = [
             json.loads(body) for (body,) in db.execute("SELECT body FROM records WHERE key='observation:game'")
@@ -116,11 +120,16 @@ def verify(root, sessions):
         for row in map(json.loads, (root / "telemetry/jobs.jsonl").read_text().splitlines())
         if row["jobId"] == record["activationId"]
     )
-    counts = Counter(name for name, _, _ in calls)
+    counts = Counter(name for call_id, name, _, _ in call_rows if not call_id.startswith("startup:"))
     assert dict(counts) == {
         key.removeprefix("tool:"): entry["calls"]
         for key, entry in telemetry["apiCalls"].items()
         if key.startswith("tool:")
+    }
+    assert Counter(name for call_id, name, _, _ in call_rows if call_id.startswith("startup:")) == {
+        key.removeprefix("startup:"): value["calls"]
+        for key, value in telemetry["apiCalls"].items()
+        if key.startswith("startup:")
     }
     metrics["elapsedMs"] = telemetry["elapsedMs"]
     metrics["apiCalls"] = telemetry["apiCalls"]

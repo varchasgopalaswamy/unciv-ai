@@ -525,7 +525,9 @@ class TurnArchive:
                 notes = [
                     data["text"] for data in messages if isinstance(data.get("text"), str) and data["text"].strip()
                 ]
-                summary.append("\nNo final public report was captured; action reasons are incomplete.\n")
+                summary.append(
+                    "\nNo final public report was captured. See recorded action intents and receipts above.\n"
+                )
                 if notes:
                     summary.append("\nAvailable public notes (self-reported):\n\n" + self._quote("\n\n".join(notes)))
             if any(event.get("incompleteChunk") for event in events):

@@ -11,6 +11,43 @@ from aiohttp import web
 from civ_agent.agent_service import AgentService, ServiceError, server_ssl_context
 from civ_agent.protocol import JsonObject
 from civ_agent.tls import client_ssl_context, ensure_server_certificate
+from tests.test_proposal_gateway import Host
+
+
+class StartupHost(Host):
+    """A permitted starting view for service lifecycle tests with a fake model."""
+
+    def __init__(self, factory):
+        super().__init__()
+        self.factory = factory
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_):
+        await self.close()
+
+    async def list_tools(self) -> list[JsonObject]:
+        return [
+            *await super().list_tools(),
+            *[
+                {"name": name, "description": name, "inputSchema": {"type": "object", "properties": {}}}
+                for name in ("player_turn", "player_capabilities", "victory_progress")
+            ],
+        ]
+
+    async def tool(self, name, args):
+        record = self.factory.service.records[self.factory.service.active_id]
+        if name == "player_capabilities":
+            return {"protocolVersion": "test", "commands": ["END_TURN"], "queries": []}
+        if name == "victory_progress":
+            return {"turn": record["gameTurn"], "victories": []}
+        result = await super().tool(name, args)
+        if "epoch" in result:
+            result["epoch"] = record["epoch"]
+        if "turn" in result:
+            result["turn"] = record["gameTurn"]
+        return result
 
 
 class FakeCodex:
@@ -141,6 +178,9 @@ class FakeFactory:
         self.instances.append(process)
         return process
 
+    def connection(self, *args, **kwargs):
+        return StartupHost(self)
+
 
 class AgentServiceTestCase(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
@@ -158,6 +198,7 @@ class AgentServiceTestCase(unittest.IsolatedAsyncioTestCase):
             "https://localhost:8765/mcp",
             None,
             process_factory=self.factory,
+            connection_factory=self.factory.connection,
             **settings,
         )
         self.factory.service = service

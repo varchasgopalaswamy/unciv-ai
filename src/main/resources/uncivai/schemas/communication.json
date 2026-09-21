@@ -967,6 +967,16 @@
           "minimum": 0,
           "maximum": 9223372036854775807
         },
+        "gameplayElapsedMs": {
+          "type": ["integer", "null"],
+          "minimum": 0,
+          "maximum": 9223372036854775807
+        },
+        "finalizationElapsedMs": {
+          "type": ["integer", "null"],
+          "minimum": 0,
+          "maximum": 9223372036854775807
+        },
         "endedAtMs": {
           "anyOf": [
             {

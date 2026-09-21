@@ -35,9 +35,13 @@ def summarize(jobs):
         "toolHandlingMs",
         "negotiationWaitMs",
         "rejectedMemoryChanges",
+        "startupCalls",
+        "startupChars",
     )
     result: JsonObject = {key: sum(job[key] for job in jobs) for key in fields}
     result.update(jobs=len(jobs), usage=sum_usage(jobs))
+    for key in ("gameplayElapsedMs", "finalizationElapsedMs"):
+        result[key] = sum(job[key] for job in jobs) if jobs and all(job.get(key) is not None for job in jobs) else None
     result["responseMetrics"] = {
         key: sum(job["responses"].get(key, 0) for job in jobs)
         for key in sorted({key for job in jobs for key in job["responses"]})
@@ -83,16 +87,26 @@ def collect(root, sessions, require_updates=False):
         with contextlib.closing(
             sqlite3.connect(f"file:{service / 'civilization/memory.sqlite3'}?mode=ro", uri=True)
         ) as db:
-            calls = [
-                (name, json.loads(arguments), json.loads(result) if result else None)
-                for name, arguments, result in db.execute(
-                    "SELECT name,arguments,result FROM calls WHERE job=? ORDER BY rowid", (id,)
+            all_calls = [
+                (call_id, name, json.loads(arguments), json.loads(result) if result else None)
+                for call_id, name, arguments, result in db.execute(
+                    "SELECT id,name,arguments,result FROM calls WHERE job=? ORDER BY rowid", (id,)
                 )
+            ]
+            calls = [
+                (name, arguments, result)
+                for call_id, name, arguments, result in all_calls
+                if not call_id.startswith("startup:")
+            ]
+            prepared_calls = [
+                (name, arguments, result)
+                for call_id, name, arguments, result in all_calls
+                if call_id.startswith("startup:")
             ]
             snapshots = [
                 json.loads(body) for (body,) in db.execute("SELECT body FROM records WHERE key='observation:game'")
             ]
-        chunks, audited = Chunks(), []
+        chunks, audited, withheld = Chunks(), [], 0
         history = service / "history" / hashlib.sha256(id.encode()).hexdigest() / "events.jsonl"
         for line in history.read_text().splitlines():
             event = chunks.expand(json.loads(line))
@@ -100,10 +114,12 @@ def collect(root, sessions, require_updates=False):
                 result = event["data"].get("result")
                 if isinstance(result, dict) and isinstance(result.get("structuredContent"), dict):
                     audited.append(result["structuredContent"])
+                    withheld += event["data"].get("deliveredToModel") is False
         durable = Counter(encoded(result) for _, _, result in calls if result is not None)
         audit = Counter(encoded(result) for result in audited)
         assert not durable - audit, f"Durable response missing from audit for {id}"
         responses = result_metrics(paths[0], audited)
+        responses["withheldHandoffResults"] = withheld
         assert responses["unmatchedPrintedResults"] == 0
         telemetry = job["telemetry"]
         tool_calls = {
@@ -122,6 +138,12 @@ def collect(root, sessions, require_updates=False):
             "successfulCommands": tool_calls.get("player_command", {}).get("succeeded", 0),
             "overviewCalls": tool_calls.get("player_turn", {}).get("calls", 0),
             "jobElapsedMs": telemetry["elapsedMs"],
+            "gameplayElapsedMs": telemetry.get("gameplayElapsedMs"),
+            "finalizationElapsedMs": telemetry.get("finalizationElapsedMs"),
+            "startupCalls": sum(
+                value["calls"] for name, value in telemetry["apiCalls"].items() if name.startswith("startup:")
+            ),
+            "startupChars": activation.get("startup", {}).get("characters", 0),
             "toolHandlingMs": sum(value["elapsedMs"] for value in tool_calls.values()),
             "negotiationWaitMs": telemetry["negotiationWaitMs"],
             "tools": {name: value["calls"] for name, value in tool_calls.items()},
@@ -144,10 +166,17 @@ def collect(root, sessions, require_updates=False):
             "responses": responses,
         }
         assert Counter(name for name, _, _ in calls) == row["tools"], f"Call counts differ for {id}"
+        assert Counter(name for name, _, _ in prepared_calls) == {
+            key.removeprefix("startup:"): value["calls"]
+            for key, value in telemetry["apiCalls"].items()
+            if key.startswith("startup:")
+        }, f"Startup counts differ for {id}"
         if require_updates:
             assert responses["duplicateTextBlocks"] == 0
             if job["purpose"] == "gameplay":
-                row["stateUpdates"] = measure_updates(calls, snapshots, id)
+                row["stateUpdates"] = measure_updates(
+                    [(name, args, result) for _, name, args, result in all_calls], snapshots, id
+                )
                 assert row["stateUpdates"]["updates"].get("turn_ended") == 1
         rows.append(row)
     report = {

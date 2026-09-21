@@ -78,6 +78,7 @@ class CompletionCorrelationTests(unittest.IsolatedAsyncioTestCase):
             "https://localhost:8765/mcp",
             None,
             process_factory=self.factory,
+            connection_factory=self.factory.connection,
         )
         self.factory.service = service
         return service

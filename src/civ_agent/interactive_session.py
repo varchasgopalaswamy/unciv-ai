@@ -4,6 +4,7 @@ from civ_agent import service_recovery
 from civ_agent.civilization_state import StateConflict, job_id
 from civ_agent.host_connection import HostConnection
 from civ_agent.schemas import InteractiveRequest, validate
+from civ_agent.startup_context import prepare_startup, startup_text
 
 
 async def open_session(service, payload):
@@ -19,6 +20,7 @@ async def open_session(service, payload):
         diagnostics=service.diagnostics,
         context={"purpose": "interactive"},
     )
+    job = None
     try:
         view = await connection.tool("player_turn", {})
         identity = await connection.tool("player_communication", {"op": "state", "epoch": view.get("epoch")})
@@ -44,10 +46,15 @@ async def open_session(service, payload):
             "token": job.token,
             "url": service.gateway_url,
             "caFile": str(service.gateway_ca_file) if service.gateway_ca_file else None,
-            "context": service.memory.context(job.memory),
+            "context": service.memory.context(job.memory)
+            + "\n\n"
+            + startup_text(await prepare_startup(service.gateway, job)),
         }
     except BaseException:
-        await connection.close()
+        if job is not None:
+            await service.gateway.close(job, False)
+        else:
+            await connection.close()
         raise
 
 

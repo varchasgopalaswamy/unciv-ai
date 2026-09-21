@@ -34,6 +34,10 @@ Its corrected three-round replay completed all nine turns with 7.3% fewer input
 tokens and 9.0% fewer player-tool calls, but 2.3% longer elapsed time. The report
 includes the initial recovery-prompt failure, correction and remaining retries.
 
+The next [five-part call-reduction plan](Agent-call-reduction.md) covers prepared
+startup context, a small core of tool definitions, need-driven inspection,
+command guidance and background turn finalization.
+
 ## 1. Deliver each response once
 
 Previously, the gateway included the same JSON in MCP `content[].text` and

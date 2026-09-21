@@ -13,6 +13,7 @@ from civ_agent.civilization_state import StateConflict, job_id
 from civ_agent.host_connection import HostConnection
 from civ_agent.protocol import JsonObject
 from civ_agent.schemas import ConnectRequest, validate
+from civ_agent.startup_context import prepare_startup, startup_text
 from civ_agent.tls import private_directory, write_private_json
 from civ_agent.tool_discovery import tool_discovery_instructions
 
@@ -216,7 +217,7 @@ class ChatRuntime:
             + "\n\n"
             + f"Handle {service.civilization}'s newly received communication. Ordinary gameplay is handled separately. "
             "Follow scenario.instructions when present; otherwise your objective is to win the game.\n\n"
-            "1. Read chat_read and relevant memory once. Use player_turn only for a specific missing gameplay "
+            "1. Use prepared chat_read and relevant memory, or read them if absent. Use player_turn only for a specific missing gameplay "
             "detail or required native-action inspection. Statements are attributed claims, not game facts.\n"
             "2. Decide whether a useful response or agreement advances your strategy. Use chat_send for messages "
             "and explicit nativeAction, commitment_offer/decide for social promises, trade tools for binding "
@@ -240,6 +241,14 @@ class ChatRuntime:
                         (destination / name).chmod(0o600)
 
         try:
+            prepared = await prepare_startup(service.gateway, job)
+            context = startup_text(prepared)
+            record["startup"] = {
+                "characters": len(context),
+                "coreTools": [tool["name"] for tool in prepared["coreTools"]],
+                "reads": list(prepared["reads"]),
+            }
+            prompt += "\n\n" + context
             await service.io.call(service.history.begin, record, prompt, job.token)
             await process.start(job.token, self.settings.get("model"))
             options: JsonObject = {"cwd": str(workspace), "approvalPolicy": "never", "sandbox": "workspace-write"}

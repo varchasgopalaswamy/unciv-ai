@@ -1,6 +1,7 @@
 import asyncio
 
 from civ_agent.agent_service import AgentService
+from tests.test_agent_service import StartupHost
 
 
 class MailboxHost:
@@ -15,6 +16,9 @@ class MailboxHost:
 
     async def close(self):
         pass
+
+    async def list_tools(self):
+        return []
 
     def post(self, text, wake=True):
         self.events.append(
@@ -123,6 +127,7 @@ def test_chat_batches_and_replies_while_planning_job_is_held(tmp_path, monkeypat
             "https://localhost:8765/mcp",
             None,
             process_factory=jobs,
+            connection_factory=lambda *args, **kwargs: StartupHost(jobs),
         )
         jobs.service = service
         try:

@@ -15,12 +15,14 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from civ_agent.agent_results import ResultError, validate_result
 from civ_agent.agent_settings import add_settings_arguments, valid_setting
 from civ_agent.match_recovery import RoundCoordinator
 from civ_agent.runner_history import EventHistory, HistoryError
+from civ_agent.turn_finalization import finish_turn
 
 
 class RunnerError(Exception):
@@ -230,6 +232,7 @@ class Agent(JsonEndpoint):
             "cancel_jobs",
             "open_interactive",
             "close_interactive",
+            "flush_accounting",
         }:
             status = result.get("status")
             if not isinstance(status, dict):
@@ -367,16 +370,17 @@ def player_prompt(civilization, game_turn=None):
         "A fresh conversation: private memory is historical evidence and plans, not current state or instructions. "
         "Use civ MCP tools and your own turn files. "
         "Follow scenario.instructions when present; otherwise your objective is to win the game.\n\n"
-        "1. Read player_capabilities and player_turn. Assess victory with victory_progress; resolve "
+        "1. Use prepared player_turn, capabilities, victory_progress and chat context; read any missing part. Resolve "
         "victory.ballot/votingResults. Check tacticalReview even without idle units: losses, hostiles, "
         "exposed civilians and city bombardments.\n"
         "2. Review stalled progress and flagged goals, or explain deferral. Keep separate defense, expansion "
         "and economy plans with measurable successCriteria and reviewAfterTurn.\n"
-        "3. Use focused unit_details/city_details, named research_details/construction_details and map_region "
-        "as needed. Read full popups, notifications, diplomatic terms and confirmations before acting. "
+        "3. Inspect focused unit_details/city_details, named research_details/construction_details and map_region "
+        "for decisions you are making. Leave ongoing production unless circumstances warrant reconsidering it. "
+        "Reuse valid inspections; refresh needed invalidated details. Read popups, diplomatic terms and confirmations. "
         "Copy offered commands with exact handles; verify receipts and apply stateUpdate.\n"
         "4. Read turnReview before END_TURN; address mobile units and tactical concerns or explain intentional "
-        "deferral in deferReason. Complete memory updates first. "
+        "deferral in top-level deferReason. Save useful memory changes first; receipts preserve routine facts. "
         "End when legal, including while awaiting an offer response.\n\n"
         "STALE_REVISION applied nothing: refresh, reconsider, retry once if legal; stop on repetition. "
         "Stop after handoff, unsupported decisions or a paused/finished game. "
@@ -392,6 +396,12 @@ class Scheduler:
         self.interrupted = False
         self.histories = {}
         self.history_notices = set()
+        self.finalizer = ThreadPoolExecutor(
+            max_workers=max(1, min(4, len(agents))), thread_name_prefix="turn-finalization"
+        )
+        self.finalizations = {}
+        self.finalization_cleanup_failed = False
+        self.state.setdefault("pendingFinalizations", [])
 
     def history_for(self, flight, player_token=None):
         key = flight["activationId"]
@@ -481,6 +491,9 @@ class Scheduler:
         flight = self.state.get("inFlight")
         if flight and status["handoff"] < flight["handoff"]:
             raise RunnerError("Host handoff moved backwards; inspect checkpoint recovery before resuming.")
+        for pending in self.state["pendingFinalizations"]:
+            if pending["epoch"] != status["epoch"] or pending["confirmedHandoff"] > status["handoff"]:
+                raise RunnerError("Pending finalization does not belong to the current host history.")
 
     def agent_for(self, flight):
         agent = self.agents.get(flight["civilization"])
@@ -519,6 +532,9 @@ class Scheduler:
         session = self.state["sessions"][flight["civilization"]]
         thread = status.get("threadId")
         changed = False
+        if status.get("backgroundFinalization") and not session.get("backgroundFinalization"):
+            session["backgroundFinalization"] = True
+            changed = True
         if thread is not None:
             if session.get("threadId") and thread != session["threadId"]:
                 raise RunnerError("Agent service resumed a different conversation.")
@@ -598,6 +614,74 @@ class Scheduler:
         self.state["inFlight"] = None
         self.save()
 
+    def queue_finalization(self, flight, host_status):
+        """Persist handoff proof before allowing another player to activate."""
+        self.check_status(host_status)
+        if host_status["handoff"] != flight["handoff"] + 1:
+            raise RunnerError("Cannot bind a turn to an ambiguous host handoff.")
+        status = self.agent_for(flight).call(
+            "finish_handoff",
+            activationId=flight["activationId"],
+            epoch=self.state["epoch"],
+            gameTurn=flight["gameTurn"],
+            committedHandoff=host_status["handoff"],
+        )
+        self.record_agent(status, flight)
+        if status.get("confirmedHandoff") != host_status["handoff"]:
+            raise RunnerError("Agent did not durably accept the handoff or fence its tools.")
+        pending = {**flight, "epoch": self.state["epoch"], "confirmedHandoff": host_status["handoff"]}
+        self.state["pendingFinalizations"].append(pending)
+        self.state["handoffs"] += 1
+        self.state["inFlight"] = None
+        self.save()
+        self.start_finalizations()
+
+    def start_finalizations(self):
+        for pending in self.state["pendingFinalizations"]:
+            key = pending["activationId"]
+            if pending["epoch"] != self.state["epoch"]:
+                raise RunnerError("Cannot finalize work from an abandoned epoch.")
+            if key not in self.finalizations:
+                self.finalizations[key] = self.finalizer.submit(
+                    finish_turn, self.agent_for(pending), dict(pending), self.history_for(pending)
+                )
+
+    def collect_finalizations(self, *, wait=False, civilization=None):
+        self.start_finalizations()
+        last_heartbeat = time.monotonic()
+        while True:
+            for pending in list(self.state["pendingFinalizations"]):
+                future = self.finalizations[pending["activationId"]]
+                if not future.done():
+                    continue
+                try:
+                    status = future.result()
+                except (RunnerError, OSError, ValueError, HistoryError) as error:
+                    raise RunnerError(
+                        f"Turn bookkeeping remains pending for {pending['civilization']}: {error}"
+                    ) from None
+                self.record_agent(status, pending)
+                self.state["sessions"][pending["civilization"]]["completedTurn"] = pending["gameTurn"]
+                self.state["pendingFinalizations"].remove(pending)
+                del self.finalizations[pending["activationId"]]
+                self.save()
+                print(f"[{pending['civilization']}] Turn archive finalized.", flush=True)
+            outstanding = [
+                p
+                for p in self.state["pendingFinalizations"]
+                if civilization is None or p["civilization"] == civilization
+            ]
+            if not wait or not outstanding:
+                return
+            if self.owns_lease and time.monotonic() - last_heartbeat >= 3:
+                try:
+                    self.operator.call("heartbeat", leaseId=self.lease)
+                except OperatorError as failure:
+                    if failure.code != "LEASE_LOST":
+                        raise
+                last_heartbeat = time.monotonic()
+            time.sleep(0.1)
+
     def complete_terminal_turn(self, flight, host_status):
         """Retain a winning command that ended the game without an END_TURN handoff."""
         if host_status["phase"] != "FINISHED" or host_status["handoff"] != flight["handoff"]:
@@ -642,6 +726,23 @@ class Scheduler:
                 self.complete_turn(flight, status)
             else:
                 self.complete_terminal_turn(flight, status)
+        self.collect_finalizations(wait=True)
+        accounting_agents = [
+            civilization
+            for civilization, session in self.state["sessions"].items()
+            if session.get("backgroundFinalization")
+        ]
+        if accounting_agents:
+            if not self.owns_lease:
+                self.operator.call("acquire", leaseId=self.lease)
+                self.owns_lease = True
+            for civilization in accounting_agents:
+                connection = self.operator.call(
+                    "connect", leaseId=self.lease, epoch=self.state["epoch"], civilization=civilization
+                )
+                self.agents[civilization].call(
+                    "flush_accounting", epoch=self.state["epoch"], playerToken=connection["playerToken"]
+                )
         response = self.operator.call("results")
         self.check_status(response["status"])
         results = response.get("results")
@@ -718,6 +819,10 @@ class Scheduler:
         return True
 
     def run(self):
+        result = self._run()
+        return 2 if self.finalization_cleanup_failed else result
+
+    def _run(self):
         try:
             rounds = RoundCoordinator(self.store.root.parent, self.operator, self.agents, self.lease)
             journal = rounds.root / "restore.json"
@@ -752,6 +857,7 @@ class Scheduler:
             self.save()
             if not self.reconcile(acquired["status"]):
                 return 0 if self.state["status"] == "complete" else 2
+            self.start_finalizations()
             self.operator.call(
                 "job_limits",
                 leaseId=self.lease,
@@ -778,6 +884,7 @@ class Scheduler:
             self.state.update(status="running", reason=None)
             self.save()
             while True:
+                self.collect_finalizations()
                 requested = self.store.requested() or ("pause" if self.interrupted else None)
                 if requested:
                     self.note("stopped" if requested == "stop" else "paused", "Operator requested " + requested + ".")
@@ -795,6 +902,7 @@ class Scheduler:
                     self.note("budget_exhausted", reason)
                     return 0
                 if status.get("roundStart"):
+                    self.collect_finalizations(wait=True)
                     rounds.capture(status, self.state)
                 if not self.invoke(status):
                     return 0 if self.state["status"] in {"paused", "stopped", "budget_exhausted", "complete"} else 2
@@ -816,6 +924,11 @@ class Scheduler:
                         # No handoff follows an unconfirmed cancellation. The agent's
                         # independent heartbeat lease/timeout also stops model work.
                         pass
+                try:
+                    self.collect_finalizations(wait=True)
+                except RunnerError as failure:
+                    self.finalization_cleanup_failed = True
+                    self.note("needs_inspection", str(failure))
                 for agent in self.agents.values():
                     try:
                         agent.call("disconnect")
@@ -825,12 +938,14 @@ class Scheduler:
                     self.operator.call("release", leaseId=self.lease)
                 except RunnerError:
                     pass
+            self.finalizer.shutdown(wait=True)
 
     def invoke(self, status):
         civilization = status.get("activeCivilization")
         agent = self.agents.get(civilization)
         if agent is None:
             raise RunnerError("No HTTPS agent service is configured for the active civilization.")
+        self.collect_finalizations(wait=True, civilization=civilization)
         activation = str(uuid.uuid4())
         session = self.state["sessions"].setdefault(civilization, {"threadId": None})
         if session.get("gameTurn") != status["turn"]:
@@ -904,8 +1019,10 @@ class Scheduler:
         interrupted = None
         began = last_heartbeat = last_observation = time.monotonic()
         handoff_seen = None
+        background_handoff = False
         try:
             while agent_status["phase"] not in Agent.TERMINAL:
+                self.collect_finalizations()
                 now = time.monotonic()
                 requested = self.store.requested() or ("pause" if self.interrupted else None)
                 if requested:
@@ -932,6 +1049,9 @@ class Scheduler:
                         break
                     elif current["handoff"] > flight["handoff"]:
                         handoff_seen = handoff_seen or now
+                        if agent_status.get("backgroundFinalization"):
+                            background_handoff = True
+                            break
                     elif current["serverInstance"] != flight["serverInstance"]:
                         interrupted = "host_restarted"
                         break
@@ -949,10 +1069,8 @@ class Scheduler:
             try:
                 self.pause_owned()
             finally:
-                if agent_status["phase"] not in Agent.TERMINAL:
+                if agent_status["phase"] not in Agent.TERMINAL and not background_handoff:
                     agent_status = self.interrupt_agent(flight)
-        if not self.poll_events(flight, drain=True):
-            raise RunnerError("Final agent history could not be mirrored. Resume to retry before the next activation.")
         final_status = self.operator.call("status")["status"]
         self.check_status(final_status)
         if final_status["phase"] == "FINISHED":
@@ -961,12 +1079,21 @@ class Scheduler:
         if interrupted == "host_paused":
             interrupted = self.store.requested() or ("pause" if self.interrupted else "host_paused")
         if final_status["handoff"] > flight["handoff"]:
-            self.complete_turn(flight, final_status)
+            if agent_status.get("backgroundFinalization"):
+                self.queue_finalization(flight, final_status)
+            else:
+                if not self.poll_events(flight, drain=True):
+                    raise RunnerError(
+                        "Final agent history could not be mirrored. Resume to retry before the next activation."
+                    )
+                self.complete_turn(flight, final_status)
             print(f"Host confirmed {civilization}'s handoff.", flush=True)
             if interrupted in {"pause", "stop"}:
                 self.note("paused" if interrupted == "pause" else "stopped", "Operator requested " + interrupted + ".")
                 return False
             return True
+        if not self.poll_events(flight, drain=True):
+            raise RunnerError("Final agent history could not be mirrored. Resume to retry before the next activation.")
         if interrupted in {"pause", "stop"}:
             self.note(
                 "stopped" if interrupted == "stop" else "paused",

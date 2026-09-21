@@ -17,11 +17,33 @@ def available(option: JsonObject | None) -> TypeGuard[JsonObject]:
     return bool(option and option.get("available") is True)
 
 
+def add_overview_commands(value: JsonObject) -> None:
+    """Use complete visible decisions; never prefill intent, consent or deferral."""
+    for alert in value.get("alerts", []):
+        if alert.get("canAcknowledge") is True and alert.get("content") is not None:
+            attach(alert, "ACKNOWLEDGE_ALERT", target=alert["handle"])
+    if value.get("canEndTurn") is True:
+        value["endTurn"] = {
+            "command": command_arguments({"kind": "END_TURN"}),
+            "instruction": "Read turnReview and tacticalReview. Add intent and a top-level deferReason explaining any intentional deferral. Save useful memory changes before executing.",
+        }
+    for unit in value.get("units", []):
+        if unit.get("canFoundCity"):
+            unit.setdefault("inspections", {})["FOUND_CITY"] = {
+                "tool": "unit_details",
+                "arguments": {"target": unit["handle"], "sections": ["settlement"]},
+            }
+
+
 def add_unit_commands(unit: JsonObject) -> None:
     target = unit["handle"]
     add_combat_commands({"map": {"units": [unit]}})
     for move in unit.get("moves", []):
         attach(move, "MOVE_UNIT", target=target, destination=move["destination"])
+        move["destinationInspection"] = {
+            "tool": "movement_preview",
+            "arguments": {"target": target, "destination": move["destination"]},
+        }
     order = unit.get("movementOrder")
     if order and order.get("canCancel"):
         attach(order, "CANCEL_UNIT_MOVEMENT", target=target)

@@ -70,6 +70,8 @@ internal data class JobTelemetry(
     val model: String? = null,
     val reasoningEffort: String? = null,
     val apiCalls: Map<String, ApiCounts> = emptyMap(),
+    val gameplayElapsedMs: Long? = null,
+    val finalizationElapsedMs: Long? = null,
 )
 
 @Serializable
@@ -250,6 +252,8 @@ internal class Telemetry(private val runtime: GameExecutor) {
                     "hostCalls" to aggregateCalls(listOf(state.windows[id]?.actors?.get(turn.civilization).orEmpty())),
                     "elapsedMs" to elapsed, "inactiveOrRecoveryMs" to elapsed?.let { (it - turn.activeMs).coerceAtLeast(0) },
                     "jobElapsedMs" to attempts.values.sumOf { it.telemetry?.elapsedMs ?: 0 },
+                    "gameplayElapsedMs" to attempts.values.mapNotNull { it.telemetry?.gameplayElapsedMs }.takeIf { it.isNotEmpty() }?.sum(),
+                    "finalizationElapsedMs" to attempts.values.mapNotNull { it.telemetry?.finalizationElapsedMs }.takeIf { it.isNotEmpty() }?.sum(),
                     "negotiationWaitMs" to attempts.values.sumOf { it.telemetry?.negotiationWaitMs ?: 0 },
                 )
             }

@@ -40,6 +40,7 @@ class ServiceHistoryTests(unittest.IsolatedAsyncioTestCase):
             "https://localhost:8765/mcp",
             None,
             process_factory=self.factory,
+            connection_factory=self.factory.connection,
         )
         self.factory.service = self.service
         self.runner = web.AppRunner(self.service.application(), access_log=None)

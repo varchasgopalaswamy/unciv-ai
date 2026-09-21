@@ -136,6 +136,12 @@ class JobAccess:
     wait_started: float | None = None
     completed_wait: float = 0
     owns_connection: bool = False
+    catalogue: list[JsonObject] | None = None
+    complete_on_handoff: bool = False
+    gameplay_fenced: bool = False
+    handoff_response_held: bool = False
+    gameplay_ended: asyncio.Event = field(default_factory=asyncio.Event)
+    model_stopped: asyncio.Event = field(default_factory=asyncio.Event)
 
     def waiting_seconds(self) -> float:
         return self.completed_wait + (time.monotonic() - self.wait_started if self.wait_started is not None else 0)
@@ -150,6 +156,7 @@ class ProposalGateway:
         self.in_flight = 0
         self.deferred_completions = []
         self.accounting: JobAccounting | None = None
+        self.history = None
 
     async def open(
         self,
@@ -183,8 +190,13 @@ class ProposalGateway:
     def check(self, job: JobAccess):
         if self.paused or job.closed or self.jobs.get(job.token) is not job:
             raise StateConflict("JOB_PAUSED_OR_EXPIRED")
+        if job.gameplay_fenced:
+            raise StateConflict("TURN_ENDED")
 
     async def tools(self, job: JobAccess):
+        self.check(job)
+        if job.catalogue is not None:
+            return copy.deepcopy(job.catalogue)
         upstream = await job.connection.list_tools()
         tools = []
         for tool in upstream:
@@ -243,7 +255,11 @@ class ProposalGateway:
                     "ABSTAIN_DIPLOMATIC_VOTE and ACKNOWLEDGE_DIPLOMATIC_RESULTS take only kind and intent; "
                     "read victory.votingResults before acknowledging results. "
                     "END_TURN requires reading turnReview and a deferReason for intentionally idle mobile units "
-                    "or deferred tactical concerns; complete memory updates before issuing it."
+                    "or deferred tactical concerns; deferReason is a top-level argument, outside intent. "
+                    "ACKNOWLEDGE_ALERT uses target, not handle. Copy the overview's alert/endTurn command. "
+                    "FOUND_CITY needs unit_details sections=[settlement]; SET_UNIT_DESTINATION needs a matching "
+                    "movement_preview(target,destination), whose command uses engine pathfinding. "
+                    "Complete useful memory updates before END_TURN."
                 )
                 tools.append(entry)
 
@@ -348,6 +364,7 @@ class ProposalGateway:
             "memory_update",
             "Create, revise, replace or retire typed private plans, beliefs, notes and SOUL principles. Code assigns IDs and turn metadata. Read before changing existing records. Notes use text and optional plan: an existing plan record ID, never prose; omit it for unrelated notes. Notes do not accept sources. Beliefs require claim, uncertainty and sources. Sources must have been read: record/message IDs, observation:overview, a detail response's evidence ID, or observation:communication after chat_read. Assumptions with source are ongoing dependencies; sources alone are historical evidence. Revise a plan after reviewing changed assumptions before reusing it for intent. For a rejected change with STALE_ASSUMPTIONS, reread its record and changed dependencies before reconsidering. Retirement removes active context, retaining history; it does not cancel a promise. Use subjects such as economy, Greece or entity handles for relevant context selection.",
         )
+        job.catalogue = copy.deepcopy(tools)
         return tools
 
     async def read_social(self, job: JobAccess, delivered: bool = True):
@@ -365,13 +382,23 @@ class ProposalGateway:
         job.social = result
         return result
 
-    async def call(self, job: JobAccess, name: str, arguments: JsonObject, call_id: str) -> JsonObject:
+    async def call(
+        self, job: JobAccess, name: str, arguments: JsonObject, call_id: str, *, source: str = "tool"
+    ) -> JsonObject:
         accounting = self.accounting
-        counted = await self.io.call(accounting.begin_call, job.id, name, arguments) if accounting else None
+        counted = (
+            await self.io.call(accounting.begin_call, job.id, name, arguments, source=source) if accounting else None
+        )
         outcome, replayed = "incomplete", False
+        ended = False
         try:
             result, replayed = await self._call_once(job, name, arguments, call_id)
             outcome = "error" if "error" in result else "success"
+            ended = job.complete_on_handoff and result.get("stateUpdate", {}).get("kind") == "turn_ended"
+            if ended:
+                job.gameplay_fenced = True
+                if self.history is not None:
+                    await self.io.call(self.history.handoff_response, job.id, call_id, name, arguments, result)
             return result
         except asyncio.CancelledError:
             self.forget_observation(job)
@@ -382,6 +409,10 @@ class ProposalGateway:
         finally:
             if accounting and counted:
                 await self.io.call(accounting.end_call, counted, outcome, replayed)
+            if ended:
+                # The native receipt, tool response and accounting are durable.
+                # Fence further calls before notifying the lifecycle controller.
+                job.gameplay_ended.set()
 
     async def _call_once(
         self, job: JobAccess, name: str, arguments: JsonObject, call_id: str
@@ -390,6 +421,7 @@ class ProposalGateway:
         if not isinstance(name, str) or not isinstance(arguments, dict):
             raise ValueError("INVALID_ARGUMENT")
         async with job.lock:
+            self.check(job)
             previous = await self.io.call(self.memory.call, job.id, call_id, name, arguments)
             if previous is not None:
                 return previous, True
@@ -941,6 +973,12 @@ class ProposalGateway:
                 parameters = body.get("params", {})
                 value = await self.call(job, parameters["name"], parameters.get("arguments", {}), str(body["id"]))
                 result = tool_result(value)
+                if job.complete_on_handoff and value.get("stateUpdate", {}).get("kind") == "turn_ended":
+                    # Keep this tool response pending until Codex has stopped,
+                    # so it cannot start a paid summary-only model request. The
+                    # service retains the receipt even if the client disconnects.
+                    job.handoff_response_held = True
+                    await job.model_stopped.wait()
             else:
                 return web.json_response(
                     {"jsonrpc": "2.0", "id": body["id"], "error": {"code": -32601, "message": "Method not available"}}

@@ -11,7 +11,12 @@ from typing import Annotated, Any, Literal
 
 from pydantic import Field
 
-from civ_agent.action_templates import add_city_commands, add_construction_commands, add_unit_commands
+from civ_agent.action_templates import (
+    add_city_commands,
+    add_construction_commands,
+    add_overview_commands,
+    add_unit_commands,
+)
 from civ_agent.entity_sections import (
     CITY_COMMAND_SECTIONS,
     UNIT_COMMAND_SECTIONS,
@@ -107,6 +112,7 @@ class UnitSummary(BoundaryModel):
     transported: bool = False
     carriedUnits: list[str] = Field(default_factory=list)
     interceptionReady: bool = False
+    inspections: JsonObject | None = None
 
 
 class PlayerNotification(BoundaryModel):
@@ -123,6 +129,7 @@ class TurnOverview(BoundaryModel):
     turn: int
     phase: str
     canEndTurn: bool
+    endTurn: JsonObject | None = None
     tacticalReview: JsonObject = Field(default_factory=dict)
     strategyReview: JsonObject = Field(default_factory=dict)
     pending: list[JsonObject] = Field(default_factory=list)
@@ -157,7 +164,7 @@ class TurnOverview(BoundaryModel):
 
 def overview(snapshot: JsonObject) -> JsonObject:
     """No legal-offer lists, map tiles, yield breakdowns or repeated receipt bodies."""
-    value = {key: snapshot[key] for key in TurnOverview.model_fields if key in snapshot}
+    value = {key: copy.deepcopy(snapshot[key]) for key in TurnOverview.model_fields if key in snapshot}
     value["cities"] = []
     for city in snapshot.get("cities", []):
         development = city.get("development") or {}
@@ -264,6 +271,7 @@ def overview(snapshot: JsonObject) -> JsonObject:
         "exploredTiles": len(snapshot.get("map", {}).get("tiles", [])),
         "frontierTiles": len(snapshot.get("map", {}).get("frontier", [])),
     }
+    add_overview_commands(value)
     return TurnOverview.model_validate(value).model_dump(exclude_none=True)
 
 

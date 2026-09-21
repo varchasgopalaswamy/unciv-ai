@@ -186,3 +186,7 @@ Ruff lint/format, Pyrefly and diff checks passed. No package build was run.
 Use an unused state directory when repeating the run. The source-state directory
 supplies the same checkpoint credentials as the original batch; the checkpoint
 itself is the unchanged original opening.
+
+The subsequent [agent call reduction work](Agent-call-reduction.md) adds prepared
+startup context and core definitions, decision-driven reads, command guidance and
+background turn finalization. The measurements above predate those changes.

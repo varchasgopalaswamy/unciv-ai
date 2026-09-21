@@ -41,6 +41,13 @@ async def capture(service, id):
 
 
 async def restore(service, payload):
+    # A late finalization request must finish against the old archive before
+    # paths and epoch are replaced. No writer may resume into the restored tree.
+    async with service.guard:
+        return await _restore(service, payload)
+
+
+async def _restore(service, payload):
     if set(payload) != {"id", "sha256", "epoch"} or not service.gateway.paused:
         raise ValueError("BARRIER_REQUIRED")
     path = checkpoint_path(service, payload["id"])
@@ -74,6 +81,7 @@ async def restore(service, payload):
         service.match = {"epoch": payload["epoch"]}
         write_private_json(service.match_file, service.match)
         service.history = HistoryStore(service.state_dir / "history", service.token, auto_render=False)
+        service.gateway.history = service.history
         service.archive = TurnArchive(
             service.state_dir / "turn-archive",
             service.workspace,

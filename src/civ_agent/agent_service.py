@@ -15,6 +15,7 @@ import hmac
 import json
 import os
 import signal
+import sqlite3
 import ssl
 import tempfile
 import time
@@ -37,6 +38,7 @@ from civ_agent.proposal_gateway import ProposalGateway
 from civ_agent.protocol import AgentProcess, JsonObject, Notification
 from civ_agent.schemas import StartRequest, start_error
 from civ_agent.service_io import ServiceIO
+from civ_agent.startup_context import prepare_startup, startup_text
 from civ_agent.telemetry import JobAccounting
 from civ_agent.tls import codex_trust_environment, https_url, private_directory, regular_file, write_private_json
 from civ_agent.tool_discovery import tool_discovery_instructions
@@ -223,6 +225,7 @@ class AgentService:
         memory_context_chars: int = 12000,
         gateway_url: str = "https://localhost:8865/mcp",
         gateway_ca_file: Path | None = None,
+        connection_factory=HostConnection,
     ) -> None:
         if model is not None and not valid_setting(model):
             raise ServiceError("INVALID_MODEL")
@@ -235,6 +238,7 @@ class AgentService:
             raise ServiceError("PRIVATE_STATE_INSIDE_WORKSPACE")
         self.token, self.mcp_url, self.ca_file = token, https_url(mcp_url, ("/mcp",)), ca_file
         self.executable, self.process_factory = executable, process_factory
+        self.connection_factory = connection_factory
         self.history = HistoryStore(self.state_dir / "history", token, auto_render=False)
         self.io = ServiceIO()
         self.archive_cache = {}
@@ -282,6 +286,7 @@ class AgentService:
         self.memory = CivilizationState(self.state_dir / "civilization", civilization, memory_context_chars)
         self.memory.export(self.workspace)
         self.gateway = ProposalGateway(self.memory, self.io, self.workspace)
+        self.gateway.history = self.history
         self.accounting = JobAccounting(self.state_dir / "telemetry")
         self.gateway.accounting = self.accounting
         self.telemetry_lock = asyncio.Lock()
@@ -414,7 +419,7 @@ class AgentService:
             handoff=record.get("committedHandoff"),
             aborted=record.get("aborted", False),
             terminal=record.get("terminalOutcome", False),
-            structured_summary=self.memory.summary(record["gameTurn"]),
+            structured_summary=record.get("frozenTurnSummary") or self.memory.summary(record["gameTurn"]),
         )
 
     async def result(self, payload):
@@ -481,7 +486,43 @@ class AgentService:
                 raise ServiceError("FINALIZATION_CONFLICT", 409)
             record["committedHandoff"] = payload["committedHandoff"]
             await self._save(record, refresh=True)
+            if "gameplayEndedAtMs" in record and "finalizationFinishedAtMs" not in record:
+                record["finalizationFinishedAtMs"] = int(time.time() * 1000)
+                record["finalizationElapsedMs"] = max(
+                    0, record["finalizationFinishedAtMs"] - record["gameplayEndedAtMs"]
+                )
+                await self._save(record)
+            if self.chat.running:
+                await self.flush_telemetry()
             return self.status(payload["activationId"])
+
+    async def finish_handoff(self, payload):
+        """Accept operator proof and fence this job without waiting for rendering."""
+        if set(payload) != {"activationId", "epoch", "gameTurn", "committedHandoff"}:
+            raise ServiceError("INVALID_ARGUMENT")
+        if (
+            not identifier(payload.get("activationId"))
+            or type(payload.get("gameTurn")) is not int
+            or type(payload.get("committedHandoff")) is not int
+        ):
+            raise ServiceError("INVALID_ARGUMENT")
+        async with self.guard:
+            self.status(payload["activationId"])
+            record = self.records[payload["activationId"]]
+            if (payload["epoch"], payload["gameTurn"]) != (record["epoch"], record["gameTurn"]):
+                raise ServiceError("INVALID_BINDING", 409)
+            if record.get("aborted") or record.get("terminalOutcome"):
+                raise ServiceError("FINALIZATION_CONFLICT", 409)
+            if payload["committedHandoff"] != record["handoff"] + 1:
+                raise ServiceError("INVALID_HANDOFF", 409)
+            for job in list(self.gateway.jobs.values()):
+                if job.id == record["activationId"]:
+                    job.gameplay_fenced = True
+                    async with job.lock:
+                        job.gameplay_ended.set()
+            record["confirmedHandoff"] = payload["committedHandoff"]
+            await self._save(record)
+            return self.status(record["activationId"])
 
     async def abort(self, payload: JsonObject) -> JsonObject:
         if (
@@ -562,8 +603,9 @@ class AgentService:
         result = {
             key: (dict(value) if isinstance(value, dict) else value)
             for key, value in record.items()
-            if key not in {"fingerprint", "threadTotals", "baseline"}
+            if key not in {"fingerprint", "threadTotals", "baseline", "frozenTurnSummary"}
         }
+        result["backgroundFinalization"] = True
         job = next((job for job in self.gateway.jobs.values() if job.id == activation_id), None)
         result["negotiationWaitSeconds"] = job.waiting_seconds() if job else record.get("negotiationWaitSeconds", 0)
         return result
@@ -656,9 +698,8 @@ class AgentService:
                 + f"\n\nTurn {payload['gameTurn']}; files: turn_{payload['gameTurn']}/. "
                 "Use history_read only when earlier detailed commands or receipts are needed. "
                 "The service writes all turn files. Do not create or edit them. "
-                "After END_TURN succeeds, make no further tool calls; immediately return your concise turn summary "
-                "as your final response. The service generates summary.json and summary.md from receipts and typed memory. "
-                "Final prose is only a report."
+                "After END_TURN succeeds, make no further tool calls. The service ends the model job at the handoff "
+                "and generates summary.json and summary.md from receipts and typed memory; no final prose is needed."
             )
             if payload["threadId"] is None:
                 assert self.archive is not None
@@ -699,17 +740,36 @@ class AgentService:
             self.active_task = asyncio.create_task(self._run(payload))
             return self.status()
 
-    async def flush_telemetry(self):
-        if self.chat.connection is None:
+    async def flush_telemetry(self, *, connection=None, epoch=None):
+        if connection is None and self.chat.connection is None:
             return
         async with self.telemetry_lock:
             for report in await self.io.call(self.accounting.pending):
-                response = await self.chat.social(
-                    "job_report", job=report["job"], usage=report["usage"], telemetry=report["telemetry"]
+                fields = {"job": report["job"], "usage": report["usage"], "telemetry": report["telemetry"]}
+                response = (
+                    await connection.tool("player_communication", {"op": "job_report", "epoch": epoch, **fields})
+                    if connection is not None
+                    else await self.chat.social("job_report", **fields)
                 )
                 if response.get("granted") is not True:
                     raise ServiceError("TELEMETRY_NOT_ACCEPTED", 503)
                 await self.io.call(self.accounting.acknowledge, report["job"], report["telemetry"]["sequence"])
+
+    async def flush_accounting(self, payload):
+        """Reconcile late reports after a finished-game restart without waking chat."""
+        if (
+            set(payload) != {"epoch", "playerToken"}
+            or not identifier(payload.get("epoch"))
+            or not isinstance(payload.get("playerToken"), str)
+            or len(payload["playerToken"]) != 43
+        ):
+            raise ServiceError("INVALID_ARGUMENT")
+        async with self.connection_factory(self.mcp_url, payload["playerToken"], self.ca_file) as connection:
+            identity = await connection.tool("player_communication", {"op": "state", "epoch": payload["epoch"]})
+            if identity.get("civilization") != self.civilization or identity.get("epoch") != payload["epoch"]:
+                raise ServiceError("INVALID_BINDING", 409)
+            await self.flush_telemetry(connection=connection, epoch=payload["epoch"])
+        return {"flushed": True}
 
     async def heartbeat(self, activation_id):
         status = self.status(activation_id)
@@ -841,7 +901,7 @@ class AgentService:
             "epoch": payload["epoch"],
         }
         self.diagnostics.emit("gameplay_job_started", **context)
-        async with HostConnection(
+        async with self.connection_factory(
             self.mcp_url, payload["playerToken"], self.ca_file, diagnostics=self.diagnostics, context=context
         ) as connection:
             await self._run_connected_job(payload, connection)
@@ -862,6 +922,7 @@ class AgentService:
             record["gameTurn"],
             memory_snapshot=payload.get("_memorySnapshot"),
         )
+        job.complete_on_handoff = True
         process = self.process_factory(
             self.executable, workspace, self.gateway_url, self.gateway_ca_file, self._notification
         )
@@ -886,6 +947,20 @@ class AgentService:
                 return
 
         monitor = asyncio.create_task(watchdog())
+
+        async def handoff_watcher():
+            await job.gameplay_ended.wait()
+            try:
+                record["gameplayEndedAtMs"] = int(time.time() * 1000)
+                record["gameplayElapsedMs"] = max(0, int((time.monotonic() - started) * 1000))
+                record["frozenTurnSummary"] = await self.io.call(self.memory.summary, record["gameTurn"])
+                await self._save(record)
+            except (OSError, ValueError, sqlite3.Error):
+                self.failure = "HANDOFF_RECORD_FAILED"
+            finally:
+                self.stop_event.set()
+
+        handoff_monitor = asyncio.create_task(handoff_watcher())
 
         async def render_history():
             try:
@@ -915,6 +990,15 @@ class AgentService:
                 record["epoch"],
                 self.gameplay_permit == record["activationId"],
             )
+            prepared = await prepare_startup(self.gateway, job)
+            context = startup_text(prepared)
+            record["startup"] = {
+                "characters": len(context),
+                "coreTools": [tool["name"] for tool in prepared["coreTools"]],
+                "reads": list(prepared["reads"]),
+            }
+            await self.io.call(self.history.startup_context, record["activationId"], context)
+            payload = {**payload, "prompt": payload["prompt"] + "\n\n" + context}
             await process.start(job.token, selected["model"])
             options: JsonObject = {"cwd": str(workspace), "approvalPolicy": "never", "sandbox": "workspace-write"}
             if selected["model"] is not None:
@@ -1001,7 +1085,21 @@ class AgentService:
                     break
                 with contextlib.suppress(asyncio.TimeoutError):
                     await asyncio.wait_for(self.stop_event.wait(), 0.25)
-            if self.completion not in {"completed", "interrupted"} and self.failure is None:
+            if job.gameplay_ended.is_set() and self.failure is None:
+                self.stopping = True
+                record["completionReason"] = "native_handoff"
+                # The END_TURN tool response remains pending at the gateway, so
+                # no further model request can start. Drain native completion
+                # and usage notifications before shutting down the process.
+                if self.completion is None:
+                    try:
+                        async with asyncio.timeout(5):
+                            await process.request("turn/interrupt", {"threadId": thread_id, "turnId": turn_id})
+                            while self.completion is None:
+                                await asyncio.sleep(0.01)
+                    except (TimeoutError, ServiceError, OSError, aiohttp.ClientError):
+                        record["accountingIncompleteReason"] = "HANDOFF_STOP_NOT_ACKNOWLEDGED"
+            elif self.completion not in {"completed", "interrupted"} and self.failure is None:
                 self.failure = "CODEX_TURN_FAILED"
         except asyncio.CancelledError:
             self.failure = self.failure or "INTERRUPTED"
@@ -1010,6 +1108,9 @@ class AgentService:
         finally:
             record["negotiationWaitSeconds"] = job.waiting_seconds()
             self.stopping = True
+            handoff_monitor.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await handoff_monitor
             monitor.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await monitor
@@ -1023,21 +1124,37 @@ class AgentService:
                 record["error"] = "STOP_UNCONFIRMED"
                 await self._save(record)
                 raise
+            job.model_stopped.set()
             finished = copy.deepcopy(record)
             finished["phase"] = (
                 "COMPLETED"
-                if self.completion == "completed" and self.failure is None
+                if (self.completion == "completed" or record.get("completionReason") == "native_handoff")
+                and self.failure is None
                 else "INTERRUPTED"
                 if self.failure == "INTERRUPTED" or self.completion == "interrupted"
                 else "FAILED"
             )
-            finished["usageComplete"] = self.completion == "completed" and finished.get("usageReported", False)
+            finished["usageComplete"] = (
+                (
+                    self.completion == "completed"
+                    or (
+                        record.get("completionReason") == "native_handoff"
+                        and self.completion == "interrupted"
+                        and job.handoff_response_held
+                    )
+                )
+                and finished.get("usageReported", False)
+                and "accountingIncompleteReason" not in record
+            )
+            if "gameplayEndedAtMs" in finished:
+                finished["finalizationElapsedMs"] = max(0, int(time.time() * 1000) - finished["gameplayEndedAtMs"])
             if self.failure:
                 finished["error"] = self.failure
-            # Never publish a terminal phase until the process has stopped and
-            # all accepted events and derived turn files have finished writing.
+            # A committed handoff has durable receipts and stopped model work.
+            # Its archive rendering is deferred to operator finalization; other
+            # terminal paths retain their synchronous recovery archive flush.
             try:
-                await self._save(finished, refresh=True)
+                await self._save(finished, refresh=not job.gameplay_ended.is_set())
             except (OSError, ValueError):
                 record["error"] = "HISTORY_WRITE_FAILED"
                 with contextlib.suppress(OSError, ValueError):
@@ -1117,6 +1234,10 @@ class AgentService:
                     result = await service_recovery.restore(self, payload)
                 elif operation == "finalize":
                     result = await self.finalize(payload)
+                elif operation == "finish_handoff":
+                    result = await self.finish_handoff(payload)
+                elif operation == "flush_accounting":
+                    result = await self.flush_accounting(payload)
                 elif operation == "finalize_terminal":
                     result = await self.finalize_terminal(payload)
                 elif operation == "result":

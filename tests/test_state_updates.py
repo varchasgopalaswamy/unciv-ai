@@ -188,7 +188,9 @@ def test_new_alerts_and_decisions_arrive_without_repeating_old_alert_content(tmp
             host.after_command = lambda: host.view.update(alerts=[old, new], pending=[{"kind": "ChooseTechnology"}])
             receipt = await gateway.call(job, "player_command", MOVE, "move")
             update = receipt["stateUpdate"]
-            assert update["collections"]["alerts"]["upsert"] == [new]
+            assert update["collections"]["alerts"]["upsert"] == [
+                {**new, "command": {"kind": "ACKNOWLEDGE_ALERT", "target": "alert-new"}}
+            ]
             assert update["set"]["pending"] == [{"kind": "ChooseTechnology"}]
             assert "Old long text" not in json.dumps(update)
             host.after_command = lambda: None

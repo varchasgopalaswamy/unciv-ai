@@ -358,6 +358,22 @@ class HistoryStore:
             log.append("lifecycle", data)
             log.last_lifecycle = data
 
+    def startup_context(self, activation_id, text):
+        """Retain the exact extra context supplied before the first model request."""
+        self.logs[activation_id].append("user_message", {"text": text, "source": "service_startup"})
+
+    def handoff_response(self, activation_id, call_id, name, arguments, result):
+        """Keep a response intentionally withheld to prevent another model request."""
+        log = self.logs[activation_id]
+        item = {
+            "itemId": "handoff:" + call_id,
+            "type": "mcpToolCall",
+            "source": "service_handoff",
+            "deliveredToModel": False,
+        }
+        log.append("tool_call", {**item, "server": "civ", "tool": name, "arguments": arguments})
+        log.append("tool_result", {**item, "result": {"content": [], "structuredContent": result, "isError": False}})
+
     def bind_turn(self, activation_id, turn_id):
         log = self.logs.get(activation_id)
         if log is not None:

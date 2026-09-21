@@ -135,13 +135,14 @@ def verify(root: Path, sessions: Path):
     assert len(paths) == 1
     history = root / "agent-services/Rome/history" / hashlib.sha256(record["activationId"].encode()).hexdigest()
     chunks = Chunks()
-    audited = []
+    audited, withheld = [], 0
     for line in (history / "events.jsonl").read_text().splitlines():
         event = chunks.expand(json.loads(line))
         if event is not None and event["kind"] == "tool_result":
             result = event["data"].get("result")
             if isinstance(result, dict) and isinstance(result.get("structuredContent"), dict):
                 audited.append(result["structuredContent"])
+                withheld += event["data"].get("deliveredToModel") is False
     # Open read-only: constructing CivilizationState would mark old jobs interrupted.
     with contextlib.closing(
         sqlite3.connect(f"file:{root / 'agent-services/Rome/civilization/memory.sqlite3'}?mode=ro", uri=True)
@@ -149,7 +150,8 @@ def verify(root: Path, sessions: Path):
         results = [
             json.loads(row[0])
             for row in db.execute(
-                "SELECT result FROM calls WHERE job=? AND result IS NOT NULL", (record["activationId"],)
+                "SELECT result FROM calls WHERE job=? AND result IS NOT NULL AND id NOT LIKE 'startup:%'",
+                (record["activationId"],),
             )
         ]
     # Boundary rejections can leave a call's result NULL; their complete error
@@ -159,6 +161,7 @@ def verify(root: Path, sessions: Path):
     assert not durable - audit, "Durable call results are missing from MCP audit history"
     assert all("error" in json.loads(value) for value in audit - durable), "Unexpected audit-only result"
     metrics = result_metrics(paths[0], audited)
+    metrics["withheldHandoffResults"] = withheld
     metrics["durableCallResults"] = sum(durable.values())
     metrics["auditOnlyErrorResults"] = sum((audit - durable).values())
     assert metrics["printedStructuredResults"] > 0, "No model-facing structured results were captured"

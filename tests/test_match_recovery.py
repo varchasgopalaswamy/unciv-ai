@@ -107,6 +107,7 @@ def test_partial_restore_remains_paused_then_repeats_same_epoch_without_refundin
     assert state["usage"] == {"input_tokens": 700}
     coordinator.restore(manifest, state)
     assert state["epoch"] == epoch and state["invocations"] == 4
+    assert state["pendingFinalizations"] == []
     assert host.world["gold"] == 100 and host.paused
     assert not history.exists()
     assert (coordinator.root / ("abandoned-" + epoch) / "history" / "old-timeline.txt").exists()

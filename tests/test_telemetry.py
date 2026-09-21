@@ -104,3 +104,17 @@ def test_gateway_counts_cached_tools_replays_and_rejections(tmp_path):
             await io.close()
 
     asyncio.run(run())
+
+
+def test_late_finalization_updates_timing_without_changing_gameplay_usage(tmp_path):
+    store = JobAccounting(tmp_path)
+    store.start("job", "epoch", True)
+    store.sample(record(phase="COMPLETED", usageComplete=True, gameplayElapsedMs=300, finalizationElapsedMs=20))
+    before = store.pending()[0]
+    store.acknowledge("job", before["telemetry"]["sequence"])
+    store.sample(record(phase="COMPLETED", usageComplete=True, gameplayElapsedMs=300, finalizationElapsedMs=75))
+    after = store.pending()[0]
+    assert after["usage"] == before["usage"]
+    assert after["telemetry"]["elapsedMs"] == before["telemetry"]["elapsedMs"]
+    assert after["telemetry"]["gameplayElapsedMs"] == 300
+    assert after["telemetry"]["finalizationElapsedMs"] == 75

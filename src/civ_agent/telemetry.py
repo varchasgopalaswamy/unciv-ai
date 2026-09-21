@@ -80,9 +80,11 @@ class JobAccounting:
             db.execute("INSERT OR IGNORE INTO jobs VALUES(?,?,0)", (id, json.dumps(row)))
         self.starts[id] = time.monotonic()
 
-    def begin_call(self, job: str, name: str, arguments: JsonObject) -> str:
+    def begin_call(self, job: str, name: str, arguments: JsonObject, *, source: str = "tool") -> str:
         id = uuid.uuid4().hex
-        keys = ["tool:" + str(name)[:128]]
+        if source not in {"tool", "startup"}:
+            raise ValueError("Invalid call source")
+        keys = [source + ":" + str(name)[:128]]
         if name == "player_command" and isinstance(arguments, dict) and isinstance(arguments.get("kind"), str):
             keys.append("command:" + arguments["kind"][:128])
         with self.connect() as db:
@@ -119,6 +121,9 @@ class JobAccounting:
             report.update(model=settings.get("model"), reasoningEffort=settings.get("reasoningEffort"))
             report["usageReported"] = bool(record.get("usageReported", False))
             report["usageComplete"] = report["usageReported"] and bool(record.get("usageComplete", False))
+            for field in ("gameplayElapsedMs", "finalizationElapsedMs"):
+                if field in record:
+                    report[field] = max(report.get(field, 0), record[field])
             if record["phase"] in TERMINAL:
                 report["endedAtMs"] = report["endedAtMs"] or int(time.time() * 1000)
             for key in TOKEN_KEYS:

@@ -150,6 +150,8 @@ class FakeHost:
                                     "turnReview": {"id": "review1"},
                                     "phase": owner.phase,
                                 }
+                                if owner.behaviors and owner.behaviors[0] == "many_events":
+                                    result["scenario"] = {"testManyEvents": "true"}
                             elif name == "player_command":
                                 behavior = owner.behaviors.pop(0) if owner.behaviors else "complete"
                                 owner.plays.append(
@@ -172,6 +174,8 @@ class FakeHost:
                                 }:
                                     owner.handoff += 1
                                 result = {"behavior": behavior, "requestId": arguments["requestId"], "kind": "END_TURN"}
+                                if behavior == "hang":
+                                    result["error"] = "TEST_WAIT"
                             elif name == "player_receipt":
                                 result = {"error": "NOT_ENACTED"}
                             else:
@@ -266,7 +270,11 @@ class FakeHost:
         elif operation == "acquire":
             if self.lease and self.lease != body["leaseId"]:
                 return 409, {"error": "LEASE_BUSY"}
-            self.lease, self.phase, self.scheduled = body["leaseId"], "PAUSED", True
+            self.lease, self.phase, self.scheduled = (
+                body["leaseId"],
+                "FINISHED" if self.phase == "FINISHED" else "PAUSED",
+                True,
+            )
             if self.turn_start_handoff != self.handoff:
                 self.turn_start_handoff, self.turn_start_effects = self.handoff, self.effects
             extra["leaseId"] = self.lease
