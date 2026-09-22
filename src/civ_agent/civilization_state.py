@@ -17,7 +17,7 @@ from civ_agent.agreement_memory import affected_subjects, lifecycle_terms
 from civ_agent.memory_exports import export_files, projection_files
 from civ_agent.memory_history import action_record, build_summary, summary_markdown
 from civ_agent.memory_records import MEMORY_TYPES, HistoryReadResult, Intent, MemoryUpdate, public_record
-from civ_agent.memory_store import REACHABLE, RecordStore, encode, select_context, semantic
+from civ_agent.memory_store import REACHABLE, EvidenceRequired, RecordStore, encode, select_context, semantic
 from civ_agent.model_view import model_view
 from civ_agent.observations import DetailQuery, native_observation, project_detail
 from civ_agent.protocol import JsonObject
@@ -348,14 +348,27 @@ class CivilizationState:
         call_id: str,
         name: str,
         arguments: JsonObject,
-        respond: Callable[[JsonObject], JsonObject],
+        respond: Callable[[JsonObject, JsonObject], JsonObject],
+        update_memory: bool = True,
     ):
         """Commit delivered evidence and its replayable response in one transaction."""
         with self.transaction() as db:
             observed = self._observe_player(db, body, job, compact)
-            result = respond(self._records(db))
+            records = self._records(db)
+            snapshot = json.loads(db.execute("SELECT snapshot FROM jobs WHERE id=?", (job,)).fetchone()[0])
+            changed = {
+                key: record
+                for key, record in records.items()
+                if update_memory
+                and record["category"] in MEMORY_TYPES
+                and key in snapshot.get("delivered", {})
+                and snapshot["delivered"][key] != record["version"]
+            }
+            self._deliver(snapshot, changed)
+            db.execute("UPDATE jobs SET snapshot=? WHERE id=?", (encode(snapshot), job))
+            result = respond(records, changed)
             self._call_record(db, job, call_id, name, arguments, result)
-            return observed, result
+            return {**observed, **changed}, result
 
     def _observe_player(self, db, body: JsonObject, job: str, compact: JsonObject | None):
         """Independent evidence versions; the host still validates the full view too."""
@@ -585,11 +598,15 @@ class CivilizationState:
                         self._validate(db, job, {key: version})
                         if old["body"].get("state") == "retired" and change["op"] != "replace":
                             raise ValueError("RETIRED_MEMORY: create an explicit replacement")
-                        if change["op"] == "revise" and any(
-                            snapshot.get("delivered", {}).get(ref["key"], 0) < ref["version"]
+                        missing = [
+                            ref["key"]
                             for ref in old["body"].get("_review", [])
-                        ):
-                            raise ValueError("REVIEW_EVIDENCE_FIRST: read the changed evidence before revising")
+                            if snapshot.get("delivered", {}).get(ref["key"], 0) < ref["version"]
+                        ]
+                        if change["op"] == "revise" and missing:
+                            raise EvidenceRequired(
+                                "REVIEW_EVIDENCE_FIRST: read the changed evidence before revising", missing
+                            )
                     content = None
                     if change["op"] != "retire":
                         content = store.content(change["content"], snapshot)
@@ -658,9 +675,21 @@ class CivilizationState:
                             "id": key,
                             "accepted": False,
                             "reason": str(error),
+                            "recoverable": True,
                             "changedRecords": error.keys,
                             "conflicts": error.details,
                             "recovery": recovery_reads(db, error.keys, "memory_update", {}),
+                        }
+                    )
+                except EvidenceRequired as error:
+                    results.append(
+                        {
+                            "id": key,
+                            "accepted": False,
+                            "reason": str(error),
+                            "recoverable": True,
+                            "requiredSources": error.keys,
+                            "recovery": recovery_reads(db, error.keys + ([key] if key else []), "memory_update", {}),
                         }
                     )
                 except (StateConflict, ValueError) as error:

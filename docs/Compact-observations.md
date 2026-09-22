@@ -22,7 +22,7 @@ Confirmed-action bodies and detailed economic/map data move to explicit reads.
 | `city_details({target,sections})` | Selected city sections listed below; omit `sections` or use `["all"]` for full details |
 | `construction_details({target})` | Compact construction catalogue, including entries unavailable for purchase |
 | `construction_details({target,names})` | Up to 16 named entries with full descriptions, costs, requirements, confirmations, queue progress and copyable commands |
-| `map_region({center,radius})` | Explored tiles and frontier within radius 0–4 of an observed coordinate; respects world wrap |
+| `map_region({center,radius,format})` | Explored tiles and frontier within radius 0–4 of an observed coordinate; respects world wrap; `format` defaults to `compact`, with `full` available |
 | `player_details({section})` | `economy`, `diplomacy`, `research`, `policies`, `turn_history`, or `map_index` |
 | `research_details({names})`, `policy_details({names})` | Existing on-demand tree catalogues and selected UI descriptions |
 | `movement_preview({target,destination})` | Native adjacent route paths, estimated turn stops and costs; required before a matching `SET_UNIT_DESTINATION` |
@@ -36,6 +36,23 @@ and its `SET_UNIT_DESTINATION` command. After a successful command, apply its
 `stateUpdate` to the last overview and reread relevant `invalidatedDetails` before
 the next action. Unchanged prior inspections remain valid. Queries for
 missing entities return `available:false` without inventing their current state.
+
+## Compact map tiles
+
+The default `map_region` response may include `data.tileDefaults`. A tile inherits
+those defaults and replaces them with its own explicit fields. For example,
+`tileDefaults: {"owner": null}` applies to every returned tile except those with
+their own `owner`. Explicit `null`, `false`, empty lists and empty objects are
+real overrides. Missing fields remain distinct from nulls. Position, terrain,
+visibility, units and yields remain directly on each tile.
+
+This factors repeated values after the existing visibility and region selection;
+it preserves every returned fact, including fields unknown to the adapter. Small
+responses keep ordinary tiles if defaults would make them larger. Use
+`format: "full"` for expanded tile objects. The reference
+[`expand_tiles`](../src/civ_agent/map_format.py) reconstructs them exactly.
+Changing representation alone does not mark a plan's evidence as factually changed.
+See the [saved-response measurement](Gameplay-read-audit-2026-09-22.md#implementation-follow-up).
 
 ## Focused sections and commands
 

@@ -182,6 +182,11 @@ def public_record(key, record):
         "id": key,
         "type": record["category"],
         **(body if record["category"] in MEMORY_TYPES | {"decision"} else {"body": body}),
+        **(
+            {"reviewSources": sorted({ref["key"] for ref in record["body"]["_review"]})}
+            if record["category"] in MEMORY_TYPES and record["body"].get("_review")
+            else {}
+        ),
     }
 
 
@@ -195,6 +200,7 @@ class RecordMetadata(BoundaryModel):
     updatedTurn: NonnegativeInt | None
     state: Literal["active", "retired"]
     needsReview: list[str] = Field(default_factory=list)
+    reviewSources: list[str] = Field(default_factory=list)
     retirementReason: Retirement | None = None
     assessment: str = ""
     successor: str | None = None
@@ -262,6 +268,8 @@ class ChangeResult(BoundaryModel):
     changedRecords: list[str] | None = None
     conflicts: list[JsonObject] | None = None
     recovery: JsonObject | None = None
+    recoverable: bool | None = None
+    requiredSources: list[str] | None = None
 
 
 class MemoryUpdateResult(BoundaryModel):

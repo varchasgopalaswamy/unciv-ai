@@ -26,6 +26,7 @@ from civ_agent.entity_sections import (
     project_entity,
 )
 from civ_agent.game_commands import Position
+from civ_agent.map_format import compact_tiles
 from civ_agent.protocol import JsonObject
 from civ_agent.schemas import BoundaryModel
 
@@ -37,6 +38,7 @@ class ConstructionDetails(EntityDetails):
 class MapRegion(BoundaryModel):
     center: Position
     radius: Annotated[int, Field(ge=0, le=4)] = 2
+    format: Literal["compact", "full"] = "compact"
 
 
 class PlayerDetails(BoundaryModel):
@@ -127,6 +129,7 @@ class PlayerNotification(BoundaryModel):
 
 class TurnOverview(BoundaryModel):
     stateId: str | None = None
+    memoryUpdates: list[JsonObject] | None = None
     turn: int
     phase: str
     canEndTurn: bool
@@ -360,12 +363,11 @@ def project_detail(snapshot: JsonObject, query: DetailQuery) -> JsonObject:
         positions = [t["position"] for t in map_view.get("tiles", [])] + map_view.get("frontier", [])
         available = center in positions
         if available:
+            tiles = [t for t in map_view.get("tiles", []) if region_distance(t["position"], center, wrap) <= radius]
             data = {
                 "center": center,
                 "radius": radius,
-                "tiles": [
-                    t for t in map_view.get("tiles", []) if region_distance(t["position"], center, wrap) <= radius
-                ],
+                **(compact_tiles(tiles) if args.get("format", "compact") == "compact" else {"tiles": tiles}),
                 "frontier": [p for p in map_view.get("frontier", []) if region_distance(p, center, wrap) <= radius],
             }
     elif name == "player_details":

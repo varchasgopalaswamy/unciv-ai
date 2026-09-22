@@ -710,7 +710,6 @@ class AgentService:
                 assert self.archive is not None
                 await self.io.call(self.memory.bind, payload["epoch"])
                 snapshot = await self.io.call(self.memory.snapshot, "gameplay")
-                prompt += "\n\n" + self.memory.context(snapshot)
                 payload = {**payload, "_memorySnapshot": snapshot}
             else:
                 prompt += "\nThis is recovery of the same unfinished game turn. Reobserve current host state before retrying commands."

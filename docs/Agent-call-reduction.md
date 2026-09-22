@@ -27,6 +27,10 @@ decisions, reliable receipts, accounting and recovery. Keep all game agents on
 - Supply the actual gateway definitions for `player_turn`, `player_command` and
   `memory_update` in gameplay startup context, including argument schemas. Do not
   maintain a second hand-written schema. Give their callable names explicitly.
+- The [turn-11 audit follow-up](Gameplay-read-audit-2026-09-22.md#implementation-follow-up)
+  adds `memory_read`, `unit_details` and `map_region` to that stable gameplay core.
+  Communication retains its own three permitted core tools. The added schemas
+  are based on observed usage; their net live token/request effect remains to be measured.
 - Keep the rest of the catalogue selectively discoverable. Fetch only definitions
   needed for the next decision; avoid looking up core definitions again.
 - Give communication and interactive jobs an appropriate, permitted core too.

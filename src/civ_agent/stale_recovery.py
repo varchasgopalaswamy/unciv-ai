@@ -8,8 +8,11 @@ from civ_agent.memory_store import encode
 REPEATED_STALE = "REPEATED_STALE_ASSUMPTIONS"
 RECOVERY_INSTRUCTIONS = (
     "This operation was not applied. Follow recovery.reads, reconsider the changed evidence, and revise any "
-    "flagged plan before making one fresh attempt. Skip it only if it is no longer wanted or already handled. "
-    "A second stale rejection of the same operation stops the run for inspection; do not defer it to keep playing."
+    "flagged plan before retrying. Skip it only if it is no longer wanted or already handled. "
+    "The host tracks retries per operation: a successful operation resets its count. A later conflict after success "
+    "starts a new recovery, even for the same plan. Follow recoverable responses; do not count all stale errors "
+    "in the turn yourself. Only the host declares repeated-stale failure: REPEATED_STALE_ASSUMPTIONS with "
+    "recoverable=false halts the run and saves diagnostics for inspection."
 )
 
 
@@ -47,6 +50,7 @@ def recovery_reads(db, keys, name, arguments):
         row = db.execute("SELECT body FROM records JOIN heads USING(key,version) WHERE key=?", (key,)).fetchone()
         if row:
             evidence.update(ref["key"] for ref in json.loads(row[0]).get("_review", []))
+    keys.update(evidence)
     reads = []
     agreements = sorted(key for key in keys if key.startswith("observation:agreement/"))
     reads.extend({"tool": "agreement_read", "arguments": {"agreement": key.split("/", 1)[1]}} for key in agreements)

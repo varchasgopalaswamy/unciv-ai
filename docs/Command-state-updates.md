@@ -63,6 +63,9 @@ a unit's movement inspection.
 
 Native movement/mission previews expire whenever the native revision changes.
 Their routes and consequences require another native query.
+Finish unrelated research, production and alert actions before fetching the final
+preview, then issue its command. Ordinary independent reads can still be batched;
+batching several final previews before any movement can waste the later previews.
 
 Only the overview reconstructed from the delivered base and delta counts as newly
 read. Internally refreshed details remain unread until requested. Changed detail
@@ -70,6 +73,13 @@ cannot support a current assumption without a new read; an older delivered versi
 remains citeable as historical evidence.
 
 Overview evidence and the replayable response commit in one SQLite transaction.
+Changed private records already read by this job also arrive atomically in
+top-level `memoryUpdates`, alongside `stateUpdate` or an explicit overview. Each
+entry contains its private `version` and public `record`, including review flags
+and `reviewSources`. This list is response metadata, not part of the overview or
+its `stateId`; the reference reducer removes it from explicit-read bases.
+Keep the newest private record by ID on replay. An updated record does not deliver
+its cited evidence; relevant changed details still require explicit inspection.
 A failed response write rolls back the new observation evidence. The native
 action receipt was already saved separately and survives. Internal projection,
 validation or persistence errors stop the run with `STATE_UPDATE_FAILED` and

@@ -8,6 +8,7 @@ from contextlib import asynccontextmanager
 import pytest
 
 from civ_agent.civilization_state import CivilizationState, StateConflict
+from civ_agent.memory_records import MemoryReadResult
 from civ_agent.proposal_gateway import ProposalGateway
 from civ_agent.service_io import ServiceIO
 from civ_agent.state_updates import apply_overview_update, overview_update, stamp
@@ -172,6 +173,68 @@ def test_successive_actions_use_updates_and_only_changed_inspections_expire(tmp_
     asyncio.run(run())
 
 
+@pytest.mark.parametrize("source_kind", ["overview", "detail"])
+def test_actions_deliver_flagged_plans_without_delivering_unread_evidence(tmp_path, source_kind):
+    async def run():
+        async with session(tmp_path) as (gateway, job, _, memory):
+            base = await gateway.call(job, "player_turn", {}, "start")
+            detail = await inspect(gateway, job)
+            source = "observation:overview" if source_kind == "overview" else detail["evidence"]
+            key = create(
+                memory, plan(assumptions=[{"text": "The position is unchanged", "source": source}]), job=job.id
+            )
+            result = await gateway.call(job, "player_command", MOVE, "move")
+            updated = result["memoryUpdates"][0]
+            assert updated["record"]["id"] == key
+            assert updated["record"]["needsReview"] and updated["record"]["reviewSources"] == [source]
+            MemoryReadResult.model_validate({"records": [updated["record"]]})
+            assert updated["version"] == job.memory["records"][key]["version"]
+            assert apply_overview_update(base, result["stateUpdate"]) == job.delivered_overview
+            assert job.delivered_overview is not None and "memoryUpdates" not in job.delivered_overview
+            args = {"changes": [{"op": "revise", "id": key, "content": plan(approach="Hold the new position")}]}
+            revision = await gateway.call(job, "memory_update", args, "review")
+            if source_kind == "detail":
+                rejection = revision["changes"][0]
+                assert rejection["reason"].startswith("REVIEW_EVIDENCE_FIRST")
+                assert rejection["requiredSources"] == [source] and rejection["recoverable"]
+                assert detail["query"] in rejection["recovery"]["reads"]
+                for i, read in enumerate(rejection["recovery"]["reads"]):
+                    await gateway.call(job, read["tool"], read["arguments"], f"recover:{i}")
+                revision = await gateway.call(job, "memory_update", args, "review-after-reading")
+            assert revision["changes"][0]["accepted"]
+            assert not job.memory["records"][key]["body"]["needsReview"]
+            newest = copy.deepcopy(job.memory["records"][key])
+            assert newest["version"] > updated["version"]
+            assert await gateway.call(job, "player_command", MOVE, "move") == result
+            assert job.memory["records"][key] == newest  # Old receipt never rewinds delivery.
+            assert "memoryUpdates" not in await gateway.call(job, "player_turn", {}, "unchanged")
+
+    asyncio.run(run())
+
+
+def test_overview_delivers_known_retirements_without_delivering_unselected_records(tmp_path):
+    async def run():
+        async with session(tmp_path) as (gateway, job, _, memory):
+            await gateway.call(job, "player_turn", {}, "start")
+            key = create(memory, plan(), job=job.id)
+            chat = await gateway.open("chat", "communication", "g1", job.connection, {}, 0)
+            unseen = create(memory, plan(objective="Undelivered plan"), job=chat.id)
+            assert memory.patch(chat.id, [{"op": "retire", "id": key, "reason": "abandoned"}])["changes"][0]["accepted"]
+            base = await gateway.call(job, "player_turn", {}, "refresh")
+            assert [update["record"]["id"] for update in base["memoryUpdates"]] == [key]
+            assert base["memoryUpdates"][0]["record"]["state"] == "retired"
+            assert job.delivered_overview is not None and "memoryUpdates" not in job.delivered_overview
+            await inspect(gateway, job)
+            result = await gateway.call(job, "player_command", MOVE, "move")
+            assert apply_overview_update(base, result["stateUpdate"]) == job.delivered_overview
+            assert "memoryUpdates" not in result
+            rejected = memory.patch(job.id, [{"op": "create", "content": plan(sources=[unseen])}])["changes"][0]
+            assert rejected["reason"].startswith("SOURCE_NOT_DELIVERED")
+            assert rejected["requiredSources"] == [unseen]
+
+    asyncio.run(run())
+
+
 def test_new_alerts_and_decisions_arrive_without_repeating_old_alert_content(tmp_path):
     async def run():
         async with session(tmp_path) as (gateway, job, host, _):
@@ -265,6 +328,12 @@ def test_invalid_state_update_stops_for_inspection_and_keeps_committed_receipt(t
             await gateway.call(job, "player_turn", {}, "start")
             await inspect(gateway, job)
             before = memory.snapshot("gameplay")["records"]["observation:overview"]
+            key = create(
+                memory,
+                plan(assumptions=[{"text": "The overview is current", "source": "observation:overview"}]),
+                job=job.id,
+            )
+            plan_before = memory.snapshot("gameplay")["records"][key]
             if failure == "invalid_view":
                 host.after_command = lambda: host.view.update(turn="malformed")
             else:
@@ -274,6 +343,7 @@ def test_invalid_state_update_stops_for_inspection_and_keeps_committed_receipt(t
                 def fail_commit(db, job, id, name, arguments, result=None):
                     nonlocal fail_once
                     if fail_once and result and result.get("stateUpdate", {}).get("kind") == "delta":
+                        assert result["memoryUpdates"][0]["record"]["id"] == key
                         fail_once = False
                         raise OSError("Interrupted response write")
                     return original(db, job, id, name, arguments, result)
@@ -286,6 +356,10 @@ def test_invalid_state_update_stops_for_inspection_and_keeps_committed_receipt(t
             receipt = memory.call_receipt(job.id, "move")
             assert receipt is not None and receipt["done"] and not memory.pending()
             assert memory.snapshot("gameplay")["records"]["observation:overview"] == before
+            assert memory.snapshot("gameplay")["records"][key] == plan_before
+            with memory.transaction() as db:
+                snapshot = json.loads(db.execute("SELECT snapshot FROM jobs WHERE id=?", (job.id,)).fetchone()[0])
+                assert snapshot["delivered"][key] == plan_before["version"]
             assert memory.run_failure()["exceptionType"] == (
                 "ValidationError" if failure == "invalid_view" else "OSError"
             )

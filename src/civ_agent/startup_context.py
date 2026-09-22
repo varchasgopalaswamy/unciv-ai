@@ -8,7 +8,7 @@ from civ_agent.player_prompts import job_instructions
 from civ_agent.protocol import JsonObject
 
 CORE_TOOLS = {
-    "gameplay": ("player_turn", "player_command", "memory_update"),
+    "gameplay": ("player_turn", "player_command", "memory_update", "memory_read", "unit_details", "map_region"),
     "communication": ("chat_read", "chat_send", "memory_update"),
 }
 STARTUP_CALL_PREFIX = "startup:"
@@ -44,6 +44,19 @@ async def prepare_startup(gateway, job) -> JsonObject:
         # These are service reads, not fabricated model calls. The gateway still
         # records responses and delivered evidence; host API accounting is intact.
         reads[name] = await gateway.call(job, name, {}, STARTUP_CALL_PREFIX + name, source="startup")
+    # Native/social observations may flag or retire private records after the
+    # dispatch snapshot was selected. Read those records before rendering the
+    # one private context the model will actually receive. Keep the selection
+    # pinned; do not mark unselected cached evidence as delivered.
+    selected = job.memory["contextIds"]
+    for offset in range(0, len(selected), 20):
+        await gateway.call(
+            job,
+            "memory_read",
+            {"ids": selected[offset : offset + 20], "includeRetired": True},
+            STARTUP_CALL_PREFIX + f"memory:{offset}",
+            source="startup",
+        )
     capabilities = reads.get("player_capabilities")
     if capabilities is not None and "error" not in capabilities:
         capabilities = {
@@ -54,6 +67,7 @@ async def prepare_startup(gateway, job) -> JsonObject:
     return {
         "coreTools": core_definitions(catalogue, job.purpose),
         "reads": reads,
+        "memoryContext": gateway.memory.context(job.memory),
         # Prepared social context carries the same interpretation guidance as an
         # explicit read, even when chat_read has not been discovered separately.
         "readInstructions": {
@@ -105,6 +119,8 @@ def startup_prompt(prepared: JsonObject, purpose: str, dynamic: str) -> StartupP
         )
     if dynamic:
         sections.append(dynamic)
+    if prepared.get("memoryContext"):
+        sections.append(prepared["memoryContext"])
     sections.append("Prepared player-visible reads:\n" + encoded(reads))
     return StartupPrompt(
         instructions=job_instructions(purpose) + "\n\n" + startup_instructions(prepared),
@@ -114,4 +130,10 @@ def startup_prompt(prepared: JsonObject, purpose: str, dynamic: str) -> StartupP
 
 def startup_text(prepared: JsonObject) -> str:
     """Plain-text variant for interactive clients, with definitions before data."""
-    return startup_instructions(prepared) + "\n\nPrepared player-visible reads:\n" + encoded(prepared["reads"])
+    return (
+        startup_instructions(prepared)
+        + "\n\n"
+        + prepared.get("memoryContext", "")
+        + "\n\nPrepared player-visible reads:\n"
+        + encoded(prepared["reads"])
+    )

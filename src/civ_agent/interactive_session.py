@@ -46,9 +46,7 @@ async def open_session(service, payload):
             "token": job.token,
             "url": service.gateway_url,
             "caFile": str(service.gateway_ca_file) if service.gateway_ca_file else None,
-            "context": startup_text(await prepare_startup(service.gateway, job))
-            + "\n\n"
-            + service.memory.context(job.memory),
+            "context": startup_text(await prepare_startup(service.gateway, job)),
         }
     except BaseException:
         if job is not None:

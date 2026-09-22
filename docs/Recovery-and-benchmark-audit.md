@@ -46,6 +46,15 @@ their presence alone does not establish they were temporary benchmark hacks.
    so an off-turn communication failure also stops the run. Already dispatched
    work retains its native receipt; no automatic rollback occurs.
 
+Only the host decides that stale recovery is exhausted. Agents follow
+`recoverable` responses rather than counting stale errors across a turn.
+A successful action or memory edit resets that operation's counter, even when
+another conflict occurs later for the same plan. The
+[turn-11 audit](Gameplay-read-audit-2026-09-22.md) found an agent stopping itself
+before this host condition fired; the prompt now states this distinction
+explicitly. Tests cover successive recovery cycles and termination without model
+cooperation. The stop remains enforced in code and persists across restarts.
+
 Diagnostic JSON is stored at
 `SERVICE_DIR/civilization/failures/<diagnosticId>.json`; the authoritative failure
 also lives in `civilization/memory.sqlite3`. Agent status and scheduler output name

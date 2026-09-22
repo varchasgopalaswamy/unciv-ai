@@ -120,6 +120,34 @@ def test_belief_retraction_flags_plan_but_old_sighting_is_historical(tmp_path):
     assert current(memory, campaign)["needsReview"]
 
 
+def test_missing_sources_and_assumptions_return_all_needed_reads(tmp_path):
+    memory = setup(tmp_path)
+    # These records are cached, but the new job has not read either observation.
+    memory.observe("border", {"turn": 4, "units": []}, "game")
+    memory.start_job("next", "gameplay", {})
+    args = [
+        {
+            "op": "create",
+            "content": plan(
+                sources=["observation:game"],
+                assumptions=[{"text": "The border is clear", "source": "observation:border"}],
+            ),
+        }
+    ]
+    result = memory.patch("next", args)
+    MemoryUpdateResult.model_validate(result)
+    rejection = result["changes"][0]
+    assert rejection["reason"].startswith("SOURCE_NOT_DELIVERED")
+    assert rejection["requiredSources"] == ["observation:border", "observation:game"]
+    reads = rejection["recovery"]["reads"]
+    assert reads[-1] == {
+        "tool": "memory_read",
+        "arguments": {"ids": rejection["requiredSources"], "includeRetired": True},
+    }
+    memory.refresh_memory("next", rejection["requiredSources"])
+    assert memory.patch("next", args)["changes"][0]["accepted"]
+
+
 @pytest.mark.parametrize("subject", ["u1", "c1", "Greece"])
 def test_subject_changes_flag_only_related_plans(tmp_path, subject):
     memory = setup(tmp_path)

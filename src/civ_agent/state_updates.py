@@ -92,6 +92,8 @@ def overview_update(previous: JsonObject | None, current: JsonObject, invalidate
 
 def apply_overview_update(previous: JsonObject | None, update: JsonObject) -> JsonObject:
     """Reference reducer for consumers/tests. A replay never reapplies an old delta."""
+    if previous is not None:
+        previous = {key: value for key, value in previous.items() if key != "memoryUpdates"}
     if update["kind"] == "full":
         return copy.deepcopy(update["overview"])
     if update["kind"] != "delta" or previous is None:

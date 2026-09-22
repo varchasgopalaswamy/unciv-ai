@@ -60,11 +60,27 @@ greetings do not invalidate plans. A due progress review independently flags the
 plan. New confirmed combat losses flag defense and economy plans, losing the last
 military unit flags defense, and a fall in city count also flags expansion.
 `player_turn.strategyReview` lists current plans, review reasons and missing topic
-coverage; use `memory_read` before revising a listed record. `observation:tactics`
+coverage. Read a listed record with `memory_read` unless its current copy was
+already delivered in startup context or `memoryUpdates`. `observation:tactics`
 records the delivered tactical review. These flags and deadlines are versioned in
 SQLite and participate in the existing restart and rollback mechanism.
 See [compact observations](Compact-observations.md) for detail-query delivery and
 selective invalidation when a new snapshot arrives.
+
+Overview reads and successful gameplay action responses include `memoryUpdates`
+when a private record already delivered to this job has changed. Each entry is
+`{"version": 4, "record": {"id": "mem1", ...}}`; replace older copies by ID.
+Updates include review flags, external edits and retirements. They commit with
+the observation and saved response. Replaying an old response does not rewind
+the service's delivered versions. Records not previously read remain selective.
+
+`reviewSources` identifies evidence that triggered a record's review. Receiving
+the updated record does not mark that evidence as read: a changed detail still
+requires its focused read before revision. Rejected memory edits with unread,
+outdated or unreviewed evidence carry `requiredSources`, `recoverable: true`,
+and `recovery.reads`, including the necessary detail queries and a final private
+record refresh. Prefer narrow detail evidence for ongoing assumptions; the whole
+overview changes on many ordinary actions.
 
 ## Retirement and retrieval
 
@@ -108,10 +124,14 @@ Read the indicated evidence and revise the plan, or supply a fresh reason for a
 new decision. Retiring a plan after approval cannot undo an in-flight action.
 
 Each stale memory-edit rejection includes recovery reads and conflict versions.
-One fresh attempt is allowed; a second stale rejection for that operation and
-record in the same job stops the run with `REPEATED_STALE_ASSUMPTIONS`. Successful
-edits in a partially rejected batch remain applied. Transport replays do not
-count as another attempt. See [recovery diagnostics](Recovery-and-benchmark-audit.md).
+The host counts failed retries for each operation and record within the job.
+A second stale rejection without an intervening success stops the run with
+`REPEATED_STALE_ASSUMPTIONS`, saves diagnostics and interrupts the models.
+A successful operation resets its counter; a later conflict starts a new recovery.
+Agents follow recoverable responses and do not declare this terminal condition
+themselves. Successful edits in a partially rejected batch remain applied.
+Transport replays do not count as another attempt.
+See [recovery diagnostics](Recovery-and-benchmark-audit.md).
 
 `turn_N/summary.json` contains typed actions, receipts, observations, memory
 assessments and unresolved work. `summary.md` renders at most 200 words. It does
@@ -130,6 +150,12 @@ review notices and new events. Configure the private-memory allowance with
 `agent-server start Rome --memory-context-chars 12000` (default 12,000). The
 context reports how many records were omitted; search retrieves them on demand.
 No extra model calls or model polling are used for memory maintenance.
+
+The selection is pinned at dispatch. After startup's native and social reads,
+the service refreshes those selected private records in batches of up to 20,
+accounted as `startup:memory_read`. It renders private context once, after any
+observation-triggered review or expiry. A selected record that expires during
+preparation is delivered as retired. Other cached evidence stays unread.
 
 Normal restart preserves committed memory. Whole-match rollback restores record
 lifecycle, decisions and evidence with all players and the native save, then

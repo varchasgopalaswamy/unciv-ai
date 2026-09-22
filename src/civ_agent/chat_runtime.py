@@ -219,9 +219,7 @@ class ChatRuntime:
             service.executable, workspace, service.gateway_url, service.gateway_ca_file, notification
         )
         self.jobs[id] = (job, process)
-        prompt = f"Handle {service.civilization}'s newly received communication.\n\n" + service.memory.context(
-            job.memory
-        )
+        prompt = f"Handle {service.civilization}'s newly received communication."
 
         def export_history():
             log = service.history.logs.get(id)

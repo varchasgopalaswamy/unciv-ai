@@ -2,6 +2,7 @@
 
 import json
 
+from civ_agent.map_format import expand_tiles
 from civ_agent.memory_records import MEMORY_TYPES, public_record
 from civ_agent.protocol import JsonObject
 
@@ -15,6 +16,14 @@ REACHABLE = """WITH RECURSIVE reachable(key,version) AS (
     SELECT key,version FROM heads UNION
     SELECT r.key,r.parent FROM records r JOIN reachable a USING(key,version) WHERE r.parent IS NOT NULL
 ) """
+
+
+class EvidenceRequired(ValueError):
+    """A rejected memory edit with the precise evidence needed for recovery."""
+
+    def __init__(self, message: str, keys: list[str]):
+        super().__init__(message)
+        self.keys = sorted(set(keys))
 
 
 class RecordStore:
@@ -49,6 +58,7 @@ class RecordStore:
     @staticmethod
     def pin(snapshot: JsonObject, sources: list[str]) -> list[JsonObject]:
         evidence: list[JsonObject] = []
+        missing, refresh = [], []
         for source in sources:
             if source in snapshot.get("historicalEvidence", {}):
                 evidence.append({**snapshot["historicalEvidence"][source], "historical": True})
@@ -64,11 +74,16 @@ class RecordStore:
                 )
             ]
             if len(matches) != 1:
-                raise ValueError("SOURCE_NOT_DELIVERED: read the evidence before referencing it")
+                missing.append(source)
+                continue
             key, record = matches[0]
             if record["body"].get("requiresRefresh"):
-                raise ValueError("SOURCE_NEEDS_REFRESH: read the current agreement before referencing it")
+                refresh.append(key)
             evidence.append({"key": key, "version": record["version"], "category": record["category"]})
+        if missing:
+            raise EvidenceRequired("SOURCE_NOT_DELIVERED: read the evidence before referencing it", missing + refresh)
+        if refresh:
+            raise EvidenceRequired("SOURCE_NEEDS_REFRESH: read the current agreement before referencing it", refresh)
         return evidence
 
     def content(self, content, snapshot):
@@ -76,8 +91,8 @@ class RecordStore:
             raise ValueError("MEMORY_TOO_LARGE")
         sources = content.get("sources", []) + content.get("contradictingSources", [])
         assumptions = [a["source"] for a in content.get("assumptions", []) if a.get("source")]
-        evidence = self.pin(snapshot, sources)
-        pinned = self.pin(snapshot, assumptions)
+        references = self.pin(snapshot, sources + assumptions)
+        evidence, pinned = references[: len(sources)], references[len(sources) :]
         if content.get("plan"):
             try:
                 related = self.pin(snapshot, [content["plan"]])
@@ -91,9 +106,10 @@ class RecordStore:
                 )
             pinned.extend(related)
         current = self.all()
-        for ref in pinned:
-            if current.get(ref["key"], {}).get("version") != ref["version"]:
-                raise ValueError("ASSUMPTION_CHANGED: read the current evidence before revising")
+        changed = [ref["key"] for ref in pinned if current.get(ref["key"], {}).get("version") != ref["version"]]
+        if changed:
+            raise EvidenceRequired("ASSUMPTION_CHANGED: read the current evidence before revising", changed)
+        review = []
         for ref in evidence + pinned:
             if ref.get("historical") and ref not in pinned:
                 continue
@@ -103,7 +119,9 @@ class RecordStore:
                 or value["body"].get("state") != "active"
                 or value["body"].get("needsReview")
             ):
-                raise ValueError("SOURCE_NEEDS_REVIEW: read and reconsider the referenced memory")
+                review.append(ref["key"])
+        if review:
+            raise EvidenceRequired("SOURCE_NEEDS_REVIEW: read and reconsider the referenced memory", review)
         return {**content, "_evidence": evidence, "_assumptions": pinned}
 
     def flag(self, keys=(), subjects=(), reason="Evidence changed", review_keys=(), plans=()):
@@ -214,6 +232,11 @@ class RecordStore:
 def semantic(value):
     """Ignore transport clocks, preserving game facts and entity status."""
     if isinstance(value, dict):
+        if "tileDefaults" in value and isinstance(value.get("tiles"), list):
+            value = {
+                **{key: part for key, part in value.items() if key != "tileDefaults"},
+                "tiles": expand_tiles(value),
+            }
         return {
             key: semantic(part)
             for key, part in value.items()

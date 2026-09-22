@@ -252,6 +252,9 @@ class ProposalGateway:
                         "Inspect new alerts and decisions. Reread relevant invalidatedDetails only when needed for "
                         "the next action; unchanged inspections remain valid. An argument error with applied=false "
                         "alone needs no refresh; follow recovery.reads when supplied."
+                        " A response's memoryUpdates contains versioned private records, separate from the overview; "
+                        "replace older copies by ID, retaining newer versions on replay. Inspect their reviewSources "
+                        "before revision; receiving a record does not read its cited evidence."
                     )
                     entry["outputSchema"] = TurnOverview.model_json_schema()
                 elif tool["name"] in {"research_details", "policy_details"}:
@@ -265,11 +268,15 @@ class ProposalGateway:
                 elif tool["name"] == "mission_preview":
                     entry["description"] += (
                         " Read unit_details sections=[air], then copy this preview's command and add intent. "
+                        "Fetch the final preview after unrelated native actions and execute its chosen command next; "
+                        "any native revision expires the preview. "
                         "Interception is automatic; preserve readiness by leaving the unit unused or skipping it."
                     )
                 elif tool["name"] == "movement_preview":
                     entry["description"] += (
                         " Copy this preview's SET_UNIT_DESTINATION command and add intent. "
+                        "Fetch the final preview after unrelated native actions and execute its chosen command next; "
+                        "any native revision expires the preview. "
                         "Read unit_details sections=[movement] to inspect or cancel orders. "
                         "For settlers, inspect settlement separately from route availability: waiting for movement "
                         "does not fix city spacing or foreign ownership. Reconsider repeatedly blocked sites."
@@ -330,7 +337,7 @@ class ProposalGateway:
             "unit_details": "Inspect one owned unit by its player_turn handle. Prefer explicit sections: movement (paths/orders; use movement_preview for distant destinations), combat (attacks), orders, promotions, work (worker/water improvements; Work Boats are consumed), settlement (current-site native blockers, movement requirements and native promises; movement_preview also inspects prospective city sites), economy (upgrade/pillage/disband), abilities (great people/spaceship/gifts), or air (missions, bases/capacity, carried units and interception readiness; use mission_preview for special missions). Multiple sections are allowed; omitted sections or [all] returns full details. Only returned sections count as inspected. Read availability, warnings and confirmations; copy an offered command and add intent. Receipts report actual effects.",
             "city_details": "Inspect one owned city by its player_turn handle. Prefer explicit sections: status (capture choices), production (queue/progress/options), citizens (growth/work tiles/specialists/focus), economy (yields/buildings/sales), purchases, or combat (bombardment). Multiple sections are allowed. Omitted sections or [all] returns full details. Each section retains native consequences; unrelated sections do not count as inspected. Prefer construction_details(names=[candidates]) for queueing/buying specific buildings or units. Copy offered commands and add your intent.",
             "construction_details": "Inspect construction in an owned city. Supply up to 16 names for descriptions, costs, eligibility, queue progress, purchase confirmations and copyable commands. Omit names for a compact catalogue only when choosing candidates. Read the named option before queueing or buying; copy command and add your intent. Confirm purchases explicitly after reading consequences.",
-            "map_region": "Read explored tiles and frontier within radius 0–4 of an observed coordinate, respecting world wrap. Hidden tiles have no data. Read player_details(map_index) to locate distant regions.",
+            "map_region": "Read explored tiles and frontier within radius 0–4 of an observed coordinate, respecting world wrap. Hidden tiles have no data. Default format=compact: each tile inherits tileDefaults, with its explicit fields overriding those defaults, including null/false/empty values. All visible facts are retained; position, terrain, visibility, units and yields remain on each tile. Use format=full for expanded tile objects. Read player_details(map_index) to locate distant regions.",
             "player_details": "Read full economy, diplomacy (including war consequences), research progress, policy choices, current/previous turn receipts, or map coordinate index. Uses the latest permitted snapshot; returned evidence identifies what was read. For CITY_STATE_ACTION inspect section=diplomacy: target=civilizationId, selection=available actions.name, and confirmAction=true only after accepting any confirmation. DECLARE_WAR also accepts city-states. Inspect receipt.cityState for actual influence and alliance changes.",
         }.items():
             add(name, description)
@@ -538,13 +545,21 @@ class ProposalGateway:
         compact.pop("stateId", None)
         invalidated = changed_details(previous, value, job.details_read)
 
-        def respond(records):
+        def respond(records, changed):
             current = stamp(
                 {**compact, "strategyReview": strategy_review(records).model_dump()}, job.id, job.epoch, revision
             )
-            if receipt is None:
-                return current
-            return {**receipt, "stateUpdate": overview_update(baseline, current, invalidated)}
+            result = (
+                current
+                if receipt is None
+                else {**receipt, "stateUpdate": overview_update(baseline, current, invalidated)}
+            )
+            if changed:
+                result["memoryUpdates"] = [
+                    {"version": record["version"], "record": public_record(key, record)}
+                    for key, record in sorted(changed.items())
+                ]
+            return result
 
         try:
             observed, result = await self.io.call(
@@ -556,6 +571,7 @@ class ProposalGateway:
                 name,
                 arguments,
                 respond,
+                not call_id.startswith("startup:"),
             )
         except BaseException:
             # A cancelled I/O await may still have committed the response. Replay
@@ -564,7 +580,11 @@ class ProposalGateway:
             raise
         job.memory["records"].update(observed)
         job.observation = value
-        job.delivered_overview = result if receipt is None else apply_overview_update(baseline, result["stateUpdate"])
+        job.delivered_overview = (
+            {key: part for key, part in result.items() if key != "memoryUpdates"}
+            if receipt is None
+            else apply_overview_update(baseline, result["stateUpdate"])
+        )
         job.details_read = [query for query in job.details_read if query not in invalidated]
         job.detail_revision = revision
         return result

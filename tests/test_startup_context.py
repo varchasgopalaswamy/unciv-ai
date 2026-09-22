@@ -15,6 +15,7 @@ from civ_agent.startup_context import core_definitions, prepare_startup, startup
 from civ_agent.state_updates import apply_overview_update
 from civ_agent.telemetry import JobAccounting
 from tests.test_agent_service import StartupHost
+from tests.test_structured_memory import create, plan
 
 
 def test_prepared_reads_establish_evidence_and_update_base_without_model_calls(tmp_path):
@@ -40,7 +41,14 @@ def test_prepared_reads_establish_evidence_and_update_base_without_model_calls(t
             assert prepared["reads"]["player_capabilities"]["version"]
             assert "revision" not in view and "epoch" not in view
             assert "stateId" in view
-            assert len(prepared["coreTools"]) == 3
+            assert {tool["name"] for tool in prepared["coreTools"]} == {
+                "mcp__civ__player_turn",
+                "mcp__civ__player_command",
+                "mcp__civ__memory_update",
+                "mcp__civ__memory_read",
+                "mcp__civ__unit_details",
+                "mcp__civ__map_region",
+            }
             for tool in prepared["coreTools"]:
                 Draft202012Validator.check_schema(tool["inputSchema"])
             assert "social promises" in prepared["readInstructions"]["chat_read"]
@@ -90,6 +98,62 @@ def test_communication_startup_cannot_prepare_gameplay_or_expose_its_commands(tm
                 "mcp__civ__memory_update",
             }
             assert "player_command" not in json.dumps(prepared)
+        finally:
+            await io.close()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("purpose", ["gameplay", "communication"])
+def test_private_startup_context_follows_observation_reviews_and_expiry(tmp_path, purpose):
+    async def run():
+        memory, io = CivilizationState(tmp_path / "memory", "Rome"), ServiceIO()
+        gateway = ProposalGateway(memory, io, tmp_path / "workspace")
+        memory.bind("g1")
+        memory.start_job("previous", "gameplay", {})
+        memory.observe_player({"turn": 0}, "previous")
+        key = create(memory, plan(reviewAfterTurn=1), job="previous")
+        expiring = create(memory, {"type": "note", "text": "Temporary report", "expiresTurn": 1}, job="previous")
+        memory.finish_job("previous", True)
+        host = StartupHost(
+            SimpleNamespace(service=SimpleNamespace(active_id="job", records={"job": {"epoch": "g1", "gameTurn": 1}}))
+        )
+        original = host.tool
+
+        async def at_turn_one(name, args):
+            result: JsonObject = await original(name, args)
+            if name == "player_communication" and args["op"] == "state":
+                result["context"] = {"turn": 1}
+            return result
+
+        host.tool = at_turn_one
+        try:
+            job = await gateway.open("job", purpose, "g1", host, {}, 1)
+            assert not job.memory["records"][key]["body"]["needsReview"]
+            prepared = await prepare_startup(gateway, job)
+            context = json.loads(prepared["memoryContext"].split("\n", 1)[1])
+            records = {record["id"]: record for record in context["records"]}
+            assert records[key]["needsReview"]
+            assert records[expiring]["state"] == "retired"
+            assert "memoryUpdates" not in prepared["reads"].get("player_turn", {})
+            prompt = startup_prompt(prepared, purpose, "Play this turn")
+            assert prompt.user.count(prepared["memoryContext"]) == 1
+            assert "Temporary report" not in prompt.instructions
+            assert startup_text(prepared).count(prepared["memoryContext"]) == 1
+            saved = memory.call(
+                job.id,
+                "startup:memory:0",
+                "memory_read",
+                {"ids": job.memory["contextIds"], "includeRetired": True},
+            )
+            assert saved is not None and saved["records"] == context["records"]
+            result = await gateway.call(
+                job,
+                "memory_update",
+                {"changes": [{"op": "revise", "id": key, "content": plan(reviewAfterTurn=5)}]},
+                "review",
+            )
+            assert result["changes"][0]["accepted"]
         finally:
             await io.close()
 

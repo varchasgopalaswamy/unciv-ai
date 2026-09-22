@@ -166,6 +166,31 @@ def test_memory_batch_stops_on_second_conflict_preserving_successes_and_replay(t
     asyncio.run(run())
 
 
+def test_host_resets_a_memory_retry_after_success_and_stops_the_next_repeated_failure(tmp_path):
+    async def run():
+        async with session(tmp_path) as (gateway, memory, job, chat, _, key):
+            args = {"changes": [{"op": "revise", "id": key, "content": PLAN}]}
+            change_plan(memory, chat, key, "First competing edit")
+            first = await gateway.call(job, "memory_update", args, "first")
+            assert first["changes"][0]["recoverable"] is True
+            await recover(gateway, job, first["changes"][0], "read")
+            assert (await gateway.call(job, "memory_update", args, "success"))["changes"][0]["accepted"]
+            change_plan(memory, chat, key, "New conflict after success")
+            later = await gateway.call(job, "memory_update", args, "later")
+            assert later["changes"][0]["reason"] == "STALE_ASSUMPTIONS"
+            assert later["changes"][0]["recoverable"] is True
+            assert not gateway.failed.is_set() and memory.run_failure() is None
+            repeated = await gateway.call(job, "memory_update", args, "repeated")
+            assert repeated["error"] == REPEATED_STALE and repeated["recoverable"] is False
+            failure = memory.run_failure()
+            assert failure["firstAttempt"]["callId"] == "later"
+            assert failure["secondAttempt"]["callId"] == "repeated"
+            assert gateway.failed.is_set()
+            assert (memory.root / "failures" / (failure["diagnosticId"] + ".json")).exists()
+
+    asyncio.run(run())
+
+
 def test_reading_without_review_and_retrying_without_reads_are_also_bounded(tmp_path):
     async def run():
         async with session(tmp_path) as (gateway, memory, job, chat, host, key):
@@ -205,7 +230,8 @@ def test_failed_export_cannot_hide_a_durably_failed_memory_batch(tmp_path):
 @pytest.mark.parametrize("purpose", ["gameplay", "communication"])
 def test_prompts_require_bounded_recovery(purpose):
     instructions = tool_discovery_instructions(purpose)
-    assert "one fresh attempt" in instructions and REPEATED_STALE in instructions
+    assert "Only the host declares repeated-stale failure" in instructions and REPEATED_STALE in instructions
+    assert "resets that operation's count" in instructions and "Follow recoverable responses" in instructions
     assert "do not stop the gameplay turn for this" not in instructions
 
 
