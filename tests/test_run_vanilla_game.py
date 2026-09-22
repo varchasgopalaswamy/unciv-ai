@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from scripts import run_vanilla_game as launcher
+from tests import live_vanilla
 
 
 def saved_run(root, **changes):
@@ -41,6 +42,45 @@ def test_full_game_defaults_and_existing_match_protection(tmp_path):
     with pytest.raises(ValueError, match="already exists"):
         launcher.launch_command(args, Path(sys.executable))
     assert launcher.read_json(tmp_path / "runner/run.json") == saved
+
+
+@pytest.mark.parametrize(
+    "flags, enabled", [([], False), (["--strategy-guide"], True), (["--no-strategy-guide"], False)]
+)
+def test_strategy_toggle_reaches_all_agent_services(tmp_path, monkeypatch, flags, enabled):
+    from civ_agent.commands import agent_server
+
+    command = launcher.launch_command(launcher.arguments(["--state-dir", str(tmp_path), *flags]), Path(sys.executable))
+    monkeypatch.setattr(sys, "argv", ["live_vanilla", *command[4:]])
+    processes = []
+
+    class Process:
+        def __init__(self, command, *, stdout, stderr):
+            self.command, self.stopped = command, False
+            stdout.write("MCP-READY:local\n" if command[1] == "host" else "AGENT-READY:local\n")
+            stdout.flush()
+            processes.append(self)
+
+        def poll(self):
+            return 0 if self.stopped else None
+
+        def terminate(self):
+            self.stopped = True
+
+        def wait(self, timeout):
+            return 0
+
+    def schedule(args):
+        assert (args.model, args.reasoning_effort) == ("gpt-5.6-luna", "medium")
+        return 0
+
+    monkeypatch.setattr(live_vanilla.subprocess, "Popen", Process)
+    monkeypatch.setattr(live_vanilla.scheduler, "run", schedule)
+    assert live_vanilla.main() == 0
+    assert len(processes) == 4 and all(process.stopped for process in processes)
+    agents = [agent_server.parser().parse_args(process.command[3:]) for process in processes[1:]]
+    assert [args.civilization for args in agents] == ["Rome", "Greece", "France"]
+    assert all(args.strategy_guide == enabled for args in agents)
 
 
 def test_resume_preserves_larger_limits_usage_and_original_clock(tmp_path):
@@ -110,13 +150,15 @@ def test_launcher_captures_output_and_stop_report_without_restarting(tmp_path, m
     monkeypatch.setattr(
         launcher, "launch_command", lambda args, python: [str(python), "-u", str(worker), str(args.state_dir)]
     )
-    assert launcher.main(["--state-dir", str(root), "--color", "always"]) == 2
+    assert launcher.main(["--state-dir", str(root), "--color", "always", "--strategy-guide"]) == 2
     output = capsys.readouterr().out
     assert "\x1b[" in output.split("\x1b[36mstdout diagnostic")[0]
     assert "\x1b[36mstdout diagnostic\x1b[0m" in output
     assert "\x1b[" in output.split("stderr diagnostic")[1]
     launches = list((root / "launches").iterdir())
     assert len(launches) == 1
+    metadata = launcher.read_json(launches[0] / "launch.json")
+    assert metadata is not None and metadata["strategyGuide"]
     console = (launches[0] / "console.log").read_text()
     assert "stdout diagnostic" in console and "stderr diagnostic" in console
     assert "\x1b" not in console

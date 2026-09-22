@@ -221,6 +221,7 @@ class TurnArchive:
         if self.directory == self.workspace or self.directory.is_relative_to(self.workspace):
             raise TurnArchiveError("Trusted turn memory must be outside the player's writable workspace.")
         self.civilization, self.epoch = civilization, epoch
+        self.receipt_cache = {}
         self.secrets = tuple(secret for secret in secrets if isinstance(secret, str) and secret)
         self.binding = {"version": 2, "civilization": civilization, "epoch": epoch}
         with self._lock():
@@ -402,22 +403,37 @@ class TurnArchive:
                 write_private_json(attempt_path / "source.json", attempt_metadata)
             return artifacts
 
-    def _render(self, game_turn, turn_path, attempts, *, include_aborted=False):
+    def _earlier_requests(self, game_turn):
+        """Index each unchanged earlier transcript once, including across renders."""
         seen_requests = set()
         for earlier_turn, earlier_path in self._turns():
             if earlier_turn >= game_turn:
                 break
-            for earlier_attempt in self._attempts(earlier_path):
-                if earlier_attempt.get("aborted"):
-                    continue
-                for event in self._read_events(earlier_path, earlier_attempt):
-                    receipt = (
-                        _receipt(event["data"])
-                        if event["kind"] == "tool_result" and not event.get("incompleteChunk")
-                        else None
-                    )
-                    if receipt is not None and receipt["epoch"] == self.epoch:
-                        seen_requests.add((receipt["epoch"], receipt["requestId"]))
+            attempts = [attempt for attempt in self._attempts(earlier_path) if not attempt.get("aborted")]
+            version = []
+            for attempt in attempts:
+                path = earlier_path / f"attempt_{attempt['attempt']}.jsonl"
+                regular_file(path, private=True)
+                info = path.stat()
+                version.append((attempt["attempt"], info.st_ino, info.st_mtime_ns, info.st_size))
+            cached = self.receipt_cache.get(earlier_turn)
+            if cached is None or cached[0] != version:
+                receipts = set()
+                for attempt in attempts:
+                    for event in self._read_events(earlier_path, attempt):
+                        receipt = (
+                            _receipt(event["data"])
+                            if event["kind"] == "tool_result" and not event.get("incompleteChunk")
+                            else None
+                        )
+                        if receipt is not None and receipt["epoch"] == self.epoch:
+                            receipts.add((receipt["epoch"], receipt["requestId"]))
+                cached = self.receipt_cache[earlier_turn] = (version, receipts)
+            seen_requests.update(cached[1])
+        return seen_requests
+
+    def _render(self, game_turn, turn_path, attempts, *, include_aborted=False):
+        seen_requests = self._earlier_requests(game_turn)
         public_attempts = [
             {key: attempt[key] for key in ("attempt", "phase", "handoff", "aborted")}
             | {"terminalOutcome": attempt.get("terminalOutcome", False)}

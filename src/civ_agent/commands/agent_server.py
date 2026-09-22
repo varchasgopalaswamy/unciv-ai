@@ -54,6 +54,12 @@ def parser(*, add_help: bool = True) -> argparse.ArgumentParser:
     result.add_argument("--token-file", type=Path, help="Existing service bearer token file (created if absent)")
     result.add_argument("--codex", default="codex", help="Codex executable path")
     result.add_argument(
+        "--strategy-guide",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Include optional Civ V strategy suggestions in agent context (default: off)",
+    )
+    result.add_argument(
         "--memory-context-chars",
         type=int,
         default=12000,
@@ -136,6 +142,7 @@ def run(args: argparse.Namespace) -> int:
             model=args.model,
             reasoning_effort=args.reasoning_effort,
             memory_context_chars=args.memory_context_chars,
+            strategy_guide=args.strategy_guide,
             gateway_url=host_origin(args.public_host, port) + "/mcp",
             gateway_ca_file=material["ca_file"],
         )
@@ -155,6 +162,7 @@ def run(args: argparse.Namespace) -> int:
         print(f"Starting {args.civilization} agent service at {url}", flush=True)
         print(f"Player turn files: {workspace}", flush=True)
         print(f"Service diagnostics: {service.diagnostics.path}", flush=True)
+        print(f"Strategy guide: {'enabled (optional suggestions)' if args.strategy_guide else 'disabled'}", flush=True)
         print(
             f"New conversation defaults: model={args.model or 'Codex config'}, reasoning={args.reasoning_effort or 'Codex config'}",
             flush=True,

@@ -57,8 +57,8 @@ class Player:
             path = self.root / (fields["id"] + ".json")
             return {"valid": hashlib.sha256(path.read_bytes()).hexdigest() == fields["sha256"]}
         if op == "restore":
-            self.memory.restore(self.root / (fields["id"] + ".json"), fields["sha256"], fields["epoch"])
-            return {"restored": True, "epoch": fields["epoch"]}
+            interrupted = self.memory.restore(self.root / (fields["id"] + ".json"), fields["sha256"], fields["epoch"])
+            return {"restored": True, "epoch": fields["epoch"], "interruptedMemoryUpdates": interrupted}
         return {}
 
 
@@ -88,6 +88,7 @@ def test_partial_restore_remains_paused_then_repeats_same_epoch_without_refundin
     for player in players.values():
         player.memory.start_job("initial", "gameplay", {})
         player.memory.patch("initial", [{"op": "create", "content": {"type": "soul", "text": "Build peacefully"}}])
+        player.memory.begin_memory_phase("initial")
     coordinator.capture({"epoch": "g1", "turn": 0}, state)
     manifest = json.loads(next(coordinator.root.glob("*-round-*.json")).read_text())
     host.world["gold"] = 999
@@ -96,6 +97,7 @@ def test_partial_restore_remains_paused_then_repeats_same_epoch_without_refundin
         player.memory.ingest(
             "g1", [{"id": 1, "kind": "message", "wake": True, "body": {"text": "Abandoned future"}}], 1
         )
+        player.memory.finish_job("initial", True)
     players["Greece"].fail = "restore"
     history = coordinator.root.parent / "runner" / "history"
     history.mkdir(parents=True)
@@ -108,6 +110,7 @@ def test_partial_restore_remains_paused_then_repeats_same_epoch_without_refundin
     coordinator.restore(manifest, state)
     assert state["epoch"] == epoch and state["invocations"] == 4
     assert state["pendingFinalizations"] == []
+    assert state["restoredIncompleteMemory"] == {name: [{"job": "initial", "gameTurn": None}] for name in players}
     assert host.world["gold"] == 100 and host.paused
     assert not history.exists()
     assert (coordinator.root / ("abandoned-" + epoch) / "history" / "old-timeline.txt").exists()

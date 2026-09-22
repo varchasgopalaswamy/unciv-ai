@@ -77,7 +77,7 @@ def memory(root, player, events, record):
             ("agreement_list", {}, {"agreements": [active]}),
             ("agreement_read", {"agreement": record["agreement"]}, initial_read),
         ):
-            db.execute(
+            db.exec_driver_sql(
                 "INSERT INTO calls VALUES (?,?,?,?,?)", ("opening", name, name, encode(arguments), encode(result))
             )
     backup = root / "before-restart-memory" / (player + ".sqlite3")
@@ -88,11 +88,11 @@ def memory(root, player, events, record):
     with state.transaction() as db:
         store = RecordStore(db, 2)
         for event in events:
-            cursor = db.execute(
+            cursor = db.exec_driver_sql(
                 "INSERT INTO events(source,kind,body,wake) VALUES (?,?,?,?)",
                 ("epoch:" + str(event["id"]), event["kind"], encode(event), True),
             )
-            db.execute("INSERT INTO inbox VALUES (?)", (cursor.lastrowid,))
+            db.exec_driver_sql("INSERT INTO inbox VALUES (?)", (cursor.lastrowid,))
             store.write("event:" + str(event["id"]), "observation", event)
         if resource:
             end = next(e for e in events if e["body"]["agreement"] == record["agreement"])
@@ -109,7 +109,7 @@ def memory(root, player, events, record):
                 "_evidence": [{"key": key, "version": 2, "category": "observation"}],
             }
             store.write("mem1", "plan", reviewed, "review")
-            db.execute(
+            db.exec_driver_sql(
                 "INSERT INTO calls VALUES (?,?,?,?,?)",
                 (
                     "review",

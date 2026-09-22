@@ -321,6 +321,59 @@ class SchedulerServiceTest(unittest.TestCase):
         self.assertEqual(before, mirrors[0].read_bytes())
         self.assertNotIn("verbose", self.saved())
 
+    def test_model_retry_is_visible_in_quiet_console_history_diagnostics_and_dashboard(self):
+        from civ_agent.watch_state import WatchReader
+
+        def override(name, _arguments, _token):
+            if name == "player_turn":
+                return {
+                    "turn": self.host.status()["turn"],
+                    "canEndTurn": True,
+                    "epoch": self.host.epoch,
+                    "revision": "rev1",
+                    "turnReview": {"id": "review1"},
+                    "phase": self.host.phase,
+                    "scenario": {"testModelRetry": True},
+                }
+            return None
+
+        self.host.mcp_override = override
+        result = self.run_cli("--max-invocations", "1", "--max-seconds", "60")
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+        self.assertIn("[Rome] Warning: Model connection idle timeout; retrying (1/5", result.stdout)
+        self.assertIn("Model response resumed", result.stdout)
+        self.assertEqual(1, result.stdout.count("Model connection idle timeout"))
+        source = next((self.state_dir / "agent-services/Rome/history").glob("*/events.jsonl"))
+        mirror = next((self.state_dir / "runner/history/Rome").glob("*/*/events.jsonl"))
+        self.assertEqual(
+            [json.loads(line) for line in source.read_text().splitlines()],
+            [json.loads(line) for line in mirror.read_text().splitlines()],
+        )
+        notices = [
+            json.loads(line)["data"]
+            for line in mirror.read_text().splitlines()
+            if json.loads(line)["kind"] == "model_status"
+        ]
+        self.assertEqual(["retrying", "responding"], [event["state"] for event in notices])
+        diagnostics = (self.state_dir / "agent-services/Rome/diagnostics.jsonl").read_text()
+        self.assertIn('"event": "model_status"', diagnostics)
+        self.assertIn('"reason": "idle_timeout"', diagnostics)
+        identity = json.loads(mirror.with_name("source.json").read_text())
+        activity = WatchReader(self.state_dir).history(self.host.epoch, "Rome", 0, identity["activationId"])
+        warnings = [entry for entry in activity if entry.label == "Warning"]
+        self.assertEqual(1, len(warnings))
+        self.assertFalse(warnings[0].verbose)
+        self.assertIn("retrying (1/5", warnings[0].text)
+        for secret in ("PRIVATE_PROVIDER_HEADER", "PRIVATE_COOKIE"):
+            self.assertNotIn(
+                secret, result.stdout + source.read_text() + diagnostics + mirror.with_name("history.md").read_text()
+            )
+        records = [
+            json.loads(path.read_text()) for path in (self.state_dir / "agent-services/Rome/activations").glob("*.json")
+        ]
+        self.assertEqual("responding", records[0]["modelStatus"]["state"])
+        self.assertEqual(1, len(self.host.plays))
+
     def test_live_assistant_text_is_visible_before_any_handoff(self):
         self.host.behaviors = ["hang"]
         log = self.root / "live.log"
@@ -342,7 +395,7 @@ class SchedulerServiceTest(unittest.TestCase):
             process.wait(timeout=10)
             self.assertEqual(process.returncode, 0, log.read_text())
 
-    def test_committed_handoff_stops_before_a_slow_final_report(self):
+    def test_next_player_plays_while_previous_model_writes_memory(self):
         self.host.behaviors = ["slow_report", "complete"]
         result = self.run_cli("--max-turns", "1", "--max-seconds", "60", "--turn-timeout", "15")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -356,10 +409,56 @@ class SchedulerServiceTest(unittest.TestCase):
         self.assertTrue(all(record["completionReason"] == "native_handoff" for record in records))
         self.assertTrue(all(record["usageComplete"] for record in records))
         self.assertTrue(all("finalizationElapsedMs" in record for record in records))
-        self.assertEqual(2, sum(row["method"] == "turn/interrupt" for row in self.records()))
+        self.assertTrue(all(record["memoryPhaseComplete"] for record in records))
+        self.assertEqual(0, sum(row["method"] == "turn/interrupt" for row in self.records()))
+        calls = [row["params"] for row in self.records() if row["method"] == "test/tool"]
+        greece_end = next(
+            index
+            for index, row in enumerate(calls)
+            if row["civilization"] == "Greece" and row["tool"] == "player_command"
+        )
+        rome_memory = next(
+            index for index, row in enumerate(calls) if row["civilization"] == "Rome" and row["tool"] == "memory_update"
+        )
+        self.assertLess(greece_end, rome_memory)
+        summary = json.loads((self.state_dir / "agents/Rome/turn_0/summary.json").read_text())
+        self.assertTrue(
+            any(row["text"] == "Reflection saved while the next player acted" for row in summary["memoryChanges"])
+        )
 
     def test_gameplay_waits_while_chat_enacts_trade_and_scheduling_continues(self):
         self.exercise_concurrent_trade(peace=False)
+
+    def test_round_checkpoint_overlaps_last_players_memory_and_own_next_turn_waits(self):
+        self.host.round_checkpoints = True
+        self.host.behaviors = ["complete", "slow_report", "complete", "complete"]
+        result = self.run_cli("--max-turns", "2", "--max-seconds", "60", "--turn-timeout", "15")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.host.handoff, 4)
+        calls = [row["params"] for row in self.records() if row["method"] == "test/tool"]
+        rome_ends = [
+            i for i, row in enumerate(calls) if row["civilization"] == "Rome" and row["tool"] == "player_command"
+        ]
+        greece_ends = [
+            i for i, row in enumerate(calls) if row["civilization"] == "Greece" and row["tool"] == "player_command"
+        ]
+        reflection = next(
+            i for i, row in enumerate(calls) if row["civilization"] == "Greece" and row["tool"] == "memory_update"
+        )
+        self.assertLess(rome_ends[1], reflection)
+        self.assertLess(reflection, greece_ends[1])
+        checkpoint = json.loads(
+            (self.state_dir / "round-checkpoints" / (self.host.epoch + "-round-1.json")).read_text()
+        )
+        pending = checkpoint["scheduler"]["pendingFinalizations"]
+        self.assertTrue(any(row["civilization"] == "Greece" and row["gameTurn"] == 0 for row in pending))
+        component = checkpoint["players"]["Greece"]
+        saved = json.loads(
+            (self.state_dir / "agent-services/Greece/round-checkpoints" / (component["id"] + ".json")).read_text()
+        )
+        self.assertTrue(
+            any(row["status"] == "RUNNING" and json.loads(row["snapshot"]).get("memoryOnly") for row in saved["jobs"])
+        )
 
     def test_peace_uses_the_same_off_turn_counteroffer_and_acceptance_flow(self):
         self.exercise_concurrent_trade(peace=True)

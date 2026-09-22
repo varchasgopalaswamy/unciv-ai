@@ -22,11 +22,13 @@ def tool_discovery_instructions(purpose: Literal["gameplay", "communication"]) -
         'text(ALL_TOOLS.filter(t => t.name.startsWith("mcp__civ__")).map(t => t.name));\n'
         "Keyword searches also return names only. All job tools remain discoverable; do not preload the catalogue.\n\n"
         'For tools accepting intent, use {reason:"why"} or {plan:"existing active plan ID"}. '
-        "Review flagged plans with memory_update before referencing them in intent. "
+        "A plan reference must be current and reviewed. Prefer a fresh intent.reason during gameplay "
+        "so persistence of a revised plan can wait until the post-turn memory phase. "
         "Save changed strategy, beliefs and useful durable notes; receipts already preserve routine state and actions. "
         "Retire obsolete records with memory_update before finishing; no memory write is needed when nothing useful changed. "
         "Follow error recovery.reads and instructions; stop if an action's outcome is uncertain. "
-        "For STALE_ASSUMPTIONS, follow recovery.reads, reconsider and revise flagged plans, then retry. "
+        "For STALE_ASSUMPTIONS, follow recovery.reads and reconsider; supply a fresh intent.reason "
+        "or revise the referenced plan before retrying. "
         "Skip only obsolete work or work already handled. The host counts retries per operation; "
         "a successful action or memory edit resets that operation's count. A later conflict after success starts "
         "a new recovery. Do not stop just because multiple stale errors occurred in the turn. "

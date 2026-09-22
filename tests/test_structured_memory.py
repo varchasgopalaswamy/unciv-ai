@@ -369,7 +369,7 @@ def test_historical_evidence_is_pinned_without_replacing_current_job_version(tmp
         {"key": "observation:border", "version": 1, "category": "observation", "historical": True}
     ]
     with memory.transaction() as db:
-        snapshot = json.loads(db.execute("SELECT snapshot FROM jobs WHERE id='game'").fetchone()[0])
+        snapshot = json.loads(db.exec_driver_sql("SELECT snapshot FROM jobs WHERE id='game'").scalar_one())
         assert snapshot["delivered"]["observation:border"] == 2
 
 

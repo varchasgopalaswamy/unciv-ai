@@ -299,7 +299,7 @@
         "pattern": "\\S"
       },
       "maxItems": 1024,
-      "description": "Research queue in prerequisite order, only for SET_RESEARCH_QUEUE."
+      "description": "Replace the entire research queue, including current research, in prerequisite order. Only for SET_RESEARCH_QUEUE. The first technology becomes active; stored science is retained. Include current research first to finish it before later technologies."
     }
   },
   "required": [

@@ -117,7 +117,7 @@ def test_sdk_reads_schema_valid_results_in_both_formats(tmp_path, material, purp
                         assert isinstance(reply.content[0], TextContent)
                         assert json.loads(reply.content[0].text) == reply.structured_content
                     with gateway.memory.transaction() as db:
-                        saved = db.execute("SELECT result FROM calls WHERE job=?", (job.id,)).fetchone()[0]
+                        saved = db.exec_driver_sql("SELECT result FROM calls WHERE job=?", (job.id,)).scalar_one()
                     assert json.loads(saved) == reply.structured_content
 
     asyncio.run(run())
@@ -167,7 +167,9 @@ def test_opt_in_preserves_authentication_errors_receipts_and_cross_format_replay
                 assert compact == canonical_tool_result(legacy)
                 assert len(host.executed) == 1
                 with gateway.memory.transaction() as db:
-                    saved = db.execute("SELECT result FROM calls WHERE job=? AND id='move'", (job.id,)).fetchone()[0]
+                    saved = db.exec_driver_sql(
+                        "SELECT result FROM calls WHERE job=? AND id='move'", (job.id,)
+                    ).scalar_one()
                 assert json.loads(saved) == compact["structuredContent"]
                 gateway.paused = True
                 paused = await call("paused", "player_turn", {})

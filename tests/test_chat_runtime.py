@@ -1,6 +1,9 @@
 import asyncio
 
+import pytest
+
 from civ_agent.agent_service import AgentService
+from civ_agent.strategy_guide import strategy_reference
 from tests.test_agent_service import StartupHost
 
 
@@ -116,7 +119,8 @@ class Jobs:
         return Process()
 
 
-def test_chat_batches_and_replies_while_planning_job_is_held(tmp_path, monkeypatch):
+@pytest.mark.parametrize("strategy_guide", [False, True])
+def test_chat_batches_and_replies_while_planning_job_is_held(tmp_path, monkeypatch, strategy_guide):
     async def run():
         host = MailboxHost()
         monkeypatch.setattr("civ_agent.chat_runtime.HostConnection", lambda *args, **kwargs: host)
@@ -130,6 +134,7 @@ def test_chat_batches_and_replies_while_planning_job_is_held(tmp_path, monkeypat
             None,
             process_factory=jobs,
             connection_factory=lambda *args, **kwargs: StartupHost(jobs),
+            strategy_guide=strategy_guide,
         )
         jobs.service = service
         try:
@@ -174,6 +179,9 @@ def test_chat_batches_and_replies_while_planning_job_is_held(tmp_path, monkeypat
             host.post("Let me know what you need.")
             await asyncio.wait_for(jobs.replied.wait(), 3)
             assert jobs.purposes == ["gameplay", "communication"]
+            assert all(prompt.count(strategy_reference()) == int(strategy_guide) for prompt in jobs.instructions)
+            assert all(strategy_reference() not in prompt for prompt in jobs.prompts)
+            assert service.records["planning"]["startup"]["strategyGuide"]["enabled"] == strategy_guide
             assert all(prompt.count("Civ tool discovery:") == 1 for prompt in jobs.instructions)
             assert all("Civ tool discovery:" not in prompt for prompt in jobs.prompts)
             assert '"mcp__civ__player_capabilities"' in jobs.instructions[0]

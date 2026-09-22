@@ -25,7 +25,7 @@ def add_overview_commands(value: JsonObject) -> None:
     if value.get("canEndTurn") is True:
         value["endTurn"] = {
             "command": command_arguments({"kind": "END_TURN"}),
-            "instruction": "Read turnReview and tacticalReview. Add intent and a top-level deferReason explaining any intentional deferral. Save useful memory changes before executing.",
+            "instruction": "Read turnReview and tacticalReview. Add intent and a top-level deferReason explaining any intentional deferral. Batch useful memory changes after the handoff when memoryPhase is supplied.",
         }
     for unit in value.get("units", []):
         if unit.get("canFoundCity") or unit.get("settlementStatus"):
@@ -192,11 +192,28 @@ def add_construction_commands(data: JsonObject) -> None:
 
 def add_decision_commands(name: str, value: JsonObject, arguments: JsonObject) -> None:
     if name == "research_details" and arguments.get("names"):
+        value["queueInstruction"] = (
+            "SET_RESEARCH_QUEUE replaces the entire queue, including current research. "
+            "The first technology becomes active; stored science is retained. "
+            "Choose command to replace it, or appendToQueue to preserve the existing queue."
+        )
         for option in value.get("technologies", []):
             if option.get("queueAvailable") and option.get("prerequisiteQueue"):
                 attach(option, "SET_RESEARCH_QUEUE", queue=option["prerequisiteQueue"])
             elif available(option.get("researchNow")):
                 attach(option, "SET_RESEARCH_QUEUE", queue=[option["name"]])
+            if "command" in option:
+                path = option["command"]["queue"]
+                option["commandLabel"] = f"Replace queue; research {path[0]} now"
+                # Both ordered paths come from the engine. Preserve every
+                # existing entry, then add missing prerequisites and the target.
+                queue = value.get("researchQueue", [])
+                appended = list(dict.fromkeys([*queue, *path]))
+                if queue and appended != queue and appended != path:
+                    option["appendToQueue"] = {"label": "Append after the existing queue; preserve current research"}
+                    attach(option["appendToQueue"], "SET_RESEARCH_QUEUE", queue=appended)
+                if option["name"] in queue:
+                    option["alreadyQueued"] = True
             if available(option.get("freeChoice")):
                 attach(option["freeChoice"], "CHOOSE_FREE_TECHNOLOGY", selection=option["name"])
     elif name == "policy_details" and arguments.get("names"):
@@ -221,3 +238,19 @@ def add_decision_commands(name: str, value: JsonObject, arguments: JsonObject) -
             destination=arguments["destination"],
             confirmation="confirmAction" if kind == "NUCLEAR_STRIKE" else None,
         )
+
+
+def research_change(previous: JsonObject | None, current: JsonObject) -> JsonObject:
+    """Report actual visible progress from the refresh already required by actions."""
+    research = current.get("research") or {}
+    active = research.get("current")
+    if active is None:
+        active = next(iter(current.get("researchQueue", [])), None)
+    result: JsonObject = {"current": active}
+    before = (previous or {}).get("research") or {}
+    prior = before.get("current") or next(iter((previous or {}).get("researchQueue", [])), None)
+    if prior and prior != active:
+        progress = next((tech for tech in research.get("technologies", []) if tech["name"] == prior), None)
+        if progress is not None and not progress.get("researched"):
+            result["paused"] = {"technology": prior, "scienceStored": progress["scienceStored"]}
+    return result

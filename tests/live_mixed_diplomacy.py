@@ -19,6 +19,7 @@ from civ_agent.host_connection import HostConnection
 from civ_agent.protocol import JsonObject
 from civ_agent.scheduler import Agent, Operator, agent_services, operator_token, player_prompt
 from civ_agent.tls import endpoint_configuration
+from civ_agent.turn_finalization import finalize_turn
 
 
 async def exercise(root: Path, model: str, reasoning: str, resume: bool = False):
@@ -182,12 +183,16 @@ async def exercise(root: Path, model: str, reasoning: str, resume: bool = False)
             assert status["phase"] == "COMPLETED" and acquired["handoff"] > status["handoff"]
             # Repair a driver interruption after the already-confirmed native handoff.
             # Finalization archives the turn; it never advances or mutates the game.
-            service.call(
-                "finalize",
-                activationId=previous["activationId"],
-                epoch=epoch,
-                gameTurn=previous["turn"],
-                committedHandoff=status["handoff"] + 1,
+            await asyncio.to_thread(
+                finalize_turn,
+                service,
+                {
+                    "activationId": previous["activationId"],
+                    "epoch": epoch,
+                    "gameTurn": previous["turn"],
+                    "handoff": status["handoff"],
+                    "confirmedHandoff": status["handoff"] + 1,
+                },
             )
         for civ, service in services.items():
             token = op("connect", epoch=epoch, civilization=civ)["playerToken"]
@@ -245,12 +250,16 @@ async def exercise(root: Path, model: str, reasoning: str, resume: bool = False)
                 save()
                 assert status["phase"] == "COMPLETED", status["phase"]
                 assert op("status")["status"]["handoff"] == before["handoff"] + 1, "No confirmed model handoff"
-                finalized = service.call(
-                    "finalize",
-                    activationId=activation,
-                    epoch=epoch,
-                    gameTurn=before["turn"],
-                    committedHandoff=before["handoff"] + 1,
+                finalized = await asyncio.to_thread(
+                    finalize_turn,
+                    service,
+                    {
+                        "activationId": activation,
+                        "epoch": epoch,
+                        "gameTurn": before["turn"],
+                        "handoff": before["handoff"],
+                        "confirmedHandoff": before["handoff"] + 1,
+                    },
                 )
                 assert finalized["committedHandoff"] == before["handoff"] + 1
                 cursor = 0

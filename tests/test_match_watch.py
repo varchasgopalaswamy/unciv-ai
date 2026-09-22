@@ -5,6 +5,7 @@ from unittest.mock import Mock
 from textual.widgets import DataTable, RichLog, Static, TabbedContent
 
 from civ_agent import cli, match_watch
+from civ_agent.protocol import JsonObject
 from civ_agent.watch_state import WatchReader
 
 
@@ -22,7 +23,7 @@ def event(sequence, kind, **data):
     return {"sequence": sequence, "time": f"2026-09-21T12:00:{sequence:02d}+00:00", "kind": kind, "data": data}
 
 
-def fixture(root):
+def fixture(root) -> tuple[JsonObject, list[JsonObject]]:
     usage = {"input_tokens": 2000, "cached_input_tokens": 1500, "output_tokens": 100, "reasoning_output_tokens": 20}
     records = []
     for handoff, (name, turn, phase) in enumerate(
@@ -165,6 +166,41 @@ def test_chunked_startup_is_hidden_and_control_sequences_are_inert(tmp_path):
 
 def log_text(app):
     return "\n".join(line.text for line in app.query_one("#activity", RichLog).lines)
+
+
+def test_dashboard_model_warning_clears_on_recovery_and_stays_in_history(tmp_path):
+    run, _ = fixture(tmp_path)
+    notice = {
+        "state": "retrying",
+        "message": "Model connection idle timeout; retrying (1/5).",
+        "elapsedSeconds": 301,
+    }
+    run["inFlight"]["modelStatus"] = notice
+    write_json(tmp_path / "runner/run.json", run)
+    path = tmp_path / "runner/history/Rome/turn_2/attempt_job2/events.jsonl"
+    with path.open("a") as stream:
+        stream.write(json.dumps(event(7, "model_status", **notice)) + "\n")
+
+    async def check():
+        app = match_watch.MatchWatch(tmp_path, refresh=60)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            assert "retrying (1/5)" in str(app.query_one("#status", Static).render())
+            assert "301s" in str(app.query_one("#status", Static).render())
+            assert str(app.query_one("#players", DataTable).get_row("Rome")[1]) == "Model retrying"
+            assert "idle timeout" in log_text(app)
+            resumed = {"state": "responding", "message": "Model response resumed after 315s without progress."}
+            run["inFlight"]["modelStatus"] = resumed
+            write_json(tmp_path / "runner/run.json", run)
+            with path.open("a") as stream:
+                stream.write(json.dumps(event(8, "model_status", **resumed)) + "\n")
+            await app.poll_records()
+            await pilot.pause()
+            assert "retrying" not in str(app.query_one("#status", Static).render())
+            assert str(app.query_one("#players", DataTable).get_row("Rome")[1]) == "Running"
+            assert "idle timeout" in log_text(app) and "resumed after 315s" in log_text(app)
+
+    asyncio.run(check())
 
 
 def test_dashboard_navigation_live_refresh_freeze_and_quit(tmp_path):

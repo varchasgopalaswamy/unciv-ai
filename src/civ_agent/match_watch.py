@@ -12,6 +12,7 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.widgets import DataTable, Footer, Header, RichLog, Static, TabbedContent, TabPane
 
+from civ_agent.model_status import status_text
 from civ_agent.terminal_output import player_style, visible_text
 from civ_agent.turn_display import api_calls, number, seconds
 from civ_agent.watch_state import WatchReader, WatchSnapshot, event_time
@@ -187,6 +188,13 @@ class MatchWatch(App):
             title.append("  ·  VIEW FROZEN", style="bold yellow")
         if run.get("reason"):
             title.append("\n" + visible_text(run["reason"]), style="yellow")
+        model_status = flight.get("modelStatus") or {}
+        if (
+            run.get("status") == "running"
+            and flight.get("agentPhase") not in {"COMPLETED", "FAILED", "INTERRUPTED"}
+            and model_status.get("state") in {"waiting", "retrying", "warning", "failed"}
+        ):
+            title.append("\n" + visible_text(status_text(model_status)), style="yellow")
         victory = result.get("result")
         if isinstance(victory, dict):
             title.append(
@@ -211,6 +219,8 @@ class MatchWatch(App):
                 phase = "Bookkeeping"
             elif flight.get("civilization") == name:
                 phase = str(flight.get("agentPhase", "Starting")).replace("_", " ").capitalize()
+                if phase == "Running" and model_status.get("state") in {"waiting", "retrying"}:
+                    phase = "Model " + model_status["state"]
                 if run.get("status") != "running":
                     phase = status.capitalize()
             if score.get("defeated"):
@@ -332,8 +342,10 @@ class MatchWatch(App):
             text.append(
                 f" · T{entry.turn} · {visible_text(entry.label)}\n",
                 style="bold"
-                if self.no_color and entry.label in {"Action", "Error"}
-                else {"Action": "bright_green", "Error": "bold bright_red"}.get(entry.label, "dim"),
+                if self.no_color and entry.label in {"Action", "Error", "Warning"}
+                else {"Action": "bright_green", "Error": "bold bright_red", "Warning": "yellow"}.get(
+                    entry.label, "dim"
+                ),
             )
             text.append(visible_text(entry.text) + "\n\n")
         if not entries:

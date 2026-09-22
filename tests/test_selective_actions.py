@@ -270,6 +270,32 @@ def test_research_templates_preserve_native_prerequisite_paths_and_free_choices(
 
 
 @pytest.mark.parametrize(
+    "queue,path,appended",
+    [
+        (["Mining"], ["Calendar"], ["Mining", "Calendar"]),
+        (["Mining", "Bronze Working"], ["Pottery", "Calendar"], ["Mining", "Bronze Working", "Pottery", "Calendar"]),
+        (["Mining"], ["Mining", "Bronze Working"], None),
+        (["Mining", "Bronze Working"], ["Mining"], None),
+        ([], ["Calendar"], None),
+    ],
+)
+def test_research_choices_distinguish_replacement_from_preserving_the_whole_queue(queue, path, appended):
+    value: JsonObject = {
+        "researchQueue": queue,
+        "technologies": [{"name": path[-1], "queueAvailable": True, "prerequisiteQueue": path}],
+    }
+    add_decision_commands("research_details", value, {"names": [path[-1]]})
+    choice = value["technologies"][0]
+    assert choice["command"]["queue"] == path
+    assert "Replace queue" in choice["commandLabel"]
+    if appended:
+        assert choice["appendToQueue"]["command"] == {"kind": "SET_RESEARCH_QUEUE", "queue": appended}
+    else:
+        assert "appendToQueue" not in choice
+    assert choice.get("alreadyQueued", False) == (path[-1] in queue)
+
+
+@pytest.mark.parametrize(
     "mission,kind",
     [
         (None, "SET_UNIT_DESTINATION"),

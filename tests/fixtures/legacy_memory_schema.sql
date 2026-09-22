@@ -1,0 +1,25 @@
+-- Schema before the SQLAlchemy migration. Keep independent of current metadata.
+CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS events(
+    id INTEGER PRIMARY KEY, source TEXT UNIQUE NOT NULL,
+    kind TEXT NOT NULL, body TEXT NOT NULL, wake INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS records(
+    key TEXT NOT NULL, version INTEGER NOT NULL, category TEXT NOT NULL,
+    body TEXT NOT NULL, parent INTEGER, job TEXT, PRIMARY KEY(key,version));
+CREATE TABLE IF NOT EXISTS handles(id INTEGER PRIMARY KEY AUTOINCREMENT);
+CREATE TABLE IF NOT EXISTS jobs(
+    id TEXT PRIMARY KEY, epoch TEXT NOT NULL, purpose TEXT NOT NULL,
+    snapshot TEXT NOT NULL, settings TEXT NOT NULL, status TEXT NOT NULL, game_turn INTEGER);
+CREATE TABLE IF NOT EXISTS outbox(
+    id TEXT PRIMARY KEY, job TEXT NOT NULL, transport TEXT NOT NULL,
+    payload TEXT NOT NULL, dependencies TEXT NOT NULL, result TEXT, decision TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS calls(job TEXT, id TEXT, name TEXT NOT NULL,
+    arguments TEXT NOT NULL, result TEXT, PRIMARY KEY(job,id));
+CREATE TABLE IF NOT EXISTS heads(key TEXT PRIMARY KEY, version INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS inbox(id INTEGER PRIMARY KEY REFERENCES events(id));
+CREATE TABLE IF NOT EXISTS outgoing(id TEXT PRIMARY KEY REFERENCES outbox(id));
+CREATE TABLE IF NOT EXISTS live_jobs(id TEXT PRIMARY KEY REFERENCES jobs(id));
+CREATE TABLE IF NOT EXISTS export_jobs(id TEXT PRIMARY KEY REFERENCES jobs(id));
+CREATE INDEX IF NOT EXISTS records_by_job ON records(job);
+CREATE INDEX IF NOT EXISTS jobs_by_turn ON jobs(game_turn,purpose);
+CREATE INDEX IF NOT EXISTS outbox_by_job ON outbox(job);

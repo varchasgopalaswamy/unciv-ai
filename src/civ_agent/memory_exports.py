@@ -72,11 +72,12 @@ def projection_files(records, events):
     return files
 
 
-def export_files(root, workspace, files):
+def export_files(root, workspace, files, *, retained_prefixes=()):
     private_directory(workspace)
     manifest = root / "generated-files.json"
     previous = set(json.loads(manifest.read_text())) if manifest.exists() else set()
-    planned = set(files)
+    retained = {name for name in previous if any(name.startswith(prefix) for prefix in retained_prefixes)}
+    planned = set(files) | retained
     # Write-ahead list lets a restart clean up partially written projections.
     write_private_json(manifest, sorted(previous | planned))
     for name in previous | planned:
@@ -89,6 +90,9 @@ def export_files(root, workspace, files):
         path = workspace / name
         if name in files:
             write_private(path, files[name].encode())
+        elif name in retained:
+            if path.is_symlink():
+                raise ValueError("Unsafe projection path")
         elif path.is_symlink():
             raise ValueError("Unsafe projection path")
         elif path.exists():

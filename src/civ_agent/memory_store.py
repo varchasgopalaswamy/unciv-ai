@@ -2,6 +2,9 @@
 
 import json
 
+from sqlalchemy import ColumnElement, func, insert, select
+
+from civ_agent import memory_schema as tables
 from civ_agent.map_format import expand_tiles
 from civ_agent.memory_records import MEMORY_TYPES, public_record
 from civ_agent.protocol import JsonObject
@@ -9,13 +12,6 @@ from civ_agent.protocol import JsonObject
 
 def encode(value):
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-
-
-# A restored head can only reach its own ancestors, never a discarded future.
-REACHABLE = """WITH RECURSIVE reachable(key,version) AS (
-    SELECT key,version FROM heads UNION
-    SELECT r.key,r.parent FROM records r JOIN reachable a USING(key,version) WHERE r.parent IS NOT NULL
-) """
 
 
 class EvidenceRequired(ValueError):
@@ -33,26 +29,44 @@ class RecordStore:
     def all(self):
         return {
             row["key"]: {"version": row["version"], "category": row["category"], "body": json.loads(row["body"])}
-            for row in self.db.execute("SELECT r.* FROM records r JOIN heads h USING(key,version)")
+            for row in self.db.execute(select(tables.records).select_from(tables.current_records)).mappings()
         }
 
     def write(self, key, category, body, job=None):
-        prior = self.db.execute(
-            "SELECT r.* FROM records r JOIN heads h USING(key,version) WHERE r.key=?", (key,)
-        ).fetchone()
+        prior = (
+            self.db.execute(
+                select(tables.records).select_from(tables.current_records).where(tables.records.c.key == key)
+            )
+            .mappings()
+            .fetchone()
+        )
         if prior and prior["body"] == encode(body) and prior["category"] == category:
             return prior["version"]
-        version = self.db.execute("SELECT COALESCE(MAX(version),0)+1 FROM records WHERE key=?", (key,)).fetchone()[0]
+        version = self.db.execute(
+            select(func.coalesce(func.max(tables.records.c.version), 0) + 1).where(tables.records.c.key == key)
+        ).scalar_one()
         self.db.execute(
-            "INSERT INTO records VALUES (?,?,?,?,?,?)",
-            (key, version, category, encode(body), prior["version"] if prior else None, job),
+            insert(tables.records).values(
+                key=key,
+                version=version,
+                category=category,
+                body=encode(body),
+                parent=prior["version"] if prior else None,
+                job=job,
+            )
         )
-        self.db.execute("INSERT OR REPLACE INTO heads VALUES (?,?)", (key, version))
+        self.db.execute(insert(tables.heads).values(key=key, version=version).prefix_with("OR REPLACE"))
+        if job is not None:
+            self.db.execute(
+                insert(tables.export_jobs)
+                .from_select(["id"], select(tables.jobs.c.id).where(tables.jobs.c.id == job))
+                .prefix_with("OR IGNORE")
+            )
         return version
 
     def handle(self, prefix="mem"):
         # AUTOINCREMENT is deliberately outside the rollback manifest.
-        cursor = self.db.execute("INSERT INTO handles DEFAULT VALUES")
+        cursor = self.db.execute(insert(tables.handles).values())
         return prefix + str(cursor.lastrowid)
 
     @staticmethod
@@ -106,7 +120,12 @@ class RecordStore:
                 )
             pinned.extend(related)
         current = self.all()
-        changed = [ref["key"] for ref in pinned if current.get(ref["key"], {}).get("version") != ref["version"]]
+        changed = [
+            ref["key"]
+            for ref in pinned
+            if current.get(ref["key"], {}).get("version") != ref["version"]
+            and not (snapshot.get("memoryOnly") and ref["category"] not in MEMORY_TYPES)
+        ]
         if changed:
             raise EvidenceRequired("ASSUMPTION_CHANGED: read the current evidence before revising", changed)
         review = []
@@ -190,33 +209,35 @@ class RecordStore:
                 )
                 self.flag(keys=[key], reason=f"{key} expired")
 
-    def search(self, *, type=None, subject="", state="active", query="", history=False, id="", offset=0):
-        conditions, args = [], []
+    def search(
+        self, *, type=None, subject="", state="active", query="", history=False, id="", offset=0, memory_only=False
+    ):
+        conditions: list[ColumnElement[bool]] = []
+        if memory_only:
+            conditions.append(tables.records.c.category.in_(MEMORY_TYPES))
         if type:
-            conditions.append("r.category=?")
-            args.append(type)
+            conditions.append(tables.records.c.category == type)
         if subject:
-            conditions.append("EXISTS (SELECT 1 FROM json_each(r.body,'$.subjects') WHERE value=?)")
-            args.append(subject)
+            subjects = func.json_each(tables.records.c.body, "$.subjects").table_valued("value")
+            conditions.append(select(1).select_from(subjects).where(subjects.c.value == subject).exists())
         if state != "all":
-            conditions.append("COALESCE(json_extract(r.body,'$.state'),'active')=?")
-            args.append(state)
+            conditions.append(func.coalesce(func.json_extract(tables.records.c.body, "$.state"), "active") == state)
         if id:
-            conditions.append("r.key=?")
-            args.append(id)
+            conditions.append(tables.records.c.key == id)
         if query:
-            conditions.append("instr(lower(r.body),lower(?))>0")
-            args.append(query)
-        where = " WHERE " + " AND ".join(conditions) if conditions else ""
-        rows = self.db.execute(
-            (REACHABLE if history else "")
-            + "SELECT r.*,r.rowid AS record_id FROM records r JOIN "
-            + ("reachable" if history else "heads")
-            + " h USING(key,version)"
-            + where
-            + " ORDER BY r.rowid DESC LIMIT 21 OFFSET ?",
-            (*args, offset),
-        ).fetchall()
+            conditions.append(func.instr(func.lower(tables.records.c.body), func.lower(query)) > 0)
+        rows = (
+            self.db.execute(
+                select(tables.records, tables.record_order.label("record_id"))
+                .select_from(tables.record_versions(tables.reachable) if history else tables.current_records)
+                .where(*conditions)
+                .order_by(tables.record_order.desc())
+                .limit(21)
+                .offset(offset)
+            )
+            .mappings()
+            .all()
+        )
         # Historical revisions are evidence only; they never replace a job's current version.
         return {
             "records": [

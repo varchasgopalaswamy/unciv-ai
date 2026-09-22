@@ -7,21 +7,24 @@ Model computation and HTTPS requests happen outside these transactions.
 import hashlib
 import json
 import secrets
-import sqlite3
 from collections.abc import Callable
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
+from sqlalchemy import and_, bindparam, func, insert, inspect, or_, select
+
+from civ_agent import memory_schema as tables
 from civ_agent.agreement_memory import affected_subjects, lifecycle_terms
 from civ_agent.memory_exports import export_files, projection_files
 from civ_agent.memory_history import action_record, build_summary, summary_markdown
 from civ_agent.memory_records import MEMORY_TYPES, HistoryReadResult, Intent, MemoryUpdate, public_record
-from civ_agent.memory_store import REACHABLE, EvidenceRequired, RecordStore, encode, select_context, semantic
+from civ_agent.memory_store import EvidenceRequired, RecordStore, encode, select_context, semantic
 from civ_agent.model_view import model_view
 from civ_agent.observations import DetailQuery, native_observation, project_detail
 from civ_agent.protocol import JsonObject
 from civ_agent.schemas import validate
+from civ_agent.sqlite_database import sqlite_engine
 from civ_agent.stale_recovery import conflict_details, record_conflicts, recovery_reads
 from civ_agent.tls import private_directory, write_private_json
 
@@ -53,67 +56,47 @@ class CivilizationState:
         self.context_limit = context_limit
         if self.path.is_symlink():
             raise ValueError("Unsafe memory path")
+        self.engine = sqlite_engine(self.path)
         with self.transaction() as db:
-            exists = db.execute("SELECT 1 FROM sqlite_master WHERE name='meta'").fetchone()
+            exists = inspect(db).has_table("meta")
             if exists and self._meta(db, "format") != 2:
                 raise MemoryFormatError("Unsupported memory format; start a fresh match in a new state directory.")
-            db.executescript("""
-                CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
-                CREATE TABLE IF NOT EXISTS events(
-                    id INTEGER PRIMARY KEY, source TEXT UNIQUE NOT NULL,
-                    kind TEXT NOT NULL, body TEXT NOT NULL, wake INTEGER NOT NULL);
-                CREATE TABLE IF NOT EXISTS records(
-                    key TEXT NOT NULL, version INTEGER NOT NULL, category TEXT NOT NULL,
-                    body TEXT NOT NULL, parent INTEGER, job TEXT, PRIMARY KEY(key,version));
-                CREATE TABLE IF NOT EXISTS handles(id INTEGER PRIMARY KEY AUTOINCREMENT);
-                CREATE TABLE IF NOT EXISTS jobs(
-                    id TEXT PRIMARY KEY, epoch TEXT NOT NULL, purpose TEXT NOT NULL,
-                    snapshot TEXT NOT NULL, settings TEXT NOT NULL, status TEXT NOT NULL, game_turn INTEGER);
-                CREATE TABLE IF NOT EXISTS outbox(
-                    id TEXT PRIMARY KEY, job TEXT NOT NULL, transport TEXT NOT NULL,
-                    payload TEXT NOT NULL, dependencies TEXT NOT NULL, result TEXT, decision TEXT NOT NULL);
-                CREATE TABLE IF NOT EXISTS calls(job TEXT, id TEXT, name TEXT NOT NULL,
-                    arguments TEXT NOT NULL, result TEXT, PRIMARY KEY(job,id));
-                CREATE TABLE IF NOT EXISTS heads(key TEXT PRIMARY KEY, version INTEGER NOT NULL);
-                CREATE TABLE IF NOT EXISTS inbox(id INTEGER PRIMARY KEY REFERENCES events(id));
-                CREATE TABLE IF NOT EXISTS outgoing(id TEXT PRIMARY KEY REFERENCES outbox(id));
-                CREATE TABLE IF NOT EXISTS live_jobs(id TEXT PRIMARY KEY REFERENCES jobs(id));
-            """)
+            tables.metadata.create_all(db)
+            # create_all does not add missing indexes to an existing table.
+            for table in tables.metadata.tables.values():
+                for index in table.indexes:
+                    index.create(db, checkfirst=True)
             existing = self._meta(db, "civilization")
             if existing is not None and existing != civilization:
                 raise StateConflict("CIVILIZATION_CONFLICT")
             self._set(db, "civilization", civilization)
             self._set(db, "format", 2)
+            if self._meta(db, "incrementalExports") is not True:
+                db.execute(
+                    insert(tables.export_jobs)
+                    .from_select(["id"], select(tables.live_jobs.c.id))
+                    .prefix_with("OR IGNORE")
+                )
+                self._set(db, "incrementalExports", True)
             if self._meta(db, "storeId") is None:
                 self._set(db, "storeId", secrets.token_hex(16))
             # A process restart never resumes a model's uncommitted computation.
-            db.execute("UPDATE jobs SET status='INTERRUPTED' WHERE status='RUNNING'")
+            db.execute(tables.jobs.update().where(tables.jobs.c.status == "RUNNING").values(status="INTERRUPTED"))
         self.path.chmod(0o600)
 
     @contextmanager
     def transaction(self):
-        db = sqlite3.connect(self.path, timeout=15)
-        db.row_factory = sqlite3.Row
-        try:
-            db.execute("PRAGMA synchronous=FULL")
-            db.execute("PRAGMA foreign_keys=ON")
-            db.execute("BEGIN IMMEDIATE")
+        with self.engine.begin() as db:
             yield db
-            db.commit()
-        except BaseException:
-            db.rollback()
-            raise
-        finally:
-            db.close()
 
     @staticmethod
     def _meta(db, key, default=None) -> Any:
-        row = db.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
+        row = db.execute(select(tables.meta.c.value).where(tables.meta.c.key == key)).fetchone()
         return json.loads(row[0]) if row else default
 
     @staticmethod
     def _set(db, key, value):
-        db.execute("INSERT OR REPLACE INTO meta VALUES (?,?)", (key, encode(value)))
+        db.execute(insert(tables.meta).values(key=key, value=encode(value)).prefix_with("OR REPLACE"))
 
     def bind(self, epoch: str):
         with self.transaction() as db:
@@ -135,10 +118,15 @@ class CivilizationState:
             for event in events:
                 source = epoch + ":" + str(event["id"])
                 db.execute(
-                    "INSERT OR IGNORE INTO events(source,kind,body,wake) VALUES (?,?,?,?)",
-                    (source, event["kind"], encode(event), bool(event.get("wake"))),
+                    insert(tables.events)
+                    .values(source=source, kind=event["kind"], body=encode(event), wake=bool(event.get("wake")))
+                    .prefix_with("OR IGNORE")
                 )
-                inserted = db.execute("INSERT OR IGNORE INTO inbox SELECT id FROM events WHERE source=?", (source,))
+                inserted = db.execute(
+                    insert(tables.inbox)
+                    .from_select(["id"], select(tables.events.c.id).where(tables.events.c.source == source))
+                    .prefix_with("OR IGNORE")
+                )
                 if not inserted.rowcount:
                     # Reconnect replay must not reflag plans already reconsidered.
                     # The first durable event body remains the source of truth.
@@ -274,9 +262,11 @@ class CivilizationState:
             if key.startswith("observation:trade/"):
                 self._settle_trade(db, body)
             if job is not None:
-                snapshot = json.loads(db.execute("SELECT snapshot FROM jobs WHERE id=?", (job,)).fetchone()[0])
+                snapshot = json.loads(
+                    db.execute(select(tables.jobs.c.snapshot).where(tables.jobs.c.id == job)).scalar_one()
+                )
                 self._deliver(snapshot, {key: {"version": version, "category": "observation", "body": body}})
-                db.execute("UPDATE jobs SET snapshot=? WHERE id=?", (encode(snapshot), job))
+                db.execute(tables.jobs.update().where(tables.jobs.c.id == job).values(snapshot=encode(snapshot)))
             return version
 
     def snapshot(self, purpose: str) -> JsonObject:
@@ -286,12 +276,21 @@ class CivilizationState:
             events = [
                 json.loads(row["body"])
                 for row in db.execute(
-                    "SELECT body FROM events JOIN inbox USING(id) WHERE id>? ORDER BY id LIMIT 50", (cursor,)
-                )
+                    select(tables.events.c.body)
+                    .select_from(tables.events.join(tables.inbox))
+                    .where(tables.events.c.id > cursor)
+                    .order_by(tables.events.c.id)
+                    .limit(50)
+                ).mappings()
             ]
-            high = db.execute(
-                "SELECT COALESCE(MAX(id),0) FROM (SELECT id FROM inbox WHERE id>? ORDER BY id LIMIT 50)", (cursor,)
-            ).fetchone()[0]
+            page = (
+                select(tables.inbox.c.id)
+                .where(tables.inbox.c.id > cursor)
+                .order_by(tables.inbox.c.id)
+                .limit(50)
+                .subquery()
+            )
+            high = db.execute(select(func.coalesce(func.max(page.c.id), 0))).scalar_one()
             snapshot = {
                 "epoch": self._meta(db, "epoch"),
                 "purpose": purpose,
@@ -355,7 +354,9 @@ class CivilizationState:
         with self.transaction() as db:
             observed = self._observe_player(db, body, job, compact)
             records = self._records(db)
-            snapshot = json.loads(db.execute("SELECT snapshot FROM jobs WHERE id=?", (job,)).fetchone()[0])
+            snapshot = json.loads(
+                db.execute(select(tables.jobs.c.snapshot).where(tables.jobs.c.id == job)).scalar_one()
+            )
             changed = {
                 key: record
                 for key, record in records.items()
@@ -365,7 +366,7 @@ class CivilizationState:
                 and snapshot["delivered"][key] != record["version"]
             }
             self._deliver(snapshot, changed)
-            db.execute("UPDATE jobs SET snapshot=? WHERE id=?", (encode(snapshot), job))
+            db.execute(tables.jobs.update().where(tables.jobs.c.id == job).values(snapshot=encode(snapshot)))
             result = respond(records, changed)
             self._call_record(db, job, call_id, name, arguments, result)
             return {**observed, **changed}, result
@@ -397,7 +398,7 @@ class CivilizationState:
             scopes["diplomacy/" + relation["civilizationId"]] = {"turn": body.get("turn"), "relation": relation}
         self._validate(db, job, {})
         self._advance_turn(db, body.get("turn"))
-        snapshot = json.loads(db.execute("SELECT snapshot FROM jobs WHERE id=?", (job,)).fetchone()[0])
+        snapshot = json.loads(db.execute(select(tables.jobs.c.snapshot).where(tables.jobs.c.id == job)).scalar_one())
         previous_records = self._records(db)
         for key, previous in previous_records.items():
             scope = key.removeprefix("observation:")
@@ -448,15 +449,21 @@ class CivilizationState:
             snapshot,
             {key: value for key, value in observed.items() if key.removeprefix("observation:") in delivered},
         )
-        db.execute("UPDATE jobs SET snapshot=? WHERE id=?", (encode(snapshot), job))
+        db.execute(tables.jobs.update().where(tables.jobs.c.id == job).values(snapshot=encode(snapshot)))
         return observed
 
     def has_wake(self) -> bool:
         with self.transaction() as db:
             return (
                 db.execute(
-                    "SELECT 1 FROM events JOIN inbox USING(id) WHERE wake=1 AND id>? LIMIT 1",
-                    (max(self._meta(db, "handled:communication", 0), self._meta(db, "attempted:communication", 0)),),
+                    select(tables.events.c.id)
+                    .select_from(tables.events.join(tables.inbox))
+                    .where(
+                        tables.events.c.wake == 1,
+                        tables.events.c.id
+                        > max(self._meta(db, "handled:communication", 0), self._meta(db, "attempted:communication", 0)),
+                    )
+                    .limit(1)
                 ).fetchone()
                 is not None
             )
@@ -487,31 +494,75 @@ class CivilizationState:
             if self._meta(db, "epoch") != snapshot["epoch"]:
                 raise StateConflict("STALE_EPOCH")
             db.execute(
-                "INSERT INTO jobs VALUES (?,?,?,?,?,?,?)",
-                (job, snapshot["epoch"], purpose, encode(snapshot), encode(settings), "RUNNING", game_turn),
+                insert(tables.jobs).values(
+                    id=job,
+                    epoch=snapshot["epoch"],
+                    purpose=purpose,
+                    snapshot=encode(snapshot),
+                    settings=encode(settings),
+                    status="RUNNING",
+                    game_turn=game_turn,
+                )
             )
-            db.execute("INSERT INTO live_jobs VALUES (?)", (job,))
+            db.execute(insert(tables.live_jobs).values(id=job))
+            db.execute(insert(tables.export_jobs).values(id=job).prefix_with("OR IGNORE"))
             if purpose == "communication":
                 self._set(db, "attempted:communication", snapshot["cursor"])
         return snapshot
 
     def finish_job(self, job: str, completed: bool):
         with self.transaction() as db:
-            row = db.execute("SELECT * FROM jobs WHERE id=?", (job,)).fetchone()
+            row = db.execute(select(tables.jobs).where(tables.jobs.c.id == job)).mappings().fetchone()
             if row is None or row["epoch"] != self._meta(db, "epoch") or row["status"] != "RUNNING":
                 return
-            db.execute("UPDATE jobs SET status=? WHERE id=?", ("COMPLETED" if completed else "INTERRUPTED", job))
+            db.execute(
+                tables.jobs.update()
+                .where(tables.jobs.c.id == job)
+                .values(status="COMPLETED" if completed else "INTERRUPTED")
+            )
             snapshot = json.loads(row["snapshot"])
             snapshot["closingRecords"] = self._records(db)
-            db.execute("UPDATE jobs SET snapshot=? WHERE id=?", (encode(snapshot), job))
+            db.execute(tables.jobs.update().where(tables.jobs.c.id == job).values(snapshot=encode(snapshot)))
+            db.execute(insert(tables.export_jobs).values(id=job).prefix_with("OR IGNORE"))
             if completed:
                 key = "handled:" + row["purpose"]
                 self._set(db, key, max(snapshot["cursor"], self._meta(db, key, 0)))
 
+    def begin_memory_phase(self, job: str):
+        """Freeze delivered game evidence before allowing post-handoff memory work."""
+        with self.transaction() as db:
+            self._validate(db, job, {})
+            row = (
+                db.execute(select(tables.jobs.c.snapshot, tables.jobs.c.game_turn).where(tables.jobs.c.id == job))
+                .mappings()
+                .one()
+            )
+            snapshot = json.loads(row["snapshot"])
+            if not snapshot.get("memoryOnly"):
+                snapshot["handoffSummary"] = build_summary(db, turn=row["game_turn"])
+                snapshot["memoryOnly"] = True
+                db.execute(tables.jobs.update().where(tables.jobs.c.id == job).values(snapshot=encode(snapshot)))
+
+    def completed_summary(self, job: str):
+        with self.transaction() as db:
+            row = (
+                db.execute(select(tables.jobs.c.snapshot, tables.jobs.c.game_turn).where(tables.jobs.c.id == job))
+                .mappings()
+                .one()
+            )
+            snapshot = json.loads(row["snapshot"])
+            summary = build_summary(db, turn=row["game_turn"])
+            frozen = snapshot.get("handoffSummary")
+            if frozen is not None:
+                # Reflection changes private assessments, never the past game view.
+                summary["actions"] = frozen["actions"]
+                summary["observations"] = frozen["observations"]
+            return summary
+
     def _validate(self, db, job, dependencies):
         if self._meta(db, "paused", False):
             raise StateConflict("STATE_PAUSED")
-        row = db.execute("SELECT * FROM jobs WHERE id=?", (job,)).fetchone()
+        row = db.execute(select(tables.jobs).where(tables.jobs.c.id == job)).mappings().fetchone()
         if row is None or row["status"] != "RUNNING" or row["epoch"] != self._meta(db, "epoch"):
             raise StateConflict("STALE_JOB")
         current = self._records(db)
@@ -547,8 +598,16 @@ class CivilizationState:
     def fail_run(self, job, call_id, error, details, result):
         """Fence mutations while retaining a confirmed receipt and its failed delivery diagnostics."""
         with self.transaction() as db:
-            call = db.execute("SELECT * FROM calls WHERE job=? AND id=?", (job, call_id)).fetchone()
-            identity = db.execute("SELECT epoch,purpose FROM jobs WHERE id=?", (job,)).fetchone()
+            call = (
+                db.execute(select(tables.calls).where(tables.calls.c.job == job, tables.calls.c.id == call_id))
+                .mappings()
+                .one()
+            )
+            identity = (
+                db.execute(select(tables.jobs.c.epoch, tables.jobs.c.purpose).where(tables.jobs.c.id == job))
+                .mappings()
+                .one()
+            )
             failure = {
                 "error": error,
                 "job": job,
@@ -580,15 +639,23 @@ class CivilizationState:
             self._check_run_failure(db)
             self._validate(db, job, {})
             if call_id is not None:
-                prior = db.execute("SELECT result FROM calls WHERE job=? AND id=?", (job, call_id)).fetchone()
+                prior = db.execute(
+                    select(tables.calls.c.result).where(tables.calls.c.job == job, tables.calls.c.id == call_id)
+                ).fetchone()
                 if prior and prior[0]:
                     return json.loads(prior[0])
-            snapshot = json.loads(db.execute("SELECT snapshot FROM jobs WHERE id=?", (job,)).fetchone()[0])
-            store = RecordStore(db, self._meta(db, "gameTurn"))
+            row = (
+                db.execute(select(tables.jobs.c.snapshot, tables.jobs.c.game_turn).where(tables.jobs.c.id == job))
+                .mappings()
+                .one()
+            )
+            snapshot = json.loads(row["snapshot"])
+            store = RecordStore(db, self._meta(db, "gameTurn", row["game_turn"]))
             for change in changes:
                 key = change.get("id")
                 try:
                     old = store.all().get(key, {})
+                    unread_review = []
                     if change["op"] != "create":
                         if not old or old["category"] not in MEMORY_TYPES:
                             raise ValueError("UNKNOWN_MEMORY")
@@ -603,7 +670,9 @@ class CivilizationState:
                             for ref in old["body"].get("_review", [])
                             if snapshot.get("delivered", {}).get(ref["key"], 0) < ref["version"]
                         ]
-                        if change["op"] == "revise" and missing:
+                        if snapshot.get("memoryOnly"):
+                            unread_review = [ref for ref in old["body"].get("_review", []) if ref["key"] in missing]
+                        elif change["op"] == "revise" and missing:
                             raise EvidenceRequired(
                                 "REVIEW_EVIDENCE_FIRST: read the changed evidence before revising", missing
                             )
@@ -652,6 +721,16 @@ class CivilizationState:
                             "state": "active",
                             "needsReview": [],
                         }
+                        if snapshot.get("memoryOnly"):
+                            current = store.all()
+                            changed = [
+                                {"key": ref["key"], "version": current[ref["key"]]["version"]}
+                                for ref in content.get("_assumptions", [])
+                                if ref["key"] in current and current[ref["key"]]["version"] != ref["version"]
+                            ]
+                            if unread_review or changed:
+                                body["needsReview"] = ["Evidence changed after the completed turn; review before reuse"]
+                                body["_review"] = unread_review + changed
                         version = store.write(target, content["type"], body, job)
                         self._deliver(
                             snapshot, {target: {"version": version, "category": content["type"], "body": body}}
@@ -678,7 +757,7 @@ class CivilizationState:
                             "recoverable": True,
                             "changedRecords": error.keys,
                             "conflicts": error.details,
-                            "recovery": recovery_reads(db, error.keys, "memory_update", {}),
+                            "recovery": self._memory_recovery(db, snapshot, error.keys),
                         }
                     )
                 except EvidenceRequired as error:
@@ -689,38 +768,62 @@ class CivilizationState:
                             "reason": str(error),
                             "recoverable": True,
                             "requiredSources": error.keys,
-                            "recovery": recovery_reads(db, error.keys + ([key] if key else []), "memory_update", {}),
+                            "recovery": self._memory_recovery(db, snapshot, error.keys + ([key] if key else [])),
                         }
                     )
                 except (StateConflict, ValueError) as error:
                     results.append({"id": key, "accepted": False, "reason": str(error)})
-            db.execute("UPDATE jobs SET snapshot=? WHERE id=?", (encode(snapshot), job))
+            db.execute(tables.jobs.update().where(tables.jobs.c.id == job).values(snapshot=encode(snapshot)))
             result = {"changes": results}
             if call_id is not None:
                 # Use the original, validated call arguments for identity. The
                 # patch's normalized defaults must not change its replay key.
-                call = db.execute("SELECT arguments FROM calls WHERE job=? AND id=?", (job, call_id)).fetchone()
+                call = db.execute(
+                    select(tables.calls.c.arguments).where(tables.calls.c.job == job, tables.calls.c.id == call_id)
+                ).fetchone()
                 arguments = json.loads(call[0]) if call else {"changes": changes}
                 result = self._call_record(db, job, call_id, "memory_update", arguments, result)
                 assert result is not None
             return result
 
+    @staticmethod
+    def _memory_recovery(db, snapshot, keys):
+        if not snapshot.get("memoryOnly"):
+            return recovery_reads(db, keys, "memory_update", {})
+        current = RecordStore(db).all()
+        private = list(dict.fromkeys(key for key in keys if current.get(key, {}).get("category") in MEMORY_TYPES))
+        return {
+            "reads": [
+                {"tool": "memory_read", "arguments": {"ids": private[offset : offset + 20], "includeRetired": True}}
+                for offset in range(0, len(private), 20)
+            ],
+            "instruction": "Reconcile with current private records using the completed turn's evidence. Keep review flags for newer evidence. If an edit needs evidence not read during the turn, defer that edit; no live game or chat reads are available in the memory phase.",
+        }
+
     def search_memory(self, job, arguments):
         with self.transaction() as db:
             self._validate(db, job, {})
-            result, keys = RecordStore(db).search(**arguments)
-            snapshot = json.loads(db.execute("SELECT snapshot FROM jobs WHERE id=?", (job,)).fetchone()[0])
+            snapshot = json.loads(
+                db.execute(select(tables.jobs.c.snapshot).where(tables.jobs.c.id == job)).scalar_one()
+            )
+            result, keys = RecordStore(db).search(**arguments, memory_only=bool(snapshot.get("memoryOnly")))
             if not arguments.get("history"):
                 current = self._records(db)
                 self._deliver(snapshot, {key: current[key] for key in keys})
             else:
                 for record in result["records"]:
                     alias = record["evidence"]
-                    row = db.execute(
-                        "SELECT key,version,category FROM records WHERE rowid=?", (int(alias[1:]),)
-                    ).fetchone()
+                    row = (
+                        db.execute(
+                            select(tables.records.c.key, tables.records.c.version, tables.records.c.category).where(
+                                tables.record_order == int(alias[1:])
+                            )
+                        )
+                        .mappings()
+                        .one()
+                    )
                     snapshot.setdefault("historicalEvidence", {})[alias] = dict(row)
-            db.execute("UPDATE jobs SET snapshot=? WHERE id=?", (encode(snapshot), job))
+            db.execute(tables.jobs.update().where(tables.jobs.c.id == job).values(snapshot=encode(snapshot)))
             return result
 
     def queue(
@@ -737,7 +840,7 @@ class CivilizationState:
         with self.transaction() as db:
             self._check_run_failure(db)
             self._validate(db, job, dependencies)
-            previous = db.execute("SELECT * FROM outbox WHERE id=?", (request_id,)).fetchone()
+            previous = db.execute(select(tables.outbox).where(tables.outbox.c.id == request_id)).mappings().fetchone()
             if previous:
                 if previous["transport"] != transport or json.loads(previous["payload"]) != {
                     **payload,
@@ -746,7 +849,9 @@ class CivilizationState:
                     raise StateConflict("CALL_CONFLICT")
                 return dict(previous)
             body = {**payload, "requestId": request_id}
-            snapshot = json.loads(db.execute("SELECT snapshot FROM jobs WHERE id=?", (job,)).fetchone()[0])
+            snapshot = json.loads(
+                db.execute(select(tables.jobs.c.snapshot).where(tables.jobs.c.id == job)).scalar_one()
+            )
             store = RecordStore(db, self._meta(db, "gameTurn"))
             pinned: JsonObject = {}
             if intent is not None:
@@ -794,10 +899,17 @@ class CivilizationState:
                 job,
             )
             db.execute(
-                "INSERT INTO outbox VALUES (?,?,?,?,?,NULL,?)",
-                (request_id, job, transport, encode(body), encode(dependencies), decision),
+                insert(tables.outbox).values(
+                    id=request_id,
+                    job=job,
+                    transport=transport,
+                    payload=encode(body),
+                    dependencies=encode(dependencies),
+                    result=None,
+                    decision=decision,
+                )
             )
-            db.execute("INSERT INTO outgoing VALUES (?)", (request_id,))
+            db.execute(insert(tables.outgoing).values(id=request_id))
             return {
                 "id": request_id,
                 "job": job,
@@ -814,9 +926,13 @@ class CivilizationState:
 
     def uncertain(self, request_id):
         with self.transaction() as db:
-            row = db.execute(
-                "SELECT o.* FROM outbox o JOIN outgoing a ON o.id=a.id WHERE o.id=?", (request_id,)
-            ).fetchone()
+            row = (
+                db.execute(
+                    select(tables.outbox).select_from(tables.live_requests).where(tables.outbox.c.id == request_id)
+                )
+                .mappings()
+                .fetchone()
+            )
             if row and row["result"] is None:
                 record = self._records(db)[row["decision"]]
                 self._record(db, row["decision"], "decision", {**record["body"], "outcome": "uncertain"}, row["job"])
@@ -826,7 +942,9 @@ class CivilizationState:
         if trade.get("status") in {None, "PENDING"}:
             return
         records = self._records(db)
-        for row in db.execute("SELECT o.* FROM outbox o JOIN outgoing a ON o.id=a.id WHERE result IS NOT NULL"):
+        for row in db.execute(
+            select(tables.outbox).select_from(tables.live_requests).where(tables.outbox.c.result.is_not(None))
+        ).mappings():
             receipt = json.loads(row["result"])
             if (receipt.get("trade") or {}).get("proposal") == trade.get("proposal"):
                 record = records[row["decision"]]
@@ -837,8 +955,11 @@ class CivilizationState:
             return [
                 dict(row)
                 for row in db.execute(
-                    "SELECT o.* FROM outbox o JOIN outgoing a ON o.id=a.id WHERE result IS NULL ORDER BY o.rowid"
-                )
+                    select(tables.outbox)
+                    .select_from(tables.live_requests)
+                    .where(tables.outbox.c.result.is_(None))
+                    .order_by(tables.request_order)
+                ).mappings()
             ]
 
     def requests_for_job(self, job: str):
@@ -846,29 +967,42 @@ class CivilizationState:
             return [
                 dict(row)
                 for row in db.execute(
-                    "SELECT o.* FROM outbox o JOIN outgoing a ON o.id=a.id WHERE job=? ORDER BY o.rowid", (job,)
-                )
+                    select(tables.outbox)
+                    .select_from(tables.live_requests)
+                    .where(tables.outbox.c.job == job)
+                    .order_by(tables.request_order)
+                ).mappings()
             ]
 
     def call_receipt(self, job: str, call_id: str):
         request_id = "r" + hashlib.sha256((job + ":" + call_id).encode()).hexdigest()[:24]
         with self.transaction() as db:
             self._validate(db, job, {})
-            row = db.execute("SELECT result FROM outbox WHERE id=? AND job=?", (request_id, job)).fetchone()
+            row = db.execute(
+                select(tables.outbox.c.result).where(tables.outbox.c.id == request_id, tables.outbox.c.job == job)
+            ).fetchone()
             return json.loads(row[0]) if row and row[0] is not None else None
 
     def receipt(self, request_id: str, result: JsonObject):
         with self.transaction() as db:
-            row = db.execute(
-                "SELECT o.* FROM outbox o JOIN outgoing a ON o.id=a.id WHERE o.id=?", (request_id,)
-            ).fetchone()
+            row = (
+                db.execute(
+                    select(tables.outbox).select_from(tables.live_requests).where(tables.outbox.c.id == request_id)
+                )
+                .mappings()
+                .fetchone()
+            )
             if row is None:
                 raise StateConflict("UNKNOWN_REQUEST")
             if row["result"] is not None:
                 if json.loads(row["result"]) != result:
                     raise StateConflict("RECEIPT_CONFLICT")
                 return
-            db.execute("UPDATE outbox SET result=? WHERE id=? AND result IS NULL", (encode(result), request_id))
+            db.execute(
+                tables.outbox.update()
+                .where(tables.outbox.c.id == request_id, tables.outbox.c.result.is_(None))
+                .values(result=encode(result))
+            )
             self._record(db, "receipt:" + request_id, "observation", result, row["job"])
             record = self._records(db)[row["decision"]]
             self._record(
@@ -900,7 +1034,11 @@ class CivilizationState:
 
     def _call_record(self, db, job, id, name, arguments, result=None):
         self._validate(db, job, {})
-        prior = db.execute("SELECT * FROM calls WHERE job=? AND id=?", (job, id)).fetchone()
+        prior = (
+            db.execute(select(tables.calls).where(tables.calls.c.job == job, tables.calls.c.id == id))
+            .mappings()
+            .fetchone()
+        )
         if prior and (prior["name"] != name or prior["arguments"] != encode(arguments)):
             raise StateConflict("CALL_CONFLICT")
         if prior and prior["result"]:
@@ -908,18 +1046,32 @@ class CivilizationState:
             # Preserve the first delivery's intentional section order (tactics
             # before city menus), without rewriting or recounting a cached call.
             return result if result is not None and result == previous else previous
-        db.execute("INSERT OR IGNORE INTO calls VALUES (?,?,?,?,NULL)", (job, id, name, encode(arguments)))
+        db.execute(
+            insert(tables.calls)
+            .values(job=job, id=id, name=name, arguments=encode(arguments), result=None)
+            .prefix_with("OR IGNORE")
+        )
         if result is not None:
             result = record_conflicts(db, job, id, name, arguments, result)
-            db.execute("UPDATE calls SET result=? WHERE job=? AND id=?", (encode(result), job, id))
+            db.execute(
+                tables.calls.update()
+                .where(tables.calls.c.job == job, tables.calls.c.id == id)
+                .values(result=encode(result))
+            )
         return result
 
     def refresh_memory(self, job, keys, cursor=None, include_retired=False):
         with self.transaction() as db:
             self._validate(db, job, {})
-            row = db.execute("SELECT snapshot FROM jobs WHERE id=?", (job,)).fetchone()
+            row = db.execute(select(tables.jobs.c.snapshot).where(tables.jobs.c.id == job)).one()
             snapshot = json.loads(row[0])
             current = self._records(db)
+            if snapshot.get("memoryOnly"):
+                current = {key: record for key, record in current.items() if record["category"] in MEMORY_TYPES} | {
+                    key: record
+                    for key, record in snapshot["records"].items()
+                    if key in snapshot.get("delivered", {}) and record["category"] not in MEMORY_TYPES
+                }
             chosen = {
                 key: current[key]
                 for key in keys
@@ -928,7 +1080,7 @@ class CivilizationState:
             self._deliver(snapshot, chosen)
             if cursor is not None:
                 snapshot["cursor"] = max(snapshot["cursor"], cursor)
-            db.execute("UPDATE jobs SET snapshot=? WHERE id=?", (encode(snapshot), job))
+            db.execute(tables.jobs.update().where(tables.jobs.c.id == job).values(snapshot=encode(snapshot)))
             return chosen
 
     def chat_history(self, participant=None, query=""):
@@ -940,19 +1092,48 @@ class CivilizationState:
             raise ValueError("INVALID_ARGUMENT")
         search = "%" + query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
         with self.transaction() as db:
-            rows = db.execute(
-                "SELECT events.body FROM events JOIN inbox USING(id) WHERE events.body LIKE ? ESCAPE '\\' AND (? IS NULL OR EXISTS (SELECT 1 FROM json_each(events.body,'$.body.participants') WHERE value=?)) ORDER BY id DESC LIMIT 21",
-                (search, participant, participant),
-            ).fetchall()
+            participants = func.json_each(tables.events.c.body, "$.body.participants").table_valued("value")
+            query = (
+                select(tables.events.c.body)
+                .select_from(tables.events.join(tables.inbox))
+                .where(tables.events.c.body.like(search, escape="\\"))
+            )
+            if participant is not None:
+                query = query.where(
+                    select(1).select_from(participants).where(participants.c.value == participant).exists()
+                )
+            rows = db.execute(query.order_by(tables.events.c.id.desc()).limit(21)).all()
             return {"events": [json.loads(row[0]) for row in reversed(rows[:20])], "hasMore": len(rows) > 20}
 
-    def history(self, game_turn: int, offset: int = 0):
+    def history(self, game_turn: int, offset: int = 0, *, job: str | None = None):
         if type(game_turn) is not int or game_turn < 0 or type(offset) is not int or offset < 0:
             raise ValueError("INVALID_ARGUMENT")
         with self.transaction() as db:
+            if job is not None:
+                self._validate(db, job, {})
+                row = (
+                    db.execute(select(tables.jobs.c.snapshot, tables.jobs.c.game_turn).where(tables.jobs.c.id == job))
+                    .mappings()
+                    .one()
+                )
+                snapshot = json.loads(row["snapshot"])
+                if snapshot.get("memoryOnly") and game_turn >= row["game_turn"]:
+                    if game_turn > row["game_turn"]:
+                        raise StateConflict("MEMORY_ONLY: history ends at the completed turn")
+                    actions = snapshot["handoffSummary"]["actions"]
+                    return {
+                        "turn": game_turn,
+                        "actions": actions[offset : offset + 20],
+                        "hasMore": offset + 20 < len(actions),
+                        "nextOffset": offset + len(actions[offset : offset + 20]),
+                    }
             rows = db.execute(
-                "SELECT o.decision FROM outbox o JOIN outgoing a ON o.id=a.id JOIN jobs j ON o.job=j.id WHERE j.game_turn=? ORDER BY o.rowid LIMIT 21 OFFSET ?",
-                (game_turn, offset),
+                select(tables.outbox.c.decision)
+                .select_from(tables.live_requests.join(tables.jobs, tables.outbox.c.job == tables.jobs.c.id))
+                .where(tables.jobs.c.game_turn == game_turn)
+                .order_by(tables.request_order)
+                .limit(21)
+                .offset(offset)
             ).fetchall()
             records = self._records(db)
             return HistoryReadResult.model_validate(
@@ -971,20 +1152,62 @@ class CivilizationState:
     def generation(self):
         with self.transaction() as db:
             return db.execute(
-                "SELECT COALESCE(MAX(r.rowid),0) FROM records r JOIN heads h USING(key,version)"
-            ).fetchone()[0]
+                select(func.coalesce(func.max(tables.record_order), 0)).select_from(tables.current_records)
+            ).scalar_one()
 
     def export(self, workspace: Path):
+        """Refresh current views and dirty jobs; completed history is left intact."""
         with self.transaction() as db:
+            retained = set()
+            for row in db.execute(
+                select(tables.jobs.c.id, tables.jobs.c.game_turn, tables.jobs.c.purpose).select_from(tables.active_jobs)
+            ).mappings():
+                directory = (
+                    f"turn_{row['game_turn']}"
+                    if row["purpose"] == "gameplay" and row["game_turn"] is not None
+                    else f"communication/{row['id']}"
+                )
+                retained.add(directory + "/")
+                if any(
+                    not (workspace / directory / name).is_file()
+                    for name in ("receipts.jsonl", "summary.json", "summary.md")
+                ):
+                    # Projections are disposable: rebuild missing files from
+                    # canonical records, including exports to a new workspace.
+                    db.execute(insert(tables.export_jobs).values(id=row["id"]).prefix_with("OR IGNORE"))
             records = self._records(db)
             events = [
-                json.loads(row[0]) for row in db.execute("SELECT body FROM events JOIN inbox USING(id) ORDER BY id")
+                json.loads(row[0])
+                for row in db.execute(
+                    select(tables.events.c.body)
+                    .select_from(tables.events.join(tables.inbox))
+                    .order_by(tables.events.c.id)
+                )
             ]
+            dirty_jobs = tables.jobs.alias("dirty_jobs")
+            changed = (
+                select(tables.export_jobs.c.id)
+                .select_from(tables.export_jobs.join(dirty_jobs, dirty_jobs.c.id == tables.export_jobs.c.id))
+                .where(
+                    or_(
+                        dirty_jobs.c.id == tables.jobs.c.id,
+                        and_(
+                            dirty_jobs.c.purpose == "gameplay",
+                            tables.jobs.c.purpose == "gameplay",
+                            dirty_jobs.c.game_turn == tables.jobs.c.game_turn,
+                        ),
+                    )
+                )
+                .exists()
+            )
             requests = [
                 dict(row)
                 for row in db.execute(
-                    "SELECT o.*,j.game_turn,j.purpose FROM outbox o JOIN outgoing a ON o.id=a.id JOIN jobs j ON o.job=j.id ORDER BY o.rowid"
-                )
+                    select(tables.outbox, tables.jobs.c.game_turn, tables.jobs.c.purpose)
+                    .select_from(tables.live_requests.join(tables.jobs, tables.outbox.c.job == tables.jobs.c.id))
+                    .where(changed)
+                    .order_by(tables.request_order)
+                ).mappings()
             ]
             files = projection_files(records, events)
             groups = {}
@@ -997,9 +1220,10 @@ class CivilizationState:
                 groups.setdefault(directory, []).append(request)
             # Memory-only jobs also get a structured summary.
             for row in db.execute(
-                REACHABLE
-                + "SELECT DISTINCT j.* FROM jobs j JOIN records r ON r.job=j.id JOIN reachable a USING(key,version)"
-            ):
+                select(tables.jobs.c.id, tables.jobs.c.game_turn, tables.jobs.c.purpose).select_from(
+                    tables.active_jobs.join(tables.export_jobs, tables.jobs.c.id == tables.export_jobs.c.id)
+                )
+            ).mappings():
                 directory = (
                     f"turn_{row['game_turn']}"
                     if row["purpose"] == "gameplay" and row["game_turn"] is not None
@@ -1027,7 +1251,10 @@ class CivilizationState:
                     json.dumps(model_view(summary), ensure_ascii=False, indent=2) + "\n"
                 )
                 files[directory + "/summary.md"] = summary_markdown(summary)
-        export_files(self.root, workspace, files)
+            # Clear dirty work only after every disposable projection was written.
+            # A failed or interrupted export is safe to repeat after restart.
+            export_files(self.root, workspace, files, retained_prefixes=retained)
+            db.execute(tables.export_jobs.delete())
 
     def backup(self, destination: Path) -> str:
         if destination.exists():
@@ -1037,16 +1264,21 @@ class CivilizationState:
             snapshot = {
                 "civilization": self.civilization,
                 "storeId": self._meta(db, "storeId"),
-                "meta": [list(row) for row in db.execute("SELECT * FROM meta ORDER BY key")],
-                "heads": [list(row) for row in db.execute("SELECT * FROM heads ORDER BY key")],
-                "inbox": [row[0] for row in db.execute("SELECT id FROM inbox ORDER BY id")],
-                "outgoing": [row[0] for row in db.execute("SELECT id FROM outgoing ORDER BY id")],
+                "meta": [list(row) for row in db.execute(select(tables.meta).order_by(tables.meta.c.key))],
+                "heads": [list(row) for row in db.execute(select(tables.heads).order_by(tables.heads.c.key))],
+                "inbox": [row[0] for row in db.execute(select(tables.inbox.c.id).order_by(tables.inbox.c.id))],
+                "outgoing": [row[0] for row in db.execute(select(tables.outgoing.c.id).order_by(tables.outgoing.c.id))],
                 "records": [
                     list(row)
-                    for row in db.execute(REACHABLE + "SELECT key,version FROM reachable ORDER BY key,version")
+                    for row in db.execute(
+                        select(tables.reachable).order_by(tables.reachable.c.key, tables.reachable.c.version)
+                    )
                 ],
                 "jobs": [
-                    dict(row) for row in db.execute("SELECT j.* FROM jobs j JOIN live_jobs a USING(id) ORDER BY j.id")
+                    dict(row)
+                    for row in db.execute(
+                        select(tables.jobs).select_from(tables.active_jobs).order_by(tables.jobs.c.id)
+                    ).mappings()
                 ],
             }
             snapshot["historySha256"] = self._history_digest(db, snapshot)
@@ -1058,17 +1290,29 @@ class CivilizationState:
         """Verify referenced immutable evidence without copying it into every round."""
         checksum = hashlib.sha256()
         queries = (
-            ("records", saved["records"], "SELECT * FROM records WHERE key=? AND version=?"),
-            ("events", [(id,) for id in saved["inbox"]], "SELECT * FROM events WHERE id=?"),
+            (
+                "records",
+                saved["records"],
+                select(tables.records).where(
+                    tables.records.c.key == bindparam("ref0"), tables.records.c.version == bindparam("ref1")
+                ),
+            ),
+            (
+                "events",
+                [(id,) for id in saved["inbox"]],
+                select(tables.events).where(tables.events.c.id == bindparam("ref0")),
+            ),
             (
                 "outbox",
                 [(id,) for id in saved["outgoing"]],
-                "SELECT o.*,j.epoch,j.purpose,j.game_turn FROM outbox o JOIN jobs j ON j.id=o.job WHERE o.id=?",
+                select(tables.outbox, tables.jobs.c.epoch, tables.jobs.c.purpose, tables.jobs.c.game_turn)
+                .select_from(tables.outbox.join(tables.jobs, tables.jobs.c.id == tables.outbox.c.job))
+                .where(tables.outbox.c.id == bindparam("ref0")),
             ),
         )
         for table, references, query in queries:
             for reference in references:
-                row = db.execute(query, reference).fetchone()
+                row = db.execute(query, {f"ref{i}": value for i, value in enumerate(reference)}).mappings().fetchone()
                 if row is None:
                     raise StateConflict("CHECKPOINT_HISTORY_MISSING")
                 if table == "outbox" and row["result"] is None:
@@ -1090,7 +1334,7 @@ class CivilizationState:
     def fence(self, epoch: str):
         with self.transaction() as db:
             self._set(db, "epoch", epoch)
-            db.execute("UPDATE jobs SET status='INTERRUPTED' WHERE status='RUNNING'")
+            db.execute(tables.jobs.update().where(tables.jobs.c.status == "RUNNING").values(status="INTERRUPTED"))
 
     def pause(self, paused: bool):
         with self.transaction() as db:
@@ -1102,19 +1346,41 @@ class CivilizationState:
 
     def restore(self, source: Path, checksum: str, epoch: str):
         saved = self.verify(source, checksum)
+        interrupted = []
         with self.transaction() as db:
-            for table in ("meta", "heads", "inbox", "outgoing", "live_jobs"):
-                db.execute("DELETE FROM " + table)
-            db.executemany("INSERT INTO meta VALUES (?,?)", saved["meta"])
-            db.executemany("INSERT INTO heads VALUES (?,?)", saved["heads"])
-            db.executemany("INSERT INTO inbox VALUES (?)", [(id,) for id in saved["inbox"]])
-            db.executemany("INSERT INTO outgoing VALUES (?)", [(id,) for id in saved["outgoing"]])
+            for table in (tables.meta, tables.heads, tables.inbox, tables.outgoing, tables.live_jobs):
+                db.execute(table.delete())
+            for table, rows in (
+                (tables.meta, saved["meta"]),
+                (tables.heads, saved["heads"]),
+                (tables.inbox, [(id,) for id in saved["inbox"]]),
+                (tables.outgoing, [(id,) for id in saved["outgoing"]]),
+            ):
+                if rows:
+                    db.execute(insert(table), [dict(zip(table.c.keys(), row, strict=True)) for row in rows])
             for job in saved["jobs"]:
-                db.execute("UPDATE jobs SET snapshot=? WHERE id=?", (job["snapshot"], job["id"]))
-                db.execute("INSERT INTO live_jobs VALUES (?)", (job["id"],))
+                snapshot = json.loads(job["snapshot"])
+                if job["status"] == "RUNNING" and snapshot.get("memoryOnly"):
+                    snapshot["memoryPhaseInterrupted"] = True
+                    snapshot["closingRecords"] = self._records(db)
+                    interrupted.append({"job": job["id"], "gameTurn": job["game_turn"]})
+                # A job may have completed after capture. Its later completion
+                # and closing context must not leak into the restored timeline.
+                db.execute(
+                    tables.jobs.update()
+                    .where(tables.jobs.c.id == job["id"])
+                    .values(
+                        snapshot=encode(snapshot),
+                        status="INTERRUPTED" if job["status"] == "RUNNING" else job["status"],
+                    )
+                )
+                db.execute(insert(tables.live_jobs).values(id=job["id"]))
+            db.execute(tables.export_jobs.delete())
+            db.execute(insert(tables.export_jobs).from_select(["id"], select(tables.live_jobs.c.id)))
             self._set(db, "epoch", epoch)
             self._set(db, "paused", True)
-            db.execute("UPDATE jobs SET status='INTERRUPTED' WHERE status='RUNNING'")
+            db.execute(tables.jobs.update().where(tables.jobs.c.status == "RUNNING").values(status="INTERRUPTED"))
+        return interrupted
 
 
 def job_id() -> str:

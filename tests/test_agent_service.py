@@ -321,8 +321,8 @@ class AgentServiceTests(AgentServiceTestCase):
         self.assertEqual(starts[0]["developerInstructions"], instructions)
         self.assertNotEqual(starts[0]["cwd"], starts[-1]["cwd"])
         self.assertIn("The service writes all turn files. Do not create or edit them.", instructions)
-        self.assertIn("After END_TURN succeeds, make no further tool calls", instructions)
-        self.assertIn("receipts and typed memory", instructions)
+        self.assertIn("After END_TURN succeeds with memoryPhase", instructions)
+        self.assertIn("Other players can play while you finish", instructions)
         self.assertNotIn("Private strategy and evidence", instructions)
         self.assertNotIn("Civ tool discovery:", prompt)
         metadata = self.service.records[second["activationId"]]["startup"]
@@ -642,7 +642,7 @@ class AgentServiceTests(AgentServiceTestCase):
                     ssl=tls,
                     headers=headers,
                     json={
-                        "op": "finalize",
+                        "op": "begin_finalize",
                         "activationId": "activation-one",
                         "epoch": "epoch-one",
                         "gameTurn": 0,
@@ -650,7 +650,9 @@ class AgentServiceTests(AgentServiceTestCase):
                     },
                 ) as response:
                     self.assertEqual(200, response.status)
-                    self.assertEqual(1, (await response.json())["status"]["committedHandoff"])
+                    self.assertIn((await response.json())["status"]["finalizationState"], {"RUNNING", "COMPLETED"})
+                await self.service.finalization_tasks["activation-one"]
+                self.assertEqual(1, self.service.status("activation-one")["committedHandoff"])
                 async with client.post(
                     url, ssl=tls, headers=headers, json={"op": "archive", "activationId": "activation-one"}
                 ) as response:

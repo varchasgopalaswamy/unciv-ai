@@ -1,17 +1,39 @@
 """Service-owned accounting, outside both model workspaces and game rollback snapshots."""
 
 import json
-import sqlite3
 import time
 import uuid
 from contextlib import contextmanager
 from pathlib import Path
 
+from sqlalchemy import REAL, Column, Integer, MetaData, Table, Text, insert, select
+
 from civ_agent.protocol import JsonObject
+from civ_agent.sqlite_database import sqlite_engine
 from civ_agent.tls import private_directory
 
 TOKEN_KEYS = ("input_tokens", "cached_input_tokens", "output_tokens", "reasoning_output_tokens")
 TERMINAL = {"COMPLETED", "FAILED", "INTERRUPTED"}
+
+metadata = MetaData()
+jobs = Table(
+    "jobs",
+    metadata,
+    Column("id", Text, primary_key=True, nullable=True),
+    Column("payload", Text, nullable=False),
+    Column("sent", Integer, nullable=False),
+)
+calls = Table(
+    "calls",
+    metadata,
+    Column("id", Text, primary_key=True, nullable=True),
+    Column("job", Text, nullable=False),
+    Column("keys", Text, nullable=False),
+    Column("started", REAL, nullable=False),
+    Column("outcome", Text),
+    Column("replayed", Integer, nullable=False, server_default="0"),
+    Column("elapsed", Integer),
+)
 
 
 class JobAccounting:
@@ -19,22 +41,19 @@ class JobAccounting:
         self.path = private_directory(directory) / "accounting.sqlite3"
         if self.path.is_symlink():
             raise ValueError("Unsafe accounting database")
+        self.engine = sqlite_engine(self.path)
         self.starts: dict[str, float] = {}
         with self.connect() as db:
-            db.executescript("""
-                CREATE TABLE IF NOT EXISTS jobs(id TEXT PRIMARY KEY, payload TEXT NOT NULL, sent INTEGER NOT NULL);
-                CREATE TABLE IF NOT EXISTS calls(id TEXT PRIMARY KEY, job TEXT NOT NULL, keys TEXT NOT NULL,
-                    started REAL NOT NULL, outcome TEXT, replayed INTEGER NOT NULL DEFAULT 0, elapsed INTEGER);
-            """)
-            db.execute("UPDATE calls SET outcome='incomplete',elapsed=0 WHERE outcome IS NULL")
+            metadata.create_all(db)
+            db.execute(calls.update().where(calls.c.outcome.is_(None)).values(outcome="incomplete", elapsed=0))
             recovered = []
             # Work lost on service restart is still paid work. Retain the last known counters.
-            for id, payload in db.execute("SELECT id,payload FROM jobs").fetchall():
+            for id, payload in db.execute(select(jobs.c.id, jobs.c.payload)).all():
                 row = json.loads(payload)
                 if row["telemetry"]["phase"] not in TERMINAL:
                     row["telemetry"].update(phase="FAILED", endedAtMs=int(time.time() * 1000), usageComplete=False)
                     row["telemetry"]["sequence"] += 1
-                    db.execute("UPDATE jobs SET payload=?,sent=0 WHERE id=?", (json.dumps(row), id))
+                    db.execute(jobs.update().where(jobs.c.id == id).values(payload=json.dumps(row), sent=0))
                     recovered.append(
                         {
                             "activationId": id,
@@ -53,13 +72,8 @@ class JobAccounting:
 
     @contextmanager
     def connect(self):
-        db = sqlite3.connect(self.path)
-        try:
-            db.execute("PRAGMA synchronous=FULL")
-            with db:
-                yield db
-        finally:
-            db.close()
+        with self.engine.begin() as db:
+            yield db
 
     def start(self, id: str, epoch: str, claimed: bool):
         report: JsonObject = {
@@ -77,7 +91,7 @@ class JobAccounting:
         }
         row = {"epoch": epoch, "claimed": claimed, "usage": dict.fromkeys(TOKEN_KEYS, 0), "telemetry": report}
         with self.connect() as db:
-            db.execute("INSERT OR IGNORE INTO jobs VALUES(?,?,0)", (id, json.dumps(row)))
+            db.execute(insert(jobs).values(id=id, payload=json.dumps(row), sent=0).prefix_with("OR IGNORE"))
         self.starts[id] = time.monotonic()
 
     def begin_call(self, job: str, name: str, arguments: JsonObject, *, source: str = "tool") -> str:
@@ -88,23 +102,24 @@ class JobAccounting:
         if name == "player_command" and isinstance(arguments, dict) and isinstance(arguments.get("kind"), str):
             keys.append("command:" + arguments["kind"][:128])
         with self.connect() as db:
-            db.execute(
-                "INSERT INTO calls(id,job,keys,started) VALUES(?,?,?,?)", (id, job, json.dumps(keys), time.monotonic())
-            )
+            db.execute(insert(calls).values(id=id, job=job, keys=json.dumps(keys), started=time.monotonic()))
         return id
 
     def end_call(self, id: str, outcome: str, replayed: bool):
         with self.connect() as db:
-            started = db.execute("SELECT started FROM calls WHERE id=?", (id,)).fetchone()[0]
+            started = db.execute(select(calls.c.started).where(calls.c.id == id)).scalar_one()
             db.execute(
-                "UPDATE calls SET outcome=?,replayed=?,elapsed=? WHERE id=?",
-                (outcome, int(replayed), max(0, int((time.monotonic() - started) * 1000)), id),
+                calls.update()
+                .where(calls.c.id == id)
+                .values(
+                    outcome=outcome, replayed=int(replayed), elapsed=max(0, int((time.monotonic() - started) * 1000))
+                )
             )
 
     def sample(self, record: JsonObject, wait_seconds: float = 0):
         id = record["activationId"]
         with self.connect() as db:
-            saved = db.execute("SELECT payload FROM jobs WHERE id=?", (id,)).fetchone()
+            saved = db.execute(select(jobs.c.payload).where(jobs.c.id == id)).fetchone()
             if saved is None:
                 return
             row = json.loads(saved[0])
@@ -128,31 +143,31 @@ class JobAccounting:
                 report["endedAtMs"] = report["endedAtMs"] or int(time.time() * 1000)
             for key in TOKEN_KEYS:
                 row["usage"][key] = max(row["usage"][key], record.get("usage", {}).get(key, 0))
-            calls: JsonObject = {}
+            counts: JsonObject = {}
             for keys, outcome, replayed, elapsed in db.execute(
-                "SELECT keys,outcome,replayed,elapsed FROM calls WHERE job=?", (id,)
+                select(calls.c["keys"], calls.c.outcome, calls.c.replayed, calls.c.elapsed).where(calls.c.job == id)
             ):
                 for key in json.loads(keys):
-                    count = calls.setdefault(
+                    count = counts.setdefault(
                         key, dict.fromkeys(("calls", "succeeded", "errors", "replayed", "incomplete", "elapsedMs"), 0)
                     )
                     count["calls"] += 1
                     count[{"success": "succeeded", "error": "errors"}.get(outcome, "incomplete")] += 1
                     count["replayed"] += replayed
                     count["elapsedMs"] += elapsed or 0
-            report["apiCalls"] = calls
-            db.execute("UPDATE jobs SET payload=?,sent=0 WHERE id=?", (json.dumps(row), id))
+            report["apiCalls"] = counts
+            db.execute(jobs.update().where(jobs.c.id == id).values(payload=json.dumps(row), sent=0))
 
     def pending(self) -> list[JsonObject]:
         with self.connect() as db:
             return [
                 {"job": id, **json.loads(payload)}
-                for id, payload in db.execute("SELECT id,payload FROM jobs WHERE sent=0")
+                for id, payload in db.execute(select(jobs.c.id, jobs.c.payload).where(jobs.c.sent == 0))
                 if json.loads(payload)["claimed"]
             ]
 
     def acknowledge(self, id: str, sequence: int):
         with self.connect() as db:
-            saved = db.execute("SELECT payload FROM jobs WHERE id=?", (id,)).fetchone()
+            saved = db.execute(select(jobs.c.payload).where(jobs.c.id == id)).fetchone()
             if saved and json.loads(saved[0])["telemetry"]["sequence"] == sequence:
-                db.execute("UPDATE jobs SET sent=1 WHERE id=?", (id,))
+                db.execute(jobs.update().where(jobs.c.id == id).values(sent=1))

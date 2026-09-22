@@ -123,12 +123,15 @@ class RoundCoordinator:
             private_directory(history_archive.parent)
             shutil.move(history, history_archive)
         restored = self.operator.call("restore", leaseId=self.lease, epoch=epoch, checkpoint=manifest["host"])["status"]
+        interrupted = {}
         for civilization, agent in self.agents.items():
             self.operator.call("heartbeat", leaseId=self.lease)
             component = manifest["players"][civilization]
             result = agent.call("restore", id=component["id"], sha256=component["sha256"], epoch=epoch)
             if result.get("epoch") != epoch or not result.get("restored"):
                 raise ValueError("Civilization restoration is incomplete; match remains paused")
+            if result.get("interruptedMemoryUpdates"):
+                interrupted[civilization] = result["interruptedMemoryUpdates"]
         credentials = self.operator.call("rotate_players", leaseId=self.lease, epoch=epoch)["players"]
         if {player["civilizationId"] for player in credentials} != set(self.agents):
             raise ValueError("Credential rotation is incomplete; match remains paused")
@@ -139,6 +142,7 @@ class RoundCoordinator:
             initialTurn=min(scheduler["initialTurn"], restored["turn"]),
             inFlight=None,
             pendingFinalizations=[],
+            restoredIncompleteMemory=interrupted,
             sessions={},
             handoffs=manifest["scheduler"].get("handoffs", 0),
             status="paused",

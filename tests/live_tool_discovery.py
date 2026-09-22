@@ -21,6 +21,7 @@ from civ_agent.commands.agent import player_credentials
 from civ_agent.host_connection import HostConnection
 from civ_agent.scheduler import Agent, Operator, agent_services, operator_token, player_prompt
 from civ_agent.tls import endpoint_configuration, write_private_json
+from civ_agent.turn_finalization import finalize_turn
 
 MODEL = "gpt-5.6-luna"
 EFFORT = "medium"
@@ -169,12 +170,15 @@ def run(args):
                     assert status["phase"] == "COMPLETED", status["phase"]
                     after = op("status")["status"]
                     assert after["handoff"] == before["handoff"] + 1, "Model failed to finish its game turn"
-                    service.call(
-                        "finalize",
-                        activationId=activation,
-                        epoch=epoch,
-                        gameTurn=before["turn"],
-                        committedHandoff=after["handoff"],
+                    finalize_turn(
+                        service,
+                        {
+                            "activationId": activation,
+                            "epoch": epoch,
+                            "gameTurn": before["turn"],
+                            "handoff": before["handoff"],
+                            "confirmedHandoff": after["handoff"],
+                        },
                     )
                     break
             else:

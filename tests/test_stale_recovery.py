@@ -205,7 +205,7 @@ def test_reading_without_review_and_retrying_without_reads_are_also_bounded(tmp_
     asyncio.run(run())
 
 
-def test_failed_export_cannot_hide_a_durably_failed_memory_batch(tmp_path):
+def test_memory_batch_reports_durable_failure_without_waiting_for_export(tmp_path):
     async def run():
         async with session(tmp_path) as (gateway, memory, job, chat, _, key):
             revision = {"changes": [{"op": "revise", "id": key, "content": PLAN}]}
@@ -218,8 +218,8 @@ def test_failed_export_cannot_hide_a_durably_failed_memory_batch(tmp_path):
                 raise OSError("Memory export unavailable")
 
             memory.export = unavailable_export
-            with pytest.raises(OSError, match="Memory export unavailable"):
-                await gateway.call(job, "memory_update", revision, "second")
+            result = await gateway.call(job, "memory_update", revision, "second")
+            assert result["error"] == REPEATED_STALE
             assert gateway.failed.is_set() and gateway.run_failure["error"] == REPEATED_STALE
             result = memory.call(job.id, "second", "memory_update", revision)
             assert result is not None and result["error"] == REPEATED_STALE

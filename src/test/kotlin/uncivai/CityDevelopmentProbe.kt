@@ -6,6 +6,9 @@ import com.unciv.logic.civilization.PlayerOperations
 import com.unciv.logic.civilization.PlayerUnitOperations
 import com.unciv.models.stats.Stat
 import com.unciv.view.GameView
+import uncivai.player.PlayerHost
+import uncivai.player.TurnCommandKind
+import uncivai.player.TurnCommandRequest
 import uncivai.player.observeCityDevelopment
 import uncivai.player.observeResearchDevelopment
 import uncivai.player.observeTileYields
@@ -64,6 +67,22 @@ object CityDevelopmentProbe {
             check(research.current == "Pottery")
             val pottery = research.technologies.single { it.name == "Pottery" }
             check(pottery.cost == player.tech.costOfTech("Pottery") && pottery.turns == player.tech.turnsToTech("Pottery"))
+            player.tech.addTechnology("Pottery")
+            check(operations.trySetResearchQueue(listOf("Mining")))
+            player.tech.techsInProgress["Mining"] = 20
+            val session = PlayerHost(runtime).bindPlayer("Rome")
+            val choices = session.researchDetails(listOf("Calendar"))
+            check(choices.current == "Mining" && choices.researchQueue == listOf("Mining"))
+            check(choices.technologies.single().prerequisiteQueue == listOf("Calendar"))
+            for ((index, queue) in listOf(listOf("Calendar"), listOf("Mining", "Calendar")).withIndex()) {
+                val turn = session.turn()
+                session.execute(TurnCommandRequest("research-$index", turn.epoch, turn.revision, TurnCommandKind.SET_RESEARCH_QUEUE, queue = queue))
+                check(player.tech.techsToResearch == queue)
+                check(player.tech.currentTechnologyName() == queue.first())
+                check(player.tech.researchOfTech("Mining") == 20)
+                check(!player.tech.isResearched("Mining"))
+            }
+            check(choices.researchQueue == listOf("Mining")) { "Research detail queue changed after mutation" }
             val cityOperations = PlayerCityOperations(player)
             val worked = observed.tiles.first { it.canUnwork }
             val tile = game.tileMap[com.unciv.logic.map.HexCoord(worked.position.x, worked.position.y)]

@@ -29,6 +29,8 @@ class FakeHost:
         self.phase: str = "ACTIVE"
         self.scheduled = False
         self.handoff = 0
+        self.round_checkpoints = False
+        self.barrier_active = False
         self.behaviors = list(behaviors)
         self.calls, self.plays = [], []
         self.agent_tokens = {name: secrets.token_urlsafe(32) for name in ("Rome", "Greece")}
@@ -254,6 +256,7 @@ class FakeHost:
             serverInstance=self.instance,
             turn=self.handoff // len(civilizations),
             handoff=self.handoff,
+            roundStart=self.round_checkpoints and self.handoff % len(civilizations) == 0,
             phase=self.phase,
             activeCivilization=civilizations[self.handoff % len(civilizations)],
             scheduled=self.scheduled,
@@ -265,7 +268,14 @@ class FakeHost:
         self.calls.append(dict(body))
         operation = body["op"]
         extra: JsonObject = {}
-        if operation in {"job_limits", "unbarrier"}:
+        if operation == "unbarrier":
+            self.barrier_active = False
+        elif operation == "barrier" and self.round_checkpoints:
+            self.barrier_active = True
+        elif operation == "snapshot" and self.round_checkpoints:
+            assert self.barrier_active
+            extra["checkpoint"] = {"epoch": self.epoch, "turn": self.status()["turn"], "handoff": self.handoff}
+        elif operation == "job_limits":
             pass
         elif operation == "connect":
             extra["playerToken"] = self.agent_tokens[body["civilization"]]
@@ -340,7 +350,7 @@ class FakeHost:
     def agent_request(self, civilization, body):
         if body["op"] == "health":
             return 200, {"status": {"civilization": civilization, "runFailure": self.agent_failures.get(civilization)}}
-        if body["op"] in {"connect", "disconnect", "barrier"}:
+        if body["op"] in {"connect", "disconnect", "barrier", "flush_accounting"}:
             return 200, {"status": {"connected": True, "ready": True, "paused": body.get("paused", False)}}
         if body["op"] == "result":
             self.result_deliveries.append({key: value for key, value in body.items() if key != "op"})
@@ -380,7 +390,6 @@ class FakeHost:
                     "complete",
                     "lost_response",
                     "after_handoff_hang",
-                    "refuse_interrupt",
                     "victory_after_handoff",
                 }:
                     self.handoff += 1
@@ -399,6 +408,7 @@ class FakeHost:
                     phase=phase,
                     gameTurn=body["gameTurn"],
                     handoff=body["handoff"],
+                    memoryTimeoutSeconds=300,
                     usage={"input_tokens": 10, "cached_input_tokens": 2, "output_tokens": 3}
                     if phase == "COMPLETED"
                     else {},
@@ -413,23 +423,35 @@ class FakeHost:
                 phase="INTERRUPTED",
                 gameTurn=body["gameTurn"],
                 handoff=body["handoff"],
+                memoryTimeoutSeconds=300,
                 usage={},
                 _behavior="missing_start",
             )
         if key not in self.activations:
             return 404, {"error": "UNKNOWN_ACTIVATION"}
         status = self.activations[key]
-        if body["op"] == "finalize":
+        if body["op"] == "finish_handoff":
+            if (
+                body["epoch"] != status["epoch"]
+                or body["gameTurn"] != status["gameTurn"]
+                or body["committedHandoff"] != status["handoff"] + 1
+            ):
+                return 409, {"error": "INVALID_HANDOFF"}
+            status["confirmedHandoff"] = body["committedHandoff"]
+            if status["_behavior"] == "after_handoff_hang":
+                status["phase"] = "COMPLETED"
+        if body["op"] == "begin_finalize":
             if status["phase"] == "RUNNING":
                 return 409, {"error": "AGENT_BUSY"}
             if (
                 body["epoch"] != status["epoch"]
                 or body["gameTurn"] != status["gameTurn"]
-                or body["committedHandoff"] <= status["handoff"]
+                or body["committedHandoff"] != status["handoff"] + 1
             ):
                 return 409, {"error": "INVALID_HANDOFF"}
             self.finalizations.append(dict(body))
             status["committedHandoff"] = body["committedHandoff"]
+            status["finalizationState"] = "COMPLETED"
         if body["op"] == "finalize_terminal":
             if status["phase"] == "RUNNING" or any(
                 body[field] != status[field] for field in ("epoch", "gameTurn", "handoff")
@@ -847,14 +869,20 @@ class SchedulerTest(unittest.TestCase):
         last = self.host.plays[-1]["request"]
         self.assertEqual(("chosen-model", "high"), (last["model"], last["reasoningEffort"]))
 
-    def test_archive_failure_stops_next_dispatch_then_resume_retries_without_model_replay(self):
+    def test_archive_failure_retains_proof_and_resume_retries_without_model_replay(self):
         self.host.archive_failures = 1
         failed = self.run_cli("--max-turns", "1", "--max-seconds", "30")
         self.assertEqual(failed.returncode, 2, failed.stdout + failed.stderr)
-        self.assertEqual([play["civ"] for play in self.host.plays], ["Rome"])
-        self.assertEqual(self.host.handoff, 1)
-        self.assertEqual(self.saved()["handoffs"], 0)
-        self.assertIsNotNone(self.saved()["inFlight"])
+        # Greece may already have played when the background archive fails.
+        # Both accepted handoffs remain committed; retry only the saved archive.
+        played = [play["civ"] for play in self.host.plays]
+        self.assertIn(played, [["Rome"], ["Rome", "Greece"]])
+        self.assertEqual(self.host.handoff, len(played))
+        self.assertEqual(self.saved()["handoffs"], len(played))
+        self.assertIsNone(self.saved()["inFlight"])
+        pending = self.saved()["pendingFinalizations"]
+        roman_pending = [flight for flight in pending if flight["civilization"] == "Rome"]
+        self.assertEqual([flight["confirmedHandoff"] for flight in roman_pending], [1])
         resumed = self.run_cli("resume")
         self.assertEqual(resumed.returncode, 0, resumed.stdout + resumed.stderr)
         self.assertEqual([play["civ"] for play in self.host.plays], ["Rome", "Greece"])

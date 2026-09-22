@@ -100,7 +100,7 @@ def test_checkpoint_checks_database_identity_and_referenced_evidence(tmp_path):
     with pytest.raises(StateConflict, match="CHECKPOINT_INVALID"):
         unrelated.verify(path, checksum)
     with memory.transaction() as db:
-        db.execute("UPDATE records SET body='{}'")
+        db.exec_driver_sql("UPDATE records SET body='{}'")
     with pytest.raises(StateConflict, match="CHECKPOINT_HISTORY_CHANGED"):
         memory.verify(path, checksum)
 

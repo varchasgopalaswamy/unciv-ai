@@ -128,6 +128,42 @@ async def inspect(gateway, job, unit="unit1"):
     return await gateway.call(job, "unit_details", {"target": unit, "sections": ["movement"]}, "inspect-" + unit)
 
 
+@pytest.mark.parametrize("queue", [["Calendar"], ["Mining", "Calendar"]])
+def test_research_result_reports_actual_active_technology_and_retained_progress_without_extra_reads(tmp_path, queue):
+    async def run():
+        async with session(tmp_path) as (gateway, job, host, memory):
+            host.view.update(
+                researchQueue=["Mining"],
+                research={
+                    "current": "Mining",
+                    "technologies": [{"name": "Mining", "researched": False, "scienceStored": 20}],
+                },
+            )
+            before = await gateway.call(job, "player_turn", {}, "start")
+
+            def changed():
+                host.view["researchQueue"] = queue
+                host.view["research"]["current"] = queue[0]
+
+            host.after_command = changed
+            arguments = {
+                "kind": "SET_RESEARCH_QUEUE",
+                "queue": queue,
+                "intent": {"reason": "Choose the research order"},
+            }
+            result = await gateway.call(job, "player_command", arguments, "research")
+            assert result["researchChange"]["current"] == queue[0]
+            if queue[0] == "Calendar":
+                assert result["researchChange"]["paused"] == {"technology": "Mining", "scienceStored": 20}
+            else:
+                assert "paused" not in result["researchChange"]
+            assert apply_overview_update(before, result["stateUpdate"])["researchQueue"] == queue
+            assert await gateway.call(job, "player_command", arguments, "research") == result
+            assert host.reads == 2 and len(host.executed) == 1
+
+    asyncio.run(run())
+
+
 def test_successive_actions_use_updates_and_only_changed_inspections_expire(tmp_path):
     async def run():
         async with session(tmp_path) as (gateway, job, host, memory):
@@ -358,7 +394,9 @@ def test_invalid_state_update_stops_for_inspection_and_keeps_committed_receipt(t
             assert memory.snapshot("gameplay")["records"]["observation:overview"] == before
             assert memory.snapshot("gameplay")["records"][key] == plan_before
             with memory.transaction() as db:
-                snapshot = json.loads(db.execute("SELECT snapshot FROM jobs WHERE id=?", (job.id,)).fetchone()[0])
+                snapshot = json.loads(
+                    db.exec_driver_sql("SELECT snapshot FROM jobs WHERE id=?", (job.id,)).scalar_one()
+                )
                 assert snapshot["delivered"][key] == plan_before["version"]
             assert memory.run_failure()["exceptionType"] == (
                 "ValidationError" if failure == "invalid_view" else "OSError"

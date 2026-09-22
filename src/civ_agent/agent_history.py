@@ -10,6 +10,7 @@ from collections.abc import Iterable
 from pathlib import Path
 
 from civ_agent.mcp_results import canonical_tool_result
+from civ_agent.model_status import REASONS, error_fields
 from civ_agent.protocol import EventPage
 from civ_agent.tls import private_directory, regular_file, write_private
 
@@ -25,6 +26,7 @@ HISTORY_METHODS = frozenset(
         "item/commandExecution/outputDelta",
         "item/mcpToolCall/progress",
         "error",
+        "service/modelStatus",
         "turn/completed",
     }
 )
@@ -394,7 +396,9 @@ class HistoryStore:
         if log is None or params.get("threadId") != thread_id or not thread_id:
             return
         result = None
-        if method in {"item/started", "item/completed"}:
+        if method == "service/modelStatus":
+            result = "model_status", {key: value for key, value in params.items() if key != "threadId"}
+        elif method in {"item/started", "item/completed"}:
             result = visible_item(method, params)
         elif method in {
             "item/agentMessage/delta",
@@ -413,16 +417,19 @@ class HistoryStore:
                 result[1]["summaryIndex"] = params.get("summaryIndex", 0)
         elif method == "error":
             error = params.get("error", {})
+            fields = error_fields(error)
             result = (
                 "error",
                 {
-                    "message": error.get("message", "Codex reported an error"),
+                    "message": REASONS[fields["reason"]],
                     "willRetry": params.get("willRetry", False),
+                    **fields,
                 },
             )
         elif method == "turn/completed" and isinstance(params.get("turn", {}).get("error"), dict):
             turn = params["turn"]
-            result = "error", {"message": turn["error"].get("message", "Codex turn failed"), "willRetry": False}
+            fields = error_fields(turn["error"])
+            result = "error", {"message": REASONS[fields["reason"]], "willRetry": False, **fields}
             params = {**params, "turnId": turn.get("id")}
         if result is not None and isinstance(params.get("turnId"), str):
             log.accept(params["turnId"], *result)

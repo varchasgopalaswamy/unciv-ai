@@ -3,6 +3,9 @@
 import hashlib
 import json
 
+from sqlalchemy import insert, select
+
+from civ_agent import memory_schema as tables
 from civ_agent.memory_store import encode
 
 REPEATED_STALE = "REPEATED_STALE_ASSUMPTIONS"
@@ -17,11 +20,15 @@ RECOVERY_INSTRUCTIONS = (
 
 
 def conflict_details(db, job, keys, expected=None, cause="version_changed"):
-    snapshot = json.loads(db.execute("SELECT snapshot FROM jobs WHERE id=?", (job,)).fetchone()[0])
+    snapshot = json.loads(db.execute(select(tables.jobs.c.snapshot).where(tables.jobs.c.id == job)).scalar_one())
     versions = snapshot.get("delivered", {}) if expected is None else expected
     details = []
     for key in sorted(set(keys)):
-        row = db.execute("SELECT r.* FROM records r JOIN heads h USING(key,version) WHERE key=?", (key,)).fetchone()
+        row = (
+            db.execute(select(tables.records).select_from(tables.current_records).where(tables.records.c.key == key))
+            .mappings()
+            .fetchone()
+        )
         body = json.loads(row["body"]) if row else {}
         details.append(
             {
@@ -42,12 +49,14 @@ def recovery_reads(db, keys, name, arguments):
     intent = arguments.get("intent") or {}
     references = [intent.get("plan")] + [assumption.get("source") for assumption in intent.get("assumptions", [])]
     for key in references:
-        if key and db.execute("SELECT 1 FROM heads WHERE key=?", (key,)).fetchone():
+        if key and db.execute(select(tables.heads.c.key).where(tables.heads.c.key == key)).fetchone():
             keys.add(key)
     private = sorted({key for key in keys if not key.startswith("observation:")})
     evidence = set()
     for key in private:
-        row = db.execute("SELECT body FROM records JOIN heads USING(key,version) WHERE key=?", (key,)).fetchone()
+        row = db.execute(
+            select(tables.records.c.body).select_from(tables.current_records).where(tables.records.c.key == key)
+        ).fetchone()
         if row:
             evidence.update(ref["key"] for ref in json.loads(row[0]).get("_review", []))
     keys.update(evidence)
@@ -77,7 +86,9 @@ def recovery_reads(db, keys, name, arguments):
     for key in sorted(keys):
         if not key.startswith("observation:detail/"):
             continue
-        row = db.execute("SELECT body FROM records JOIN heads USING(key,version) WHERE key=?", (key,)).fetchone()
+        row = db.execute(
+            select(tables.records.c.body).select_from(tables.current_records).where(tables.records.c.key == key)
+        ).fetchone()
         query = json.loads(row[0]).get("query") if row else None
         if query:
             reads.append(query)
@@ -101,7 +112,7 @@ def recovery_reads(db, keys, name, arguments):
 
 def record_conflicts(db, job, call_id, name, arguments, result):
     """Called once in the transaction that saves a tool response, including partial memory batches."""
-    row = db.execute("SELECT * FROM jobs WHERE id=?", (job,)).fetchone()
+    row = db.execute(select(tables.jobs).where(tables.jobs.c.id == job)).mappings().fetchone()
     snapshot = json.loads(row["snapshot"])
     pending = snapshot.setdefault("staleRecovery", {})
     operations = (
@@ -135,10 +146,18 @@ def record_conflicts(db, job, call_id, name, arguments, result):
         reads = [
             {"callId": item["id"], "tool": item["name"], "arguments": json.loads(item["arguments"])}
             for item in db.execute(
-                "SELECT * FROM calls WHERE job=? AND result IS NOT NULL AND rowid > "
-                "(SELECT rowid FROM calls WHERE job=? AND id=?) ORDER BY rowid",
-                (job, job, first["callId"]),
-            )
+                select(tables.calls)
+                .where(
+                    tables.calls.c.job == job,
+                    tables.calls.c.result.is_not(None),
+                    tables.call_order
+                    > select(tables.call_order)
+                    .where(tables.calls.c.job == job, tables.calls.c.id == first["callId"])
+                    .correlate(None)
+                    .scalar_subquery(),
+                )
+                .order_by(tables.call_order)
+            ).mappings()
             if item["name"].endswith("_details")
             or item["name"]
             in {
@@ -172,9 +191,9 @@ def record_conflicts(db, job, call_id, name, arguments, result):
             "secondAttempt": attempt,
             "interveningReads": reads,
         }
-        db.execute("INSERT OR REPLACE INTO meta VALUES ('runFailure',?)", (encode(failure),))
+        db.execute(insert(tables.meta).values(key="runFailure", value=encode(failure)).prefix_with("OR REPLACE"))
         break
-    db.execute("UPDATE jobs SET snapshot=? WHERE id=?", (encode(snapshot), job))
+    db.execute(tables.jobs.update().where(tables.jobs.c.id == job).values(snapshot=encode(snapshot)))
     if failure:
         return {
             **result,

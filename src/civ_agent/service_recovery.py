@@ -17,19 +17,30 @@ def checkpoint_path(service, id):
 
 
 async def barrier(service, paused):
-    service.gateway.paused = paused
-    await service.io.call(service.memory.pause, paused)
-    if not paused:
-        deferred, service.gateway.deferred_completions = service.gateway.deferred_completions, []
-        for epoch, id, completed in deferred:
-            if service.match is not None and service.match["epoch"] == epoch:
-                await service.io.call(service.memory.finish_job, id, completed)
+    gateway = service.gateway
+    if paused:
+        gateway.request_checkpoint()
+        # Existing calls finish all their writes/receipts before memory is
+        # frozen. A model still computing, or waiting to call a tool, need not.
+        if gateway.calls_in_flight or gateway.in_flight:
+            return {"paused": True, "ready": False}
+        gateway.paused = True
+        await service.io.call(service.memory.pause, True)
+    else:
+        await service.io.call(service.memory.pause, False)
+        while gateway.deferred_completions:
+            deferred, gateway.deferred_completions = gateway.deferred_completions, []
+            for epoch, id, completed in deferred:
+                if service.match is not None and service.match["epoch"] == epoch:
+                    await service.io.call(service.memory.finish_job, id, completed)
+        gateway.paused = False
+        gateway.release_checkpoint()
         service.chat.pending.set()
-    return {"paused": paused, "ready": service.gateway.in_flight == 0}
+    return {"paused": paused, "ready": True}
 
 
 async def capture(service, id):
-    if not service.gateway.paused or service.gateway.in_flight:
+    if not service.gateway.paused or service.gateway.in_flight or service.gateway.calls_in_flight:
         raise ValueError("BARRIER_REQUIRED")
     await service.chat.reconcile()
     path = checkpoint_path(service, id)
@@ -43,6 +54,8 @@ async def capture(service, id):
 async def restore(service, payload):
     # A late finalization request must finish against the old archive before
     # paths and epoch are replaced. No writer may resume into the restored tree.
+    for task in list(service.finalization_tasks.values()):
+        await task
     async with service.guard:
         return await _restore(service, payload)
 
@@ -76,7 +89,7 @@ async def _restore(service, payload):
                 shutil.move(source, destination)
         private_directory(service.workspace)
         private_directory(service.records_dir)
-        service.memory.restore(path, payload["sha256"], payload["epoch"])
+        interrupted = service.memory.restore(path, payload["sha256"], payload["epoch"])
         service.memory.export(service.workspace)
         service.match = {"epoch": payload["epoch"]}
         write_private_json(service.match_file, service.match)
@@ -94,6 +107,8 @@ async def _restore(service, payload):
         service.thread_settings.clear()
         service.thread_totals.clear()
         service.archive_cache.clear()
+        service.finalization_tasks.clear()
+        service.finalization_errors.clear()
         service.active_id = None
         service.gateway.jobs.clear()
         service.gateway.deferred_completions.clear()
@@ -103,9 +118,18 @@ async def _restore(service, payload):
         else:
             service.gateway.failed.clear()
         write_private_json(service.state_dir / "restore.json", {**payload, "installed": True})
+        return interrupted
 
-    await service.io.call(install)
-    return {"restored": True, "epoch": payload["epoch"], "id": payload["id"], "sha256": payload["sha256"]}
+    interrupted = await service.io.call(install)
+    if interrupted:
+        service.diagnostics.emit("restored_incomplete_memory", epoch=payload["epoch"], jobs=interrupted)
+    return {
+        "restored": True,
+        "epoch": payload["epoch"],
+        "id": payload["id"],
+        "sha256": payload["sha256"],
+        "interruptedMemoryUpdates": interrupted,
+    }
 
 
 def pending_restore(service):

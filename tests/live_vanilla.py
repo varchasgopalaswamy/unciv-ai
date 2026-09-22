@@ -1,5 +1,6 @@
 """Opt-in ordinary Ancient-start match. Own services and cleanup; issue no gameplay commands."""
 
+import argparse
 import hashlib
 import json
 import os
@@ -25,6 +26,12 @@ def main() -> int:
     mode.add_argument("--checkpoint", type=Path, help="Start a fresh run from a saved host/round checkpoint")
     parser.add_argument("--source-state", type=Path, help="Original state directory providing checkpoint credentials")
     parser.add_argument("--seed", type=int, default=20260920)
+    parser.add_argument(
+        "--strategy-guide",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Give all agents optional Civ V strategy suggestions (default: off)",
+    )
     parser.add_argument(
         "--startup-timeout", type=scheduler.positive, default=180, help="Seconds allowed per service startup"
     )
@@ -68,6 +75,7 @@ def main() -> int:
                     "sourceCheckpoint": str(args.checkpoint.resolve()),
                     "model": MODEL,
                     "reasoningEffort": EFFORT,
+                    "strategyGuide": args.strategy_guide,
                     "serviceRevision": subprocess.check_output(
                         ["git", "rev-parse", "HEAD"], cwd=repository, text=True
                     ).strip(),
@@ -117,6 +125,7 @@ def main() -> int:
                     MODEL,
                     "--reasoning-effort",
                     EFFORT,
+                    *(["--strategy-guide"] if args.strategy_guide else []),
                 ],
                 civilization,
                 "AGENT-READY:",

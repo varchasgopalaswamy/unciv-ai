@@ -107,12 +107,15 @@ class ChatRuntime:
             try:
                 cursor = await self.service.io.call(self.service.memory.cursor)
                 page = await self.social("read", cursor=cursor, limit=100, waitSeconds=25)
-                if self.service.gateway.paused:
+                if self.service.gateway.paused or self.service.gateway.checkpoint_requested:
                     # Preserve the host cursor; uncommitted arrivals are fetched
                     # again after the checkpoint barrier, without waking a model.
                     await asyncio.sleep(0.1)
                     continue
-                await self.service.io.call(self.service.memory.ingest, self.epoch, page["events"], page["nextCursor"])
+                async with self.service.gateway.admit():
+                    await self.service.io.call(
+                        self.service.memory.ingest, self.epoch, page["events"], page["nextCursor"]
+                    )
                 if page["events"]:
                     await self.service.io.call(self.service.memory.export, self.service.workspace)
                 if await self.service.io.call(self.service.memory.has_wake):
@@ -129,6 +132,7 @@ class ChatRuntime:
             self.pending.clear()
             if (
                 self.service.gateway.paused
+                or self.service.gateway.checkpoint_requested
                 or self.service.gateway.run_failure
                 or not await self.service.io.call(self.service.memory.has_wake)
             ):
@@ -191,6 +195,8 @@ class ChatRuntime:
             nonlocal final, completed
             if method in HISTORY_METHODS:
                 await service.io.call(service.history.notify, id, record["threadId"], method, params)
+            if method == "service/modelStatus" and params.get("threadId") == record["threadId"]:
+                service.diagnostics.emit("model_status", activationId=id, purpose="communication", **params)
             if params.get("threadId") == record["threadId"]:
                 if method == "turn/completed":
                     turn = params.get("turn", {})
@@ -243,9 +249,9 @@ class ChatRuntime:
 
         try:
             prepared = await prepare_startup(service.gateway, job)
-            startup = startup_prompt(prepared, "communication", prompt)
+            startup = startup_prompt(prepared, "communication", prompt, strategy_guide=service.strategy_guide)
             record["startup"] = {
-                "characters": len(startup_text(prepared)),
+                "characters": len(startup_text(prepared, strategy_guide=service.strategy_guide)),
                 "coreTools": [tool["name"] for tool in prepared["coreTools"]],
                 "reads": list(prepared["reads"]),
                 **startup.metadata(),

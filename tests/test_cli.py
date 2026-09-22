@@ -49,6 +49,8 @@ def test_dispatch_preserves_options_and_exit_status(
     settings = command.startswith(("agent ", "agent-server ", "match "))
     if settings:
         args.extend(["--model", "test-model", "--reasoning-effort", "high"])
+    if command == "agent-server start":
+        args.append("--strategy-guide")
     assert cli.main(args) == 7
     run.assert_called_once()
     options = run.call_args.args[0]
@@ -57,6 +59,8 @@ def test_dispatch_preserves_options_and_exit_status(
         assert options.action == command.split()[1]
     if settings:
         assert (options.model, options.reasoning_effort) == ("test-model", "high")
+    if command == "agent-server start":
+        assert options.strategy_guide
     assert not (tmp_path / "match with spaces").exists()
 
 
@@ -97,4 +101,5 @@ def test_installed_entrypoint_and_module_work_outside_checkout(tmp_path: Path) -
             check=True,
         )
         assert "--reasoning-effort" in help_output.stdout
+        assert "--strategy-guide" in help_output.stdout and "--no-strategy-guide" in help_output.stdout
     assert list(tmp_path.iterdir()) == []

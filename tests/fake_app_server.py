@@ -278,6 +278,26 @@ async def main():
 
                 view = await call("chat_read" if communication else "player_turn", {})
                 scenario = view.get("scenario") or view.get("context", {}).get("scenario", {})
+                if scenario.get("testModelRetry"):
+                    # Match the real warning which isn't emitted as a protocol event
+                    # on the first automatic retry. Extra stderr must stay private.
+                    print("PRIVATE_PROVIDER_HEADER=" + "x" * 80000, file=sys.stderr, flush=True)
+                    print(
+                        "WARN codex_core::responses_retry: stream disconnected - retrying sampling request "
+                        f"(1/5 in 184ms)... turn_id={current['turn']} retries=1 max_retries=5 "
+                        "sampling_error=stream disconnected before completion: idle timeout waiting for websocket "
+                        "cookie=PRIVATE_COOKIE",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                    await asyncio.sleep(0.15)
+                    await report_usage()  # Usage/heartbeats do not prove recovery.
+                    await websocket.send_json(
+                        dict(
+                            method="item/agentMessage/delta",
+                            params=dict(**common, itemId="recovered", delta="Continuing."),
+                        )
+                    )
                 if scenario.get("testManyEvents") and not os.environ.get("CIV_TEST_MANY_EVENTS"):
                     await publish_history(common)
                 if scenario.get("name") == "CONCURRENT_TRADE_TEST":
@@ -291,10 +311,23 @@ async def main():
                 if "error" in result:
                     raise RuntimeError("Gateway rejected fake gameplay")
                 behavior = result["behavior"]
+                if behavior == "slow_report":
+                    assert result.get("memoryPhase"), "Scheduled handoff must return the memory-only continuation"
+                    await asyncio.sleep(4)
+                    saved = await call(
+                        "memory_update",
+                        {
+                            "changes": [
+                                {
+                                    "op": "create",
+                                    "content": {"type": "note", "text": "Reflection saved while the next player acted"},
+                                }
+                            ]
+                        },
+                    )
+                    assert saved["changes"][0]["accepted"]
             if behavior in {"hang", "after_handoff_hang"}:
                 await asyncio.Event().wait()
-            if behavior == "slow_report":
-                await asyncio.sleep(4)
             if behavior == "crash":
                 os._exit(1)
             await complete("completed")

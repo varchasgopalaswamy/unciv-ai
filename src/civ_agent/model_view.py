@@ -1,8 +1,8 @@
 """Remove audited native flavor from copies, never from player-authored wording.
 
 Match owned protocol structures, not arbitrary text/description keys or phrases.
-Raw host observations and receipts remain the audit source. See the field audit
-in docs/Model-flavor-text-audit.md.
+Raw host observations and receipts remain the audit source. See the projection
+contract and linked field audit in docs/architecture/Agent-context.md.
 """
 
 import json

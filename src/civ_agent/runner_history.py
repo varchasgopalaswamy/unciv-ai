@@ -7,6 +7,7 @@ import re
 import tempfile
 from pathlib import Path
 
+from civ_agent.model_status import status_text
 from civ_agent.terminal_output import TerminalOutput, visible_text
 from civ_agent.tls import TLSConfigError, private_directory, regular_file
 from civ_agent.turn_archive import civilization_directory_name
@@ -24,6 +25,7 @@ KINDS = {
     "lifecycle",
     "error",
     "action",
+    "model_status",
 }
 PRIVATE_FIELDS = {
     "encrypted_content",
@@ -222,7 +224,16 @@ class LiveOutput:
             text = json.dumps(data, ensure_ascii=False, separators=(",", ":"))
             self.line(label, text[:1200] + (" … (full result in history)" if len(text) > 1200 else ""))
         elif kind == "error":
-            self.error(json.dumps(data, ensure_ascii=False))
+            if data.get("willRetry"):
+                self.line("Warning", "Model retry: " + str(data.get("message", "Connection interrupted")))
+            else:
+                self.error(json.dumps(data, ensure_ascii=False))
+        elif kind == "model_status":
+            state = data.get("state")
+            label = (
+                "Error" if state == "failed" else "Warning" if state in {"waiting", "retrying", "warning"} else "Status"
+            )
+            self.line(label, status_text(data))
         elif kind == "lifecycle":
             phase = str(data.get("phase", "Status")).replace("_", " ").capitalize()
             if data.get("error"):
@@ -410,7 +421,7 @@ class EventHistory:
             if kind in {"developer_message", "user_message"}:
                 label = "Developer instructions" if kind == "developer_message" else "Instructions"
                 blocks.append(f"**{label}**\n\n" + str(data.get("text", "")))
-            elif kind in {"tool_call", "tool_result", "lifecycle", "error", "action"}:
+            elif kind in {"tool_call", "tool_result", "lifecycle", "error", "action", "model_status"}:
                 text = json.dumps(data, ensure_ascii=False, indent=2)
                 fence = "`" * max(3, max((len(match.group()) + 1 for match in re.finditer(r"`+", text)), default=3))
                 blocks.append(f"**{kind.replace('_', ' ').capitalize()}**\n\n{fence}json\n{text}\n{fence}")

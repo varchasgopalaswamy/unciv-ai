@@ -15,7 +15,6 @@ import hmac
 import json
 import os
 import signal
-import sqlite3
 import ssl
 import tempfile
 import time
@@ -25,6 +24,7 @@ from pathlib import Path
 import aiohttp
 from aiohttp import web
 from pydantic import ValidationError
+from sqlalchemy.exc import SQLAlchemyError
 
 from civ_agent import service_recovery
 from civ_agent.agent_history import HISTORY_METHODS, HistoryStore
@@ -39,6 +39,7 @@ from civ_agent.chat_runtime import ChatRuntime
 from civ_agent.civilization_state import CivilizationState, StateConflict
 from civ_agent.diagnostics import Diagnostics
 from civ_agent.host_connection import HostConnection
+from civ_agent.model_status import LogLines, ModelStatus
 from civ_agent.proposal_gateway import ProposalGateway
 from civ_agent.protocol import AgentProcess, JsonObject, Notification
 from civ_agent.schemas import StartRequest, start_error
@@ -50,6 +51,7 @@ from civ_agent.turn_archive import TurnArchive
 
 TERMINAL = {"COMPLETED", "INTERRUPTED", "FAILED"}
 HISTORY_RENDER_INTERVAL = 2.0
+MEMORY_PHASE_SECONDS = 300
 USAGE_KEYS = {
     "input_tokens": "inputTokens",
     "cached_input_tokens": "cachedInputTokens",
@@ -88,8 +90,12 @@ class CodexProcess:
         self.session: aiohttp.ClientSession | None = None
         self.socket: aiohttp.ClientWebSocketResponse | None = None
         self.reader_task: asyncio.Task[None] | None = None
+        self.runtime_task: asyncio.Task[None] | None = None
+        self.model_status = ModelStatus()
+        self.closing = False
         self.temporary: tempfile.TemporaryDirectory[str] | None = None
         self.pending: dict[int, asyncio.Future[JsonObject]] = {}
+        self.requests: dict[int, tuple[str, JsonObject]] = {}
         self.sequence = 0
 
     async def start(self, token: str, model: str | None) -> None:
@@ -100,6 +106,9 @@ class CodexProcess:
             if name.startswith("UNCIV_"):
                 del environment[name]
         environment["UNCIV_PLAYER_TOKEN"] = token
+        # Some automatic provider retries have no app-server notification. Only
+        # enable their warning target; never copy arbitrary child logs to history.
+        environment["RUST_LOG"] = "off,codex_core::responses_retry=warn"
         config = player_mcp_configuration(self.mcp_url, tool_timeout_seconds=86400)
         # Models use player tools and private memory tools. Disable general host
         # inspection/execution surfaces in these narrowly scoped jobs.
@@ -119,10 +128,11 @@ class CodexProcess:
             env=environment,
             stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
             start_new_session=True,
             preexec_fn=functools.partial(parent_death_signal, os.getpid()),
         )
+        self.runtime_task = asyncio.create_task(self._runtime())
         deadline = time.monotonic() + 15
         while not socket_path.exists():
             if self.process.returncode is not None or time.monotonic() >= deadline:
@@ -144,11 +154,32 @@ class CodexProcess:
         request_id = self.sequence
         future: asyncio.Future[JsonObject] = asyncio.get_running_loop().create_future()
         self.pending[request_id] = future
+        self.requests[request_id] = method, parameters
         try:
             await self.socket.send_json({"id": request_id, "method": method, "params": parameters})
             return await asyncio.wait_for(future, 30)
         finally:
             self.pending.pop(request_id, None)
+            self.requests.pop(request_id, None)
+
+    async def _model_notice(self, notice: JsonObject | None) -> None:
+        if notice is not None and not self.closing:
+            await self.notification("service/modelStatus", notice)
+
+    async def _runtime(self) -> None:
+        assert self.process is not None and self.process.stderr is not None
+        lines = LogLines()
+        while True:
+            try:
+                chunk = await asyncio.wait_for(self.process.stderr.read(4096), 1)
+            except TimeoutError:
+                chunk = None
+            if chunk == b"":
+                return
+            if chunk:
+                for fields in lines.feed(chunk):
+                    await self._model_notice(self.model_status.retry(fields, "stderr"))
+            await self._model_notice(self.model_status.poll())
 
     async def _read(self) -> None:
         assert self.socket is not None
@@ -171,6 +202,11 @@ class CodexProcess:
                         )
                         await self.notification("service/approvalRequired", {})
                     else:
+                        notice = self.model_status.observe(message["method"], message.get("params", {}))
+                        await self._model_notice(notice)
+                        if message["method"] in {"error", "warning"}:
+                            # The normalized notice replaces arbitrary provider text.
+                            continue
                         await self.notification(message["method"], message.get("params", {}))
                 else:
                     future = self.pending.get(message.get("id"))
@@ -178,7 +214,13 @@ class CodexProcess:
                         if "error" in message:
                             future.set_exception(ServiceError("CODEX_REQUEST_FAILED", 502))
                         else:
-                            future.set_result(message.get("result", {}))
+                            result = message.get("result", {})
+                            method, params = self.requests.get(message.get("id"), (None, {}))
+                            if method == "turn/start" and identifier(result.get("turn", {}).get("id")):
+                                # Bind before consuming following frames, which can
+                                # arrive before request()'s caller resumes.
+                                self.model_status.begin(params["threadId"], result["turn"]["id"])
+                            future.set_result(result)
         except (ValueError, OSError, aiohttp.ClientError):
             pass
         finally:
@@ -188,6 +230,7 @@ class CodexProcess:
             await self.notification("service/disconnected", {})
 
     async def close(self) -> None:
+        self.closing = True
         if self.process is not None:
             # The process group is dedicated to this activation. Wait for actual exit before
             # publishing a terminal phase, even when turn/interrupt did not answer.
@@ -201,6 +244,10 @@ class CodexProcess:
                 await self.process.wait()
             with contextlib.suppress(ProcessLookupError):
                 os.killpg(self.process.pid, signal.SIGKILL)
+        if self.runtime_task is not None:
+            self.runtime_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self.runtime_task
         if self.reader_task is not None:
             self.reader_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -228,6 +275,7 @@ class AgentService:
         model: str | None = None,
         reasoning_effort: str | None = None,
         memory_context_chars: int = 12000,
+        strategy_guide: bool = False,
         gateway_url: str = "https://localhost:8865/mcp",
         gateway_ca_file: Path | None = None,
         connection_factory=HostConnection,
@@ -237,6 +285,7 @@ class AgentService:
         if reasoning_effort is not None and not valid_setting(reasoning_effort):
             raise ServiceError("INVALID_REASONING_EFFORT")
         self.default_settings = {"model": model, "reasoningEffort": reasoning_effort}
+        self.strategy_guide = strategy_guide
         self.civilization = civilization
         self.workspace, self.state_dir = private_directory(workspace), private_directory(state_dir)
         if self.state_dir.resolve().is_relative_to(self.workspace.resolve()):
@@ -247,6 +296,8 @@ class AgentService:
         self.history = HistoryStore(self.state_dir / "history", token, auto_render=False)
         self.io = ServiceIO()
         self.archive_cache = {}
+        self.finalization_tasks: dict[str, asyncio.Task] = {}
+        self.finalization_errors: dict[str, str] = {}
         self.records_dir = private_directory(self.state_dir / "activations")
         self.lock: int | None = os.open(self.state_dir / ".lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
         try:
@@ -323,6 +374,9 @@ class AgentService:
                     previous[key] = max(previous[key], record.get("threadTotals", {}).get(key, 0))
             if record["phase"] not in TERMINAL:
                 record["phase"], record["error"] = "FAILED", "SERVICE_RESTARTED"
+                if record.get("memoryPhase"):
+                    record["memoryPhaseComplete"] = False
+                    record["frozenTurnSummary"] = self.memory.completed_summary(record["activationId"])
                 self._persist(record, refresh=True)
         received = self.results.load()
         if received is not None:
@@ -368,7 +422,7 @@ class AgentService:
             record.get("committedHandoff"),
             record.get("aborted", False),
             record.get("terminalOutcome", False),
-            self.memory.generation(),
+            None if record.get("frozenTurnSummary") else self.memory.generation(),
         )
         previous = self.archive_cache.get(record["activationId"])
         if previous is None or previous[0] != version:
@@ -490,16 +544,58 @@ class AgentService:
             if record.get("committedHandoff", payload["committedHandoff"]) != payload["committedHandoff"]:
                 raise ServiceError("FINALIZATION_CONFLICT", 409)
             record["committedHandoff"] = payload["committedHandoff"]
-            await self._save(record, refresh=True)
-            if "gameplayEndedAtMs" in record and "finalizationFinishedAtMs" not in record:
-                record["finalizationFinishedAtMs"] = int(time.time() * 1000)
-                record["finalizationElapsedMs"] = max(
-                    0, record["finalizationFinishedAtMs"] - record["gameplayEndedAtMs"]
-                )
-                await self._save(record)
+            if "finalizationFinishedAtMs" not in record:
+                await self._save(record, refresh=True)
+                finished = {**record, "finalizationFinishedAtMs": int(time.time() * 1000)}
+                if "gameplayEndedAtMs" in record:
+                    finished["finalizationElapsedMs"] = max(
+                        0, finished["finalizationFinishedAtMs"] - record["gameplayEndedAtMs"]
+                    )
+                # Publish completion only after its marker is durable. A failed
+                # save must leave this operation retryable in the same process.
+                await self._save(finished)
+                record.update(finished)
+            # A lost telemetry acknowledgement is independently retryable even
+            # when the archive and its completion marker were already saved.
             if self.chat.running:
                 await self.flush_telemetry()
             return self.status(payload["activationId"])
+
+    def begin_finalize(self, payload):
+        """Schedule idempotent finalization; HTTP never waits for file generation."""
+        if set(payload) != {"activationId", "epoch", "gameTurn", "committedHandoff"}:
+            raise ServiceError("INVALID_ARGUMENT")
+        if (
+            not identifier(payload["activationId"])
+            or not identifier(payload["epoch"])
+            or type(payload["gameTurn"]) is not int
+            or type(payload["committedHandoff"]) is not int
+        ):
+            raise ServiceError("INVALID_ARGUMENT")
+        self.status(payload["activationId"])
+        record = self.records[payload["activationId"]]
+        if (payload["epoch"], payload["gameTurn"]) != (record["epoch"], record["gameTurn"]):
+            raise ServiceError("INVALID_BINDING", 409)
+        if payload["committedHandoff"] != record["handoff"] + 1:
+            raise ServiceError("INVALID_HANDOFF", 409)
+        if record["phase"] not in TERMINAL:
+            raise ServiceError("AGENT_BUSY", 409)
+        if record.get("aborted") or record.get("terminalOutcome"):
+            raise ServiceError("FINALIZATION_CONFLICT", 409)
+        key = record["activationId"]
+        task = self.finalization_tasks.get(key)
+        if task is None or task.done():
+            self.finalization_errors.pop(key, None)
+
+            async def finish():
+                try:
+                    await self.finalize(payload)
+                except (OSError, ValueError, SQLAlchemyError, ServiceError, aiohttp.ClientError) as error:
+                    self.finalization_errors[key] = str(error)
+                    self.diagnostics.emit("finalization_failed", error=error, activationId=key)
+
+            self.finalization_tasks[key] = asyncio.create_task(finish())
+        return self.status(key)
 
     async def finish_handoff(self, payload):
         """Accept operator proof and fence this job without waiting for rendering."""
@@ -520,11 +616,18 @@ class AgentService:
                 raise ServiceError("FINALIZATION_CONFLICT", 409)
             if payload["committedHandoff"] != record["handoff"] + 1:
                 raise ServiceError("INVALID_HANDOFF", 409)
-            for job in list(self.gateway.jobs.values()):
-                if job.id == record["activationId"]:
-                    job.gameplay_fenced = True
-                    async with job.lock:
-                        job.gameplay_ended.set()
+            # Finalization workers repeat this proof after the scheduler has
+            # accepted it. Memory may now be frozen for a round checkpoint;
+            # the already-established memory phase needs no new database write.
+            if record.get("confirmedHandoff") != payload["committedHandoff"]:
+                for job in list(self.gateway.jobs.values()):
+                    if job.id == record["activationId"]:
+                        async with job.lock:
+                            await self.io.call(self.memory.begin_memory_phase, job.id)
+                            job.gameplay_fenced = True
+                            if job.handoff_at is None:
+                                job.handoff_at = time.monotonic()
+                            job.gameplay_ended.set()
             record["confirmedHandoff"] = payload["committedHandoff"]
             await self._save(record)
             return self.status(record["activationId"])
@@ -610,7 +713,19 @@ class AgentService:
             for key, value in record.items()
             if key not in {"fingerprint", "threadTotals", "baseline", "frozenTurnSummary"}
         }
-        result["backgroundFinalization"] = True
+        result["memoryTimeoutSeconds"] = MEMORY_PHASE_SECONDS
+        task = self.finalization_tasks.get(activation_id)
+        result["finalizationState"] = (
+            "RUNNING"
+            if task is not None and not task.done()
+            else "FAILED"
+            if activation_id in self.finalization_errors
+            else "COMPLETED"
+            if "finalizationFinishedAtMs" in record
+            else "PENDING"
+        )
+        if activation_id in self.finalization_errors:
+            result["finalizationError"] = self.finalization_errors[activation_id]
         job = next((job for job in self.gateway.jobs.values() if job.id == activation_id), None)
         result["negotiationWaitSeconds"] = job.waiting_seconds() if job else record.get("negotiationWaitSeconds", 0)
         return result
@@ -815,6 +930,16 @@ class AgentService:
         try:
             if method in HISTORY_METHODS:
                 await self.io.call(self.history.notify, self.active_id, record["threadId"], method, params)
+            if (
+                method == "service/modelStatus"
+                and params.get("threadId") == record["threadId"]
+                and params.get("turnId") == record.get("turnId")
+            ):
+                record["modelStatus"] = {
+                    key: value for key, value in params.items() if key not in {"threadId", "turnId"}
+                }
+                self.diagnostics.emit("model_status", activationId=self.active_id, **params)
+                await self._save(record)
         except (OSError, ValueError):
             self.failure = "HISTORY_WRITE_FAILED"
             self.stop_event.set()
@@ -937,7 +1062,7 @@ class AgentService:
             record["gameTurn"],
             memory_snapshot=payload.get("_memorySnapshot"),
         )
-        job.complete_on_handoff = True
+        job.memory_after_handoff = True
         process = self.process_factory(
             self.executable, workspace, self.gateway_url, self.gateway_ca_file, self._notification
         )
@@ -955,7 +1080,9 @@ class AgentService:
                     self.failure = self.gateway.run_failure["error"]
                 elif now - self.last_heartbeat >= payload["leaseSeconds"]:
                     self.failure = "HEARTBEAT_EXPIRED"
-                elif now - started - job.waiting_seconds() >= payload["timeoutSeconds"]:
+                elif job.handoff_at is not None and now - job.handoff_at >= MEMORY_PHASE_SECONDS:
+                    self.failure = "MEMORY_PHASE_TIMEOUT"
+                elif job.handoff_at is None and now - started - job.waiting_seconds() >= payload["timeoutSeconds"]:
                     self.failure = "ACTIVATION_TIMEOUT"
                 else:
                     continue
@@ -969,13 +1096,14 @@ class AgentService:
             await job.gameplay_ended.wait()
             try:
                 record["gameplayEndedAtMs"] = int(time.time() * 1000)
-                record["gameplayElapsedMs"] = max(0, int((time.monotonic() - started) * 1000))
-                record["frozenTurnSummary"] = await self.io.call(self.memory.summary, record["gameTurn"])
+                record["gameplayElapsedMs"] = max(0, int(((job.handoff_at or time.monotonic()) - started) * 1000))
+                record["memoryPhase"] = True
+                record["completionReason"] = "native_handoff"
                 await self._save(record)
-            except (OSError, ValueError, sqlite3.Error):
+            except (OSError, ValueError, SQLAlchemyError):
                 self.failure = "HANDOFF_RECORD_FAILED"
-            finally:
                 self.stop_event.set()
+                owner.cancel()
 
         handoff_monitor = asyncio.create_task(handoff_watcher())
 
@@ -1008,9 +1136,9 @@ class AgentService:
                 self.gameplay_permit == record["activationId"],
             )
             prepared = await prepare_startup(self.gateway, job)
-            prompt = startup_prompt(prepared, "gameplay", payload["prompt"])
+            prompt = startup_prompt(prepared, "gameplay", payload["prompt"], strategy_guide=self.strategy_guide)
             record["startup"] = {
-                "characters": len(startup_text(prepared)),
+                "characters": len(startup_text(prepared, strategy_guide=self.strategy_guide)),
                 "coreTools": [tool["name"] for tool in prepared["coreTools"]],
                 "reads": list(prepared["reads"]),
                 **prompt.metadata(),
@@ -1105,26 +1233,11 @@ class AgentService:
                 if now - self.last_heartbeat >= payload["leaseSeconds"]:
                     self.failure = "HEARTBEAT_EXPIRED"
                     break
-                if now - started - job.waiting_seconds() >= payload["timeoutSeconds"]:
-                    self.failure = "ACTIVATION_TIMEOUT"
-                    break
                 with contextlib.suppress(asyncio.TimeoutError):
                     await asyncio.wait_for(self.stop_event.wait(), 0.25)
             if job.gameplay_ended.is_set() and self.failure is None:
-                self.stopping = True
                 record["completionReason"] = "native_handoff"
-                # The END_TURN tool response remains pending at the gateway, so
-                # no further model request can start. Drain native completion
-                # and usage notifications before shutting down the process.
-                if self.completion is None:
-                    try:
-                        async with asyncio.timeout(5):
-                            await process.request("turn/interrupt", {"threadId": thread_id, "turnId": turn_id})
-                            while self.completion is None:
-                                await asyncio.sleep(0.01)
-                    except (TimeoutError, ServiceError, OSError, aiohttp.ClientError):
-                        record["accountingIncompleteReason"] = "HANDOFF_STOP_NOT_ACKNOWLEDGED"
-            elif self.completion not in {"completed", "interrupted"} and self.failure is None:
+            if self.completion not in {"completed", "interrupted"} and self.failure is None:
                 self.failure = "CODEX_TURN_FAILED"
         except asyncio.CancelledError:
             self.failure = self.failure or "INTERRUPTED"
@@ -1138,7 +1251,8 @@ class AgentService:
                 record["runFailure"] = self.health()["runFailure"]
             record["negotiationWaitSeconds"] = job.waiting_seconds()
             self.stopping = True
-            handoff_monitor.cancel()
+            if not job.gameplay_ended.is_set():
+                handoff_monitor.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await handoff_monitor
             monitor.cancel()
@@ -1160,21 +1274,13 @@ class AgentService:
                 "FAILED"
                 if self.gateway.run_failure
                 else "COMPLETED"
-                if (self.completion == "completed" or record.get("completionReason") == "native_handoff")
-                and self.failure is None
+                if self.completion == "completed" and self.failure is None
                 else "INTERRUPTED"
                 if self.failure == "INTERRUPTED" or self.completion == "interrupted"
                 else "FAILED"
             )
             finished["usageComplete"] = (
-                (
-                    self.completion == "completed"
-                    or (
-                        record.get("completionReason") == "native_handoff"
-                        and self.completion == "interrupted"
-                        and job.handoff_response_held
-                    )
-                )
+                self.completion == "completed"
                 and finished.get("usageReported", False)
                 and "accountingIncompleteReason" not in record
             )
@@ -1186,6 +1292,10 @@ class AgentService:
             # Its archive rendering is deferred to operator finalization; other
             # terminal paths retain their synchronous recovery archive flush.
             try:
+                await self.gateway.close(job, finished["phase"] == "COMPLETED")
+                if job.gameplay_ended.is_set():
+                    finished["frozenTurnSummary"] = await self.io.call(self.memory.completed_summary, job.id)
+                    finished["memoryPhaseComplete"] = finished["phase"] == "COMPLETED"
                 await self._save(finished, refresh=not job.gameplay_ended.is_set())
             except (OSError, ValueError):
                 record["error"] = "HISTORY_WRITE_FAILED"
@@ -1193,7 +1303,6 @@ class AgentService:
                     await self._save(record)
                 raise ServiceError("HISTORY_WRITE_FAILED", 503) from None
             record.update(finished)
-            await self.gateway.close(job, finished["phase"] == "COMPLETED")
             if self.chat.running:
                 with contextlib.suppress(OSError, ValueError, TimeoutError, aiohttp.ClientError):
                     await self.flush_telemetry()
@@ -1204,6 +1313,8 @@ class AgentService:
     async def close(self):
         if self.active_task is not None and not self.active_task.done():
             await self.interrupt(self.active_id)
+        for task in self.finalization_tasks.values():
+            await asyncio.shield(task)
         await self.chat.close()
         for job in list(self.gateway.jobs.values()):
             await self.gateway.close(job, False)
@@ -1264,10 +1375,10 @@ class AgentService:
                     result = {"valid": payload["civilization"] == self.civilization}
                 elif operation == "restore":
                     result = await service_recovery.restore(self, payload)
-                elif operation == "finalize":
-                    result = await self.finalize(payload)
                 elif operation == "finish_handoff":
                     result = await self.finish_handoff(payload)
+                elif operation == "begin_finalize":
+                    result = self.begin_finalize(payload)
                 elif operation == "flush_accounting":
                     result = await self.flush_accounting(payload)
                 elif operation == "finalize_terminal":

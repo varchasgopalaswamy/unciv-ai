@@ -5,8 +5,8 @@ import copy
 import hmac
 import json
 import secrets
-import sqlite3
 import time
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
@@ -14,8 +14,9 @@ from typing import Any, Protocol
 import aiohttp
 from aiohttp import web
 from pydantic import ValidationError
+from sqlalchemy.exc import SQLAlchemyError
 
-from civ_agent.action_templates import add_decision_commands
+from civ_agent.action_templates import add_decision_commands, research_change
 from civ_agent.civilization_state import CivilizationState, StaleAssumptions, StateConflict
 from civ_agent.game_commands import add_combat_commands, command_arguments, command_error, command_schema
 from civ_agent.mcp_results import RESULT_FORMAT_HEADER, STRUCTURED_RESULT_FORMAT, canonical_tool_result
@@ -52,6 +53,7 @@ from civ_agent.telemetry import JobAccounting
 from civ_agent.tool_schemas import TOOL_MODELS, TOOL_OUTPUT_MODELS
 
 BOOKKEEPING = {"requestId", "epoch", "revision", "reviewId", "socialVersion"}
+MEMORY_PHASE_TOOLS = {"memory_read", "memory_search", "memory_update", "history_read"}
 READ_TOOLS = {
     "player_capabilities",
     "player_turn",
@@ -138,9 +140,9 @@ class JobAccess:
     completed_wait: float = 0
     owns_connection: bool = False
     catalogue: list[JsonObject] | None = None
-    complete_on_handoff: bool = False
+    memory_after_handoff: bool = False
     gameplay_fenced: bool = False
-    handoff_response_held: bool = False
+    handoff_at: float | None = None
     gameplay_ended: asyncio.Event = field(default_factory=asyncio.Event)
     model_stopped: asyncio.Event = field(default_factory=asyncio.Event)
 
@@ -153,6 +155,10 @@ class ProposalGateway:
         self.memory, self.io, self.workspace = memory, io, workspace
         self.jobs: dict[str, JobAccess] = {}
         self.paused = False
+        self.checkpoint_requested = False
+        self.checkpoint_released = asyncio.Event()
+        self.checkpoint_released.set()
+        self.calls_in_flight = 0
         self.dispatch = asyncio.Lock()
         self.in_flight = 0
         self.deferred_completions = []
@@ -162,6 +168,25 @@ class ProposalGateway:
         self.failed = asyncio.Event()
         if self.run_failure:
             self.failed.set()
+
+    @asynccontextmanager
+    async def admit(self):
+        """Drain accepted calls before capture; later calls wait without model retries."""
+        while not self.checkpoint_released.is_set():
+            await self.checkpoint_released.wait()
+        self.calls_in_flight += 1
+        try:
+            yield
+        finally:
+            self.calls_in_flight -= 1
+
+    def request_checkpoint(self):
+        self.checkpoint_requested = True
+        self.checkpoint_released.clear()
+
+    def release_checkpoint(self):
+        self.checkpoint_requested = False
+        self.checkpoint_released.set()
 
     async def resume_run(self):
         if self.jobs:
@@ -193,6 +218,21 @@ class ProposalGateway:
         owns_connection: bool = False,
         memory_snapshot: JsonObject | None = None,
     ) -> JobAccess:
+        async with self.admit():
+            return await self._open(
+                id,
+                purpose,
+                epoch,
+                connection,
+                settings,
+                game_turn,
+                owns_connection=owns_connection,
+                memory_snapshot=memory_snapshot,
+            )
+
+    async def _open(
+        self, id, purpose, epoch, connection, settings, game_turn, *, owns_connection, memory_snapshot
+    ) -> JobAccess:
         if self.run_failure:
             raise StateConflict(self.run_failure["error"])
         await self.io.call(self.memory.bind, epoch)
@@ -210,22 +250,29 @@ class ProposalGateway:
         self.jobs.pop(job.token, None)
         if job.owns_connection:
             await job.connection.close()
-        if self.paused:
+        if self.paused or self.checkpoint_requested:
             self.deferred_completions.append((job.epoch, job.id, completed))
             return
         await self.io.call(self.memory.finish_job, job.id, completed)
-        await self.io.call(self.memory.export, self.workspace)
+        if job.purpose != "gameplay":
+            await self.io.call(self.memory.export, self.workspace)
 
-    def check(self, job: JobAccess):
+    def check(self, job: JobAccess, *, memory_allowed=False):
         if self.run_failure:
             raise StateConflict(self.run_failure["error"])
         if self.paused or job.closed or self.jobs.get(job.token) is not job:
             raise StateConflict("JOB_PAUSED_OR_EXPIRED")
-        if job.gameplay_fenced:
-            raise StateConflict("TURN_ENDED")
+        if job.gameplay_fenced and not memory_allowed:
+            raise StateConflict("MEMORY_ONLY: gameplay has ended; use private memory tools, then finish")
 
     async def tools(self, job: JobAccess):
-        self.check(job)
+        async with self.admit():
+            return await self._tools(job)
+
+    async def _tools(self, job: JobAccess):
+        self.check(job, memory_allowed=True)
+        if job.gameplay_fenced:
+            return copy.deepcopy([tool for tool in job.catalogue or [] if tool["name"] in MEMORY_PHASE_TOOLS])
         if job.catalogue is not None:
             return copy.deepcopy(job.catalogue)
         upstream = await job.connection.list_tools()
@@ -246,7 +293,7 @@ class ProposalGateway:
                         "at your stateId; read player_turn for a missing/mismatched base.\n"
                         "- full: replace the overview. unavailable: keep the successful receipt and read player_turn; "
                         "refresh failure never undoes an action. Never repeat an applied action to refresh state.\n"
-                        "- turn_ended: stop immediately without further calls.\n"
+                        "- turn_ended: gameplay has ended; follow memoryPhase if supplied, otherwise stop.\n"
                         "native.availableDemandsToSend lists actions YOU may send, not requests received or promises. "
                         "Received native messages are in alerts.nativeDiplomacy with sender, event and response options. "
                         "Inspect new alerts and decisions. Reread relevant invalidatedDetails only when needed for "
@@ -265,6 +312,12 @@ class ProposalGateway:
                         " Prefer names=[candidate names] from the overview for detailed relevant choices and copyable "
                         "commands; omit names for broader planning. Copy command and add intent."
                     )
+                    if tool["name"] == "research_details":
+                        entry["description"] += (
+                            " SET_RESEARCH_QUEUE replaces current research and the entire queue. "
+                            "command starts the offered path now; appendToQueue preserves all queued technologies. "
+                            "Inspect researchQueue and the command label before choosing. Stored science is retained."
+                        )
                 elif tool["name"] == "mission_preview":
                     entry["description"] += (
                         " Read unit_details sections=[air], then copy this preview's command and add intent. "
@@ -301,7 +354,7 @@ class ProposalGateway:
                     "ACKNOWLEDGE_ALERT uses target, not handle. Copy the overview's alert/endTurn command. "
                     "FOUND_CITY needs unit_details sections=[settlement]; SET_UNIT_DESTINATION needs a matching "
                     "movement_preview(target,destination), whose command uses engine pathfinding. "
-                    "Complete useful memory updates before END_TURN."
+                    "Batch useful memory updates after END_TURN when memoryPhase is supplied."
                 )
                 tools.append(entry)
 
@@ -427,6 +480,12 @@ class ProposalGateway:
     async def call(
         self, job: JobAccess, name: str, arguments: JsonObject, call_id: str, *, source: str = "tool"
     ) -> JsonObject:
+        async with self.admit():
+            return await self._admitted_call(job, name, arguments, call_id, source=source)
+
+    async def _admitted_call(
+        self, job: JobAccess, name: str, arguments: JsonObject, call_id: str, *, source: str
+    ) -> JsonObject:
         accounting = self.accounting
         counted = (
             await self.io.call(accounting.begin_call, job.id, name, arguments, source=source) if accounting else None
@@ -452,17 +511,15 @@ class ProposalGateway:
                 if kind != "END_TURN" and actions and actions[-1].get("kind") == kind:
                     description = actions[-1].get("description") or description
                 await self.io.call(self.history.action, job.id, call_id, kind, description)
-            ended = job.complete_on_handoff and result.get("stateUpdate", {}).get("kind") == "turn_ended"
+            ended = job.memory_after_handoff and result.get("stateUpdate", {}).get("kind") == "turn_ended"
             if ended:
                 job.gameplay_fenced = True
-                if self.history is not None:
-                    await self.io.call(self.history.handoff_response, job.id, call_id, name, arguments, result)
             return public_result(result)
         except asyncio.CancelledError:
             self.forget_observation(job)
             await self.sync_failure()
             raise
-        except (OSError, ValueError, KeyError, TypeError, sqlite3.Error):
+        except (OSError, ValueError, KeyError, TypeError, SQLAlchemyError):
             outcome = "error"
             # A memory batch may have durably failed before its export/response
             # failed too. Its terminal stop must still reach the lifecycle owner.
@@ -474,45 +531,64 @@ class ProposalGateway:
             if ended:
                 # The native receipt, tool response and accounting are durable.
                 # Fence further calls before notifying the lifecycle controller.
+                if job.handoff_at is None:
+                    job.handoff_at = time.monotonic()
                 job.gameplay_ended.set()
 
     async def _call_once(
         self, job: JobAccess, name: str, arguments: JsonObject, call_id: str
     ) -> tuple[JsonObject, bool]:
-        self.check(job)
+        self.check(job, memory_allowed=True)
         if not isinstance(name, str) or not isinstance(arguments, dict):
             raise ValueError("INVALID_ARGUMENT")
         async with job.lock:
-            self.check(job)
+            self.check(job, memory_allowed=True)
             previous = await self.io.call(self.memory.call, job.id, call_id, name, arguments)
             if previous is not None:
+                if "memoryPhase" in previous:
+                    await self.io.call(self.memory.begin_memory_phase, job.id)
+                    job.gameplay_fenced = True
                 return previous, True
             # The action receipt may be durable even if a barrier interrupted
             # saving the MCP response. Replay it without needing a new observation.
             receipt = await self.io.call(self.memory.call_receipt, job.id, call_id)
+            self.check(
+                job,
+                memory_allowed=name in MEMORY_PHASE_TOOLS
+                or (receipt is not None and name == "player_command" and arguments.get("kind") == "END_TURN"),
+            )
             if receipt is not None:
-                result = await self.settle_gameplay(job, name, public_result(receipt))
-                result = await self.update_after_action(job, name, arguments, call_id, result)
-                await self.io.call(self.memory.call, job.id, call_id, name, arguments, result)
-                return result, True
-            try:
-                result = await self._call(job, name, arguments, call_id)
-            except StaleAssumptions as conflict:
-                # Nothing was queued or sent. Cache the rejection too: replaying
-                # this call after a read must never execute an old decision.
-                result = {
-                    "error": "STALE_ASSUMPTIONS",
-                    "applied": False,
-                    "recoverable": True,
-                    "changedRecords": conflict.keys,
-                    "conflicts": conflict.details,
-                    "recovery": await self.io.call(self.memory.conflict_recovery, conflict.keys, name, arguments),
-                }
+                result = public_result(receipt)
+            else:
+                try:
+                    result = await self._call(job, name, arguments, call_id)
+                except StaleAssumptions as conflict:
+                    # Nothing was queued or sent. Cache the rejection too: replaying
+                    # this call after a read must never execute an old decision.
+                    result = {
+                        "error": "STALE_ASSUMPTIONS",
+                        "applied": False,
+                        "recoverable": True,
+                        "changedRecords": conflict.keys,
+                        "conflicts": conflict.details,
+                        "recovery": await self.io.call(self.memory.conflict_recovery, conflict.keys, name, arguments),
+                    }
             result = await self.settle_gameplay(job, name, result)
             result = await self.update_after_action(job, name, arguments, call_id, result)
+            if job.memory_after_handoff and result.get("stateUpdate", {}).get("kind") == "turn_ended":
+                result = {
+                    **result,
+                    "memoryPhase": {
+                        "allowedTools": sorted(MEMORY_PHASE_TOOLS),
+                        "instruction": "The next player may act now. Use this conversation's evidence to batch useful private memory changes, then finish. Do not fetch game state or send messages. No final narrative is needed.",
+                    },
+                }
             result = await self.io.call(self.memory.call, job.id, call_id, name, arguments, result)
             assert result is not None
-            return result, False
+            if "memoryPhase" in result:
+                await self.io.call(self.memory.begin_memory_phase, job.id)
+                job.gameplay_fenced = True
+            return result, receipt is not None
 
     @staticmethod
     def forget_observation(job: JobAccess) -> None:
@@ -639,8 +715,10 @@ class ProposalGateway:
             if value.get("phase") == "WAITING":
                 self.forget_observation(job)
                 return {**result, "stateUpdate": {"kind": "turn_ended"}}
+            if name == "player_command" and arguments.get("kind") == "SET_RESEARCH_QUEUE":
+                result = {**result, "researchChange": research_change(job.observation, value)}
             return await self.deliver_turn(job, value, name, arguments, call_id, result)
-        except (OSError, ValueError, KeyError, TypeError, sqlite3.Error) as error:
+        except (OSError, ValueError, KeyError, TypeError, SQLAlchemyError) as error:
             return await self.failed_update(job, call_id, result, error)
 
     async def failed_update(self, job, call_id, result, error):
@@ -719,9 +797,11 @@ class ProposalGateway:
         }
 
     async def _call(self, job: JobAccess, name: str, arguments: JsonObject, call_id: str) -> JsonObject:
-        self.check(job)
+        self.check(job, memory_allowed=name in MEMORY_PHASE_TOOLS)
         arguments = copy.deepcopy(arguments)
         if not job.verified:
+            if job.gameplay_fenced:
+                raise StateConflict("MEMORY_ONLY: no prepared job identity")
             identity = await job.connection.tool("player_communication", {"op": "state", "epoch": job.epoch})
             if identity.get("civilization") != self.memory.civilization or identity.get("epoch") != job.epoch:
                 raise StateConflict("PLAYER_CREDENTIAL_MISMATCH")
@@ -755,8 +835,10 @@ class ProposalGateway:
         if intent is not None:
             intent = validate(Intent, intent).model_dump()
         if name == "history_read":
-            return public_result(await self.io.call(self.memory.history, arguments["turn"], arguments.get("offset", 0)))
-        self.check(job)
+            return public_result(
+                await self.io.call(self.memory.history, arguments["turn"], arguments.get("offset", 0), job=job.id)
+            )
+        self.check(job, memory_allowed=name in MEMORY_PHASE_TOOLS)
         if name in DETAIL_MODELS:
             if job.observation is None:
                 return self.reobserve_after_negotiation("Read player_turn before requesting details.")
@@ -876,7 +958,6 @@ class ProposalGateway:
             accepted = [change["id"] for change in result["changes"] if change["accepted"]]
             refreshed = await self.io.call(self.memory.refresh_memory, job.id, accepted, include_retired=True)
             job.memory["records"].update(refreshed)
-            await self.io.call(self.memory.export, self.workspace)
             return MemoryUpdateResult.model_validate(result).model_dump(exclude_unset=True)
         if name == "player_command":
             if job.purpose != "gameplay":
@@ -1031,7 +1112,9 @@ class ProposalGateway:
         if "id" not in body:
             return web.Response(status=202)
         try:
-            self.check(job)
+            while not self.checkpoint_released.is_set():
+                await self.checkpoint_released.wait()
+            self.check(job, memory_allowed=True)
             if method == "initialize":
                 result = {
                     "protocolVersion": "2025-06-18",
@@ -1046,12 +1129,6 @@ class ProposalGateway:
                 parameters = body.get("params", {})
                 value = await self.call(job, parameters["name"], parameters.get("arguments", {}), str(body["id"]))
                 result = tool_result(value)
-                if job.complete_on_handoff and value.get("stateUpdate", {}).get("kind") == "turn_ended":
-                    # Keep this tool response pending until Codex has stopped,
-                    # so it cannot start a paid summary-only model request. The
-                    # service retains the receipt even if the client disconnects.
-                    job.handoff_response_held = True
-                    await job.model_stopped.wait()
             else:
                 return web.json_response(
                     {"jsonrpc": "2.0", "id": body["id"], "error": {"code": -32601, "message": "Method not available"}}

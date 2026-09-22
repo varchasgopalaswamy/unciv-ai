@@ -38,6 +38,7 @@ data class ResearchDetails(
     val current: String?,
     val freeTechnologies: Int,
     val technologies: List<ResearchDetail>,
+    val researchQueue: List<String> = emptyList(),
 )
 
 @Serializable
@@ -96,6 +97,7 @@ internal fun observeResearchDetails(player: Civilization, turn: PlayerTurnSnapsh
                 )
             },
         ),
+        researchQueue = frozenDetails(player.tech.techsToResearch),
     )
 }
 

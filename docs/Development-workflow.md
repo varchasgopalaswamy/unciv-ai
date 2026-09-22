@@ -4,6 +4,10 @@ This repository is private and has one maintainer. It contains the host, MCP ada
 
 Read the [repository instructions](../AGENTS.md) before making changes. Unciv commit messages and public contribution text must never reveal this repository's existence, name, or purpose. Describe each engine change accurately in terms of its reusable behavior and tests. Keep private coordination notes here.
 
+Use the [documentation index](README.md) to find current guides and references,
+and the [roadmap](Roadmap.md) to resume unfinished work. Completed task plans
+and dated results belong in the [archive](archive/README.md).
+
 ## Checkouts and dependency
 
 ```text
@@ -30,7 +34,11 @@ Use JDK 21 or newer and the checked-in Gradle wrapper. The included Unciv build 
 
 `engineInfo` prints the selected checkout, commit and asset directory. The build imports the selected engine's dependency catalog and consumes `:core` through a [Gradle composite build](https://docs.gradle.org/current/userguide/composite_builds.html). Test and Java execution tasks use `android/assets` from that same checkout. The Gradle wrapper is copied from the initial engine revision; review wrapper compatibility when updating the dependency.
 
-The initial smoke test loads Vanilla and Gods & Kings rules with mods disabled and no graphics backend. The [headless runtime](Headless-runtime.md) adds saved-game loading and shutdown, with separate-process lifecycle scenarios for both rulesets. The [Kotlin player-summary prototype](Player-summary-prototype.md) adds the first player-bound observation surface, and the [city-rename prototype](City-rename-prototype.md) adds serialized command execution and retry receipts. The recorded engine also supplies [free great-person selection](Free-great-person-selection.md), with manual before/after UI fixtures; the [Kotlin choice prototype](Free-great-person-prototype.md) exposes discovery and validated selection through the player session. The [MCP prototype](MCP-prototype.md) exposes these methods to independently authenticated local clients. Remaining player surfaces are tracked in the [headless plan](Headless-player-agent-path.md).
+The headless runtime loads the bundled Vanilla and Gods & Kings rules without a
+graphics backend. The [player protocol](reference/Player-api-protocol.md) describes
+authenticated observations, commands, receipts and recovery. Use the
+[coverage ledger](reference/Player-api-coverage.md) for supported and outstanding
+player surfaces, and the [roadmap](Roadmap.md) for current acceptance work.
 
 ## Kotlin host libraries
 
@@ -38,7 +46,7 @@ The host uses Clikt for command-line parsing, Networknt for explicit JSON Schema
 validation, and kotlinx.serialization for typed requests and checkpoint records.
 Ktor and the official MCP SDK serve HTTPS. Coroutine notifications wake
 communication subscriptions after committed changes. See the
-[Kotlin architecture](Kotlin-architecture.md) for request validation, subscription
+[Kotlin architecture](architecture/Kotlin-architecture.md) for request validation, subscription
 lifetimes, and the transport schema layout.
 
 ## Python package and checks
@@ -53,9 +61,10 @@ runtime dependencies, and Ruff, Pyrefly, and pytest configuration live in
 `pyproject.toml`. `uv.lock` records the resolved runtime and development dependencies.
 
 Runtime libraries include aiohttp for the service and Codex socket connection,
-Pydantic for owned boundary schemas, the official MCP SDK with httpx2 for host
+Pydantic for owned boundary schemas, SQLAlchemy Core for SQLite memory and
+accounting queries, the official MCP SDK with httpx2 for host
 clients, and cryptography for certificate and keystore provisioning. See the
-[Python architecture diagrams](Python-architecture.md) for their responsibilities
+[Python architecture diagrams](architecture/Python-architecture.md) for their responsibilities
 and connection lifetimes. TLS provisioning does not require an OpenSSL executable;
 some independent test fixtures still use it.
 
@@ -82,7 +91,7 @@ prek hooks check Python formatting, lint, and types when relevant files change.
 Host commands discover the JVM checkout from the working directory or editable
 source tree. An independently installed package can select it with `--repo-dir`
 or `CIV_AGENT_REPO`. Agent services need only the Python package and their runtime
-tools, credentials, and certificates. See [local commands](Local-launchers.md).
+tools, credentials, and certificates. See [local commands](guides/Local-launchers.md).
 
 ## Work on the engine locally
 

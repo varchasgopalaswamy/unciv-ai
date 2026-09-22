@@ -293,3 +293,48 @@ class ServiceHistoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("COMPLETED", json.loads(record_path.read_text())["phase"])
         self.assertNotIn("The final report is durable.", (self.root / "workspace/turn_0/summary.md").read_text())
         self.assertTrue((self.root / "workspace/turn_0/summary.json").exists())
+
+    async def test_async_finalization_keeps_http_responsive_beyond_old_timeout(self):
+        await self.start()
+        await self.notify("turn/completed", turn={"id": "turn-1", "status": "completed"})
+        assert self.service.active_task is not None
+        await self.service.active_task
+        entered, release = threading.Event(), threading.Event()
+        export = self.service._export
+
+        def stalled(record):
+            entered.set()
+            if not release.wait(10):
+                raise TimeoutError("Test did not release finalization")
+            return export(record)
+
+        payload = {
+            "op": "begin_finalize",
+            "activationId": "activation",
+            "epoch": "epoch",
+            "gameTurn": 0,
+            "committedHandoff": 1,
+        }
+        with patch.object(self.service, "_export", side_effect=stalled) as exports:
+            try:
+                async with self.client.post(
+                    self.url, headers={"Authorization": "Bearer " + "S" * 43}, json=payload
+                ) as response:
+                    self.assertEqual(response.status, 200)
+                    self.assertEqual((await response.json())["status"]["finalizationState"], "RUNNING")
+                self.assertTrue(await asyncio.to_thread(entered.wait, 2))
+                # Repeating a request whose reply was lost must not create another writer.
+                self.assertEqual(
+                    self.service.begin_finalize({k: v for k, v in payload.items() if k != "op"})["finalizationState"],
+                    "RUNNING",
+                )
+                for _ in range(6):
+                    self.assertEqual((await self.control("status"))["finalizationState"], "RUNNING")
+                    await asyncio.sleep(0.9)
+            finally:
+                release.set()
+            await self.service.finalization_tasks["activation"]
+            self.assertEqual(exports.call_count, 1)
+        self.assertEqual(self.service.status()["finalizationState"], "COMPLETED")
+        await self.service.finalize({k: v for k, v in payload.items() if k != "op"})
+        self.assertEqual(len(self.factory.instances), 1)

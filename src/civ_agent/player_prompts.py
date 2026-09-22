@@ -12,7 +12,9 @@ GAMEPLAY_WORKFLOW = (
     "victory.ballot/votingResults. Check tacticalReview even without idle units: losses, hostiles, "
     "exposed civilians and city bombardments.\n"
     "2. Review stalled progress and flagged goals, or explain deferral. Keep separate defense, expansion "
-    "and economy plans with measurable successCriteria and reviewAfterTurn.\n"
+    "and economy plans with measurable successCriteria and reviewAfterTurn. Reconsider them while playing, "
+    "then batch durable revisions after handoff. Prefer a current intent.reason for actions; do not revise "
+    "a stored plan merely to authorize an action.\n"
     "3. Inspect focused unit_details/city_details, named research_details/construction_details and map_region "
     "for decisions you are making. Leave ongoing production unless circumstances warrant reconsidering it. "
     "Reuse valid inspections; refresh needed invalidated details. Read popups, diplomatic terms and confirmations. "
@@ -25,18 +27,24 @@ GAMEPLAY_WORKFLOW = (
     "so previewing several units before moving the first usually forces another preview. Discover preview "
     "tools when a chosen action needs them.\n"
     "4. Read turnReview before END_TURN; address mobile units and tactical concerns or explain intentional "
-    "deferral in top-level deferReason. Save useful memory changes first; receipts preserve routine facts. "
+    "deferral in top-level deferReason. Receipts preserve routine facts. "
     "End when legal, including while awaiting an offer response.\n\n"
     "STALE_REVISION applied nothing: refresh, reconsider, retry once if legal; stop on repetition. "
-    "Stop after handoff, unsupported decisions or a paused/finished game."
+    "Stop gameplay after handoff; stop all work on unsupported decisions or a paused/finished game."
 )
 
 GAMEPLAY_INSTRUCTIONS = GAMEPLAY_WORKFLOW + (
     "\n\n"
     "Use history_read only when earlier detailed commands or receipts are needed. "
     "The service writes all turn files. Do not create or edit them. "
-    "After END_TURN succeeds, make no further tool calls. The service ends the model job at the handoff "
-    "and generates summary.json and summary.md from receipts and typed memory; no final prose is needed."
+    "After END_TURN succeeds with memoryPhase, continue this conversation using only memory_read, "
+    "memory_search, memory_update and history_read. Other players can play while you finish. "
+    "Batch useful changed plans, beliefs, notes and retirements in memory_update; skip unchanged records. "
+    "Use the observations and results already in context. Memory reads of game evidence return only "
+    "previously delivered evidence; no new game reads, gameplay or diplomacy are permitted. "
+    "If another job changed a private record, read that record before reconciling your edit; retain "
+    "review flags for evidence newer than this turn. Finish after saving the useful changes. "
+    "The service generates summary.json and summary.md; no final narrative is needed."
 )
 
 COMMUNICATION_INSTRUCTIONS = (

@@ -58,7 +58,7 @@ class Agent:
                 "civilization": self.civilization,
                 "phase": "COMPLETED",
                 "threadId": key,
-                "backgroundFinalization": True,
+                "memoryTimeoutSeconds": 300,
                 "usage": {"input_tokens": 10},
             }
             self.operator.handoff += 1
@@ -66,13 +66,15 @@ class Agent:
         if operation == "finish_handoff":
             assert fields["committedHandoff"] == row["handoff"] + 1
             row["confirmedHandoff"] = fields["committedHandoff"]
-        if operation == "finalize":
+        if operation == "begin_finalize":
             self.entered.set()
-            assert self.release.wait(5), "test did not release finalization"
+            row["finalizationState"] = "RUNNING"
+        if row.get("finalizationState") == "RUNNING" and self.release.is_set():
             if self.fail:
-                raise RunnerError("archive temporarily unavailable")
-            self.proofs.append(fields["committedHandoff"])
-            row["committedHandoff"] = fields["committedHandoff"]
+                row.update(finalizationState="FAILED", finalizationError="archive temporarily unavailable")
+            else:
+                self.proofs.append(row["confirmedHandoff"])
+                row.update(finalizationState="COMPLETED", committedHandoff=row["confirmedHandoff"])
         return copy.deepcopy(row)
 
     def events(self, activation, cursor):
@@ -173,6 +175,39 @@ def test_restart_retries_original_proof_after_later_handoffs(tmp_path):
         resumed.finalizer.shutdown(wait=True)
 
 
+def test_pause_interrupts_memory_while_waiting_for_finalization(tmp_path):
+    scheduler, _, published = make_scheduler(tmp_path)
+    rome = scheduler.agents["Rome"]
+    call = rome.call
+    interrupted = []
+
+    def memory_call(operation, **fields):
+        if operation == "interrupt":
+            interrupted.append(fields["activationId"])
+            rome.rows[fields["activationId"]]["phase"] = "INTERRUPTED"
+            rome.release.set()
+        row = call(operation, **fields)
+        if operation == "start":
+            row["phase"] = "RUNNING"
+            rome.rows[fields["activationId"]]["phase"] = "RUNNING"
+        return row
+
+    rome.call = memory_call
+    try:
+        assert scheduler.invoke(scheduler.operator.status())
+        scheduler.store.requested = lambda: "pause"
+        scheduler.collect_finalizations(wait=True)
+        assert len(interrupted) == 1
+        assert len(published) == 1
+        assert scheduler.state["pendingFinalizations"] == []
+        assert not scheduler.invoke(scheduler.operator.status())
+        assert scheduler.state["status"] == "paused"
+        assert scheduler.operator.activated == ["Rome"]
+    finally:
+        rome.release.set()
+        scheduler.finalizer.shutdown(wait=True)
+
+
 def test_restored_epoch_cannot_publish_a_pending_old_archive(tmp_path):
     scheduler, _, _ = make_scheduler(tmp_path)
     scheduler.state["pendingFinalizations"] = [{"epoch": "old", "confirmedHandoff": 1, "activationId": "abandoned"}]
@@ -184,3 +219,58 @@ def test_restored_epoch_cannot_publish_a_pending_old_archive(tmp_path):
         assert not scheduler.finalizations
     finally:
         scheduler.finalizer.shutdown(wait=True)
+
+
+def test_memory_heartbeat_and_lost_async_finalization_ack(monkeypatch):
+    from civ_agent import turn_finalization
+    from civ_agent.scheduler import OperatorError
+
+    clock = SimpleNamespace(now=0)
+    monkeypatch.setattr(
+        turn_finalization,
+        "time",
+        SimpleNamespace(
+            monotonic=lambda: clock.now,
+            sleep=lambda seconds: setattr(clock, "now", clock.now + 1),
+        ),
+    )
+    flight = {"activationId": "job", "epoch": "epoch", "gameTurn": 35, "handoff": 106, "confirmedHandoff": 107}
+    calls = []
+    proofs = []
+
+    class MemoryAgent:
+        TERMINAL = Agent.TERMINAL
+
+        def call(self, operation, **fields):
+            calls.append(operation)
+            row = {
+                **flight,
+                "phase": "RUNNING" if clock.now < 6 else "COMPLETED",
+                "memoryTimeoutSeconds": 300,
+                "committedHandoff": 107,
+                "finalizationState": "COMPLETED" if clock.now >= 10 else "RUNNING",
+            }
+            if operation == "begin_finalize":
+                proofs.append(fields)
+                if len(proofs) == 1:
+                    raise OperatorError("reply lost", "TRANSPORT_TIMEOUT")
+            return row
+
+        def events(self, activation, cursor):
+            return {"available": True, "events": [], "nextCursor": cursor, "hasMore": False}
+
+        def archive(self, activation):
+            return {"gameTurn": 35}
+
+    published = []
+    history = SimpleNamespace(
+        cursor=0,
+        append=lambda events: None,
+        output=SimpleNamespace(finish_line=lambda: None),
+        publish_archive=published.append,
+    )
+    assert turn_finalization.finish_turn(MemoryAgent(), flight, history)["committedHandoff"] == 107
+    assert "heartbeat" in calls
+    assert proofs[0] == proofs[1]
+    assert "start" not in calls and "finalize" not in calls
+    assert published == [{"gameTurn": 35}]

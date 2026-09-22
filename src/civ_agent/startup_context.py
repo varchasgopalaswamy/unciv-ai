@@ -6,6 +6,7 @@ from dataclasses import dataclass
 
 from civ_agent.player_prompts import job_instructions
 from civ_agent.protocol import JsonObject
+from civ_agent.strategy_guide import strategy_reference
 
 CORE_TOOLS = {
     "gameplay": ("player_turn", "player_command", "memory_update", "memory_read", "unit_details", "map_region"),
@@ -93,6 +94,7 @@ def startup_instructions(prepared: JsonObject) -> str:
 class StartupPrompt:
     instructions: str
     user: str
+    strategy_reference: str = ""
 
     def metadata(self):
         return {
@@ -101,10 +103,17 @@ class StartupPrompt:
             "instructionCharacters": len(self.instructions),
             "userCharacters": len(self.user),
             "totalPromptCharacters": len(self.instructions) + len(self.user),
+            "strategyGuide": {
+                "enabled": bool(self.strategy_reference),
+                "characters": len(self.strategy_reference),
+                "sha256": hashlib.sha256(self.strategy_reference.encode()).hexdigest()
+                if self.strategy_reference
+                else None,
+            },
         }
 
 
-def startup_prompt(prepared: JsonObject, purpose: str, dynamic: str) -> StartupPrompt:
+def startup_prompt(prepared: JsonObject, purpose: str, dynamic: str, *, strategy_guide: bool = False) -> StartupPrompt:
     """Give stable guidance a separate message; all game data stays at user level.
 
     Always use freshly authorized reads. Stable serialization enables prefix
@@ -122,16 +131,22 @@ def startup_prompt(prepared: JsonObject, purpose: str, dynamic: str) -> StartupP
     if prepared.get("memoryContext"):
         sections.append(prepared["memoryContext"])
     sections.append("Prepared player-visible reads:\n" + encoded(reads))
+    reference = strategy_reference() if strategy_guide else ""
+    instructions = job_instructions(purpose)
+    if reference:
+        instructions += "\n\n" + reference
     return StartupPrompt(
-        instructions=job_instructions(purpose) + "\n\n" + startup_instructions(prepared),
+        instructions=instructions + "\n\n" + startup_instructions(prepared),
         user="\n\n".join(sections),
+        strategy_reference=reference,
     )
 
 
-def startup_text(prepared: JsonObject) -> str:
+def startup_text(prepared: JsonObject, *, strategy_guide: bool = False) -> str:
     """Plain-text variant for interactive clients, with definitions before data."""
     return (
-        startup_instructions(prepared)
+        (strategy_reference() + "\n\n" if strategy_guide else "")
+        + startup_instructions(prepared)
         + "\n\n"
         + prepared.get("memoryContext", "")
         + "\n\nPrepared player-visible reads:\n"

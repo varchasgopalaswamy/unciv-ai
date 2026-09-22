@@ -4,6 +4,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 from urllib.parse import unquote
 
 from civ_agent.protocol import JsonObject
@@ -82,6 +83,16 @@ class TurnArchiveTests(unittest.TestCase):
                 TurnArchive(self.trusted, self.workspace, civilization, epoch)
         with self.assertRaises(TurnArchiveError):
             TurnArchive(self.workspace / "private", self.workspace, "Rome", "epoch")
+
+    def test_repeated_renders_do_not_reread_unchanged_earlier_transcripts(self):
+        first = self.events(*self.command(game_turn=0))
+        self.archive.update(0, "first", first, phase="COMPLETED", handoff=1)
+        second = self.events(*self.command(request_id="second", game_turn=1))
+        with patch.object(self.archive, "_read_events", wraps=self.archive._read_events) as reads:
+            self.archive.update(1, "second", second, phase="COMPLETED", handoff=2)
+            self.archive.update(1, "second", second, phase="COMPLETED", handoff=2)
+        earlier = [call for call in reads.call_args_list if call.args[0].name == "turn_0"]
+        self.assertEqual(len(earlier), 1)
 
     def test_artifacts_separate_evidence_from_claims_and_keep_full_commands(self):
         events = self.events(*self.command(), self.report("I explored the entire continent and founded six cities."))

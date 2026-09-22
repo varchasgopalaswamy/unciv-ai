@@ -2,8 +2,11 @@
 
 import json
 
+from sqlalchemy import and_, bindparam, select
+
+from civ_agent import memory_schema as tables
 from civ_agent.memory_records import MEMORY_TYPES, TurnSummary, record_text
-from civ_agent.memory_store import REACHABLE, RecordStore
+from civ_agent.memory_store import RecordStore
 
 
 def action_text(command, receipt, settlement=None):
@@ -38,14 +41,22 @@ def action_record(key, decision):
 
 
 def build_summary(db, *, turn=None, job=None):
-    where, args = ("j.id=?", (job,)) if job else ("j.game_turn=? AND j.purpose='gameplay'", (turn,))
+    where = (
+        tables.jobs.c.id == job
+        if job
+        else and_(tables.jobs.c.game_turn == bindparam("summary_turn", turn), tables.jobs.c.purpose == "gameplay")
+    )
     records = RecordStore(db).all()
-    rows = db.execute(
-        "SELECT o.* FROM outbox o JOIN outgoing a ON o.id=a.id JOIN jobs j ON j.id=o.job WHERE "
-        + where
-        + " ORDER BY o.rowid",
-        args,
-    ).fetchall()
+    rows = (
+        db.execute(
+            select(tables.outbox)
+            .select_from(tables.live_requests.join(tables.jobs, tables.jobs.c.id == tables.outbox.c.job))
+            .where(where)
+            .order_by(tables.request_order)
+        )
+        .mappings()
+        .all()
+    )
     actions, unresolved = [], []
     for row in rows:
         decision = records[row["decision"]]["body"]
@@ -53,13 +64,18 @@ def build_summary(db, *, turn=None, job=None):
         actions.append(entry)
         if decision["outcome"] in {"pending", "uncertain", "rejected"}:
             unresolved.append(entry["action"] + ": " + decision["outcome"])
-    revisions = db.execute(
-        REACHABLE
-        + "SELECT r.* FROM records r JOIN reachable a USING(key,version) JOIN jobs j ON j.id=r.job WHERE "
-        + where
-        + " ORDER BY r.rowid",
-        args,
-    ).fetchall()
+    revisions = (
+        db.execute(
+            select(tables.records)
+            .select_from(
+                tables.record_versions(tables.reachable).join(tables.jobs, tables.jobs.c.id == tables.records.c.job)
+            )
+            .where(where)
+            .order_by(tables.record_order)
+        )
+        .mappings()
+        .all()
+    )
     changes, observations = {}, {}
     for row in revisions:
         body = json.loads(row["body"])
@@ -79,9 +95,14 @@ def build_summary(db, *, turn=None, job=None):
         ):
             observations[row["key"]] = {"id": row["key"], "type": "observation", "body": body}
     jobs = db.execute(
-        "SELECT j.snapshot FROM jobs j JOIN live_jobs a USING(id) WHERE " + where + " ORDER BY j.rowid", args
-    ).fetchall()
+        select(tables.jobs.c.snapshot).select_from(tables.active_jobs).where(where).order_by(tables.job_order)
+    ).all()
     if jobs:
+        if any(json.loads(row[0]).get("memoryPhaseInterrupted") for row in jobs):
+            unresolved.append(
+                "Post-turn memory update was interrupted by checkpoint restoration; "
+                "only memory committed at capture was restored"
+            )
         snapshot = json.loads(jobs[-1][0])
         for record in snapshot.get("closingRecords", snapshot["records"]).values():
             body = record["body"]

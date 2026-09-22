@@ -9,9 +9,14 @@ from contextlib import closing
 from pathlib import Path
 
 from civ_agent.commands.verify_trade_cycle import clauses
-from civ_agent.memory_store import REACHABLE
 from civ_agent.protocol import JsonObject
 from civ_agent.tls import write_private_json
+
+# Independent read-only audit of the persisted revision graph.
+REACHABLE = """WITH RECURSIVE reachable(key,version) AS (
+    SELECT key,version FROM heads UNION
+    SELECT r.key,r.parent FROM records r JOIN reachable a USING(key,version) WHERE r.parent IS NOT NULL
+) """
 
 MAP_NAME = "Agreement Lifecycle"
 PLAYERS = ("Rome", "Greece", "France")

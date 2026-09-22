@@ -22,7 +22,14 @@ class Command(BoundaryModel):
 
 class ResearchQueue(Command):
     kind: Literal["SET_RESEARCH_QUEUE"]
-    queue: Annotated[list[Name], Field(min_length=1, max_length=1024)]
+    queue: Annotated[
+        list[Name],
+        Field(
+            min_length=1,
+            max_length=1024,
+            description="Replace the entire research queue, including current research, in prerequisite order. The first technology becomes active. To finish Mining before Calendar, send ['Mining', 'Calendar']; ['Calendar'] switches immediately. Stored science is retained.",
+        ),
+    ]
 
 
 class Choice(Command):

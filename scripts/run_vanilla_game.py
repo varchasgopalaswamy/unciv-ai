@@ -71,6 +71,12 @@ def arguments(argv=None):
     )
     parser.add_argument("--seed", type=int, help="New-game terrain seed; defaults to 20260920")
     parser.add_argument(
+        "--strategy-guide",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Give all agents optional Civ V strategy suggestions (default: off; pass again on resume)",
+    )
+    parser.add_argument(
         "--startup-timeout",
         type=positive,
         default=900,
@@ -149,6 +155,8 @@ def launch_command(args, python):
         command += ["--" + option.replace("_", "-"), str(value)]
     if args.verbose:
         command.append("--verbose")
+    if args.strategy_guide:
+        command.append("--strategy-guide")
     # The scheduler writes through a pipe. Resolve auto against the real terminal.
     command += ["--color", "always" if color_enabled(args.color) else "never"]
     return command
@@ -295,6 +303,7 @@ def main(argv=None):
                 "engine": provenance(REPOSITORY / "vendor/Unciv"),
                 "model": "gpt-5.6-luna",
                 "reasoningEffort": "medium",
+                "strategyGuide": args.strategy_guide,
             },
         )
         show("Status", "Resuming Vanilla game." if args.resume else "Starting Vanilla game.")
@@ -305,6 +314,7 @@ def main(argv=None):
             show("Player", "gpt-5.6-luna · medium reasoning", civilization=civilization)
         show("Player", "Built-in AI", civilization="Egypt")
         show("Setup", "Two city-states.")
+        show("Strategy", "Optional guide enabled." if args.strategy_guide else "Guide disabled.")
         show(
             "Status",
             "Ctrl-C pauses and flushes the run (allow a minute). A blocked turn stops for inspection; this launcher does not restart it.",
