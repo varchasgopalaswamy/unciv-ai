@@ -320,6 +320,16 @@ def project_detail(snapshot: JsonObject, query: DetailQuery) -> JsonObject:
                 data = {"entity": project_entity(entity, name, args.get("sections", ["all"]))}
                 if name == "unit_details":
                     add_unit_commands(data["entity"])
+                    if data["entity"].get("worker") is not None or data["entity"].get("waterImprovement") is not None:
+                        data["workScope"] = {
+                            "kind": "CURRENT_TILE",
+                            "position": entity["position"],
+                            "description": "Work options apply only at this unit's current tile; they do not enumerate jobs elsewhere.",
+                            "surroundings": {
+                                "tool": "map_region",
+                                "arguments": {"center": entity["position"], "radius": 3},
+                            },
+                        }
                 else:
                     add_city_commands(data["entity"])
             else:

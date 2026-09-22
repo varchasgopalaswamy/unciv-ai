@@ -46,7 +46,7 @@ class PlayerSessionException(
             PlayerSessionFailure.STALE_REVISION -> "Player observation is stale"
             PlayerSessionFailure.OBSERVATION_REQUIRED -> "Read player_turn and the current message, terms, confirmation or turn review before responding"
             PlayerSessionFailure.TURN_BLOCKED -> "Resolve pending choices before ending the turn"
-            PlayerSessionFailure.TURN_REVIEW_REQUIRED -> "Read turnReview in player_turn; act on remaining movement or END_TURN with its reviewId and a deferReason for idle units with legal destinations"
+            PlayerSessionFailure.TURN_REVIEW_REQUIRED -> "Read the current turnReview in player_turn and use its reviewId for END_TURN. Idle units do not require action or a deferReason."
             PlayerSessionFailure.COMMAND_UNAVAILABLE -> "Command is unavailable"
         }
     }

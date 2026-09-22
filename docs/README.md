@@ -28,6 +28,7 @@ Run shell examples from the repository root unless a page says otherwise.
 | [Match dashboard](guides/Match-dashboard.md) | TUI, live output and model-connection status |
 | [Chat, memory and recovery](guides/Chat-memory-and-recovery.md) | Human communication, history and whole-match rollback |
 | [Optional strategy guide](guides/Strategy-guide.md) | Advisory strategy context, CLI toggle and size measurements |
+| [Saved strategic positions](scenarios/Strategic-positions.md) | Reusable failure cases, live model comparisons and opening benchmarks |
 
 ## Architecture
 

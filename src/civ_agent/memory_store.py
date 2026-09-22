@@ -299,8 +299,6 @@ def semantic(value):
 
 def select_context(snapshot, limit, topics=()):
     subjects = set(topics)
-    if snapshot["purpose"] == "gameplay":
-        subjects.update(("defense", "expansion", "economy"))
     for event in snapshot["events"]:
         body = event.get("body", {})
         subjects.update(body.get("participants", []))

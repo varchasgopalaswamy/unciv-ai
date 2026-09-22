@@ -91,6 +91,55 @@ def test_explicit_chat_action_uses_observed_revision_and_replays_once(tmp_path):
     asyncio.run(run())
 
 
+def test_incoming_major_demand_exposes_copyable_response_without_choosing_for_the_player(tmp_path):
+    async def run():
+        io = ServiceIO()
+        gateway = ProposalGateway(CivilizationState(tmp_path / "private", "Rome"), io, tmp_path / "workspace")
+        host = NativeHost()
+        host.view["alerts"] = [
+            {
+                "handle": "alert1",
+                "canAcknowledge": False,
+                "nativeDiplomacy": {
+                    "active": True,
+                    "civilizationId": "Greece",
+                    "responseCommand": None,
+                    "options": [
+                        {"name": name, "available": available}
+                        for name, available in (("Accept", True), ("Refuse", True), ("Unavailable", False))
+                    ],
+                },
+            }
+        ]
+        try:
+            job = await gateway.open("game", "gameplay", "g1", host, {})
+            view = await gateway.call(job, "player_turn", {}, "observe")
+            accept, refuse, unavailable = view["alerts"][0]["nativeDiplomacy"]["options"]
+            assert "responseTool" in accept and "responseTool" not in unavailable
+            response = refuse["responseTool"]
+            assert response["tool"] == "chat_send"
+            assert "text" not in response["arguments"] and "intent" not in response["arguments"]
+            args = {
+                **response["arguments"],
+                "text": "We decline.",
+                "intent": {"reason": "Keep our expansion options open"},
+            }
+            TOOL_MODELS["chat_send"].model_validate(args)
+            result = await gateway.call(job, response["tool"], args, "respond")
+            assert host.writes[-1]["nativeAction"] == {
+                "kind": "RESPOND_DIPLOMACY",
+                "target": "alert1",
+                "selection": "Refuse",
+                "revision": "rev1",
+            }
+            assert result["nativeOutcome"]["status"] == "ENACTED"
+            assert result["stateUpdate"]["kind"] == "delta"
+        finally:
+            await io.close()
+
+    asyncio.run(run())
+
+
 @pytest.mark.parametrize("kind", ["TRADE", "PEACE", "DECLARE_WAR", "SIGN_DEFENSIVE_PACT"])
 def test_chat_does_not_create_an_alternative_trade_or_war_protocol(kind):
     with pytest.raises(ValidationError):

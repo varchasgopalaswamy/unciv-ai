@@ -73,6 +73,13 @@ a wakeup. Cancellation does not consume messages. A quiet timeout performs one
 initial read and one final guarded read. The service may renew its HTTPS wait;
 no model invocation is needed to keep a subscription open.
 
+Each stateless HTTP request owns its MCP server and session, which are closed at
+request completion or cancellation. Authentication still resolves the current
+player grant on every request. Transport instances are not cached by credential:
+evicting a shared instance could cancel an unrelated in-flight subscription.
+Unexpected HTTP failures log exception types and stack frames without messages,
+credentials, or request payloads.
+
 ## CLI and verification
 
 Run `build/install/unciv-ai/bin/unciv-ai --help` after `./gradlew installDist` for

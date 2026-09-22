@@ -87,6 +87,16 @@ validation diagnostics. Raw exception messages, source lines, local variables,
 headers, credentials and game/chat payloads are excluded. Public tool errors
 remain unchanged.
 
+Service health includes `communicationSubscription`: status, cumulative failures,
+consecutive failures, and timestamps for the last success and failure. Counts
+cover the service process lifetime; reconnecting does not reset the total.
+`communication_subscription_failed` and `communication_subscription_recovered`
+diagnostics preserve the history across restarts. The scheduler prints changes
+in failure counts and recovery notices, including failures that recovered between
+health checks. Transient polling failures retry the same durable cursor without
+invoking a model. `communicationJobError` tracks model job failures separately, so
+a successful idle poll cannot clear them.
+
 A failed response does not establish whether a command was enacted. Compare its
 request ID with the durable receipt; receipt reads also appear in this log. This
 instrumentation adds no command retries or model calls. Diagnostic records are
@@ -144,7 +154,7 @@ Pydantic command variants in `game_commands.py` define each action's arguments a
 reject invalid combinations before dispatch. `tactical_review.py` validates compact
 reviews derived from permitted observations. The host supplies visible hostile
 proximity using engine map distances; the Python gateway adds combat command
-arguments, review prompts and explicit tactical deferral. See
+arguments and advisory factual reviews. Legal idling needs no explanation. See
 [tactical and strategic review](../reference/Tactical-review.md) for behavior and regression coverage.
 
 `observations.py` defines Pydantic overview and detail schemas. The gateway returns

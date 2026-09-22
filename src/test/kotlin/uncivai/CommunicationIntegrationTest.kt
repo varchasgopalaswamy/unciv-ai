@@ -8,6 +8,11 @@ import java.util.concurrent.TimeUnit
 
 class CommunicationIntegrationTest {
     @Test
+    fun `quiet communication polls survive concurrent HTTPS calls`() {
+        runProbe("uncivai.CommunicationHttpProbe")
+    }
+
+    @Test
     fun `mixed diplomacy routes native AI requests without pausing and survives restart`() {
         runProbe("uncivai.MixedDiplomacyProbe")
     }

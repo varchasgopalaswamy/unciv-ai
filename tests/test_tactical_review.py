@@ -107,7 +107,7 @@ def test_command_schemas_cover_every_host_action_and_reject_cross_action_fields(
             command_arguments(invalid)
 
 
-def test_gateway_reports_shape_errors_before_dispatch_and_requires_deliberate_tactical_deferral(tmp_path):
+def test_gateway_reports_shape_errors_but_tactical_concerns_do_not_require_deferral(tmp_path):
     async def run():
         io = ServiceIO()
         memory = CivilizationState(tmp_path / "private", "France")
@@ -123,11 +123,8 @@ def test_gateway_reports_shape_errors_before_dispatch_and_requires_deliberate_ta
         try:
             job = await gateway.open("turn60", "gameplay", "g1", host, {}, game_turn=60)
             view = await gateway.call(job, "player_turn", {}, "read")
-            assert "tacticalReview" in view and view["strategyReview"]["missingSubjects"] == [
-                "defense",
-                "expansion",
-                "economy",
-            ]
+            assert view["tacticalReview"]["civiliansNearHostiles"]
+            assert view["strategyReview"] == {"plans": []}
             encoded = tool_result(view)["content"][0]["text"]
             assert encoded.index('"tacticalReview"') < encoded.index('"cities"')
             city = await gateway.call(job, "city_details", {"target": "city2"}, "inspect")
@@ -141,8 +138,6 @@ def test_gateway_reports_shape_errors_before_dispatch_and_requires_deliberate_ta
             assert result["error"] == "INVALID_COMMAND_ARGUMENTS"
             assert "attackFrom" not in result["allowedFields"]
             assert not host.executed and not memory.pending()
-            blocked = await gateway.call(job, "player_command", {"kind": "END_TURN"}, "end")
-            assert blocked["error"] == "TACTICAL_REVIEW_REQUIRED" and not host.executed
             result = await gateway.call(
                 job, "player_command", {**shot["command"], "intent": {"reason": "Protect the worker"}}, "shot"
             )
@@ -151,7 +146,7 @@ def test_gateway_reports_shape_errors_before_dispatch_and_requires_deliberate_ta
             result = await gateway.call(
                 job,
                 "player_command",
-                {"kind": "END_TURN", "deferReason": "Hold position to test explicit deferral."},
+                {"kind": "END_TURN"},
                 "end-reviewed",
             )
             assert result["done"]
@@ -166,7 +161,7 @@ def test_losses_invalidate_relevant_plans_and_scheduled_reviews_survive_restart(
     defense = create(memory, plan(subjects=["defense"]))
     economy = create(memory, plan(objective="Protect workers", subjects=["economy"]))
     expansion = create(memory, plan(objective="Found a second city", subjects=["expansion"], reviewAfterTurn=70))
-    assert current(memory, defense)["reviewAfterTurn"] == 9
+    assert current(memory, defense).get("reviewAfterTurn") is None
     # The current observation, not the model's prose, establishes the loss.
     view = reviewed(25)
     memory.observe_player(view, "game")

@@ -66,9 +66,6 @@ object TurnReviewProbe {
 
             val beforeRejected = json().toJson(runtime.game)
             expect(PlayerSessionFailure.TURN_REVIEW_REQUIRED) { rome.execute(command(snapshot, TurnCommandKind.END_TURN)) }
-            expect(PlayerSessionFailure.TURN_REVIEW_REQUIRED) {
-                rome.execute(command(snapshot, TurnCommandKind.END_TURN).copy(reviewId = review.id))
-            }
             expect(PlayerSessionFailure.OPTION_UNAVAILABLE) {
                 rome.execute(command(snapshot, TurnCommandKind.QUEUE_CONSTRUCTION, snapshot.cities.single().handle, "Unavailable construction"))
             }
@@ -100,16 +97,18 @@ object TurnReviewProbe {
             expect(PlayerSessionFailure.OBSERVATION_REQUIRED) { rome.execute(saved.request) }
             val beforeEnd = rome.turn()
             check(beforeEnd.turnReview == saved.snapshot.turnReview) { "Restart lost the current review" }
-            val receipt = rome.execute(saved.request)
+            // Native-legal idling needs no explanation, even with mobile units.
+            val end = saved.request.copy(deferReason = null)
+            val receipt = rome.execute(end)
             val afterEnd = json().toJson(runtime.game)
-            check(rome.execute(saved.request) == receipt)
+            check(rome.execute(end) == receipt)
             check(json().toJson(runtime.game) == afterEnd) { "Review acknowledgment replay advanced a second turn" }
             check(rome.turn().turnReview == null)
             val completed = checkNotNull(rome.turn().previousTurnReview)
             check(completed.turn == saved.snapshot.turn)
             check(completed.actions == saved.snapshot.turnReview!!.actions)
             check(completed.deferredUnits == saved.snapshot.turnReview.units)
-            check(completed.reason == DEFER_REASON)
+            check(completed.reason == null)
             check(greece.turn().previousTurnReview == null) { "Another player received Rome's review" }
             check(greece.turn().turnReview!!.actions.isEmpty())
 
@@ -132,7 +131,7 @@ object TurnReviewProbe {
             check(nextRome.turn == saved.snapshot.turn + 1 && nextRome.phase == "ACTIVE")
             check(nextRome.previousTurnReview == completed && nextRome.turnReview!!.actions.isEmpty())
             check(greece.turn().previousTurnReview!!.let { it.reason == null && it.deferredUnits.isEmpty() })
-            save(root, saved.copy(receipt = receipt, completed = completed))
+            save(root, saved.copy(request = end, receipt = receipt, completed = completed))
         }
     }
 

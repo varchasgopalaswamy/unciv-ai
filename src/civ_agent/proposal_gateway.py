@@ -48,7 +48,7 @@ from civ_agent.schemas import validate
 from civ_agent.service_io import ServiceIO
 from civ_agent.stale_recovery import REPEATED_STALE
 from civ_agent.state_updates import apply_overview_update, changed_details, overview_update, refresh_required, stamp
-from civ_agent.tactical_review import TacticalReviewRequired, strategy_review, tactical_review
+from civ_agent.tactical_review import strategy_review, tactical_review
 from civ_agent.telemetry import JobAccounting
 from civ_agent.tool_schemas import TOOL_MODELS, TOOL_OUTPUT_MODELS
 
@@ -297,6 +297,7 @@ class ProposalGateway:
                         "native.availableDemandsToSend lists actions YOU may send, not requests received or promises. "
                         "Received native messages are in alerts.nativeDiplomacy with sender, event and response options. "
                         "For city-state messages, copy an offered option's RESPOND_CITY_STATE_ALERT command. "
+                        "Major-player messages supply responseTool for chat_send with nativeAction. "
                         "Inspect new alerts and decisions. Reread relevant invalidatedDetails only when needed for "
                         "the next action; unchanged inspections remain valid. An argument error with applied=false "
                         "alone needs no refresh; follow recovery.reads when supplied."
@@ -322,15 +323,13 @@ class ProposalGateway:
                 elif tool["name"] == "mission_preview":
                     entry["description"] += (
                         " Read unit_details sections=[air], then copy this preview's command and add intent. "
-                        "Fetch the final preview after unrelated native actions and execute its chosen command next; "
-                        "any native revision expires the preview. "
+                        "Any native revision expires the preview; the chosen command needs a current matching preview. "
                         "Interception is automatic; preserve readiness by leaving the unit unused or skipping it."
                     )
                 elif tool["name"] == "movement_preview":
                     entry["description"] += (
                         " Copy this preview's SET_UNIT_DESTINATION command and add intent. "
-                        "Fetch the final preview after unrelated native actions and execute its chosen command next; "
-                        "any native revision expires the preview. "
+                        "Any native revision expires the preview; the chosen command needs a current matching preview. "
                         "Read unit_details sections=[movement] to inspect or cancel orders. "
                         "For settlers, inspect settlement separately from route availability: waiting for movement "
                         "does not fix city spacing or foreign ownership. Reconsider repeatedly blocked sites."
@@ -350,8 +349,8 @@ class ProposalGateway:
                     "CAST_DIPLOMATIC_VOTE uses selection=candidate civilizationId from victory.ballot. "
                     "ABSTAIN_DIPLOMATIC_VOTE and ACKNOWLEDGE_DIPLOMATIC_RESULTS take only kind and intent; "
                     "read victory.votingResults before acknowledging results. "
-                    "END_TURN requires reading turnReview and a deferReason for intentionally idle mobile units "
-                    "or deferred tactical concerns; deferReason is a top-level argument, outside intent. "
+                    "END_TURN uses the current turnReview. Idle units and tactical warnings do not block it; "
+                    "top-level deferReason is optional audit context. "
                     "ACKNOWLEDGE_ALERT uses target, not handle. Copy the overview's alert/endTurn command. "
                     "RESPOND_CITY_STATE_ALERT uses an alert target and an offered response selection from the overview. "
                     "FOUND_CITY needs unit_details sections=[settlement]; SET_UNIT_DESTINATION needs a matching "
@@ -415,7 +414,7 @@ class ProposalGateway:
         )
         add(
             "trade_offer",
-            "Publish exact binding terms from trade_options and your consent. Only the current player can initiate; invite them in chat otherwise. For human/agent partners the offer pauses all gameplay. For a built-in AI, NATIVE_AI requests stay pending until its turn and gameplay continues. Gameplay calls for shared negotiations return after settlement; communication jobs handle replies without waiting. Copy the offered name, amount and duration for Embassy, Agreement, City, Treaty and WarDeclaration. WarDeclaration in give makes YOU declare; in receive makes the PARTNER declare. Both sides can declare on the same target for joint war. Inspect your native declaration warnings. Social promises never restrict legal game actions. Treaties must match on both sides; at war include mutual Peace Treaty. Research Agreement amount is each player's signing cost after immediate gold transfers. give/receive are from YOUR perspective. Set proposal to counter a trade inspected with trade_read, within counteroffersRemaining. No effect until acceptance. Do not automatically reopen closed negotiations.",
+            "Publish exact binding terms from trade_options and your consent. Only the current player can initiate; invite them in chat otherwise. For human/agent partners the offer pauses all gameplay. For a built-in AI, NATIVE_AI requests stay pending until its turn and gameplay continues. Gameplay calls for shared negotiations return after settlement; communication jobs handle replies without waiting. Copy the offered name, amount and duration for Embassy, Agreement, City, Treaty and WarDeclaration. WarDeclaration in give makes YOU declare; in receive makes the PARTNER declare. Both sides can declare on the same target for joint war. Inspect your native declaration warnings. Social promises never restrict legal game actions. Treaties must match on both sides; at war include mutual Peace Treaty. Research Agreement amount is each player's signing cost after immediate gold transfers. give/receive are from YOUR perspective. Set proposal to counter a trade inspected with trade_read, within counteroffersRemaining. No effect until acceptance. Avoid duplicate proposals; changed circumstances or terms may justify a new proposal.",
         )
         add(
             "friendship_offer",
@@ -584,7 +583,14 @@ class ProposalGateway:
                     **result,
                     "memoryPhase": {
                         "allowedTools": sorted(MEMORY_PHASE_TOOLS),
-                        "instruction": "The next player may act now. Use this conversation's evidence to batch useful private memory changes, then finish. Do not fetch game state or send messages. No final narrative is needed.",
+                        "instruction": (
+                            "The next player may act now. Batch useful changed plans, beliefs, notes and retirements; "
+                            "skip unchanged records. Use this conversation's evidence; no new game reads or messages. "
+                            "Copy evidence handles exactly. Historical citations and note.plan links may reference "
+                            "retired records; ongoing assumptions and action intent require current reviewed records. "
+                            "If another job changed a record, read it before reconciling; retain review flags for newer "
+                            "evidence. Finish after saving useful changes. No final narrative is needed."
+                        ),
                     },
                 }
             result = await self.io.call(self.memory.call, job.id, call_id, name, arguments, result)
@@ -721,6 +727,25 @@ class ProposalGateway:
                 return {**result, "stateUpdate": {"kind": "turn_ended"}}
             if name == "player_command" and arguments.get("kind") == "SET_RESEARCH_QUEUE":
                 result = {**result, "researchChange": research_change(job.observation, value)}
+            if (
+                name == "player_command"
+                and arguments.get("kind") in {"MOVE_UNIT", "SET_UNIT_DESTINATION", "ATTACK", "REBASE_UNIT", "PARADROP"}
+                and job.observation is not None
+                and "tiles" in job.observation.get("map", {})
+                and "tiles" in value.get("map", {})
+            ):
+                # Both maps came through the same player's visibility boundary.
+                # Include zero: moving successfully need not reveal any terrain.
+                before_tiles = {(t["position"]["x"], t["position"]["y"]) for t in job.observation["map"]["tiles"]}
+                after_tiles = {(t["position"]["x"], t["position"]["y"]) for t in value["map"]["tiles"]}
+                result = {
+                    **result,
+                    "exploration": {
+                        "exploredTilesBefore": len(before_tiles),
+                        "exploredTilesAfter": len(after_tiles),
+                        "newlyExploredTiles": len(after_tiles - before_tiles),
+                    },
+                }
             return await self.deliver_turn(job, value, name, arguments, call_id, result)
         except (OSError, ValueError, KeyError, TypeError, SQLAlchemyError) as error:
             return await self.failed_update(job, call_id, result, error)
@@ -984,14 +1009,6 @@ class ProposalGateway:
                 }
             payload = {**arguments, "epoch": job.epoch, "revision": job.observation["revision"]}
             if arguments.get("kind") == "END_TURN":
-                tactics = job.observation.get("tacticalReview", {})
-                concerns = [
-                    key
-                    for key in ("cityBombardments", "civiliansNearHostiles", "injuredMilitaryNearHostiles")
-                    if tactics.get(key)
-                ]
-                if concerns and not arguments.get("deferReason", "").strip():
-                    return TacticalReviewRequired.model_validate({"concerns": concerns}).model_dump()
                 payload["reviewId"] = job.observation.get("turnReview", {}).get("id")
             transport = "player_command"
         elif name in {"trade_offer", "trade_decide", "friendship_offer"}:

@@ -68,6 +68,7 @@ def test_prepared_reads_establish_evidence_and_update_base_without_model_calls(t
             assert len(host.executed) == 1
             assert view["endTurn"]["command"] == {"kind": "END_TURN"}
             assert "deferReason" not in view["endTurn"]["command"]
+            assert "deferReason is optional" in view["endTurn"]["instruction"]
             settlement = view["units"][0]["inspections"]["FOUND_CITY"]
             args = {"kind": "FOUND_CITY", "target": "unit1", "intent": {"reason": "Settle here"}}
             rejection = await gateway.call(job, "player_command", args, "uninspected")
@@ -257,16 +258,15 @@ def test_strategy_reference_is_optional_once_and_before_dynamic_context(tmp_path
     enabled = startup_prompt(prepared, purpose, "Play this turn", strategy_guide=True)
     assert baseline.instructions == job_instructions(purpose) + "\n\n" + startup_instructions(prepared)
     assert baseline.metadata()["strategyGuide"] == {"enabled": False, "characters": 0, "sha256": None}
-    assert enabled.instructions.count(reference) == 1
-    assert enabled.user == baseline.user
-    assert reference not in enabled.user
+    assert enabled.instructions == baseline.instructions
+    assert enabled.user.count(reference) == 1
+    assert enabled.user.endswith(baseline.user)
+    assert enabled.user.index(reference) < enabled.user.index("PRIVATE_MEMORY_SENTINEL")
     assert enabled.metadata()["strategyGuide"]["enabled"]
     assert enabled.metadata()["strategyGuide"]["characters"] == len(reference)
     assert enabled.metadata()["strategyGuide"]["sha256"]
-    assert (
-        enabled.metadata()["instructionCharacters"] - baseline.metadata()["instructionCharacters"] == len(reference) + 2
-    )
-    assert enabled.metadata()["instructionsSha256"] != baseline.metadata()["instructionsSha256"]
+    assert enabled.metadata()["instructionCharacters"] == baseline.metadata()["instructionCharacters"]
+    assert enabled.metadata()["instructionsSha256"] == baseline.metadata()["instructionsSha256"]
     interactive = startup_text(prepared, strategy_guide=True)
     assert interactive == reference + "\n\n" + startup_text(prepared)
     assert interactive.count(reference) == 1
@@ -280,6 +280,6 @@ def test_prefix_is_deterministic_and_communication_has_its_own_workflow():
     one = startup_prompt(first, "communication", "Rome")
     two = startup_prompt(second, "communication", "Greece")
     assert one.instructions == two.instructions
-    assert "Never automatically reopen" in one.instructions
+    assert "Avoid duplicate proposals" in one.instructions
     assert "After END_TURN succeeds" not in one.instructions
     assert one.metadata()["instructionCharacters"] == len(one.instructions)

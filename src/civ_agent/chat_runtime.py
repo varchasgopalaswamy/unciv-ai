@@ -31,6 +31,19 @@ class ChatRuntime:
         self.pending = asyncio.Event()
         self.jobs = {}
         self.error = None
+        self.subscription = {
+            "status": "DISCONNECTED",
+            "failures": 0,
+            "consecutiveFailures": 0,
+            "lastSuccessAtMs": None,
+            "lastFailureAtMs": None,
+        }
+
+    def subscription_health(self):
+        health = dict(self.subscription)
+        if self.running and self.listener is not None and self.listener.done():
+            health["status"] = "STOPPED"
+        return health
 
     async def connect(self, payload):
         validate(ConnectRequest, payload)
@@ -74,6 +87,7 @@ class ChatRuntime:
             raise
         self.listener = asyncio.create_task(self.receive())
         self.worker = asyncio.create_task(self.dispatch())
+        self.subscription.update(status="CONNECTING", consecutiveFailures=0)
         return {"connected": True, "epoch": self.epoch}
 
     async def social(self, op, **fields):
@@ -112,18 +126,36 @@ class ChatRuntime:
                     # Preserve the host cursor; uncommitted arrivals are fetched
                     # again after the checkpoint barrier, without waking a model.
                     await asyncio.sleep(0.1)
-                    continue
-                async with self.service.gateway.admit():
-                    await self.service.io.call(
-                        self.service.memory.ingest, self.epoch, page["events"], page["nextCursor"]
+                else:
+                    async with self.service.gateway.admit():
+                        await self.service.io.call(
+                            self.service.memory.ingest, self.epoch, page["events"], page["nextCursor"]
+                        )
+                    if page["events"]:
+                        await self.service.io.call(self.service.memory.export, self.service.workspace)
+                    if await self.service.io.call(self.service.memory.has_wake):
+                        self.pending.set()
+                recovered_failures = self.subscription["consecutiveFailures"]
+                self.subscription.update(
+                    status="HEALTHY", consecutiveFailures=0, lastSuccessAtMs=int(time.time() * 1000)
+                )
+                if recovered_failures:
+                    self.service.diagnostics.emit(
+                        "communication_subscription_recovered",
+                        epoch=self.epoch,
+                        recoveredFailures=recovered_failures,
+                        **self.subscription,
                     )
-                if page["events"]:
-                    await self.service.io.call(self.service.memory.export, self.service.workspace)
-                if await self.service.io.call(self.service.memory.has_wake):
-                    self.pending.set()
-                self.error = None
-            except (OSError, ValueError, TimeoutError, aiohttp.ClientError):
-                self.error = "EVENT_SUBSCRIPTION_RECONNECTING"
+            except (OSError, ValueError, TimeoutError, aiohttp.ClientError) as error:
+                self.subscription.update(
+                    status="RECONNECTING",
+                    failures=self.subscription["failures"] + 1,
+                    consecutiveFailures=self.subscription["consecutiveFailures"] + 1,
+                    lastFailureAtMs=int(time.time() * 1000),
+                )
+                self.service.diagnostics.emit(
+                    "communication_subscription_failed", error=error, epoch=self.epoch, **self.subscription
+                )
                 await asyncio.sleep(1)
 
     async def dispatch(self):
@@ -148,6 +180,7 @@ class ChatRuntime:
                 try:
                     async with asyncio.timeout(self.timeout):
                         await self.compute(job)
+                    self.error = None
                 finally:
                     with contextlib.suppress(OSError, ValueError, TimeoutError, aiohttp.ClientError):
                         await self.social("job_release", job=job)
@@ -341,6 +374,7 @@ class ChatRuntime:
 
     async def close(self):
         self.running = False
+        self.subscription["status"] = "DISCONNECTED"
         for task in (self.listener, self.worker):
             if task is not None:
                 task.cancel()

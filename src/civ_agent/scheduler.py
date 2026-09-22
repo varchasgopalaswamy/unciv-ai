@@ -387,6 +387,7 @@ class Scheduler:
         self.interrupted = False
         self.histories = {}
         self.history_notices = set()
+        self.subscription_notices = {}
         self.finalizer = ThreadPoolExecutor(
             max_workers=max(1, min(4, len(agents))), thread_name_prefix="turn-finalization"
         )
@@ -1097,11 +1098,26 @@ class Scheduler:
         return False
 
     def check_agent_health(self):
-        """Communication failures also stop a run while another civilization is playing."""
+        """Report subscription health and stop on fatal failures, including off-turn jobs."""
         for civilization, agent in self.agents.items():
             health = agent.call("health")
             if health.get("civilization") != civilization or "runFailure" not in health:
                 raise RunnerError("Invalid agent health response; stopped for inspection.")
+            subscription = health.get("communicationSubscription")
+            if isinstance(subscription, dict):
+                previous = self.subscription_notices.get(civilization, ("CONNECTING", 0))
+                current = (subscription.get("status"), subscription.get("failures", 0))
+                self.subscription_notices[civilization] = current
+                if current != previous:
+                    if current[0] in {"RECONNECTING", "STOPPED"} or current[1] != previous[1]:
+                        self.output.line(
+                            "Warning",
+                            f"Communication polling: {current[0]}; {current[1]} failures, "
+                            f"{subscription.get('consecutiveFailures', 0)} consecutive. See service diagnostics.jsonl.",
+                            civilization=civilization,
+                        )
+                    elif current[0] == "HEALTHY" and previous[0] in {"RECONNECTING", "STOPPED"}:
+                        self.output.line("Communication", "Polling recovered.", civilization=civilization)
             if health["runFailure"] is not None:
                 failure = health["runFailure"]
                 if not isinstance(failure, dict) or not all(

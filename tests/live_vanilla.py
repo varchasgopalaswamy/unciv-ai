@@ -12,6 +12,7 @@ from pathlib import Path
 
 from civ_agent import scheduler
 from civ_agent.agent_settings import resolve_run_settings
+from civ_agent.commands.host import ensure_players
 from civ_agent.tls import write_private_json
 
 DEFAULT_MODEL = "gpt-6-luna"
@@ -25,6 +26,7 @@ def main() -> int:
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--resume", action="store_true")
     mode.add_argument("--checkpoint", type=Path, help="Start a fresh run from a saved host/round checkpoint")
+    mode.add_argument("--position", type=Path, help="Prepared strategic position directory, with fresh private memory")
     parser.add_argument("--source-state", type=Path, help="Original state directory providing checkpoint credentials")
     parser.add_argument("--seed", type=int, default=20260920)
     parser.add_argument("--fast", action="store_true", help="Request Codex fast priority for all agent work")
@@ -41,6 +43,8 @@ def main() -> int:
     if bool(args.checkpoint) != bool(args.source_state):
         parser.error("--checkpoint and --source-state must be supplied together")
     args.action = "resume" if args.resume else "start"
+    players = PLAYERS
+    preflight = None
     root = args.state_dir.expanduser().resolve()
     try:
         saved = json.loads((root / "runner/run.json").read_text()) if args.resume else None
@@ -52,8 +56,24 @@ def main() -> int:
     root.mkdir(parents=True, exist_ok=True, mode=0o700)
     if not args.resume and (root / "exploration.json").exists():
         parser.error("Existing match: use --resume")
-    if args.checkpoint and any(root.iterdir()):
+    if (args.checkpoint or args.position) and any(root.iterdir()):
         parser.error("A checkpoint comparison requires an empty state directory")
+    if args.position:
+        checkpoint = json.loads((args.position / "exploration.json").read_text())
+        preflight = json.loads((args.position / "preflight.json").read_text())
+        game = json.loads(checkpoint["gameJson"])
+        humans = [c["civID"] for c in game["civilizations"] if c.get("playerType") == "Human"]
+        if humans != [preflight["civilization"]] or game["currentPlayer"] != humans[0]:
+            parser.error("Position must start with its single evaluated human player")
+        if checkpoint["communication"].get("jobs") or checkpoint.get("handoff", 0):
+            parser.error("Position must have a fresh host ledger")
+        players = tuple(humans)
+        write_private_json(root / "exploration.json", checkpoint)
+        write_private_json(root / "position.json", preflight)
+        ensure_players(root / "players.json", False, players)
+    position_resume = args.resume and (root / "position.json").exists()
+    if position_resume:
+        players = (json.loads((root / "position.json").read_text())["civilization"],)
     if args.resume or args.checkpoint:
         source = json.loads((args.checkpoint or root / "exploration.json").read_text())
         checkpoint = source.get("host", source)
@@ -63,7 +83,10 @@ def main() -> int:
             for civ in game["civilizations"]
             if civ.get("civID") in (*PLAYERS, "Egypt")
         }
-        if majors != {**dict.fromkeys(PLAYERS, "Human"), "Egypt": "AI"}:
+        expected = {**dict.fromkeys(PLAYERS, "Human"), "Egypt": "AI"}
+        if position_resume:
+            expected = {name: "Human" if name in players else "AI" for name in (*PLAYERS, "Egypt")}
+        if majors != expected:
             parser.error("Checkpoint is not the Rome/Greece/France plus native Egypt match")
         if args.checkpoint:
             if checkpoint["communication"].get("jobs") or checkpoint.get("handoff", 0):
@@ -96,6 +119,30 @@ def main() -> int:
                     ).strip(),
                 },
             )
+    if args.position:
+        repository = Path(__file__).resolve().parents[1]
+        assert preflight is not None
+        write_private_json(
+            root / "live-run.json",
+            {
+                "sourcePosition": str(args.position.resolve()),
+                "position": preflight,
+                "checkpointSha256": hashlib.sha256((args.position / "exploration.json").read_bytes()).hexdigest(),
+                "model": args.model,
+                "reasoningEffort": args.reasoning_effort,
+                "strategyGuide": args.strategy_guide,
+                "requestedServiceTier": "fast" if args.fast else None,
+                "serviceRevision": subprocess.check_output(
+                    ["git", "rev-parse", "HEAD"], cwd=repository, text=True
+                ).strip(),
+                "sourceDiffSha256": hashlib.sha256(
+                    subprocess.check_output(["git", "diff", "--", "src"], cwd=repository)
+                ).hexdigest(),
+                "engineRevision": subprocess.check_output(
+                    ["git", "rev-parse", "HEAD"], cwd=repository / "vendor/Unciv", text=True
+                ).strip(),
+            },
+        )
     executable = str(Path(sys.executable).with_name("civ-agent"))
     processes: list[subprocess.Popen] = []
     logs = []
@@ -117,10 +164,10 @@ def main() -> int:
 
     try:
         host = ["host", "start", "--port", str(args.port)]
-        if not args.resume and not args.checkpoint:
+        if not args.resume and not args.checkpoint and not args.position:
             host += ["--new", "--built-in-ai", "Egypt", "--city-states", "2", "--seed", str(args.seed)]
         start(host, "host", "MCP-READY:")
-        for offset, civilization in enumerate(PLAYERS, 1):
+        for offset, civilization in enumerate(players, 1):
             start(
                 [
                     "agent-server",

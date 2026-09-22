@@ -128,6 +128,30 @@ async def inspect(gateway, job, unit="unit1"):
     return await gateway.call(job, "unit_details", {"target": unit, "sections": ["movement"]}, "inspect-" + unit)
 
 
+def test_movement_reports_zero_or_actual_discovery_and_replays_without_recounting(tmp_path):
+    async def run():
+        async with session(tmp_path) as (gateway, job, host, _):
+            await gateway.call(job, "player_turn", {}, "start")
+            await inspect(gateway, job)
+            no_discovery = await gateway.call(job, "player_command", MOVE, "known-tile")
+            assert no_discovery["exploration"] == {
+                "exploredTilesBefore": 1,
+                "exploredTilesAfter": 1,
+                "newlyExploredTiles": 0,
+            }
+            await gateway.call(job, "unit_details", {"target": "unit1", "sections": ["movement"]}, "refresh")
+            host.after_command = lambda: host.view["map"]["tiles"].append(
+                {"position": {"x": 2, "y": 0}, "visible": True, "terrain": "Grassland"}
+            )
+            discovered = await gateway.call(job, "player_command", MOVE, "frontier")
+            assert discovered["exploration"]["newlyExploredTiles"] == 1
+            reads = host.reads
+            assert await gateway.call(job, "player_command", MOVE, "frontier") == discovered
+            assert host.reads == reads and len(host.executed) == 2
+
+    asyncio.run(run())
+
+
 def test_scout_reveals_settler_destination_in_action_update_without_repeated_reads(tmp_path):
     async def run():
         async with session(tmp_path) as (gateway, job, host, _):

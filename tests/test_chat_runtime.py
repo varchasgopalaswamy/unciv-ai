@@ -1,10 +1,94 @@
 import asyncio
+import json
 
 import pytest
 
 from civ_agent.agent_service import AgentService
 from civ_agent.strategy_guide import strategy_reference
 from tests.test_agent_service import StartupHost
+
+
+def test_polling_health_reports_failures_and_recovery_without_losing_cursor(tmp_path, monkeypatch):
+    class PollingHost(MailboxHost):
+        def __init__(self):
+            super().__init__()
+            self.responses = asyncio.Queue()
+            self.cursors = []
+
+        async def tool(self, name, arguments):
+            if arguments["op"] != "read":
+                return await super().tool(name, arguments)
+            self.cursors.append(arguments["cursor"])
+            response = await self.responses.get()
+            if isinstance(response, Exception):
+                raise response
+            return response
+
+    async def run():
+        host = PollingHost()
+        monkeypatch.setattr("civ_agent.chat_runtime.HostConnection", lambda *args, **kwargs: host)
+        service = AgentService(
+            "Rome", tmp_path / "Rome", tmp_path / "private", "S" * 43, "https://localhost:8765/mcp", None
+        )
+
+        async def until(predicate):
+            async with asyncio.timeout(4):
+                while not predicate():
+                    await asyncio.sleep(0.01)
+
+        try:
+            await service.chat.connect(
+                {"epoch": "g1", "playerToken": "P" * 43, "model": None, "reasoningEffort": None, "timeoutSeconds": 10}
+            )
+
+            def health():
+                return service.health()["communicationSubscription"]
+
+            assert health()["status"] == "CONNECTING"
+            host.responses.put_nowait({"events": [], "nextCursor": 0, "hasMore": False})
+            await until(lambda: health()["status"] == "HEALTHY")
+            initial_success = health()["lastSuccessAtMs"]
+            assert isinstance(initial_success, int)
+            host.responses.put_nowait(ValueError("private wire body"))
+            host.responses.put_nowait(ValueError("private wire body"))
+            await until(lambda: health()["failures"] == 2)
+            assert health()["status"] == "RECONNECTING"
+            assert health()["consecutiveFailures"] == 2
+            last_failure = health()["lastFailureAtMs"]
+            assert isinstance(last_failure, int) and last_failure >= initial_success
+            assert await service.io.call(service.memory.cursor) == 0
+            # Subscription recovery must not erase an independent model job failure.
+            service.chat.error = "COMMUNICATION_JOB_FAILED"
+            host.responses.put_nowait(
+                {
+                    "events": [
+                        {"id": 1, "kind": "message", "wake": False, "body": {"author": "Greece", "text": "Hello"}}
+                    ],
+                    "nextCursor": 1,
+                    "hasMore": False,
+                }
+            )
+            await until(lambda: health()["status"] == "HEALTHY" and len(host.cursors) == 5)
+            assert host.cursors == [0, 0, 0, 0, 1]
+            assert await service.io.call(service.memory.cursor) == 1
+            assert health()["consecutiveFailures"] == 0
+            assert health()["failures"] == 2
+            last_success = health()["lastSuccessAtMs"]
+            assert isinstance(last_success, int) and last_success >= last_failure
+            assert service.health()["communicationJobError"] == "COMMUNICATION_JOB_FAILED"
+            assert service.health()["runFailure"] is None
+            await service.chat.close()
+            assert health()["status"] == "DISCONNECTED"
+            assert health()["failures"] == 2
+        finally:
+            await service.close()
+        log = service.diagnostics.path.read_text()
+        events = [json.loads(line)["event"] for line in log.splitlines()]
+        assert events.count("communication_subscription_failed") == 2
+        assert events.count("communication_subscription_recovered") == 1
+        assert "private wire body" not in log
+
+    asyncio.run(run())
 
 
 class MailboxHost:
@@ -194,8 +278,8 @@ def test_chat_batches_and_replies_while_planning_job_is_held(tmp_path, monkeypat
                     if method == "thread/start":
                         assert parameters["config"]["model_reasoning_effort"] == "medium"
                         assert parameters["config"].get("features.fast_mode", False) == fast
-            assert all(prompt.count(strategy_reference()) == int(strategy_guide) for prompt in jobs.instructions)
-            assert all(strategy_reference() not in prompt for prompt in jobs.prompts)
+            assert all(strategy_reference() not in prompt for prompt in jobs.instructions)
+            assert all(prompt.count(strategy_reference()) == int(strategy_guide) for prompt in jobs.prompts)
             assert service.records["planning"]["startup"]["strategyGuide"]["enabled"] == strategy_guide
             assert all(prompt.count("Civ tool discovery:") == 1 for prompt in jobs.instructions)
             assert all("Civ tool discovery:" not in prompt for prompt in jobs.prompts)

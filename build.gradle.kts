@@ -137,6 +137,21 @@ tasks.register<JavaExec>("generateSettlementLiveFixture") {
     doFirst { args(providers.gradleProperty("settlementLiveDir").get()) }
 }
 
+tasks.register<JavaExec>("prepareStrategyPositions") {
+    group = "verification"
+    description = "Validates saved strategic positions and creates isolated checkpoints for opt-in live evaluation."
+    dependsOn(tasks.testClasses)
+    classpath = sourceSets.test.get().runtimeClasspath
+    mainClass = "uncivai.StrategyPositionFixtures"
+    doFirst {
+        args(
+            providers.gradleProperty("strategyMode").getOrElse("prepare"),
+            providers.gradleProperty("strategySource").getOrElse(project.file("tests/fixtures/strategy_positions").absolutePath),
+            providers.gradleProperty("strategyOutput").get(),
+        )
+    }
+}
+
 tasks.register<JavaExec>("generateVictoryLiveFixtures") {
     group = "verification"
     description = "Creates fresh late-game checkpoints for opt-in live spaceship and election acceptance."

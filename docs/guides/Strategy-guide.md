@@ -31,8 +31,10 @@ text already delivered in a conversation being recovered.
 
 The service loads the guide as a package resource, independent of its working
 directory. There are no extra model requests, player-tool reads, or runtime web
-lookups. When enabled, the text appears once in the stable developer prefix,
-before private memory and observations. Interactive startup likewise places
+lookups. When enabled, the text appears once at the beginning of user context,
+labeled as optional reference suggestions, before private memory and observations.
+The developer message contains the operational contract and tool definitions.
+Interactive startup likewise places
 the reference before changing context. When disabled, the preexisting prompt
 text is unchanged.
 

@@ -20,9 +20,9 @@ format-2 databases directly and does not require a new match.
 Each supports `subjects`, `priority` (1–5, default 3), and optional `expiresTurn`.
 The service assigns short IDs such as `mem1`, creation/update turns and revisions.
 Subjects can name a civilization, an entity handle, or a topic such as `economy`.
-Gameplay plans should separately cover `defense`, `expansion` and `economy`.
-Use measurable success criteria and a future `reviewAfterTurn`. When omitted,
-the service schedules a review five turns after creation or revision. This is a
+Players choose their own subjects; no strategic categories are required or favored
+by gameplay context selection. Plans include success criteria and an optional
+future `reviewAfterTurn`. Omitting it schedules no automatic review. A scheduled review is a
 progress check, not retirement: the plan stays active but requires reconsideration
 before it can be reused as an action's intent. Revise with a new review turn or
 retire it after checking the evidence. Success criteria remain agent assessments.

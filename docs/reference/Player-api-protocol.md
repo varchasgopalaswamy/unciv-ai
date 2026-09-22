@@ -128,7 +128,7 @@ objects or authorize stale commands. Older checkpoint formats require a new game
 | `REMOVE_CONSTRUCTION` | `target`: city handle; `index`: removable construction entry |
 | `MOVE_CONSTRUCTION` | `target`: city handle; `index`: construction entry; `toIndex`: one of its `moveToIndices` |
 | `DECLARE_WAR` | `target`: known civilizationId; `confirmWar: true` after reading current confirmation |
-| `END_TURN` | `reviewId`: current `turnReview.id`; `canEndTurn` must be true. If any review units are idle with legal destinations, include `deferReason` explaining intentional idling. |
+| `END_TURN` | `reviewId`: current `turnReview.id`; `canEndTurn` must be true. `deferReason` is optional audit context. |
 
 Peace proposals and decisions use the same asynchronous `trade_*` tools as economic
 trades, described in [Asynchronous-trade.md](Asynchronous-trade.md). They are not
@@ -169,8 +169,8 @@ confirmed actions and deliberately deferred units with the player's reason.
 `END_TURN` checks shared engine picker requirements and additional unimplemented
 alerts/trades, then requires a current review acknowledgment. Fetch and read
 `player_turn`, reconsider any unused movement, and send `reviewId=turnReview.id`.
-If any review units have `idle=true` and `legalDestinations>0`, include a nonblank
-`deferReason` of at most 500 characters. `TURN_REVIEW_REQUIRED` rejects a missing
+Idle units and tactical warnings do not block the turn. An optional
+`deferReason` may contain at most 500 characters. `TURN_REVIEW_REQUIRED` rejects a missing
 or mismatched acknowledgment; `OBSERVATION_REQUIRED` rejects an unread review.
 Every successful mutation invalidates the prior review. Reviews and deferrals
 persist in checkpoints, while a restart requires a fresh read before an uncommitted

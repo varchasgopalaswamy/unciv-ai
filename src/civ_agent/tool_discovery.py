@@ -17,7 +17,7 @@ def tool_discovery_instructions(purpose: Literal["gameplay", "communication"]) -
         f"const needed = new Set([{selected}]);\n"
         "text(ALL_TOOLS.filter(t => needed.has(t.name)));\n"
         "Gameplay actions use mcp__civ__player_command; private changes use mcp__civ__memory_update. "
-        "Read definitions before calling any tool not supplied at startup. Fetch at most four new definitions per lookup for the next "
+        "Read definitions before calling any tool not supplied at startup. Fetch a small relevant set for the next "
         "decisions; reuse definitions already read. Skip the index for known names. To explore, print names only:\n"
         'text(ALL_TOOLS.filter(t => t.name.startsWith("mcp__civ__")).map(t => t.name));\n'
         "Keyword searches also return names only. All job tools remain discoverable; do not preload the catalogue.\n\n"
@@ -27,11 +27,6 @@ def tool_discovery_instructions(purpose: Literal["gameplay", "communication"]) -
         "Save changed strategy, beliefs and useful durable notes; receipts already preserve routine state and actions. "
         "Retire obsolete records with memory_update before finishing; no memory write is needed when nothing useful changed. "
         "Follow error recovery.reads and instructions; stop if an action's outcome is uncertain. "
-        "For STALE_ASSUMPTIONS, follow recovery.reads and reconsider; supply a fresh intent.reason "
-        "or revise the referenced plan before retrying. "
-        "Skip only obsolete work or work already handled. The host counts retries per operation; "
-        "a successful action or memory edit resets that operation's count. A later conflict after success starts "
-        "a new recovery. Do not stop just because multiple stale errors occurred in the turn. "
-        "Follow recoverable responses. Only the host declares repeated-stale failure: it halts the run and saves "
-        "diagnostics. REPEATED_STALE_ASSUMPTIONS with recoverable=false is terminal: stop without further tool calls."
+        "Follow recoverable error responses. The host detects repeated stale assumptions; "
+        "recoverable=false is terminal: stop without further tool calls."
     )

@@ -127,7 +127,7 @@ def test_native_prefix_is_stable_across_fresh_private_workspaces(tmp_path):
                         "readInstructions": {},
                         "reads": {"player_turn": {"turn": index, "civilization": ("Rome", "Greece")[index]}},
                     }
-                    prompt = startup_prompt(prepared, "gameplay", f"PRIVATE_MEMORY_{index}")
+                    prompt = startup_prompt(prepared, "gameplay", f"PRIVATE_MEMORY_{index}", strategy_guide=True)
                     thread = await process.request(
                         "thread/start",
                         {
@@ -165,9 +165,11 @@ def test_native_prefix_is_stable_across_fresh_private_workspaces(tmp_path):
                         block.get("text") for item in prefix for block in item.get("content", [])
                     ]
                     assert "PRIVATE_MEMORY" not in json.dumps(prefix)
+                    assert prompt.strategy_reference not in prompt.instructions
                     users = [item for item in wire["input"] if item.get("role") == "user"]
                     assert len(users) == 1
                     assert users[0]["content"] == [{"type": "input_text", "text": prompt.user}]
+                    assert prompt.user.index(prompt.strategy_reference) < prompt.user.index("PRIVATE_MEMORY")
                     wires.append(prefix)
                 finally:
                     await process.close()

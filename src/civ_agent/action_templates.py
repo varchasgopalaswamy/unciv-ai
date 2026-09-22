@@ -27,10 +27,25 @@ def add_overview_commands(value: JsonObject) -> None:
             for option in native.get("options", []):
                 if available(option):
                     attach(option, "RESPOND_CITY_STATE_ALERT", target=alert["handle"], selection=option["name"])
+        elif native.get("active") and native.get("civilizationId"):
+            for option in native.get("options", []):
+                if available(option):
+                    option["responseTool"] = {
+                        "tool": "chat_send",
+                        "arguments": {
+                            "to": native["civilizationId"],
+                            "nativeAction": {
+                                "kind": "RESPOND_DIPLOMACY",
+                                "target": alert["handle"],
+                                "selection": option["name"],
+                            },
+                        },
+                        "instruction": "Read chat_send's definition and this option's consequences; add your own text and intent.",
+                    }
     if value.get("canEndTurn") is True:
         value["endTurn"] = {
             "command": command_arguments({"kind": "END_TURN"}),
-            "instruction": "Read turnReview and tacticalReview. Add intent and a top-level deferReason explaining any intentional deferral. Batch useful memory changes after the handoff when memoryPhase is supplied.",
+            "instruction": "Use the current turn review. Idle units and tactical warnings are advisory; deferReason is optional. Follow memoryPhase after handoff.",
         }
     for unit in value.get("units", []):
         if unit.get("canFoundCity") or unit.get("settlementStatus"):

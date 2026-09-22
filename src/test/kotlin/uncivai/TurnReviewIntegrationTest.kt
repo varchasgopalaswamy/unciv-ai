@@ -8,7 +8,7 @@ import java.util.concurrent.TimeUnit
 
 class TurnReviewIntegrationTest {
     @Test
-    fun `turn review requires observation and explicit deferral and survives restart without replaying actions`() {
+    fun `turn review requires observation but allows unexplained idling and survives restart without replaying actions`() {
         val root = Files.createTempDirectory("turn-review-")
         try {
             for (stage in listOf("prepare", "complete", "verify")) {

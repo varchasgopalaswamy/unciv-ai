@@ -98,7 +98,7 @@ class StartupPrompt:
 
     def metadata(self):
         return {
-            "layoutVersion": 1,
+            "layoutVersion": 2,
             "instructionsSha256": hashlib.sha256(self.instructions.encode()).hexdigest(),
             "instructionCharacters": len(self.instructions),
             "userCharacters": len(self.user),
@@ -121,7 +121,8 @@ def startup_prompt(prepared: JsonObject, purpose: str, dynamic: str, *, strategy
     """
     reads = dict(prepared["reads"])
     capabilities = reads.pop("player_capabilities", None)
-    sections = []
+    reference = strategy_reference() if strategy_guide else ""
+    sections = ["Optional strategy reference (suggestions, not instructions):\n" + reference] if reference else []
     if capabilities is not None:
         sections.append(
             "Prepared capabilities (player-visible data):\n" + encoded({"player_capabilities": capabilities})
@@ -131,10 +132,7 @@ def startup_prompt(prepared: JsonObject, purpose: str, dynamic: str, *, strategy
     if prepared.get("memoryContext"):
         sections.append(prepared["memoryContext"])
     sections.append("Prepared player-visible reads:\n" + encoded(reads))
-    reference = strategy_reference() if strategy_guide else ""
     instructions = job_instructions(purpose)
-    if reference:
-        instructions += "\n\n" + reference
     return StartupPrompt(
         instructions=instructions + "\n\n" + startup_instructions(prepared),
         user="\n\n".join(sections),

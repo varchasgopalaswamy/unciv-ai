@@ -15,8 +15,47 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from civ_agent.protocol import JsonObject
-from civ_agent.scheduler import Operator, OperatorError, RunnerError, atomic_json, operator_token, player_prompt
+from civ_agent.scheduler import (
+    Operator,
+    OperatorError,
+    RunnerError,
+    Scheduler,
+    atomic_json,
+    operator_token,
+    player_prompt,
+)
 from tests.support import match_command
+
+
+def test_subscription_health_warnings_are_visible_and_not_repeated(capsys):
+    class Agent:
+        subscription = {"status": "HEALTHY", "failures": 0, "consecutiveFailures": 0}
+
+        def call(self, operation):
+            assert operation == "health"
+            return {"civilization": "Rome", "runFailure": None, "communicationSubscription": dict(self.subscription)}
+
+    agent = Agent()
+    scheduler = Scheduler(None, None, {"Rome": agent}, {}, color="never")
+    try:
+        scheduler.check_agent_health()
+        assert capsys.readouterr().out == ""
+        agent.subscription.update(status="RECONNECTING", failures=2, consecutiveFailures=2)
+        scheduler.check_agent_health()
+        scheduler.check_agent_health()
+        output = capsys.readouterr().out
+        assert output.count("Communication polling:") == 1
+        assert "2 failures, 2 consecutive" in output
+        agent.subscription.update(status="HEALTHY", consecutiveFailures=0)
+        scheduler.check_agent_health()
+        scheduler.check_agent_health()
+        assert capsys.readouterr().out.count("Polling recovered.") == 1
+        # A failure and recovery between health checks still surface in the total.
+        agent.subscription.update(failures=3)
+        scheduler.check_agent_health()
+        assert "3 failures, 0 consecutive" in capsys.readouterr().out
+    finally:
+        scheduler.finalizer.shutdown()
 
 
 class FakeHost:

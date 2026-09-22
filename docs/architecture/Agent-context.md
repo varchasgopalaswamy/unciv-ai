@@ -20,8 +20,8 @@ from the current permitted catalogue:
 | Communication | `chat_read`, `chat_send`, `memory_update` |
 
 The model can call prepared tools directly. For additional tools, the shared
-discovery guidance uses exact-name lookup, at most four new definitions per
-lookup, and names-only catalogue exploration. Previously read definitions are
+discovery guidance uses exact-name lookup, small relevant definition lookups,
+and names-only catalogue exploration. Previously read definitions are
 reused. All tools permitted for that job remain discoverable.
 
 [Prompt caching](Prompt-caching.md) describes how stable workflow/schema text

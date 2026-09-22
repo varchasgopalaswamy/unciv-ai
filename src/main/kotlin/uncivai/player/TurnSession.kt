@@ -409,7 +409,7 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
             if (!before.canEndTurn) fail(PlayerSessionFailure.TURN_BLOCKED)
             if (state.observedRevision != before.revision) fail(PlayerSessionFailure.OBSERVATION_REQUIRED)
             val review = before.turnReview!!
-            if (request.reviewId != review.id || (review.deferredUnits().isNotEmpty() && request.deferReason.isNullOrBlank())) {
+            if (request.reviewId != review.id) {
                 fail(PlayerSessionFailure.TURN_REVIEW_REQUIRED)
             }
         }

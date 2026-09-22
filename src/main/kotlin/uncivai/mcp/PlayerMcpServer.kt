@@ -19,7 +19,12 @@ import io.ktor.util.AttributeKey
 import io.ktor.utils.io.readRemaining
 import io.modelcontextprotocol.kotlin.sdk.server.Server
 import io.modelcontextprotocol.kotlin.sdk.server.mcpStatelessStreamableHttp
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 import kotlinx.io.readByteArray
 import kotlinx.serialization.SerializationException
 import uncivai.HostTls
@@ -39,6 +44,7 @@ private const val MCP_SESSION_ID_HEADER = "Mcp-Session-Id"
 private const val LISTENER_GRACE_MILLIS = 1_000L
 private const val LISTENER_TIMEOUT_MILLIS = 30_000L
 private val AUTHENTICATED_PLAYER_KEY = AttributeKey<AuthenticatedPlayer>("authenticated-player")
+private val REQUEST_SERVER_KEY = AttributeKey<Server>("request-server")
 private val TOKEN_PATTERN = Regex("[A-Za-z0-9_-]{43}")
 
 /** A trusted host binding. Its credential and player facade are not exposed as public properties. */
@@ -62,7 +68,6 @@ class PlayerMcpServer(
     private var listenerStop: (() -> Unit)? = null
     private var boundPort: Int? = null
     private var closed = false
-    private val activationServers = java.util.concurrent.ConcurrentHashMap<String, Server>()
 
     init {
         require(port in 0..65535) { "Port must be between 0 and 65535" }
@@ -84,7 +89,7 @@ class PlayerMcpServer(
 
         val allowedHosts = tls?.let { listOf(it.publicHost) } ?: listOf(LOOPBACK_HOST, "localhost")
         val module: suspend Application.() -> Unit = {
-            configurePlayerMcp(authenticatedPlayers, operator, activationServers, allowedHosts)
+            configurePlayerMcp(authenticatedPlayers, operator, allowedHosts)
         }
         // Cleartext is retained only for embedded protocol fixtures. The CLI requires TLS.
         val listener = if (tls == null) {
@@ -126,38 +131,11 @@ class PlayerMcpServer(
             }
         }
 
-        var closeFailure: Throwable? = null
-        try {
-            stopListener?.invoke()
-        } catch (failure: Throwable) {
-            closeFailure = failure
-        } finally {
-            runBlocking {
-                for (player in authenticatedPlayers) {
-                    try {
-                        player.server.close()
-                    } catch (failure: Throwable) {
-                        if (closeFailure == null) {
-                            closeFailure = failure
-                        } else {
-                            closeFailure.addSuppressed(failure)
-                        }
-                    }
-                }
-                for (server in activationServers.values) server.close()
-                activationServers.clear()
-            }
-        }
-        closeFailure?.let { throw it }
+        stopListener?.invoke()
     }
 }
 
 private class AuthenticatedPlayer(
-    val tokenHash: ByteArray,
-    val server: Server,
-)
-
-private class PreparedPlayer(
     val tokenHash: ByteArray,
     val session: PlayerSession,
 )
@@ -166,7 +144,7 @@ private fun prepareAuthenticatedPlayers(bindings: List<PlayerMcpBinding>): List<
     require(bindings.size in 1..64) { "Between 1 and 64 player bindings are required" }
     val preparedPlayers = bindings.map { binding ->
         require(TOKEN_PATTERN.matches(binding.token)) { "Player credentials must be 256-bit Base64URL values" }
-        PreparedPlayer(hashToken(binding.token), binding.session)
+        AuthenticatedPlayer(hashToken(binding.token), binding.session)
     }
     for (index in preparedPlayers.indices) {
         val player = preparedPlayers[index]
@@ -177,12 +155,7 @@ private fun prepareAuthenticatedPlayers(bindings: List<PlayerMcpBinding>): List<
             "Each player credential must use a distinct player session"
         }
     }
-    return preparedPlayers.map { player ->
-        AuthenticatedPlayer(
-            tokenHash = player.tokenHash,
-            server = createPlayerToolsServer(player.session),
-        )
-    }
+    return preparedPlayers
 }
 
 private fun hashToken(token: String): ByteArray = MessageDigest.getInstance("SHA-256")
@@ -191,9 +164,28 @@ private fun hashToken(token: String): ByteArray = MessageDigest.getInstance("SHA
 private fun Application.configurePlayerMcp(
     authenticatedPlayers: List<AuthenticatedPlayer>,
     operator: OperatorMcpBinding?,
-    activationServers: java.util.concurrent.ConcurrentHashMap<String, Server>,
     allowedHosts: List<String>,
 ) {
+    intercept(ApplicationCallPipeline.Monitoring) {
+        try {
+            proceed()
+        } catch (failure: Throwable) {
+            // Exception messages may contain request bodies or credentials. Keep only types and frames.
+            if (failure !is CancellationException || currentCoroutineContext().isActive) {
+                val trace = generateSequence(failure) { it.cause }.take(4).joinToString("\nCaused by: ") {
+                    it.javaClass.name + "\n" + it.stackTrace.take(20).joinToString("\n") { frame -> "  at $frame" }
+                }
+                java.util.logging.Logger.getLogger("uncivai.mcp").severe("MCP HTTP request failed:\n$trace")
+            }
+            throw failure
+        } finally {
+            // Stateless MCP sessions belong to one HTTP request. Closing a cached server while
+            // another request is polling cancels its pending response, producing an HTTP 500.
+            context.attributes.getOrNull(REQUEST_SERVER_KEY)?.let { server ->
+                withContext(NonCancellable) { server.close() }
+            }
+        }
+    }
     intercept(ApplicationCallPipeline.Plugins) {
         val authorizationHeaders = context.request.headers.getAll(HttpHeaders.Authorization)
         val token = authorizationHeaders
@@ -211,16 +203,10 @@ private fun Application.configurePlayerMcp(
                     if (MessageDigest.isEqual(candidate.tokenHash, presentedHash)) match = candidate
                 }
                 if (match == null && operator != null) {
-                    // Resolve against the current activation every time; cached servers do not grant authority.
+                    // Resolve authority for every request, including long-lived communication grants.
                     val session = operator.control.activationSession(presentedToken)
                     if (session != null) {
-                        val key = java.util.Base64.getEncoder().encodeToString(presentedHash)
-                        match = AuthenticatedPlayer(presentedHash, activationServers.computeIfAbsent(key) { createPlayerToolsServer(session) })
-                        // Retain a short grace window for in-flight reads, not every activation forever.
-                        while (activationServers.size > 64) {
-                            val expired = activationServers.keys.firstOrNull { it != key } ?: break
-                            activationServers.remove(expired)?.close()
-                        }
+                        match = AuthenticatedPlayer(presentedHash, session)
                     }
                 }
                 match
@@ -298,7 +284,9 @@ private fun Application.configurePlayerMcp(
         allowedHosts = allowedHosts,
         allowedOrigins = emptyList(),
     ) {
-        call.attributes[AUTHENTICATED_PLAYER_KEY].server
+        createPlayerToolsServer(call.attributes[AUTHENTICATED_PLAYER_KEY].session).also {
+            call.attributes.put(REQUEST_SERVER_KEY, it)
+        }
     }
 }
 

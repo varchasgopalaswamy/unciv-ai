@@ -29,6 +29,19 @@ def query(tool, **arguments):
     return DetailQuery.model_validate({"tool": tool, "arguments": arguments})
 
 
+def test_worker_options_explicitly_describe_current_tile_and_link_visible_surroundings():
+    snapshot = reviewed()
+    worker = snapshot["map"]["units"][0]
+    worker["worker"] = {"options": [], "currentJob": None}
+    detail = project_detail(snapshot, query("unit_details", target=worker["handle"], sections=["work"]))
+    scope = detail["data"]["workScope"]
+    assert scope["kind"] == "CURRENT_TILE" and scope["position"] == worker["position"]
+    surrounding = project_detail(snapshot, DetailQuery.model_validate(scope["surroundings"]))
+    assert surrounding["available"]
+    movement = project_detail(snapshot, query("unit_details", target=worker["handle"], sections=["movement"]))
+    assert "workScope" not in movement["data"]
+
+
 def test_compact_snapshot_keeps_decisions_and_all_details_remain_reachable():
     snapshot = reviewed()
     snapshot["alerts"] = [{"handle": "alert1", "kind": "WonderBuilt", "content": {"paragraphs": ["Important " * 1000]}}]

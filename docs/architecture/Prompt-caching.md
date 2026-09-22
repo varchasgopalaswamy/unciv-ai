@@ -6,16 +6,18 @@ Scheduled gameplay and communication use separate messages:
 
 1. **Developer instructions:** stable job workflow, discovery/recovery guidance,
    permitted core tool definitions and prepared-read interpretation instructions.
-   The optional [strategy guide](../guides/Strategy-guide.md) sits between the
-   workflow and core definitions. This message contains no player identity,
+   This message contains no player identity,
    turn number, private memory or observation values.
-2. **User input:** freshly read capabilities, the current request and selected
+2. **User input:** the optional [strategy guide](../guides/Strategy-guide.md),
+   explicitly labeled as reference suggestions, then freshly read capabilities, the current request and selected
    private memory, followed by current observations and communication.
 
 The service passes stable instructions through `developerInstructions`. Core
 schemas come from the current permitted gateway catalogue. Canonical JSON keeps
 key order stable; schema changes change the prefix. Gameplay and communication
-have different instructions and tools.
+have different instructions and tools. Stable reference material precedes all
+changing user data, preserving prefix reuse without promoting strategy advice to
+developer instructions. Startup metadata identifies this as layout version 2.
 
 Game data remains at user priority, including scenario text and other players'
 messages. Preparation performs normal evidence/accounting reads for every

@@ -738,6 +738,8 @@ class AgentService:
         return {
             "civilization": self.civilization,
             "runFailure": {key: failure[key] for key in ("error", "diagnosticId", "job")} if failure else None,
+            "communicationSubscription": self.chat.subscription_health(),
+            "communicationJobError": self.chat.error,
         }
 
     def _validate_start(self, payload):

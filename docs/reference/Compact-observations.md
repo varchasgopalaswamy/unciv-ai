@@ -102,6 +102,18 @@ already present in the overview, as does ordinary notification dismissal. Social
 commitment decisions require `chat_read`; formal trades continue to require
 `trade_read`.
 
+Available major-player diplomatic responses expose a `responseTool` template
+for `chat_send` with `nativeAction=RESPOND_DIPLOMACY`. The agent supplies its own
+text and intent after inspecting consequences. City-state responses retain their
+separate `RESPOND_CITY_STATE_ALERT` commands; trade and peace use trade tools.
+
+Worker and Work Boat details include `workScope`: the offered jobs apply to the
+unit's current tile only. A copyable `map_region` query exposes nearby observed
+terrain, improvements and yields without claiming that no work exists elsewhere.
+Movement receipts include `exploration` with before/after explored tile counts and
+`newlyExploredTiles`, including zero. These counts compare only the player's
+permitted maps; movement success alone does not establish exploration progress.
+
 Argument errors return the selected command's expected shape and safe field error
 codes, without echoing invalid values. `OBSERVATION_REQUIRED` supplies a concrete
 refresh query. Successful gameplay actions, including alert acknowledgements,

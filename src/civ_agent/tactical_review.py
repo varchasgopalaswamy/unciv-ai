@@ -1,7 +1,5 @@
 """A compact review of permitted observations, not a combat planner or hidden-state oracle."""
 
-from typing import Literal
-
 from pydantic import Field
 
 from civ_agent.game_commands import CityAttack, Position
@@ -73,36 +71,17 @@ class TacticalReview(BoundaryModel):
     limits: str = (
         "Proximity includes visible hostile military within two hexes, using the engine's map distances. "
         "It does not predict enemy reach or reveal hidden units. An empty threat list does not establish safety. "
-        "Review city bombardments even when no units are idle. Copy commands only after reading their offers; add intent."
+        "These observations are advisory; no attack, movement or written deferral is required."
     )
 
 
 class PlanReview(BoundaryModel):
     id: str
-    subjects: list[str]
-    objective: str
     needsReview: list[str]
 
 
 class StrategyReview(BoundaryModel):
     plans: list[PlanReview] = Field(default_factory=list)
-    missingSubjects: list[str] = Field(default_factory=list)
-    instruction: str = (
-        "Keep separate defense, expansion and economy plans with measurable successCriteria and a reviewAfterTurn. "
-        "Reconsider flagged plans using current evidence; revise or retire them. Deliberately delaying expansion "
-        "or an available attack is allowed: record the reason and when to reconsider."
-    )
-
-
-class TacticalReviewRequired(BoundaryModel):
-    error: Literal["TACTICAL_REVIEW_REQUIRED"] = "TACTICAL_REVIEW_REQUIRED"
-    applied: Literal[False] = False
-    recoverable: Literal[True] = True
-    concerns: list[Literal["cityBombardments", "civiliansNearHostiles", "injuredMilitaryNearHostiles"]]
-    instruction: str = (
-        "Review tacticalReview. Act or supply a brief deferReason explaining why these concerns can wait. "
-        "No attack or movement is mandatory."
-    )
 
 
 def tactical_review(snapshot: JsonObject) -> TacticalReview:
@@ -194,14 +173,9 @@ def strategy_review(records: JsonObject) -> StrategyReview:
     plans = [
         PlanReview(
             id=key,
-            subjects=r["body"].get("subjects", []),
-            objective=r["body"]["objective"],
             needsReview=r["body"].get("needsReview", []),
         )
         for key, r in records.items()
-        if r["category"] == "plan" and r["body"].get("state") == "active"
+        if r["category"] == "plan" and r["body"].get("state") == "active" and r["body"].get("needsReview")
     ]
-    covered = {s for p in plans for s in p.subjects}
-    return StrategyReview(
-        plans=plans, missingSubjects=[s for s in ("defense", "expansion", "economy") if s not in covered]
-    )
+    return StrategyReview(plans=plans)

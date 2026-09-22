@@ -1,0 +1,95 @@
+{
+  "formatVersion": 1,
+  "seed": 10923811242,
+  "origin": "Historical Vanilla match round checkpoints",
+  "transformation": "Keep subject human; advance to its turn through native AI, ending the already-started source player without issuing actions; then make all other majors native AI. No terrain, unit, resource or technology edits. Fresh private memory; original social ledger is not imported.",
+  "positions": [
+    {
+      "id": "idle-workers",
+      "civilization": "Rome",
+      "sourceRound": 32,
+      "rounds": 2,
+      "description": "Workers idle on improved tiles while useful reachable work exists elsewhere.",
+      "sourceCheckpointSha256": "80db7f329883fc8ded6cef9ad73d2a70b6a97af976a60bf2dbd70dad5028bdcd",
+      "saveSha256": "aab044dafadb4d3aefa1ed77eead050c208ce093e34533b13d9e80a93cb2fb90",
+      "preflight": {
+        "id": "idle-workers",
+        "civilization": "Rome",
+        "turn": 32,
+        "saveSha256": "aab044dafadb4d3aefa1ed77eead050c208ce093e34533b13d9e80a93cb2fb90",
+        "exploredTiles": 125,
+        "frontierTiles": 56,
+        "reachableVisibleUnimprovedTilesWithLegalJobs": 9
+      }
+    },
+    {
+      "id": "exploration-loop",
+      "civilization": "France",
+      "sourceRound": 16,
+      "rounds": 3,
+      "description": "Scout movement can succeed without revealing terrain.",
+      "sourceCheckpointSha256": "33eaf8a19bc59f5089eae0cc35ca816d3105b60721d793747623038c9086df7a",
+      "saveSha256": "42a1bbcb7c7cedb257bc456c56bd81ff66b79f9a24e037b4aeb013027ee73da6",
+      "preflight": {
+        "id": "exploration-loop",
+        "civilization": "France",
+        "turn": 16,
+        "saveSha256": "42a1bbcb7c7cedb257bc456c56bd81ff66b79f9a24e037b4aeb013027ee73da6",
+        "exploredTiles": 129,
+        "frontierTiles": 49
+      }
+    },
+    {
+      "id": "slow-economy",
+      "civilization": "France",
+      "sourceRound": 26,
+      "rounds": 2,
+      "description": "Young city has a slow Library and luxury improvement depends on research.",
+      "sourceCheckpointSha256": "ae627649315033872c8298022ace05bda85e41c5384e32b502cfbb21d5c704e5",
+      "saveSha256": "dff0753175ccf80f07f8e7bb95e72aab65f8af40a58bf59e0c995df4cb6170cb",
+      "preflight": {
+        "id": "slow-economy",
+        "civilization": "France",
+        "turn": 26,
+        "saveSha256": "dff0753175ccf80f07f8e7bb95e72aab65f8af40a58bf59e0c995df4cb6170cb",
+        "exploredTiles": 129,
+        "frontierTiles": 49
+      }
+    },
+    {
+      "id": "civilian-route",
+      "civilization": "France",
+      "sourceRound": 25,
+      "rounds": 3,
+      "description": "Two settlers, limited protection and incomplete knowledge along expansion routes.",
+      "sourceCheckpointSha256": "a4225dde675203731f631601ac13f1ef7b784b5b2916b8fed85af2dac2bfaf4a",
+      "saveSha256": "b2caf839911fe8aac9040898de3a892e12192efafd7949e4fd690c6e89a709e1",
+      "preflight": {
+        "id": "civilian-route",
+        "civilization": "France",
+        "turn": 25,
+        "saveSha256": "b2caf839911fe8aac9040898de3a892e12192efafd7949e4fd690c6e89a709e1",
+        "exploredTiles": 129,
+        "frontierTiles": 49
+      }
+    },
+    {
+      "id": "injured-military",
+      "civilization": "Greece",
+      "sourceRound": 26,
+      "rounds": 2,
+      "description": "Injured units face visible hostiles; holding or retreating can be reasonable.",
+      "sourceCheckpointSha256": "ae627649315033872c8298022ace05bda85e41c5384e32b502cfbb21d5c704e5",
+      "saveSha256": "c22979933aa0382285de10e665c908ecdd56cc5ce28cffbdb231da9ba6501309",
+      "preflight": {
+        "id": "injured-military",
+        "civilization": "Greece",
+        "turn": 26,
+        "saveSha256": "c22979933aa0382285de10e665c908ecdd56cc5ce28cffbdb231da9ba6501309",
+        "exploredTiles": 130,
+        "frontierTiles": 56
+      }
+    }
+  ],
+  "sourceHostRevision": "248ad34c2c518d45e5f9bbf863ec24ea0aaab820"
+}

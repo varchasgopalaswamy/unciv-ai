@@ -718,11 +718,13 @@ class CivilizationState:
                             for k, r in store.all().items()
                         ):
                             raise ValueError("SOUL_EXISTS: read and revise the existing principles")
-                        if content["type"] == "plan" and store.turn is not None:
-                            if content.get("reviewAfterTurn") is None:
-                                content["reviewAfterTurn"] = store.turn + 5
-                            elif content["reviewAfterTurn"] <= store.turn:
-                                raise ValueError("REVIEW_TURN_IN_PAST: choose a future review turn")
+                        if (
+                            content["type"] == "plan"
+                            and store.turn is not None
+                            and content.get("reviewAfterTurn") is not None
+                            and content["reviewAfterTurn"] <= store.turn
+                        ):
+                            raise ValueError("REVIEW_TURN_IN_PAST: choose a future review turn")
                         if (
                             content.get("expiresTurn") is not None
                             and store.turn is not None

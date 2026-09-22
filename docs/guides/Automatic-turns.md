@@ -62,14 +62,13 @@ continue using the version they loaded.
 
 Before handing off, agents read `player_turn.turnReview`, which lists confirmed
 actions and remaining movement. `END_TURN` includes the current review ID. Leaving
-idle units with legal destinations also requires a short `deferReason`, so an agent
-must act or explain its choice. Changes require a fresh observation and review.
+idle units with legal destinations is allowed; `deferReason` is optional audit
+context. Changes require a fresh observation and review.
 The service also puts `tacticalReview` and `strategyReview` before the detailed
 snapshot. These highlight confirmed losses, the military roster, visible hostile
 units, nearby civilian risks, available city bombardments and plans needing review.
-An unused bombardment, a civilian near a visible hostile, or an injured military
-unit near one requires acting or giving `deferReason` before ending. This permits
-intentional restraint; it never requires an attack. See [tactical review](../reference/Tactical-review.md).
+These observations do not require attacks, movement, or written explanations.
+See [tactical review](../reference/Tactical-review.md).
 `previousTurnReview` carries the prior review and deferred choices into the next turn
 alongside the agent's own summaries.
 

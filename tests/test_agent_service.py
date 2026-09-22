@@ -322,8 +322,7 @@ class AgentServiceTests(AgentServiceTestCase):
         self.assertEqual(starts[0]["developerInstructions"], instructions)
         self.assertNotEqual(starts[0]["cwd"], starts[-1]["cwd"])
         self.assertIn("The service writes all turn files. Do not create or edit them.", instructions)
-        self.assertIn("After END_TURN succeeds with memoryPhase", instructions)
-        self.assertIn("Other players can play while you finish", instructions)
+        self.assertIn("After END_TURN succeeds, follow its memoryPhase instructions", instructions)
         self.assertNotIn("Private strategy and evidence", instructions)
         self.assertNotIn("Civ tool discovery:", prompt)
         metadata = self.service.records[second["activationId"]]["startup"]
