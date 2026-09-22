@@ -100,6 +100,11 @@ internal fun confirmedAction(request: TurnCommandRequest, before: PlayerTurnSnap
 
         TurnCommandKind.RESPOND_FRIENDSHIP -> "${request.selection} friendship with ${before.alerts.single { it.handle == request.target }.friendship!!.civilizationId}."
 
+        TurnCommandKind.RESPOND_CITY_STATE_ALERT -> {
+            val alert = before.alerts.single { it.handle == request.target }
+            "${request.selection} response to ${alert.kind} from ${alert.nativeDiplomacy!!.civilizationId}."
+        }
+
         TurnCommandKind.MANAGE_CAPTURED_CITY -> "${city!!.name}: ${request.selection}."
 
         TurnCommandKind.BUY_CONSTRUCTION -> "${city!!.name} purchased ${request.selection}; treasury changed by ${economy!!.goldChange} gold."

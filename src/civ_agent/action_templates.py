@@ -22,6 +22,11 @@ def add_overview_commands(value: JsonObject) -> None:
     for alert in value.get("alerts", []):
         if alert.get("canAcknowledge") is True and alert.get("content") is not None:
             attach(alert, "ACKNOWLEDGE_ALERT", target=alert["handle"])
+        native = alert.get("nativeDiplomacy") or {}
+        if native.get("responseCommand") == "RESPOND_CITY_STATE_ALERT":
+            for option in native.get("options", []):
+                if available(option):
+                    attach(option, "RESPOND_CITY_STATE_ALERT", target=alert["handle"], selection=option["name"])
     if value.get("canEndTurn") is True:
         value["endTurn"] = {
             "command": command_arguments({"kind": "END_TURN"}),

@@ -15,6 +15,8 @@ class CityStateIntegrationTest {
 
     @Test fun `city state war peace and tribute use native constraints`() = run("conflict")
 
+    @Test fun `city state popups resolve through the turn API and survive recovery`() = run("popups")
+
     @Test fun `city state observations protect unknown identities and hidden resources`() = run("privacy")
 
     @Test fun `city state commands recover before and after checkpoint replacement`() = run("recovery")

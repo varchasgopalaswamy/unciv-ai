@@ -409,7 +409,10 @@ def required_detail(command: JsonObject) -> DetailQuery | None:
         return DetailQuery(tool="movement_preview", arguments={"target": target, "destination": command["destination"]})
     if kind in {"DECLARE_WAR", "CITY_STATE_ACTION"}:
         return DetailQuery(tool="player_details", arguments={"section": "diplomacy"})
-    if kind in {"ACKNOWLEDGE_ALERT", "RESPOND_FRIENDSHIP", "RESOLVE_CAPTURED_CITY"} or target is None:
+    if (
+        kind in {"ACKNOWLEDGE_ALERT", "RESPOND_FRIENDSHIP", "RESPOND_CITY_STATE_ALERT", "RESOLVE_CAPTURED_CITY"}
+        or target is None
+    ):
         return None  # Full decision content is always in the overview.
     if kind in {"QUEUE_CONSTRUCTION", "BUY_CONSTRUCTION"}:
         return DetailQuery(tool="construction_details", arguments={"target": target, "names": [command["selection"]]})

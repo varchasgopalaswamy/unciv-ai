@@ -28,6 +28,7 @@ data class NativeDiplomaticDecision(
     val demand: String? = null,
     val incidentCityState: CityStateCivilization? = null,
     val active: Boolean = true,
+    val responseCommand: TurnCommandKind? = null,
 )
 
 @Serializable
@@ -86,6 +87,7 @@ internal fun nativeDecision(player: Civilization, alert: PopupAlert, active: Boo
             null
         },
         active = !player.gameInfo.getCivilization(decision.civilizationId).isDefeated(),
+        responseCommand = TurnCommandKind.RESPOND_CITY_STATE_ALERT.takeIf { player.gameInfo.getCivilization(decision.civilizationId).isCityState },
     )
 }
 

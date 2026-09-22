@@ -36,6 +36,7 @@
         "ACKNOWLEDGE_ALERT",
         "DISMISS_NOTIFICATIONS",
         "RESPOND_FRIENDSHIP",
+        "RESPOND_CITY_STATE_ALERT",
         "DECLARE_WAR",
         "CITY_STATE_ACTION",
         "GIFT_UNIT",

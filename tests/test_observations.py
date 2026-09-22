@@ -308,6 +308,7 @@ def test_detail_input_schemas_and_every_command_have_a_deliberate_read_path():
         "ACKNOWLEDGE_ALERT",
         "DISMISS_NOTIFICATIONS",
         "RESPOND_FRIENDSHIP",
+        "RESPOND_CITY_STATE_ALERT",
         "RESOLVE_CAPTURED_CITY",
     }
     schema = COMMANDS.json_schema()

@@ -47,6 +47,7 @@ class TargetChoice(Command):
         "PROMOTE_UNIT",
         "RESOLVE_CAPTURED_CITY",
         "RESPOND_FRIENDSHIP",
+        "RESPOND_CITY_STATE_ALERT",
         "MANAGE_CAPTURED_CITY",
         "SET_CITY_FOCUS",
         "ASSIGN_SPECIALIST",

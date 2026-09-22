@@ -12,6 +12,7 @@ import com.unciv.logic.civilization.PlayerCityOperations
 import com.unciv.logic.civilization.PlayerCityStateOperations
 import com.unciv.logic.civilization.PlayerCombatOperations
 import com.unciv.logic.civilization.PlayerDiplomacyOperations
+import com.unciv.logic.civilization.PlayerDiplomaticCommunicationOperations
 import com.unciv.logic.civilization.PlayerFriendshipOperations
 import com.unciv.logic.civilization.PlayerGreatPersonOperations
 import com.unciv.logic.civilization.PlayerOperations
@@ -219,6 +220,12 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
             if (request.selection !in setOf("Accept", "Decline") || (request.selection == "Accept" && !decision.accept.available) || !decision.canDecline) fail(PlayerSessionFailure.OPTION_UNAVAILABLE)
             if (state.observedRevision != before.revision) fail(PlayerSessionFailure.OBSERVATION_REQUIRED)
         }
+        if (request.kind == TurnCommandKind.RESPOND_CITY_STATE_ALERT) {
+            val decision = before.alerts.singleOrNull { it.handle == request.target }?.nativeDiplomacy
+                ?: fail(PlayerSessionFailure.OPTION_UNAVAILABLE)
+            if (decision.responseCommand != request.kind || decision.options.none { it.name == request.selection && it.available }) fail(PlayerSessionFailure.OPTION_UNAVAILABLE)
+            if (state.observedRevision != before.revision) fail(PlayerSessionFailure.OBSERVATION_REQUIRED)
+        }
         if (request.kind == TurnCommandKind.RESOLVE_CAPTURED_CITY) {
             val decision = before.alerts.singleOrNull { it.handle == request.target }?.capture
                 ?: fail(PlayerSessionFailure.OPTION_UNAVAILABLE)
@@ -276,6 +283,7 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
         }
         val affectedCityState = when (request.kind) {
             TurnCommandKind.CITY_STATE_ACTION, TurnCommandKind.DECLARE_WAR -> partner?.takeIf { it.isCityState }?.civID
+            TurnCommandKind.RESPOND_CITY_STATE_ALERT -> before.alerts.single { it.handle == request.target }.nativeDiplomacy!!.civilizationId
             TurnCommandKind.GIFT_UNIT -> unit!!.currentTile.getOwner()!!.civID
             TurnCommandKind.ACTIVATE_GREAT_PERSON -> unit!!.currentTile.getOwner()?.takeIf { it.isCityState && request.selection?.startsWith("mission") == true }?.civID
             else -> null
@@ -538,6 +546,11 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
                     alert != null && operations.tryAcknowledgeAlert(alert)
                 }
 
+                TurnCommandKind.RESPOND_CITY_STATE_ALERT -> {
+                    val alert = state.alertHandles.entries.firstOrNull { it.value == request.target }?.key
+                    alert != null && PlayerDiplomaticCommunicationOperations(player).tryRespond(alert, request.selection!!)
+                }
+
                 TurnCommandKind.DISMISS_NOTIFICATIONS -> {
                     // Presentation state only. Keep native messages for UI history and combat reporting.
                     state.dismissedNotifications.addAll(detachedRequest.targets)
@@ -776,7 +789,7 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
     private fun state() = runtime.turnSessions.getOrPut(civilizationId) { TurnSessionState() }
 
     private fun validateShape(request: TurnCommandRequest) {
-        val needsTarget = request.kind in cityCommands || request.kind in unitCommands || request.kind in partnerCommands || request.kind in setOf(TurnCommandKind.ACKNOWLEDGE_ALERT, TurnCommandKind.RESOLVE_CAPTURED_CITY, TurnCommandKind.RESPOND_FRIENDSHIP)
+        val needsTarget = request.kind in cityCommands || request.kind in unitCommands || request.kind in partnerCommands || request.kind in setOf(TurnCommandKind.ACKNOWLEDGE_ALERT, TurnCommandKind.RESOLVE_CAPTURED_CITY, TurnCommandKind.RESPOND_FRIENDSHIP, TurnCommandKind.RESPOND_CITY_STATE_ALERT)
         val needsSelection = request.kind in setOf(
             TurnCommandKind.CHOOSE_FREE_TECHNOLOGY,
             TurnCommandKind.ADOPT_POLICY,
@@ -789,6 +802,7 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
             TurnCommandKind.PROMOTE_UNIT,
             TurnCommandKind.RESOLVE_CAPTURED_CITY,
             TurnCommandKind.RESPOND_FRIENDSHIP,
+            TurnCommandKind.RESPOND_CITY_STATE_ALERT,
             TurnCommandKind.MANAGE_CAPTURED_CITY,
             TurnCommandKind.BUY_CONSTRUCTION,
             TurnCommandKind.UPGRADE_UNIT,

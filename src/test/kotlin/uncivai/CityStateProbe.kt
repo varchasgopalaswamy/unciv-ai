@@ -1,8 +1,10 @@
 package uncivai
 
 import com.unciv.json.json
+import com.unciv.logic.civilization.AlertType
 import com.unciv.logic.civilization.CivFlags
 import com.unciv.logic.civilization.NotificationCategory
+import com.unciv.logic.civilization.PopupAlert
 import com.unciv.logic.civilization.diplomacy.DiplomacyFlags
 import uncivai.player.PlayerHost
 import uncivai.player.PlayerTurnJson
@@ -21,6 +23,7 @@ object CityStateProbe {
             "affordability" -> affordability(root)
             "interactions" -> interactions(root)
             "conflict" -> conflict(root)
+            "popups" -> popups(root)
             "privacy" -> privacy(root)
             "recovery" -> recovery(root)
             else -> error(args[1])
@@ -148,6 +151,69 @@ object CityStateProbe {
             if (next.kind == TurnCommandKind.END_TURN) return
         }
         error("Fixture budget exhausted")
+    }
+
+    private fun popups(root: Path) {
+        val checkpoint = root.resolve("checkpoint.json")
+        lateinit var last: TurnCommandRequest
+        lateinit var receiptJson: String
+        CityStateFixtures.create(root.resolve("initial")).use { runtime ->
+            val rome = runtime.game.getCivilization("Rome")
+            val geneva = runtime.game.getCivilization("Geneva")
+            geneva.cityStateFunctions.updateDiplomaticRelationshipForCityState()
+            check(rome.popupAlerts.any { it.type == AlertType.BorderConflict && it.value == geneva.civID })
+            runtime.executor.enableCheckpoints(checkpoint)
+        }
+        // An already-pending popup in a saved game must become actionable too.
+        HeadlessRuntime.loadCheckpoint(checkpoint, root.resolve("pending")).use { runtime ->
+            val rome = runtime.game.getCivilization("Rome")
+            val geneva = runtime.game.getCivilization("Geneva")
+            GameplayTestApi(runtime, root.resolve("tls"), CityStateFixtures.tokens).use { api ->
+                val token = api.playerToken("Rome")
+                for ((type, selection) in listOf(AlertType.BorderConflict to "Acknowledge", AlertType.BorderConflict to "Protest", AlertType.TilesStolen to "Acknowledge")) {
+                    if (rome.popupAlerts.none { it.type == type }) rome.popupAlerts.add(PopupAlert(type, geneva.civID))
+                    val turn = api.turn(token)
+                    val alert = turn.alerts.single { it.kind == type.name }
+                    val native = checkNotNull(alert.nativeDiplomacy)
+                    check(native.sender == geneva.civID && native.responseCommand == TurnCommandKind.RESPOND_CITY_STATE_ALERT)
+                    check(native.options.any { it.name == selection && it.available })
+                    check(turn.pending.single { it.kind == "PopupAlerts" }.supported && !turn.canEndTurn)
+                    last = command(turn, TurnCommandKind.RESPOND_CITY_STATE_ALERT, alert.handle, selection)
+                    val before = json().toJson(runtime.game)
+                    api.reject(token, command(turn, TurnCommandKind.END_TURN, null), "TURN_BLOCKED")
+                    api.reject(token, command(turn, TurnCommandKind.ACKNOWLEDGE_ALERT, alert.handle), "OPTION_UNAVAILABLE")
+                    api.reject(api.playerToken("Greece"), last, "NOT_YOUR_TURN")
+                    api.reject(token, last.copy(target = "unknown"), "OPTION_UNAVAILABLE")
+                    api.reject(token, last.copy(selection = "DeclareWar"), "OPTION_UNAVAILABLE")
+                    api.reject(token, last.copy(revision = "stale"), "STALE_REVISION")
+                    check(json().toJson(runtime.game) == before)
+                    val receipt = api.execute(token, last)
+                    val outcome = checkNotNull(receipt.cityState)
+                    check(outcome.influenceBefore == outcome.influenceAfter && outcome.goldChange == 0)
+                    check(!outcome.atWarBefore && !outcome.atWarAfter)
+                    check(rome.popupAlerts.none { it.type == type })
+                    check(api.execute(token, last) == receipt)
+                    receiptJson = PlayerTurnJson.encode(receipt)
+                }
+                // Major-player responses remain on the existing diplomacy path.
+                val majorAlert = PopupAlert(AlertType.Denounced, "Greece")
+                rome.popupAlerts.add(majorAlert)
+                val turn = api.turn(token)
+                val alert = turn.alerts.single { it.kind == "Denounced" }
+                check(alert.nativeDiplomacy!!.responseCommand == null)
+                api.reject(token, command(turn, TurnCommandKind.RESPOND_CITY_STATE_ALERT, alert.handle, "Acknowledge"), "OPTION_UNAVAILABLE")
+                rome.popupAlerts.remove(majorAlert)
+                finish(api, token)
+                check(runtime.game.currentPlayer == "Greece")
+            }
+        }
+        HeadlessRuntime.loadCheckpoint(checkpoint, root.resolve("completed")).use { runtime ->
+            val session = PlayerHost(runtime).bindPlayer("Rome")
+            val before = json().toJson(runtime.game)
+            check(PlayerTurnJson.encode(session.execute(last)) == receiptJson)
+            check(json().toJson(runtime.game) == before)
+            check(runtime.game.getCivilization("Rome").popupAlerts.none { it.type in setOf(AlertType.BorderConflict, AlertType.TilesStolen) })
+        }
     }
 
     private fun privacy(root: Path) = CityStateFixtures.create(root.resolve("initial"), meetAll = false).use { runtime ->

@@ -53,6 +53,7 @@ relationships and quests; detailed observations supply action names and reasons.
 | Protection or revocation | Same command with `pledgeProtection` or `revokeProtection`; requires `confirmAction` when confirmation text is present |
 | Gold or Worker tribute | Same command with `goldTribute` or `workerTribute`; native military pressure, influence effects and cooldowns apply |
 | City-state peace | Same command with `makePeace`; native immediate bilateral treaty, declared-war cooldown and allied-war restrictions |
+| City-state popup response | `RESPOND_CITY_STATE_ALERT`, owned alert handle as `target`, and offered `nativeDiplomacy.options.name` as `selection`; the overview supplies copyable commands |
 | War | Existing `DECLARE_WAR`, city-state ID as `target`, native confirmation |
 | Unit gift | `GIFT_UNIT` with the owned unit handle as `target`; inspect `unit_details.cityStateGift` first; recipient comes from its current territory |
 | Great Merchant mission | Existing `ACTIVATE_GREAT_PERSON` with the owned unit handle and the offered mission name |
