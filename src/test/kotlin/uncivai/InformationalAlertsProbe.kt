@@ -99,6 +99,12 @@ object InformationalAlertsProbe {
         val player = runtime.game.getCivilization("Rome")
         val other = runtime.game.getCivilization("Greece")
         val raw = json().toJson(runtime.game)
+        val future = host.bindPlayer("Rome").researchDetails(listOf("Future Tech")).technologies.single()
+        check("Who knows what the future holds?".tr() in future.description!!)
+        check("Who knows what the future holds?".tr() !in future.gameplayDescription!!)
+        check(future.gameplayDescription!!.isNotBlank()) { "Future Tech's actual effects were removed" }
+        val effects = host.bindPlayer("Rome").researchDetails(listOf(TECHNOLOGY_NAME)).technologies.single()
+        check(effects.description == effects.gameplayDescription) { "Mechanical research description changed" }
         val snapshot = api.turn("Rome")
         val waiting = api.turn("Greece")
         check(json().toJson(runtime.game) == raw) { "Reading popup content changed the game" }
@@ -205,21 +211,25 @@ object InformationalAlertsProbe {
         check(intro.title == player.getLeaderDisplayName())
         check(intro.paragraphs == listOf(player.nation.startIntroPart1.tr(), player.nation.startIntroPart2.tr()))
         check(intro.quote == null && intro.acknowledgement == "Let's begin!".tr())
+        check(intro.kind == "StartIntro" && intro.gameplayParagraphs == emptyList<String>())
         val technology = player.gameInfo.ruleset.technologies.getValue(TECHNOLOGY_NAME)
         val tech = snapshot.alerts.single { it.kind == "TechResearched" }
         check(tech.subject == TECHNOLOGY_NAME && tech.content!!.title == technology.name.tr())
         check(tech.content!!.paragraphs == listOf(technology.getDescription(player).tr()))
         check(tech.content!!.quote == technology.quote.tr() && tech.content!!.acknowledgement == "Close".tr())
+        check(tech.content!!.gameplayParagraphs == tech.content!!.paragraphs)
         val wonder = player.gameInfo.ruleset.buildings.getValue(WONDER_NAME)
         val built = snapshot.alerts.single { it.kind == "WonderBuilt" }
         check(built.subject == WONDER_NAME && built.content!!.title == wonder.name.tr())
         check(built.content!!.paragraphs == listOf(wonder.getShortDescription().tr()))
         check(built.content!!.quote == wonder.quote.takeIf { it.isNotEmpty() }?.tr())
         check(built.content!!.acknowledgement == "Close".tr())
+        check(built.content!!.gameplayParagraphs == built.content!!.paragraphs)
         val golden = snapshot.alerts.single { it.kind == "GoldenAge" }.content!!
         check(golden.title == "GOLDEN AGE".tr())
         check(golden.paragraphs == listOf("Your citizens have been happy with your rule for so long that the empire enters a Golden Age!".tr()))
         check(golden.quote == null && golden.acknowledgement == "Close".tr())
+        check(golden.kind == "GoldenAge" && golden.gameplayParagraphs == emptyList<String>())
     }
 
     private fun acknowledgeAfterRestart(root: Path, runtime: HeadlessRuntime, api: AlertClient) {

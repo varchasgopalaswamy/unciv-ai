@@ -1,5 +1,10 @@
 # Agent prompt streamlining
 
+**Current recovery policy (September 21):** the historical benchmark deferral
+guidance below has been removed. Agents get one fresh attempt after reading and
+reconsidering stale evidence; a second stale rejection of the same operation
+stops the run through the service. See the [recovery audit](Recovery-and-benchmark-audit.md).
+
 The September 20, 2026 pass shortens the instructions supplied to gameplay and
 communication jobs. It keeps the existing model (`gpt-5.6-luna`, medium), tool
 schemas, visibility boundaries, action inspections, consent and recovery checks.
@@ -8,7 +13,7 @@ schemas, visibility boundaries, action inspections, consent and recovery checks.
 
 | Surface | Responsibility |
 | --- | --- |
-| Shared startup guidance | Selective discovery, structured intent, review flagged plans before reuse, save useful private memory, defer repeated stale-assumption conflicts and continue |
+| Shared startup guidance | Selective discovery, structured intent, review flagged plans before reuse, save useful private memory, one stale-conflict recovery attempt followed by an enforced stop |
 | Gameplay task | Ordered turn workflow: observe, review strategy, inspect and act, review and end the turn |
 | Communication task | Read the message context, choose an appropriate diplomatic response, summarize |
 | Service footer | Service-owned turn files and summaries; no calls after successful `END_TURN` |
@@ -16,7 +21,7 @@ schemas, visibility boundaries, action inspections, consent and recovery checks.
 | Action/detail definitions | Applicable command shapes, previews, consequences and confirmations |
 | `chat_read` definition | Asynchronous delivery and ambiguous, nonbinding social promises |
 | `memory_update` definition | Record shapes, existing plan IDs and delivered evidence requirements |
-| Error responses | Specific recovery reads for rejected actions; individual rejected memory changes also need the startup deferral guidance |
+| Error responses | Specific recovery reads and conflict details for rejected actions and individual memory edits; repeated stale failures are terminal |
 
 The startup lookups still fetch gameplay's `player_turn`, `player_capabilities`,
 `victory_progress` and `chat_read`, or communication's `chat_read`, `chat_send`,

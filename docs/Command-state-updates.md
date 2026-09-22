@@ -71,7 +71,9 @@ remains citeable as historical evidence.
 
 Overview evidence and the replayable response commit in one SQLite transaction.
 A failed response write rolls back the new observation evidence. The native
-action receipt was already saved separately and survives.
+action receipt was already saved separately and survives. Internal projection,
+validation or persistence errors stop the run with `STATE_UPDATE_FAILED` and
+durable diagnostics; they are not treated as routine refresh outages.
 
 ## Visibility and events
 
@@ -93,7 +95,7 @@ what the command actually did.
 | --- | --- |
 | `delta` | Apply changes to the matching base; inspect new decisions and relevant invalidated details |
 | `full` | Receipt recovery has no trusted in-memory baseline; use its complete `overview` |
-| `unavailable` | The action succeeded but refresh failed; retain the receipt and follow the `player_turn` recovery query |
+| `unavailable` | Retain the successful receipt. For a transport outage, follow the `player_turn` recovery query; if the response has terminal `STATE_UPDATE_FAILED`, stop for operator inspection |
 | `turn_ended` | Stop the gameplay job; ordinary `END_TURN` does not query a post-handoff overview |
 
 Retrying a call ID returns its saved response without executing the action or

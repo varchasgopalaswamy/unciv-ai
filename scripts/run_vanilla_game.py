@@ -300,6 +300,7 @@ def main(argv=None):
         show("Status", "Resuming Vanilla game." if args.resume else "Starting Vanilla game.")
         show("Match", str(root))
         show("Log", str(launch / "console.log"))
+        show("Dashboard", shlex.join([str(python.with_name("civ-agent")), "match", "watch", "--state-dir", str(root)]))
         for civilization in ("Rome", "Greece", "France"):
             show("Player", "gpt-5.6-luna · medium reasoning", civilization=civilization)
         show("Player", "Built-in AI", civilization="Egypt")

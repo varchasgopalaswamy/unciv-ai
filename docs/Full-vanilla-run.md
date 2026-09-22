@@ -37,7 +37,9 @@ For a different directory or ports:
 Native victory stops the run before these limits. Ctrl-C requests a graceful pause;
 allow time for the scheduler to fence actions and flush its services. A timed-out,
 failed or blocked gameplay turn stops the launcher for inspection. There is no
-automatic restart loop. Normal recoverable tool errors can still be handled by
+automatic restart loop. Repeated stale conflicts and internal state-update errors
+stop for inspection with durable [recovery diagnostics](Recovery-and-benchmark-audit.md).
+Normal recoverable tool errors can still be handled by
 the current agent within its turn, as before.
 
 Override limits with `--turn-timeout`, `--startup-timeout`, `--max-seconds`,
@@ -52,6 +54,16 @@ mode. Saved `console.log` and histories remain plain text. `--verbose` also prin
 preloaded startup context and detailed tool activity; the full service history is
 saved regardless. See [live output](Automatic-turns.md#live-output-and-saved-history)
 for accounting scope and unavailable metrics.
+
+For the [interactive dashboard](Match-dashboard.md), open another terminal and run
+the command printed under `Dashboard`, or:
+
+```sh
+.venv/bin/civ-agent match watch --state-dir ~/.local/state/unciv-host/vanilla-full
+```
+
+It attaches to the current run and shows player scores, activity, calls, tokens,
+and per-turn timings. Quitting the viewer leaves the game running.
 
 ## Resume after inspection
 

@@ -4,6 +4,7 @@ from typing import Annotated, Literal
 
 from pydantic import Field, ValidationError, model_validator
 
+from civ_agent.model_view import model_view
 from civ_agent.protocol import JsonObject
 from civ_agent.schemas import BoundaryModel, NonnegativeInt, argument_issues, argument_shape
 
@@ -175,6 +176,8 @@ REQUIRED_TOOLS = {"trade_offer", "trade_decide", "friendship_offer", "commitment
 
 def public_record(key, record):
     body = {k: v for k, v in record["body"].items() if not k.startswith("_")}
+    if record["category"] not in MEMORY_TYPES:
+        body = model_view(body)
     return {
         "id": key,
         "type": record["category"],
@@ -256,10 +259,17 @@ class ChangeResult(BoundaryModel):
     accepted: bool
     retired: str | None = None
     reason: str | None = None
+    changedRecords: list[str] | None = None
+    conflicts: list[JsonObject] | None = None
+    recovery: JsonObject | None = None
 
 
 class MemoryUpdateResult(BoundaryModel):
     changes: Annotated[list[ChangeResult], Field(max_length=20)]
+    error: str | None = None
+    recoverable: bool | None = None
+    diagnosticId: str | None = None
+    instruction: str | None = None
 
 
 class SummaryAction(BoundaryModel):

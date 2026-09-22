@@ -56,6 +56,12 @@ handled and continue its turn; a rejected decision is never automatically replay
 against fresh assumptions. Uncertain network responses retain their separate
 stop-and-reconcile behavior.
 
+A second stale rejection of the same operation after one fresh attempt stops the
+run for inspection. This also covers individual edits within a memory batch;
+independent successful edits remain applied. The service enforces the stop and
+preserves diagnostics across restart. See the
+[recovery audit](Recovery-and-benchmark-audit.md) for identity, replay and resume rules.
+
 Communication jobs normally read `chat_read` for compact, player-bound turn,
 scenario, economy and diplomatic context. Full gameplay observations remain on
 demand. This keeps map details and construction menus out of ordinary message

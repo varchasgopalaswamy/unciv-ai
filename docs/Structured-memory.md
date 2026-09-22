@@ -107,6 +107,12 @@ changed or unreviewed plan returns recoverable `STALE_ASSUMPTIONS` before dispat
 Read the indicated evidence and revise the plan, or supply a fresh reason for a
 new decision. Retiring a plan after approval cannot undo an in-flight action.
 
+Each stale memory-edit rejection includes recovery reads and conflict versions.
+One fresh attempt is allowed; a second stale rejection for that operation and
+record in the same job stops the run with `REPEATED_STALE_ASSUMPTIONS`. Successful
+edits in a partially rejected batch remain applied. Transport replays do not
+count as another attempt. See [recovery diagnostics](Recovery-and-benchmark-audit.md).
+
 `turn_N/summary.json` contains typed actions, receipts, observations, memory
 assessments and unresolved work. `summary.md` renders at most 200 words. It does
 not depend on a final response and is regenerated after receipt reconciliation.

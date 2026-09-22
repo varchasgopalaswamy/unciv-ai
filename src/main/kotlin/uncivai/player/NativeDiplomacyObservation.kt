@@ -15,10 +15,20 @@ import uncivai.SocialPromiseAdvisory
 import java.util.Collections
 
 @Serializable
-data class NativeDiplomaticChoice(val name: String, val text: String, val available: Boolean, val consequences: List<String>, val socialAdvisories: List<SocialPromiseAdvisory> = emptyList())
+data class NativeDiplomaticChoice(val name: String, val text: String, val available: Boolean, val consequences: List<String>, val socialAdvisories: List<SocialPromiseAdvisory> = emptyList(), val declaresWar: Boolean = false)
 
 @Serializable
-data class NativeDiplomaticDecision(val civilizationId: String, val content: AlertContent, val options: List<NativeDiplomaticChoice>)
+data class NativeDiplomaticDecision(
+    val civilizationId: String,
+    val content: AlertContent,
+    val options: List<NativeDiplomaticChoice>,
+    val event: String = "",
+    val sender: String = "",
+    val recipient: String = "",
+    val demand: String? = null,
+    val incidentCityState: CityStateCivilization? = null,
+    val active: Boolean = true,
+)
 
 @Serializable
 data class NativeDemandOption(val name: String, val text: String, val action: DiplomaticAction)
@@ -55,9 +65,27 @@ internal fun nativeDecision(player: Civilization, alert: PopupAlert, active: Boo
                     active && it.available,
                     immutable(it.consequences.map(String::tr)),
                     if (war) immutable(runtime.communication.peaceAdvisories(player.civID, decision.civilizationId)) else emptyList(),
+                    war,
                 )
             },
         ),
+        event = alert.type.name,
+        sender = decision.civilizationId,
+        recipient = player.civID,
+        demand = (Demand.entries.firstOrNull { it.demandAlert == alert.type || it.violationDiscoveredAlert == alert.type })?.name,
+        incidentCityState = if (alert.type in PlayerDiplomaticCommunicationOperations.incidentAlerts) {
+            // Match the native message's visibility: never expose an unmet minor's ID.
+            player.gameInfo.civilizations.firstOrNull { it.civID == alert.value.substringAfter('@', "") && it.isCityState }?.let {
+                if (player.knows(it)) {
+                    CityStateCivilization(it.civID, it.civName, false)
+                } else {
+                    CityStateCivilization(null, "Unknown city-state", true)
+                }
+            }
+        } else {
+            null
+        },
+        active = !player.gameInfo.getCivilization(decision.civilizationId).isDefeated(),
     )
 }
 

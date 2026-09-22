@@ -189,7 +189,11 @@ def test_new_alerts_and_decisions_arrive_without_repeating_old_alert_content(tmp
             receipt = await gateway.call(job, "player_command", MOVE, "move")
             update = receipt["stateUpdate"]
             assert update["collections"]["alerts"]["upsert"] == [
-                {**new, "command": {"kind": "ACKNOWLEDGE_ALERT", "target": "alert-new"}}
+                {
+                    **new,
+                    "content": {"kind": "FirstContact", "paragraphs": []},
+                    "command": {"kind": "ACKNOWLEDGE_ALERT", "target": "alert-new"},
+                }
             ]
             assert update["set"]["pending"] == [{"kind": "ChooseTechnology"}]
             assert "Old long text" not in json.dumps(update)
@@ -230,29 +234,13 @@ def test_visibility_changes_expire_regions_without_inventing_destruction_or_hidd
     asyncio.run(run())
 
 
-@pytest.mark.parametrize("failure", ["timeout", "invalid_view", "save_response"])
-def test_refresh_failure_keeps_receipt_and_does_not_deliver_partial_evidence(tmp_path, failure):
+def test_refresh_failure_keeps_receipt_and_does_not_deliver_partial_evidence(tmp_path):
     async def run():
         async with session(tmp_path) as (gateway, job, host, memory):
             await gateway.call(job, "player_turn", {}, "start")
             await inspect(gateway, job)
             before = memory.snapshot("gameplay")["records"]["observation:overview"]
-            if failure == "timeout":
-                host.after_command = lambda: setattr(host, "fail_refresh", True)
-            elif failure == "invalid_view":
-                host.after_command = lambda: host.view.update(turn="malformed")
-            else:
-                original = memory._call_record
-                fail_once = True
-
-                def fail_commit(db, job, id, name, arguments, result=None):
-                    nonlocal fail_once
-                    if fail_once and result and result.get("stateUpdate", {}).get("kind") == "delta":
-                        fail_once = False
-                        raise OSError("Interrupted response write")
-                    return original(db, job, id, name, arguments, result)
-
-                memory._call_record = fail_commit
+            host.after_command = lambda: setattr(host, "fail_refresh", True)
             receipt = await gateway.call(job, "player_command", MOVE, "move")
             assert receipt["done"] and receipt["stateUpdate"]["kind"] == "unavailable"
             assert memory.snapshot("gameplay")["records"]["observation:overview"] == before
@@ -266,6 +254,43 @@ def test_refresh_failure_keeps_receipt_and_does_not_deliver_partial_evidence(tmp
             host.after_command = lambda: None
             fresh = await gateway.call(job, "player_turn", {}, "recover")
             assert fresh["units"][0]["position"] == MOVE["destination"]
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("failure", ["invalid_view", "save_response"])
+def test_invalid_state_update_stops_for_inspection_and_keeps_committed_receipt(tmp_path, failure):
+    async def run():
+        async with session(tmp_path) as (gateway, job, host, memory):
+            await gateway.call(job, "player_turn", {}, "start")
+            await inspect(gateway, job)
+            before = memory.snapshot("gameplay")["records"]["observation:overview"]
+            if failure == "invalid_view":
+                host.after_command = lambda: host.view.update(turn="malformed")
+            else:
+                original = memory._call_record
+                fail_once = True
+
+                def fail_commit(db, job, id, name, arguments, result=None):
+                    nonlocal fail_once
+                    if fail_once and result and result.get("stateUpdate", {}).get("kind") == "delta":
+                        fail_once = False
+                        raise OSError("Interrupted response write")
+                    return original(db, job, id, name, arguments, result)
+
+                memory._call_record = fail_commit
+            result = await gateway.call(job, "player_command", MOVE, "move")
+            assert result["error"] == "STATE_UPDATE_FAILED" and result["applied"] is True
+            assert result["done"] and result["recoverable"] is False
+            assert gateway.failed.is_set() and len(host.executed) == 1
+            receipt = memory.call_receipt(job.id, "move")
+            assert receipt is not None and receipt["done"] and not memory.pending()
+            assert memory.snapshot("gameplay")["records"]["observation:overview"] == before
+            assert memory.run_failure()["exceptionType"] == (
+                "ValidationError" if failure == "invalid_view" else "OSError"
+            )
+            with pytest.raises(StateConflict, match="STATE_UPDATE_FAILED"):
+                await gateway.call(job, "player_command", MOVE, "retry")
 
     asyncio.run(run())
 

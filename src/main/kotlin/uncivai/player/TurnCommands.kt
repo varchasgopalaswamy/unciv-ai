@@ -89,7 +89,7 @@ data class PlayerAlert(
 )
 
 @Serializable
-data class FriendshipDecision(val civilizationId: String, val content: AlertContent, val accept: DiplomaticAction, val canDecline: Boolean)
+data class FriendshipDecision(val civilizationId: String, val content: AlertContent, val accept: DiplomaticAction, val canDecline: Boolean, val duration: Int = com.unciv.logic.civilization.PlayerFriendshipOperations.DURATION)
 
 @Serializable
 data class TurnCity(

@@ -36,7 +36,12 @@ allied city-state are included.
 
 Read `player_turn` to discover permitted known-major actions, native AI opinion
 modifiers, native promises and their durations, and each owned alert's
-`nativeDiplomacy` content/options. War-producing responses carry native warnings
+`nativeDiplomacy` event, sender, recipient and options. The model view lists outgoing
+options under `native.availableDemandsToSend`, with a `type`, `recipient`,
+availability and unavailable reasons. These are actions the reader may send;
+they are not received requests or promises. Native stock dialogue is omitted
+from the model view; see the [flavor text audit](Model-flavor-text-audit.md).
+War-producing responses carry `declaresWar`, native warnings
 and any applicable nonblocking social peace advice. Native consequences remain
 Unciv's: a rejection described as “You'll pay for this!” need not declare war.
 
@@ -48,7 +53,8 @@ Agent-facing examples, after observing the current turn:
 {"tool":"chat_send","arguments":{"to":"Greece","text":"Acknowledged.","nativeAction":{"kind":"RESPOND_DIPLOMACY","target":"<owned alert handle>","selection":"Acknowledge"}}}
 ```
 
-Use the observed demand/choice names; unavailable choices stay unavailable. The
+Use the observed outgoing demand `type` or incoming choice `name` for `selection`;
+unavailable choices stay unavailable. The
 agent gateway supplies the exact observed revision and durable request identity.
 Direct `player_communication` clients supply `epoch`, `requestId`, and
 `nativeAction.revision`. A private message's recipient must match the native

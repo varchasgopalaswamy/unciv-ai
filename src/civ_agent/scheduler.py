@@ -235,6 +235,7 @@ class Agent(JsonEndpoint):
             "open_interactive",
             "close_interactive",
             "flush_accounting",
+            "health",
         }:
             status = result.get("status")
             if not isinstance(status, dict):
@@ -409,8 +410,9 @@ class Scheduler:
     def poll_events(self, flight, *, drain=False, player_token=None):
         agent = self.agent_for(flight)
         key = flight["activationId"]
-        if flight.get("eventsUnsupported"):
-            return True
+        # Old runner snapshots may contain this former compatibility bypass.
+        # Recheck the API; missing audit history no longer counts as success.
+        flight.pop("eventsUnsupported", None)
         try:
             history = self.history_for(flight, player_token)
             while True:
@@ -420,7 +422,7 @@ class Scheduler:
                     if key not in self.history_notices:
                         history.output.line("History", "No service events were recorded for this activation.")
                         self.history_notices.add(key)
-                    return True
+                    return not drain
                 history.append(page["events"])
                 if page["nextCursor"] != history.cursor or (page["hasMore"] and history.cursor == before):
                     raise HistoryError("Agent event cursor did not match the durable mirror.")
@@ -445,14 +447,9 @@ class Scheduler:
                 "REQUEST_REJECTED",
                 "NOT_FOUND",
             }:
-                flight["eventsUnsupported"] = True
-                self.save()
-                self.output.line(
-                    "Warning",
-                    "Live history is unavailable in this older service. Restart civ-agent agent-server start to enable it; turn scheduling continues.",
-                    civilization=flight["civilization"],
-                )
-                return True
+                raise RunnerError(
+                    "Agent history API is unavailable. Restart the agent services with the current code before resuming; turn scheduling stopped."
+                ) from failure
             elif key not in self.history_notices:
                 self.output.line(
                     "Warning",
@@ -938,6 +935,7 @@ class Scheduler:
             self.finalizer.shutdown(wait=True)
 
     def invoke(self, status):
+        self.check_agent_health()
         civilization = status.get("activeCivilization")
         agent = self.agents.get(civilization)
         if agent is None:
@@ -1033,6 +1031,7 @@ class Scheduler:
                     interrupted = "timeout"
                     break
                 if now - last_heartbeat >= 5:
+                    self.check_agent_health()
                     self.operator.call("heartbeat", leaseId=self.lease)
                     self.record_agent(agent.call("heartbeat", activationId=activation), flight)
                     last_heartbeat = now
@@ -1068,6 +1067,7 @@ class Scheduler:
                     agent_status = self.interrupt_agent(flight)
         final_status = self.operator.call("status")["status"]
         self.check_status(final_status)
+        self.check_agent_health()
         if final_status["phase"] == "FINISHED":
             self.complete_game(final_status)
             return False
@@ -1122,6 +1122,22 @@ class Scheduler:
                 "Agent returned without a committed handoff. Resume preserves confirmed work and starts a fresh planning job.",
             )
         return False
+
+    def check_agent_health(self):
+        """Communication failures also stop a run while another civilization is playing."""
+        for civilization, agent in self.agents.items():
+            health = agent.call("health")
+            if health.get("civilization") != civilization or "runFailure" not in health:
+                raise RunnerError("Invalid agent health response; stopped for inspection.")
+            if health["runFailure"] is not None:
+                failure = health["runFailure"]
+                if not isinstance(failure, dict) or not all(
+                    isinstance(failure.get(key), str) and failure[key] for key in ("error", "diagnosticId")
+                ):
+                    raise RunnerError("Invalid agent failure report; stopped for inspection.")
+                raise RunnerError(
+                    f"{civilization}: {failure['error']}; diagnostic {failure['diagnosticId']}. Run stopped for inspection."
+                )
 
 
 def parser(*, add_help: bool = True) -> argparse.ArgumentParser:

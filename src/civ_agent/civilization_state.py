@@ -18,9 +18,11 @@ from civ_agent.memory_exports import export_files, projection_files
 from civ_agent.memory_history import action_record, build_summary, summary_markdown
 from civ_agent.memory_records import MEMORY_TYPES, HistoryReadResult, Intent, MemoryUpdate, public_record
 from civ_agent.memory_store import REACHABLE, RecordStore, encode, select_context, semantic
+from civ_agent.model_view import model_view
 from civ_agent.observations import DetailQuery, native_observation, project_detail
 from civ_agent.protocol import JsonObject
 from civ_agent.schemas import validate
+from civ_agent.stale_recovery import conflict_details, record_conflicts, recovery_reads
 from civ_agent.tls import private_directory, write_private_json
 
 
@@ -35,9 +37,10 @@ class MemoryFormatError(StateConflict):
 class StaleAssumptions(StateConflict):
     """A local pre-dispatch rejection; the affected evidence must be read again."""
 
-    def __init__(self, keys: list[str]):
+    def __init__(self, keys: list[str], details: list[JsonObject] | None = None):
         super().__init__("STALE_ASSUMPTIONS")
         self.keys = sorted(keys)
+        self.details = details or []
 
 
 class CivilizationState:
@@ -465,6 +468,7 @@ class CivilizationState:
     ) -> JsonObject:
         snapshot = snapshot if snapshot is not None else self.snapshot(purpose)
         with self.transaction() as db:
+            self._check_run_failure(db)
             if self._meta(db, "paused", False):
                 raise StateConflict("STATE_PAUSED")
             if self._meta(db, "epoch") != snapshot["epoch"]:
@@ -500,13 +504,67 @@ class CivilizationState:
         current = self._records(db)
         changed = [key for key, version in dependencies.items() if current.get(key, {}).get("version", 0) != version]
         if changed:
-            raise StaleAssumptions(changed)
+            raise StaleAssumptions(changed, conflict_details(db, job, changed, dependencies))
+
+    @staticmethod
+    def _check_run_failure(db):
+        failure = CivilizationState._meta(db, "runFailure")
+        if failure:
+            raise StateConflict(failure["error"])
+
+    def run_failure(self):
+        with self.transaction() as db:
+            return self._meta(db, "runFailure")
+
+    def resume_run(self):
+        """Explicit operator reconnect starts a new attempt; keep diagnostics and old calls."""
+        with self.transaction() as db:
+            self._set(db, "runFailure", None)
+
+    def conflict_recovery(self, keys, name, arguments):
+        with self.transaction() as db:
+            return recovery_reads(db, keys, name, arguments)
+
+    def export_failure(self):
+        failure = self.run_failure()
+        if failure:
+            write_private_json(self.root / "failures" / (failure["diagnosticId"] + ".json"), failure)
+        return failure
+
+    def fail_run(self, job, call_id, error, details, result):
+        """Fence mutations while retaining a confirmed receipt and its failed delivery diagnostics."""
+        with self.transaction() as db:
+            call = db.execute("SELECT * FROM calls WHERE job=? AND id=?", (job, call_id)).fetchone()
+            identity = db.execute("SELECT epoch,purpose FROM jobs WHERE id=?", (job,)).fetchone()
+            failure = {
+                "error": error,
+                "job": job,
+                "epoch": identity["epoch"],
+                "purpose": identity["purpose"],
+                "callId": call_id,
+                "tool": call["name"],
+                "arguments": json.loads(call["arguments"]),
+                "diagnosticId": hashlib.sha256(encode([job, call_id, error]).encode()).hexdigest()[:24],
+                **details,
+            }
+            self._set(db, "runFailure", failure)
+            result = {
+                **result,
+                "error": error,
+                "recoverable": False,
+                "diagnosticId": failure["diagnosticId"],
+                "instruction": "Stop. The action's confirmed receipt is preserved; never repeat it. The run requires operator inspection.",
+            }
+            result = self._call_record(db, job, call_id, call["name"], json.loads(call["arguments"]), result)
+            assert result is not None
+            return result
 
     def patch(self, job: str, changes: list[JsonObject], call_id: str | None = None) -> JsonObject:
         """Typed, independent optimistic edits; cache the batch in the same commit."""
         changes = validate(MemoryUpdate, {"changes": changes}).model_dump()["changes"]
         results = []
         with self.transaction() as db:
+            self._check_run_failure(db)
             self._validate(db, job, {})
             if call_id is not None:
                 prior = db.execute("SELECT result FROM calls WHERE job=? AND id=?", (job, call_id)).fetchone()
@@ -594,12 +652,28 @@ class CivilizationState:
                             **({"retired": key} if change["op"] == "replace" else {}),
                         }
                     )
+                except StaleAssumptions as error:
+                    results.append(
+                        {
+                            "id": key,
+                            "accepted": False,
+                            "reason": str(error),
+                            "changedRecords": error.keys,
+                            "conflicts": error.details,
+                            "recovery": recovery_reads(db, error.keys, "memory_update", {}),
+                        }
+                    )
                 except (StateConflict, ValueError) as error:
                     results.append({"id": key, "accepted": False, "reason": str(error)})
             db.execute("UPDATE jobs SET snapshot=? WHERE id=?", (encode(snapshot), job))
             result = {"changes": results}
             if call_id is not None:
-                db.execute("UPDATE calls SET result=? WHERE job=? AND id=?", (encode(result), job, call_id))
+                # Use the original, validated call arguments for identity. The
+                # patch's normalized defaults must not change its replay key.
+                call = db.execute("SELECT arguments FROM calls WHERE job=? AND id=?", (job, call_id)).fetchone()
+                arguments = json.loads(call[0]) if call else {"changes": changes}
+                result = self._call_record(db, job, call_id, "memory_update", arguments, result)
+                assert result is not None
             return result
 
     def search_memory(self, job, arguments):
@@ -632,6 +706,7 @@ class CivilizationState:
         """Code owns identity. Retrying one tool call reuses the exact saved request."""
         request_id = "r" + hashlib.sha256((job + ":" + call_id).encode()).hexdigest()[:24]
         with self.transaction() as db:
+            self._check_run_failure(db)
             self._validate(db, job, dependencies)
             previous = db.execute("SELECT * FROM outbox WHERE id=?", (request_id,)).fetchone()
             if previous:
@@ -652,14 +727,16 @@ class CivilizationState:
                     current = store.all().get(key)
                     version = snapshot.get("delivered", {}).get(key)
                     if not current or version is None:
-                        raise StaleAssumptions([key])
+                        raise StaleAssumptions([key], conflict_details(db, job, [key], cause="plan_not_read"))
                     self._validate(db, job, {key: version})
                     if (
                         current["category"] != "plan"
                         or current["body"].get("state") != "active"
                         or current["body"].get("needsReview")
                     ):
-                        raise StaleAssumptions([key])
+                        raise StaleAssumptions(
+                            [key], conflict_details(db, job, [key], cause="plan_not_active_or_reviewed")
+                        )
                     pinned["plan"] = {"key": key, "version": version, "objective": current["body"]["objective"]}
                 pinned["assumptions"] = store.pin(snapshot, [a["source"] for a in intent["assumptions"] if a["source"]])
                 self._validate(db, job, {ref["key"]: ref["version"] for ref in pinned["assumptions"]})
@@ -668,7 +745,10 @@ class CivilizationState:
                     if current["category"] in MEMORY_TYPES and (
                         current["body"].get("state") != "active" or current["body"].get("needsReview")
                     ):
-                        raise StaleAssumptions([ref["key"]])
+                        raise StaleAssumptions(
+                            [ref["key"]],
+                            conflict_details(db, job, [ref["key"]], cause="assumption_not_active_or_reviewed"),
+                        )
             decision = store.handle("dec")
             store.write(
                 decision,
@@ -794,10 +874,16 @@ class CivilizationState:
         prior = db.execute("SELECT * FROM calls WHERE job=? AND id=?", (job, id)).fetchone()
         if prior and (prior["name"] != name or prior["arguments"] != encode(arguments)):
             raise StateConflict("CALL_CONFLICT")
+        if prior and prior["result"]:
+            previous = json.loads(prior["result"])
+            # Preserve the first delivery's intentional section order (tactics
+            # before city menus), without rewriting or recounting a cached call.
+            return result if result is not None and result == previous else previous
         db.execute("INSERT OR IGNORE INTO calls VALUES (?,?,?,?,NULL)", (job, id, name, encode(arguments)))
         if result is not None:
+            result = record_conflicts(db, job, id, name, arguments, result)
             db.execute("UPDATE calls SET result=? WHERE job=? AND id=?", (encode(result), job, id))
-        return json.loads(prior["result"]) if prior and prior["result"] else None
+        return result
 
     def refresh_memory(self, job, keys, cursor=None, include_retired=False):
         with self.transaction() as db:
@@ -896,7 +982,7 @@ class CivilizationState:
                     encode(
                         {
                             "request": json.loads(row["payload"]),
-                            "receipt": json.loads(row["result"]) if row["result"] else None,
+                            "receipt": model_view(json.loads(row["result"])) if row["result"] else None,
                             "decision": row["decision"],
                         }
                     )
@@ -908,7 +994,9 @@ class CivilizationState:
                     if directory.startswith("turn_")
                     else build_summary(db, job=directory.split("/", 1)[1])
                 )
-                files[directory + "/summary.json"] = json.dumps(summary, ensure_ascii=False, indent=2) + "\n"
+                files[directory + "/summary.json"] = (
+                    json.dumps(model_view(summary), ensure_ascii=False, indent=2) + "\n"
+                )
                 files[directory + "/summary.md"] = summary_markdown(summary)
         export_files(self.root, workspace, files)
 

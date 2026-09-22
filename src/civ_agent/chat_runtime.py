@@ -60,6 +60,10 @@ class ChatRuntime:
                 self.running = False
                 raise StateConflict("PLAYER_CREDENTIAL_MISMATCH")
             await self.reconcile()
+            if service.gateway.run_failure:
+                # connect is an explicit operator run/resume boundary, not a
+                # subscription reconnect or an automatic model retry.
+                await service.gateway.resume_run()
             await service.flush_telemetry()
             await service.io.call(service.memory.allow_communication_retry)
             if await service.io.call(service.memory.has_wake):
@@ -123,7 +127,11 @@ class ChatRuntime:
             await self.pending.wait()
             await asyncio.sleep(1)  # Batch in application code, never in model context.
             self.pending.clear()
-            if self.service.gateway.paused or not await self.service.io.call(self.service.memory.has_wake):
+            if (
+                self.service.gateway.paused
+                or self.service.gateway.run_failure
+                or not await self.service.io.call(self.service.memory.has_wake)
+            ):
                 continue
             job = job_id()
             try:
@@ -226,6 +234,15 @@ class ChatRuntime:
                         shutil.copyfile(source, destination / name)
                         (destination / name).chmod(0o600)
 
+        owner = asyncio.current_task()
+        assert owner is not None
+
+        async def stop_on_failure():
+            await service.gateway.failed.wait()
+            owner.cancel()
+
+        failure_monitor = asyncio.create_task(stop_on_failure())
+
         try:
             prepared = await prepare_startup(service.gateway, job)
             startup = startup_prompt(prepared, "communication", prompt)
@@ -287,11 +304,21 @@ class ChatRuntime:
                     grant = await self.social("job_heartbeat", job=id, usage=record["usage"])
                     if not grant["granted"]:
                         break
+        except asyncio.CancelledError:
+            if not service.gateway.run_failure:
+                raise
         finally:
+            failure_monitor.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await failure_monitor
+            if service.gateway.run_failure:
+                completed = False
+                record["error"] = service.gateway.run_failure["error"]
+                record["runFailure"] = service.health()["runFailure"]
             job.closed = True
             await process.close()
             await service.gateway.close(job, completed)
-            record["phase"] = "COMPLETED" if completed else "INTERRUPTED"
+            record["phase"] = "FAILED" if record.get("error") else "COMPLETED" if completed else "INTERRUPTED"
             record["summary"] = final[:2400]
             record["usageComplete"] = completed and record.get("usageReported", False)
             await service.io.call(service.accounting.sample, record, job.waiting_seconds())

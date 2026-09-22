@@ -36,7 +36,7 @@ from civ_agent.agent_settings import (
     valid_setting,
 )
 from civ_agent.chat_runtime import ChatRuntime
-from civ_agent.civilization_state import CivilizationState
+from civ_agent.civilization_state import CivilizationState, StateConflict
 from civ_agent.diagnostics import Diagnostics
 from civ_agent.host_connection import HostConnection
 from civ_agent.proposal_gateway import ProposalGateway
@@ -615,6 +615,13 @@ class AgentService:
         result["negotiationWaitSeconds"] = job.waiting_seconds() if job else record.get("negotiationWaitSeconds", 0)
         return result
 
+    def health(self):
+        failure = self.gateway.run_failure
+        return {
+            "civilization": self.civilization,
+            "runFailure": {key: failure[key] for key in ("error", "diagnosticId", "job")} if failure else None,
+        }
+
     def _validate_start(self, payload):
         try:
             request = StartRequest.model_validate(payload)
@@ -627,6 +634,8 @@ class AgentService:
 
     async def start(self, payload: JsonObject) -> JsonObject:
         self._validate_start(payload)
+        if self.gateway.run_failure:
+            raise ServiceError(self.gateway.run_failure["error"], 409)
         fingerprint = hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
         async with self.guard:
             if await self.io.call(self.results.load) is not None or any(
@@ -898,10 +907,20 @@ class AgentService:
             "epoch": payload["epoch"],
         }
         self.diagnostics.emit("gameplay_job_started", **context)
-        async with self.connection_factory(
-            self.mcp_url, payload["playerToken"], self.ca_file, diagnostics=self.diagnostics, context=context
-        ) as connection:
-            await self._run_connected_job(payload, connection)
+        try:
+            async with self.connection_factory(
+                self.mcp_url, payload["playerToken"], self.ca_file, diagnostics=self.diagnostics, context=context
+            ) as connection:
+                await self._run_connected_job(payload, connection)
+        except StateConflict:
+            if not self.gateway.run_failure:
+                raise
+            # A concurrent chat failure can fence startup before its watchdog exists.
+            record = self.records[payload["activationId"]]
+            record.update(
+                phase="FAILED", error=self.gateway.run_failure["error"], runFailure=self.health()["runFailure"]
+            )
+            await self._save(record, refresh=True)
         self.diagnostics.emit("gameplay_job_finished", **context, phase=self.records[payload["activationId"]]["phase"])
 
     async def _run_connected_job(self, payload: JsonObject, connection: HostConnection) -> None:
@@ -933,7 +952,9 @@ class AgentService:
                 if self.stopping:
                     return
                 now = time.monotonic()
-                if now - self.last_heartbeat >= payload["leaseSeconds"]:
+                if self.gateway.run_failure:
+                    self.failure = self.gateway.run_failure["error"]
+                elif now - self.last_heartbeat >= payload["leaseSeconds"]:
                     self.failure = "HEARTBEAT_EXPIRED"
                 elif now - started - job.waiting_seconds() >= payload["timeoutSeconds"]:
                     self.failure = "ACTIVATION_TIMEOUT"
@@ -1109,8 +1130,13 @@ class AgentService:
         except asyncio.CancelledError:
             self.failure = self.failure or "INTERRUPTED"
         except (TimeoutError, ServiceError, OSError, ValueError, KeyError, aiohttp.ClientError) as error:
-            self.failure = error.code if isinstance(error, ServiceError) else "CODEX_CONNECTION_FAILED"
+            self.failure = self.failure or (
+                error.code if isinstance(error, ServiceError) else "CODEX_CONNECTION_FAILED"
+            )
         finally:
+            if self.gateway.run_failure:
+                self.failure = self.gateway.run_failure["error"]
+                record["runFailure"] = self.health()["runFailure"]
             record["negotiationWaitSeconds"] = job.waiting_seconds()
             self.stopping = True
             handoff_monitor.cancel()
@@ -1132,7 +1158,9 @@ class AgentService:
             job.model_stopped.set()
             finished = copy.deepcopy(record)
             finished["phase"] = (
-                "COMPLETED"
+                "FAILED"
+                if self.gateway.run_failure
+                else "COMPLETED"
                 if (self.completion == "completed" or record.get("completionReason") == "native_handoff")
                 and self.failure is None
                 else "INTERRUPTED"
@@ -1271,6 +1299,10 @@ class AgentService:
                     return web.json_response(
                         result, dumps=lambda value: json.dumps(value, ensure_ascii=False, separators=(",", ":"))
                     )
+                elif operation == "health":
+                    if payload:
+                        raise ServiceError("INVALID_ARGUMENT")
+                    result = self.health()
                 elif operation in {"status", "heartbeat", "interrupt"}:
                     if set(payload) - {"activationId"} or (
                         operation != "status" and not identifier(payload.get("activationId"))

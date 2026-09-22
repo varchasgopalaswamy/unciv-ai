@@ -56,6 +56,10 @@ object MixedDiplomacyProbe {
                 rome.popupAlerts.add(PopupAlert(AlertType.DemandToStopSettlingCitiesNear, china.civID))
                 val demandTurn = api.turn(tokens.getValue("Rome"))
                 val alert = demandTurn.alerts.single { it.nativeDiplomacy?.civilizationId == "China" }
+                check(alert.nativeDiplomacy!!.sender == "China" && alert.nativeDiplomacy!!.recipient == "Rome")
+                check(alert.nativeDiplomacy!!.event == AlertType.DemandToStopSettlingCitiesNear.name)
+                check(alert.nativeDiplomacy!!.demand == "DoNotSettleNearUs")
+                check(alert.nativeDiplomacy!!.options.none { it.declaresWar })
                 val response = command("send", "to" to "China", "text" to "We accept.", "nativeAction" to obj("kind" to "RESPOND_DIPLOMACY", "target" to alert.handle, "selection" to "Accept", "revision" to demandTurn.revision))
                 check(response["error"] == null) { response.toString() }
                 check(china.getDiplomacyManager(rome)!!.hasFlag(DiplomacyFlags.AgreedToNotSettleNearUs))
@@ -161,6 +165,7 @@ object MixedDiplomacyProbe {
         for (afterReplace in listOf(false, true)) verifyFailedMessage(root.resolve("failed-message-$afterReplace"), afterReplace)
         verifyMediatedPeace(root.resolve("mediated-peace"))
         verifyResponseAdvice(root.resolve("response-advice"))
+        verifyIncidentFacts(root.resolve("incident-facts"))
     }
 
     private fun gold(amount: Int) = obj("type" to "Gold", "name" to "Gold", "amount" to amount, "duration" to -1)
@@ -180,12 +185,36 @@ object MixedDiplomacyProbe {
                 val alert = turn.alerts.single { it.nativeDiplomacy != null }
                 val response = alert.nativeDiplomacy!!.options.single { it.name == choice }
                 check(response.available && response.socialAdvisories.single().terms == terms)
+                check(response.declaresWar)
                 val result = rome.communication(obj("op" to "send", "epoch" to runtime.epoch, "requestId" to "native-war-response", "to" to "Greece", "text" to "We choose war despite that social promise.", "nativeAction" to obj("kind" to "RESPOND_DIPLOMACY", "target" to alert.handle, "selection" to choice, "revision" to turn.revision)))
                 check(result["nativeOutcome"]!!.jsonObject["atWar"]!!.jsonPrimitive.boolean)
                 check(roman.isAtWarWith(greek))
                 check(rome.turn().socialAdvisories.single().terms == terms)
                 check(runtime.executor.communicationState.outcomes.count { it.action == "DECLARE_WAR" } == 1)
             }
+        }
+    }
+
+    private fun verifyIncidentFacts(root: Path) {
+        HeadlessRuntime.createMixedDiplomacyExercise(root).use { runtime ->
+            val roman = runtime.game.getCivilization("Rome")
+            val greek = runtime.game.getCivilization("Greece")
+            val minor = runtime.game.civilizations.first { it.isCityState }
+            roman.diplomacyFunctions.makeCivilizationsMeet(minor)
+            roman.popupAlerts.clear()
+            val rome = PlayerHost(runtime).bindPlayer("Rome")
+            roman.popupAlerts.add(PopupAlert(AlertType.DeclarationOfFriendship, greek.civID))
+            val friendship = rome.turn().alerts.single().friendship!!
+            check(friendship.duration == com.unciv.logic.civilization.PlayerFriendshipOperations.DURATION)
+            check(friendship.content.paragraphs.isNotEmpty()) { "Human-facing dialogue was removed" }
+            roman.popupAlerts.clear()
+            roman.popupAlerts.add(PopupAlert(AlertType.AttackedProtectedMinor, "${greek.civID}@${minor.civID}"))
+            val incident = rome.turn().alerts.single().nativeDiplomacy!!
+            check(incident.incidentCityState!!.civilizationId == minor.civID && !incident.incidentCityState!!.unmet)
+            // The native message can reference an incident involving an unmet minor.
+            roman.diplomacy.remove(minor.civID)
+            val hidden = rome.turn().alerts.single().nativeDiplomacy!!.incidentCityState!!
+            check(hidden.civilizationId == null && hidden.unmet && minor.civName !in hidden.name)
         }
     }
 

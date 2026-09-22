@@ -4,7 +4,7 @@ import argparse
 from collections.abc import Sequence
 from importlib.metadata import version
 
-from civ_agent import match_recovery, scheduler
+from civ_agent import match_recovery, match_watch, scheduler
 from civ_agent.commands import (
     agent,
     agent_server,
@@ -51,6 +51,10 @@ def parser() -> argparse.ArgumentParser:
     service.set_defaults(handler=agent_server.run)
 
     matches = groups.add_parser("match", help="Schedule turns and control a match").add_subparsers(required=True)
+    watch = matches.add_parser(
+        "watch", parents=[match_watch.parser(add_help=False)], help="Open a live terminal dashboard for a saved match"
+    )
+    watch.set_defaults(handler=match_watch.run)
     descriptions = {
         "start": "Start automatic turn scheduling",
         "resume": "Resume scheduling and recover an interrupted turn",

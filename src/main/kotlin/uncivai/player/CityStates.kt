@@ -28,7 +28,11 @@ data class CityStateBonus(val relationship: String, val description: String, val
 data class CityStateContest(val yourScore: Int, val leaderScore: Int, val leaders: List<CityStateCivilization>)
 
 @Serializable
-data class CityStateQuest(val name: String, val description: String, val influenceReward: Float, val remainingTurns: Int?, val global: Boolean, val targetCivilization: CityStateCivilization?, val location: TilePosition?, val contest: CityStateContest?)
+data class CityStateQuest(val name: String, val description: String, val influenceReward: Float, val remainingTurns: Int?, val global: Boolean, val targetCivilization: CityStateCivilization?, val location: TilePosition?, val contest: CityStateContest?, val objective: CityStateQuestObjective? = null)
+
+/** Public parameters already displayed by the quest, separated from its narrative. */
+@Serializable
+data class CityStateQuestObjective(val kind: String, val issuer: String, val targetName: String? = null, val goldGiftInfluenceBonusPercent: Int? = null)
 
 @Serializable
 data class CityStateDefense(val enemy: CityStateCivilization, val unitsToKill: Int, val unitsKilled: Int)
@@ -175,6 +179,20 @@ private fun quest(player: Civilization, assigned: AssignedQuest): CityStateQuest
         location,
         manager.getGlobalQuestStanding(assigned)?.let { standing ->
             CityStateContest(standing.yourScore, standing.leaderScore, frozen(standing.leaders.map { civilization(player, player.gameInfo.getCivilization(it)) }))
+        },
+        if (assigned.questNameInstance == QuestName.None) {
+            null
+        } else {
+            CityStateQuestObjective(
+                assigned.questName,
+                assigned.assignerCiv.civID,
+                // Never copy arbitrary data1: it can be a hidden civilization ID,
+                // location or private contest baseline. These names are UI targets.
+                targetName = assigned.data1.takeIf {
+                    assigned.questNameInstance in setOf(QuestName.ConstructWonder, QuestName.ConnectResource, QuestName.GreatPerson, QuestName.FindNaturalWonder, QuestName.SpreadReligion)
+                },
+                goldGiftInfluenceBonusPercent = assigned.data1.toIntOrNull().takeIf { assigned.questNameInstance == QuestName.Invest },
+            )
         },
     )
 }

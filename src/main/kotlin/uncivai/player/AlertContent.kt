@@ -15,9 +15,12 @@ data class AlertContent(
     val quote: String? = null,
     val acknowledgement: String,
     val additionalAcknowledgements: List<String> = emptyList(),
+    val kind: String? = null,
+    val civilizationId: String? = null,
+    val gameplayParagraphs: List<String>? = null,
 )
 
-internal fun observeAlertContent(operations: PlayerOperations, alert: PopupAlert): AlertContent? = operations.informationalPopupContent(alert)?.toPlayerContent()
+internal fun observeAlertContent(operations: PlayerOperations, alert: PopupAlert): AlertContent? = operations.informationalPopupContent(alert)?.toPlayerContent()?.copy(kind = alert.type.name)
 
 internal fun InformationalPopupContent.toPlayerContent(): AlertContent = let { content ->
     AlertContent(

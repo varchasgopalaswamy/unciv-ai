@@ -49,6 +49,8 @@ class Agent:
         self.proofs = []
 
     def call(self, operation, **fields):
+        if operation == "health":
+            return {"civilization": self.civilization, "runFailure": None}
         key = fields["activationId"]
         if operation == "start":
             self.rows[key] = {
@@ -74,7 +76,7 @@ class Agent:
         return copy.deepcopy(row)
 
     def events(self, activation, cursor):
-        return {"available": False, "events": [], "nextCursor": cursor, "hasMore": False}
+        return {"available": True, "events": [], "nextCursor": cursor, "hasMore": False}
 
     def archive(self, activation):
         return {"gameTurn": self.rows[activation]["gameTurn"]}
@@ -101,6 +103,7 @@ def make_scheduler(tmp_path, state=None, operator=None, agents=None):
     published = []
     scheduler.history_for = lambda *args, **kwargs: SimpleNamespace(
         cursor=0,
+        append=lambda events: None,
         output=SimpleNamespace(finish_line=lambda: None, line=lambda *args: None),
         publish_archive=published.append,
     )

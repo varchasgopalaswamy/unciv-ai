@@ -3,6 +3,7 @@ package uncivai.player
 import com.unciv.logic.civilization.Civilization
 import com.unciv.logic.civilization.PlayerOperations
 import com.unciv.models.ruleset.Policy
+import com.unciv.models.ruleset.tech.Technology
 import com.unciv.models.ruleset.unique.GameContext
 import com.unciv.models.ruleset.unique.UniqueType
 import com.unciv.models.translations.tr
@@ -27,6 +28,7 @@ data class ResearchDetail(
     val prerequisiteQueue: List<String>?,
     val queueAvailable: Boolean?,
     val description: String?,
+    val gameplayDescription: String? = null,
 )
 
 @Serializable
@@ -90,10 +92,22 @@ internal fun observeResearchDetails(player: Civilization, turn: PlayerTurnSnapsh
                     availability(reasons + if (player.tech.freeTechs == 0) listOf("No free technology choice is pending") else emptyList()),
                     queue, queue?.let { active && player.tech.freeTechs == 0 && it.isNotEmpty() },
                     if (names.isEmpty()) null else tech.getDescription(player),
+                    if (names.isEmpty()) null else tech.gameplayDescription(player),
                 )
             },
         ),
     )
+}
+
+/** The engine prepends these exact Civilopedia lines to its mechanical description.
+ * Strip only that source-identified prefix, without changing the ruleset or guessing
+ * which effect descriptions are prose. Desktop/audit descriptions stay intact.
+ */
+internal fun Technology.gameplayDescription(player: Civilization): String {
+    val description = getDescription(player)
+    val prefix = civilopediaText.filter { it.text.isNotEmpty() && it.header == 0 }.joinToString("\n") { it.text.tr() }
+    if (prefix.isEmpty()) return description
+    return if (description == prefix) "" else description.removePrefix("$prefix\n")
 }
 
 internal fun observePolicyDetails(player: Civilization, turn: PlayerTurnSnapshot, names: List<String>): PolicyDetails {

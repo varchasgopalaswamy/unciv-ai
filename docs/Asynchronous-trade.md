@@ -143,8 +143,9 @@ If another job changes a relevant private plan or observation before dispatch,
 the gateway returns `STALE_ASSUMPTIONS` with `applied: false`, `recoverable: true`,
 the changed record keys and `recovery.reads`. No command was sent. The agent reads
 those records, reconsiders the affected action and either makes a fresh decision
-or skips work already completed by the other job. A repeated conflict defers that
-action while other gameplay continues. Unrelated messages do not invalidate a
+or skips work already completed by the other job. A second stale rejection of the
+same operation stops the run with `REPEATED_STALE_ASSUMPTIONS` and durable
+diagnostics; it cannot be deferred to continue the benchmark. Unrelated messages do not invalidate a
 plan. Replaying the rejected call returns the same rejection even after a refresh;
 it cannot execute an obsolete decision. Uncertain transmitted requests still
 stop the job and require receipt reconciliation.

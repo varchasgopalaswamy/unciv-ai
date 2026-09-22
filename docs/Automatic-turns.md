@@ -184,6 +184,12 @@ edits to these copies cannot change the next job's context.
 
 ## Live output and saved history
 
+For a live dashboard in another terminal, run
+`uv run civ-agent match watch --state-dir /path/to/match`. It shows player status,
+scores, token/call totals, per-turn timings, and scrollable activity with player and
+turn selection. It attaches to existing records without restarting or interrupting
+the game. See [terminal dashboard](Match-dashboard.md) for controls and data sources.
+
 `civ-agent match start` prints turn headers, consistent player colors, indented
 assistant messages and confirmed-action summaries from native receipts. Errors
 and warnings remain visible in normal output. One renderer coordinates messages
@@ -222,6 +228,12 @@ worker. Markdown and turn archives refresh periodically (every two seconds plus
 rendering time), and unchanged versions are skipped. Interruption and completion
 flush accepted events and derived files before publishing a terminal activation.
 Status requests and heartbeats remain on the HTTPS event loop while this work runs.
+
+The scheduler requires the current service's history and health APIs. Missing
+terminal history blocks the next turn. A second stale conflict on one operation,
+or an internal state-update failure, stops the run for inspection; communication
+failures are checked even while another civilization is playing. See the
+[recovery and compatibility audit](Recovery-and-benchmark-audit.md).
 
 New MCP tool-result records keep structured JSON once when its accompanying plain
 text contains exactly the same JSON value. Distinct text, annotations, other content

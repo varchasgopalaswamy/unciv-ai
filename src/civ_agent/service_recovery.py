@@ -97,6 +97,11 @@ async def _restore(service, payload):
         service.active_id = None
         service.gateway.jobs.clear()
         service.gateway.deferred_completions.clear()
+        service.gateway.run_failure = service.memory.run_failure()
+        if service.gateway.run_failure:
+            service.gateway.failed.set()
+        else:
+            service.gateway.failed.clear()
         write_private_json(service.state_dir / "restore.json", {**payload, "installed": True})
 
     await service.io.call(install)

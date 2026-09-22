@@ -24,6 +24,7 @@ import com.unciv.logic.civilization.PlayerVictoryOperations
 import com.unciv.logic.civilization.PlayerWaterImprovementOperations
 import com.unciv.logic.civilization.PlayerWorkerOperations
 import com.unciv.logic.civilization.PopupAlert
+import com.unciv.models.translations.tr
 import uncivai.GameExecutor
 import java.util.Collections
 
@@ -648,7 +649,21 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
         state.alertHandles.keys.removeIf { old -> player.popupAlerts.none { it === old } }
         val alerts = player.popupAlerts.map { alert ->
             val contact = observeFirstContact(operations, alert)
-            val content = observeAlertContent(operations, alert)
+            val content = observeAlertContent(operations, alert)?.let { content ->
+                content.copy(
+                    civilizationId = when (alert.type) {
+                        AlertType.FirstContact -> contact?.civilizationId
+                        AlertType.WarDeclaration, AlertType.Defeated -> game.civilizations.firstOrNull { it.civID == alert.value && player.knows(it) }?.civID
+                        else -> null
+                    },
+                    gameplayParagraphs = when (alert.type) {
+                        AlertType.TechResearched -> game.ruleset.technologies[alert.value]?.let { immutable(listOf(it.gameplayDescription(player).tr())) }
+                        AlertType.WonderBuilt -> content.paragraphs
+                        AlertType.StartIntro, AlertType.FirstContact, AlertType.GoldenAge, AlertType.WarDeclaration, AlertType.Defeated, AlertType.GameHasBeenWon -> emptyList()
+                        else -> null
+                    },
+                )
+            }
             val capture = captures.captureDecision(alert)?.observation(active = phase == "ACTIVE" && !negotiating)
             val friendship = PlayerFriendshipOperations(player).decision(alert)?.let {
                 FriendshipDecision(

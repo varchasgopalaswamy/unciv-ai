@@ -16,12 +16,17 @@ from typing import Any
 
 from civ_agent.memory_history import action_text, summary_markdown
 from civ_agent.memory_records import TurnSummary
+from civ_agent.model_view import model_view
 from civ_agent.protocol import JsonObject
 from civ_agent.tls import private_directory, regular_file, write_private, write_private_json
 
 
 class TurnArchiveError(ValueError):
     pass
+
+
+def _model_jsonl(text: str) -> str:
+    return _jsonl(model_view(json.loads(line)) for line in text.splitlines())
 
 
 _SECRET_KEY = re.compile(r"token|authorization|password|secret|api.?key", re.I)
@@ -365,9 +370,15 @@ class TurnArchive:
             # copies. A bad workspace path cannot contaminate future context.
             for root in (turn_path, self.workspace / turn_name):
                 _directory(root)
-                write_private(root / "commands.jsonl", artifacts["commands"].encode())
+                workspace_copy = root != turn_path
+
+                commands = _model_jsonl(artifacts["commands"]) if workspace_copy else artifacts["commands"]
+                write_private(root / "commands.jsonl", commands.encode())
                 write_private(root / "summary.md", artifacts["summary"].encode())
-                write_private_json(root / "summary.json", artifacts["summaryData"])
+                write_private_json(
+                    root / "summary.json",
+                    model_view(artifacts["summaryData"]) if workspace_copy else artifacts["summaryData"],
+                )
                 metadata = {
                     key: value for key, value in artifacts.items() if key not in {"commands", "summary", "summaryData"}
                 }
@@ -379,9 +390,15 @@ class TurnArchive:
                     ]
                 write_private_json(root / "turn.json", metadata)
                 attempt_path = _directory(_directory(root / "attempts") / f"attempt_{attempt['attempt']}")
-                write_private(attempt_path / "commands.jsonl", attempt_artifacts["commands"].encode())
+                commands = (
+                    _model_jsonl(attempt_artifacts["commands"]) if workspace_copy else attempt_artifacts["commands"]
+                )
+                write_private(attempt_path / "commands.jsonl", commands.encode())
                 write_private(attempt_path / "summary.md", attempt_artifacts["summary"].encode())
-                write_private(attempt_path / "events.jsonl", _jsonl(public_events).encode())
+                write_private(
+                    attempt_path / "events.jsonl",
+                    _jsonl(model_view(public_events) if workspace_copy else public_events).encode(),
+                )
                 write_private_json(attempt_path / "source.json", attempt_metadata)
             return artifacts
 

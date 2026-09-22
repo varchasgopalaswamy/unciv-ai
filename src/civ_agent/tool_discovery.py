@@ -26,6 +26,8 @@ def tool_discovery_instructions(purpose: Literal["gameplay", "communication"]) -
         "Save changed strategy, beliefs and useful durable notes; receipts already preserve routine state and actions. "
         "Retire obsolete records with memory_update before finishing; no memory write is needed when nothing useful changed. "
         "Follow error recovery.reads and instructions; stop if an action's outcome is uncertain. "
-        "On repeated STALE_ASSUMPTIONS, defer the affected action or memory change and continue other work; "
-        "do not stop the gameplay turn for this."
+        "For STALE_ASSUMPTIONS, follow recovery.reads, reconsider and revise flagged plans, then make one fresh "
+        "attempt. Skip only obsolete work or work already handled. A second stale rejection of the same action "
+        "or memory edit stops the run for inspection. Never defer a persistent recovery failure to keep playing. "
+        "REPEATED_STALE_ASSUMPTIONS is terminal; stop without further tool calls."
     )

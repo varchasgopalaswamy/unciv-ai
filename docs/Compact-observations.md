@@ -8,8 +8,10 @@ Native pathfinding, special-mission previews and tree/victory queries run on dem
 
 The overview includes tactical and strategy reviews, city and unit rosters,
 production queues, growth, empire totals, research/policy choices, known diplomatic
-status, and turn-review unit activity. Alerts, decisions, ordinary notifications
-and combat reports retain their full content. Agents must read popup content
+status, and turn-review unit activity. Alerts and decisions retain gameplay facts,
+effects and consequences; [audited native flavor text](Model-flavor-text-audit.md)
+is omitted from model views. Ordinary notifications and combat reports retain
+their full content. Agents must read popup facts
 before acknowledging it. [Ordinary notifications](Ordinary-notifications.md) can
 be dismissed in batches after reading; agents choose which assessments to update.
 Confirmed-action bodies and detailed economic/map data move to explicit reads.
@@ -78,7 +80,7 @@ action. A construction catalogue does not establish that purchase confirmations
 were read; inspect the named entry, full city, or both `production` and `purchases`.
 A movement read cannot satisfy a disband, gift, promotion or settlement inspection.
 Declaration warnings require
-`player_details({section:"diplomacy"})`. Popup responses use the complete content
+`player_details({section:"diplomacy"})`. Popup responses use the gameplay content
 already present in the overview, as does ordinary notification dismissal. Social
 commitment decisions require `chat_read`; formal trades continue to require
 `trade_read`.
@@ -89,8 +91,10 @@ refresh query. Successful gameplay actions, including alert acknowledgements,
 return [state updates](Command-state-updates.md) with deterministic section/row
 changes. Only changed inspections expire; native movement/mission previews still
 expire on a changed revision. An argument error with `applied:false` does not
-itself require another overview. Failed refreshes preserve the applied receipt
-and require a full `player_turn`; they never repeat the action.
+itself require another overview. Transport refresh failures preserve the applied
+receipt and require a full `player_turn`. Invalid snapshots or internal
+projection/persistence failures stop with `STATE_UPDATE_FAILED` for inspection;
+neither case repeats the action.
 
 Pydantic defines the service's overview, detail input and detail result schemas.
 `observation:overview` cites the game overview; each detail response has an
@@ -103,8 +107,9 @@ than reconstruction from cached map data. The compact unit roster retains the
 active destination, Work Boat action availability, available air missions, transport state and automatic interception readiness. Full `unit_details.air` adds bases, remaining slots and ranges. A greeting or a change to
 another entity does not invalidate
 a plan depending only on the inspected section. Changes to another section of
-that same unit also leave its focused evidence unchanged. Historical raw snapshots remain
-available through explicit memory reads. Restart and whole-match rollback use the
+that same unit also leave its focused evidence unchanged. Historical snapshots remain
+available through explicit memory reads with the same flavor-text projection.
+Raw host observations and receipts remain in audit storage. Restart and whole-match rollback use the
 same versioned SQLite evidence store.
 
 Victory progress uses Unciv's pure milestone completion checks and victory-screen

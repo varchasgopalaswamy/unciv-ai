@@ -30,6 +30,7 @@ from civ_agent.memory_records import (
     memory_argument_error,
     public_record,
 )
+from civ_agent.model_view import model_view
 from civ_agent.observations import (
     DETAIL_MODELS,
     DetailQuery,
@@ -44,6 +45,7 @@ from civ_agent.observations import (
 from civ_agent.protocol import JsonObject
 from civ_agent.schemas import validate
 from civ_agent.service_io import ServiceIO
+from civ_agent.stale_recovery import REPEATED_STALE
 from civ_agent.state_updates import apply_overview_update, changed_details, overview_update, refresh_required, stamp
 from civ_agent.tactical_review import TacticalReviewRequired, strategy_review, tactical_review
 from civ_agent.telemetry import JobAccounting
@@ -64,11 +66,6 @@ READ_TOOLS = {
     "free_great_person_choice",
 }
 COMMUNICATION_READ_TOOLS = {"player_turn", "player_result", "victory_progress"}
-RECOVERY_INSTRUCTIONS = (
-    "STALE_ASSUMPTIONS applied nothing: follow recovery.reads, reconsider only the affected action, "
-    "then make a fresh decision or skip it if another job already handled it. "
-    "If it conflicts again, defer that action and continue other work; do not stop the gameplay turn for this. "
-)
 ECONOMIC = {
     "BUY_CONSTRUCTION",
     "BUY_TILE",
@@ -86,9 +83,13 @@ ECONOMIC = {
 
 
 def public_result(value: Any) -> Any:
+    return _without_bookkeeping(model_view(value))
+
+
+def _without_bookkeeping(value: Any) -> Any:
     if isinstance(value, dict):
         return {
-            key: public_result(
+            key: _without_bookkeeping(
                 {name: part for name, part in item.items() if name != "id"}
                 if key == "turnReview" and isinstance(item, dict)
                 else item
@@ -97,7 +98,7 @@ def public_result(value: Any) -> Any:
             if key not in BOOKKEEPING and key not in {"peaceVersion", "_evidence", "_assumptions", "_pinned"}
         }
     if isinstance(value, list):
-        return [public_result(item) for item in value]
+        return [_without_bookkeeping(item) for item in value]
     return value
 
 
@@ -157,6 +158,28 @@ class ProposalGateway:
         self.deferred_completions = []
         self.accounting: JobAccounting | None = None
         self.history = None
+        self.run_failure = memory.run_failure()
+        self.failed = asyncio.Event()
+        if self.run_failure:
+            self.failed.set()
+
+    async def resume_run(self):
+        if self.jobs:
+            raise StateConflict("ACTIVE_JOBS")
+        await self.io.call(self.memory.export_failure)
+        await self.io.call(self.memory.resume_run)
+        self.run_failure = None
+        self.failed.clear()
+
+    async def sync_failure(self):
+        failure = await self.io.call(self.memory.run_failure)
+        if failure:
+            self.run_failure = failure
+            try:
+                if not self.failed.is_set():
+                    await self.io.call(self.memory.export_failure)
+            finally:
+                self.failed.set()
 
     async def open(
         self,
@@ -170,8 +193,14 @@ class ProposalGateway:
         owns_connection: bool = False,
         memory_snapshot: JsonObject | None = None,
     ) -> JobAccess:
+        if self.run_failure:
+            raise StateConflict(self.run_failure["error"])
         await self.io.call(self.memory.bind, epoch)
-        snapshot = await self.io.call(self.memory.start_job, id, purpose, settings, game_turn, memory_snapshot)
+        try:
+            snapshot = await self.io.call(self.memory.start_job, id, purpose, settings, game_turn, memory_snapshot)
+        except StateConflict:
+            await self.sync_failure()
+            raise
         job = JobAccess(id, purpose, epoch, connection, snapshot, owns_connection=owns_connection)
         self.jobs[job.token] = job
         return job
@@ -188,6 +217,8 @@ class ProposalGateway:
         await self.io.call(self.memory.export, self.workspace)
 
     def check(self, job: JobAccess):
+        if self.run_failure:
+            raise StateConflict(self.run_failure["error"])
         if self.paused or job.closed or self.jobs.get(job.token) is not job:
             raise StateConflict("JOB_PAUSED_OR_EXPIRED")
         if job.gameplay_fenced:
@@ -205,7 +236,7 @@ class ProposalGateway:
                 if tool["name"] == "player_turn":
                     entry["description"] = (
                         "Read the current overview at turn startup or to resynchronize: tactics, strategy review, "
-                        "city/unit roster, pending decisions, full alerts and notifications. Inspect legal options and "
+                        "city/unit roster, pending decisions, factual alerts and notifications. Inspect legal options and "
                         "consequences with focused detail tools before acting; use chat_read for social promises.\n"
                         "After successful gameplay actions, apply stateUpdate instead of reading player_turn again:\n"
                         "- delta: baseStateId must match your stateId; adopt the new stateId. set replaces whole "
@@ -216,6 +247,8 @@ class ProposalGateway:
                         "- full: replace the overview. unavailable: keep the successful receipt and read player_turn; "
                         "refresh failure never undoes an action. Never repeat an applied action to refresh state.\n"
                         "- turn_ended: stop immediately without further calls.\n"
+                        "native.availableDemandsToSend lists actions YOU may send, not requests received or promises. "
+                        "Received native messages are in alerts.nativeDiplomacy with sender, event and response options. "
                         "Inspect new alerts and decisions. Reread relevant invalidatedDetails only when needed for "
                         "the next action; unchanged inspections remain valid. An argument error with applied=false "
                         "alone needs no refresh; follow recovery.reads when supplied."
@@ -251,7 +284,7 @@ class ProposalGateway:
                     "confirmationField only after reading and accepting its consequences; templates never supply "
                     "consent. Use the selected kind's schema for actions without templates. The service handles "
                     "request bookkeeping. Verify the native receipt; apply stateUpdate as described by player_turn.\n"
-                    "Read full alerts before responding or acknowledging. DISMISS_NOTIFICATIONS takes "
+                    "Read alert facts and consequences before responding or acknowledging. DISMISS_NOTIFICATIONS takes "
                     "targets=[read notice handles]; dismissed contents remain in receipts. "
                     "CAST_DIPLOMATIC_VOTE uses selection=candidate civilizationId from victory.ballot. "
                     "ABSTAIN_DIPLOMATIC_VOTE and ACKNOWLEDGE_DIPLOMATIC_RESULTS take only kind and intent; "
@@ -344,7 +377,7 @@ class ProposalGateway:
         )
         add(
             "chat_send",
-            "Send authenticated text. Omit to for public chat; mention players to notify them. Optional nativeAction explicitly executes DENOUNCE or ISSUE_DEMAND against target civilization, or RESPOND_DIPLOMACY against an owned alert handle with an offered selection. Read player_turn first: native diplomacy requires your active turn and current observations. Inspect nativeDiplomacy.options and consequences before responding. Ordinary text has no game effects. Built-in AI only understands explicit native requests. Trade and peace use trade tools.",
+            "Send authenticated text. Omit to for public chat; mention players to notify them. Optional nativeAction explicitly executes DENOUNCE or ISSUE_DEMAND against target civilization (selection=type from native.availableDemandsToSend), or RESPOND_DIPLOMACY against an owned alert handle with an offered selection. Available demands are actions you may initiate, not incoming requests. Read player_turn first: native diplomacy requires your active turn and current observations. Inspect the received alert's nativeDiplomacy sender, event, options, declaresWar and consequences before responding. Ordinary text has no game effects. Built-in AI only understands explicit native requests. Trade and peace use trade tools.",
         )
         add(
             "commitment_offer",
@@ -396,6 +429,8 @@ class ProposalGateway:
         try:
             result, replayed = await self._call_once(job, name, arguments, call_id)
             outcome = "error" if "error" in result else "success"
+            if result.get("error") in (REPEATED_STALE, "STATE_UPDATE_FAILED"):
+                await self.sync_failure()
             if (
                 self.history is not None
                 and not replayed
@@ -415,12 +450,16 @@ class ProposalGateway:
                 job.gameplay_fenced = True
                 if self.history is not None:
                     await self.io.call(self.history.handoff_response, job.id, call_id, name, arguments, result)
-            return result
+            return public_result(result)
         except asyncio.CancelledError:
             self.forget_observation(job)
+            await self.sync_failure()
             raise
-        except (ValueError, KeyError):
+        except (OSError, ValueError, KeyError, TypeError, sqlite3.Error):
             outcome = "error"
+            # A memory batch may have durably failed before its export/response
+            # failed too. Its terminal stop must still reach the lifecycle owner.
+            await self.sync_failure()
             raise
         finally:
             if accounting and counted:
@@ -454,46 +493,18 @@ class ProposalGateway:
             except StaleAssumptions as conflict:
                 # Nothing was queued or sent. Cache the rejection too: replaying
                 # this call after a read must never execute an old decision.
-                reads: list[JsonObject] = []
-                private = [key for key in conflict.keys if not key.startswith("observation:")]
-                if private:
-                    evidence = await self.io.call(self.memory.review_evidence, private)
-                    for offset in range(0, len(private + evidence), 20):
-                        reads.append(
-                            {
-                                "tool": "memory_read",
-                                "arguments": {
-                                    "ids": (private + evidence)[offset : offset + 20],
-                                    "includeRetired": True,
-                                },
-                            }
-                        )
-                agreement_keys = [key for key in conflict.keys if key.startswith("observation:agreement/")]
-                for key in agreement_keys:
-                    reads.append({"tool": "agreement_read", "arguments": {"agreement": key.split("/", 1)[1]}})
-                if "observation:agreements" in conflict.keys:
-                    reads.append({"tool": "agreement_list", "arguments": {}})
-                if any(
-                    key.startswith("observation:") and key not in agreement_keys and key != "observation:agreements"
-                    for key in conflict.keys
-                ):
-                    reads.append({"tool": "player_turn", "arguments": {}})
-                if name in {"trade_offer", "trade_decide", "friendship_offer"}:
-                    reads.append(
-                        {"tool": "trade_read", "arguments": {"proposal": arguments["proposal"]}}
-                        if "proposal" in arguments
-                        else {"tool": "trade_options", "arguments": {"partner": arguments["partner"]}}
-                    )
                 result = {
                     "error": "STALE_ASSUMPTIONS",
                     "applied": False,
                     "recoverable": True,
                     "changedRecords": conflict.keys,
-                    "recovery": {"reads": reads, "instruction": RECOVERY_INSTRUCTIONS},
+                    "conflicts": conflict.details,
+                    "recovery": await self.io.call(self.memory.conflict_recovery, conflict.keys, name, arguments),
                 }
             result = await self.settle_gameplay(job, name, result)
             result = await self.update_after_action(job, name, arguments, call_id, result)
-            await self.io.call(self.memory.call, job.id, call_id, name, arguments, result)
+            result = await self.io.call(self.memory.call, job.id, call_id, name, arguments, result)
+            assert result is not None
             return result, False
 
     @staticmethod
@@ -586,19 +597,45 @@ class ProposalGateway:
             }
         try:
             value = await job.connection.tool("player_turn", {})
+        except (OSError, TimeoutError, aiohttp.ClientError):
+            self.forget_observation(job)
+            self.check(job)
+            return {**result, "stateUpdate": refresh_required()}
+        except StateConflict as error:
+            if str(error) == "HOST_UNAVAILABLE":
+                self.forget_observation(job)
+                self.check(job)
+                return {**result, "stateUpdate": refresh_required()}
+            return await self.failed_update(job, call_id, result, error)
+        except (ValueError, KeyError, TypeError) as error:
+            return await self.failed_update(job, call_id, result, error)
+        try:
             self.check(job)
             # Do not spend a confirmed command's response waiting for a new
             # negotiation or attach another turn's state to this action.
             if "error" in value or value.get("negotiation", {}).get("active"):
-                raise ValueError("REFRESH_UNAVAILABLE")
+                self.forget_observation(job)
+                return {**result, "stateUpdate": refresh_required()}
             if value.get("phase") == "WAITING":
                 self.forget_observation(job)
                 return {**result, "stateUpdate": {"kind": "turn_ended"}}
             return await self.deliver_turn(job, value, name, arguments, call_id, result)
-        except (OSError, ValueError, KeyError, TypeError, sqlite3.Error, TimeoutError, aiohttp.ClientError):
-            self.forget_observation(job)
-            self.check(job)  # Paused/expired jobs must stop, retaining the raw receipt.
-            return {**result, "stateUpdate": refresh_required()}
+        except (OSError, ValueError, KeyError, TypeError, sqlite3.Error) as error:
+            return await self.failed_update(job, call_id, result, error)
+
+    async def failed_update(self, job, call_id, result, error):
+        self.forget_observation(job)
+        self.check(job)  # Paused/expired jobs must stop, retaining the raw receipt.
+        failed = await self.io.call(
+            self.memory.fail_run,
+            job.id,
+            call_id,
+            "STATE_UPDATE_FAILED",
+            {"exceptionType": type(error).__name__, "message": str(error)},
+            {**result, "applied": True, "stateUpdate": refresh_required()},
+        )
+        await self.sync_failure()
+        return failed
 
     async def wait_for_gameplay(self, job: JobAccess) -> bool:
         """Long-poll in code, outside dispatch and the memory actor. Chat jobs remain runnable."""

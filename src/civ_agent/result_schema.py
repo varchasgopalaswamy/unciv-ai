@@ -25,6 +25,9 @@ class FinalMessage(BoundaryModel):
     acknowledgement: Text
     quote: Text | None = None
     additionalAcknowledgements: list[Text] = Field(default_factory=list)
+    kind: Text | None = None
+    civilizationId: Text | None = None
+    gameplayParagraphs: list[Text] | None = None
 
 
 class Combatant(BoundaryModel):

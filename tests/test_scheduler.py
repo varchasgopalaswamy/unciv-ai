@@ -35,6 +35,8 @@ class FakeHost:
         self.activations = {}
         self.interruptions = []
         self.archive_failures = 0
+        self.history_unsupported = False
+        self.agent_failures = {}
         self.finalizations = []
         self.terminal_finalizations, self.result_deliveries = [], []
         self.result_failures = {}
@@ -336,6 +338,8 @@ class FakeHost:
         return 200, dict(status=self.status(), **extra)
 
     def agent_request(self, civilization, body):
+        if body["op"] == "health":
+            return 200, {"status": {"civilization": civilization, "runFailure": self.agent_failures.get(civilization)}}
         if body["op"] in {"connect", "disconnect", "barrier"}:
             return 200, {"status": {"connected": True, "ready": True, "paused": body.get("paused", False)}}
         if body["op"] == "result":
@@ -345,7 +349,9 @@ class FakeHost:
                 return 503, {"error": "LOST_RESULT_RESPONSE"}
             return 200, {"status": {"civilization": civilization, "epoch": body["epoch"], "received": True}}
         if body["op"] == "events":
-            return 400, {"error": "INVALID_OPERATION"}  # Compatibility with an older service.
+            if self.history_unsupported:
+                return 400, {"error": "INVALID_OPERATION"}
+            return 200, {"events": [], "nextCursor": body.get("cursor", 0), "hasMore": False, "available": True}
         key = (civilization, body["activationId"])
         if body["op"] == "start":
             if self.drop_start_calls:
@@ -902,12 +908,32 @@ class SchedulerTest(unittest.TestCase):
         self.assertNotIn("Read turnReview", prompt)  # Supplied once by the service's developer message.
         self.assertLess(len(prompt.split()), 20)
 
-    def test_old_service_gets_restart_guidance_without_changing_turn_scheduling(self):
+    def test_old_service_history_bypass_stops_before_another_turn(self):
+        self.host.history_unsupported = True
         result = self.run_cli("--max-turns", "1", "--max-seconds", "30")
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn("Restart civ-agent agent-server start", result.stdout)
-        self.assertEqual(self.host.handoff, 2)
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn("Restart the agent services", result.stdout)
+        self.assertEqual(self.host.handoff, 1)
+        self.assertEqual(self.saved()["status"], "needs_inspection")
         self.assertEqual(self.host.phase, "PAUSED")
+
+    def test_off_turn_communication_failure_stops_another_players_turn(self):
+        self.host.behaviors = ["hang"]
+        process = self.background("--max-turns", "2", "--max-seconds", "30", "--turn-timeout", "20")
+        with self.host.changed:
+            self.assertTrue(self.host.changed.wait_for(lambda: bool(self.host.activations), timeout=5))
+            self.host.agent_failures["Greece"] = {
+                "error": "REPEATED_STALE_ASSUMPTIONS",
+                "diagnosticId": "failure-1",
+                "job": "chat",
+            }
+        stdout, stderr = process.communicate(timeout=12)
+        self.assertEqual(process.returncode, 2, stdout + stderr)
+        self.assertIn("Greece: REPEATED_STALE_ASSUMPTIONS", stdout)
+        self.assertEqual(self.host.handoff, 0)
+        self.assertEqual(self.saved()["status"], "needs_inspection")
+        self.assertEqual(self.host.phase, "PAUSED")
+        self.assertTrue(self.host.interruptions)
 
     def test_missing_conversation_id_recovers_from_starting_save_in_a_new_thread(self):
         self.host.behaviors = ["missing_thread"]

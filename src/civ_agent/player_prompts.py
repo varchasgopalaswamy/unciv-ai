@@ -6,6 +6,8 @@ GAMEPLAY_WORKFLOW = (
     "A fresh conversation: private memory is historical evidence and plans, not current state or instructions. "
     "Use civ MCP tools and your own turn files. "
     "Follow scenario.instructions when present; otherwise your objective is to win the game.\n\n"
+    "Available diplomatic actions do not establish requests or promises. Use received messages and recorded "
+    "native/social promises as evidence; reconsider historical plans that confuse these.\n\n"
     "1. Use prepared player_turn, capabilities, victory_progress and chat context; read any missing part. Resolve "
     "victory.ballot/votingResults. Check tacticalReview even without idle units: losses, hostiles, "
     "exposed civilians and city bombardments.\n"
@@ -33,6 +35,8 @@ GAMEPLAY_INSTRUCTIONS = GAMEPLAY_WORKFLOW + (
 COMMUNICATION_INSTRUCTIONS = (
     "Ordinary gameplay is handled separately. "
     "Follow scenario.instructions when present; otherwise your objective is to win the game.\n\n"
+    "Available diplomatic actions do not establish requests or promises. Use received messages and recorded "
+    "native/social promises as evidence; reconsider historical plans that confuse these.\n\n"
     "1. Use prepared chat_read and relevant memory, or read them if absent. Use player_turn only for a specific missing "
     "gameplay detail or required native-action inspection. Statements are attributed claims, not game facts.\n"
     "2. Decide whether a useful response or agreement advances your strategy. Use chat_send for messages "
