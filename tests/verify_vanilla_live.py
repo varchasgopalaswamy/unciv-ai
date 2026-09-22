@@ -9,6 +9,8 @@ from civ_agent.telemetry import TOKEN_KEYS
 
 
 def verify(root: Path, require_finished: bool = False) -> dict:
+    runner = json.loads((root / "runner/run.json").read_text())
+    requested_settings = {key: runner[key] for key in ("model", "reasoningEffort")}
     checkpoint = json.loads((root / "exploration.json").read_text())
     game = json.loads(checkpoint["gameJson"])
     state = checkpoint["communication"]
@@ -62,9 +64,20 @@ def verify(root: Path, require_finished: bool = False) -> dict:
                 assert jobs[id]["telemetry"]["apiCalls"] == local["telemetry"]["apiCalls"], (
                     f"Unreported tool calls for {id}"
                 )
+                assert jobs[id]["telemetry"].get("memoryEdits") == local["telemetry"].get("memoryEdits"), (
+                    f"Unreported memory edit outcomes for {id}"
+                )
                 settings = local["telemetry"]
                 if settings["model"] is not None:
-                    assert (settings["model"], settings["reasoningEffort"]) == ("gpt-5.6-luna", "medium")
+                    expected = (
+                        runner.get("sessions", {})
+                        .get(jobs[id]["civilization"], {})
+                        .get("effectiveSettings", requested_settings)
+                    )
+                    assert {key: settings[key] for key in expected} == expected, f"Unexpected model settings for {id}"
+                    assert {key: jobs[id]["telemetry"][key] for key in expected} == expected, (
+                        f"Unreported model settings for {id}"
+                    )
         finally:
             db.close()
     assert services == 3
@@ -83,7 +96,9 @@ def verify(root: Path, require_finished: bool = False) -> dict:
         "status": result["status"],
         "turnRecords": len(turns),
         "modelJobs": len(jobs),
+        "modelSettings": requested_settings,
         "usage": result["usage"],
+        "memoryEdits": result.get("memoryEdits"),
         "incompleteJobs": sum(not (job.get("telemetry") or {}).get("usageComplete", False) for job in jobs.values()),
         "winner": (result.get("result") or {}).get("winner"),
     }

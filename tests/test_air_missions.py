@@ -6,7 +6,7 @@ from pydantic import ValidationError
 
 from civ_agent.civilization_state import CivilizationState
 from civ_agent.game_commands import command_arguments, command_schema
-from civ_agent.observations import overview, required_detail
+from civ_agent.observations import DetailQuery, detail_scope, overview, required_detail
 from civ_agent.proposal_gateway import ProposalGateway
 from civ_agent.service_io import ServiceIO
 from tests.test_proposal_gateway import Host
@@ -61,16 +61,17 @@ def test_mission_requires_exact_current_preview_and_invalidates_memory(tmp_path,
             assert missing["recovery"]["reads"] == [{"tool": "mission_preview", "arguments": query}]
             assert not host.executed
             preview = await gateway.call(job, "mission_preview", query, "preview")
+            canonical = "observation:" + detail_scope(DetailQuery.model_validate(preview["query"]))
             assert preview["available"] and "revision" not in preview
             wrong = {**action, "destination": {"x": 5, "y": 0}}
             assert (await gateway.call(job, "player_command", wrong, "wrong"))["error"] == "DETAIL_REQUIRED"
             await gateway.call(job, "player_turn", {}, "same-view")
-            assert job.memory["records"][preview["evidence"]]["body"]["available"]
+            assert job.memory["records"][canonical]["body"]["available"]
             receipt = await gateway.call(job, "player_command", action, "act")
             assert host.executed[-1]["kind"] == kind
             assert await gateway.call(job, "player_command", action, "act") == receipt
             await gateway.call(job, "player_turn", {}, "changed")
-            assert not job.memory["records"][preview["evidence"]]["body"]["available"]
+            assert not job.memory["records"][canonical]["body"]["available"]
             assert (await gateway.call(job, "player_command", action, "stale"))["error"] == "DETAIL_REQUIRED"
             host.revision = "rev99"
             assert (await gateway.call(job, "mission_preview", query, "changed-preview"))[

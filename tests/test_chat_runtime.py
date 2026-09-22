@@ -64,6 +64,7 @@ class Jobs:
         self.purposes = []
         self.prompts = []
         self.instructions = []
+        self.calls = []
         self.planning_started = asyncio.Event()
         self.replied = asyncio.Event()
 
@@ -79,9 +80,15 @@ class Jobs:
                 self.token = token
 
             async def request(self, method, parameters):
+                owner.calls.append((method, parameters))
                 if method == "thread/start":
                     owner.instructions.append(parameters["developerInstructions"])
-                    return {"thread": {"id": workspace.name}, "model": "test-model", "reasoningEffort": "medium"}
+                    return {
+                        "thread": {"id": workspace.name},
+                        "model": "test-model",
+                        "reasoningEffort": "medium",
+                        "serviceTier": parameters.get("serviceTier"),
+                    }
                 if method == "turn/start":
                     owner.prompts.append(parameters["input"][0]["text"])
                     purpose = (
@@ -120,7 +127,8 @@ class Jobs:
 
 
 @pytest.mark.parametrize("strategy_guide", [False, True])
-def test_chat_batches_and_replies_while_planning_job_is_held(tmp_path, monkeypatch, strategy_guide):
+@pytest.mark.parametrize("fast", [False, True])
+def test_chat_batches_and_replies_while_planning_job_is_held(tmp_path, monkeypatch, strategy_guide, fast):
     async def run():
         host = MailboxHost()
         monkeypatch.setattr("civ_agent.chat_runtime.HostConnection", lambda *args, **kwargs: host)
@@ -135,6 +143,7 @@ def test_chat_batches_and_replies_while_planning_job_is_held(tmp_path, monkeypat
             process_factory=jobs,
             connection_factory=lambda *args, **kwargs: StartupHost(jobs),
             strategy_guide=strategy_guide,
+            fast=fast,
         )
         jobs.service = service
         try:
@@ -179,6 +188,12 @@ def test_chat_batches_and_replies_while_planning_job_is_held(tmp_path, monkeypat
             host.post("Let me know what you need.")
             await asyncio.wait_for(jobs.replied.wait(), 3)
             assert jobs.purposes == ["gameplay", "communication"]
+            for method, parameters in jobs.calls:
+                if method in {"thread/start", "turn/start"}:
+                    assert parameters.get("serviceTier") == ("fast" if fast else None)
+                    if method == "thread/start":
+                        assert parameters["config"]["model_reasoning_effort"] == "medium"
+                        assert parameters["config"].get("features.fast_mode", False) == fast
             assert all(prompt.count(strategy_reference()) == int(strategy_guide) for prompt in jobs.instructions)
             assert all(strategy_reference() not in prompt for prompt in jobs.prompts)
             assert service.records["planning"]["startup"]["strategyGuide"]["enabled"] == strategy_guide
@@ -192,6 +207,9 @@ def test_chat_batches_and_replies_while_planning_job_is_held(tmp_path, monkeypat
             assert host.sent == ["I will consider your offer."]
             assert service.status()["phase"] == "RUNNING"  # Long planning still in progress.
             await asyncio.sleep(0.1)
+            assert all(
+                record["requestedServiceTier"] == ("fast" if fast else None) for record in service.chat.jobs.values()
+            )
             host.post("Unmentioned public remark", wake=False)
             await asyncio.sleep(1.2)
             assert jobs.purposes == ["gameplay", "communication"]

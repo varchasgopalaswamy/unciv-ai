@@ -23,6 +23,7 @@ object SettlementPreviewProbe {
             when (args[1]) {
                 "rules" -> rules(root)
                 "privacy" -> privacy(root)
+                "orders" -> orders(root)
                 else -> error("Unknown scenario")
             }
             println("SETTLEMENT_PREVIEW_${args[1]}_PASS")
@@ -32,7 +33,7 @@ object SettlementPreviewProbe {
         }
     }
 
-    private fun fixture(root: Path) = HeadlessRuntime.createVanillaGame(root, 412L).also { runtime ->
+    internal fun fixture(root: Path) = HeadlessRuntime.createVanillaGame(root, 412L).also { runtime ->
         val game = runtime.game
         game.gameParameters.noBarbarians = true
         for (civ in game.civilizations) civ.units.getCivUnits().toList().forEach { it.destroy() }
@@ -151,6 +152,10 @@ object SettlementPreviewProbe {
         hidden.setExplored(rome, false)
         rome.viewableTiles = visible
         val request = MovementPreviewRequest(handle, TilePosition(4, 0))
+        settler.action = "moveTo 4,0"
+        val beforeOrder = checkNotNull(session.turn().map.units.single().movementOrder)
+        check(beforeOrder.destination == request.destination)
+        check(beforeOrder.settlement!!.siteStatus == "UNKNOWN" && beforeOrder.settlement.siteBlockers.isEmpty())
         val before = session.movementPreview(request).settlement!!
         check(before.siteStatus == "UNKNOWN" && before.canFoundNow == null && before.siteBlockers.isEmpty())
         check(UnitSettlement.canFoundCity(settler, game.tileMap[4, 0]))
@@ -159,15 +164,29 @@ object SettlementPreviewProbe {
         hidden.setExplored(rome, false)
         check(!UnitSettlement.canFoundCity(settler, game.tileMap[4, 0]))
         check(before == session.movementPreview(request).settlement) { "Unseen city changed prospective settlement response" }
+        check(beforeOrder == session.turn().map.units.single().movementOrder) { "Unseen city changed standing-order advice" }
 
         // Exploring a center does not expose its current existence under fog.
         hidden.setExplored(rome, true)
         check(before == session.movementPreview(request).settlement)
+        check(beforeOrder == session.turn().map.units.single().movementOrder)
         rome.viewableTiles = game.tileMap.values.toSet()
+        val nativeBefore = json().toJson(game)
+        val revealedOrder = session.turn().map.units.single().movementOrder!!
+        check(json().toJson(game) == nativeBefore) { "Observing a blocked destination changed the game" }
+        check(revealedOrder.destination == beforeOrder.destination && settler.isMoving())
+        check(revealedOrder.settlement!!.siteStatus == "BLOCKED")
         val revealed = session.movementPreview(request).settlement!!
         check(revealed.siteStatus == "BLOCKED" && revealed.uncertainty == null)
         check(revealed.siteBlockers.single().city == secretCity.name)
         check(revealed.siteBlockers.single().position == TilePosition(6, 0))
+        check(revealedOrder.settlement.siteBlockers == revealed.siteBlockers)
+        check(revealedOrder.settlement.uncertainty == revealed.uncertainty)
+        settler.currentMovement = 0f
+        check(session.turn().map.units.single().movementOrder!!.settlement == revealedOrder.settlement)
+        settler.currentMovement = 2f
+        rome.viewableTiles = visible
+        check(beforeOrder == session.turn().map.units.single().movementOrder) { "Standing order retained a city under fog" }
 
         // Unexplored terrain and out-of-map coordinates share an unknown response.
         hidden.setExplored(rome, false)
@@ -183,6 +202,45 @@ object SettlementPreviewProbe {
             error("Another player's unit was accepted")
         } catch (failure: PlayerSessionException) {
             check(failure.reason == PlayerSessionFailure.UNIT_UNAVAILABLE)
+        }
+    }
+
+    private fun orders(root: Path) = fixture(root.resolve("initial")).use { runtime ->
+        val game = runtime.game
+        val rome = game.getCivilization("Rome")
+        val settler = rome.units.getCivUnits().single()
+        GameplayTestApi(runtime, root.resolve("tls")).use { api ->
+            val token = api.playerToken("Rome")
+            var turn = api.turn(token)
+            val handle = turn.map.units.single().handle
+            val destination = TilePosition(0, 5)
+            check(preview(api, token, handle, destination).available)
+            val receipt = api.execute(token, command(turn, TurnCommandKind.SET_UNIT_DESTINATION, handle).copy(destination = destination))
+            check(receipt.movement!!.orderAfter!!.destination == destination)
+            check(receipt.movement.orderAfter.settlement != null)
+            rome.viewableTiles = game.tileMap.values.toSet()
+            turn = api.turn(token)
+            val observed = turn.map.units.single()
+            check(observed.position != destination && observed.settlement!!.siteStatus == "BLOCKED")
+            check(observed.movementOrder!!.settlement!!.siteStatus == "ELIGIBLE")
+            check(observed.movementOrder.settlement.siteBlockers.isEmpty())
+            check(observed.movementOrder.settlement.uncertainty == null)
+            api.execute(token, command(turn, TurnCommandKind.CANCEL_UNIT_MOVEMENT, handle))
+            check(api.turn(token).map.units.single().movementOrder == null)
+
+            // Arrival clears the native order and leaves the ordinary current-tile diagnostic.
+            settler.currentMovement = 10f
+            turn = api.turn(token)
+            check(preview(api, token, handle, destination).available)
+            api.execute(token, command(turn, TurnCommandKind.SET_UNIT_DESTINATION, handle).copy(destination = destination))
+            turn = api.turn(token)
+            check(turn.map.units.single().position == destination)
+            check(turn.map.units.single().movementOrder == null)
+            check(turn.map.units.single().canFoundCity)
+
+            val warrior = rome.units.placeUnitNearTile(HexCoord(2, 0), "Warrior")!!
+            warrior.action = "moveTo 4,0"
+            check(api.turn(token).map.units.single { it.name == "Warrior" }.movementOrder!!.settlement == null)
         }
     }
 }

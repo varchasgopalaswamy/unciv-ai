@@ -205,6 +205,7 @@ internal fun TurnCommandRequest.detached(): TurnCommandRequest = copy(
 )
 
 internal fun TurnCommandReceipt.detached(): TurnCommandReceipt = copy(
+    movement = movement?.copy(orderBefore = movement.orderBefore?.detached(), orderAfter = movement.orderAfter?.detached()),
     dismissedNotifications = Collections.unmodifiableList(dismissedNotifications.map { it.detached() }),
     greatPerson = greatPerson?.detached(),
     mission = mission?.detached(),

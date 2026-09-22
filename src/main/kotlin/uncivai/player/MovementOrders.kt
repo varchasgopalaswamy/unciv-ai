@@ -28,7 +28,11 @@ data class MovementPreview(
 )
 
 @Serializable
-data class MovementOrder(val destination: TilePosition, val canCancel: Boolean)
+data class MovementOrder(
+    val destination: TilePosition,
+    val canCancel: Boolean,
+    val settlement: SettlementSiteSummary? = null,
+)
 
 @Serializable
 data class MovementOutcome(
@@ -42,10 +46,18 @@ data class MovementOutcome(
     val orderAfter: MovementOrder?,
 )
 
+internal fun MovementOrder.detached(): MovementOrder = copy(
+    settlement = settlement?.copy(siteBlockers = Collections.unmodifiableList(settlement.siteBlockers.toList())),
+)
+
 internal fun observeMovementOrder(player: Civilization, unit: MapUnit, active: Boolean): MovementOrder? {
     if (!unit.isMoving()) return null
     val position = unit.getMovementDestination().position
-    return MovementOrder(TilePosition(position.x, position.y), active && PlayerUnitOperations(player).canCancelMovement(unit))
+    val destination = TilePosition(position.x, position.y)
+    val settlement = observeSettlement(player, unit, destination, active)?.let {
+        SettlementSiteSummary(it.siteStatus, it.siteBlockers, it.uncertainty)
+    }
+    return MovementOrder(destination, active && PlayerUnitOperations(player).canCancelMovement(unit), settlement)
 }
 
 internal fun observeMovementPreview(player: Civilization, unit: MapUnit, turn: PlayerTurnSnapshot, request: MovementPreviewRequest): MovementPreview {

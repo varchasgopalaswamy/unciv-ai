@@ -36,6 +36,25 @@ internal data class TelemetryState(
 @Serializable
 internal data class ApiCounts(var calls: Long = 0, var succeeded: Long = 0, var errors: Long = 0, var replayed: Long = 0, var incomplete: Long = 0, var elapsedMs: Long = 0)
 
+/** Edit outcomes are independent of transport success, and exclude replayed batches. */
+@Serializable
+internal data class MemoryEditCounts(
+    val batches: Long = 0,
+    val accepted: Long = 0,
+    val rejected: Long = 0,
+    val rejectedBatches: Long = 0,
+    val rejectionReasons: Map<String, Long> = emptyMap(),
+    val complete: Boolean = true,
+) {
+    fun valid() = listOf(batches, accepted, rejected, rejectedBatches).all { it >= 0 } &&
+        rejectedBatches <= batches && rejectedBatches <= rejected &&
+        rejectionReasons.values.all { it >= 0 } && rejectionReasons.values.sum() == rejected
+
+    fun follows(prior: MemoryEditCounts) = batches >= prior.batches && accepted >= prior.accepted &&
+        rejected >= prior.rejected && rejectedBatches >= prior.rejectedBatches &&
+        (!prior.complete || complete) && prior.rejectionReasons.all { (reason, count) -> (rejectionReasons[reason] ?: 0) >= count }
+}
+
 @Serializable
 internal data class ApiWindow(val epoch: String, val handoff: Long, val gameTurn: Int, val activeCivilization: String, val actors: MutableMap<String, MutableMap<String, ApiCounts>> = linkedMapOf())
 
@@ -72,6 +91,7 @@ internal data class JobTelemetry(
     val apiCalls: Map<String, ApiCounts> = emptyMap(),
     val gameplayElapsedMs: Long? = null,
     val finalizationElapsedMs: Long? = null,
+    val memoryEdits: MemoryEditCounts? = null,
 )
 
 @Serializable
@@ -233,6 +253,21 @@ internal class Telemetry(private val runtime: GameExecutor) {
         return JsonObject(totals.mapValues { it.value.recordJson() })
     }
 
+    private fun aggregateMemoryEdits(groups: Collection<MemoryEditCounts?>): JsonObject? {
+        val measured = groups.filterNotNull()
+        if (measured.isEmpty()) return null
+        val reasons = linkedMapOf<String, Long>()
+        measured.forEach { count -> count.rejectionReasons.forEach { (reason, value) -> reasons[reason] = (reasons[reason] ?: 0) + value } }
+        return MemoryEditCounts(
+            batches = measured.sumOf { it.batches },
+            accepted = measured.sumOf { it.accepted },
+            rejected = measured.sumOf { it.rejected },
+            rejectedBatches = measured.sumOf { it.rejectedBatches },
+            rejectionReasons = reasons,
+            complete = groups.all { it?.complete == true },
+        ).recordJson()
+    }
+
     /** Exports are replaceable views; the checkpoint is the commit authority. */
     fun export(game: GameInfo, checkpoint: Path) {
         if (!exportDirty && exportError == null) return
@@ -249,6 +284,7 @@ internal class Telemetry(private val runtime: GameExecutor) {
                     "usage" to usage(attempts.values), "jobs" to attempts.keys.toList(), "attempts" to turn.activationIds.size,
                     "accountingComplete" to (turn.endedAtMs != null && turn.activationIds.all { activation -> attempts[activation]?.telemetry?.usageComplete == true }),
                     "agentCalls" to aggregateCalls(attempts.values.map { it.telemetry?.apiCalls.orEmpty() }),
+                    "memoryEdits" to aggregateMemoryEdits(attempts.values.map { it.telemetry?.memoryEdits }),
                     "hostCalls" to aggregateCalls(listOf(state.windows[id]?.actors?.get(turn.civilization).orEmpty())),
                     "elapsedMs" to elapsed, "inactiveOrRecoveryMs" to elapsed?.let { (it - turn.activeMs).coerceAtLeast(0) },
                     "jobElapsedMs" to attempts.values.sumOf { it.telemetry?.elapsedMs ?: 0 },
@@ -272,6 +308,7 @@ internal class Telemetry(private val runtime: GameExecutor) {
                 "result" to state.result?.recordJson(), "scores" to (state.result?.scores ?: scores(game)).map { it.recordJson() },
                 "usage" to usage(jobs.values), "modelJobs" to jobs.size,
                 "agentCalls" to aggregateCalls(jobs.values.map { it.telemetry?.apiCalls.orEmpty() }),
+                "memoryEdits" to aggregateMemoryEdits(jobs.values.map { it.telemetry?.memoryEdits }),
                 "hostCalls" to aggregateCalls(state.windows.values.flatMap { it.actors.values }),
                 "players" to game.civilizations.filter { it.isMajorCiv() }.map { player ->
                     val owned = jobs.values.filter { it.civilization == player.civID }
@@ -279,6 +316,7 @@ internal class Telemetry(private val runtime: GameExecutor) {
                         "civilization" to player.civID, "usage" to usage(owned), "modelJobs" to owned.size,
                         "gameplayUsage" to usage(owned.filter { it.purpose == "gameplay" }), "chatUsage" to usage(owned.filter { it.purpose == "communication" }),
                         "agentCalls" to aggregateCalls(owned.map { it.telemetry?.apiCalls.orEmpty() }),
+                        "memoryEdits" to aggregateMemoryEdits(owned.map { it.telemetry?.memoryEdits }),
                         "hostCalls" to aggregateCalls(state.windows.values.mapNotNull { it.actors[player.civID] }),
                         "activeMs" to state.turns.values.filter { it.civilization == player.civID }.sumOf { it.activeMs },
                         "jobElapsedMs" to owned.sumOf { it.telemetry?.elapsedMs ?: 0 },

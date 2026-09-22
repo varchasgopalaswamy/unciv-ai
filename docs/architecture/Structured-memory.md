@@ -49,6 +49,18 @@ delivered evidence until explicitly read. Beliefs also accept
 `contradictingSources`. The service pins each source revision. Historical search
 returns evidence handles for referring to the specific revision that was read.
 
+Detail responses use short handles such as `e123`, pinned to that exact revision.
+Copy them instead of constructing observation hashes. Reading the query again
+after it changes yields a new handle; the old one remains a historical citation.
+Handles are usable only by jobs that received them. A revision may retain its own
+existing citations without rereading their sources, including across turns.
+This does not let a new claim borrow unread evidence from another record.
+
+`sources` and `contradictingSources` are historical references, even when a cited
+private record has since changed, needs review, or is retired. A note's `plan`
+field is also a historical link: recording why a plan failed never requires
+repairing or reactivating that plan. Neither form authorizes a gameplay action.
+
 Plans optionally declare ongoing `assumptions`, for example:
 
 ```json
@@ -57,7 +69,8 @@ Plans optionally declare ongoing `assumptions`, for example:
 
 A historical sighting does not become false when the unit moves. An ongoing
 assumption about that unit's current location does need review. Retracted/replaced
-beliefs flag dependent records. Relevant diplomatic changes and loss of owned
+beliefs flag plans that explicitly assume those beliefs still hold. Merely citing
+the old belief does not create that dependency. Relevant diplomatic changes and loss of owned
 cities or units flag plans with matching subjects. Turn counters and unrelated
 greetings do not invalidate plans. A due progress review independently flags the
 plan. New confirmed combat losses flag defense and economy plans, losing the last
@@ -78,12 +91,19 @@ the observation and saved response. Replaying an old response does not rewind
 the service's delivered versions. Records not previously read remain selective.
 
 `reviewSources` identifies evidence that triggered a record's review. Receiving
-the updated record does not mark that evidence as read: a changed detail still
-requires its focused read before revision. Rejected memory edits with unread,
+the updated record does not mark that evidence as read: retaining an assumption
+requires current evidence. A full revision can explicitly drop an obsolete
+assumption without rereading it. Other unread review evidence remains relevant.
+Rejected memory edits with unread,
 outdated or unreviewed evidence carry `requiredSources`, `recoverable: true`,
 and `recovery.reads`, including the necessary detail queries and a final private
 record refresh. Prefer narrow detail evidence for ongoing assumptions; the whole
 overview changes on many ordinary actions.
+
+Unknown source IDs receive bounded `recovery.sourceSuggestions` containing only
+previously delivered references and their queries. The service never silently
+substitutes a similar ID, and it does not suggest rereading a nonexistent record.
+The agent must decide whether a suggested source supports the statement.
 
 ## Retirement and retrieval
 

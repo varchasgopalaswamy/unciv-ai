@@ -68,7 +68,7 @@ a section. These projections use only the permission-filtered cached snapshot.
 | `orders` | Current order and available orders |
 | `promotions` | Experience, prerequisites and promotion choices |
 | `work` | Worker jobs, prerequisites, yield changes and Work Boat improvements |
-| `settlement` | Founding availability, nearby hostiles and native settlement promises |
+| `settlement` | Current-tile founding diagnostics, active destination's site summary, nearby hostiles and native settlement promises |
 | `economy` | Upgrades, pillage, disband, costs and confirmations |
 | `abilities` | Great Person abilities, spaceship assembly and city-state gifts |
 | `air` | Missions, ranges, bases/capacity, transport and interception readiness |
@@ -115,13 +115,19 @@ neither case repeats the action.
 
 Pydantic defines the service's overview, detail input and detail result schemas.
 `observation:overview` cites the game overview; each detail response has an
-`evidence` ID for precisely that query and data. Cached raw data is not marked as
+short `evidence` handle such as `e123` for precisely that delivered revision.
+After refreshing a changed query, use its new handle for ongoing assumptions;
+the old handle remains a historical citation. Cached raw data is not marked as
 delivered. Previously requested detail projections are recomputed when a new
 snapshot arrives so changed assumptions are flagged, without claiming the model
 read those changes. Movement and mission previews are retained for an unchanged revision and
 invalidated when the revision changes; they require a fresh native query rather
 than reconstruction from cached map data. The compact unit roster retains the
-active destination, Work Boat action availability, available air missions, transport state and automatic interception readiness. Full `unit_details.air` adds bases, remaining slots and ranges. A greeting or a change to
+active destination, including `movementOrder.settlement` for settlers, Work Boat
+action availability, available air missions, transport state and automatic
+interception readiness. The destination's visible site blockers arrive in command
+updates even when another unit reveals them; `settlementStatus` still describes
+the settler's current tile. Full `unit_details.air` adds bases, remaining slots and ranges. A greeting or a change to
 another entity does not invalidate
 a plan depending only on the inspected section. Changes to another section of
 that same unit also leave its focused evidence unchanged. Historical snapshots remain

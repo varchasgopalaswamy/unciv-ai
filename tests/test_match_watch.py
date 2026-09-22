@@ -55,6 +55,14 @@ def fixture(root) -> tuple[JsonObject, list[JsonObject]]:
                 "gameplayElapsedMs": 25000 if phase == "ended" else None,
                 "finalizationElapsedMs": 1500 if phase == "ended" else None,
                 "hostCalls": {"tool:player_command": {"calls": 3}, "command:FOUND_CITY": {"calls": 1}},
+                "memoryEdits": {
+                    "batches": 2,
+                    "accepted": 3,
+                    "rejected": 1,
+                    "rejectedBatches": 1,
+                    "rejectionReasons": {"SOURCE_NOT_DELIVERED": 1},
+                    "complete": True,
+                },
             }
         )
     run = {
@@ -242,6 +250,8 @@ def test_dashboard_navigation_live_refresh_freeze_and_quit(tmp_path):
             assert all(e.turn == 1 for e in app.snapshot.activity)
             assert "Turn 1 · Rome" in str(app.query_one("#metrics", Static).render())
             assert "Usage complete" in str(app.query_one("#metrics", Static).render())
+            assert "Memory edits 3 accepted" in str(app.query_one("#metrics", Static).render())
+            assert "SOURCE_NOT_DELIVERED: 1" in str(app.query_one("#metrics", Static).render())
             await pilot.press("l", "a")
             assert app.selected is None and app.civilization is None
             log = app.query_one("#activity", RichLog)

@@ -9,6 +9,7 @@ import time
 import aiohttp
 
 from civ_agent.agent_history import HISTORY_METHODS
+from civ_agent.agent_settings import codex_thread_settings
 from civ_agent.civilization_state import StateConflict, job_id
 from civ_agent.host_connection import HostConnection
 from civ_agent.protocol import JsonObject
@@ -170,6 +171,7 @@ class ChatRuntime:
             "usage": {},
             "settings": self.settings,
             "purpose": "communication",
+            "requestedServiceTier": "fast" if service.fast else None,
         }
         done = asyncio.Event()
         completed = False
@@ -265,13 +267,11 @@ class ChatRuntime:
                 "approvalPolicy": "never",
                 "sandbox": "workspace-write",
                 "developerInstructions": startup.instructions,
+                **codex_thread_settings(self.settings, fast=service.fast),
             }
-            if self.settings.get("model"):
-                options["model"] = self.settings["model"]
-            if self.settings.get("reasoningEffort"):
-                options["config"] = {"model_reasoning_effort": self.settings["reasoningEffort"]}
             thread = await process.request("thread/start", options)
             record["threadId"] = thread["thread"]["id"]
+            record["serviceTier"] = thread.get("serviceTier")
             record["effectiveSettings"] = {
                 "model": thread.get("model"),
                 "reasoningEffort": thread.get("reasoningEffort"),
@@ -284,6 +284,7 @@ class ChatRuntime:
                     "input": [{"type": "text", "text": startup.user}],
                     "approvalPolicy": "never",
                     "summary": "auto",
+                    **({"serviceTier": "fast"} if service.fast else {}),
                     **({"effort": self.settings["reasoningEffort"]} if self.settings.get("reasoningEffort") else {}),
                 },
             )

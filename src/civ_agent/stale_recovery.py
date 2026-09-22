@@ -7,11 +7,13 @@ from sqlalchemy import insert, select
 
 from civ_agent import memory_schema as tables
 from civ_agent.memory_store import encode
+from civ_agent.protocol import JsonObject
 
 REPEATED_STALE = "REPEATED_STALE_ASSUMPTIONS"
 RECOVERY_INSTRUCTIONS = (
     "This operation was not applied. Follow recovery.reads, reconsider the changed evidence, and revise any "
     "flagged plan before retrying. Skip it only if it is no longer wanted or already handled. "
+    "Use the new evidence handles returned by those reads for retained assumptions; old handles keep their old versions. "
     "The host tracks retries per operation: a successful operation resets its count. A later conflict after success "
     "starts a new recovery, even for the same plan. Follow recoverable responses; do not count all stale errors "
     "in the turn yourself. Only the host declares repeated-stale failure: REPEATED_STALE_ASSUMPTIONS with "
@@ -44,11 +46,13 @@ def conflict_details(db, job, keys, expected=None, cause="version_changed"):
     return details
 
 
-def recovery_reads(db, keys, name, arguments):
+def recovery_reads(db, keys, name, arguments, evidence=None) -> JsonObject:
     keys = set(keys)
     intent = arguments.get("intent") or {}
     references = [intent.get("plan")] + [assumption.get("source") for assumption in intent.get("assumptions", [])]
     for key in references:
+        if evidence and key in evidence:
+            key = evidence[key]["key"]
         if key and db.execute(select(tables.heads.c.key).where(tables.heads.c.key == key)).fetchone():
             keys.add(key)
     private = sorted({key for key in keys if not key.startswith("observation:")})

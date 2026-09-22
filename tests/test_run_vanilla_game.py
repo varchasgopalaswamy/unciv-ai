@@ -13,7 +13,17 @@ from tests import live_vanilla
 
 def saved_run(root, **changes):
     (root / "runner").mkdir(parents=True, exist_ok=True)
-    (root / "exploration.json").write_text("{}")
+    checkpoint = {
+        "gameJson": json.dumps(
+            {
+                "civilizations": [{"civID": civ, "playerType": "Human"} for civ in live_vanilla.PLAYERS]
+                + [{"civID": "Egypt"}]
+            }
+        ),
+        "communication": {"jobs": {}},
+        "handoff": 0,
+    }
+    (root / "exploration.json").write_text(json.dumps(checkpoint))
     state = {
         "model": "gpt-5.6-luna",
         "reasoningEffort": "medium",
@@ -36,6 +46,8 @@ def test_full_game_defaults_and_existing_match_protection(tmp_path):
         "max-seconds": "604800",
         "turn-timeout": "3600",
         "startup-timeout": "900",
+        "model": "gpt-6-luna",
+        "reasoning-effort": "medium",
     }.items():
         assert command[command.index("--" + name) + 1] == expected
     saved = saved_run(tmp_path)
@@ -44,15 +56,9 @@ def test_full_game_defaults_and_existing_match_protection(tmp_path):
     assert launcher.read_json(tmp_path / "runner/run.json") == saved
 
 
-@pytest.mark.parametrize(
-    "flags, enabled", [([], False), (["--strategy-guide"], True), (["--no-strategy-guide"], False)]
-)
-def test_strategy_toggle_reaches_all_agent_services(tmp_path, monkeypatch, flags, enabled):
-    from civ_agent.commands import agent_server
-
-    command = launcher.launch_command(launcher.arguments(["--state-dir", str(tmp_path), *flags]), Path(sys.executable))
-    monkeypatch.setattr(sys, "argv", ["live_vanilla", *command[4:]])
-    processes = []
+@pytest.fixture
+def fake_services(monkeypatch):
+    processes, scheduled = [], []
 
     class Process:
         def __init__(self, command, *, stdout, stderr):
@@ -71,25 +77,108 @@ def test_strategy_toggle_reaches_all_agent_services(tmp_path, monkeypatch, flags
             return 0
 
     def schedule(args):
-        assert (args.model, args.reasoning_effort) == ("gpt-5.6-luna", "medium")
+        scheduled.append(args)
         return 0
 
     monkeypatch.setattr(live_vanilla.subprocess, "Popen", Process)
     monkeypatch.setattr(live_vanilla.scheduler, "run", schedule)
-    assert live_vanilla.main() == 0
+    return processes, scheduled
+
+
+def assert_agent_settings(fake_services, expected):
+    from civ_agent.commands import agent_server
+
+    processes, scheduled = fake_services
+    assert [(args.model, args.reasoning_effort) for args in scheduled] == [expected]
     assert len(processes) == 4 and all(process.stopped for process in processes)
     agents = [agent_server.parser().parse_args(process.command[3:]) for process in processes[1:]]
     assert [args.civilization for args in agents] == ["Rome", "Greece", "France"]
+    assert all((args.model, args.reasoning_effort) == expected for args in agents)
+    return agents
+
+
+@pytest.mark.parametrize(
+    "flags, enabled", [([], False), (["--strategy-guide"], True), (["--no-strategy-guide"], False)]
+)
+@pytest.mark.parametrize("fast", [False, True])
+@pytest.mark.parametrize(
+    "settings, expected",
+    [
+        ([], ("gpt-6-luna", "medium")),
+        (["--model", "gpt-6-luna", "--reasoning-effort", "high"], ("gpt-6-luna", "high")),
+        (["--model", "chosen-model", "--reasoning-effort", "custom-effort"], ("chosen-model", "custom-effort")),
+    ],
+)
+def test_launcher_options_reach_all_agent_services(
+    tmp_path, monkeypatch, fake_services, flags, enabled, fast, settings, expected
+):
+    command = launcher.launch_command(
+        launcher.arguments(["--state-dir", str(tmp_path), *flags, *settings, *(["--fast"] if fast else [])]),
+        Path(sys.executable),
+    )
+    monkeypatch.setattr(sys, "argv", ["live_vanilla", *command[4:]])
+    assert live_vanilla.main() == 0
+    agents = assert_agent_settings(fake_services, expected)
     assert all(args.strategy_guide == enabled for args in agents)
+    assert all(args.fast == fast for args in agents)
+
+
+@pytest.mark.parametrize("via_launcher", [False, True])
+def test_resume_inherits_saved_settings_before_starting_services(tmp_path, monkeypatch, fake_services, via_launcher):
+    saved = saved_run(tmp_path, reasoningEffort="high")
+    arguments = ["--state-dir", str(tmp_path), "--resume", "--port", "8971"]
+    if via_launcher:
+        args = launcher.arguments(arguments)
+        arguments = launcher.launch_command(args, Path(sys.executable))[4:]
+        assert (args.model, args.reasoning_effort) == ("gpt-5.6-luna", "high")
+    monkeypatch.setattr(sys, "argv", ["live_vanilla", *arguments])
+    assert live_vanilla.main() == 0
+    assert_agent_settings(fake_services, ("gpt-5.6-luna", "high"))
+    assert launcher.read_json(tmp_path / "runner/run.json") == saved
+
+
+def test_checkpoint_run_records_and_uses_selected_settings(tmp_path, monkeypatch, fake_services):
+    source, target = tmp_path / "source", tmp_path / "target"
+    saved_run(source)
+    for name in ("players.json", "operator.json"):
+        (source / name).write_text("{}")
+    monkeypatch.setattr(
+        live_vanilla.subprocess,
+        "check_output",
+        lambda command, **kwargs: "" if "--porcelain" in command else "revision\n",
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "live_vanilla",
+            "--state-dir",
+            str(target),
+            "--port",
+            "8971",
+            "--checkpoint",
+            str(source / "exploration.json"),
+            "--source-state",
+            str(source),
+            "--model",
+            "chosen-model",
+            "--reasoning-effort",
+            "high",
+        ],
+    )
+    assert live_vanilla.main() == 0
+    assert_agent_settings(fake_services, ("chosen-model", "high"))
+    provenance = launcher.read_json(target / "live-run.json")
+    assert provenance is not None and (provenance["model"], provenance["reasoningEffort"]) == ("chosen-model", "high")
 
 
 def test_resume_preserves_larger_limits_usage_and_original_clock(tmp_path):
     saved = saved_run(
         tmp_path, limits={"maxTurns": 500, "maxInvocations": 20000, "maxSeconds": 900000, "activationSeconds": 4000}
     )
-    args = launcher.arguments(["--state-dir", str(tmp_path), "--resume"])
+    args = launcher.arguments(["--state-dir", str(tmp_path), "--resume", "--fast"])
     command = launcher.launch_command(args, Path(sys.executable))
-    assert "--resume" in command and "--seed" not in command
+    assert "--resume" in command and "--fast" in command and "--seed" not in command
     for option, (key, _) in launcher.LIMITS.items():
         assert command[command.index("--" + option.replace("_", "-")) + 1] == str(saved["limits"][key])
     assert launcher.read_json(tmp_path / "runner/run.json") == saved
@@ -102,12 +191,31 @@ def test_resume_preserves_larger_limits_usage_and_original_clock(tmp_path):
         launcher.launch_command(args, Path(sys.executable))
 
 
-def test_resume_requires_saved_state_and_same_model(tmp_path):
+def test_resume_requires_saved_state(tmp_path):
     args = launcher.arguments(["--state-dir", str(tmp_path), "--resume"])
     with pytest.raises(ValueError, match="requires exploration.json"):
         launcher.launch_command(args, Path(sys.executable))
-    saved_run(tmp_path, reasoningEffort="high")
-    with pytest.raises(ValueError, match="must use gpt-5.6-luna"):
+
+
+@pytest.mark.parametrize("settings", [["--model", "gpt-6-luna"], ["--reasoning-effort", "medium"]])
+def test_resume_rejects_conflicting_settings_before_starting_services(tmp_path, monkeypatch, fake_services, settings):
+    saved = saved_run(tmp_path, reasoningEffort="high")
+    arguments = ["--state-dir", str(tmp_path), "--resume", "--port", "8971", *settings]
+    args = launcher.arguments(arguments)
+    with pytest.raises(ValueError, match="Resume retains the saved model gpt-5.6-luna with high reasoning"):
+        launcher.launch_command(args, Path(sys.executable))
+    monkeypatch.setattr(sys, "argv", ["live_vanilla", *arguments])
+    with pytest.raises(SystemExit) as stopped:
+        live_vanilla.main()
+    assert stopped.value.code == 2
+    assert fake_services == ([], [])
+    assert launcher.read_json(tmp_path / "runner/run.json") == saved
+
+
+@pytest.mark.parametrize("settings", [["--model", ""], ["--reasoning-effort", "with spaces"]])
+def test_invalid_model_settings_fail_before_launch(tmp_path, settings):
+    args = launcher.arguments(["--state-dir", str(tmp_path), *settings])
+    with pytest.raises(ValueError, match="Invalid model or reasoning effort"):
         launcher.launch_command(args, Path(sys.executable))
 
 
@@ -150,7 +258,23 @@ def test_launcher_captures_output_and_stop_report_without_restarting(tmp_path, m
     monkeypatch.setattr(
         launcher, "launch_command", lambda args, python: [str(python), "-u", str(worker), str(args.state_dir)]
     )
-    assert launcher.main(["--state-dir", str(root), "--color", "always", "--strategy-guide"]) == 2
+    assert (
+        launcher.main(
+            [
+                "--state-dir",
+                str(root),
+                "--color",
+                "always",
+                "--strategy-guide",
+                "--fast",
+                "--model",
+                "chosen-model",
+                "--reasoning-effort",
+                "high",
+            ]
+        )
+        == 2
+    )
     output = capsys.readouterr().out
     assert "\x1b[" in output.split("\x1b[36mstdout diagnostic")[0]
     assert "\x1b[36mstdout diagnostic\x1b[0m" in output
@@ -159,10 +283,13 @@ def test_launcher_captures_output_and_stop_report_without_restarting(tmp_path, m
     assert len(launches) == 1
     metadata = launcher.read_json(launches[0] / "launch.json")
     assert metadata is not None and metadata["strategyGuide"]
+    assert metadata["requestedServiceTier"] == "fast"
+    assert (metadata["model"], metadata["reasoningEffort"]) == ("chosen-model", "high")
     console = (launches[0] / "console.log").read_text()
     assert "stdout diagnostic" in console and "stderr diagnostic" in console
     assert "\x1b" not in console
-    assert "[Rome] Player: gpt-5.6-luna" in console and "[Egypt] Player: Built-in AI" in console
+    assert "[Rome] Player: chosen-model · high reasoning" in console and "[Egypt] Player: Built-in AI" in console
+    assert "Priority: Fast requested." in console
     assert "stderr diagnostic\n  Error: Stopped: paused; exit 2." in console
     stopped = launcher.read_json(launches[0] / "stop.json")
     assert stopped is not None

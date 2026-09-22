@@ -7,15 +7,40 @@ From the repository directory, using the existing project environment:
 ```
 
 The launcher starts the host, the three agent services and the ordinary scheduler.
-It plays Rome, Greece and France with **gpt-5.6-luna / medium** against native Egypt,
+It plays Rome, Greece and France with **gpt-6-luna / medium** by default against native Egypt,
 with two city-states. Setup remains Vanilla, Ancient, Quick/Prince, Small Pangaea
 and all five native victory types. Agents choose their actions without guided
 milestones. The host builds through its normal source-checkout launcher.
+
+Use `--model` and `--reasoning-effort` to select settings for all three agents,
+including gameplay, chat and background memory work:
+
+```sh
+.venv/bin/python scripts/run_vanilla_game.py --model gpt-6-luna --reasoning-effort high
+```
+
+The launcher forwards these settings to the scheduler and every agent service.
+Launch metadata records the requested settings; job telemetry records the effective
+settings reported by Codex. Editing the launcher does not change running services.
 
 Add `--strategy-guide` to provide all three agents with an
 [optional short Civ V strategy reference](Strategy-guide.md). It is explicitly
 advisory and off by default; `--no-strategy-guide` also disables it. Pass the flag
 again on resume if you want to keep providing it.
+
+Add `--fast` to request [Codex Fast mode](https://learn.chatgpt.com/docs/agent-configuration/speed)
+for all three agents, including gameplay, chat and background memory work:
+
+```sh
+.venv/bin/python scripts/run_vanilla_game.py --fast
+```
+
+Pass `--fast` again on resume, alongside `--resume` and your existing
+`--state-dir`. It sets the Codex service tier to `fast` and enables its fast-mode
+feature and keeps your selected model and reasoning effort. Without the flag,
+Codex retains its configured or resumed-conversation tier. The launch log records
+the requested tier, and agent job records retain the tier reported by Codex.
+Fast-mode availability and pricing follow your Codex account and model.
 
 The default persistent match directory is
 `~/.local/state/unciv-host/vanilla-full`. Ports **8971–8974** must be available.
@@ -81,6 +106,9 @@ For the default directory:
 For a custom directory, supply the same `--state-dir` and port again. The launcher
 refuses to overwrite a saved match without `--resume`. Resume retains accounting,
 checkpoints and confirmed work, using the existing scheduler's recovery flow.
+It also inherits the saved model and reasoning effort, including for games started
+with older defaults. Explicitly conflicting settings are rejected before services
+start; choose a new match directory to use a different model or reasoning effort.
 It requires both `exploration.json` and `runner/run.json`; if startup failed before
 these exist, inspect the startup logs first.
 

@@ -185,7 +185,8 @@ def test_only_changed_detail_invalidates_its_assumptions_and_survives_restart(tm
             snapshot = await host.tool("player_turn", {})
             snapshot["map"]["units"] = []
             restarted.observe_player(snapshot, "next", overview(snapshot))
-            stored = restarted.snapshot("gameplay")["records"][detail["evidence"]]["body"]
+            canonical = current(memory, key)["_assumptions"][0]["key"]
+            stored = restarted.snapshot("gameplay")["records"][canonical]["body"]
             assert not stored["available"] and stored["data"] == {}
         finally:
             await io.close()

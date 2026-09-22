@@ -79,7 +79,15 @@ movement. A reachable tile can still be an unsuitable city site.
 
 The agent overview includes a compact `settlementStatus` and a link to
 `unit_details(target, sections=["settlement"])`, even when `canFoundCity` is false.
-That section includes the same diagnostics for the unit's current tile:
+`settlementStatus` describes the unit's **current tile**. For a standing destination
+order, `movementOrder.settlement` describes the **destination** using `siteStatus`,
+`siteBlockers`, and `uncertainty`. It is refreshed from permitted observations on
+every snapshot, without computing a new route. A scout revealing a blocking city
+therefore updates the settler's row in the scout action's `stateUpdate`, even if
+the settler has not moved. Unchanged rows are omitted by the ordinary delta logic.
+
+The focused settlement section includes both the active destination summary and
+the full diagnostics for the unit's current tile:
 
 | Field | Meaning |
 | --- | --- |
@@ -101,6 +109,12 @@ Prospective previews include only owned or currently visible blocking cities.
 Incomplete surrounding visibility produces uncertainty regardless of whether an
 unseen city actually exists, preventing eligibility queries from becoming a hidden
 city detector. Unexplored and nonexistent destinations return unknown site details.
+The same filters apply to standing-order summaries; they do not retain a foreign
+city's current existence once it leaves visibility. Destination summaries omit
+current unit requirements such as remaining movement. They disappear when the
+native order clears on arrival or cancellation, and units without a founding
+ability have no destination settlement summary. Site advice never cancels or
+redirects an order.
 The current-tile `canFoundNow` mirrors the existing native action availability;
 it does not identify an unseen cause. These filters apply to this diagnostic
 surface; the broader map-UI visibility limitations described above still apply.
@@ -110,7 +124,48 @@ recovery, ownership, adjacent settlers, and retained UI actions.
 `SettlementPreviewIntegrationTest` checks authenticated previews and commands,
 read-only behavior, founding/retry effects, and hidden-city non-disclosure.
 Python selective-read and movement-order tests cover discovery and advisory-only
-behavior through the model-facing gateway.
+behavior through the model-facing gateway. State-update tests cover new blockers
+revealed by another unit, selective inspection invalidation, unchanged-row
+suppression, and clearing an order from the delivered overview.
+
+### Focused live exercise
+
+Generate an isolated fixture with a Roman settler already heading toward an
+uncertain site, a scout, and two built-in AI rivals. One `gpt-5.6-luna`/medium
+agent scouts the area and chooses whether to retain or replace the destination,
+then founds a city. The driver issues no gameplay commands. The default limits
+are three rounds, twelve model activations, thirty minutes overall, and ten
+minutes per activation; the ordinary scheduler limit flags can override these.
+
+Choose a new absolute directory for each run:
+
+```sh
+./gradlew generateSettlementLiveFixture -PsettlementLiveDir=/tmp/settlement-check
+.venv/bin/python -m tests.live_settlement --state-dir /tmp/settlement-check --port 9121
+.venv/bin/python -m tests.verify_settlement_live /tmp/settlement-check
+```
+
+The verifier reads the durable model-call journal through a read-only SQLAlchemy
+connection and checks native command receipts. It records destination transitions,
+turns with settler movement, stationary turns before founding, redirects, and
+turns from availability to founding in `settlement-verification.json`. The settler
+is supplied at turn zero; the exercise does not measure production time or provide
+a controlled before/after speed comparison. A turn-limit stop is expected after
+the three completed turns; check the verifier for the settlement result.
+
+September 22, 2026: all three Luna/medium turns completed in
+`/tmp/unciv-settlement-live-20260922`; all six verifier checks passed. The scout
+revealed Orleans blocking `(4,0)`, and its action update delivered that fact while
+the settler remained at `(0,2)`. Rome issued one replacement order to `(2,4)` on
+turn 0 and founded Antium on turn 1. There were no stationary turns before the
+founding turn and no tile-by-tile settler commands. The native city action remained
+available even though surrounding visibility left the site's status `UNKNOWN`.
+
+The agent also verbally confused `UNKNOWN` with exhausted movement and repeated
+the survey milestone. Inspection guidance now explicitly defines `UNKNOWN` as
+incomplete visibility, and the exercise prompt says to skip completed milestones.
+Those wording refinements have not had a second live run. The retained
+`settlement-live.json` and per-turn histories record the prompts used in this run.
 
 ## Slice inventory and evidence
 
@@ -123,8 +178,6 @@ behavior through the model-facing gateway.
 | Fresh creation and first turn handoff | `VanillaGameSetup`, `Main`, `HeadlessRuntime` | `GameLaunchIntegrationTest` and `VanillaGameProbe`: ordinary three-player setup, HTTPS settlement, scheduled rounds and restart; `ExplorationIntegrationTest`: movement and settlement privacy/recovery |
 | Settlement durability | `CheckpointStore`, `TurnSession` | `SettlementCrashProbe`: process killed before/after atomic replacement; recovery retries consume exactly one settler and create exactly one city |
 
-The broader engine movement, pathfinding and formation regression suites also run.
-These are scripted tests; the new slice has not yet had a live Codex playthrough or
-a graphical human-versus-agent acceptance run. Desktop game ownership remains separate
-from the headless executor. Multi-turn path previews outside this slice still use
-the existing engine pathfinder and require further visibility review.
+For multi-turn orders and their live acceptance evidence, see
+[naval gameplay](Naval-gameplay.md). Desktop human-versus-agent acceptance and
+broader pathfinding visibility review remain separate work.

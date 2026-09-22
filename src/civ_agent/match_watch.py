@@ -14,7 +14,7 @@ from textual.widgets import DataTable, Footer, Header, RichLog, Static, TabbedCo
 
 from civ_agent.model_status import status_text
 from civ_agent.terminal_output import player_style, visible_text
-from civ_agent.turn_display import api_calls, number, seconds
+from civ_agent.turn_display import api_calls, memory_edits_text, number, seconds
 from civ_agent.watch_state import WatchReader, WatchSnapshot, event_time
 
 
@@ -258,6 +258,7 @@ class MatchWatch(App):
         metrics += f"Game API {count(api_calls(accounting.get('hostCalls')))} · Model requests unavailable"
         metrics += " · Usage " + ("complete" if complete else "partial / not yet finalized")
         metrics += " · Cached and reasoning tokens are included in input and output."
+        metrics += "\n" + memory_edits_text(accounting.get("memoryEdits"))
         self.query_one("#metrics", Static).update(Text(metrics))
         inspection = f"Turn {self.selected[1]} · {scope}" if self.selected else f"Recent activity · {scope}"
         self.query_one("#scope", Static).update(

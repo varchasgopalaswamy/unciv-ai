@@ -71,6 +71,9 @@ def arguments(argv=None):
     )
     parser.add_argument("--seed", type=int, help="New-game terrain seed; defaults to 20260920")
     parser.add_argument(
+        "--fast", action="store_true", help="Request Codex fast priority for all agent work; pass again on resume"
+    )
+    parser.add_argument(
         "--strategy-guide",
         action=argparse.BooleanOptionalAction,
         default=False,
@@ -99,6 +102,15 @@ def arguments(argv=None):
         default="auto",
         help="Terminal colors (default: auto; respects NO_COLOR)",
     )
+
+    parser.add_argument(
+        "--model", help="Model for all agents (new-game default: gpt-6-luna; resume retains saved settings)"
+    )
+    parser.add_argument(
+        "--reasoning-effort",
+        help="Reasoning effort for all agents (new-game default: medium; resume retains saved settings)",
+    )
+
     args = parser.parse_args(argv)
     args.state_dir = args.state_dir.expanduser().resolve()
     if args.port > 65532:
@@ -109,6 +121,7 @@ def arguments(argv=None):
 
 
 def launch_command(args, python):
+    from civ_agent.agent_settings import resolve_run_settings
     from civ_agent.terminal_output import color_enabled
 
     root = args.state_dir
@@ -120,10 +133,11 @@ def launch_command(args, python):
                 "Resume requires exploration.json and runner/run.json; inspect the saved startup logs if either is missing."
             )
         previous = read_json(runner) or {}
-        if (previous.get("model"), previous.get("reasoningEffort")) != ("gpt-5.6-luna", "medium"):
-            raise ValueError("The saved match must use gpt-5.6-luna with medium reasoning.")
     elif checkpoint.exists() or runner.exists():
         raise ValueError("A saved match already exists. Use --resume or choose a new --state-dir.")
+    args.model, args.reasoning_effort = resolve_run_settings(
+        args.model, args.reasoning_effort, defaults=("gpt-6-luna", "medium"), saved=previous
+    )
     command = [
         str(python),
         "-u",
@@ -135,6 +149,10 @@ def launch_command(args, python):
         str(args.port),
         "--startup-timeout",
         str(args.startup_timeout),
+        "--model",
+        args.model,
+        "--reasoning-effort",
+        args.reasoning_effort,
     ]
     if args.resume:
         command.append("--resume")
@@ -157,6 +175,8 @@ def launch_command(args, python):
         command.append("--verbose")
     if args.strategy_guide:
         command.append("--strategy-guide")
+    if args.fast:
+        command.append("--fast")
     # The scheduler writes through a pipe. Resolve auto against the real terminal.
     command += ["--color", "always" if color_enabled(args.color) else "never"]
     return command
@@ -301,9 +321,10 @@ def main(argv=None):
                 "repository": str(REPOSITORY),
                 "source": provenance(REPOSITORY),
                 "engine": provenance(REPOSITORY / "vendor/Unciv"),
-                "model": "gpt-5.6-luna",
-                "reasoningEffort": "medium",
+                "model": args.model,
+                "reasoningEffort": args.reasoning_effort,
                 "strategyGuide": args.strategy_guide,
+                "requestedServiceTier": "fast" if args.fast else None,
             },
         )
         show("Status", "Resuming Vanilla game." if args.resume else "Starting Vanilla game.")
@@ -311,10 +332,11 @@ def main(argv=None):
         show("Log", str(launch / "console.log"))
         show("Dashboard", shlex.join([str(python.with_name("civ-agent")), "match", "watch", "--state-dir", str(root)]))
         for civilization in ("Rome", "Greece", "France"):
-            show("Player", "gpt-5.6-luna · medium reasoning", civilization=civilization)
+            show("Player", f"{args.model} · {args.reasoning_effort} reasoning", civilization=civilization)
         show("Player", "Built-in AI", civilization="Egypt")
         show("Setup", "Two city-states.")
         show("Strategy", "Optional guide enabled." if args.strategy_guide else "Guide disabled.")
+        show("Priority", "Fast requested." if args.fast else "Codex default.")
         show(
             "Status",
             "Ctrl-C pauses and flushes the run (allow a minute). A blocked turn stops for inspection; this launcher does not restart it.",

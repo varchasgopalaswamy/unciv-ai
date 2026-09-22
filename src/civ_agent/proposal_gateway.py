@@ -459,7 +459,7 @@ class ProposalGateway:
         )
         add(
             "memory_update",
-            "Create, revise, replace or retire typed private plans, beliefs, notes and SOUL principles. Code assigns IDs and turn metadata. Read before changing existing records. Notes use text and optional plan: an existing plan record ID, never prose; omit it for unrelated notes. Notes do not accept sources. Beliefs require claim, uncertainty and sources. Sources must have been read: record/message IDs, observation:overview, a detail response's evidence ID, or observation:communication after chat_read. Assumptions with source are ongoing dependencies; sources alone are historical evidence. Revise a plan after reviewing changed assumptions before reusing it for intent. For a rejected change with STALE_ASSUMPTIONS, reread its record and changed dependencies before reconsidering. Retirement removes active context, retaining history; it does not cancel a promise. Use subjects such as economy, Greece or entity handles for relevant context selection.",
+            "Create, revise, replace or retire typed private plans, beliefs, notes and SOUL principles. Code assigns IDs and turn metadata. Read before changing existing records. Notes use text and optional plan: a previously read plan ID, even if retired or needing review. This is a historical link, not an active dependency. Notes do not accept sources. Beliefs require claim, uncertainty and sources. Copy sources exactly: record/message IDs, observation:overview, a detail response's short evidence handle (e123), or observation:communication after chat_read. Do not construct evidence IDs. Revisions can retain their existing historical citations without rereading them. Explicit assumptions are ongoing dependencies: refresh those you keep; drop obsolete ones when changing strategy. Review a flagged plan before reusing it for intent. For STALE_ASSUMPTIONS, follow recovery reads and reconsider. Retirement retains history and does not cancel a promise. Use relevant subjects such as economy, Greece or entity handles.",
         )
         job.catalogue = copy.deepcopy(tools)
         return tools
@@ -573,7 +573,9 @@ class ProposalGateway:
                         "recoverable": True,
                         "changedRecords": conflict.keys,
                         "conflicts": conflict.details,
-                        "recovery": await self.io.call(self.memory.conflict_recovery, conflict.keys, name, arguments),
+                        "recovery": await self.io.call(
+                            self.memory.conflict_recovery, job.id, conflict.keys, name, arguments
+                        ),
                     }
             result = await self.settle_gameplay(job, name, result)
             result = await self.update_after_action(job, name, arguments, call_id, result)
@@ -847,7 +849,7 @@ class ProposalGateway:
             query = DetailQuery.model_validate({"tool": name, "arguments": arguments})
             value = project_detail(job.observation, query)
             scope = detail_scope(query)
-            version = await self.io.call(self.memory.observe, scope, value, job.id)
+            version, delivered = await self.io.call(self.memory.observe_detail, scope, value, job.id)
             job.memory["records"]["observation:" + scope] = {
                 "version": version,
                 "category": "observation",
@@ -855,7 +857,7 @@ class ProposalGateway:
             }
             if value["available"] and query not in job.details_read:
                 job.details_read.append(query)
-            return public_result(value)
+            return public_result(delivered)
         if name in {"trade_options", "trade_read", "agreement_list", "agreement_read"}:
             value = await job.connection.tool("player_communication", {**arguments, "op": name, "epoch": job.epoch})
             self.check(job)
@@ -904,7 +906,7 @@ class ProposalGateway:
                 query = DetailQuery(tool=name, arguments=arguments)
                 scope = detail_scope(query)
                 value = {**value, "evidence": "observation:" + scope, "query": query.model_dump()}
-                version = await self.io.call(self.memory.observe, scope, value, job.id)
+                version, delivered = await self.io.call(self.memory.observe_detail, scope, value, job.id)
                 job.memory["records"]["observation:" + scope] = {
                     "version": version,
                     "category": "observation",
@@ -912,6 +914,7 @@ class ProposalGateway:
                 }
                 if value.get("available") and query not in job.details_read:
                     job.details_read.append(query)
+                value = delivered
             elif "error" not in value:
                 if name == "player_capabilities":
                     value = {**value, "queries": list(dict.fromkeys(value.get("queries", []) + list(DETAIL_MODELS)))}

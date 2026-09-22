@@ -54,6 +54,9 @@ def parser(*, add_help: bool = True) -> argparse.ArgumentParser:
     result.add_argument("--token-file", type=Path, help="Existing service bearer token file (created if absent)")
     result.add_argument("--codex", default="codex", help="Codex executable path")
     result.add_argument(
+        "--fast", action="store_true", help="Request Codex fast priority for gameplay and background work"
+    )
+    result.add_argument(
         "--strategy-guide",
         action=argparse.BooleanOptionalAction,
         default=False,
@@ -143,6 +146,7 @@ def run(args: argparse.Namespace) -> int:
             reasoning_effort=args.reasoning_effort,
             memory_context_chars=args.memory_context_chars,
             strategy_guide=args.strategy_guide,
+            fast=args.fast,
             gateway_url=host_origin(args.public_host, port) + "/mcp",
             gateway_ca_file=material["ca_file"],
         )
@@ -163,6 +167,7 @@ def run(args: argparse.Namespace) -> int:
         print(f"Player turn files: {workspace}", flush=True)
         print(f"Service diagnostics: {service.diagnostics.path}", flush=True)
         print(f"Strategy guide: {'enabled (optional suggestions)' if args.strategy_guide else 'disabled'}", flush=True)
+        print(f"Requested service tier: {'fast' if args.fast else 'Codex default'}", flush=True)
         print(
             f"New conversation defaults: model={args.model or 'Codex config'}, reasoning={args.reasoning_effort or 'Codex config'}",
             flush=True,

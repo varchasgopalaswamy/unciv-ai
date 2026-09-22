@@ -3,6 +3,7 @@
 import json
 import time
 import uuid
+from collections.abc import Callable
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -37,11 +38,12 @@ calls = Table(
 
 
 class JobAccounting:
-    def __init__(self, directory: Path):
+    def __init__(self, directory: Path, memory_edits: Callable[[str], JsonObject] | None = None):
         self.path = private_directory(directory) / "accounting.sqlite3"
         if self.path.is_symlink():
             raise ValueError("Unsafe accounting database")
         self.engine = sqlite_engine(self.path)
+        self.memory_edits = memory_edits
         self.starts: dict[str, float] = {}
         with self.connect() as db:
             metadata.create_all(db)
@@ -118,6 +120,9 @@ class JobAccounting:
 
     def sample(self, record: JsonObject, wait_seconds: float = 0):
         id = record["activationId"]
+        # Read the durable memory journal, not the transport outcome: one
+        # successful request can contain rejected edits, and replies can be lost.
+        edits = self.memory_edits(id) if self.memory_edits else None
         with self.connect() as db:
             saved = db.execute(select(jobs.c.payload).where(jobs.c.id == id)).fetchone()
             if saved is None:
@@ -156,6 +161,8 @@ class JobAccounting:
                     count["replayed"] += replayed
                     count["elapsedMs"] += elapsed or 0
             report["apiCalls"] = counts
+            if edits is not None:
+                report["memoryEdits"] = edits
             db.execute(jobs.update().where(jobs.c.id == id).values(payload=json.dumps(row), sent=0))
 
     def pending(self) -> list[JsonObject]:

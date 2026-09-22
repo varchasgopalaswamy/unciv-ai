@@ -11,10 +11,11 @@ import time
 from pathlib import Path
 
 from civ_agent import scheduler
+from civ_agent.agent_settings import resolve_run_settings
 from civ_agent.tls import write_private_json
 
-MODEL = "gpt-5.6-luna"
-EFFORT = "medium"
+DEFAULT_MODEL = "gpt-6-luna"
+DEFAULT_EFFORT = "medium"
 PLAYERS = ("Rome", "Greece", "France")
 
 
@@ -26,6 +27,7 @@ def main() -> int:
     mode.add_argument("--checkpoint", type=Path, help="Start a fresh run from a saved host/round checkpoint")
     parser.add_argument("--source-state", type=Path, help="Original state directory providing checkpoint credentials")
     parser.add_argument("--seed", type=int, default=20260920)
+    parser.add_argument("--fast", action="store_true", help="Request Codex fast priority for all agent work")
     parser.add_argument(
         "--strategy-guide",
         action=argparse.BooleanOptionalAction,
@@ -36,13 +38,17 @@ def main() -> int:
         "--startup-timeout", type=scheduler.positive, default=180, help="Seconds allowed per service startup"
     )
     args = parser.parse_args()
-    if args.model not in (None, MODEL) or args.reasoning_effort not in (None, EFFORT):
-        parser.error(f"All model jobs must use {MODEL} with {EFFORT} reasoning")
     if bool(args.checkpoint) != bool(args.source_state):
         parser.error("--checkpoint and --source-state must be supplied together")
-    args.model, args.reasoning_effort = MODEL, EFFORT
     args.action = "resume" if args.resume else "start"
     root = args.state_dir.expanduser().resolve()
+    try:
+        saved = json.loads((root / "runner/run.json").read_text()) if args.resume else None
+        args.model, args.reasoning_effort = resolve_run_settings(
+            args.model, args.reasoning_effort, defaults=(DEFAULT_MODEL, DEFAULT_EFFORT), saved=saved
+        )
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        parser.error(str(error))
     root.mkdir(parents=True, exist_ok=True, mode=0o700)
     if not args.resume and (root / "exploration.json").exists():
         parser.error("Existing match: use --resume")
@@ -73,9 +79,10 @@ def main() -> int:
                     "checkpointSha256": hashlib.sha256(json.dumps(checkpoint, sort_keys=True).encode()).hexdigest(),
                     "sourceState": str(args.source_state.resolve()),
                     "sourceCheckpoint": str(args.checkpoint.resolve()),
-                    "model": MODEL,
-                    "reasoningEffort": EFFORT,
+                    "model": args.model,
+                    "reasoningEffort": args.reasoning_effort,
                     "strategyGuide": args.strategy_guide,
+                    "requestedServiceTier": "fast" if args.fast else None,
                     "serviceRevision": subprocess.check_output(
                         ["git", "rev-parse", "HEAD"], cwd=repository, text=True
                     ).strip(),
@@ -122,10 +129,11 @@ def main() -> int:
                     "--port",
                     str(args.port + offset),
                     "--model",
-                    MODEL,
+                    args.model,
                     "--reasoning-effort",
-                    EFFORT,
+                    args.reasoning_effort,
                     *(["--strategy-guide"] if args.strategy_guide else []),
+                    *(["--fast"] if args.fast else []),
                 ],
                 civilization,
                 "AGENT-READY:",

@@ -87,7 +87,7 @@ def collect(root, sessions, require_updates=False):
         assert len(paths) == 1, f"Missing/ambiguous provider trace for {id}"
         discovery = discovery_metrics(paths[0])
         assert discovery["modelSettings"] and all(
-            setting == {"model": "gpt-5.6-luna", "reasoningEffort": "medium"} for setting in discovery["modelSettings"]
+            setting == activation["effectiveSettings"] for setting in discovery["modelSettings"]
         )
         assert {key: discovery["usage"][key] for key in TOKEN_KEYS} == job["usage"], f"Provider usage differs for {id}"
         service = root / "agent-services" / job["civilization"]
@@ -216,7 +216,7 @@ def main():
     parser.add_argument("--sessions", type=Path, default=Path.home() / ".codex/sessions")
     args = parser.parse_args()
     report = {"baseline": collect(args.baseline, args.sessions), "current": collect(args.current, args.sessions, True)}
-    for key in ("gameTurn", "handoffs", "turnRecords"):
+    for key in ("gameTurn", "handoffs", "turnRecords", "modelSettings"):
         assert report["baseline"]["verification"][key] == report["current"]["verification"][key]
     record = json.loads((args.current / "live-run.json").read_text())
     checkpoint = json.loads(Path(record["sourceCheckpoint"]).read_text())

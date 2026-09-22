@@ -58,10 +58,13 @@ def add_unit_commands(unit: JsonObject) -> None:
             unit["foundCityConfirmationField"] = "confirmBreakPromise"
     if unit.get("settlement") is not None:
         unit["settlementInstruction"] = (
+            "settlement describes the current tile; movementOrder.settlement describes the active destination "
+            "and updates with visible information. "
             "For another site, read movement_preview(target, destination) and inspect its settlement field. "
             "Movement availability does not imply founding eligibility. Waiting restores movement, not site eligibility. "
             "Reconsider a repeatedly blocked site; scout or choose another location instead of assuming next turn fixes it. "
-            "UNKNOWN is not a rejection: recheck canFoundCity on arrival. Own territory and adjacent foreign settlers "
+            "UNKNOWN means incomplete visibility; recheck canFoundCity on arrival even if the site remains UNKNOWN. "
+            "Own territory and adjacent foreign settlers "
             "do not by themselves prohibit founding."
         )
     worker = unit.get("worker") or {}

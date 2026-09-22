@@ -11,6 +11,8 @@ class SettlementPreviewIntegrationTest {
 
     @Test fun `prospective sites cannot disclose hidden cities or certify unseen surroundings`() = run("privacy")
 
+    @Test fun `standing orders report destination sites independently and clear on cancellation or arrival`() = run("orders")
+
     private fun run(scenario: String) {
         val root = Files.createTempDirectory("settlement-preview-$scenario-")
         try {

@@ -32,6 +32,14 @@ data class SettlementPreview(
     val minimumCityDistanceOnDifferentContinents: Int,
 )
 
+/** Destination advice excludes the unit's current movement and action availability. */
+@Serializable
+data class SettlementSiteSummary(
+    val siteStatus: String,
+    val siteBlockers: List<SettlementBlocker>,
+    val uncertainty: String?,
+)
+
 internal fun observeSettlement(player: Civilization, unit: MapUnit, destination: TilePosition, active: Boolean): SettlementPreview? {
     if (!UnitSettlement.hasFoundingAbility(unit)) return null
     val tile = player.gameInfo.tileMap.getOrNull(destination.x, destination.y)

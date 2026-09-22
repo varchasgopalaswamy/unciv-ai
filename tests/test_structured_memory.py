@@ -108,7 +108,8 @@ def test_belief_retraction_flags_plan_but_old_sighting_is_historical(tmp_path):
         memory,
         {"type": "belief", "claim": "Greece may attack", "uncertainty": "medium", "sources": ["observation:border"]},
     )
-    campaign = create(memory, plan(sources=[belief]))
+    campaign = create(memory, plan(assumptions=[{"text": "Greece may attack", "source": belief}]))
+    historical_belief = create(memory, plan(sources=[belief]))
     history = create(memory, plan(objective="Remember the sighting", sources=["observation:border"]))
     dependent = create(memory, plan(assumptions=[{"text": "Warrior remains nearby", "source": "observation:border"}]))
     memory.observe("border", {"turn": 5, "units": ["Greek warrior"]}, "game")
@@ -118,6 +119,7 @@ def test_belief_retraction_flags_plan_but_old_sighting_is_historical(tmp_path):
     assert not current(memory, history)["needsReview"]
     memory.patch("game", [{"op": "retire", "id": belief, "reason": "retracted"}])
     assert current(memory, campaign)["needsReview"]
+    assert not current(memory, historical_belief)["needsReview"]
 
 
 def test_missing_sources_and_assumptions_return_all_needed_reads(tmp_path):

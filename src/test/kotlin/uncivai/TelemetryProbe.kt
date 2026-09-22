@@ -2,6 +2,7 @@ package uncivai
 
 import com.unciv.logic.VictoryData
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.boolean
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
@@ -21,7 +22,8 @@ object TelemetryProbe {
         val civilizations = listOf("Rome", "Greece", "France")
         val tokens = civilizations.associateWith { it.first().toString().repeat(43) }
         lateinit var originalEpoch: String
-        val finalReport = JobTelemetry(2, "COMPLETED", 1000, 2000, 1000, 50, true, true, "gpt-5.6-luna", "medium", mapOf("tool:unit_details" to ApiCounts(3, 2, 1), "startup:player_turn" to ApiCounts(1, 1)), gameplayElapsedMs = 850, finalizationElapsedMs = 150)
+        val edits = MemoryEditCounts(2, 3, 1, 1, mapOf("SOURCE_NOT_DELIVERED" to 1))
+        val finalReport = JobTelemetry(2, "COMPLETED", 1000, 2000, 1000, 50, true, true, "gpt-5.6-luna", "medium", mapOf("tool:unit_details" to ApiCounts(3, 2, 1), "startup:player_turn" to ApiCounts(1, 1)), gameplayElapsedMs = 850, finalizationElapsedMs = 150, memoryEdits = edits)
         HeadlessRuntime.createVanillaGame(root.resolve("initial"), 42, 2, listOf("Egypt")).use { runtime ->
             check(runtime.game.getCivilization("Egypt").isAI())
             check(runtime.game.civilizations.count { it.isCityState } == 2)
@@ -45,6 +47,10 @@ object TelemetryProbe {
                     api.communicate(credential, report(2))
                     api.communicate(credential, report(2))
                     api.communicate(credential, report(1))
+                    val decreased = JsonObject(report(3) + ("telemetry" to finalReport.copy(sequence = 3, memoryEdits = edits.copy(accepted = 1)).recordJson()))
+                    check(api.communicate(credential, decreased).containsKey("error"))
+                    val inconsistent = JsonObject(report(3) + ("telemetry" to finalReport.copy(sequence = 3, memoryEdits = edits.copy(rejected = 2)).recordJson()))
+                    check(api.communicate(credential, inconsistent).containsKey("error"))
                     api.communicate(credential, obj("op" to "job_release", "epoch" to originalEpoch, "job" to job))
                     val metrics = runtime.executor.communicationState.telemetry.turns.getValue("$originalEpoch/${activation.status.handoff}")
                     check(metrics.endedAtMs != null && metrics.activeMs >= 0 && metrics.civilization == civilization)
@@ -60,6 +66,7 @@ object TelemetryProbe {
                 check(turns.all { it.getValue("finalizationElapsedMs").jsonPrimitive.long == 150L })
                 check(turns.all { it.getValue("agentCalls").jsonObject.getValue("startup:player_turn").jsonObject.getValue("calls").jsonPrimitive.long == 1L })
                 check(turns.all { it.getValue("agentCalls").jsonObject.getValue("tool:unit_details").jsonObject.getValue("calls").jsonPrimitive.long == 3L })
+                check(turns.all { it.getValue("memoryEdits") == edits.recordJson() })
                 val allCalls = runtime.executor.communicationState.telemetry.windows.values.flatMap { it.actors.values }.flatMap { it.entries }
                 check(allCalls.filter { it.key == "command:FOUND_CITY" }.sumOf { it.value.errors } == 3L)
                 check(allCalls.filter { it.key == "command:END_TURN" }.sumOf { it.value.replayed } == 3L)
@@ -93,6 +100,11 @@ object TelemetryProbe {
             check(scores.getValue("Egypt").getValue("controller").jsonPrimitive.content == "BUILT_IN_AI")
             check(scores.getValue("France").getValue("defeated").jsonPrimitive.boolean)
             check(result.getValue("usage").jsonObject.getValue("total_tokens").jsonPrimitive.long == 390L)
+            val memory = result.getValue("memoryEdits").jsonObject
+            check(memory.getValue("accepted").jsonPrimitive.long == 9L && memory.getValue("rejected").jsonPrimitive.long == 3L)
+            check(memory.getValue("batches").jsonPrimitive.long == 6L && memory.getValue("complete").jsonPrimitive.boolean)
+            check(memory.getValue("rejectionReasons").jsonObject.getValue("SOURCE_NOT_DELIVERED").jsonPrimitive.long == 3L)
+            check(result.getValue("players").jsonArray.filter { it.jsonObject.getValue("civilization").jsonPrimitive.content in civilizations }.all { it.jsonObject.getValue("memoryEdits") == edits.recordJson() })
             check(scores.getValue("Rome").getValue("score").jsonPrimitive.long > scores.getValue("Egypt").getValue("score").jsonPrimitive.long)
             // Exports are replaceable and terminal scores remain frozen across restart.
             Files.writeString(root.resolve("telemetry/game-result.json"), "damaged export")
@@ -101,6 +113,7 @@ object TelemetryProbe {
             val result = Json.parseToJsonElement(Files.readString(root.resolve("telemetry/game-result.json"))).jsonObject
             check(result.getValue("result").jsonObject.getValue("winner").jsonPrimitive.content == "Egypt")
             check(result.getValue("usage").jsonObject.getValue("total_tokens").jsonPrimitive.long == 390L)
+            check(result.getValue("memoryEdits").jsonObject.getValue("rejected").jsonPrimitive.long == 3L)
         }
     }
 }

@@ -24,17 +24,29 @@ turn 30 without a completed game.
 
 ## Observed follow-ups
 
-These remain recommendations from the live review, not completed changes:
+Implemented from the live review; ordinary-game impact still needs measurement:
 
-1. **Reduce memory repair work.** Avoid pre-handoff revision loops and unnecessary
-   rereads of old plan dependencies while preserving evidence provenance.
-2. **Expose partial memory rejections in telemetry.** Count accepted/rejected edits
-   and reasons separately from transport-level API success.
-3. **Improve decisions from existing information.** Review counterattack risk,
+- **Memory semantics.** Historical citations and note-to-plan links no longer
+  require active, reviewed sources. Revisions retain citations, can drop obsolete
+  assumptions, and use short versioned detail-evidence handles. Concurrent edits,
+  retained assumptions, and newer review evidence remain checked.
+- **Memory telemetry.** Accepted/rejected edits, affected batches, and rejection
+  reasons now come from the durable call journal and appear in host exports,
+  console summaries, and the TUI separately from API success.
+- **Settlement destinations.** Standing settler orders show visible destination
+  eligibility and blockers. Existing action updates deliver discoveries without
+  another preview request; uncertainty and native movement rules are preserved.
+  The [focused live exercise](reference/Exploration-and-settlement.md#focused-live-exercise)
+  delivered a newly revealed blocker, and Rome redirected on turn 0 and founded
+  on turn 1.
+
+Remaining recommendations:
+
+1. **Improve decisions from existing information.** Review counterattack risk,
    delayed military replacement, scouting before settlement and stalled city
-   growth. Consider showing the visible settlement status of a standing movement
-   order; preserve uncertainty and player visibility.
-4. **Investigate recurring communication-read failures if they return.** The last
+   growth. Measure whether the new destination summaries reduce settlement delays
+   in ordinary play.
+2. **Investigate recurring communication-read failures if they return.** The last
    review found eleven recoverable background MCP errors before a restart, with
    no established server-side cause.
 

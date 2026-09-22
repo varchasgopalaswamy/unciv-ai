@@ -77,6 +77,7 @@ class FakeCodex:
                 "reasoningEffort": self.factory.default_effort
                 if self.factory.ignore_effort
                 else payload.get("config", {}).get("model_reasoning_effort", self.factory.default_effort),
+                "serviceTier": payload.get("serviceTier"),
             }
         if method == "turn/start":
             record = self.factory.service.records[self.factory.service.active_id]
@@ -544,6 +545,28 @@ class AgentServiceTests(AgentServiceTestCase):
             with self.assertRaisesRegex(ServiceError, "THREAD_SETTINGS_CONFLICT"):
                 await self.service.start(self.payload("conflicting-resume", threadId="thread-one", **override))
         self.assertEqual(2, len(self.factory.instances))
+
+    async def test_fast_priority_applies_to_new_and_resumed_turns_without_changing_model(self):
+        await self.service.close()
+        self.service = self.make_service(model="gpt-5.6-luna", reasoning_effort="medium", fast=True)
+        await self.service.start(self.payload())
+        first = await self.terminal()
+        await self.service.close()
+        self.service = self.make_service(fast=True)
+        await self.service.start(self.payload("resume-fast", threadId=first["threadId"]))
+        second = await self.terminal()
+        self.assertEqual(first["effectiveSettings"], second["effectiveSettings"])
+        for method, payload in self.factory.calls:
+            if method in {"thread/start", "thread/resume", "turn/start"}:
+                self.assertEqual("fast", payload["serviceTier"])
+                self.assertEqual("gpt-5.6-luna", payload["model"])
+                if method.startswith("thread/"):
+                    self.assertEqual(
+                        {"model_reasoning_effort": "medium", "features.fast_mode": True}, payload["config"]
+                    )
+        self.assertTrue(any(method == "thread/resume" for method, _ in self.factory.calls))
+        self.assertEqual("fast", second["requestedServiceTier"])
+        self.assertEqual("fast", second["serviceTier"])
 
     async def test_invalid_settings_never_start_a_codex_process(self):
         for key, code in (("model", "INVALID_MODEL"), ("reasoningEffort", "INVALID_REASONING_EFFORT")):

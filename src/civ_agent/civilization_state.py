@@ -6,9 +6,11 @@ Model computation and HTTPS requests happen outside these transactions.
 
 import hashlib
 import json
+import re
 import secrets
 from collections.abc import Callable
 from contextlib import contextmanager
+from difflib import get_close_matches
 from pathlib import Path
 from typing import Any
 
@@ -235,39 +237,62 @@ class CivilizationState:
         snapshot.setdefault("delivered", {}).update({key: record["version"] for key, record in chosen.items()})
 
     def observe(self, key: str, body: JsonObject, job: str | None = None):
-        body = native_observation(body)
         with self.transaction() as db:
-            if self._meta(db, "paused", False):
-                raise StateConflict("STATE_PAUSED")
-            if job is not None:
-                self._validate(db, job, {})
-            self._advance_turn(db, body.get("context", {}).get("turn") if key == "communication" else body.get("turn"))
-            key = "observation:" + key
-            prior = self._records(db).get(key)
-            if (
-                key.startswith("observation:agreement/")
-                and prior
-                and body.get("agreement", {}).get("version", 0)
-                < max(prior["body"].get("agreement", {}).get("version", 0), prior["body"].get("latestVersion", 0))
-            ):
-                raise StateConflict("AGREEMENT_CHANGED: refresh with agreement_read")
-            if key == "observation:agreements" and prior:
-                versions = {row["agreement"]: row.get("version", 0) for row in body.get("agreements", [])}
-                if any(
-                    versions.get(id, 0) < version for id, version in prior["body"].get("latestVersions", {}).items()
-                ):
-                    raise StateConflict("AGREEMENT_CHANGED: refresh with agreement_list")
-            version = self._record(db, key, "observation", body, job)
-            self._changed_observation(db, key, body, prior)
-            if key.startswith("observation:trade/"):
-                self._settle_trade(db, body)
-            if job is not None:
-                snapshot = json.loads(
-                    db.execute(select(tables.jobs.c.snapshot).where(tables.jobs.c.id == job)).scalar_one()
+            return self._observe(db, key, body, job)
+
+    def observe_detail(self, key: str, body: JsonObject, job: str):
+        """Return a short, immutable evidence handle for exactly this delivered revision."""
+        with self.transaction() as db:
+            version = self._observe(db, key, body, job)
+            canonical = "observation:" + key
+            record_id = db.execute(
+                select(tables.record_order).where(
+                    tables.records.c.key == canonical, tables.records.c.version == version
                 )
-                self._deliver(snapshot, {key: {"version": version, "category": "observation", "body": body}})
-                db.execute(tables.jobs.update().where(tables.jobs.c.id == job).values(snapshot=encode(snapshot)))
-            return version
+            ).scalar_one()
+            handle = "e" + str(record_id)
+            snapshot = json.loads(
+                db.execute(select(tables.jobs.c.snapshot).where(tables.jobs.c.id == job)).scalar_one()
+            )
+            snapshot.setdefault("historicalEvidence", {})[handle] = {
+                "key": canonical,
+                "version": version,
+                "category": "observation",
+            }
+            db.execute(tables.jobs.update().where(tables.jobs.c.id == job).values(snapshot=encode(snapshot)))
+            return version, {**body, "evidence": handle}
+
+    def _observe(self, db, key, body, job):
+        body = native_observation(body)
+        if self._meta(db, "paused", False):
+            raise StateConflict("STATE_PAUSED")
+        if job is not None:
+            self._validate(db, job, {})
+        self._advance_turn(db, body.get("context", {}).get("turn") if key == "communication" else body.get("turn"))
+        key = "observation:" + key
+        prior = self._records(db).get(key)
+        if (
+            key.startswith("observation:agreement/")
+            and prior
+            and body.get("agreement", {}).get("version", 0)
+            < max(prior["body"].get("agreement", {}).get("version", 0), prior["body"].get("latestVersion", 0))
+        ):
+            raise StateConflict("AGREEMENT_CHANGED: refresh with agreement_read")
+        if key == "observation:agreements" and prior:
+            versions = {row["agreement"]: row.get("version", 0) for row in body.get("agreements", [])}
+            if any(versions.get(id, 0) < version for id, version in prior["body"].get("latestVersions", {}).items()):
+                raise StateConflict("AGREEMENT_CHANGED: refresh with agreement_list")
+        version = self._record(db, key, "observation", body, job)
+        self._changed_observation(db, key, body, prior)
+        if key.startswith("observation:trade/"):
+            self._settle_trade(db, body)
+        if job is not None:
+            snapshot = json.loads(
+                db.execute(select(tables.jobs.c.snapshot).where(tables.jobs.c.id == job)).scalar_one()
+            )
+            self._deliver(snapshot, {key: {"version": version, "category": "observation", "body": body}})
+            db.execute(tables.jobs.update().where(tables.jobs.c.id == job).values(snapshot=encode(snapshot)))
+        return version
 
     def snapshot(self, purpose: str) -> JsonObject:
         with self.transaction() as db:
@@ -585,9 +610,12 @@ class CivilizationState:
         with self.transaction() as db:
             self._set(db, "runFailure", None)
 
-    def conflict_recovery(self, keys, name, arguments):
+    def conflict_recovery(self, job, keys, name, arguments):
         with self.transaction() as db:
-            return recovery_reads(db, keys, name, arguments)
+            snapshot = json.loads(
+                db.execute(select(tables.jobs.c.snapshot).where(tables.jobs.c.id == job)).scalar_one()
+            )
+            return recovery_reads(db, keys, name, arguments, snapshot.get("historicalEvidence", {}))
 
     def export_failure(self):
         failure = self.run_failure()
@@ -670,15 +698,19 @@ class CivilizationState:
                             for ref in old["body"].get("_review", [])
                             if snapshot.get("delivered", {}).get(ref["key"], 0) < ref["version"]
                         ]
-                        if snapshot.get("memoryOnly"):
-                            unread_review = [ref for ref in old["body"].get("_review", []) if ref["key"] in missing]
-                        elif change["op"] == "revise" and missing:
-                            raise EvidenceRequired(
-                                "REVIEW_EVIDENCE_FIRST: read the changed evidence before revising", missing
-                            )
+                        unread_review = [ref for ref in old["body"].get("_review", []) if ref["key"] in missing]
                     content = None
                     if change["op"] != "retire":
-                        content = store.content(change["content"], snapshot)
+                        content = store.content(change["content"], snapshot, old.get("body"))
+                        dropped = {ref["key"] for ref in old.get("body", {}).get("_assumptions", [])} - {
+                            ref["key"] for ref in content["_assumptions"]
+                        }
+                        unread_review = [ref for ref in unread_review if ref["key"] not in dropped]
+                        if change["op"] == "revise" and unread_review and not snapshot.get("memoryOnly"):
+                            raise EvidenceRequired(
+                                "REVIEW_EVIDENCE_FIRST: read the changed evidence before revising",
+                                [ref["key"] for ref in unread_review],
+                            )
                         if change["op"] == "revise" and content["type"] != old["category"]:
                             raise ValueError("Use replace to change a record's type")
                         if content["type"] == "soul" and any(
@@ -768,7 +800,7 @@ class CivilizationState:
                             "reason": str(error),
                             "recoverable": True,
                             "requiredSources": error.keys,
-                            "recovery": self._memory_recovery(db, snapshot, error.keys + ([key] if key else [])),
+                            "recovery": self._memory_recovery(db, snapshot, error.keys, target=key),
                         }
                     )
                 except (StateConflict, ValueError) as error:
@@ -787,18 +819,48 @@ class CivilizationState:
             return result
 
     @staticmethod
-    def _memory_recovery(db, snapshot, keys):
-        if not snapshot.get("memoryOnly"):
-            return recovery_reads(db, keys, "memory_update", {})
+    def _memory_recovery(db, snapshot, keys, target=None):
         current = RecordStore(db).all()
-        private = list(dict.fromkeys(key for key in keys if current.get(key, {}).get("category") in MEMORY_TYPES))
-        return {
-            "reads": [
-                {"tool": "memory_read", "arguments": {"ids": private[offset : offset + 20], "includeRetired": True}}
-                for offset in range(0, len(private), 20)
-            ],
-            "instruction": "Reconcile with current private records using the completed turn's evidence. Keep review flags for newer evidence. If an edit needs evidence not read during the turn, defer that edit; no live game or chat reads are available in the memory phase.",
-        }
+        unknown = [key for key in keys if key not in current and key not in snapshot.get("historicalEvidence", {})]
+        known = [key for key in keys if key in current]
+        # Refresh the edited record after actual dependency reads, which can
+        # change its review flags. A typo alone needs no private-record refresh.
+        if known and target is not None:
+            known.append(target)
+        recovery: JsonObject
+        if not snapshot.get("memoryOnly"):
+            recovery = recovery_reads(db, known, "memory_update", {})
+        else:
+            private = list(dict.fromkeys(key for key in known if current[key]["category"] in MEMORY_TYPES))
+            recovery = {
+                "reads": [
+                    {"tool": "memory_read", "arguments": {"ids": private[offset : offset + 20], "includeRetired": True}}
+                    for offset in range(0, len(private), 20)
+                ],
+                "instruction": "Reconcile with current private records using the completed turn's evidence. Keep review flags for newer evidence. If an edit needs evidence not read during the turn, defer that edit; no live game or chat reads are available in the memory phase.",
+            }
+        if unknown:
+            # Suggestions contain only previously delivered references. Never
+            # silently correct a typo or deliver new game state during reflection.
+            available: dict[str, JsonObject] = {
+                key: {"source": key, "version": version} for key, version in snapshot.get("delivered", {}).items()
+            }
+            for alias, ref in snapshot.get("historicalEvidence", {}).items():
+                candidate = {"source": alias, "record": ref["key"], "version": ref["version"]}
+                query = snapshot["records"].get(ref["key"], {}).get("body", {}).get("query")
+                if query:
+                    candidate["query"] = query
+                available[alias] = candidate
+                if ref["version"] >= available.get(ref["key"], {}).get("version", 0):
+                    available[ref["key"]] = candidate
+            recovery["sourceSuggestions"] = [
+                {"requested": key, "candidates": [available[match] for match in get_close_matches(key, available, n=3)]}
+                for key in dict.fromkeys(unknown)
+            ][:5]
+            recovery["instruction"] += (
+                " Unknown source IDs cannot be repaired by rereading the plan. Check the suggested references and their queries; use one only if it supports your statement."
+            )
+        return recovery
 
     def search_memory(self, job, arguments):
         with self.transaction() as db:
@@ -876,6 +938,10 @@ class CivilizationState:
                 self._validate(db, job, {ref["key"]: ref["version"] for ref in pinned["assumptions"]})
                 for ref in pinned["assumptions"]:
                     current = store.all()[ref["key"]]
+                    if current["body"].get("requiresRefresh"):
+                        raise StaleAssumptions(
+                            [ref["key"]], conflict_details(db, job, [ref["key"]], cause="source_requires_refresh")
+                        )
                     if current["category"] in MEMORY_TYPES and (
                         current["body"].get("state") != "active" or current["body"].get("needsReview")
                     ):
@@ -1031,6 +1097,43 @@ class CivilizationState:
     def call(self, job, id, name, arguments, result=None):
         with self.transaction() as db:
             return self._call_record(db, job, id, name, arguments, result)
+
+    def memory_edit_counts(self, job: str) -> JsonObject:
+        """Count committed edit outcomes, including partial batches and lost responses.
+
+        The call journal survives rollback and deduplicates transport retries.
+        Return counters and reason codes only, never private record contents.
+        """
+        counts: JsonObject = {
+            "batches": 0,
+            "accepted": 0,
+            "rejected": 0,
+            "rejectedBatches": 0,
+            "rejectionReasons": {},
+            "complete": True,
+        }
+        with self.transaction() as db:
+            for (saved,) in db.execute(
+                select(tables.calls.c.result).where(
+                    tables.calls.c.job == job,
+                    tables.calls.c.name == "memory_update",
+                    tables.calls.c.result.is_not(None),
+                )
+            ):
+                result = json.loads(saved)
+                if "changes" not in result:
+                    continue  # Request validation errors remain API errors.
+                counts["batches"] += 1
+                rejected = False
+                for change in result["changes"]:
+                    counts["accepted" if change["accepted"] else "rejected"] += 1
+                    if not change["accepted"]:
+                        rejected = True
+                        reason = change.get("reason", "UNKNOWN").split(":", 1)[0]
+                        reason = reason if re.fullmatch(r"[A-Z][A-Z0-9_]{0,63}", reason) else "OTHER"
+                        counts["rejectionReasons"][reason] = counts["rejectionReasons"].get(reason, 0) + 1
+                counts["rejectedBatches"] += int(rejected)
+        return counts
 
     def _call_record(self, db, job, id, name, arguments, result=None):
         self._validate(db, job, {})

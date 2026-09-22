@@ -13,7 +13,7 @@ from civ_agent.proposal_gateway import ProposalGateway
 from civ_agent.service_io import ServiceIO
 from civ_agent.state_updates import apply_overview_update, overview_update, stamp
 from tests.test_proposal_gateway import Host
-from tests.test_structured_memory import create, plan
+from tests.test_structured_memory import create, current, plan
 
 
 def stamped(value, revision="r1", epoch="g1"):
@@ -128,6 +128,67 @@ async def inspect(gateway, job, unit="unit1"):
     return await gateway.call(job, "unit_details", {"target": unit, "sections": ["movement"]}, "inspect-" + unit)
 
 
+def test_scout_reveals_settler_destination_in_action_update_without_repeated_reads(tmp_path):
+    async def run():
+        async with session(tmp_path) as (gateway, job, host, _):
+            settler = host.view["map"]["units"][1]
+            unknown = {"siteStatus": "UNKNOWN", "siteBlockers": [], "uncertainty": "Nearby tiles are not all visible."}
+            settler.update(
+                name="Settler",
+                settlement={"siteStatus": "BLOCKED", "siteBlockers": [{"code": "CITY_TOO_CLOSE", "city": "Rome"}]},
+                movementOrder={"destination": {"x": 4, "y": 0}, "canCancel": True, "settlement": unknown},
+            )
+            base = await gateway.call(job, "player_turn", {}, "start")
+            shown = base["units"][1]
+            assert shown["settlementStatus"] == "BLOCKED"  # Current tile, not the destination.
+            assert shown["movementOrder"]["settlement"] == unknown
+            detail = await gateway.call(job, "unit_details", shown["inspections"]["FOUND_CITY"]["arguments"], "site")
+            assert detail["data"]["entity"]["movementOrder"] == {
+                "destination": settler["movementOrder"]["destination"],
+                "settlement": unknown,
+            }
+            await inspect(gateway, job)
+            blocked = {
+                "siteStatus": "BLOCKED",
+                "siteBlockers": [
+                    {
+                        "code": "CITY_TOO_CLOSE",
+                        "city": "Paris",
+                        "position": {"x": 6, "y": 0},
+                        "distance": 2,
+                        "minimumDistance": 4,
+                    }
+                ],
+                "uncertainty": None,
+            }
+            host.after_command = lambda: settler["movementOrder"].update(settlement=blocked)
+            result = await gateway.call(job, "player_command", MOVE, "scout")
+            update = result["stateUpdate"]
+            changed = next(row for row in update["collections"]["units"]["upsert"] if row["handle"] == "unit2")
+            assert changed["movementOrder"]["settlement"] == blocked
+            assert changed["position"] == shown["position"] and changed["settlementStatus"] == "BLOCKED"
+            assert detail["query"] in update["invalidatedDetails"]
+            assert apply_overview_update(base, update) == job.delivered_overview
+            assert host.reads == 2 and len(host.executed) == 1
+
+            host.after_command = lambda: None
+            await gateway.call(
+                job, "unit_details", {"target": "unit1", "sections": ["movement"]}, "inspect-scout-again"
+            )
+            unchanged = await gateway.call(job, "player_command", MOVE, "scout-again")
+            assert "unit2" not in json.dumps(unchanged["stateUpdate"])  # Unchanged destination not repeated.
+
+            host.after_command = lambda: settler.update(movementOrder=None)
+            arrived = await gateway.call(job, "player_command", MOVE, "arrival")
+            row = arrived["stateUpdate"]["collections"]["units"]["upsert"][0]
+            assert row["handle"] == "unit2" and "movementOrder" not in row
+            assert job.delivered_overview is not None
+            assert "movementOrder" not in job.delivered_overview["units"][1]
+            assert len(host.executed) == 3  # No automatic cancellation or redirection.
+
+    asyncio.run(run())
+
+
 @pytest.mark.parametrize("queue", [["Calendar"], ["Mining", "Calendar"]])
 def test_research_result_reports_actual_active_technology_and_retained_progress_without_extra_reads(tmp_path, queue):
     async def run():
@@ -222,21 +283,16 @@ def test_actions_deliver_flagged_plans_without_delivering_unread_evidence(tmp_pa
             result = await gateway.call(job, "player_command", MOVE, "move")
             updated = result["memoryUpdates"][0]
             assert updated["record"]["id"] == key
-            assert updated["record"]["needsReview"] and updated["record"]["reviewSources"] == [source]
+            canonical = current(memory, key)["_assumptions"][0]["key"]
+            assert updated["record"]["needsReview"] and updated["record"]["reviewSources"] == [canonical]
             MemoryReadResult.model_validate({"records": [updated["record"]]})
             assert updated["version"] == job.memory["records"][key]["version"]
             assert apply_overview_update(base, result["stateUpdate"]) == job.delivered_overview
             assert job.delivered_overview is not None and "memoryUpdates" not in job.delivered_overview
             args = {"changes": [{"op": "revise", "id": key, "content": plan(approach="Hold the new position")}]}
             revision = await gateway.call(job, "memory_update", args, "review")
-            if source_kind == "detail":
-                rejection = revision["changes"][0]
-                assert rejection["reason"].startswith("REVIEW_EVIDENCE_FIRST")
-                assert rejection["requiredSources"] == [source] and rejection["recoverable"]
-                assert detail["query"] in rejection["recovery"]["reads"]
-                for i, read in enumerate(rejection["recovery"]["reads"]):
-                    await gateway.call(job, read["tool"], read["arguments"], f"recover:{i}")
-                revision = await gateway.call(job, "memory_update", args, "review-after-reading")
+            # The revised plan explicitly drops the old positional assumption;
+            # it need not inspect an abandoned dependency to do so.
             assert revision["changes"][0]["accepted"]
             assert not job.memory["records"][key]["body"]["needsReview"]
             newest = copy.deepcopy(job.memory["records"][key])

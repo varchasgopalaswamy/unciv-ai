@@ -106,6 +106,14 @@ def test_turn_summary_uses_matching_host_totals_without_double_counting(tmp_path
             "tool:player_turn": {"calls": 2},
             "command:END_TURN": {"calls": 1},
         },
+        "memoryEdits": {
+            "batches": 3,
+            "accepted": 5,
+            "rejected": 2,
+            "rejectedBatches": 1,
+            "rejectionReasons": {"SOURCE_NOT_DELIVERED": 2},
+            "complete": True,
+        },
     }
     (tmp_path / "telemetry").mkdir()
     (tmp_path / "telemetry/turns.jsonl").write_text(json.dumps(metrics) + "\n")
@@ -113,6 +121,7 @@ def test_turn_summary_uses_matching_host_totals_without_double_counting(tmp_path
     display_turn(TerminalOutput(color="never", file=output), tmp_path, flight, {})
     text = output.getvalue()
     assert "Game API 5" in text and "Model requests unavailable" in text
+    assert "Memory edits 5 accepted" in text and "2 rejected" in text and "SOURCE_NOT_DELIVERED: 2" in text
     assert "12.4s gameplay" in text and "0.3s bookkeeping" in text
     assert "Input 24,000 (cached 19,000)" in text
     assert "Output 900 (reasoning 400)" in text and "Turn usage complete" in text
@@ -140,6 +149,7 @@ def test_missing_accounting_is_unavailable_not_zero_and_partial_usage_is_labelle
     display_turn(renderer, tmp_path, flight, {"usage": {"input_tokens": 0}, "usageReported": False})
     assert "Usage unavailable" in output.getvalue()
     assert "Game API unavailable" in output.getvalue()
+    assert "Memory edits unavailable" in output.getvalue()
     output.seek(0)
     output.truncate()
     display_turn(

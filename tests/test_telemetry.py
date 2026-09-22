@@ -36,6 +36,23 @@ def test_reports_survive_lost_acknowledgement_and_do_not_drop_newer_counts(tmp_p
     assert final["telemetry"]["usageComplete"]
 
 
+def test_model_telemetry_uses_effective_settings_and_survives_restart(tmp_path):
+    store = JobAccounting(tmp_path)
+    store.start("job", "epoch1", True)
+    effective = {"model": "resolved-model", "reasoningEffort": "high"}
+    store.sample(
+        record(
+            phase="COMPLETED",
+            settings={"model": "requested-alias", "reasoningEffort": "high"},
+            effectiveSettings=effective,
+            usageComplete=True,
+        )
+    )
+    restored = JobAccounting(tmp_path)
+    telemetry = restored.pending()[0]["telemetry"]
+    assert {key: telemetry[key] for key in effective} == effective
+
+
 def test_service_crash_preserves_spending_and_uncertain_call(tmp_path):
     store = JobAccounting(tmp_path)
     store.start("job", "epoch1", True)
@@ -82,12 +99,28 @@ def test_gateway_counts_cached_tools_replays_and_rejections(tmp_path):
         io = ServiceIO()
         try:
             gateway = ProposalGateway(memory, io, tmp_path / "workspace")
-            store = JobAccounting(tmp_path / "accounting")
+            store = JobAccounting(tmp_path / "accounting", memory.memory_edit_counts)
             gateway.accounting = store
             store.start("job", "epoch1", True)
             job = await gateway.open("job", "gameplay", "epoch1", Connection(), {})
             first = await gateway.call(job, "memory_read", {"ids": ["missing"]}, "a")
             assert await gateway.call(job, "memory_read", {"ids": ["missing"]}, "a") == first
+            batch = {
+                "changes": [
+                    {"op": "create", "content": {"type": "note", "text": "PRIVATE_NOTE"}},
+                    {
+                        "op": "create",
+                        "content": {
+                            "type": "belief",
+                            "claim": "PRIVATE_CLAIM",
+                            "uncertainty": "high",
+                            "sources": ["unread"],
+                        },
+                    },
+                ]
+            }
+            edited = await gateway.call(job, "memory_update", batch, "batch")
+            assert await gateway.call(job, "memory_update", batch, "batch") == edited
             try:
                 await gateway.call(job, "unknown_tool", {}, "bad")
             except ValueError:
@@ -99,11 +132,46 @@ def test_gateway_counts_cached_tools_replays_and_rejections(tmp_path):
             assert calls["tool:memory_read"]["calls"] == 2
             assert calls["tool:memory_read"]["replayed"] == 1
             assert calls["tool:unknown_tool"]["errors"] == 1
+            assert calls["tool:memory_update"]["succeeded"] == 2
+            assert calls["tool:memory_update"]["errors"] == 0
+            assert calls["tool:memory_update"]["replayed"] == 1
+            report = store.pending()[0]
+            assert report["telemetry"]["memoryEdits"] == {
+                "batches": 1,
+                "accepted": 1,
+                "rejected": 1,
+                "rejectedBatches": 1,
+                "rejectionReasons": {"SOURCE_NOT_DELIVERED": 1},
+                "complete": True,
+            }
+            assert "PRIVATE" not in json.dumps(report)
             await gateway.close(job, True)
         finally:
             await io.close()
 
     asyncio.run(run())
+
+
+def test_memory_counts_recover_lost_responses_and_survive_rollback(tmp_path):
+    from tests.test_structured_memory import setup
+
+    memory = setup(tmp_path / "memory")
+    store = JobAccounting(tmp_path / "accounting", memory.memory_edit_counts)
+    store.start("game", "g1", True)
+    saved = tmp_path / "checkpoint.json"
+    checksum = memory.backup(saved)
+    batch = [{"op": "create", "content": {"type": "note", "text": "PRIVATE"}}]
+    store.begin_call("game", "memory_update", {"changes": batch})
+    memory.patch("game", batch, "committed")
+    # Crash after the memory transaction, before end_call or a telemetry sample.
+    restored = JobAccounting(tmp_path / "accounting", memory.memory_edit_counts)
+    report = restored.pending()[0]["telemetry"]
+    assert report["apiCalls"]["tool:memory_update"]["incomplete"] == 1
+    assert report["memoryEdits"]["accepted"] == 1
+    assert report["memoryEdits"]["batches"] == 1
+    memory.restore(saved, checksum, "g2")
+    assert memory.memory_edit_counts("game") == report["memoryEdits"]
+    assert memory.memory_edit_counts("other")["batches"] == 0
 
 
 def test_late_finalization_updates_timing_without_changing_gameplay_usage(tmp_path):

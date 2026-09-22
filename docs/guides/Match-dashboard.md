@@ -74,6 +74,13 @@ This is a local operator view of `runner/run.json`, `telemetry/game-result.json`
 game API or model requests and does not write to the match directory. Viewing,
 filtering, freezing, and exiting do not change the scheduler or native game.
 
+The metrics area also shows accepted/rejected memory edits, batches containing
+rejections, and reason counts for the selected turn, player, or game. These are
+separate from API errors: a successful `memory_update` request can contain failed
+edits. Older reports display unavailable or partial memory accounting rather than
+assuming there were no rejections. The ordinary console includes the same counts
+when reporting a completed turn.
+
 The reader caches unchanged files, accepts atomic replacements, waits for incomplete
 JSONL appends, and retains the last readable records with a visible warning if a
 file is temporarily corrupt. Epoch and source checks keep histories from different

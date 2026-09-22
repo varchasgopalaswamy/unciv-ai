@@ -13,7 +13,9 @@ GAMEPLAY_WORKFLOW = (
     "exposed civilians and city bombardments.\n"
     "2. Review stalled progress and flagged goals, or explain deferral. Keep separate defense, expansion "
     "and economy plans with measurable successCriteria and reviewAfterTurn. Reconsider them while playing, "
-    "then batch durable revisions after handoff. Prefer a current intent.reason for actions; do not revise "
+    "then batch durable revisions after handoff. For settlers, settlementStatus describes the current tile; "
+    "movementOrder.settlement describes the destination. A newly blocked destination is a reason to reconsider "
+    "the order. Prefer a current intent.reason for actions; do not revise "
     "a stored plan merely to authorize an action.\n"
     "3. Inspect focused unit_details/city_details, named research_details/construction_details and map_region "
     "for decisions you are making. Leave ongoing production unless circumstances warrant reconsidering it. "
@@ -44,6 +46,8 @@ GAMEPLAY_INSTRUCTIONS = GAMEPLAY_WORKFLOW + (
     "previously delivered evidence; no new game reads, gameplay or diplomacy are permitted. "
     "If another job changed a private record, read that record before reconciling your edit; retain "
     "review flags for evidence newer than this turn. Finish after saving the useful changes. "
+    "Copy evidence handles exactly. Historical citations and note.plan links do not require an active, reviewed plan; "
+    "only ongoing assumptions and action intent do. "
     "The service generates summary.json and summary.md; no final narrative is needed."
 )
 

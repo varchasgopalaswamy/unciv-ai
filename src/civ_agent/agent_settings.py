@@ -4,6 +4,23 @@ import argparse
 import json
 
 from civ_agent.mcp_results import RESULT_FORMAT_HEADER, STRUCTURED_RESULT_FORMAT
+from civ_agent.protocol import JsonObject
+
+
+def codex_thread_settings(settings: JsonObject, *, fast: bool) -> JsonObject:
+    """Apply the same model, effort and optional priority to new and resumed jobs."""
+    options: JsonObject = {}
+    config: JsonObject = {}
+    if settings.get("model") is not None:
+        options["model"] = settings["model"]
+    if settings.get("reasoningEffort") is not None:
+        config["model_reasoning_effort"] = settings["reasoningEffort"]
+    if fast:
+        config["features.fast_mode"] = True
+        options["serviceTier"] = "fast"
+    if config:
+        options["config"] = config
+    return options
 
 
 def player_mcp_configuration(url: str, *, tool_timeout_seconds: int | None = None) -> str:
@@ -70,6 +87,26 @@ def setting_argument(value):
     if not valid_setting(value):
         raise argparse.ArgumentTypeError("must be a nonempty name of at most 128 characters without whitespace")
     return value
+
+
+def resolve_run_settings(
+    model: str | None, effort: str | None, *, defaults: tuple[str, str], saved: dict | None = None
+) -> tuple[str, str]:
+    """Resolve new-game defaults or retain an existing run's conversation settings."""
+    if saved is not None:
+        if model not in (None, saved["model"]) or effort not in (None, saved["reasoningEffort"]):
+            raise ValueError(
+                f"Resume retains the saved model {saved['model']} with {saved['reasoningEffort']} reasoning. "
+                "Choose a new --state-dir to use different settings."
+            )
+        model, effort = saved["model"], saved["reasoningEffort"]
+    else:
+        model = defaults[0] if model is None else model
+        effort = defaults[1] if effort is None else effort
+    try:
+        return setting_argument(model), setting_argument(effort)
+    except argparse.ArgumentTypeError as error:
+        raise ValueError(f"Invalid model or reasoning effort: {error}") from error
 
 
 def add_settings_arguments(parser, *, model_help, reasoning_help):

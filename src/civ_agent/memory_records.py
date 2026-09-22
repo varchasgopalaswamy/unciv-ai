@@ -50,7 +50,7 @@ class Note(Content):
     plan: str = Field(
         default="",
         max_length=160,
-        description="Optional existing plan record ID already read. Omit when unrelated to a plan; never put prose here.",
+        description="Optional plan ID already read; a historical link, even if the plan needs review or is retired. Omit when unrelated; never put prose here.",
     )
 
 

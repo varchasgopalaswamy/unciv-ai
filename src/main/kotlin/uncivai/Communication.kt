@@ -209,6 +209,8 @@ internal class Communication(private val runtime: GameExecutor) {
             if (report != null && request.usage != null && prior.reportedUsage != null && listOf("input_tokens", "cached_input_tokens", "output_tokens", "reasoning_output_tokens").any { request.usage.tokens(it) < prior.reportedUsage.tokens(it) }) fail()
             if (report != null) {
                 if ((report.gameplayElapsedMs ?: 0) < 0 || (report.finalizationElapsedMs ?: 0) < 0) fail()
+                if (report.memoryEdits?.valid() == false) fail()
+                if (oldReport?.memoryEdits?.let { report.memoryEdits?.follows(it) != true } == true) fail()
                 if (report.usageComplete && (!report.usageReported || request.usage == null || report.endedAtMs == null)) fail()
                 if (oldReport != null && (report.elapsedMs < oldReport.elapsedMs || (oldReport.usageComplete && !report.usageComplete) || oldReport.apiCalls.any { (name, count) -> (report.apiCalls[name]?.calls ?: 0) < count.calls })) fail()
             }

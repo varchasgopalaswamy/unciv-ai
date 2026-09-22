@@ -41,8 +41,10 @@ def change_plan(memory, chat, key, text):
 
 
 async def recover(gateway, job, result, prefix):
+    responses = []
     for index, read in enumerate(result["recovery"]["reads"]):
-        await gateway.call(job, read["tool"], read["arguments"], f"{prefix}:{index}")
+        responses.append(await gateway.call(job, read["tool"], read["arguments"], f"{prefix}:{index}"))
+    return responses
 
 
 def test_repeated_action_conflict_stops_all_jobs_and_survives_restart(tmp_path):
@@ -122,7 +124,12 @@ def test_recovery_refreshes_explicit_detail_assumptions_before_the_fresh_attempt
             first = await gateway.call(job, "player_command", action, "first")
             assert first["error"] == "STALE_ASSUMPTIONS"
             assert any(read["tool"] == "unit_details" for read in first["recovery"]["reads"])
-            await recover(gateway, job, first, "refresh")
+            refreshed = await recover(gateway, job, first, "refresh")
+            source = next(
+                value["evidence"] for value in refreshed if value.get("query", {}).get("tool") == "unit_details"
+            )
+            assert source != details["evidence"]
+            action["intent"]["assumptions"][0]["source"] = source
             assert (await gateway.call(job, "player_command", action, "fresh"))["done"]
             assert len(host.executed) == 1 and not gateway.failed.is_set()
 

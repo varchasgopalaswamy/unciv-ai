@@ -70,9 +70,9 @@ class RecordStore:
         return prefix + str(cursor.lastrowid)
 
     @staticmethod
-    def pin(snapshot: JsonObject, sources: list[str]) -> list[JsonObject]:
+    def pin(snapshot: JsonObject, sources: list[str], retained: JsonObject | None = None) -> list[JsonObject]:
         evidence: list[JsonObject] = []
-        missing, refresh = [], []
+        missing = []
         for source in sources:
             if source in snapshot.get("historicalEvidence", {}):
                 evidence.append({**snapshot["historicalEvidence"][source], "historical": True})
@@ -88,28 +88,50 @@ class RecordStore:
                 )
             ]
             if len(matches) != 1:
-                missing.append(source)
+                if retained and source in retained:
+                    evidence.append(retained[source])
+                else:
+                    missing.append(source)
                 continue
             key, record = matches[0]
-            if record["body"].get("requiresRefresh"):
-                refresh.append(key)
             evidence.append({"key": key, "version": record["version"], "category": record["category"]})
         if missing:
-            raise EvidenceRequired("SOURCE_NOT_DELIVERED: read the evidence before referencing it", missing + refresh)
-        if refresh:
-            raise EvidenceRequired("SOURCE_NEEDS_REFRESH: read the current agreement before referencing it", refresh)
+            raise EvidenceRequired("SOURCE_NOT_DELIVERED: use delivered evidence or read the source first", missing)
         return evidence
 
-    def content(self, content, snapshot):
+    def content(self, content: JsonObject, snapshot: JsonObject, previous: JsonObject | None = None) -> JsonObject:
         if len(encode(content)) > 8000:
             raise ValueError("MEMORY_TOO_LARGE")
         sources = content.get("sources", []) + content.get("contradictingSources", [])
         assumptions = [a["source"] for a in content.get("assumptions", []) if a.get("source")]
-        references = self.pin(snapshot, sources + assumptions)
-        evidence, pinned = references[: len(sources)], references[len(sources) :]
+        previous = previous or {}
+        retained = dict(
+            zip(
+                previous.get("sources", []) + previous.get("contradictingSources", []),
+                previous.get("_evidence", []),
+                strict=False,
+            )
+        )
+        # A revision may retain its own citations without re-reading the original
+        # observations. Only explicit assumptions require current evidence.
+        references: list[list[JsonObject]] = []
+        missing: list[str] = []
+        for names, prior in ((sources, retained), (assumptions, None)):
+            try:
+                references.append(self.pin(snapshot, names, prior))
+            except EvidenceRequired as error:
+                missing.extend(error.keys)
+        if missing:
+            raise EvidenceRequired("SOURCE_NOT_DELIVERED: use delivered evidence or read the source first", missing)
+        evidence, pinned = references
+        related = []
         if content.get("plan"):
             try:
-                related = self.pin(snapshot, [content["plan"]])
+                related = self.pin(
+                    snapshot,
+                    [content["plan"]],
+                    {previous["plan"]: previous["_relatedPlan"]} if previous.get("_relatedPlan") else None,
+                )
             except ValueError:
                 raise ValueError(
                     "RELATED_PLAN_REQUIRED: note.plan must be an existing plan ID already read with memory_read or memory_search. Omit plan for an unrelated note; put prose in text."
@@ -118,8 +140,14 @@ class RecordStore:
                 raise ValueError(
                     "RELATED_PLAN_REQUIRED: note.plan must reference a plan record. Omit plan for an unrelated note."
                 )
-            pinned.extend(related)
         current = self.all()
+        refresh = [
+            ref["key"]
+            for ref in pinned
+            if not snapshot.get("memoryOnly") and current.get(ref["key"], {}).get("body", {}).get("requiresRefresh")
+        ]
+        if refresh:
+            raise EvidenceRequired("SOURCE_NEEDS_REFRESH: read the current agreement before assuming it", refresh)
         changed = [
             ref["key"]
             for ref in pinned
@@ -129,9 +157,7 @@ class RecordStore:
         if changed:
             raise EvidenceRequired("ASSUMPTION_CHANGED: read the current evidence before revising", changed)
         review = []
-        for ref in evidence + pinned:
-            if ref.get("historical") and ref not in pinned:
-                continue
+        for ref in pinned:
             value = current.get(ref["key"], {})
             if value.get("category") in MEMORY_TYPES and (
                 value.get("version") != ref["version"]
@@ -141,7 +167,12 @@ class RecordStore:
                 review.append(ref["key"])
         if review:
             raise EvidenceRequired("SOURCE_NEEDS_REVIEW: read and reconsider the referenced memory", review)
-        return {**content, "_evidence": evidence, "_assumptions": pinned}
+        return {
+            **content,
+            "_evidence": evidence,
+            "_assumptions": pinned,
+            **({"_relatedPlan": related[0]} if related else {}),
+        }
 
     def flag(self, keys=(), subjects=(), reason="Evidence changed", review_keys=(), plans=()):
         """Flag only declared assumptions or relevant subject-specific plans."""
@@ -153,11 +184,9 @@ class RecordStore:
             added = set()
             for key, record in records.items():
                 body = record["body"]
-                if record["category"] not in {"plan", "belief", "note"} or body.get("state") != "active":
+                if record["category"] not in {"plan", "belief"} or body.get("state") != "active":
                     continue
-                refs = body.get("_assumptions", []) + [
-                    r for r in body.get("_evidence", []) if r["category"] == "belief"
-                ]
+                refs = body.get("_assumptions", [])
                 affected = any(ref["key"] in changed for ref in refs)
                 affected |= record["category"] == "plan" and key in plans
                 affected |= record["category"] == "plan" and bool(set(body.get("subjects", [])) & set(subjects))

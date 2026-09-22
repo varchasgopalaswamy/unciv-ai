@@ -6,7 +6,7 @@ from pydantic import ValidationError
 
 from civ_agent.civilization_state import CivilizationState
 from civ_agent.game_commands import command_arguments, command_schema
-from civ_agent.observations import overview, required_detail
+from civ_agent.observations import DetailQuery, detail_scope, overview, required_detail
 from civ_agent.proposal_gateway import ProposalGateway
 from civ_agent.service_io import ServiceIO
 from tests.test_proposal_gateway import Host
@@ -65,16 +65,17 @@ def test_distant_order_requires_exact_current_preview_and_invalidates_memory_on_
             assert not host.executed
             preview = await gateway.call(job, "movement_preview", query, "preview")
             assert preview["available"] and "revision" not in preview
-            assert preview["evidence"] in job.memory["records"]
+            canonical = "observation:" + detail_scope(DetailQuery.model_validate(preview["query"]))
+            assert canonical in job.memory["records"]
             elsewhere = {**action, "destination": {"x": 9, "y": 0}}
             assert (await gateway.call(job, "player_command", elsewhere, "wrong-route"))["error"] == "DETAIL_REQUIRED"
             await gateway.call(job, "player_turn", {}, "same-view")
-            assert job.memory["records"][preview["evidence"]]["body"]["available"]
+            assert job.memory["records"][canonical]["body"]["available"]
             receipt = await gateway.call(job, "player_command", action, "move")
             assert host.executed[-1]["destination"] == query["destination"]
             assert await gateway.call(job, "player_command", action, "move") == receipt
             await gateway.call(job, "player_turn", {}, "changed-view")
-            assert not job.memory["records"][preview["evidence"]]["body"]["available"]
+            assert not job.memory["records"][canonical]["body"]["available"]
             assert (await gateway.call(job, "player_command", action, "old-preview"))["error"] == "DETAIL_REQUIRED"
             host.revision = "rev99"
             stale = await gateway.call(job, "movement_preview", query, "stale-read")

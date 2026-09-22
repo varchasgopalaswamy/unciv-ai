@@ -25,6 +25,21 @@ def api_calls(calls):
     return total
 
 
+def memory_edits_text(counts):
+    if not isinstance(counts, dict):
+        return "Memory edits unavailable"
+    summary = (
+        f"Memory edits {number(counts.get('accepted'))} accepted · {number(counts.get('rejected'))} rejected "
+        f"in {number(counts.get('rejectedBatches'))}/{number(counts.get('batches'))} batches"
+    )
+    if counts.get("complete") is not True:
+        summary += " (partial accounting)"
+    reasons = counts.get("rejectionReasons", {})
+    if reasons:
+        summary += "; " + ", ".join(f"{reason}: {number(value)}" for reason, value in sorted(reasons.items()))
+    return summary
+
+
 def turn_metrics(state_directory, flight):
     try:
         with (state_directory / "telemetry/turns.jsonl").open() as source:
@@ -66,6 +81,7 @@ def display_turn(renderer, state_directory, flight, status):
     renderer.line("Time", elapsed, civilization=civilization)
     total = api_calls(metrics.get("hostCalls")) if metrics else None
     renderer.line("Calls", f"Game API {number(total)} · Model requests unavailable", civilization=civilization)
+    renderer.line("Memory", memory_edits_text((metrics or {}).get("memoryEdits")), civilization=civilization)
     if available and isinstance(usage, dict):
         renderer.line(
             "Tokens",

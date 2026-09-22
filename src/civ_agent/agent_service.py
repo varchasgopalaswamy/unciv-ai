@@ -30,6 +30,7 @@ from civ_agent import service_recovery
 from civ_agent.agent_history import HISTORY_METHODS, HistoryStore
 from civ_agent.agent_results import PlayerResultStore, ResultError, validate_result
 from civ_agent.agent_settings import (
+    codex_thread_settings,
     player_mcp_configuration,
     player_tool_arguments,
     scheduled_prompt_arguments,
@@ -276,6 +277,7 @@ class AgentService:
         reasoning_effort: str | None = None,
         memory_context_chars: int = 12000,
         strategy_guide: bool = False,
+        fast: bool = False,
         gateway_url: str = "https://localhost:8865/mcp",
         gateway_ca_file: Path | None = None,
         connection_factory=HostConnection,
@@ -286,6 +288,7 @@ class AgentService:
             raise ServiceError("INVALID_REASONING_EFFORT")
         self.default_settings = {"model": model, "reasoningEffort": reasoning_effort}
         self.strategy_guide = strategy_guide
+        self.fast = fast
         self.civilization = civilization
         self.workspace, self.state_dir = private_directory(workspace), private_directory(state_dir)
         if self.state_dir.resolve().is_relative_to(self.workspace.resolve()):
@@ -343,7 +346,7 @@ class AgentService:
         self.memory.export(self.workspace)
         self.gateway = ProposalGateway(self.memory, self.io, self.workspace)
         self.gateway.history = self.history
-        self.accounting = JobAccounting(self.state_dir / "telemetry")
+        self.accounting = JobAccounting(self.state_dir / "telemetry", self.memory.memory_edit_counts)
         self.gateway.accounting = self.accounting
         self.telemetry_lock = asyncio.Lock()
         self.gateway.paused = self.memory.is_paused()
@@ -841,6 +844,7 @@ class AgentService:
                 "usage": dict.fromkeys(USAGE_KEYS, 0),
                 "fingerprint": fingerprint,
                 "settings": settings,
+                "requestedServiceTier": "fast" if self.fast else None,
             }
             if pinned is not None:
                 record["effectiveSettings"] = dict(pinned[1])
@@ -1153,11 +1157,8 @@ class AgentService:
                 "approvalPolicy": "never",
                 "sandbox": "workspace-write",
                 "developerInstructions": prompt.instructions,
+                **codex_thread_settings(selected, fast=self.fast),
             }
-            if selected["model"] is not None:
-                options["model"] = selected["model"]
-            if selected["reasoningEffort"] is not None:
-                options["config"] = {"model_reasoning_effort": selected["reasoningEffort"]}
             if record["threadId"] is None:
                 result = await process.request("thread/start", options)
             else:
@@ -1175,6 +1176,7 @@ class AgentService:
             ):
                 raise ServiceError("INVALID_CODEX_THREAD", 502)
             effective_settings = {"model": result.get("model"), "reasoningEffort": result.get("reasoningEffort")}
+            record["serviceTier"] = result.get("serviceTier")
             if not valid_setting(effective_settings["model"]) or (
                 effective_settings["reasoningEffort"] is not None
                 and not valid_setting(effective_settings["reasoningEffort"])
@@ -1206,6 +1208,7 @@ class AgentService:
                 "approvalPolicy": "never",
                 "summary": "auto",
                 "model": effective_settings["model"],
+                **({"serviceTier": "fast"} if self.fast else {}),
             }
             if effective_settings["reasoningEffort"] is not None:
                 turn_options["effort"] = effective_settings["reasoningEffort"]

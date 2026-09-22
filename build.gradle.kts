@@ -128,6 +128,15 @@ tasks.register<JavaExec>("generateNavalLiveFixture") {
     doFirst { args(providers.gradleProperty("navalLiveDir").get()) }
 }
 
+tasks.register<JavaExec>("generateSettlementLiveFixture") {
+    group = "verification"
+    description = "Creates a settler destination and scouting checkpoint for opt-in live acceptance."
+    dependsOn(tasks.testClasses)
+    classpath = sourceSets.test.get().runtimeClasspath
+    mainClass = "uncivai.SettlementLiveFixture"
+    doFirst { args(providers.gradleProperty("settlementLiveDir").get()) }
+}
+
 tasks.register<JavaExec>("generateVictoryLiveFixtures") {
     group = "verification"
     description = "Creates fresh late-game checkpoints for opt-in live spaceship and election acceptance."

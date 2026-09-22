@@ -36,7 +36,8 @@ it. Routine intent can use a fresh `intent.reason` without saving a plan first.
 - Private notes and plans may be refreshed to resolve a concurrent communication
   edit. Normal optimistic version checks still reject an overwrite based on an
   older copy. Memory search is restricted to private record types.
-- Changed evidence and unread review flags stay attached to revised plans. A
+- Changed evidence and unread review flags stay attached to revised plans, except
+  dependencies explicitly removed by the new plan. A
   frozen observation can support a historical belief, but does not establish that
   an ongoing assumption is still true. If an edit needs new game evidence, defer
   that edit until gameplay can inspect it. Repeated stale failures still stop the
@@ -44,6 +45,29 @@ it. Routine intent can use a fresh `intent.reason` without saving a plan first.
 - History reads use the frozen actions for the completed turn, allow earlier
   history, and reject later turns. Memory metadata records the actual write turn;
   the job and source versions retain the original evidence context.
+
+Historical citations and note-to-plan links do not require an active or reviewed
+source record. Existing citations survive a revision without a fresh evidence
+read; retained ongoing assumptions still require validation. This lets the
+outgoing player record an unsuccessful plan while newer information remains
+flagged for its next gameplay turn.
+
+### Edit accounting
+
+`telemetry.memoryEdits` reports `batches`, `accepted`, `rejected`,
+`rejectedBatches`, and `rejectionReasons`. These come from the committed memory
+call journal, so a lost response, replay, service restart, or game rollback does
+not lose or double-count edits. A successful API request can contain rejected
+edits; transport errors remain in `apiCalls`. Request validation failures that
+never attempt individual edits remain API errors alone. Reasons are bounded
+codes; private text and record contents are excluded.
+
+The host preserves these counts per job and aggregates them per turn, player,
+and game in its telemetry exports. Background edits belong to the outgoing turn.
+`memoryEdits.complete` describes counter coverage, separately from provider token
+usage completeness; aggregates with older, uninstrumented jobs are partial, and
+wholly unavailable counts remain null. Console turn summaries and the TUI show
+accepted/rejected edits and rejection reasons without additional API calls.
 
 ## Timeouts, durability and recovery
 
