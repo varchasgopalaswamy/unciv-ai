@@ -35,6 +35,7 @@ data class AttackOption(
     val minDamageToDefender: Int,
     val maxDamageToDefender: Int,
     val interceptionWarning: String? = null,
+    val consequences: CombatConsequences? = null,
 )
 
 @Serializable
@@ -115,7 +116,7 @@ data class CombatReport(
     val unitType: String? = null,
 )
 
-internal fun PlayerCombatOperations.AttackPreview.observation(): AttackOption = AttackOption(
+internal fun PlayerCombatOperations.AttackPreview.observation(contexts: PositionContexts = PositionContexts(attacker.getCivInfo())): AttackOption = AttackOption(
     destination = TilePosition(target.position.x, target.position.y),
     attackFrom = TilePosition(attackFrom.position.x, attackFrom.position.y),
     path = frozen(path.map { TilePosition(it.position.x, it.position.y) }),
@@ -131,11 +132,12 @@ internal fun PlayerCombatOperations.AttackPreview.observation(): AttackOption = 
     minDamageToDefender = minDamageToDefender,
     maxDamageToDefender = maxDamageToDefender,
     interceptionWarning = if ((attacker as? com.unciv.logic.battle.MapUnitCombatant)?.unit?.baseUnit?.isAirUnit() == true) "Damage estimates exclude interception, which can stop the strike. Inspect combat reports for actual effects." else null,
+    consequences = consequences(contexts),
 )
 
 internal fun PlayerCombatOperations.AttackResult.observation() = CombatOutcome(attacked, damageToAttacker, damageToDefender, attackerHealth, defenderHealth, attackerDestroyed, defenderDestroyed, defenderCaptured, resolution?.name)
 
-internal fun observeUnitCombat(player: Civilization, unit: MapUnit, active: Boolean): UnitCombat {
+internal fun observeUnitCombat(player: Civilization, unit: MapUnit, active: Boolean, contexts: PositionContexts = PositionContexts(player)): UnitCombat {
     val combat = PlayerCombatOperations(player)
     val orders = PlayerUnitOrders(player)
     val order = orders.status(unit)
@@ -146,7 +148,7 @@ internal fun observeUnitCombat(player: Civilization, unit: MapUnit, active: Bool
         rangedStrength = unit.baseUnit.rangedStrength,
         range = unit.getRange(),
         attacksRemaining = (unit.maxAttacksPerTurn() - unit.attacksThisTurn).coerceAtLeast(0),
-        attacks = frozen(if (active) combat.attacks(unit).map { it.observation() } else emptyList()),
+        attacks = frozen(if (active) combat.attacks(unit).map { it.observation(contexts) } else emptyList()),
         order = order?.let { UnitOrderStatus(it.action, it.due, it.idle, it.fortificationTurns, it.healingPerTurn) },
         orders = frozen(orders.orders(unit).map { UnitOrderOption(it.order.name, active && it.available, frozen(it.unavailableReasons)) }),
         promotions = promotions?.let { status ->

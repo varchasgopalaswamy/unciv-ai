@@ -237,8 +237,9 @@ def test_memory_batch_reports_durable_failure_without_waiting_for_export(tmp_pat
 @pytest.mark.parametrize("purpose", ["gameplay", "communication"])
 def test_prompts_require_bounded_recovery(purpose):
     instructions = tool_discovery_instructions(purpose)
-    assert "Only the host declares repeated-stale failure" in instructions and REPEATED_STALE in instructions
-    assert "resets that operation's count" in instructions and "Follow recoverable responses" in instructions
+    assert "The host detects repeated stale assumptions" in instructions
+    assert "recoverable=false is terminal: stop without further tool calls" in instructions
+    assert "Follow recoverable error responses" in instructions
     assert "do not stop the gameplay turn for this" not in instructions
 
 

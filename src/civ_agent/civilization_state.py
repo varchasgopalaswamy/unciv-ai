@@ -20,10 +20,18 @@ from civ_agent import memory_schema as tables
 from civ_agent.agreement_memory import affected_subjects, lifecycle_terms
 from civ_agent.memory_exports import export_files, projection_files
 from civ_agent.memory_history import action_record, build_summary, summary_markdown
-from civ_agent.memory_records import MEMORY_TYPES, HistoryReadResult, Intent, MemoryUpdate, public_record
+from civ_agent.memory_records import (
+    MEMORY_TYPES,
+    HistoryReadResult,
+    Intent,
+    MemoryContentError,
+    MemoryUpdate,
+    amended_content,
+    public_record,
+)
 from civ_agent.memory_store import EvidenceRequired, RecordStore, encode, select_context, semantic
 from civ_agent.model_view import model_view
-from civ_agent.observations import DetailQuery, native_observation, project_detail
+from civ_agent.observations import DetailQuery, detail_fingerprint, native_observation, project_detail
 from civ_agent.protocol import JsonObject
 from civ_agent.schemas import validate
 from civ_agent.sqlite_database import sqlite_engine
@@ -240,11 +248,14 @@ class CivilizationState:
         with self.transaction() as db:
             return self._observe(db, key, body, job)
 
-    def observe_detail(self, key: str, body: JsonObject, job: str):
+    def observe_detail(self, key: str, body: JsonObject, job: str, fingerprint: str | None = None):
         """Return a short, immutable evidence handle for exactly this delivered revision."""
         with self.transaction() as db:
             version = self._observe(db, key, body, job)
             canonical = "observation:" + key
+            cache = self._meta(db, "detailInputs", {})
+            cache[canonical] = {"version": version, "fingerprint": fingerprint}
+            self._set(db, "detailInputs", cache)
             record_id = db.execute(
                 select(tables.record_order).where(
                     tables.records.c.key == canonical, tables.records.c.version == version
@@ -331,7 +342,12 @@ class CivilizationState:
             return snapshot
 
     def _changed_observation(self, db, key, value, prior):
-        store = RecordStore(db, self._meta(db, "gameTurn"))
+        change = self._observation_change(key, value, prior)
+        if change:
+            RecordStore(db, self._meta(db, "gameTurn")).flag_many([change])
+
+    @staticmethod
+    def _observation_change(key, value, prior):
         if not prior or semantic(prior["body"]) == semantic(value):
             return
         subjects = []
@@ -358,7 +374,7 @@ class CivilizationState:
                 previous = old.get(offer["proposal"], {})
                 if offer.get("effective") != previous.get("effective"):
                     subjects.extend(offer.get("participants", []))
-        store.flag(keys=[key], subjects=subjects, reason=f"Changed {key}; reconsider assumptions")
+        return dict(keys=[key], subjects=subjects, reason=f"Changed {key}; reconsider assumptions")
 
     def observe_player(self, body: JsonObject, job: str, compact: JsonObject | None = None):
         with self.transaction() as db:
@@ -425,19 +441,30 @@ class CivilizationState:
         self._advance_turn(db, body.get("turn"))
         snapshot = json.loads(db.execute(select(tables.jobs.c.snapshot).where(tables.jobs.c.id == job)).scalar_one())
         previous_records = self._records(db)
+        detail_cache = self._meta(db, "detailInputs", {})
         for key, previous in previous_records.items():
             scope = key.removeprefix("observation:")
             if scope.startswith("detail/"):
                 query = DetailQuery.model_validate(previous["body"]["query"])
+                fingerprint = detail_fingerprint(body, query)
+                cached = {"version": previous["version"], "fingerprint": fingerprint}
+                if detail_cache.get(key) == cached:
+                    continue
+                detail_cache[key] = cached
+                if query.tool in {"movement_preview", "mission_preview"} and not previous["body"].get("available"):
+                    continue  # An expired native preview stays expired until explicitly inspected.
                 if query.tool in {"movement_preview", "mission_preview"} and previous["body"].get(
                     "revision"
                 ) == body.get("revision"):
                     scopes[scope] = previous["body"]
                 else:
-                    scopes[scope] = project_detail(body, query)
+                    projected = project_detail(body, query)
+                    if semantic(previous["body"]) != semantic(projected):
+                        scopes[scope] = projected
             if scope.startswith(("unit/", "city/")) and scope not in scopes and not previous["body"].get("absent"):
                 scopes[scope] = {"turn": body.get("turn"), "absent": True}
         observed = {}
+        changes = []
         # A cached host read can invalidate assumptions without claiming the
         # model has read all of its entity details or refreshed projections.
         delivered = set(scopes) if compact is None else {"overview", "turn", "tactics", "policy"}
@@ -445,31 +472,42 @@ class CivilizationState:
             delivered_job = job if key in delivered else None
             key = "observation:" + key
             version = self._record(db, key, "observation", value, delivered_job)
-            self._changed_observation(db, key, value, previous_records.get(key))
+            change = self._observation_change(key, value, previous_records.get(key))
+            if change:
+                changes.append(change)
             observed[key] = {"version": version, "category": "observation", "body": value}
+            if key in detail_cache:
+                detail_cache[key]["version"] = version
+        self._set(db, "detailInputs", detail_cache)
         tactics = body.get("tacticalReview")
         if tactics is not None:
             previous = previous_records.get("observation:tactics", {}).get("body", {})
             old_losses = {loss["report"] for loss in previous.get("recentLosses", [])}
-            store = RecordStore(db, self._meta(db, "gameTurn"))
             if any(loss["report"] not in old_losses for loss in tactics["recentLosses"]):
-                store.flag(
-                    subjects=["defense", "economy"],
-                    keys=["observation:tactics"],
-                    reason="New confirmed losses: reconsider defense and civilian protection",
+                changes.append(
+                    dict(
+                        subjects=["defense", "economy"],
+                        keys=["observation:tactics"],
+                        reason="New confirmed losses: reconsider defense and civilian protection",
+                    )
                 )
             if tactics["militaryCount"] == 0 and previous.get("militaryCount") != 0:
-                store.flag(
-                    subjects=["defense"],
-                    keys=["observation:tactics"],
-                    reason="No military units remain: reconsider defense",
+                changes.append(
+                    dict(
+                        subjects=["defense"],
+                        keys=["observation:tactics"],
+                        reason="No military units remain: reconsider defense",
+                    )
                 )
             if "cityCount" in previous and tactics["cityCount"] < previous["cityCount"]:
-                store.flag(
-                    subjects=["defense", "expansion", "economy"],
-                    keys=["observation:tactics"],
-                    reason="Owned city count fell: reconsider territorial and economic plans",
+                changes.append(
+                    dict(
+                        subjects=["defense", "expansion", "economy"],
+                        keys=["observation:tactics"],
+                        reason="Owned city count fell: reconsider territorial and economic plans",
+                    )
                 )
+        RecordStore(db, self._meta(db, "gameTurn")).flag_many(changes)
         self._deliver(
             snapshot,
             {key: value for key, value in observed.items() if key.removeprefix("observation:") in delivered},
@@ -590,7 +628,7 @@ class CivilizationState:
         row = db.execute(select(tables.jobs).where(tables.jobs.c.id == job)).mappings().fetchone()
         if row is None or row["status"] != "RUNNING" or row["epoch"] != self._meta(db, "epoch"):
             raise StateConflict("STALE_JOB")
-        current = self._records(db)
+        current = RecordStore(db).all(keys=dependencies) if dependencies else {}
         changed = [key for key, version in dependencies.items() if current.get(key, {}).get("version", 0) != version]
         if changed:
             raise StaleAssumptions(changed, conflict_details(db, job, changed, dependencies))
@@ -682,7 +720,8 @@ class CivilizationState:
             for change in changes:
                 key = change.get("id")
                 try:
-                    old = store.all().get(key, {})
+                    old = store.all(keys=[key]).get(key, {}) if key else {}
+                    revising = change["op"] in {"revise", "amend"}
                     unread_review = []
                     if change["op"] != "create":
                         if not old or old["category"] not in MEMORY_TYPES:
@@ -701,17 +740,22 @@ class CivilizationState:
                         unread_review = [ref for ref in old["body"].get("_review", []) if ref["key"] in missing]
                     content = None
                     if change["op"] != "retire":
-                        content = store.content(change["content"], snapshot, old.get("body"))
+                        proposed = (
+                            amended_content(old["body"], change["fields"])
+                            if change["op"] == "amend"
+                            else change["content"]
+                        )
+                        content = store.content(proposed, snapshot, old.get("body"))
                         dropped = {ref["key"] for ref in old.get("body", {}).get("_assumptions", [])} - {
                             ref["key"] for ref in content["_assumptions"]
                         }
                         unread_review = [ref for ref in unread_review if ref["key"] not in dropped]
-                        if change["op"] == "revise" and unread_review and not snapshot.get("memoryOnly"):
+                        if revising and unread_review and not snapshot.get("memoryOnly"):
                             raise EvidenceRequired(
                                 "REVIEW_EVIDENCE_FIRST: read the changed evidence before revising",
                                 [ref["key"] for ref in unread_review],
                             )
-                        if change["op"] == "revise" and content["type"] != old["category"]:
+                        if revising and content["type"] != old["category"]:
                             raise ValueError("Use replace to change a record's type")
                         if content["type"] == "soul" and any(
                             k != key and r["category"] == "soul" and r["body"].get("state") == "active"
@@ -750,7 +794,7 @@ class CivilizationState:
                         target = successor or key
                         body = {
                             **content,
-                            "createdTurn": old["body"]["createdTurn"] if change["op"] == "revise" else store.turn,
+                            "createdTurn": old["body"]["createdTurn"] if revising else store.turn,
                             "updatedTurn": store.turn,
                             "state": "active",
                             "needsReview": [],
@@ -769,11 +813,7 @@ class CivilizationState:
                         self._deliver(
                             snapshot, {target: {"version": version, "category": content["type"], "body": body}}
                         )
-                        if (
-                            change["op"] == "revise"
-                            and old["category"] == "belief"
-                            and semantic(old["body"]) != semantic(body)
-                        ):
+                        if revising and old["category"] == "belief" and semantic(old["body"]) != semantic(body):
                             store.flag(keys=[key], reason=f"Belief {key} revised")
                     results.append(
                         {
@@ -804,6 +844,10 @@ class CivilizationState:
                             "requiredSources": error.keys,
                             "recovery": self._memory_recovery(db, snapshot, error.keys, target=key),
                         }
+                    )
+                except MemoryContentError as error:
+                    results.append(
+                        {"id": key, "accepted": False, "reason": str(error), "recoverable": True, **error.details}
                     )
                 except (StateConflict, ValueError) as error:
                     results.append({"id": key, "accepted": False, "reason": str(error)})
@@ -841,6 +885,23 @@ class CivilizationState:
                 ],
                 "instruction": "Reconcile with current private records using the completed turn's evidence. Keep review flags for newer evidence. If an edit needs evidence not read during the turn, defer that edit; no live game or chat reads are available in the memory phase.",
             }
+            unavailable = list(
+                dict.fromkeys(
+                    key
+                    for key in keys
+                    if key not in private
+                    and key not in snapshot.get("delivered", {})
+                    and key not in snapshot.get("historicalEvidence", {})
+                )
+            )
+            if unavailable:
+                recovery["unavailableSources"] = unavailable
+                recovery["instruction"] += (
+                    " unavailableSources were not delivered before handoff and cannot be fetched by this memory job. "
+                    "Rereading the plan does not deliver them; reviewSources are review notices, not usable citations. "
+                    "Save independent changes using evidence already read, omitting unsupported citations and claims, "
+                    "or leave the dependent edit for a later job. Do not retry the unchanged rejected edit."
+                )
         if unknown:
             # Suggestions contain only previously delivered references. Never
             # silently correct a typo or deliver new game state during reflection.

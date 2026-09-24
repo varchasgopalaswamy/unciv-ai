@@ -34,6 +34,8 @@ internal class TurnSessionState(savedIdentifiers: Map<PlayerIdentifier, Long> = 
     val identifiers = PlayerIdentifiers(savedIdentifiers)
     val cityHandles = HashMap<String, String>()
     val unitHandles = HashMap<Int, String>()
+    val constructionSelections = HashMap<String, List<ConstructionSelection>>()
+    val settlementKnowledge = HashMap<TilePosition, KnownSettlementTile>()
     val alertHandles = java.util.IdentityHashMap<PopupAlert, String>()
     val notificationHandles = java.util.IdentityHashMap<Notification, String>()
     val dismissedNotifications = HashSet<String>()
@@ -158,7 +160,7 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
         val unitId = state.unitHandles.entries.singleOrNull { it.value == request.target }?.key
         val unit = player.units.getCivUnits().singleOrNull { it.id == unitId && !it.isDestroyed }
             ?: fail(PlayerSessionFailure.UNIT_UNAVAILABLE)
-        val preview = observeMovementPreview(player, unit, turn, request)
+        val preview = observeMovementPreview(player, unit, turn, request, state.settlementKnowledge)
         if (state.checkpointRevision != state.revision) runtime.commitCheckpoint()
         if (state.movementPreviewRevision != turn.revision) state.movementPreviews.clear()
         state.movementPreviewRevision = turn.revision
@@ -589,6 +591,9 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
                 fail(reason)
             }
             if (request.kind != TurnCommandKind.DISMISS_NOTIFICATIONS) game.checkForVictory()
+            if (city != null && request.kind in setOf(TurnCommandKind.QUEUE_CONSTRUCTION, TurnCommandKind.REMOVE_CONSTRUCTION, TurnCommandKind.MOVE_CONSTRUCTION)) {
+                recordConstructionSelection(city, before.cities.single { it.handle == request.target }, request, state)
+            }
             state.invalidate()
             runtime.captureCombatReports()
             state.freeGreatPersonDecision = null
@@ -714,6 +719,8 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
             pending.add(PendingTurnDecision("TradeRequests", player.tradeRequests.all { runtime.communication.trades.nativeBridge.handles(player, it) }))
         }
         if (player.shouldShowDiplomaticVotingResults()) pending.add(PendingTurnDecision("DiplomaticVotingResults", true))
+        updateSettlementKnowledge(player, state)
+        state.constructionSelections.keys.retainAll(player.cities.map { it.id }.toSet())
         val map = observeMap(player, state, canAct = ordinaryActions)
         val fingerprint = PlayerTurnSnapshot(
             epoch = runtime.epoch,
@@ -727,12 +734,14 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
             notifications = observeNotifications(player, state, ordinaryActions),
             cities = immutable(
                 player.cities.filter { it.civ === player }.map { city ->
+                    val constructionOptions = immutable(operations.queueableConstructions(city).sorted())
                     TurnCity(
                         handle = state.cityHandle(city.id),
                         name = city.name,
                         puppet = city.isPuppet,
                         constructionQueue = immutable(city.cityConstructions.constructionQueue),
-                        constructionOptions = immutable(operations.queueableConstructions(city).sorted()),
+                        constructionOptions = constructionOptions,
+                        constructionChoice = observeConstructionChoice(city, constructionOptions, state),
                         development = observeCityDevelopment(city, active = ordinaryActions),
                         attacks = immutable(if (ordinaryActions) PlayerCombatOperations(player).attacks(city).map { it.observation() } else emptyList()),
                         captureOptions = immutable(captures.cityChoices(city).map { it.observation(ordinaryActions) }),
@@ -751,8 +760,10 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
             greatPersonOptions = immutable(player.greatPeople.getFreeGreatPersonOptions().map { it.name }.sorted()),
             idleUnits = player.units.getDueUnits().count(),
             map = map,
+            settlement = observeSettlementOpportunities(player, state),
             research = observeResearchDevelopment(player),
             diplomacy = diplomacy,
+            diplomacyOpportunities = observeDiplomacyOpportunities(player, runtime, diplomacy.knownCivilizations),
             economy = observeEconomy(player),
             victory = observeVictoryDecisions(player, ordinaryActions),
             turnReview = if (phase == "ACTIVE") {

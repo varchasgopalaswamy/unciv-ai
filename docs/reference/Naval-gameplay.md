@@ -65,6 +65,10 @@ and `b89aea260` (naval operations) are merged and published on
    Founding units also receive [settlement diagnostics](Exploration-and-settlement.md#settlement-diagnostics)
    for that destination. These distinguish route availability from city-site
    eligibility, including the native distance rule for different continents.
+   Each stop's `afterMove` estimates remaining movement and action availability,
+   with visible nearby enemies, owned military and visibility gaps. These
+   [tactical consequences](Tactical-review.md#action-consequences) are advice;
+   changing terrain knowledge or occupancy can interrupt the planned route.
 3. Issue `SET_UNIT_DESTINATION` with the same unit and destination. Both the host
    and agent gateway require the preview to match the current revision. The engine
    executes the first segment and stores its normal `moveTo` action.

@@ -48,6 +48,11 @@ def add_overview_commands(value: JsonObject) -> None:
             "instruction": "Use the current turn review. Idle units and tactical warnings are advisory; deferReason is optional. Follow memoryPhase after handoff.",
         }
     for unit in value.get("units", []):
+        if unit.get("upgrades"):
+            unit.setdefault("inspections", {})["UPGRADE_UNIT"] = {
+                "tool": "unit_details",
+                "arguments": {"target": unit["handle"], "sections": ["economy"]},
+            }
         if unit.get("canFoundCity") or unit.get("settlementStatus"):
             unit.setdefault("inspections", {})["FOUND_CITY"] = {
                 "tool": "unit_details",
@@ -77,8 +82,9 @@ def add_unit_commands(unit: JsonObject) -> None:
             "and updates with visible information. "
             "For another site, read movement_preview(target, destination) and inspect its settlement field. "
             "Movement availability does not imply founding eligibility. Waiting restores movement, not site eligibility. "
-            "Reconsider a repeatedly blocked site; scout or choose another location instead of assuming next turn fixes it. "
-            "UNKNOWN means incomplete visibility; recheck canFoundCity on arrival even if the site remains UNKNOWN. "
+            "The turn overview's settlement summary lists known/uncertain site counts and ranked suggestions. "
+            "Remembered blockers include their observation turn; UNKNOWN means incomplete visibility. "
+            "Recheck canFoundCity on arrival even if the site remains UNKNOWN. "
             "Own territory and adjacent foreign settlers "
             "do not by themselves prohibit founding."
         )

@@ -2,6 +2,7 @@ import asyncio
 import hashlib
 import json
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 
@@ -234,6 +235,50 @@ class AgentServiceTestCase(unittest.IsolatedAsyncioTestCase):
 
 
 class AgentServiceTests(AgentServiceTestCase):
+    async def test_background_telemetry_rejection_is_a_visible_terminal_failure(self):
+        from unittest.mock import AsyncMock, patch
+
+        self.factory.complete = False
+        with patch("civ_agent.agent_service.HISTORY_RENDER_INTERVAL", 0.01):
+            await self.service.start(self.payload())
+            async with asyncio.timeout(2):
+                while self.service.status()["phase"] == "STARTING":
+                    await asyncio.sleep(0.001)
+            self.service.chat.running = True
+            self.service.flush_telemetry = AsyncMock(side_effect=ServiceError("TELEMETRY_NOT_ACCEPTED", 503))
+            status = await self.terminal()
+        self.assertEqual(status["phase"], "FAILED")
+        self.assertEqual(status["error"], "TELEMETRY_NOT_ACCEPTED")
+        self.assertTrue(self.factory.instances[-1].closed)
+        self.service.chat.running = False
+
+    async def test_heartbeat_renews_native_lease_while_database_worker_is_busy(self):
+        from unittest.mock import AsyncMock
+
+        service = self.service
+        service.records["busy"] = {"activationId": "busy", "phase": "STARTING"}
+        service.active_id = service.gameplay_permit = "busy"
+        service.chat.running = True
+        service.chat.social = AsyncMock(return_value={"granted": True})
+        entered, release = threading.Event(), threading.Event()
+
+        def slow_database():
+            entered.set()
+            assert release.wait(5)
+
+        work = asyncio.create_task(service.io.call(slow_database))
+        try:
+            self.assertTrue(await asyncio.to_thread(entered.wait, 2))
+            status = await asyncio.wait_for(service.heartbeat("busy"), 0.5)
+            self.assertEqual(status["phase"], "STARTING")
+            service.chat.social.assert_awaited_once_with("job_heartbeat", job="busy")
+            self.assertFalse(work.done())
+        finally:
+            release.set()
+            await work
+            service.chat.running = False
+            service.active_id = None
+
     async def test_thread_is_durable_before_turn_and_usage_survives_resume_restart(self):
         await self.service.start(self.payload())
         first = await self.terminal()
@@ -604,6 +649,31 @@ class AgentServiceTests(AgentServiceTestCase):
             self.assertEqual("FAILED", status["phase"])
             self.assertEqual(error, status["error"])
             self.assertTrue(self.factory.instances[-1].closed)
+
+    async def test_memory_phase_uses_configured_timeout_and_retains_it_after_restart(self):
+        self.factory.complete = False
+        await self.service.start(self.payload(timeoutSeconds=3600, leaseSeconds=30))
+        async with asyncio.timeout(4):
+            while self.service.status()["phase"] != "RUNNING":
+                await asyncio.sleep(0.01)
+        await self.service.finish_handoff(
+            dict(activationId="activation-one", epoch="epoch-one", gameTurn=0, committedHandoff=1)
+        )
+        job = next(iter(self.service.gateway.jobs.values()))
+        assert job.handoff_at is not None
+        job.handoff_at -= 301
+        await asyncio.sleep(0.2)
+        self.assertEqual("RUNNING", self.service.status()["phase"])
+        self.assertEqual(3600, self.service.status()["memoryTimeoutSeconds"])
+        job.handoff_at -= 3300
+        stopped = await self.terminal()
+        self.assertEqual("MEMORY_PHASE_TIMEOUT", stopped["error"])
+        self.assertFalse(stopped["memoryPhaseComplete"])
+        self.assertFalse(stopped["usageComplete"])
+        self.assertTrue(self.factory.instances[-1].closed)
+        await self.service.close()
+        self.service = self.make_service()
+        self.assertEqual(3600, self.service.status("activation-one")["memoryTimeoutSeconds"])
 
     async def test_unconfirmed_shutdown_never_allows_next_activation(self):
         self.factory.complete = False

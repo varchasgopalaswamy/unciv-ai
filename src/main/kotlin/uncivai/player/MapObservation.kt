@@ -53,6 +53,7 @@ data class UnitMoveOption(
     val path: List<TilePosition>,
     val movementCost: String,
     val speculative: Boolean,
+    val afterMove: MovementConsequences? = null,
 )
 
 @Serializable
@@ -97,6 +98,7 @@ internal fun observeMap(player: Civilization, state: TurnSessionState, canAct: B
     val operations = PlayerUnitOperations(player)
     val active = canAct && PlayerOperations(player).canAct()
     val format = DecimalFormat("0.#", DecimalFormatSymbols(Locale.ROOT))
+    val contexts = PositionContexts(player)
     val visibleHostiles = tiles.flatMap { tile ->
         tile.getUnits().filter { it.isVisibleTo(player) && it.baseUnit.isMilitary && player.isAtWarWith(it.civ) }
             .map { tile to VisibleUnit(it.name, it.civ.civName, it.health, military = true, atWar = true) }.toList()
@@ -117,8 +119,8 @@ internal fun observeMap(player: Civilization, state: TurnSessionState, canAct: B
                     naturalWonder = tile.naturalWonder,
                     resource = resource?.name,
                     resourceAmount = tile.resourceAmount.takeIf { resource?.resourceType == ResourceType.Strategic },
-                    owner = tile.getOwner()?.civName,
-                    cityName = city?.name,
+                    owner = if (visible) tile.getOwner()?.civName else state.settlementKnowledge[tile.position.dto()]?.owner,
+                    cityName = if (visible) city?.name else state.settlementKnowledge[tile.position.dto()]?.cityName,
                     cityHealth = city?.health?.takeIf { visible },
                     improvement = improvement,
                     improvementPillaged = tile.improvementIsPillaged.takeIf { improvement != null },
@@ -145,6 +147,7 @@ internal fun observeMap(player: Civilization, state: TurnSessionState, canAct: B
         units = detached(
             player.units.getCivUnits().filter { operations.owns(it) }.sortedBy { it.id }.map { unit ->
                 val canFound = active && operations.canFoundCity(unit)
+                val combat = observeUnitCombat(player, unit, active, contexts)
                 OwnedUnit(
                     handle = state.unitHandles.getOrPut(unit.id) { state.identifiers.next(PlayerIdentifier.UNIT) },
                     name = unit.name,
@@ -168,21 +171,22 @@ internal fun observeMap(player: Civilization, state: TurnSessionState, canAct: B
                                 path = detached(move.path.map { it.position.dto() }),
                                 movementCost = format.format(move.movementCost.toDouble()),
                                 speculative = move.path.any { !it.isVisible(player) },
+                                afterMove = movementConsequences(player, unit, move.destination, move.movementCost, contexts, combat.attacks, state.settlementKnowledge),
                             )
                         }.sortedWith(compareBy({ it.destination.x }, { it.destination.y })),
                     ),
                     canFoundCity = canFound,
                     settlementPromises = detached(if (canFound) UnitSettlement.promisesBroken(unit) else emptyList()),
                     worker = observeWorkerDevelopment(player, unit, active),
-                    combat = observeUnitCombat(player, unit, active),
+                    combat = combat,
                     economy = observeUnitEconomy(player, unit, active),
                     greatPerson = observeGreatPerson(player, unit, active),
                     cityStateGift = observeCityStateGift(player, unit, active),
                     spaceshipAssembly = observeSpaceshipAssembly(player, unit, active),
-                    movementOrder = observeMovementOrder(player, unit, active),
+                    movementOrder = observeMovementOrder(player, unit, active, state.settlementKnowledge),
                     waterImprovement = observeWaterImprovement(player, unit, active),
                     air = observeUnitAir(player, unit, state, active),
-                    settlement = observeSettlement(player, unit, unit.currentTile.position.dto(), active),
+                    settlement = observeSettlement(player, unit, unit.currentTile.position.dto(), active, state.settlementKnowledge),
                 )
             }.toList(),
         ),

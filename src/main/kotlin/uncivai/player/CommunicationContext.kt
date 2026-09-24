@@ -14,7 +14,7 @@ import uncivai.obj
 
 /** Small, player-bound UI facts for conversation; no map, action menus or foreign economy. */
 internal fun communicationContext(runtime: GameExecutor, game: GameInfo, player: Civilization): JsonObject {
-    val economy = observeEconomy(player)
+    val economy = observeEconomy(player, includeDevelopment = false)
     val diplomacy = PlayerDiplomacyOperations(player)
     return obj(
         "turn" to game.turns,

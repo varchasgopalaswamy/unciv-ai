@@ -18,8 +18,9 @@ def json_lines(path):
 
 
 def native_position(checkpoint_path, civilizations):
-    """Operator-only final facts, including consequences after the last handoff."""
-    game = json.loads(json.loads(checkpoint_path.read_text())["gameJson"])
+    """Operator-only facts from a checkpoint or raw save, never a player input."""
+    saved = json.loads(checkpoint_path.read_text())
+    game = json.loads(saved["gameJson"]) if "gameJson" in saved else saved
     positions = []
     for name in sorted(civilizations):
         civ = next(c for c in game["civilizations"] if c["civID"] == name)
@@ -43,12 +44,16 @@ def native_position(checkpoint_path, civilizations):
             {
                 "civilization": name,
                 "turn": game.get("turns", 0),
+                "gold": civ.get("gold", 0),
                 "exploredTiles": sum(name in tile.get("exploredBy", []) for tile in game["tileMap"]["tileList"]),
                 "units": units,
                 "cities": [
                     {
+                        "id": c["id"],
                         "name": c["name"],
                         "population": c.get("population", {}).get("population", 1),
+                        "foodStored": c.get("population", {}).get("foodStored", 0),
+                        "buildings": c.get("cityConstructions", {}).get("builtBuildings", []),
                         "queue": c.get("cityConstructions", {}).get("constructionQueue", []),
                         "position": c["location"],
                     }
@@ -58,6 +63,38 @@ def native_position(checkpoint_path, civilizations):
             }
         )
     return positions
+
+
+def position_changes(initial, final):
+    """Describe outcomes without labeling a move, purchase or build as correct."""
+    results = []
+    for before in initial:
+        after = next(row for row in final if row["civilization"] == before["civilization"])
+        units = {unit["id"]: unit for unit in after["units"]}
+        old_ids = {unit["id"] for unit in before["units"]}
+        counts_before = Counter(unit["name"] for unit in before["units"])
+        counts_after = Counter(unit["name"] for unit in after["units"])
+        cities = {city["id"]: city for city in after["cities"]}
+        old_cities = {city["id"] for city in before["cities"]}
+        results.append(
+            {
+                "civilization": before["civilization"],
+                "fromTurn": before["turn"],
+                "toTurn": after["turn"],
+                "exploredTilesDelta": after["exploredTiles"] - before["exploredTiles"],
+                "goldDelta": after["gold"] - before["gold"],
+                "unitCounts": {
+                    name: {"before": counts_before[name], "after": counts_after[name]}
+                    for name in sorted(counts_before.keys() | counts_after.keys())
+                },
+                "startingUnits": [{"before": unit, "after": units.get(unit["id"])} for unit in before["units"]],
+                "newUnits": [unit for unit in after["units"] if unit["id"] not in old_ids],
+                "startingCities": [{"before": city, "after": cities.get(city["id"])} for city in before["cities"]],
+                "newCities": [city for city in after["cities"] if city["id"] not in old_cities],
+                "interpretation": "A missing unit may have been destroyed, captured, disbanded, upgraded or consumed by founding/another action. Check receipts and combat reports; roster changes alone are not casualty counts.",
+            }
+        )
+    return results
 
 
 def analyze(root, sessions, rounds=None):
@@ -122,6 +159,12 @@ def analyze(root, sessions, rounds=None):
                         errors.append(
                             {"job": row["job"], "tool": row["name"], "arguments": arguments, "error": result["error"]}
                         )
+                    if row["name"] == "memory_update":
+                        errors.extend(
+                            {"job": row["job"], "tool": row["name"], "edit": index, "rejection": change}
+                            for index, change in enumerate(result.get("changes", []))
+                            if not change.get("accepted")
+                        )
                     if row["name"] == "player_command" or (
                         row["name"] == "chat_send" and arguments.get("nativeAction")
                     ):
@@ -175,6 +218,10 @@ def analyze(root, sessions, rounds=None):
             engine.dispose()
     usage = {key: sum(row["usage"][key] for row in turns) for key in TOKEN_KEYS}
     usage["uncached_input_tokens"] = usage["input_tokens"] - usage["cached_input_tokens"]
+    civilizations = {row["turn"]["civilization"] for row in turns}
+    final = native_position(root / "exploration.json", civilizations) if rounds is None else None
+    initial_path = root / "initial-game.json"
+    initial = native_position(initial_path, civilizations) if initial_path.exists() else None
     return {
         "stateDirectory": str(root.resolve()),
         "completedTurns": len(turns),
@@ -192,11 +239,9 @@ def analyze(root, sessions, rounds=None):
         "activations": sorted(activations, key=lambda row: (row["turn"], row["civilization"])),
         "commands": commands,
         "lastObservedStates": observations,
-        "finalNativePositions": native_position(
-            root / "exploration.json", {row["turn"]["civilization"] for row in turns}
-        )
-        if rounds is None
-        else None,
+        "initialNativePositions": initial,
+        "finalNativePositions": final,
+        "outcomes": position_changes(initial, final) if initial and final else None,
         "runner": json.loads((root / "runner/run.json").read_text()).get("status"),
         "limitation": "Final native positions include opponent actions after the last handoff. Omitted for historical round-limited reports whose final checkpoint is from a later turn.",
     }
@@ -216,7 +261,16 @@ def main():
             {
                 k: v
                 for k, v in report.items()
-                if k not in {"activations", "commands", "lastObservedStates", "finalNativePositions", "toolCalls"}
+                if k
+                not in {
+                    "activations",
+                    "commands",
+                    "lastObservedStates",
+                    "initialNativePositions",
+                    "finalNativePositions",
+                    "outcomes",
+                    "toolCalls",
+                }
             },
             indent=2,
         )

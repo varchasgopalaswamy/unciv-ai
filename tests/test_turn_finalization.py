@@ -274,3 +274,34 @@ def test_memory_heartbeat_and_lost_async_finalization_ack(monkeypatch):
     assert proofs[0] == proofs[1]
     assert "start" not in calls and "finalize" not in calls
     assert published == [{"gameTurn": 35}]
+
+
+@pytest.mark.parametrize("error", ["HISTORY_WRITE_FAILED", "REPEATED_STALE_ASSUMPTIONS", "STOP_UNCONFIRMED"])
+def test_resume_does_not_acknowledge_internal_memory_failures(tmp_path, error):
+    from civ_agent.turn_finalization import finish_turn
+
+    scheduler, _, _ = make_scheduler(tmp_path)
+    agent = scheduler.agents["Rome"]
+    flight = {
+        "activationId": "failed",
+        "epoch": "g1",
+        "civilization": "Rome",
+        "gameTurn": 0,
+        "handoff": 0,
+        "confirmedHandoff": 1,
+        "agentUrl": agent.url,
+    }
+    agent.rows["failed"] = {
+        **flight,
+        "phase": "FAILED",
+        "memoryPhase": True,
+        "memoryPhaseComplete": False,
+        "error": error,
+        "memoryTimeoutSeconds": 300,
+    }
+    agent.release.set()
+    try:
+        with pytest.raises(ValueError, match=error):
+            finish_turn(agent, flight, scheduler.history_for(flight), accept_failed_memory=True)
+    finally:
+        scheduler.finalizer.shutdown(wait=True)

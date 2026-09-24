@@ -313,6 +313,8 @@ class GameExecutor internal constructor(
             turnSessions[civilization] = TurnSessionState(saved.identifiers).apply {
                 cityHandles.putAll(saved.cityHandles)
                 unitHandles.putAll(saved.unitHandles)
+                constructionSelections.putAll(saved.constructionSelections)
+                settlementKnowledge.putAll(saved.settlementKnowledge.associateBy { it.position })
                 player.popupAlerts.forEachIndexed { index, alert ->
                     saved.alertHandles[index]?.let { alertHandles[alert] = it }
                 }

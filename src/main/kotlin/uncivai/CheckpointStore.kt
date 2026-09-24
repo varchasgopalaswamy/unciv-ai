@@ -72,6 +72,8 @@ internal data class SavedPlayerState(
     val combatReports: Map<String, CombatReport> = emptyMap(),
     val deliveredCombatReports: Int = 0,
     val freeGreatPersonDecision: SharedFreeGreatPersonDecision? = null,
+    val constructionSelections: Map<String, List<uncivai.player.ConstructionSelection>> = emptyMap(),
+    val settlementKnowledge: List<uncivai.player.KnownSettlementTile> = emptyList(),
 )
 
 internal class CheckpointStore(
@@ -175,6 +177,8 @@ internal class CheckpointStore(
                     combatReports = state.combatReports.toMap(),
                     deliveredCombatReports = state.deliveredCombatReports,
                     freeGreatPersonDecision = state.freeGreatPersonDecision,
+                    constructionSelections = state.constructionSelections.toMap(),
+                    settlementKnowledge = state.settlementKnowledge.values.toList(),
                 )
             },
         )

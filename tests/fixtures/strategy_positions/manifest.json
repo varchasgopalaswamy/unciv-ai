@@ -1,6 +1,5 @@
 {
   "formatVersion": 1,
-  "seed": 10923811242,
   "origin": "Historical Vanilla match round checkpoints",
   "transformation": "Keep subject human; advance to its turn through native AI, ending the already-started source player without issuing actions; then make all other majors native AI. No terrain, unit, resource or technology edits. Fresh private memory; original social ledger is not imported.",
   "positions": [
@@ -20,7 +19,9 @@
         "exploredTiles": 125,
         "frontierTiles": 56,
         "reachableVisibleUnimprovedTilesWithLegalJobs": 9
-      }
+      },
+      "sourceSeed": 10923811242,
+      "sourceHostRevision": "248ad34c2c518d45e5f9bbf863ec24ea0aaab820"
     },
     {
       "id": "exploration-loop",
@@ -37,7 +38,9 @@
         "saveSha256": "42a1bbcb7c7cedb257bc456c56bd81ff66b79f9a24e037b4aeb013027ee73da6",
         "exploredTiles": 129,
         "frontierTiles": 49
-      }
+      },
+      "sourceSeed": 10923811242,
+      "sourceHostRevision": "248ad34c2c518d45e5f9bbf863ec24ea0aaab820"
     },
     {
       "id": "slow-economy",
@@ -54,7 +57,9 @@
         "saveSha256": "dff0753175ccf80f07f8e7bb95e72aab65f8af40a58bf59e0c995df4cb6170cb",
         "exploredTiles": 129,
         "frontierTiles": 49
-      }
+      },
+      "sourceSeed": 10923811242,
+      "sourceHostRevision": "248ad34c2c518d45e5f9bbf863ec24ea0aaab820"
     },
     {
       "id": "civilian-route",
@@ -71,7 +76,9 @@
         "saveSha256": "b2caf839911fe8aac9040898de3a892e12192efafd7949e4fd690c6e89a709e1",
         "exploredTiles": 129,
         "frontierTiles": 49
-      }
+      },
+      "sourceSeed": 10923811242,
+      "sourceHostRevision": "248ad34c2c518d45e5f9bbf863ec24ea0aaab820"
     },
     {
       "id": "injured-military",
@@ -88,8 +95,81 @@
         "saveSha256": "c22979933aa0382285de10e665c908ecdd56cc5ce28cffbdb231da9ba6501309",
         "exploredTiles": 130,
         "frontierTiles": 56
-      }
+      },
+      "sourceSeed": 10923811242,
+      "sourceHostRevision": "248ad34c2c518d45e5f9bbf863ec24ea0aaab820"
+    },
+    {
+      "id": "scout-survival",
+      "civilization": "France",
+      "sourceRound": 41,
+      "rounds": 3,
+      "description": "Scout at 24 HP has a potentially lethal attack and legal movement alternatives.",
+      "sourceSeed": 1283182,
+      "sourceCheckpointSha256": "4764a932bbd2357b8c865e72ff7fa79c628bf1768fa0b54af15a048eb2f1d70d",
+      "preflight": {
+        "id": "scout-survival",
+        "civilization": "France",
+        "turn": 41,
+        "saveSha256": "62c2375cd9bc5010dcf6a40d321250e9c28934f3a8b373a36012ca6adbe688de",
+        "exploredTiles": 165,
+        "frontierTiles": 64
+      },
+      "saveSha256": "62c2375cd9bc5010dcf6a40d321250e9c28934f3a8b373a36012ca6adbe688de"
+    },
+    {
+      "id": "settler-escort",
+      "civilization": "Greece",
+      "sourceRound": 33,
+      "rounds": 4,
+      "description": "Settler is beginning a journey that historically ended in capture; military units and incomplete scouting create route choices.",
+      "sourceSeed": 1283182,
+      "sourceCheckpointSha256": "61cfd8eeff4021aaf438f6afb41c7fc70757d845900186124cb045530c8c9cad",
+      "preflight": {
+        "id": "settler-escort",
+        "civilization": "Greece",
+        "turn": 33,
+        "saveSha256": "cbbea16f800db6bef0f3d60ce8f0b5c7266f2f16f1af0b89bcbc20cff71012fa",
+        "exploredTiles": 137,
+        "frontierTiles": 49
+      },
+      "saveSha256": "cbbea16f800db6bef0f3d60ce8f0b5c7266f2f16f1af0b89bcbc20cff71012fa"
+    },
+    {
+      "id": "civilian-exposure",
+      "civilization": "France",
+      "sourceRound": 39,
+      "rounds": 3,
+      "description": "Settler and two Workers face barbarian pressure before the historical loss of two civilians.",
+      "sourceSeed": 1283182,
+      "sourceCheckpointSha256": "1ef0761d0d1c4cfff6fce25aaa058e580c7ad65ccc9bb016ac3bb7a6d10a084a",
+      "preflight": {
+        "id": "civilian-exposure",
+        "civilization": "France",
+        "turn": 39,
+        "saveSha256": "3858c8a52ffc995d2c365dfd238de1ab7b2a9602c43b344ecc08642735434c50",
+        "exploredTiles": 165,
+        "frontierTiles": 64
+      },
+      "saveSha256": "3858c8a52ffc995d2c365dfd238de1ab7b2a9602c43b344ecc08642735434c50"
+    },
+    {
+      "id": "stalled-city",
+      "civilization": "Rome",
+      "sourceRound": 35,
+      "rounds": 5,
+      "description": "Antium has population one and zero food surplus while pursuing a long construction queue.",
+      "sourceSeed": 1283182,
+      "sourceCheckpointSha256": "5ca1b1d225a3b8d975ede919b4c72976124d49c2ba44117e6712ef45362f6732",
+      "preflight": {
+        "id": "stalled-city",
+        "civilization": "Rome",
+        "turn": 35,
+        "saveSha256": "2cff929d7a08d8d871284b686941f4d77f113de790dafa6ce3fc54ae4c9652d2",
+        "exploredTiles": 89,
+        "frontierTiles": 44
+      },
+      "saveSha256": "2cff929d7a08d8d871284b686941f4d77f113de790dafa6ce3fc54ae4c9652d2"
     }
-  ],
-  "sourceHostRevision": "248ad34c2c518d45e5f9bbf863ec24ea0aaab820"
+  ]
 }

@@ -52,7 +52,6 @@ from civ_agent.turn_archive import TurnArchive
 
 TERMINAL = {"COMPLETED", "INTERRUPTED", "FAILED"}
 HISTORY_RENDER_INTERVAL = 2.0
-MEMORY_PHASE_SECONDS = 300
 USAGE_KEYS = {
     "input_tokens": "inputTokens",
     "cached_input_tokens": "cachedInputTokens",
@@ -387,6 +386,7 @@ class AgentService:
                 raise ServiceError("RESULT_BINDING_CONFLICT", 409)
             self.results.receive(received)
         self.diagnostics = Diagnostics(self.state_dir, self.civilization)
+        self.io.slow_callback = self.diagnostics.emit
 
     def _persist(self, record, *, refresh=False):
         self.accounting.sample(record, record.get("negotiationWaitSeconds", 0))
@@ -716,7 +716,8 @@ class AgentService:
             for key, value in record.items()
             if key not in {"fingerprint", "threadTotals", "baseline", "frozenTurnSummary"}
         }
-        result["memoryTimeoutSeconds"] = MEMORY_PHASE_SECONDS
+        # Older completed activations predate the persisted timeout setting.
+        result.setdefault("memoryTimeoutSeconds", 300)
         task = self.finalization_tasks.get(activation_id)
         result["finalizationState"] = (
             "RUNNING"
@@ -847,6 +848,7 @@ class AgentService:
                 "fingerprint": fingerprint,
                 "settings": settings,
                 "requestedServiceTier": "fast" if self.fast else None,
+                "memoryTimeoutSeconds": payload["timeoutSeconds"],
             }
             if pinned is not None:
                 record["effectiveSettings"] = dict(pinned[1])
@@ -902,8 +904,8 @@ class AgentService:
         if activation_id == self.active_id and status["phase"] not in TERMINAL:
             self.last_heartbeat = time.monotonic()
             if self.chat.running and self.gameplay_permit == activation_id:
-                await self.io.call(self.accounting.sample, self.records[activation_id])
-                await self.flush_telemetry()
+                # Lease renewal must not queue behind database/history work.
+                # Periodic accounting is flushed by the background renderer.
                 grant = await self.chat.social("job_heartbeat", job=activation_id)
                 if not grant["granted"]:
                     self.failure = "JOB_PERMIT_EXPIRED"
@@ -1086,7 +1088,7 @@ class AgentService:
                     self.failure = self.gateway.run_failure["error"]
                 elif now - self.last_heartbeat >= payload["leaseSeconds"]:
                     self.failure = "HEARTBEAT_EXPIRED"
-                elif job.handoff_at is not None and now - job.handoff_at >= MEMORY_PHASE_SECONDS:
+                elif job.handoff_at is not None and now - job.handoff_at >= record["memoryTimeoutSeconds"]:
                     self.failure = "MEMORY_PHASE_TIMEOUT"
                 elif job.handoff_at is None and now - started - job.waiting_seconds() >= payload["timeoutSeconds"]:
                     self.failure = "ACTIVATION_TIMEOUT"
@@ -1118,8 +1120,16 @@ class AgentService:
                 while True:
                     await asyncio.sleep(HISTORY_RENDER_INTERVAL)
                     await self.io.call(self._refresh, copy.deepcopy(record))
-            except (OSError, ValueError):
-                self.failure = "HISTORY_WRITE_FAILED"
+                    await self.io.call(self.accounting.sample, copy.deepcopy(record), job.waiting_seconds())
+                    if self.chat.running:
+                        try:
+                            await self.flush_telemetry()
+                        except (OSError, ValueError, TimeoutError, aiohttp.ClientError) as error:
+                            # Reports remain in the durable outbox for the next flush.
+                            self.diagnostics.emit("periodic_telemetry_failed", error=error, activationId=job.id)
+            except (OSError, ValueError, SQLAlchemyError, ServiceError) as error:
+                self.failure = error.code if isinstance(error, ServiceError) else "HISTORY_WRITE_FAILED"
+                self.diagnostics.emit("background_io_failed", error=error, activationId=job.id)
                 self.stop_event.set()
                 owner.cancel()
 
@@ -1309,7 +1319,7 @@ class AgentService:
                 raise ServiceError("HISTORY_WRITE_FAILED", 503) from None
             record.update(finished)
             if self.chat.running:
-                with contextlib.suppress(OSError, ValueError, TimeoutError, aiohttp.ClientError):
+                with contextlib.suppress(OSError, ValueError, TimeoutError, aiohttp.ClientError, ServiceError):
                     await self.flush_telemetry()
                     await self.chat.social("job_release", job=record["activationId"], usage=finished["usage"])
             self.process = None

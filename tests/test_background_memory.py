@@ -9,7 +9,8 @@ from civ_agent.civilization_state import CivilizationState, StateConflict
 from tests.test_structured_memory import create, current, plan, setup
 
 
-def test_reflection_reads_frozen_evidence_and_preserves_new_review_flags(tmp_path):
+@pytest.mark.parametrize("operation", ["revise", "amend"])
+def test_reflection_reads_frozen_evidence_and_preserves_new_review_flags(tmp_path, operation):
     memory = setup(tmp_path)
     memory.observe("border", {"turn": 4, "units": ["Greek warrior"]}, "game")
     content = plan(assumptions=[{"text": "Warrior remains nearby", "source": "observation:border"}])
@@ -26,7 +27,11 @@ def test_reflection_reads_frozen_evidence_and_preserves_new_review_flags(tmp_pat
     assert memory.history(4, job="game")["actions"] == []
     with pytest.raises(StateConflict, match="MEMORY_ONLY"):
         memory.history(5, job="game")
-    change = {"op": "revise", "id": key, "content": {**content, "objective": "Defend the eastern approach"}}
+    change = (
+        {"op": "revise", "id": key, "content": {**content, "objective": "Defend the eastern approach"}}
+        if operation == "revise"
+        else {"op": "amend", "id": key, "fields": {"objective": "Defend the eastern approach"}}
+    )
     rejected = memory.patch("game", [change])["changes"][0]
     assert not rejected["accepted"] and rejected["reason"] == "STALE_ASSUMPTIONS"
     assert all(read["tool"] == "memory_read" for read in rejected["recovery"]["reads"])

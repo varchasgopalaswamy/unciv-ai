@@ -71,9 +71,12 @@ accepted/rejected edits and rejection reasons without additional API calls.
 
 ## Timeouts, durability and recovery
 
-The service allows up to 300 seconds of post-handoff memory work, independently
-of the gameplay activation deadline. The finalization worker renews the agent
-lease while waiting. Pause, stop and the match deadline interrupt pending model
+The service gives post-handoff memory work its own allowance equal to the
+activation's configured `timeoutSeconds` (`--turn-timeout`), independently of
+time already spent on gameplay. The service persists and reports that allowance
+as `memoryTimeoutSeconds`; the full-game launcher's default is one hour. The
+finalization worker renews the agent lease while waiting. Pause, stop and the
+match deadline interrupt pending model
 work, including during a checkpoint/finalization barrier. Accepted edits remain
 durable; interrupted or failed provider accounting is not reported as complete.
 
@@ -95,6 +98,17 @@ marker is published only after it is saved; telemetry acknowledgements can be
 retried independently. Restart preserves accepted memory, marks an unfinished
 model job failed and retains its partial summary for inspection. It does not
 restart paid model work automatically.
+
+A model timeout, provider interruption or service restart after handoff stops the
+run for inspection. On an explicit `match resume`, a failed memory attempt already
+present in the saved run can be acknowledged after its handoff, stopped process
+and archive are verified. The scheduler records `acknowledgedMemoryFailures` and
+prints a warning before continuing. Confirmed actions and committed memory edits
+remain; unsaved notes are unavailable. The activation retains its failed status,
+incomplete memory marker and partial provider accounting. Neither gameplay nor
+reflection is replayed. A new failure during the resumed run still stops it.
+Internal state failures, repeated stale assumptions, unconfirmed shutdown and
+archive errors are not acknowledged by this recovery path.
 
 `gameplayElapsedMs` ends at handoff. `finalizationElapsedMs` runs from handoff
 through memory completion and service archive finalization; it excludes the

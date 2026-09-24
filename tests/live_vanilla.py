@@ -20,6 +20,19 @@ DEFAULT_EFFORT = "medium"
 PLAYERS = ("Rome", "Greece", "France")
 
 
+def source_fingerprint(repository: Path) -> str:
+    """Include new source files, which a plain git diff omits before staging."""
+    names = subprocess.check_output(
+        ["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", "src"], cwd=repository
+    ).split(b"\0")
+    digest = hashlib.sha256()
+    for name in sorted(set(names) - {b""}):
+        path = repository / os.fsdecode(name)
+        if path.is_file():
+            digest.update(name + b"\0" + hashlib.sha256(path.read_bytes()).digest())
+    return digest.hexdigest()
+
+
 def main() -> int:
     parser = scheduler.parser()
     parser.add_argument("--port", type=int, required=True, help="Host port; next three ports serve agents")
@@ -69,6 +82,7 @@ def main() -> int:
             parser.error("Position must have a fresh host ledger")
         players = tuple(humans)
         write_private_json(root / "exploration.json", checkpoint)
+        write_private_json(root / "initial-game.json", game)
         write_private_json(root / "position.json", preflight)
         ensure_players(root / "players.json", False, players)
     position_resume = args.resume and (root / "position.json").exists()
@@ -135,9 +149,7 @@ def main() -> int:
                 "serviceRevision": subprocess.check_output(
                     ["git", "rev-parse", "HEAD"], cwd=repository, text=True
                 ).strip(),
-                "sourceDiffSha256": hashlib.sha256(
-                    subprocess.check_output(["git", "diff", "--", "src"], cwd=repository)
-                ).hexdigest(),
+                "sourceTreeSha256": source_fingerprint(repository),
                 "engineRevision": subprocess.check_output(
                     ["git", "rev-parse", "HEAD"], cwd=repository / "vendor/Unciv", text=True
                 ).strip(),

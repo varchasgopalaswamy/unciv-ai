@@ -23,7 +23,7 @@ Confirmed-action bodies and detailed economic/map data move to explicit reads.
 | `construction_details({target})` | Compact construction catalogue, including entries unavailable for purchase |
 | `construction_details({target,names})` | Up to 16 named entries with full descriptions, costs, requirements, confirmations, queue progress and copyable commands |
 | `map_region({center,radius,format})` | Explored tiles and frontier within radius 0–4 of an observed coordinate; respects world wrap; `format` defaults to `compact`, with `full` available |
-| `player_details({section})` | `economy`, `diplomacy`, `research`, `policies`, `turn_history`, or `map_index` |
+| `player_details({section})` | `economy`, `diplomacy`, `settlement`, `research`, `policies`, `turn_history`, or `map_index` |
 | `research_details({names})`, `policy_details({names})` | Existing on-demand tree catalogues and selected UI descriptions |
 | `movement_preview({target,destination})` | Native adjacent route paths, estimated turn stops and costs; required before a matching `SET_UNIT_DESTINATION` |
 | `mission_preview({target,mission,destination})` | Native rebase, paradrop, air sweep or nuclear preview; required before a matching special-mission command |
@@ -36,6 +36,39 @@ and its `SET_UNIT_DESTINATION` command. After a successful command, apply its
 `stateUpdate` to the last overview and reread relevant `invalidatedDetails` before
 the next action. Unchanged prior inspections remain valid. Queries for
 missing entities return `available:false` without inventing their current state.
+
+## Opportunities at turn start
+
+The prepared `player_turn` includes these summaries before the model's first
+response. They also participate in ordinary command deltas; no additional opening
+tool calls are needed.
+
+- `settlement`: counts of eligible, uncertain and blocked explored sites, plus the
+  three highest-ranked candidates. `NO_KNOWN_SITES` describes the explored search
+  scope, not the hidden world. Scores adapt Unciv's advisory settlement heuristic
+  to current and last-seen information. Full candidates are available through
+  `player_details(section="settlement")`; native `movement_preview` supplies routes.
+- `economy.development`: unimproved owned resource tiles, including bonus
+  resources, worked status, land/water builder type, improvement requirements and
+  current jobs. Road and railroad technology separately enable lists of cities
+  lacking their corresponding capital connection. Harbor connections follow the
+  native engine. Site availability is not a promise that a unit can act or travel.
+- `units[].upgrades`: native upgrade target, gold/resource costs, availability and
+  blockers, with the focused economy inspection needed to issue the command.
+- `cities[].constructionChoice`: the selection turn, observed duration and **all
+  currently available construction names absent when that option was selected**.
+  New options remain listed while the choice persists; this is not merely a
+  previous-turn comparison. Imported choices have `chosenTurn:null` and an
+  explicit first-observed baseline. Queue moves and checkpoint recovery preserve
+  tracked selection history. Read named construction details to compare effects.
+- `diplomacyOpportunities`: surplus luxuries that can be offered, missing luxuries
+  in known partners' permitted trade menus, and agreement terms expiring within
+  five turns. `SHARED` partners use the chat/trade interface; `NATIVE_AI` uses the
+  existing built-in-AI bridge. Inventories describe possible negotiation, not
+  willingness to accept a deal. Inspect `trade_options` before proposing terms.
+
+These are information and suggestions. They do not enforce a strategic policy,
+require a production change, or prohibit actions because of social promises.
 
 ## Compact map tiles
 

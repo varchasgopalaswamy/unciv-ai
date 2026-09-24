@@ -84,11 +84,14 @@ object CityDevelopmentProbe {
             }
             check(choices.researchQueue == listOf("Mining")) { "Research detail queue changed after mutation" }
             val cityOperations = PlayerCityOperations(player)
-            val worked = observed.tiles.first { it.canUnwork }
+            // Research changes can reassign citizens. Inspect the current choice
+            // before testing mutation and detachment of the returned snapshot.
+            val beforeUnwork = observeCityDevelopment(city)
+            val worked = beforeUnwork.tiles.first { it.canUnwork }
             val tile = game.tileMap[com.unciv.logic.map.HexCoord(worked.position.x, worked.position.y)]
             check(cityOperations.trySetWorkedTile(city, tile, false))
-            check(observed != observeCityDevelopment(city))
-            check(observed.tiles.first { it.position == worked.position }.worked) { "Returned DTO changed after mutation" }
+            check(beforeUnwork != observeCityDevelopment(city))
+            check(beforeUnwork.tiles.first { it.position == worked.position }.worked) { "Returned DTO changed after mutation" }
 
             val hidden = game.tileMap.tileList.first { !it.isExplored(player) }
             hidden.setExplored(player, true)

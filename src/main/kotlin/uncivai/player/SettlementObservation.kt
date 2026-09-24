@@ -4,7 +4,6 @@ import com.unciv.logic.civilization.Civilization
 import com.unciv.logic.map.mapunit.FoundingUnitRejection
 import com.unciv.logic.map.mapunit.MapUnit
 import com.unciv.logic.map.mapunit.UnitSettlement
-import com.unciv.logic.map.tile.SettlementRejection
 import kotlinx.serialization.Serializable
 import java.util.Collections
 
@@ -16,6 +15,8 @@ data class SettlementBlocker(
     val position: TilePosition? = null,
     val distance: Int? = null,
     val minimumDistance: Int? = null,
+    val observedTurn: Int? = null,
+    val remembered: Boolean = false,
 )
 
 /** Site eligibility is independent of remaining movement and is not a route or arrival guarantee. */
@@ -40,7 +41,7 @@ data class SettlementSiteSummary(
     val uncertainty: String?,
 )
 
-internal fun observeSettlement(player: Civilization, unit: MapUnit, destination: TilePosition, active: Boolean): SettlementPreview? {
+internal fun observeSettlement(player: Civilization, unit: MapUnit, destination: TilePosition, active: Boolean, knowledge: Map<TilePosition, KnownSettlementTile> = emptyMap()): SettlementPreview? {
     if (!UnitSettlement.hasFoundingAbility(unit)) return null
     val tile = player.gameInfo.tileMap.getOrNull(destination.x, destination.y)
     val atDestination = tile === unit.currentTile
@@ -66,30 +67,25 @@ internal fun observeSettlement(player: Civilization, unit: MapUnit, destination:
         // Use visibility, never the presence of hidden cities, to decide whether a preview is uncertain.
         val fullyVisible = tile.getTilesInDistance(radius).all { it.isVisible(player) || it.getOwner() === player }
         uncertainty = if (fullyVisible) null else "Nearby tiles are not all visible. Scout or recheck on arrival."
-        for (blocker in tile.settlementBlockers(player)) {
-            when (blocker.reason) {
-                SettlementRejection.WATER -> blockers.add(SettlementBlocker("WATER", "A city cannot be founded on water."))
-
-                SettlementRejection.IMPASSABLE -> blockers.add(SettlementBlocker("IMPASSABLE", "A city cannot be founded on impassable terrain."))
-
-                SettlementRejection.FOREIGN_TERRITORY -> if (tile.isVisible(player)) {
-                    blockers.add(SettlementBlocker("FOREIGN_TERRITORY", "The tile belongs to another civilization."))
-                }
-
-                SettlementRejection.CITY_TOO_CLOSE -> {
-                    val city = checkNotNull(blocker.city)
-                    if (city.civ !== player && !city.getCenterTile().isVisible(player)) continue
-                    blockers.add(
-                        SettlementBlocker(
-                            "CITY_TOO_CLOSE",
-                            "City centers must be at least ${blocker.minimumDistance} hexes apart here.",
-                            city.name,
-                            TilePosition(city.location.x, city.location.y),
-                            blocker.distance,
-                            blocker.minimumDistance,
-                        ),
-                    )
-                }
+        if (tile.isWater) blockers.add(SettlementBlocker("WATER", "A city cannot be founded on water."))
+        if (tile.isImpassible()) blockers.add(SettlementBlocker("IMPASSABLE", "A city cannot be founded on impassable terrain."))
+        val rememberedTile = knowledge[destination]
+        val owner = if (tile.isVisible(player)) tile.getOwner()?.civName else rememberedTile?.owner
+        if (owner != null && owner != player.civName) {
+            blockers.add(SettlementBlocker("FOREIGN_TERRITORY", "The tile belongs to another civilization according to the latest observation.", observedTurn = rememberedTile?.observedTurn, remembered = !tile.isVisible(player)))
+        }
+        val centers = knowledge.values.filter { it.cityName != null }.associateBy { it.position }.toMutableMap()
+        for (city in player.gameInfo.getCities().filter { it.civ === player || it.getCenterTile().isVisible(player) }) {
+            val center = city.getCenterTile()
+            val position = TilePosition(city.location.x, city.location.y)
+            centers[position] = KnownSettlementTile(position, player.gameInfo.turns, true, false, center.getContinent(), city.civ.civName, city.name, false, false, false, null, null, 0f)
+        }
+        for (known in centers.values) {
+            val center = player.gameInfo.tileMap.getOrNull(known.position.x, known.position.y) ?: continue
+            val minimum = (if (tile.getContinent() == known.continent) constants.minimalCityDistance else constants.minimalCityDistanceOnDifferentContinents) + 1
+            val distance = tile.aerialDistanceTo(center)
+            if (distance < minimum) {
+                blockers.add(SettlementBlocker("CITY_TOO_CLOSE", "City centers must be at least $minimum hexes apart here.", known.cityName, known.position, distance, minimum, known.observedTurn, !center.isVisible(player) && known.owner != player.civName))
             }
         }
     }

@@ -36,6 +36,7 @@ from civ_agent.observations import (
     DETAIL_MODELS,
     DetailQuery,
     TurnOverview,
+    detail_fingerprint,
     detail_satisfies,
     detail_scope,
     native_observation,
@@ -331,6 +332,9 @@ class ProposalGateway:
                         " Copy this preview's SET_UNIT_DESTINATION command and add intent. "
                         "Any native revision expires the preview; the chosen command needs a current matching preview. "
                         "Read unit_details sections=[movement] to inspect or cancel orders. "
+                        "Each turn stop's afterMove estimates remaining movement, attack/founding availability and "
+                        "visible endpoint threats/own military. Context is current proximity within its radius, "
+                        "not enemy reachability or guaranteed protection; unseenTiles marks incomplete visibility. "
                         "For settlers, inspect settlement separately from route availability: waiting for movement "
                         "does not fix city spacing or foreign ownership. Reconsider repeatedly blocked sites."
                     )
@@ -392,8 +396,16 @@ class ProposalGateway:
             "city_details": "Inspect one owned city by its player_turn handle. Prefer explicit sections: status (capture choices), production (queue/progress/options), citizens (growth/work tiles/specialists/focus), economy (yields/buildings/sales), purchases, or combat (bombardment). Multiple sections are allowed. Omitted sections or [all] returns full details. Each section retains native consequences; unrelated sections do not count as inspected. Prefer construction_details(names=[candidates]) for queueing/buying specific buildings or units. Copy offered commands and add your intent.",
             "construction_details": "Inspect construction in an owned city. Supply up to 16 names for descriptions, costs, eligibility, queue progress, purchase confirmations and copyable commands. Omit names for a compact catalogue only when choosing candidates. Read the named option before queueing or buying; copy command and add your intent. Confirm purchases explicitly after reading consequences.",
             "map_region": "Read explored tiles and frontier within radius 0–4 of an observed coordinate, respecting world wrap. Hidden tiles have no data. Default format=compact: each tile inherits tileDefaults, with its explicit fields overriding those defaults, including null/false/empty values. All visible facts are retained; position, terrain, visibility, units and yields remain on each tile. Use format=full for expanded tile objects. Read player_details(map_index) to locate distant regions.",
-            "player_details": "Read full economy, diplomacy (including war consequences), research progress, policy choices, current/previous turn receipts, or map coordinate index. Uses the latest permitted snapshot; returned evidence identifies what was read. For CITY_STATE_ACTION inspect section=diplomacy: target=civilizationId, selection=available actions.name, and confirmAction=true only after accepting any confirmation. DECLARE_WAR also accepts city-states. Inspect receipt.cityState for actual influence and alliance changes.",
+            "player_details": "Read full economy and development opportunities, diplomacy (including war consequences), settlement candidates and scores, research progress, policy choices, current/previous turn receipts, or map coordinate index. Settlement scores are advice based on current/remembered knowledge; preview a route before travel. Uses the latest permitted snapshot; returned evidence identifies what was read. For CITY_STATE_ACTION inspect section=diplomacy: target=civilizationId, selection=available actions.name, and confirmAction=true only after accepting any confirmation. DECLARE_WAR also accepts city-states. Inspect receipt.cityState for actual influence and alliance changes.",
         }.items():
+            if name in {"unit_details", "city_details"}:
+                description += (
+                    " Combat consequences put HP and damage-based remaining HP together; destructionPossible is advisory. "
+                    "attackerConsumedOnAttack identifies self-destructing units independently of damage. "
+                    "Early death, withdrawal or interception can change those estimates. Position contexts show current "
+                    "visible proximity, not future enemy reach or guaranteed protection. Movement afterMove estimates "
+                    "remaining movement and actions if the route completes; recheck after arrival."
+                )
             add(name, description)
 
         add(
@@ -458,7 +470,7 @@ class ProposalGateway:
         )
         add(
             "memory_update",
-            "Create, revise, replace or retire typed private plans, beliefs, notes and SOUL principles. Code assigns IDs and turn metadata. Read before changing existing records. Notes use text and optional plan: a previously read plan ID, even if retired or needing review. This is a historical link, not an active dependency. Notes do not accept sources. Beliefs require claim, uncertainty and sources. Copy sources exactly: record/message IDs, observation:overview, a detail response's short evidence handle (e123), or observation:communication after chat_read. Do not construct evidence IDs. Revisions can retain their existing historical citations without rereading them. Explicit assumptions are ongoing dependencies: refresh those you keep; drop obsolete ones when changing strategy. Review a flagged plan before reusing it for intent. For STALE_ASSUMPTIONS, follow recovery reads and reconsider. Retirement retains history and does not cancel a promise. Use relevant subjects such as economy, Greece or entity handles.",
+            "Create, revise, amend, replace or retire typed private memory. Read before editing existing records. amend uses {op:'amend',id,fields:{approach:'...'}} for changed content fields; omitted fields remain, lists replace rather than append. revise supplies full content; replace creates a successor. Code owns IDs and metadata. Each source list has a 20-citation limit: select relevant support, leaving old citations in historical revisions. Existing citations can be retained without rereading them. Copy delivered evidence IDs exactly: observation:overview, short detail handles (e123), record/message IDs, or observation:communication after chat_read. Notes accept text and optional plan ID, not sources. Beliefs require claim, uncertainty and sources. Explicit assumptions require current evidence; remove obsolete ones when changing strategy. Review flagged plans before using them for intent. Keep objectives, decisions, reasons and unresolved questions; receipts already preserve routine state and turn events. Retirement preserves history and does not cancel a promise.",
         )
         job.catalogue = copy.deepcopy(tools)
         return tools
@@ -586,6 +598,7 @@ class ProposalGateway:
                         "instruction": (
                             "The next player may act now. Batch useful changed plans, beliefs, notes and retirements; "
                             "skip unchanged records. Use this conversation's evidence; no new game reads or messages. "
+                            "Amend changed content fields when useful. Select at most 20 relevant citations per source list; old revisions preserve earlier evidence. "
                             "Copy evidence handles exactly. Historical citations and note.plan links may reference "
                             "retired records; ongoing assumptions and action intent require current reviewed records. "
                             "If another job changed a record, read it before reconciling; retain review flags for newer "
@@ -874,7 +887,9 @@ class ProposalGateway:
             query = DetailQuery.model_validate({"tool": name, "arguments": arguments})
             value = project_detail(job.observation, query)
             scope = detail_scope(query)
-            version, delivered = await self.io.call(self.memory.observe_detail, scope, value, job.id)
+            version, delivered = await self.io.call(
+                self.memory.observe_detail, scope, value, job.id, detail_fingerprint(job.observation, query)
+            )
             job.memory["records"]["observation:" + scope] = {
                 "version": version,
                 "category": "observation",

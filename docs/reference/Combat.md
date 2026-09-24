@@ -15,6 +15,10 @@ and prerequisites, and legal attacks. `cities[].attacks` lists bombardment targe
 Attack previews contain the target and origin coordinates, path, movement cost,
 rounded displayed strengths, modifiers and health-capped damage ranges. They do not
 expose the random value that will resolve an attack.
+The `consequences` summary puts current and damage-based remaining HP together,
+flags possible destruction/capture, and shows visible context around the attack
+origin and possible melee advance. See [action consequences](Tactical-review.md#action-consequences)
+for the limits of those estimates.
 
 Agent services add a [tactical review](Tactical-review.md) and copyable `command`
 arguments to combat, order and promotion offers. It highlights available city shots

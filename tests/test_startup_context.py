@@ -37,6 +37,32 @@ def test_prepared_reads_establish_evidence_and_update_base_without_model_calls(t
         )
         host.view["alerts"] = [{"handle": "alert1", "canAcknowledge": True, "content": {"text": "A message"}}]
         host.view["map"]["units"][0]["canFoundCity"] = True
+        host.view["map"]["units"][0]["economy"] = {
+            "upgrades": [
+                {
+                    "targetName": "Legion",
+                    "goldCost": 50,
+                    "resourceRequirements": {"Iron": 1},
+                    "available": True,
+                    "reasons": [],
+                }
+            ]
+        }
+        host.view["cities"][0]["constructionChoice"] = {
+            "name": "Science",
+            "chosenTurn": 0,
+            "observedSinceTurn": 0,
+            "turnsObserved": 4,
+            "newOptions": ["Workshop", "Market"],
+        }
+        host.view["economy"] = {"development": {"unimprovedResources": [], "unconnectedCities": ["Antium"]}}
+        host.view["diplomacyOpportunities"] = {"luxuryTrades": [], "expiringTerms": []}
+        host.view["settlement"] = {
+            "status": "ONLY_UNCERTAIN_SITES",
+            "knownEligibleSites": 0,
+            "uncertainSites": 4,
+            "candidates": [{"position": {"x": i, "y": 4}, "score": 100 - i} for i in range(4)],
+        }
         try:
             job = await gateway.open("job", "gameplay", "g1", host, {}, 0)
             await io.call(gateway.accounting.start, "job", "g1", True)
@@ -49,6 +75,12 @@ def test_prepared_reads_establish_evidence_and_update_base_without_model_calls(t
             assert prepared["reads"]["player_capabilities"]["version"]
             assert "revision" not in view and "epoch" not in view
             assert "stateId" in view
+            assert view["units"][0]["upgrades"][0]["goldCost"] == 50
+            assert view["units"][0]["inspections"]["UPGRADE_UNIT"]["arguments"]["sections"] == ["economy"]
+            assert view["cities"][0]["constructionChoice"]["newOptions"] == ["Workshop", "Market"]
+            assert view["economy"]["development"]["unconnectedCities"] == ["Antium"]
+            assert view["diplomacyOpportunities"] == host.view["diplomacyOpportunities"]
+            assert view["settlement"]["uncertainSites"] == 4 and len(view["settlement"]["candidates"]) == 3
             assert {tool["name"] for tool in prepared["coreTools"]} == {
                 "mcp__civ__player_turn",
                 "mcp__civ__player_command",

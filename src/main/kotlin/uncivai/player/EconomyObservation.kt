@@ -60,10 +60,11 @@ data class EconomyObservation(
     val resources: List<EconomyResource>,
     val cityConnections: List<CityConnection>,
     val goldenAge: GoldenAgeObservation,
+    val development: DevelopmentOpportunities? = null,
 )
 
 /** The caller supplies the bound player and holds the executor. No foreign balances or routes escape. */
-internal fun observeEconomy(player: Civilization): EconomyObservation {
+internal fun observeEconomy(player: Civilization, includeDevelopment: Boolean = true): EconomyObservation {
     val view = GameView(player.gameInfo, player).getCivView(player)
     // Same calculations as StatsOverviewTab; reading never refreshes mutable engine caches.
     val stats = view.getStatMapForNextTurn()
@@ -92,6 +93,7 @@ internal fun observeEconomy(player: Civilization): EconomyObservation {
             supply.getUnitSupplyProductionPenalty().toInt(),
         ),
         resources = observeEconomyResources(player),
+        development = if (includeDevelopment) observeDevelopmentOpportunities(player) else null,
         cityConnections = frozenEconomy(
             player.cities.sortedBy { it.name }.map { city ->
                 CityConnection(city.name, TilePosition(city.location.x, city.location.y), city.isCapital(), city.isConnectedToCapital())

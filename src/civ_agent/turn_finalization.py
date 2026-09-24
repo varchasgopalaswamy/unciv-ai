@@ -6,6 +6,18 @@ publishes their results and owns retries, ordering, budgets and checkpoint barri
 
 import time
 
+# Explicit resume can acknowledge a stopped model's unfinished private notes.
+# Engine failures, stale-state fences and persistence failures still need repair.
+INTERRUPTED_MEMORY_ERRORS = {
+    "MEMORY_PHASE_TIMEOUT",
+    "HEARTBEAT_EXPIRED",
+    "SERVICE_RESTARTED",
+    "CODEX_DISCONNECTED",
+    "CODEX_CONNECTION_FAILED",
+    "CODEX_TURN_FAILED",
+    "INTERRUPTED",
+}
+
 
 def _idempotent_call(agent, operation, **payload):
     try:
@@ -53,7 +65,7 @@ def finalize_turn(agent, flight):
     return finalized
 
 
-def finish_turn(agent, flight, history):
+def finish_turn(agent, flight, history, *, accept_failed_memory=False):
     finalized = finalize_turn(agent, flight)
     while True:
         before = history.cursor
@@ -71,5 +83,14 @@ def finish_turn(agent, flight, history):
         raise ValueError("Agent returned another turn's archive.")
     history.publish_archive(archive)
     if finalized.get("memoryPhase") and finalized["phase"] == "FAILED":
-        raise ValueError("Post-turn memory work failed: " + finalized.get("error", finalized["phase"]))
+        if (
+            not accept_failed_memory
+            or finalized.get("memoryPhaseComplete") is not False
+            or finalized.get("error") not in INTERRUPTED_MEMORY_ERRORS
+            or finalized.get("runFailure")
+        ):
+            raise ValueError("Post-turn memory work failed: " + finalized.get("error", finalized["phase"]))
+        # Preserve the failed activation and incomplete usage exactly as reported.
+        # Its confirmed handoff, stopped process and archive were verified above.
+        finalized = {**finalized, "memoryFailureAcknowledged": True}
     return finalized

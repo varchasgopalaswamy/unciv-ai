@@ -430,6 +430,7 @@ class FakeHost:
                     "lost_response",
                     "after_handoff_hang",
                     "victory_after_handoff",
+                    "memory_timeout",
                 }:
                     self.handoff += 1
                 phase = (
@@ -437,7 +438,7 @@ class FakeHost:
                     if behavior in {"hang", "after_handoff_hang", "refuse_interrupt", "victory_hang"}
                     else "COMPLETED"
                 )
-                if behavior in {"crash", "lost_response", "missing_thread"}:
+                if behavior in {"crash", "lost_response", "missing_thread", "memory_timeout"}:
                     phase = "FAILED"
                 self.activations[key] = dict(
                     activationId=body["activationId"],
@@ -453,6 +454,14 @@ class FakeHost:
                     else {},
                     _behavior=behavior,
                 )
+                if behavior == "memory_timeout":
+                    self.activations[key].update(
+                        memoryPhase=True,
+                        memoryPhaseComplete=False,
+                        usageComplete=False,
+                        error="MEMORY_PHASE_TIMEOUT",
+                        usage={"input_tokens": 10, "cached_input_tokens": 2, "output_tokens": 3},
+                    )
         if key not in self.activations and body["op"] == "abort":
             self.activations[key] = dict(
                 activationId=body["activationId"],
@@ -929,6 +938,37 @@ class SchedulerTest(unittest.TestCase):
         roman = [item for item in self.host.finalizations if item["gameTurn"] == 0 and item["committedHandoff"] == 1]
         self.assertEqual(len(roman), 2)
         self.assertEqual(roman[0], roman[1])
+
+    def test_failed_memory_stops_once_and_explicit_resume_preserves_committed_turn(self):
+        self.host.behaviors = ["memory_timeout", "complete"]
+        failed = self.run_cli("--max-turns", "1", "--max-seconds", "60")
+        self.assertEqual(2, failed.returncode, failed.stdout + failed.stderr)
+        self.assertIn("MEMORY_PHASE_TIMEOUT", failed.stdout)
+        pending = next(p for p in self.saved()["pendingFinalizations"] if p["civilization"] == "Rome")
+        self.assertNotIn("acknowledgedMemoryFailures", self.saved())
+
+        resumed = self.run_cli("resume")
+        self.assertEqual(0, resumed.returncode, resumed.stdout + resumed.stderr)
+        self.assertIn("unsaved edits are unavailable", resumed.stdout)
+        self.assertIn("Reported token usage remains incomplete", resumed.stdout)
+        self.assertEqual(["Rome", "Greece"], [play["civ"] for play in self.host.plays])
+        self.assertEqual(2, self.saved()["handoffs"])
+        self.assertEqual(20, self.saved()["usage"]["input_tokens"])
+        self.assertEqual([], self.saved()["pendingFinalizations"])
+        acknowledged = self.saved()["acknowledgedMemoryFailures"]
+        self.assertEqual([pending["activationId"]], list(acknowledged))
+        self.assertEqual("MEMORY_PHASE_TIMEOUT", acknowledged[pending["activationId"]]["error"])
+        self.assertFalse(acknowledged[pending["activationId"]]["usageComplete"])
+        original = self.host.activations[("Rome", pending["activationId"])]
+        self.assertEqual("FAILED", original["phase"])
+        self.assertFalse(original["memoryPhaseComplete"])
+
+        # A fresh failure during the resumed run must still stop for inspection.
+        self.host.behaviors = ["memory_timeout", "complete"]
+        failed_again = self.run_cli("resume", "--max-turns", "2")
+        self.assertEqual(2, failed_again.returncode, failed_again.stdout + failed_again.stderr)
+        self.assertEqual(acknowledged, self.saved()["acknowledgedMemoryFailures"])
+        self.assertTrue(self.saved()["pendingFinalizations"])
 
     def test_old_run_layout_is_rejected_without_replaying_or_moving_existing_history(self):
         result = self.run_cli("--max-invocations", "1", "--max-seconds", "30")

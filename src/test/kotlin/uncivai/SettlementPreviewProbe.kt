@@ -186,7 +186,10 @@ object SettlementPreviewProbe {
         check(session.turn().map.units.single().movementOrder!!.settlement == revealedOrder.settlement)
         settler.currentMovement = 2f
         rome.viewableTiles = visible
-        check(beforeOrder == session.turn().map.units.single().movementOrder) { "Standing order retained a city under fog" }
+        val remembered = session.turn().map.units.single().movementOrder!!.settlement!!
+        check(remembered.siteStatus == "BLOCKED" && remembered.uncertainty != null)
+        check(remembered.siteBlockers.single().city == secretCity.name && remembered.siteBlockers.single().remembered)
+        check(remembered.siteBlockers.single().observedTurn == game.turns)
 
         // Unexplored terrain and out-of-map coordinates share an unknown response.
         hidden.setExplored(rome, false)

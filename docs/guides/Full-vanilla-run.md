@@ -112,6 +112,16 @@ start; choose a new match directory to use a different model or reasoning effort
 It requires both `exploration.json` and `runner/run.json`; if startup failed before
 these exist, inspect the startup logs first.
 
+If a model timeout or provider/service interruption happened during post-turn
+memory work, the native handoff is already committed. Explicit resume verifies
+and archives that stopped attempt, records and prints an acknowledgement of its
+incomplete memory work, and continues from the saved board. Committed memory
+edits remain; unsaved notes are unavailable and partial token usage stays marked
+incomplete. New failures still stop for inspection; internal state, shutdown and
+archive errors still require repair. No game actions or memory reasoning are
+replayed. Post-turn memory work uses the configured `--turn-timeout` allowance,
+starting at handoff, rather than a separate five-minute cap.
+
 Full-game defaults raise a previous short batch's limits, while retaining any
 larger saved limits. Explicit limits may only increase. The elapsed-time limit is
 measured from the **original scheduler start**, including pauses; it is not reset

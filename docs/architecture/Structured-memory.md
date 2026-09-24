@@ -40,6 +40,22 @@ delivered to the job. Conflicting edits return an individual rejection while
 independent valid edits in the same batch commit. Retrying the same tool call
 does not duplicate records.
 
+For a small revision, use `op: "amend"` with only the changed content fields:
+
+```json
+{"changes":[{"op":"amend","id":"mem1","fields":{"approach":"Improve the Wheat before starting the next building","reviewAfterTurn":null}}]}
+```
+
+Omitted fields retain their values. A list replaces the entire old list; it does
+not append. Explicit `null` clears an optional nullable field. The service
+validates the merged content before writing and retains the same delivered-version,
+evidence, review and retirement checks as `revise`. Type changes require `replace`;
+IDs, timestamps and review metadata are never editable. An invalid amendment
+rejects that edit completely; independent valid edits in the batch can still commit.
+The service records routine observations and actions automatically. Private memory
+is useful for durable objectives, reasons, decisions and unresolved questions;
+duplicating the current roster or writing a turn diary is optional overhead.
+
 ## Sources and assumptions
 
 `sources` cite records or messages already delivered to this job, including
@@ -48,6 +64,11 @@ or the `evidence` ID returned by a detail query. Cached raw snapshots are not
 delivered evidence until explicitly read. Beliefs also accept
 `contradictingSources`. The service pins each source revision. Historical search
 returns evidence handles for referring to the specific revision that was read.
+
+Each source list has a maximum of **20 citations**. Select relevant support for
+the current revision rather than accumulating every historical reference. Earlier
+revisions retain their evidence when a list is shortened. Oversized lists return
+the field path, received count, limit and repair guidance without echoing evidence.
 
 Detail responses use short handles such as `e123`, pinned to that exact revision.
 Copy them instead of constructing observation hashes. Reading the query again
@@ -104,6 +125,12 @@ Unknown source IDs receive bounded `recovery.sourceSuggestions` containing only
 previously delivered references and their queries. The service never silently
 substitutes a similar ID, and it does not suggest rereading a nonexistent record.
 The agent must decide whether a suggested source supports the statement.
+During the background memory phase, `recovery.unavailableSources` lists requested
+references that were not delivered before handoff. Rereading a private plan does
+not deliver its `reviewSources`. Save independently supported changes using the
+completed turn's evidence, or leave changes that need newer evidence for a later
+job. The service keeps the newer review flags and never fetches live game/chat
+data or silently drops citations to make an edit pass.
 
 ## Retirement and retrieval
 

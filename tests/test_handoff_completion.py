@@ -145,8 +145,8 @@ class HandoffFailureTests(AgentServiceTestCase):
             {"changes": [{"op": "create", "content": {"type": "note", "text": "Committed before timeout"}}]},
             "reflection",
         )
-        with patch("civ_agent.agent_service.MEMORY_PHASE_SECONDS", 0):
-            status = await self.terminal()
+        self.service.records[job.id]["memoryTimeoutSeconds"] = 0
+        status = await self.terminal()
         assert status["phase"] == "FAILED" and status["error"] == "MEMORY_PHASE_TIMEOUT"
         assert not status["memoryPhaseComplete"] and not status["usageComplete"]
         assert job.model_stopped.is_set() and self.factory.instances[-1].closed

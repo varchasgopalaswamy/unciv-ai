@@ -41,8 +41,9 @@ resource amounts are included only for revealed strategic resources. Units requi
 both sight and detection of invisibility. Foreign unit IDs, movement points and
 orders are omitted. Improvement progress and city health require current sight.
 
-Terrain, features, rivers, roads, ownership and explored city names follow the current
-map UI. Improvement names use `getShownImprovement(player)`, including remembered
+Terrain, features, rivers and roads follow the current map UI. Ownership and city
+names use current sight or the host's saved last-seen observations. Improvement
+names use `getShownImprovement(player)`, including remembered
 values in fog. Other fields are not a historical copy: for example, the UI currently
 exposes road and pillage state on explored tiles. Changes to these UI rules require
 corresponding API review. Visible tile yields are now available through the [development slice](City-development.md);
@@ -105,12 +106,14 @@ scouting or selecting another destination. It adds no movement or founding gate;
 Unciv revalidates the actual action normally. The existing settlement inspection
 and native promise-confirmation flow remain in place.
 
-Prospective previews include only owned or currently visible blocking cities.
+Prospective previews include owned, visible and previously observed blocking cities.
 Incomplete surrounding visibility produces uncertainty regardless of whether an
 unseen city actually exists, preventing eligibility queries from becoming a hidden
 city detector. Unexplored and nonexistent destinations return unknown site details.
-The same filters apply to standing-order summaries; they do not retain a foreign
-city's current existence once it leaves visibility. Destination summaries omit
+The same filters apply to standing-order summaries. A city's remembered spacing
+restriction includes `observedTurn` and `remembered:true`; it does not assert that
+the city still exists. Unseen founding, razing and border changes do not update
+these facts. Destination summaries omit
 current unit requirements such as remaining movement. They disappear when the
 native order clears on arrival or cancellation, and units without a founding
 ability have no destination settlement summary. Site advice never cancels or
@@ -118,6 +121,15 @@ redirects an order.
 The current-tile `canFoundNow` mirrors the existing native action availability;
 it does not identify an unseen cause. These filters apply to this diagnostic
 surface; the broader map-UI visibility limitations described above still apply.
+
+The turn-start `settlement` overview searches explored tiles, reports eligible,
+uncertain and blocked counts, and provides three scored suggestions. Its advisory
+heuristic uses Unciv's yield weights and settlement preferences with permitted
+current/remembered inputs. It does not apply native AI diplomatic preferences as
+legality restrictions. `NO_KNOWN_SITES` is scoped to the player's knowledge, not
+an omniscient assertion. `player_details(section="settlement")` exposes the full
+ranked list. Hex distance is not a path estimate; inspect the native route before
+issuing a destination order. See [compact observations](Compact-observations.md).
 
 `UnitSettlementTest` covers native blockers, distances across continents, movement
 recovery, ownership, adjacent settlers, and retained UI actions.

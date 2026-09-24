@@ -119,9 +119,9 @@ players. Interactive `civ-agent agent start` accepts the same two options; see
 Each activation explicitly identifies the game turn it must play. A report about an
 earlier turn does not satisfy that request. After a committed handoff, the supervisor
 starts the next player while the outgoing conversation may finish private memory
-updates. This memory-only phase has a 300-second limit and preserves the completed
-turn's game evidence. The same civilization's next activation waits for its
-finalization. Round checkpoints save committed memory and unfinished jobs so the
+updates. This memory-only phase gets its own allowance equal to the configured
+activation timeout and preserves the completed turn's game evidence. The same
+civilization's next activation waits for its finalization. Round checkpoints save committed memory and unfinished jobs so the
 next player can start while reflection continues. See [background turn memory](../architecture/Background-turn-memory.md)
 for permissions, accounting, cancellation and recovery.
 

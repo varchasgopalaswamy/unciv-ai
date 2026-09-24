@@ -378,7 +378,7 @@ def player_prompt(civilization, game_turn=None):
 
 
 class Scheduler:
-    def __init__(self, store, operator, agents, state, *, verbose=False, color="auto"):
+    def __init__(self, store, operator, agents, state, *, verbose=False, color="auto", resume=False):
         self.store, self.operator, self.agents, self.state = store, operator, agents, state
         self.verbose = verbose
         self.output = TerminalOutput(color=color)
@@ -394,6 +394,8 @@ class Scheduler:
         self.finalizations = {}
         self.finalization_cleanup_failed = False
         self.state.setdefault("pendingFinalizations", [])
+        previous = [*self.state["pendingFinalizations"], *([state["inFlight"]] if state.get("inFlight") else [])]
+        self.resumed_activations = {p["activationId"] for p in previous} if resume else set()
 
     def history_for(self, flight, player_token=None):
         key = flight["activationId"]
@@ -607,7 +609,11 @@ class Scheduler:
                 raise RunnerError("Cannot finalize work from an abandoned epoch.")
             if key not in self.finalizations:
                 self.finalizations[key] = self.finalizer.submit(
-                    finish_turn, self.agent_for(pending), dict(pending), self.history_for(pending)
+                    finish_turn,
+                    self.agent_for(pending),
+                    dict(pending),
+                    self.history_for(pending),
+                    accept_failed_memory=key in self.resumed_activations,
                 )
 
     def collect_finalizations(self, *, wait=False, civilization=None):
@@ -631,6 +637,23 @@ class Scheduler:
                         f"Turn bookkeeping remains pending for {pending['civilization']}: {error}"
                     ) from None
                 self.record_agent(status, pending)
+                if status.get("memoryFailureAcknowledged"):
+                    self.state.setdefault("acknowledgedMemoryFailures", {})[pending["activationId"]] = {
+                        "civilization": pending["civilization"],
+                        "gameTurn": pending["gameTurn"],
+                        "epoch": pending["epoch"],
+                        "committedHandoff": pending["confirmedHandoff"],
+                        "error": status["error"],
+                        "usageComplete": status.get("usageComplete", False),
+                        "acknowledgedAt": time.time(),
+                    }
+                    self.output.line(
+                        "Warning",
+                        f"Resuming after turn {pending['gameTurn']} memory work failed ({status['error']}). "
+                        "Confirmed actions and saved memory are retained; unsaved edits are unavailable. "
+                        + ("Reported token usage remains incomplete." if not status.get("usageComplete") else ""),
+                        civilization=pending["civilization"],
+                    )
                 self.state["sessions"][pending["civilization"]]["completedTurn"] = pending["gameTurn"]
                 self.state["pendingFinalizations"].remove(pending)
                 del self.finalizations[pending["activationId"]]
@@ -1289,7 +1312,13 @@ def run(options: argparse.Namespace) -> int:
         if store.control.exists():
             store.control.unlink()
         scheduler = Scheduler(
-            store, operator, agents, state, verbose=options.verbose, color=getattr(options, "color", "auto")
+            store,
+            operator,
+            agents,
+            state,
+            verbose=options.verbose,
+            color=getattr(options, "color", "auto"),
+            resume=options.action == "resume",
         )
         output = scheduler.output
         for signum in (signal.SIGINT, signal.SIGTERM):

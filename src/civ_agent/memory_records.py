@@ -10,7 +10,13 @@ from civ_agent.schemas import BoundaryModel, NonnegativeInt, argument_issues, ar
 
 Text = Annotated[str, Field(min_length=1, max_length=2000)]
 Source = Annotated[str, Field(min_length=1, max_length=160)]
-Sources = Annotated[list[Source], Field(max_length=20)]
+Sources = Annotated[
+    list[Source],
+    Field(
+        max_length=20,
+        description="At most 20 relevant citations for this revision. Replace obsolete support; earlier revisions retain their citations.",
+    ),
+]
 Retirement = Literal["completed", "abandoned", "superseded", "retracted", "expired", "irrelevant"]
 MEMORY_TYPES = {"soul", "plan", "belief", "note"}
 
@@ -60,6 +66,7 @@ class Soul(Content):
 
 
 RecordContent = Annotated[Plan | Belief | Note | Soul, Field(discriminator="type")]
+CONTENT_MODELS = {"plan": Plan, "belief": Belief, "note": Note, "soul": Soul}
 
 
 class Create(BoundaryModel):
@@ -80,29 +87,80 @@ class Retire(BoundaryModel):
     assessment: str = Field(default="", max_length=2000)
 
 
+class Amend(BoundaryModel):
+    op: Literal["amend"]
+    id: Source
+    fields: Annotated[
+        JsonObject,
+        Field(
+            min_length=1,
+            max_length=12,
+            description="Only changed content fields from a record you read. Omitted fields are retained. Lists replace the old list; they never append. Type and service metadata cannot be changed.",
+        ),
+    ]
+
+
 class MemoryUpdate(BoundaryModel):
-    changes: Annotated[list[Annotated[Create | Revise | Retire, Field(discriminator="op")]], Field(max_length=20)]
+    changes: Annotated[
+        list[Annotated[Create | Revise | Retire | Amend, Field(discriminator="op")]], Field(max_length=20)
+    ]
+
+
+def source_limits(content: JsonObject, prefix: list) -> list[JsonObject]:
+    return [
+        {"fields": [*prefix, field], "maximum": 20, "received": len(content[field])}
+        for field in ("sources", "contradictingSources")
+        if isinstance(content.get(field), list) and len(content[field]) > 20
+    ]
+
+
+class MemoryContentError(ValueError):
+    def __init__(self, details: JsonObject):
+        super().__init__("INVALID_ARGUMENT")
+        self.details = details
+
+
+def amended_content(previous: JsonObject, fields: JsonObject) -> JsonObject:
+    """Validate the complete revision before any writes, including retained fields."""
+    model = CONTENT_MODELS[previous["type"]]
+    if "type" in fields:
+        raise ValueError("TYPE_CHANGE_REQUIRES_REPLACE")
+    content = {**{key: previous[key] for key in model.model_fields if key in previous}, **fields}
+    try:
+        return model.model_validate(content).model_dump()
+    except ValidationError as error:
+        raise MemoryContentError(
+            {
+                "invalidFields": argument_issues(error, model.model_json_schema()),
+                "limits": source_limits(content, ["fields"]),
+                "instruction": "Amend only content fields. Lists replace existing lists. Keep at most 20 relevant citations per source list; historical revisions retain earlier citations. No part of this edit was applied.",
+            }
+        ) from None
 
 
 def memory_argument_error(arguments: JsonObject, error: ValidationError) -> JsonObject:
-    models = {"plan": Plan, "belief": Belief, "note": Note, "soul": Soul}
     shapes = {}
+    limits = []
     changes = arguments.get("changes")
-    for change in changes if isinstance(changes, list) else []:
+    for index, change in enumerate(changes if isinstance(changes, list) else []):
         content = change.get("content") if isinstance(change, dict) else None
         kind = content.get("type") if isinstance(content, dict) else None
-        if isinstance(kind, str) and kind in models:
-            schema = models[kind].model_json_schema()
+        if isinstance(content, dict):
+            limits.extend(source_limits(content, ["changes", index, "content"]))
+        if isinstance(kind, str) and kind in CONTENT_MODELS:
+            schema = CONTENT_MODELS[kind].model_json_schema()
             shapes[kind] = argument_shape(schema, schema.get("$defs", {}))
     return {
         "error": "INVALID_ARGUMENT",
         "applied": False,
         "recoverable": True,
         "invalidFields": argument_issues(error, MemoryUpdate.model_json_schema()),
+        "limits": limits,
         "contentSchemas": shapes,
         "instruction": "No memory changes were applied. Use the selected content type's fields. "
         "Notes accept text and optional plan (an existing plan ID), not sources. "
         "Beliefs require claim, uncertainty and sources already delivered to this job. "
+        "Each source list accepts at most 20 citations: select relevant support for this revision instead of appending old citations. Earlier revisions retain their evidence. "
         "After chat_read, observation:communication is a usable source. Game state need not be refreshed for this error.",
     }
 
@@ -270,6 +328,9 @@ class ChangeResult(BoundaryModel):
     recovery: JsonObject | None = None
     recoverable: bool | None = None
     requiredSources: list[str] | None = None
+    invalidFields: list[JsonObject] | None = None
+    limits: list[JsonObject] | None = None
+    instruction: str | None = None
 
 
 class MemoryUpdateResult(BoundaryModel):

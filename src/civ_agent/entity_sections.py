@@ -64,7 +64,7 @@ UNIT_FIELDS = {
 }
 CITY_FIELDS = {
     "status": ("captureOptions",),
-    "production": ("constructionQueue", "constructionOptions", "development.constructions"),
+    "production": ("constructionQueue", "constructionOptions", "constructionChoice", "development.constructions"),
     "citizens": (
         "development.unassignedPopulation",
         "development.foodStored",

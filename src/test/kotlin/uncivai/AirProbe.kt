@@ -97,6 +97,7 @@ object AirProbe {
                 turn = api.turn(token)
                 val missile = unitByLabel(runtime, turn, "Guided strike")
                 val offer = missile.combat!!.attacks.single { it.destination == AirFixtures.missileTarget.position() }
+                check(offer.consequences!!.attackerConsumedOnAttack)
                 val fired = api.execute(token, request(turn, TurnCommandKind.ATTACK, missile.handle).copy(destination = offer.destination, attackFrom = offer.attackFrom))
                 check(fired.combat!!.attackerDestroyed && fired.combat!!.damageToDefender > 0)
             }

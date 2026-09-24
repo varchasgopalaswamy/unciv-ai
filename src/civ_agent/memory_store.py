@@ -26,10 +26,15 @@ class RecordStore:
     def __init__(self, db, turn=None):
         self.db, self.turn = db, turn
 
-    def all(self):
+    def all(self, *, categories=None, keys=None):
+        query = select(tables.records).select_from(tables.current_records)
+        if categories is not None:
+            query = query.where(tables.records.c.category.in_(categories))
+        if keys is not None:
+            query = query.where(tables.records.c.key.in_(keys))
         return {
             row["key"]: {"version": row["version"], "category": row["category"], "body": json.loads(row["body"])}
-            for row in self.db.execute(select(tables.records).select_from(tables.current_records)).mappings()
+            for row in self.db.execute(query).mappings()
         }
 
     def write(self, key, category, body, job=None):
@@ -176,40 +181,66 @@ class RecordStore:
 
     def flag(self, keys=(), subjects=(), reason="Evidence changed", review_keys=(), plans=()):
         """Flag only declared assumptions or relevant subject-specific plans."""
-        changed = set(keys)
-        # Propagate through beliefs used to support plans; bounded by record count.
-        records = self.all()
-        review = [{"key": key, "version": records[key]["version"]} for key in (review_keys or keys) if key in records]
-        while True:
-            added = set()
-            for key, record in records.items():
-                body = record["body"]
-                if record["category"] not in {"plan", "belief"} or body.get("state") != "active":
-                    continue
-                refs = body.get("_assumptions", [])
-                affected = any(ref["key"] in changed for ref in refs)
-                affected |= record["category"] == "plan" and key in plans
-                affected |= record["category"] == "plan" and bool(set(body.get("subjects", [])) & set(subjects))
-                if affected and reason not in body.get("needsReview", []):
-                    body = {
-                        **body,
-                        "needsReview": [*body.get("needsReview", []), reason],
-                        "updatedTurn": self.turn,
-                        "_review": body.get("_review", []) + review,
-                    }
-                    self.write(key, record["category"], body)
-                    records[key] = {**record, "body": body}
+        self.flag_many([dict(keys=keys, subjects=subjects, reason=reason, review_keys=review_keys, plans=plans)])
+
+    def flag_many(self, changes):
+        """Load the dependency graph once and write each affected memory once.
+
+        Observation bodies can dwarf private memory. Only their head versions are
+        needed here; never deserialize the historical map/detail catalogue for
+        every changed observation.
+        """
+        if not changes:
+            return
+        records = self.all(categories={"plan", "belief"})
+        records = {key: r for key, r in records.items() if r["body"].get("state") == "active"}
+        review_keys = {key for change in changes for key in (change.get("review_keys") or change.get("keys", ()))}
+        versions = {
+            key: version
+            for key, version in self.db.execute(select(tables.heads).where(tables.heads.c.key.in_(review_keys)))
+        }
+        updated = {}
+        for change in changes:
+            changed = set(change.get("keys", ()))
+            subjects, plans = set(change.get("subjects", ())), set(change.get("plans", ()))
+            reason = change["reason"]
+            review = {key: versions[key] for key in (change.get("review_keys") or changed) if key in versions}
+            visited = set()
+            while True:
+                added = set()
+                for key, record in records.items():
+                    if key in visited:
+                        continue
+                    body = updated.get(key, record["body"])
+                    affected = any(ref["key"] in changed for ref in body.get("_assumptions", []))
+                    affected |= record["category"] == "plan" and (
+                        key in plans or bool(set(body.get("subjects", [])) & subjects)
+                    )
+                    if not affected:
+                        continue
+                    visited.add(key)
                     added.add(key)
-            if not added - changed:
-                break
-            changed.update(added)
+                    references = {ref["key"]: ref["version"] for ref in body.get("_review", [])}
+                    references.update(review)
+                    candidate = {
+                        **body,
+                        "needsReview": list(dict.fromkeys([*body.get("needsReview", []), reason])),
+                        "_review": [{"key": k, "version": v} for k, v in sorted(references.items())],
+                    }
+                    if candidate != body:
+                        updated[key] = {**candidate, "updatedTurn": self.turn}
+                if not added:
+                    break
+                changed.update(added)
+        for key, body in updated.items():
+            self.write(key, records[key]["category"], body)
 
     def review_plans(self):
         if self.turn is None:
             return
         due = [
             key
-            for key, r in self.all().items()
+            for key, r in self.all(categories={"plan"}).items()
             if r["category"] == "plan"
             and r["body"].get("state") == "active"
             and r["body"].get("reviewAfterTurn") is not None
@@ -223,7 +254,7 @@ class RecordStore:
     def expire(self):
         if self.turn is None:
             return
-        for key, record in self.all().items():
+        for key, record in self.all(categories=MEMORY_TYPES).items():
             body = record["body"]
             if (
                 record["category"] in MEMORY_TYPES

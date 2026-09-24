@@ -44,6 +44,32 @@ parameter values. The few driver-level statements are connection configuration
 and `BEGIN IMMEDIATE`, rather than domain queries. See SQLAlchemy's
 [SQLite transaction guidance](https://docs.sqlalchemy.org/en/20/dialects/sqlite.html#enabling-non-legacy-sqlite-transactional-modes-with-the-sqlite3-or-aiosqlite-driver).
 
+## Observation refresh cost
+
+Observation changes flag the active plan/belief dependency graph in one batch.
+The batch reads evidence head versions without loading every observation body,
+propagates dependencies and writes each affected private record once. Repeated
+changes advance the required review evidence even when the reason is unchanged.
+
+Cached detail inputs carry a fingerprint tied to their exact record-head version
+in service metadata. Unchanged inputs reuse the existing evidence; changed inputs
+are reprojected and only factual differences create refreshed historical details.
+A late read from another job's older snapshot cannot conceal a newer change.
+Existing databases initialize these fingerprints on their next refresh. Immutable
+history, delivered evidence, assumption validation and rollback remain intact.
+
+Heartbeats renew the native lease without joining the database/history queue.
+Periodic accounting and telemetry use the background renderer and retain durable
+unsent reports. `service_io_slow` diagnostics separate queue and work milliseconds
+and name the operation without recording its arguments or private contents.
+
+The turn-126 Rome regression is covered by `test_observation_refresh_scaling.py`
+and a heartbeat test with an intentionally blocked database worker. A replay on
+the stopped game's copied database is retained under
+`build/stopped-game-audit-20260923/`; the original match is unchanged. Its first
+refresh, including fingerprint initialization, fell from about 9.0 seconds to
+0.69 seconds. This measures service refresh work, not model response time.
+
 ## Compatibility
 
 Existing structured-memory format-2 files and accounting databases open directly.

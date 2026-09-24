@@ -104,6 +104,7 @@ data class TurnCity(
     val captureOptions: List<CaptureOption> = emptyList(),
     val purchases: CityPurchases? = null,
     val management: CityManagement? = null,
+    val constructionChoice: ConstructionChoice? = null,
 )
 
 @Serializable
@@ -134,8 +135,10 @@ data class PlayerTurnSnapshot(
     val greatPersonOptions: List<String>,
     val idleUnits: Int,
     val map: MapObservation = MapObservation(),
+    val settlement: SettlementOpportunities? = null,
     val research: ResearchDevelopment? = null,
     val diplomacy: DiplomacyObservation = DiplomacyObservation(),
+    val diplomacyOpportunities: DiplomacyOpportunities? = null,
     val economy: EconomyObservation? = null,
     val victory: VictoryDecisions = VictoryDecisions(),
     val socialAdvisories: List<uncivai.SocialPromiseAdvisory> = emptyList(),

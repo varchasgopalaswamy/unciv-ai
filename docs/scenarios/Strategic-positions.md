@@ -1,8 +1,9 @@
 # Saved strategic positions
 
 The [fixture manifest](../../tests/fixtures/strategy_positions/manifest.json) and
-five adjacent native saves preserve situations from the September 21 Vanilla
-game. They are regression/evaluation inputs, not scripted solutions.
+adjacent native saves preserve situations from two Vanilla games. The manifest
+records each source seed and checkpoint hash. They are regression/evaluation
+inputs, not scripted solutions.
 
 | Position | Player / start | Rounds | What to assess |
 | --- | --- | --- | --- |
@@ -11,6 +12,14 @@ game. They are regression/evaluation inputs, not scripted solutions.
 | `slow-economy` | France, 26 | 2 | Research, luxury improvement timing, growth and the young city's slow Library |
 | `civilian-route` | France, 25 | 3 | Two settlers, incomplete scouting, protection, city sites and subsequent native demands |
 | `injured-military` | Greece, 26 | 2 | Survival, retreat or defensible restraint under visible pressure |
+| `scout-survival` | France, 41 | 3 | 24-HP Scout with a potentially lethal attack, retreat choices and a stacked Worker |
+| `settler-escort` | Greece, 33 | 4 | Settler journey, military coordination, scouting and survival or founding |
+| `civilian-exposure` | France, 39 | 3 | Settler/Worker exposure before historical barbarian captures |
+| `stalled-city` | Rome, 35 | 5 | Antium's zero food surplus, population, worked tiles and construction progress |
+
+The last four cases come from seed `1283182`, reviewed on September 23. The first
+five retain seed `10923811242`. Saved positions have no prescribed winning move:
+retreat, defense, continued expansion or a justified delay can all be reasonable.
 
 The preparation changes player control only. The subject remains a human slot
 controlled by a model; other majors use native AI, alongside the existing city
@@ -28,7 +37,7 @@ reasoning. Opponent actions and model choices can vary after the saved start.
 ## Prepare and run
 
 Use a new output directory for each preparation and run. Preparation validates
-save hashes, the controlling civilization, load/reload, and relevant native
+save hashes (excluding trailing whitespace), the controlling civilization, load/reload, and relevant native
 opportunities. For example, the worker case must have visible, owned, reachable
 unimproved tiles with a currently legal improvement; the combat case must offer
 movement to an injured unit near a visible hostile.
@@ -53,6 +62,17 @@ timeouts and an hour per case. `--parallel 1` runs sequentially; repeat `--case 
 to select cases. It retains logs and checkpoints and verifies completed rounds:
 a clean driver exit after an agent stops prematurely is an incomplete evaluation.
 Infrastructure completion does not mean the strategy was good.
+
+Select the September 23 failures with:
+
+```bash
+.venv/bin/python -m tests.live_strategy_positions \
+  --prepared "$PWD/build/strategy-positions" \
+  --state-dir "$PWD/build/tactical-evaluation" --port 11681 \
+  --case scout-survival --case settler-escort \
+  --case civilian-exposure --case stalled-city \
+  --model gpt-6-luna --reasoning-effort max --fast --strategy-guide
+```
 
 Run a three-round opening (nine agent turns, plus native Egypt and two city states):
 
@@ -83,11 +103,28 @@ facts include consequences of the last opponent turns. The report never sends
 hidden state to an agent. Use `--rounds 3` to compare the first three completed
 rounds of a historical game; its much later final checkpoint is then omitted.
 
+New position runs retain `initial-game.json`. Reports compare native unit identity,
+health and location, city population/food/buildings, new cities, exploration and
+treasury against that start. Missing units are not automatically called casualties:
+founding, upgrades, disbanding and other consumption also change the roster. Inspect
+receipts and combat reports for the cause. Partially rejected memory batches appear
+in the error details as well as the memory-edit counts.
+
 Interpret outcomes with the available information. A risky route under fog is
 different from knowingly moving into visible danger. A loss is not automatically
 a bad decision, and waiting can be sensible. Inspect native legality and the
 agent's actual reads before assigning a failure. Short, single-sample runs cannot
 establish overall win rate or separate every prompt/model/opponent effect.
+
+## September 23 tactical and memory evaluation
+
+The four new failure positions completed all 15 scheduled turns with GPT-6 Luna
+at max reasoning. The Scout survived and healed, and Greece preserved its Settler
+and reached a guarded site. France lost its Settler in the separate civilian
+case; Antium remained population 1 with zero food surplus. All token totals
+reconciled. See the [dated report](../archive/reports/Tactical-memory-evaluation-2026-09-23.md)
+for usage, memory failures, validation and remaining limits. Artifacts are retained
+in `build/tactical-evaluation-20260923/`.
 
 ## September 22 evaluation
 

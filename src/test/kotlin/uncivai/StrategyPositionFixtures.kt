@@ -84,9 +84,25 @@ object StrategyPositionFixtures {
                 }
                 when (id) {
                     "exploration-loop" -> check(turn.map.frontier.isNotEmpty() && turn.map.units.any { it.name == "Scout" && it.moves.isNotEmpty() })
+
                     "slow-economy" -> check(turn.cities.any { it.name == "Orleans" && "Library" in it.constructionQueue })
+
                     "civilian-route" -> check(turn.map.units.count { it.name == "Settler" } == 2)
+
                     "injured-military" -> check(turn.map.units.any { it.military && it.health < 50 && it.nearbyHostiles.isNotEmpty() && it.moves.isNotEmpty() })
+
+                    "scout-survival" -> check(
+                        turn.map.units.any {
+                            it.name == "Scout" && it.health == 24 && it.moves.isNotEmpty() &&
+                                it.combat!!.attacks.any { attack -> attack.consequences!!.attacker.destructionPossible }
+                        },
+                    ) { "Scout must have both a move and a potentially lethal attack" }
+
+                    "settler-escort" -> check(turn.map.units.any { it.name == "Settler" && it.moves.isNotEmpty() } && turn.map.units.any { it.military })
+
+                    "civilian-exposure" -> check(turn.map.units.any { it.name == "Settler" } && turn.map.units.count { it.name == "Worker" } == 2 && turn.map.units.any { it.nearbyHostiles.isNotEmpty() })
+
+                    "stalled-city" -> check(turn.cities.any { it.name == "Antium" && it.development!!.population == 1 && it.development.foodPerTurn == 0 })
                 }
                 Files.writeString(output.resolve("initial-turn.json"), PlayerTurnJson.json.encodeToString(turn))
                 val savedGame = UncivFiles.gameInfoToString(game, forceZip = false)
@@ -116,5 +132,6 @@ object StrategyPositionFixtures {
         }
     }
 
-    private fun sha256(text: String) = MessageDigest.getInstance("SHA-256").digest(text.toByteArray()).joinToString("") { "%02x".format(it) }
+    // Native serialization has no final newline; checked-in JSON may have one.
+    private fun sha256(text: String) = MessageDigest.getInstance("SHA-256").digest(text.trimEnd().toByteArray()).joinToString("") { "%02x".format(it) }
 }

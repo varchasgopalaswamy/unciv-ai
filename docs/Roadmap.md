@@ -1,6 +1,6 @@
 # Current roadmap
 
-Updated September 22, 2026. This is the current work summary; completed sprint
+Updated September 23, 2026. This is the current work summary; completed sprint
 checklists and measurements live in the [archive](archive/README.md).
 
 ## Active acceptance: complete an ordinary Vanilla game
@@ -18,9 +18,9 @@ Use the [full-game launcher](guides/Full-vanilla-run.md).
   receipts; distinguish gameplay mistakes from API/service failures.
 
 Per-turn accounting, checkpoints, victory actions and short live exercises are
-implemented. Those results do not close full-game acceptance. The
-[latest reviewed run](archive/reports/Live-game-review-2026-09-22.md) had reached
-turn 30 without a completed game.
+implemented. The [latest saved-position evaluation](archive/reports/Tactical-memory-evaluation-2026-09-23.md)
+completed 15 player turns across four isolated cases. Those results do not close
+full-game acceptance.
 
 ## Observed follow-ups
 
@@ -33,6 +33,15 @@ Implemented from the live review; ordinary-game impact still needs measurement:
 - **Memory telemetry.** Accepted/rejected edits, affected batches, and rejection
   reasons now come from the durable call journal and appear in host exports,
   console summaries, and the TUI separately from API success.
+- **Small memory edits and recovery.** `amend` changes selected fields while
+  preserving existing content and evidence checks. Errors explain citation limits
+  and sources unavailable to the frozen memory job. Five amendments committed in
+  the saved-position evaluation; the final recovery clarification has deterministic
+  and retained-failure validation, without another live model run.
+- **Tactical consequences.** Combat and movement details co-locate health,
+  movement remaining, action availability and visible position context. These
+  advisory fields preserve native legality and fog uncertainty. All 15 evaluation
+  turns completed, but civilian protection and city growth still need work.
 - **Settlement destinations.** Standing settler orders show visible destination
   eligibility and blockers. Existing action updates deliver discoveries without
   another preview request; uncertainty and native movement rules are preserved.
@@ -42,10 +51,12 @@ Implemented from the live review; ordinary-game impact still needs measurement:
 
 Remaining recommendations:
 
-1. **Improve decisions from existing information.** Review counterattack risk,
-   delayed military replacement, scouting before settlement and stalled city
-   growth. Measure whether the new destination summaries reduce settlement delays
-   in ordinary play.
+1. **Improve decisions from existing information.** France still lost a Settler
+   after treating an adjacent Scout as protection, and Antium stayed at zero food
+   surplus without citizen or focus changes. Greece preserved its Settler and
+   reached a guarded site but did not found within four turns. Use the retained
+   cases to assess civilian protection, growth intervention and settlement delays;
+   the successful survival cases do not establish overall strategic improvement.
 2. **Investigate recurring communication-read failures if they return.** The last
    review found eleven recoverable background MCP errors before a restart, with
    no established server-side cause.
