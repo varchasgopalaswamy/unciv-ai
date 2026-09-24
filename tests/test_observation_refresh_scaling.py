@@ -54,9 +54,10 @@ def test_many_changed_observations_batch_dependency_updates_and_keep_history(tmp
     assert len(full_reads) <= 3, len(full_reads)
     assert projections == []
     current = memory.snapshot("gameplay")["records"]
+    assert current[first]["body"]["needsReview"]
+    assert not current[second]["body"]["needsReview"]  # No transitive proof graph.
     for key in (first, second):
-        assert current[key]["body"]["needsReview"]
-        assert current[key]["version"] == before[key]["version"] + 1
+        assert current[key]["version"] == before[key]["version"]
     for key in before:
         if key.startswith("observation:detail/"):
             assert current[key] == before[key]

@@ -11,26 +11,22 @@ def state(tmp_path):
     return result
 
 
-def test_concurrent_memory_updates_preserve_independent_results(tmp_path):
+def test_communication_preserves_notes_without_overwriting_the_writer(tmp_path):
     memory = state(tmp_path)
-    memory.start_job("setup", "gameplay", {})
-    content = {"type": "plan", "objective": "Attack Greece", "approach": "Advance", "successCriteria": "Capture a city"}
-    memory.patch("setup", [{"op": "create", "content": content}])
     memory.start_job("planning", "gameplay", {})
+    content = {"type": "plan", "objective": "Attack Greece", "approach": "Advance", "successCriteria": "Capture a city"}
+    memory.patch("planning", [{"op": "create", "content": content}])
     memory.start_job("chat", "communication", {})
-    memory.patch(
-        "chat",
-        [{"op": "revise", "id": "mem1", "content": {**content, "objective": "Peace accepted; redeploy to the west"}}],
-    )
     result = memory.patch(
-        "planning",
+        "chat",
         [
-            {"op": "revise", "id": "mem1", "content": content},
-            {"op": "create", "content": {"type": "note", "text": "Build a market"}},
+            {"op": "amend", "id": "mem1", "fields": {"objective": "Peace accepted"}},
+            {"op": "create", "content": {"type": "note", "text": "Peace accepted; redeploy to the west"}},
         ],
     )
     assert [entry["accepted"] for entry in result["changes"]] == [False, True]
-    assert memory.snapshot("gameplay")["records"]["mem1"]["body"]["objective"].startswith("Peace accepted")
+    assert memory.snapshot("gameplay")["records"]["mem1"]["body"]["objective"] == "Attack Greece"
+    assert memory.snapshot("gameplay")["records"][result["changes"][1]["id"]]["category"] == "contribution"
 
 
 def test_misleading_speech_cannot_replace_observation_and_cursor_is_durable(tmp_path):
@@ -79,7 +75,7 @@ def test_round_restore_fences_jobs_and_regenerates_projections(tmp_path):
     memory.patch("job", [{"op": "create", "content": {"type": "soul", "text": "Develop peacefully"}}])
     path = tmp_path / "rounds" / "one.sqlite3"
     checksum = memory.backup(path)
-    memory.patch("job", [{"op": "revise", "id": "mem1", "content": {"type": "soul", "text": "Invade"}}])
+    memory.patch("job", [{"op": "amend", "id": "mem1", "fields": {"text": "Invade"}}])
     memory.ingest("g1", [{"id": 1, "kind": "message", "body": {"text": "Abandoned future"}}], 1)
     memory.restore(path, checksum, "g2")
     memory.pause(False)

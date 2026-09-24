@@ -20,9 +20,9 @@ sessions or additional database services.
   work outside the HTTPS event loop.
 
 The read-only scenario verifier and live-run analysis tools retain their
-independent `sqlite3` readers. They can inspect both old and new databases without
-depending on the runtime query implementation. Compatibility fixtures also use
-the old SQL schema deliberately.
+independent `sqlite3` readers. They inspect stored records without depending on
+the runtime query implementation. Historical analysis does not make an old match
+resumable with the current runtime.
 
 ## Transactions and failures
 
@@ -46,17 +46,17 @@ and `BEGIN IMMEDIATE`, rather than domain queries. See SQLAlchemy's
 
 ## Observation refresh cost
 
-Observation changes flag the active plan/belief dependency graph in one batch.
-The batch reads evidence head versions without loading every observation body,
-propagates dependencies and writes each affected private record once. Repeated
-changes advance the required review evidence even when the reason is unchanged.
+Observation changes publish direct advisory notices in one batch. The batch reads
+head versions without loading every observation body. It does not propagate a
+dependency graph or rewrite notebook entries. Repeated changes advance notice
+references even when the reason is unchanged.
 
 Cached detail inputs carry a fingerprint tied to their exact record-head version
 in service metadata. Unchanged inputs reuse the existing evidence; changed inputs
 are reprojected and only factual differences create refreshed historical details.
 A late read from another job's older snapshot cannot conceal a newer change.
-Existing databases initialize these fingerprints on their next refresh. Immutable
-history, delivered evidence, assumption validation and rollback remain intact.
+Immutable history, delivered evidence, command-state validation and rollback
+retain their transaction boundaries.
 
 Heartbeats renew the native lease without joining the database/history queue.
 Periodic accounting and telemetry use the background renderer and retain durable
@@ -65,46 +65,34 @@ and name the operation without recording its arguments or private contents.
 
 The turn-126 Rome regression is covered by `test_observation_refresh_scaling.py`
 and a heartbeat test with an intentionally blocked database worker. A replay on
-the stopped game's copied database is retained under
+the stopped game's copied database from before format 3 is retained under
 `build/stopped-game-audit-20260923/`; the original match is unchanged. Its first
 refresh, including fingerprint initialization, fell from about 9.0 seconds to
 0.69 seconds. This measures service refresh work, not model response time.
 
-## Compatibility
+## Store format and rollback
 
-Existing structured-memory format-2 files and accounting databases open directly.
-No data conversion or new match is needed. The migration preserves column order,
-types, nullability, foreign keys, JSON text encoding, rowid evidence handles and
-the memory handle sequence. Core inserts retain SQLite's existing ignore/replace
-conflict behavior where it was already used.
+The notebook uses format 3. Older memory files and checkpoints are rejected;
+there is no migration or compatibility path. Use a fresh match after this change.
 
-Checkpoint files and history hashes retain their format. Restoring an earlier
-head excludes discarded future revisions from history while retaining those
-rows and never reusing their identifiers. Queries keep their explicit ordering;
-checkpoint rows use positional values, while named results use Core mappings.
-The default summary query also preserves the previous handling of an unspecified
-turn instead of treating it as a request for jobs with a null turn.
-
-Schema creation defines fresh databases. Existing tables are left in place;
-missing indexes and the previously introduced export queue are initialized as
-before. This is not a general schema-migration framework: a future change to
-existing columns will need an explicit migration.
+Within the current format, checkpoint hashes cover reachable immutable records,
+events and command receipts. Restoring an earlier head excludes discarded future
+revisions while retaining their rows and never reusing identifiers. Notebook
+entries, communication contributions and advisory notices share this durable
+revision mechanism. Their meanings and write ownership are separate.
 
 ## Validation
 
-The full Python suite passed with 616 tests and 90 subtests; the opt-in installed
-Codex capture test was skipped. Ruff lint/format, Pyrefly and diff checks passed.
-
-`test_sqlalchemy_storage.py` creates databases from frozen pre-migration SQL and
-checks old checkpoint hashes, schema compatibility, rollback ancestry, monotonically
-allocated identifiers, missing-index upgrades and accounting recovery. It also
-checks foreign-key failures roll back the entire transaction, uncommitted writes
+`test_sqlalchemy_storage.py` independently checks current checkpoint hashes, rollback
+ancestry, monotonically allocated identifiers, old-format rejection and accounting
+recovery. It also checks foreign-key failures roll back the entire transaction, uncommitted writes
 remain invisible to readers, and another writer cannot enter before commit.
 The existing memory, gateway, HTTPS, scheduling and recovery suites exercise the
 converted runtime paths.
 
-On a copy of the saved Greece game, all 36 turn summaries matched the previous
+During the SQLAlchemy conversion, the full Python suite passed with 616 tests and
+90 subtests. On a copy of the saved Greece game, all 36 turn summaries matched the previous
 `sqlite3` implementation exactly. A dirty turn-35 export took about 0.064 seconds;
 an unchanged export took about 0.018 seconds. This confirms the incremental-export
 behavior remains effective; SQLAlchemy itself is a maintainability change, not
-a measured gameplay speedup. No live game or paid model run was started.
+a measured gameplay speedup. Those measurements predate notebook format 3.

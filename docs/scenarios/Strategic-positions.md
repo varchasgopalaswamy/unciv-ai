@@ -118,6 +118,12 @@ establish overall win rate or separate every prompt/model/opponent effect.
 
 ## September 23 tactical and memory evaluation
 
+The subsequent [notebook redesign comparison](../archive/reports/Notebook-redesign-2026-09-23.md)
+reran the civilian and stalled-city cases. France finished all three turns;
+Rome stopped during turn 38 after an inaccurate combat projection and a confirmed
+Warrior loss. All seven memory edits succeeded, including two communication
+contributions. The incomplete Rome case is retained for the combat follow-up.
+
 The four new failure positions completed all 15 scheduled turns with GPT-6 Luna
 at max reasoning. The Scout survived and healed, and Greece preserved its Settler
 and reached a guarded site. France lost its Settler in the separate civilian

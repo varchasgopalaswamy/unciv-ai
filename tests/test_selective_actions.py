@@ -401,8 +401,8 @@ def test_memory_recovery_explains_note_plan_and_keeps_evidence_requirements(tmp_
 
         try:
             rejected = await update({"type": "note", "text": "Discuss borders", "plan": "SECRET-PROSE"}, "plan")
-            assert not rejected["changes"][0]["accepted"]
-            assert "RELATED_PLAN_REQUIRED" in rejected["changes"][0]["reason"] and "SECRET" not in json.dumps(rejected)
+            assert rejected["changes"][0]["accepted"]
+            assert rejected["changes"][0]["warnings"][0]["sources"] == ["SECRET-PROSE"]
             bad_shape = await update(
                 {"type": "note", "text": "Discuss borders", "sources": ["SECRET-SOURCE"], "SECRET-KEY": True}, "shape"
             )
@@ -416,7 +416,7 @@ def test_memory_recovery_explains_note_plan_and_keeps_evidence_requirements(tmp_
                 "uncertainty": "medium",
                 "sources": ["observation:communication"],
             }
-            assert not (await update(belief, "unread"))["changes"][0]["accepted"]
+            assert (await update(belief, "unread"))["changes"][0]["warnings"]
             await gateway.call(job, "chat_read", {}, "read")
             assert (await update(belief, "supported"))["changes"][0]["accepted"]
             assert not host.executed

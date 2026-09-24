@@ -11,9 +11,8 @@ from civ_agent.protocol import JsonObject
 
 REPEATED_STALE = "REPEATED_STALE_ASSUMPTIONS"
 RECOVERY_INSTRUCTIONS = (
-    "This operation was not applied. Follow recovery.reads, reconsider the changed evidence, and revise any "
-    "flagged plan before retrying. Skip it only if it is no longer wanted or already handled. "
-    "Use the new evidence handles returned by those reads for retained assumptions; old handles keep their old versions. "
+    "This operation was not applied. Follow recovery.reads and reconsider the current game state before retrying. "
+    "Skip it only if it is no longer wanted or already handled. Notebook revisions are not required for recovery. "
     "The host tracks retries per operation: a successful operation resets its count. A later conflict after success "
     "starts a new recovery, even for the same plan. Follow recoverable responses; do not count all stale errors "
     "in the turn yourself. Only the host declares repeated-stale failure: REPEATED_STALE_ASSUMPTIONS with "
@@ -46,24 +45,8 @@ def conflict_details(db, job, keys, expected=None, cause="version_changed"):
     return details
 
 
-def recovery_reads(db, keys, name, arguments, evidence=None) -> JsonObject:
+def recovery_reads(db, keys, name, arguments) -> JsonObject:
     keys = set(keys)
-    intent = arguments.get("intent") or {}
-    references = [intent.get("plan")] + [assumption.get("source") for assumption in intent.get("assumptions", [])]
-    for key in references:
-        if evidence and key in evidence:
-            key = evidence[key]["key"]
-        if key and db.execute(select(tables.heads.c.key).where(tables.heads.c.key == key)).fetchone():
-            keys.add(key)
-    private = sorted({key for key in keys if not key.startswith("observation:")})
-    evidence = set()
-    for key in private:
-        row = db.execute(
-            select(tables.records.c.body).select_from(tables.current_records).where(tables.records.c.key == key)
-        ).fetchone()
-        if row:
-            evidence.update(ref["key"] for ref in json.loads(row[0]).get("_review", []))
-    keys.update(evidence)
     reads = []
     agreements = sorted(key for key in keys if key.startswith("observation:agreement/"))
     reads.extend({"tool": "agreement_read", "arguments": {"agreement": key.split("/", 1)[1]}} for key in agreements)
@@ -88,6 +71,10 @@ def recovery_reads(db, keys, name, arguments, evidence=None) -> JsonObject:
         reads.append({"tool": "chat_read", "arguments": {}})
         delivered.add("observation:communication")
     for key in sorted(keys):
+        for prefix, tool in (("observation:unit/", "unit_details"), ("observation:city/", "city_details")):
+            if key.startswith(prefix):
+                reads.append({"tool": tool, "arguments": {"target": key.removeprefix(prefix)}})
+    for key in sorted(keys):
         if not key.startswith("observation:detail/"):
             continue
         row = db.execute(
@@ -98,9 +85,8 @@ def recovery_reads(db, keys, name, arguments, evidence=None) -> JsonObject:
             reads.append(query)
             delivered.add(key)
     # The compact overview doesn't deliver raw entity/economy evidence. Read
-    # those versions explicitly, and read plans last because refreshes can flag
-    # them for review. Never pretend that cached evidence was seen by the model.
-    records = sorted((set(private) | evidence | keys) - delivered)
+    # those versions explicitly. Never pretend cached evidence was seen by the model.
+    records = sorted(keys - delivered)
     for offset in range(0, len(records), 20):
         reads.append(
             {"tool": "memory_read", "arguments": {"ids": records[offset : offset + 20], "includeRetired": True}}
@@ -115,38 +101,31 @@ def recovery_reads(db, keys, name, arguments, evidence=None) -> JsonObject:
 
 
 def record_conflicts(db, job, call_id, name, arguments, result):
-    """Called once in the transaction that saves a tool response, including partial memory batches."""
+    """Track command conflicts in the transaction that saves their tool response."""
+    if name == "memory_update":
+        # Notebook disagreements are visible local outcomes, never match failures.
+        return result
     row = db.execute(select(tables.jobs).where(tables.jobs.c.id == job)).mappings().fetchone()
     snapshot = json.loads(row["snapshot"])
     pending = snapshot.setdefault("staleRecovery", {})
-    operations = (
-        [
-            ({"op": change["op"], "id": change.get("id")}, outcome)
-            for change, outcome in zip(arguments["changes"], result["changes"], strict=True)
-        ]
-        if name == "memory_update" and "changes" in result
-        else [({key: value for key, value in arguments.items() if key != "intent"}, result)]
-    )
+    operation = {key: value for key, value in arguments.items() if key != "intent"}
+    key = hashlib.sha256(encode([name, operation]).encode()).hexdigest()
     failure = None
-    for operation, outcome in operations:
-        key = hashlib.sha256(encode([name, operation]).encode()).hexdigest()
-        stale = outcome.get("error", outcome.get("reason")) == "STALE_ASSUMPTIONS"
-        if not stale:
-            if outcome.get("accepted") is True or name != "memory_update" and "error" not in outcome:
-                pending.pop(key, None)
-            continue
-        attempt = {
-            "callId": call_id,
-            "arguments": arguments,
-            "changedRecords": outcome.get("changedRecords", []),
-            "conflicts": outcome.get("conflicts", []),
-            "recovery": outcome.get("recovery"),
-        }
-        first = pending.get(key)
-        # Two edits of the same record in one batch aren't two recovery attempts.
-        if first is None or first["callId"] == call_id:
-            pending.setdefault(key, attempt)
-            continue
+    stale = result.get("error") == "STALE_ASSUMPTIONS"
+    first = pending.get(key)
+    attempt = {
+        "callId": call_id,
+        "arguments": arguments,
+        "changedRecords": result.get("changedRecords", []),
+        "conflicts": result.get("conflicts", []),
+        "recovery": result.get("recovery"),
+    }
+    if not stale:
+        if "error" not in result:
+            pending.pop(key, None)
+    elif first is None or first["callId"] == call_id:
+        pending.setdefault(key, attempt)
+    else:
         reads = [
             {"callId": item["id"], "tool": item["name"], "arguments": json.loads(item["arguments"])}
             for item in db.execute(
@@ -196,7 +175,6 @@ def record_conflicts(db, job, call_id, name, arguments, result):
             "interveningReads": reads,
         }
         db.execute(insert(tables.meta).values(key="runFailure", value=encode(failure)).prefix_with("OR REPLACE"))
-        break
     db.execute(tables.jobs.update().where(tables.jobs.c.id == job).values(snapshot=encode(snapshot)))
     if failure:
         return {
@@ -204,6 +182,6 @@ def record_conflicts(db, job, call_id, name, arguments, result):
             "error": REPEATED_STALE,
             "recoverable": False,
             "diagnosticId": failure["diagnosticId"],
-            "instruction": "Stop. Repeated stale assumptions halted the run for operator inspection. Successful memory edits in this response remain applied.",
+            "instruction": "Stop. Repeated stale command state halted the run for operator inspection.",
         }
     return result

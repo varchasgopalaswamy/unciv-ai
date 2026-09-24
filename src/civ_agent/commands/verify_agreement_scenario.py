@@ -333,15 +333,15 @@ def _memory(root, player, epoch, agreements, resource_record):
     report["endedAgreementRead"] = bool(ended)
     for plan in (r for r in rows if r["category"] == "plan" and sourced(r["body"], "ACTIVE")):
         revisions = sorted((r for r in rows if r["key"] == plan["key"]), key=lambda r: r["ordinal"])
-        for flagged in revisions:
-            if flagged["ordinal"] <= plan["ordinal"] or not flagged["body"].get("needsReview"):
+        for flagged in (r for r in rows if r["category"] == "notice" and r["body"].get("record") == plan["key"]):
+            if flagged["ordinal"] <= plan["ordinal"]:
                 continue
             related = any(
                 ref["key"] == key
                 or (r := evidence.get((ref["key"], ref["version"])))
                 and r["body"].get("kind") == "agreement"
                 and r["body"].get("body", {}).get("agreement") == resource_record["agreement"]
-                for ref in flagged["body"].get("_review", [])
+                for ref in flagged["body"].get("sources", [])
             )
             if not related:
                 continue
@@ -351,7 +351,11 @@ def _memory(root, player, epoch, agreements, resource_record):
                     continue
                 # A read may race ahead of event ingestion and itself trigger the flag.
                 fresh = any(plan["ordinal"] < r["ordinal"] < reviewed["ordinal"] for r in ended)
-                revision = body.get("state") == "active" and not body.get("needsReview") and sourced(body, "ENDED")
+                revision = (
+                    body.get("state") == "active"
+                    and body.get("_seenNotice", 0) >= flagged["version"]
+                    and sourced(body, "ENDED")
+                )
                 retirement = body.get("state") == "retired" and bool(body.get("assessment", "").strip())
                 if fresh and (revision or retirement):
                     report["sourcedPlanReviewed"] = True

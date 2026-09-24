@@ -34,10 +34,9 @@ async def session(tmp_path):
         await io.close()
 
 
-def change_plan(memory, chat, key, text):
-    memory.refresh_memory(chat.id, [key])
-    result = memory.patch(chat.id, [{"op": "revise", "id": key, "content": {**PLAN, "approach": text}}])
-    assert result["changes"][0]["accepted"]
+def change_dependency(memory, chat, key, text):
+    # Simulate a newer player-visible unit observation arriving from another job.
+    memory.observe("unit/unit1", {"turn": 0, "entity": {"handle": "unit1", "status": text}}, chat.id)
 
 
 async def recover(gateway, job, result, prefix):
@@ -51,14 +50,14 @@ def test_repeated_action_conflict_stops_all_jobs_and_survives_restart(tmp_path):
     async def run():
         async with session(tmp_path) as (gateway, memory, job, chat, host, key):
             action = {**MOVE, "intent": {"plan": key}}
-            change_plan(memory, chat, key, "Defend the city instead")
+            change_dependency(memory, chat, key, "Defend the city instead")
             first = await gateway.call(job, "player_command", action, "first")
             assert first["error"] == "STALE_ASSUMPTIONS" and first["recoverable"]
             assert not first["applied"]
             await recover(gateway, job, first, "refresh")
             assert await gateway.call(job, "player_command", action, "first") == first
             assert not gateway.failed.is_set()
-            change_plan(memory, chat, key, "Reinforce the frontier")
+            change_dependency(memory, chat, key, "Reinforce the frontier")
             second = await gateway.call(job, "player_command", action, "second")
             assert second["error"] == REPEATED_STALE and second["recoverable"] is False
             assert not second["applied"] and not host.executed and not memory.pending()
@@ -74,7 +73,7 @@ def test_repeated_action_conflict_stops_all_jobs_and_survives_restart(tmp_path):
                 failure["secondAttempt"]["conflicts"][0]["expectedVersion"]
                 < failure["secondAttempt"]["conflicts"][0]["currentVersion"]
             )
-            assert failure["interveningReads"][0]["tool"] == "memory_read"
+            assert failure["interveningReads"][0]["tool"] == "player_turn"
             assert json.loads((memory.root / "failures" / (failure["diagnosticId"] + ".json")).read_text()) == failure
             assert memory.call(job.id, "second", "player_command", action) == second
             restarted = CivilizationState(memory.root, "Rome")
@@ -93,14 +92,14 @@ def test_successful_retry_clears_conflict_and_different_operations_are_independe
     async def run():
         async with session(tmp_path) as (gateway, memory, job, chat, host, key):
             action = {**MOVE, "intent": {"plan": key}}
-            change_plan(memory, chat, key, "Updated defensive position")
+            change_dependency(memory, chat, key, "Updated defensive position")
             first = await gateway.call(job, "player_command", action, "first")
             other = {**action, "destination": {"x": 2, "y": 0}}
             assert (await gateway.call(job, "player_command", other, "other"))["error"] == "STALE_ASSUMPTIONS"
             await recover(gateway, job, first, "read")
             assert (await gateway.call(job, "player_command", action, "success"))["done"]
             await gateway.call(job, "unit_details", {"target": "unit1"}, "inspect-again")
-            change_plan(memory, chat, key, "Another update after successful movement")
+            change_dependency(memory, chat, key, "Another update after successful movement")
             assert (await gateway.call(job, "player_command", action, "later"))["error"] == "STALE_ASSUMPTIONS"
             assert not gateway.failed.is_set() and len(host.executed) == 1
 
@@ -136,108 +135,10 @@ def test_recovery_refreshes_explicit_detail_assumptions_before_the_fresh_attempt
     asyncio.run(run())
 
 
-def test_memory_batch_stops_on_second_conflict_preserving_successes_and_replay(tmp_path):
-    async def run():
-        async with session(tmp_path) as (gateway, memory, job, chat, _, key):
-            revision = {"op": "revise", "id": key, "content": {**PLAN, "approach": "My revised plan"}}
-            change_plan(memory, chat, key, "First competing edit")
-            first_args = {"changes": [revision, {"op": "create", "content": {"type": "note", "text": "Keep this"}}]}
-            first = await gateway.call(job, "memory_update", first_args, "first")
-            assert first["changes"][1]["accepted"]
-            await recover(gateway, job, first["changes"][0], "refresh")
-            assert await gateway.call(job, "memory_update", first_args, "first") == first
-            change_plan(memory, chat, key, "Second competing edit")
-            second_args = {
-                "changes": [
-                    {"op": "create", "content": {"type": "note", "text": "Also keep this"}},
-                    {**revision, "content": {**PLAN, "approach": "Reconsidered after reading"}},
-                ]
-            }
-            second = await gateway.call(job, "memory_update", second_args, "second")
-            assert second["error"] == REPEATED_STALE and second["recoverable"] is False
-            assert "applied" not in second
-            assert second["changes"][0]["accepted"] and not second["changes"][1]["accepted"]
-            assert (
-                len(
-                    [
-                        record
-                        for record in memory.snapshot("gameplay")["records"].values()
-                        if record["category"] == "note"
-                    ]
-                )
-                == 2
-            )
-            assert memory.call(job.id, "second", "memory_update", second_args) == second
-            assert memory.run_failure()["operation"] == {"op": "revise", "id": key}
-
-    asyncio.run(run())
-
-
-def test_host_resets_a_memory_retry_after_success_and_stops_the_next_repeated_failure(tmp_path):
-    async def run():
-        async with session(tmp_path) as (gateway, memory, job, chat, _, key):
-            args = {"changes": [{"op": "revise", "id": key, "content": PLAN}]}
-            change_plan(memory, chat, key, "First competing edit")
-            first = await gateway.call(job, "memory_update", args, "first")
-            assert first["changes"][0]["recoverable"] is True
-            await recover(gateway, job, first["changes"][0], "read")
-            assert (await gateway.call(job, "memory_update", args, "success"))["changes"][0]["accepted"]
-            change_plan(memory, chat, key, "New conflict after success")
-            later = await gateway.call(job, "memory_update", args, "later")
-            assert later["changes"][0]["reason"] == "STALE_ASSUMPTIONS"
-            assert later["changes"][0]["recoverable"] is True
-            assert not gateway.failed.is_set() and memory.run_failure() is None
-            repeated = await gateway.call(job, "memory_update", args, "repeated")
-            assert repeated["error"] == REPEATED_STALE and repeated["recoverable"] is False
-            failure = memory.run_failure()
-            assert failure["firstAttempt"]["callId"] == "later"
-            assert failure["secondAttempt"]["callId"] == "repeated"
-            assert gateway.failed.is_set()
-            assert (memory.root / "failures" / (failure["diagnosticId"] + ".json")).exists()
-
-    asyncio.run(run())
-
-
-def test_reading_without_review_and_retrying_without_reads_are_also_bounded(tmp_path):
-    async def run():
-        async with session(tmp_path) as (gateway, memory, job, chat, host, key):
-            # A retired plan stays unusable after rereading; no race is required.
-            memory.patch(chat.id, [{"op": "retire", "id": key, "reason": "abandoned"}])
-            action = {**MOVE, "intent": {"plan": key}}
-            first = await gateway.call(job, "player_command", action, "first")
-            second = await gateway.call(job, "player_command", action, "second")
-            assert first["error"] == "STALE_ASSUMPTIONS" and second["error"] == REPEATED_STALE
-            assert memory.run_failure()["interveningReads"] == [] and not host.executed
-
-    asyncio.run(run())
-
-
-def test_memory_batch_reports_durable_failure_without_waiting_for_export(tmp_path):
-    async def run():
-        async with session(tmp_path) as (gateway, memory, job, chat, _, key):
-            revision = {"changes": [{"op": "revise", "id": key, "content": PLAN}]}
-            change_plan(memory, chat, key, "First competing edit")
-            first = await gateway.call(job, "memory_update", revision, "first")
-            await recover(gateway, job, first["changes"][0], "read")
-            change_plan(memory, chat, key, "Second competing edit")
-
-            def unavailable_export(workspace):
-                raise OSError("Memory export unavailable")
-
-            memory.export = unavailable_export
-            result = await gateway.call(job, "memory_update", revision, "second")
-            assert result["error"] == REPEATED_STALE
-            assert gateway.failed.is_set() and gateway.run_failure["error"] == REPEATED_STALE
-            result = memory.call(job.id, "second", "memory_update", revision)
-            assert result is not None and result["error"] == REPEATED_STALE
-
-    asyncio.run(run())
-
-
 @pytest.mark.parametrize("purpose", ["gameplay", "communication"])
 def test_prompts_require_bounded_recovery(purpose):
     instructions = tool_discovery_instructions(purpose)
-    assert "The host detects repeated stale assumptions" in instructions
+    assert "The host detects repeated stale command state" in instructions
     assert "recoverable=false is terminal: stop without further tool calls" in instructions
     assert "Follow recoverable error responses" in instructions
     assert "do not stop the gameplay turn for this" not in instructions
@@ -333,16 +234,11 @@ def test_service_stops_running_gameplay_and_communication_without_model_cooperat
                 while "chat" not in service.chat.jobs:
                     await asyncio.sleep(0.01)
             chat = service.chat.jobs["chat"][0]
-            created = await service.gateway.call(
-                chat, "memory_update", {"changes": [{"op": "create", "content": PLAN}]}, "create"
-            )
-            key = created["changes"][0]["id"]
-            revision = {"changes": [{"op": "revise", "id": key, "content": PLAN}]}
-            change_plan(service.memory, game, key, "Competing gameplay edit")
-            first = await service.gateway.call(chat, "memory_update", revision, "first")
-            await recover(service.gateway, chat, first["changes"][0], "refresh")
-            change_plan(service.memory, game, key, "Another gameplay edit")
-            second = await service.gateway.call(chat, "memory_update", revision, "second")
+            await service.gateway.call(game, "unit_details", {"target": "unit1"}, "inspect")
+            change_dependency(service.memory, chat, None, "Concurrent unit observation")
+            first = await service.gateway.call(game, "player_command", MOVE, "first")
+            assert first["error"] == "STALE_ASSUMPTIONS"
+            second = await service.gateway.call(game, "player_command", MOVE, "second")
             assert second["error"] == REPEATED_STALE
             await asyncio.wait_for(chat_task, 3)
             assert service.active_task is not None
@@ -352,7 +248,7 @@ def test_service_stops_running_gameplay_and_communication_without_model_cooperat
             chat_record = json.loads(next((service.state_dir / "chat-jobs").glob("*.json")).read_text())
             assert chat_record["phase"] == "FAILED" and chat_record["error"] == REPEATED_STALE
             failure = service.health()["runFailure"]
-            assert failure is not None and failure["job"] == "chat"
+            assert failure is not None and failure["job"] == game.id
         finally:
             if chat_task and not chat_task.done():
                 chat_task.cancel()

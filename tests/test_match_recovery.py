@@ -93,7 +93,7 @@ def test_partial_restore_remains_paused_then_repeats_same_epoch_without_refundin
     manifest = json.loads(next(coordinator.root.glob("*-round-*.json")).read_text())
     host.world["gold"] = 999
     for player in players.values():
-        player.memory.patch("initial", [{"op": "revise", "id": "mem1", "content": {"type": "soul", "text": "Invade"}}])
+        player.memory.patch("initial", [{"op": "amend", "id": "mem1", "fields": {"text": "Invade"}}])
         player.memory.ingest(
             "g1", [{"id": 1, "kind": "message", "wake": True, "body": {"text": "Abandoned future"}}], 1
         )

@@ -3,9 +3,8 @@
 See the [architecture diagram](../architecture/Async-chat-architecture.md) for the component and
 data flows.
 
-Chat and memory are available throughout the [trade-cycle scenario](../scenarios/Trade-cycle-scenario.md),
-the only launchable gameplay exercise. Follow that runbook to start the host,
-both agent services and the scheduler. Public/private messages and social
+For a chat and memory exercise, see the [trade-cycle scenario](../scenarios/Trade-cycle-scenario.md).
+Follow that runbook to start the host, agent services and scheduler. Public/private messages and social
 commitments are also covered by internal regression fixtures.
 
 Add `--model NAME --reasoning-effort LEVEL` to `match start` to select settings
@@ -47,8 +46,7 @@ bookkeeping automatically does not invent a gameplay decision or refresh an
 unseen observation. Successful gameplay actions return receipts and
 [state updates](../architecture/Command-state-updates.md); the service refreshes
 the underlying snapshot and identifies inspections that need renewing. Unit,
-city, economic, diplomatic and private-policy
-evidence have separate versions; the host also retains its conservative full-view
+city, economic and diplomatic game-state observations have separate versions; the host also retains its conservative full-view
 revision check and performs engine legality checks atomically.
 
 A concurrent change returns a recoverable `STALE_ASSUMPTIONS` result naming the
@@ -59,8 +57,8 @@ against fresh assumptions. Uncertain network responses retain their separate
 stop-and-reconcile behavior.
 
 A second stale rejection of the same operation after one fresh attempt stops the
-run for inspection. This also covers individual edits within a memory batch;
-independent successful edits remain applied. The service enforces the stop and
+run for inspection. Notebook conflicts stay local to their edits and do not halt
+the match. The service enforces command-state stops and
 preserves diagnostics across restart. See the
 [recovery diagnostics](#recovery-diagnostics) for identity, replay and resume rules.
 
@@ -116,8 +114,8 @@ transactional. The service generates `agents/Rome/SOUL.md`, `STRATEGY.md`,
 `economy.md`, relationship files and a memory index from active typed records. Editing
 these projections does not change canonical memory; use `memory_update`.
 
-Observations retain their turn and source. Beliefs require observed sources and
-uncertainty, with the service pinning evidence revisions. Private plans and
+Observations retain their turn and source. Beliefs carry uncertainty and optional
+historical references; unavailable references remain explicitly unverified. Private plans and
 authenticated player statements remain distinct. “My army is nowhere near your
 border” records a claim by its author, without erasing an earlier unit observation.
 
@@ -131,17 +129,18 @@ history is under `agents/Rome/communication/`, with permitted incoming events in
 `chat.jsonl`. Public Codex reasoning summaries are recorded, not hidden reasoning.
 The supervisor mirrors gameplay history under `runner/history/`.
 
-Memory can be created, revised, replaced and retired. Consequential actions require
-intent with a reason or an active, reviewed plan. Retirement removes current context
+Gameplay can create, amend and retire notebook entries. Communication jobs append
+immutable contributions for the next gameplay turn. Consequential actions record
+intent with a reason or a historical plan reference; review notices are advisory. Retirement removes current context
 and Markdown while preserving revision history. See [structured memory](../architecture/Structured-memory.md)
 for schemas and examples. This format
-requires a fresh match; the previous freeform store is rejected.
+requires a fresh match; all previous memory formats are rejected without migration.
 
 ## Recovery diagnostics
 
 Stale recovery is tracked per operation within a job. Gameplay identity includes
-the tool and chosen arguments, excluding explanatory `intent`; a memory edit is
-identified by its operation and record ID. A successful operation resets that
+the tool and chosen arguments, excluding explanatory `intent`. Notebook edits
+do not participate in the terminal stale-command counter. A successful operation resets that
 operation's counter. Replaying the same transport call ID returns the saved
 response without counting another attempt.
 
@@ -213,7 +212,7 @@ This is coordinated recovery, not a standalone backup of every transcript.
 
 Tests cover three-civilization privacy, responsive overlapping jobs, idle/burst
 dispatch, stale peace/policy decisions, consent changes and expiration, uncertain
-requests, concurrent memory updates, incomplete capture/restore and credential
+requests, notebook ownership and contributions, incomplete capture/restore and credential
 revocation across restart. A live Rome/Greece run additionally verified actual
 chat, consent, development and scheduled handoffs against host records and saves.
 Both players founded capitals and completed their turns. Restoring round 0 then

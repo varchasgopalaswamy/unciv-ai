@@ -16,6 +16,7 @@ def test_amend_keeps_omitted_fields_and_replaces_citations_without_losing_histor
         sources.append(f"observation:{name}")
     key = create(memory, plan(sources=sources, expiresTurn=9))
     old = current(memory, key)
+    memory.finish_job("game", True)
     memory.start_job("next", "gameplay", {}, game_turn=5)
     memory.refresh_memory("next", [key])
     result = memory.patch("next", [{"op": "amend", "id": key, "fields": {"approach": "Withdraw", "expiresTurn": None}}])
@@ -42,24 +43,22 @@ def test_amend_rejects_metadata_type_and_invalid_values_without_partial_writes(t
     assert memory.snapshot("gameplay")["records"][key] == before
 
 
-def test_amend_keeps_optimistic_and_evidence_checks(tmp_path):
+def test_amend_is_owned_by_gameplay_and_assumptions_are_advisory(tmp_path):
     memory = setup(tmp_path)
     memory.observe("border", {"units": 1}, "game")
     key = create(memory, plan(assumptions=[{"text": "Border covered", "source": "observation:border"}]))
     memory.start_job("other", "communication", {})
     memory.refresh_memory("other", [key])
-    memory.observe("border", {"units": 1}, "other")
-    assert memory.patch("other", [{"op": "amend", "id": key, "fields": {"approach": "New plan"}}])["changes"][0][
-        "accepted"
-    ]
-    stale = memory.patch("game", [{"op": "amend", "id": key, "fields": {"approach": "Old plan"}}])
-    assert not stale["changes"][0]["accepted"] and stale["changes"][0]["changedRecords"] == [key]
-    memory.observe("border", {"units": 0})
-    memory.refresh_memory("game", [key])
+    rejected = memory.patch("other", [{"op": "amend", "id": key, "fields": {"approach": "New plan"}}])
+    assert rejected["changes"][0]["reason"] == "NOTEBOOK_READ_ONLY"
+    memory.observe("border", {"units": 0}, "other")
     kept = memory.patch("game", [{"op": "amend", "id": key, "fields": {"approach": "Hold"}}])
-    assert not kept["changes"][0]["accepted"]
+    assert kept["changes"][0]["accepted"]
+    assert current(memory, key)["needsReview"]
+    memory.refresh_memory("game", [key])
     dropped = memory.patch("game", [{"op": "amend", "id": key, "fields": {"approach": "Reassess", "assumptions": []}}])
     assert dropped["changes"][0]["accepted"]
+    assert not current(memory, key)["needsReview"]
 
 
 def test_source_limit_errors_give_counts_and_do_not_echo_evidence(tmp_path):
@@ -96,21 +95,18 @@ def test_amend_batch_keeps_successful_edits_and_replays_once(tmp_path):
     assert memory.snapshot("gameplay")["records"] == saved
 
 
-def test_frozen_memory_recovery_identifies_unavailable_sources_without_delivering_them(tmp_path):
+def test_unavailable_citations_warn_without_rejecting_an_assessment_or_delivering_content(tmp_path):
     memory = setup(tmp_path)
     key = create(memory, plan(sources=["observation:game"]))
     memory.begin_memory_phase("game")
     memory.start_job("chat", "communication", {})
     memory.observe("later-trade", {"turn": 5, "text": "FUTURE_TRADE_CONTENT"}, "chat")
     changes = [{"op": "amend", "id": key, "fields": {"approach": "Withdraw", "sources": ["observation:later-trade"]}}]
-    rejected = memory.patch("game", changes)["changes"][0]
-    assert not rejected["accepted"]
-    recovery = rejected["recovery"]
-    assert recovery["unavailableSources"] == ["observation:later-trade"]
-    assert recovery["reads"] == [{"tool": "memory_read", "arguments": {"ids": [key], "includeRetired": True}}]
-    assert "FUTURE_TRADE_CONTENT" not in json.dumps(rejected)
+    result = memory.patch("game", changes)["changes"][0]
+    assert result["accepted"]
+    assert result["warnings"][0]["sources"] == ["observation:later-trade"]
+    assert "FUTURE_TRADE_CONTENT" not in json.dumps(result)
     assert memory.refresh_memory("game", ["observation:later-trade"]) == {}
-    # The independently supported part can still be saved with the prior citations.
-    accepted = memory.patch("game", [{"op": "amend", "id": key, "fields": {"approach": "Withdraw"}}])
-    assert accepted["changes"][0]["accepted"]
-    assert current(memory, key)["sources"] == ["observation:game"]
+    assert current(memory, key)["_evidence"] == []
+    assert current(memory, key)["unverifiedSources"] == ["observation:later-trade"]
+    assert memory.run_failure() is None

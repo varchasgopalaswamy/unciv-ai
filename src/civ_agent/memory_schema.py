@@ -1,4 +1,4 @@
-"""Memory schema and shared Core expressions; existing format-2 files stay valid."""
+"""Format-3 notebook, observation journal and command recovery schema."""
 
 from sqlalchemy import Column, ForeignKey, Index, Integer, MetaData, Table, Text, and_, literal_column, select
 

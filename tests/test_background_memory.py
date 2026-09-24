@@ -9,68 +9,79 @@ from civ_agent.civilization_state import CivilizationState, StateConflict
 from tests.test_structured_memory import create, current, plan, setup
 
 
-@pytest.mark.parametrize("operation", ["revise", "amend"])
-def test_reflection_reads_frozen_evidence_and_preserves_new_review_flags(tmp_path, operation):
+def test_reflection_reads_frozen_evidence_and_preserves_new_notices(tmp_path):
     memory = setup(tmp_path)
     memory.observe("border", {"turn": 4, "units": ["Greek warrior"]}, "game")
-    content = plan(assumptions=[{"text": "Warrior remains nearby", "source": "observation:border"}])
-    key = create(memory, content)
+    key = create(memory, plan(assumptions=[{"text": "Warrior remains nearby", "source": "observation:border"}]))
+    before = memory.snapshot("gameplay")["records"][key]["version"]
     memory.begin_memory_phase("game")
     memory.start_job("chat", "communication", {})
     memory.observe("border", {"turn": 5, "units": []}, "chat")
     memory.observe("new-report", {"turn": 5, "text": "NEW_INFORMATION"}, "chat")
-
     assert memory.refresh_memory("game", ["observation:border"])["observation:border"]["body"]["units"] == [
         "Greek warrior"
     ]
     assert memory.refresh_memory("game", ["observation:new-report"]) == {}
-    assert memory.history(4, job="game")["actions"] == []
     with pytest.raises(StateConflict, match="MEMORY_ONLY"):
         memory.history(5, job="game")
-    change = (
-        {"op": "revise", "id": key, "content": {**content, "objective": "Defend the eastern approach"}}
-        if operation == "revise"
-        else {"op": "amend", "id": key, "fields": {"objective": "Defend the eastern approach"}}
+    with pytest.raises(StateConflict, match="MEMORY_ONLY"):
+        memory.queue("game", "player_command", {"kind": "END_TURN"}, {}, "after-handoff")
+    assert memory.snapshot("gameplay")["records"][key]["version"] == before
+    accepted = memory.patch(
+        "game", [{"op": "amend", "id": key, "fields": {"objective": "Defend the eastern approach"}}]
     )
-    rejected = memory.patch("game", [change])["changes"][0]
-    assert not rejected["accepted"] and rejected["reason"] == "STALE_ASSUMPTIONS"
-    assert all(read["tool"] == "memory_read" for read in rejected["recovery"]["reads"])
-    assert all(
-        record["type"] in {"plan", "belief", "note", "soul"}
-        for record in memory.search_memory("game", {"state": "all"})["records"]
-    )
-    memory.refresh_memory("game", [key])
-    assert memory.patch("game", [change])["changes"][0]["accepted"]
+    assert accepted["changes"][0]["accepted"]
     saved = current(memory, key)
-    assert saved["updatedTurn"] == 5  # Actual write time; evidence and job still belong to turn 4.
+    assert saved["updatedTurn"] == 5 and saved["basis"]["turn"] == 4
     assert saved["needsReview"] and saved["_review"]
-    belief = create(
-        memory,
-        {
-            "type": "belief",
-            "claim": "The warrior was nearby on turn 4",
-            "uncertainty": "low",
-            "sources": ["observation:border"],
-        },
-    )
-    assert current(memory, belief)["_evidence"][0]["version"] == 1
+    assert not memory.refresh_memory("game", [key])[key]["body"]["needsReview"]
     memory.finish_job("game", True)
+    memory.start_job("next", "gameplay", {}, game_turn=5)
+    assert memory.refresh_memory("next", [key])[key]["body"]["needsReview"]
     summary = memory.completed_summary("game")
-    border = next(row for row in summary["observations"] if row["id"] == "observation:border")
-    assert border["body"]["units"] == ["Greek warrior"]
-    assert any(row["id"] == belief for row in summary["memoryChanges"])
+    assert "NEW_INFORMATION" not in json.dumps(summary)
 
 
-def test_reflection_cannot_overwrite_a_concurrent_chat_edit(tmp_path):
+def test_communication_appends_contributions_at_the_next_writer_boundary(tmp_path):
     memory = setup(tmp_path)
     key = create(memory, {"type": "note", "text": "Original"})
     memory.begin_memory_phase("game")
     memory.start_job("chat", "communication", {})
     memory.refresh_memory("chat", [key])
-    memory.patch("chat", [{"op": "revise", "id": key, "content": {"type": "note", "text": "New negotiated terms"}}])
-    result = memory.patch("game", [{"op": "revise", "id": key, "content": {"type": "note", "text": "Old terms"}}])
-    assert not result["changes"][0]["accepted"]
-    assert current(memory, key)["text"] == "New negotiated terms"
+    rejected = memory.patch("chat", [{"op": "amend", "id": key, "fields": {"text": "New negotiated terms"}}])
+    assert rejected["changes"][0]["reason"] == "NOTEBOOK_READ_ONLY"
+    contribution = create(memory, {"type": "note", "text": "New negotiated terms"}, "chat")
+    assert not memory.refresh_memory("game", [contribution])
+    assert not memory.search_memory("game", {"type": "contribution"})["records"]
+    assert memory.patch("game", [{"op": "amend", "id": key, "fields": {"text": "Completed-turn reasoning"}}])[
+        "changes"
+    ][0]["accepted"]
+    with pytest.raises(StateConflict, match="NOTEBOOK_WRITER_BUSY"):
+        memory.start_job("too-soon", "gameplay", {}, game_turn=5)
+    memory.finish_job("game", True)
+    snapshot = memory.start_job("next", "gameplay", {}, game_turn=5)
+    assert contribution in snapshot["contributionIds"]
+    found = memory.search_memory("next", {"type": "contribution"})["records"]
+    assert found[0]["body"]["text"] == "New negotiated terms"
+    assert found[0]["body"]["basis"]["purpose"] == "communication"
+    immutable = memory.patch("next", [{"op": "amend", "id": contribution, "fields": {"text": "Rewrite"}}])
+    assert immutable["changes"][0]["reason"] == "IMMUTABLE_CONTRIBUTION"
+    assert memory.patch("next", [{"op": "retire", "id": contribution, "reason": "completed"}])["changes"][0]["accepted"]
+    assert current(memory, key)["text"] == "Completed-turn reasoning"
+
+
+def test_edit_response_carries_notice_delivery_into_background_work(tmp_path):
+    memory = setup(tmp_path)
+    memory.observe("border", {"units": 1}, "game")
+    key = create(memory, plan(assumptions=[{"text": "Guard nearby", "source": "observation:border"}]))
+    memory.observe("border", {"units": 0})
+    result = memory.patch("game", [{"op": "amend", "id": key, "fields": {"approach": "Reposition"}}])
+    assert result["changes"][0]["record"]["needsReview"]
+    memory.begin_memory_phase("game")
+    for approach in ("Defend the capital", "Bring reinforcements"):
+        revised = memory.patch("game", [{"op": "amend", "id": key, "fields": {"approach": approach}}])
+        assert not revised["changes"][0]["record"]["needsReview"]
+        assert not current(memory, key)["needsReview"]
 
 
 def test_exports_leave_completed_turns_untouched_and_recover_dirty_work(tmp_path):

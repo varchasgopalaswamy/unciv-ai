@@ -26,18 +26,15 @@ full-game acceptance.
 
 Implemented from the live review; ordinary-game impact still needs measurement:
 
-- **Memory semantics.** Historical citations and note-to-plan links no longer
-  require active, reviewed sources. Revisions retain citations, can drop obsolete
-  assumptions, and use short versioned detail-evidence handles. Concurrent edits,
-  retained assumptions, and newer review evidence remain checked.
+- **Private notebook.** Gameplay owns notebook revisions; communication appends
+  contributions for the next activation. Review notices are separate, advisory
+  records. Optional citations retain provenance without certifying an assessment.
+  Notebook conflicts do not halt games; command-state checks remain enforced.
+  Format 3 requires a fresh match, with no compatibility or migration path.
+  See the [redesign and validation report](archive/reports/Notebook-redesign-2026-09-23.md).
 - **Memory telemetry.** Accepted/rejected edits, affected batches, and rejection
   reasons now come from the durable call journal and appear in host exports,
   console summaries, and the TUI separately from API success.
-- **Small memory edits and recovery.** `amend` changes selected fields while
-  preserving existing content and evidence checks. Errors explain citation limits
-  and sources unavailable to the frozen memory job. Five amendments committed in
-  the saved-position evaluation; the final recovery clarification has deterministic
-  and retained-failure validation, without another live model run.
 - **Tactical consequences.** Combat and movement details co-locate health,
   movement remaining, action availability and visible position context. These
   advisory fields preserve native legality and fog uncertainty. All 15 evaluation
@@ -51,13 +48,20 @@ Implemented from the live review; ordinary-game impact still needs measurement:
 
 Remaining recommendations:
 
-1. **Improve decisions from existing information.** France still lost a Settler
+1. **Correct combat projections and stopping guidance.** The
+   [notebook evaluation](archive/reports/Notebook-redesign-2026-09-23.md#gameplay-and-the-independent-stop)
+   stopped during Rome's turn 38 after a 1-HP Warrior dealt 1 damage instead of
+   the preview's predicted 12. Potential melee damage must account for combat
+   ending at the first defeat. A confirmed receipt with enemy health hidden by
+   lost visibility should not trigger the uncertain-dispatch stop. The saved
+   checkpoint reproduces the issue; Rome's five-turn evaluation remains incomplete.
+2. **Improve decisions from existing information.** France still lost a Settler
    after treating an adjacent Scout as protection, and Antium stayed at zero food
    surplus without citizen or focus changes. Greece preserved its Settler and
    reached a guarded site but did not found within four turns. Use the retained
    cases to assess civilian protection, growth intervention and settlement delays;
    the successful survival cases do not establish overall strategic improvement.
-2. **Investigate recurring communication-read failures if they return.** The last
+3. **Investigate recurring communication-read failures if they return.** The last
    review found eleven recoverable background MCP errors before a restart, with
    no established server-side cause.
 

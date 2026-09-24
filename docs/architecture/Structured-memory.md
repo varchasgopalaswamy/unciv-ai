@@ -1,223 +1,142 @@
-# Structured civilization memory
+# Private notebook and observation history
 
-The service uses Pydantic for agent-authored records, tool inputs and outputs, and
-structured summaries. SQLAlchemy Core defines the tables and queries; SQLite is
-authoritative. Markdown files are generated views,
-and editing them does not change an agent's memory. This memory format requires a
-fresh match; no migration from the previous freeform store is provided.
-The [SQLAlchemy migration](Database-access.md) opens existing structured-memory
-format-2 databases directly and does not require a new match.
+The service separates private assessments from command validation. SQLite stores
+notebook entries, an immutable observation/action history, advisory notices and
+an inbox of communication contributions. SQLAlchemy Core owns database access;
+Markdown files are disposable views.
 
-## Record types
+**This is memory format 3. Start a fresh match.** Older memory databases and
+checkpoints are rejected without modification. There is no migration, old API
+adapter or dual runtime. Restart and whole-match rollback work within format 3.
 
-| Type | Required content | Meaning |
-| --- | --- | --- |
-| `soul` | `text` | Long-term principles; one active SOUL |
-| `plan` | `objective`, `approach`, `successCriteria` | Intended actions, not enacted game facts |
-| `belief` | `claim`, `uncertainty`, `sources` | A sourced assessment with low, medium or high uncertainty |
-| `note` | `text` | Miscellaneous private information; optional related `plan` |
+## Responsibilities
 
-Each supports `subjects`, `priority` (1–5, default 3), and optional `expiresTurn`.
-The service assigns short IDs such as `mem1`, creation/update turns and revisions.
-Subjects can name a civilization, an entity handle, or a topic such as `economy`.
-Players choose their own subjects; no strategic categories are required or favored
-by gameplay context selection. Plans include success criteria and an optional
-future `reviewAfterTurn`. Omitting it schedules no automatic review. A scheduled review is a
-progress check, not retirement: the plan stays active but requires reconsideration
-before it can be reused as an action's intent. Revise with a new review turn or
-retire it after checking the evidence. Success criteria remain agent assessments.
-Observations, attributed statements and receipt-linked decisions are separate,
-service-owned record types. Agents cannot create or overwrite them.
+| Component | Responsibility |
+| --- | --- |
+| Observation/action history | Exact permitted observations, attributed statements, commands and confirmed receipts |
+| Private notebook | Agent-authored plans, beliefs, reasons and questions |
+| Advisory notices | Relevant changes and optional scheduled reminders, stored separately from notebook revisions |
+| Command validation | Authority, relevant game-state freshness, native legality and duplicate-execution protection |
+
+A belief is an assessment, even when it cites an observation. A citation proves
+which revision was referenced; it does not prove that the claim follows from it.
+A private plan's age, retirement or review notices never independently block a
+native-legal command. Social promises remain advisory as well.
+
+## Notebook API
+
+`memory_update` accepts batches of up to 20 independent edits:
 
 ```json
-{"changes":[{"op":"create","content":{"type":"plan","objective":"Improve Rome's food supply","approach":"Queue a granary and improve food tiles","successCriteria":"Rome has adequate food for growth","subjects":["economy","c1"],"priority":4}}]}
+{"changes":[{"op":"create","content":{"type":"plan","objective":"Improve Rome's food supply","approach":"Improve food tiles","successCriteria":"Rome can grow","subjects":["economy","c1"]}}]}
 ```
 
-Pass this to `memory_update`. The result contains the assigned ID. Use
-`memory_read` with `{"ids":["mem1"]}` before revising it, then send `op: "revise"`,
-`id: "mem1"` and the complete updated `content`. Code attaches the version actually
-delivered to the job. Conflicting edits return an individual rejection while
-independent valid edits in the same batch commit. Retrying the same tool call
-does not duplicate records.
+The four content types are `plan` (`objective`, `approach`, `successCriteria`),
+`belief` (`claim`, `uncertainty`), `note` (`text`, optional related `plan` ID) and
+`soul` (`text`, one active entry). Subjects, priority and expiry are optional.
+Plan review dates and written assumptions are optional advisory information.
+Belief citations are optional, including for speculative or uncertain claims.
 
-For a small revision, use `op: "amend"` with only the changed content fields:
+Read an existing entry with `memory_read` before changing it. Use `amend` for
+changed fields; omitted fields remain and arrays replace the old array:
 
 ```json
-{"changes":[{"op":"amend","id":"mem1","fields":{"approach":"Improve the Wheat before starting the next building","reviewAfterTurn":null}}]}
+{"changes":[{"op":"amend","id":"mem1","fields":{"approach":"Improve the Wheat first","reviewAfterTurn":null}}]}
 ```
 
-Omitted fields retain their values. A list replaces the entire old list; it does
-not append. Explicit `null` clears an optional nullable field. The service
-validates the merged content before writing and retains the same delivered-version,
-evidence, review and retirement checks as `revise`. Type changes require `replace`;
-IDs, timestamps and review metadata are never editable. An invalid amendment
-rejects that edit completely; independent valid edits in the batch can still commit.
-The service records routine observations and actions automatically. Private memory
-is useful for durable objectives, reasons, decisions and unresolved questions;
-duplicating the current roster or writing a turn diary is optional overhead.
-
-## Sources and assumptions
-
-`sources` cite records or messages already delivered to this job, including
-`observation:overview` from `player_turn`, `observation:communication` from `chat_read`,
-or the `evidence` ID returned by a detail query. Cached raw snapshots are not
-delivered evidence until explicitly read. Beliefs also accept
-`contradictingSources`. The service pins each source revision. Historical search
-returns evidence handles for referring to the specific revision that was read.
-
-Each source list has a maximum of **20 citations**. Select relevant support for
-the current revision rather than accumulating every historical reference. Earlier
-revisions retain their evidence when a list is shortened. Oversized lists return
-the field path, received count, limit and repair guidance without echoing evidence.
-
-Detail responses use short handles such as `e123`, pinned to that exact revision.
-Copy them instead of constructing observation hashes. Reading the query again
-after it changes yields a new handle; the old one remains a historical citation.
-Handles are usable only by jobs that received them. A revision may retain its own
-existing citations without rereading their sources, including across turns.
-This does not let a new claim borrow unread evidence from another record.
-
-`sources` and `contradictingSources` are historical references, even when a cited
-private record has since changed, needs review, or is retired. A note's `plan`
-field is also a historical link: recording why a plan failed never requires
-repairing or reactivating that plan. Neither form authorizes a gameplay action.
-
-Plans optionally declare ongoing `assumptions`, for example:
+Use `retire` to archive an entry:
 
 ```json
-{"text":"This city remains available for development","source":"<evidence from city_details>"}
+{"changes":[{"op":"retire","id":"mem1","reason":"completed","assessment":"Food supply is sufficient"}]}
 ```
 
-A historical sighting does not become false when the unit moves. An ongoing
-assumption about that unit's current location does need review. Retracted/replaced
-beliefs flag plans that explicitly assume those beliefs still hold. Merely citing
-the old belief does not create that dependency. Relevant diplomatic changes and loss of owned
-cities or units flag plans with matching subjects. Turn counters and unrelated
-greetings do not invalidate plans. A due progress review independently flags the
-plan. New confirmed combat losses flag defense and economy plans, losing the last
-military unit flags defense, and a fall in city count also flags expansion.
-`player_turn.strategyReview` lists current plans, review reasons and missing topic
-coverage. Read a listed record with `memory_read` unless its current copy was
-already delivered in startup context or `memoryUpdates`. `observation:tactics`
-records the delivered tactical review. These flags and deadlines are versioned in
-SQLite and participate in the existing restart and rollback mechanism.
-See [compact observations](../reference/Compact-observations.md) for detail-query delivery and
-selective invalidation when a new snapshot arrives.
+Retirement reasons are `completed`, `abandoned`, `superseded`, `retracted`,
+`expired` and `irrelevant`. A retired ID cannot be reactivated. Create a new entry
+when appropriate. The old `revise` and `replace` operations have been removed.
 
-Overview reads and successful gameplay action responses include `memoryUpdates`
-when a private record already delivered to this job has changed. Each entry is
-`{"version": 4, "record": {"id": "mem1", ...}}`; replace older copies by ID.
-Updates include review flags, external edits and retirements. They commit with
-the observation and saved response. Replaying an old response does not rewind
-the service's delivered versions. Records not previously read remain selective.
+`memory_read` accepts up to 20 IDs and optional `includeRetired`. `memory_search`
+filters by type, subject, text and active/retired/all state. It returns at most 20
+records with pagination. `history: true` reads reachable historical revisions;
+rollback's discarded future remains inaccessible.
 
-`reviewSources` identifies evidence that triggered a record's review. Receiving
-the updated record does not mark that evidence as read: retaining an assumption
-requires current evidence. A full revision can explicitly drop an obsolete
-assumption without rereading it. Other unread review evidence remains relevant.
-Rejected memory edits with unread,
-outdated or unreviewed evidence carry `requiredSources`, `recoverable: true`,
-and `recovery.reads`, including the necessary detail queries and a final private
-record refresh. Prefer narrow detail evidence for ongoing assumptions; the whole
-overview changes on many ordinary actions.
+The service owns IDs, timestamps and `basis`, which records the authoring job,
+purpose and source turn. The job's durable delivered-observation record supplies
+exact provenance without asking the model to maintain a list of everything it
+read. The actual write turn can be later than the source turn during background
+memory work.
 
-Unknown source IDs receive bounded `recovery.sourceSuggestions` containing only
-previously delivered references and their queries. The service never silently
-substitutes a similar ID, and it does not suggest rereading a nonexistent record.
-The agent must decide whether a suggested source supports the statement.
-During the background memory phase, `recovery.unavailableSources` lists requested
-references that were not delivered before handoff. Rereading a private plan does
-not deliver its `reviewSources`. Save independently supported changes using the
-completed turn's evidence, or leave changes that need newer evidence for a later
-job. The service keeps the newer review flags and never fetches live game/chat
-data or silently drops citations to make an edit pass.
+## Writer ownership and communication contributions
 
-## Retirement and retrieval
+Each civilization has one notebook writer: its gameplay conversation, including
+its post-handoff memory phase. A second gameplay job cannot start while that
+writer is running. A restart interrupts the orphaned job and releases ownership;
+old jobs stay fenced.
 
-```json
-{"changes":[{"op":"retire","id":"mem1","reason":"completed","assessment":"Food supply is sufficient; shift spending to science"}]}
-```
+Communication jobs can read private memory and use `create` to append an immutable
+`contribution`. They cannot amend or retire notebook entries. Each contribution
+retains the author's content and provenance; it never overwrites a plan.
 
-Reasons are `completed`, `abandoned`, `superseded`, `retracted`, `expired`, and
-`irrelevant`. Explicit deadlines expire when a trusted observation reaches that
-game turn. Retired records leave active context, default retrieval and Markdown.
-Their revisions remain in history. Retirement records the assessment; it does
-not establish an engine fact or cancel a public commitment.
+A gameplay activation captures the available contribution IDs at its starting
+snapshot. Selected contributions appear in bounded startup context; the rest can
+be found with `memory_search(type="contribution")`. Later arrivals are saved for
+the next activation, including during background reflection. The gameplay agent
+can use a contribution to create or amend an entry, then retire the contribution
+when handled. Incorporation is an agent decision, not an automatic semantic merge.
 
-Use `memory_read` with `includeRetired: true` to inspect a retired record.
-`op: "replace"`, an existing `id`, and new `content` atomically create a successor
-and retire the predecessor. An ordinary revision cannot reactivate an old ID.
-Permanent purge is not implemented.
+An unread or mismatched entry returns `MEMORY_CONFLICT` with a narrow recovery
+read. The proposed edit is not applied. Other valid edits in its batch commit.
+Repeated notebook conflicts do not set a match failure. Tool-call replay returns
+the original result without duplicating entries or counting edits twice.
+Each accepted edit returns its new version and full public record, including any
+remaining advisory notices, so the model need not reread its own edit.
 
-`memory_search` accepts `type`, `subject`, `query`, `state` (`active`, `retired`,
-`all`), `id`, `history`, and `offset`. Results have at most 20 records, `hasMore`
-and `nextOffset`. Historical reads cannot select an abandoned rollback branch.
+## Historical references and notices
 
-## Decisions and files
+Optional source lists contain at most 20 historical references. Exact detail
+handles such as `e123` refer to immutable revisions. Current observation IDs and
+message IDs are pinned to the versions actually delivered to the authoring job.
+An amendment can retain its own existing citations without rereading them.
 
-Consequential commands and diplomatic decisions require `intent`:
+An unavailable citation produces `UNVERIFIED_REFERENCES` in the successful edit
+result and `unverifiedSources` on the saved assessment. The text is retained, but
+the reference is not treated as verified evidence. It grants no observation read,
+reveals no referenced content, and does not silently substitute another source.
 
-```json
-{"kind":"QUEUE_CONSTRUCTION","target":"c1","selection":"Granary","intent":{"plan":"mem1"}}
-```
+Notices are separate records projected as `needsReview` and `reviewSources`.
+They do not change notebook content or its optimistic version. Relevant subjects,
+direct explicitly cited assumptions, and optional review dates can generate a
+notice. There is no recursive dependency invalidation and no obligation to repair
+a plan before editing or acting. A changed belief can notify its direct dependents;
+it does not invalidate a chain of beliefs and plans.
 
-Alternatively use `intent: {"reason":"Increase food for early growth"}`.
-Optional `expectedOutcome` and `assumptions` add detail. Research, policies,
-settlement, construction queue changes, purchases/sales, upgrades/disbanding,
-Great Person abilities, combat, captured-city decisions, friendship and
-trade/commitment decisions require intent. Routine movement and other actions
-may also provide it. The gateway strips intent before forwarding to Kotlin.
+An amendment acknowledges notices delivered to that conversation. Notices from
+later information remain pending. Background reads use the completed turn's
+snapshot and cannot pull newer game, chat or contribution contents. Expiry runs
+at the next gameplay writer boundary, so it cannot race an outgoing memory edit.
 
-Missing intent returns `INTENT_REQUIRED` with `applied: false`. A retired,
-changed or unreviewed plan returns recoverable `STALE_ASSUMPTIONS` before dispatch.
-Read the indicated evidence and revise the plan, or supply a fresh reason for a
-new decision. Retiring a plan after approval cannot undo an in-flight action.
+## Commands, context and durability
 
-Each stale memory-edit rejection includes recovery reads and conflict versions.
-The host counts failed retries for each operation and record within the job.
-A second stale rejection without an intervening success stops the run with
-`REPEATED_STALE_ASSUMPTIONS`, saves diagnostics and interrupts the models.
-A successful operation resets its counter; a later conflict starts a new recovery.
-Agents follow recoverable responses and do not declare this terminal condition
-themselves. Successful edits in a partially rejected batch remain applied.
-Transport replays do not count as another attempt.
-See [recovery diagnostics](../guides/Chat-memory-and-recovery.md#recovery-diagnostics).
+Consequential commands retain an audit intent: `{"reason":"why"}` or a plan
+reference. The service records the referenced version when available, without
+checking that the plan is active, reviewed or correct. Command-specific state
+checks still apply. Repeated unexplained command-state conflicts still halt with
+diagnostics; ordinary notebook disagreements do not.
 
-`turn_N/summary.json` contains typed actions, receipts, observations, memory
-assessments and unresolved work. `summary.md` renders at most 200 words. It does
-not depend on a final response and is regenerated after receipt reconciliation.
-Queueing a building remains queueing; a requested move does not establish arrival.
-The exact requests and responses are in `receipts.jsonl`; full tool calls and
-model reports remain in `commands.jsonl` and attempt transcripts. Communication
-jobs have their own directories under `communication/`.
+Startup selects whole records within `--memory-context-chars` (default 12,000),
+using deterministic subject/priority ordering. Omitted entries remain searchable.
+The overview supplies current visible facts and advisory strategy notices.
+`memoryUpdates` carries content revisions separately from game-state updates.
+There is no requirement to save a turn diary or copy the current roster.
 
-Current views include `SOUL.md`, `STRATEGY.md`, `economy.md`, `notes/mem1.md`,
-`relationships/Greece.md` and `memory-index.md`. Relationship views link to the
-separate commitment ledger. Obsolete generated files are removed on refresh.
-Exports regenerate changed history groups and current views, preserving unchanged
-turn files. Memory tool responses wait for the SQLite commit; generated files
-refresh periodically and during finalization.
+The service synchronously commits requests, receipts and replay identities.
+Post-turn notebook work overlaps other players' turns in the same model
+conversation. Archives and Markdown refresh asynchronously. Telemetry reports
+accepted/rejected edits separately from transport/API errors; warnings on accepted
+assessments are retained in the call journal.
 
-Scheduled turns now include a [post-handoff memory phase](Background-turn-memory.md).
-The same conversation can batch private memory updates while the next player
-acts. Game observations stay frozen, concurrent private edits retain version
-checks, and newer review flags cannot be cleared using old evidence. No gameplay
-or diplomacy calls are allowed in this phase. Its model usage remains attributed
-to the completed turn.
-
-Fresh jobs receive whole active records in deterministic subject/priority order,
-review notices and new events. Configure the private-memory allowance with
-`agent-server start Rome --memory-context-chars 12000` (default 12,000). The
-context reports how many records were omitted; search retrieves them on demand.
-Projection maintenance uses no model calls. Agent-authored memory changes use
-ordinary model/tool requests, including any made after handoff.
-
-The selection is pinned at dispatch. After startup's native and social reads,
-the service refreshes those selected private records in batches of up to 20,
-accounted as `startup:memory_read`. It renders private context once, after any
-observation-triggered review or expiry. A selected record that expires during
-preparation is delivered as retired. Other cached evidence stays unread.
-
-Normal restart preserves committed memory. Whole-match rollback restores record
-lifecycle, decisions and evidence with all players and the native save, then
-rebuilds projections. IDs are never reused and old jobs remain fenced.
+Restart preserves committed entries, contributions, notices and receipts.
+Whole-match rollback restores their captured heads together with all players and
+the native game. IDs are never reused; history excludes abandoned branches.
+See [background memory](Background-turn-memory.md),
+[database access](Database-access.md) and
+[recovery diagnostics](../guides/Chat-memory-and-recovery.md#recovery-diagnostics).

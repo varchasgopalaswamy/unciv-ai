@@ -1,96 +1,73 @@
-"""Regressions for the retry loops observed during ordinary game reflection."""
+"""Private assessments keep history and provenance without enforcing strategy."""
 
 import json
 
-import pytest
-
-from civ_agent.civilization_state import StaleAssumptions
 from civ_agent.observations import DetailQuery, detail_scope
 from tests.test_structured_memory import create, current, plan, setup
 
 
-def test_notes_can_describe_unreviewed_and_retired_plans_without_authorizing_them(tmp_path):
+def test_notes_can_describe_unreviewed_and_retired_plans(tmp_path):
     memory = setup(tmp_path)
     memory.observe("border", {"turn": 4, "units": ["Warrior"]}, "game")
     key = create(memory, plan(assumptions=[{"text": "Warrior remains nearby", "source": "observation:border"}]))
-    memory.begin_memory_phase("game")
-    memory.start_job("chat", "communication", {})
-    memory.observe("border", {"turn": 5, "units": []}, "chat")
+    memory.observe("border", {"turn": 5, "units": []})
     note = create(memory, {"type": "note", "text": "This plan failed to protect the border", "plan": key})
     assert current(memory, note)["_relatedPlan"]["key"] == key
-    assert not current(memory, note)["_assumptions"]
     assert current(memory, key)["needsReview"]
-    memory.refresh_memory("chat", [key])
-    with pytest.raises(StaleAssumptions):
-        memory.queue("chat", "player_command", {"kind": "ATTACK"}, {}, "intent", {"plan": key})
-    memory.patch("chat", [{"op": "retire", "id": key, "reason": "abandoned"}])
+    memory.patch("game", [{"op": "retire", "id": key, "reason": "abandoned"}])
     second = create(memory, {"type": "note", "text": "Remember why we abandoned this plan", "plan": key})
     assert not current(memory, second)["needsReview"]
     assert not current(memory, note)["needsReview"]
 
 
-def test_historical_memory_citations_do_not_require_live_dependencies(tmp_path):
+def test_retired_plan_and_unproven_belief_do_not_gate_commands(tmp_path):
     memory = setup(tmp_path)
     key = create(memory, plan())
-    memory.start_job("chat", "communication", {})
-    memory.refresh_memory("chat", [key])
-    memory.patch("chat", [{"op": "retire", "id": key, "reason": "completed"}])
-    history = create(memory, plan(objective="Remember our earlier strategy", sources=[key]))
-    assert current(memory, history)["_evidence"][0]["version"] == 1
-    result = memory.patch(
-        "game", [{"op": "create", "content": plan(assumptions=[{"text": "Plan remains active", "source": key}])}]
-    )
-    assert not result["changes"][0]["accepted"]
+    memory.patch("game", [{"op": "retire", "id": key, "reason": "completed"}])
+    belief = create(memory, {"type": "belief", "claim": "We could still win", "uncertainty": "high"})
+    assert current(memory, belief)["sources"] == []
+    queued = memory.queue("game", "player_command", {"kind": "ATTACK"}, {}, "attack", {"plan": key})
+    assert queued["id"] and memory.pending()
 
 
-def test_revisions_keep_delivered_citations_but_new_claims_cannot_borrow_them(tmp_path):
+def test_revisions_keep_citations_without_granting_new_claims_unread_evidence(tmp_path):
     memory = setup(tmp_path)
     query = DetailQuery(tool="unit_details", arguments={"target": "u1"})
-    scope = detail_scope(query)
-    _, detail = memory.observe_detail(scope, {"query": query.model_dump(), "turn": 4, "data": {"health": 40}}, "game")
-    evidence = detail["evidence"]
-    assert evidence.startswith("e") and evidence[1:].isdigit()
-    content = plan(sources=[evidence])
+    _, detail = memory.observe_detail(
+        detail_scope(query), {"query": query.model_dump(), "turn": 4, "data": {"health": 40}}, "game"
+    )
+    content = plan(sources=[detail["evidence"]])
     key = create(memory, content)
     original = current(memory, key)["_evidence"]
+    memory.finish_job("game", True)
     memory.start_job("next", "gameplay", {}, game_turn=5)
     memory.refresh_memory("next", [key])
-    updated = memory.patch("next", [{"op": "revise", "id": key, "content": {**content, "approach": "Withdraw"}}])
-    assert updated["changes"][0]["accepted"]
+    assert memory.patch("next", [{"op": "amend", "id": key, "fields": {"approach": "Withdraw"}}])["changes"][0][
+        "accepted"
+    ]
     assert current(memory, key)["_evidence"] == original
-    unread = memory.patch("next", [{"op": "create", "content": content}])
-    assert unread["changes"][0]["reason"].startswith("SOURCE_NOT_DELIVERED")
-    assert not memory.patch(
-        "next",
-        [
-            {
-                "op": "revise",
-                "id": key,
-                "content": plan(assumptions=[{"text": "Unit remains injured", "source": evidence}]),
-            }
-        ],
-    )["changes"][0]["accepted"]
+    unread = memory.patch("next", [{"op": "create", "content": content}])["changes"][0]
+    assert unread["accepted"] and unread["warnings"][0]["code"] == "UNVERIFIED_REFERENCES"
+    assert current(memory, unread["id"])["_evidence"] == []
 
 
-def test_dropping_an_assumption_does_not_require_reading_its_obsolete_evidence(tmp_path):
+def test_advisory_notices_do_not_change_notebook_versions_or_require_evidence_reads(tmp_path):
     memory = setup(tmp_path)
     memory.observe("border", {"turn": 4, "units": ["Warrior"]}, "game")
-    content = plan(assumptions=[{"text": "Warrior is at the border", "source": "observation:border"}])
-    key = create(memory, content)
+    key = create(memory, plan(assumptions=[{"text": "Warrior is at the border", "source": "observation:border"}]))
+    original = memory.snapshot("gameplay")["records"][key]
     memory.observe("border", {"turn": 4, "units": []})
+    changed = memory.snapshot("gameplay")["records"][key]
+    assert changed["version"] == original["version"] and changed["body"]["needsReview"]
     memory.refresh_memory("game", [key])
-    assert current(memory, key)["needsReview"]
-    kept = memory.patch("game", [{"op": "revise", "id": key, "content": content}])
-    assert not kept["changes"][0]["accepted"]
-    revised = memory.patch(
-        "game", [{"op": "revise", "id": key, "content": plan(approach="Reassess the border before advancing")}]
-    )
-    assert revised["changes"][0]["accepted"]
+    assert memory.patch("game", [{"op": "amend", "id": key, "fields": {"approach": "Reassess"}}])["changes"][0][
+        "accepted"
+    ]
     assert not current(memory, key)["needsReview"]
-    assert not current(memory, key)["_assumptions"]
+    assert current(memory, key)["_assumptions"][0]["version"] == 1
 
 
-def test_detail_handles_pin_old_revisions_and_recovery_only_suggests_delivered_evidence(tmp_path):
+def test_old_evidence_is_immutable_and_unknown_references_reveal_no_new_state(tmp_path):
     memory = setup(tmp_path)
     query = DetailQuery(tool="unit_details", arguments={"target": "u1"})
     scope = detail_scope(query)
@@ -101,20 +78,10 @@ def test_detail_handles_pin_old_revisions_and_recovery_only_suggests_delivered_e
     assert first["evidence"] != second["evidence"]
     remembered = create(memory, plan(sources=[first["evidence"]]))
     assert current(memory, remembered)["_evidence"][0]["version"] == 1
-    rejected = memory.patch(
-        "game",
-        [{"op": "create", "content": plan(assumptions=[{"text": "Unit has 40 HP", "source": first["evidence"]}])}],
-    )
-    assert rejected["changes"][0]["reason"].startswith("ASSUMPTION_CHANGED")
     memory.begin_memory_phase("game")
     memory.start_job("chat", "communication", {})
-    _, unseen = memory.observe_detail(scope, {**body, "data": {"health": 10}}, "chat")
-    typo = "observation:" + scope[:-1] + "z"
-    result = memory.patch("game", [{"op": "revise", "id": remembered, "content": plan(sources=[typo])}])
-    rejection = result["changes"][0]
-    assert not rejection["accepted"]
-    assert rejection["recovery"]["reads"] == []
-    candidates = rejection["recovery"]["sourceSuggestions"][0]["candidates"]
-    assert candidates[0]["source"] == second["evidence"]
-    assert candidates[0]["query"] == query.model_dump()
-    assert unseen["evidence"] not in json.dumps(candidates)
+    _, unseen = memory.observe_detail(scope, {**body, "data": {"secret": "NEW_INFORMATION"}}, "chat")
+    result = memory.patch("game", [{"op": "amend", "id": remembered, "fields": {"sources": ["not-a-reference"]}}])
+    assert result["changes"][0]["accepted"]
+    assert unseen["evidence"] not in json.dumps(result) and "NEW_INFORMATION" not in json.dumps(result)
+    assert current(memory, remembered)["_evidence"] == []

@@ -1,4 +1,4 @@
-"""Open pre-migration files and checkpoints; verify SQL behavior independently."""
+"""Verify current-format durability, checkpoints and SQL behavior independently."""
 
 import hashlib
 import json
@@ -24,24 +24,24 @@ ANCESTORS = """WITH RECURSIVE reachable(key,version) AS (
 ) """
 
 
-def legacy_memory(directory):
-    directory.mkdir(mode=0o700)
-    path = directory / "memory.sqlite3"
+def seed_memory(directory):
+    initial = CivilizationState(directory, "Rome")
+    initial.engine.dispose()
+    path = initial.path
     command = {"kind": "END_TURN", "requestId": "request-old"}
     receipt = {"kind": "END_TURN", "done": True}
     decision = {"command": command, "receipt": receipt, "outcome": "confirmed", "intent": {"reason": "Hold position"}}
     with closing(sqlite3.connect(path)) as db, db:
-        db.executescript((FIXTURES / "legacy_memory_schema.sql").read_text())
+        db.execute("DELETE FROM meta")
         db.executemany(
             "INSERT INTO meta VALUES (?,?)",
             [
                 (key, encode(value))
                 for key, value in {
-                    "format": 2,
+                    "format": 3,
                     "civilization": "Rome",
                     "epoch": "old-epoch",
                     "storeId": "existing-store",
-                    "incrementalExports": True,
                     "gameTurn": 4,
                 }.items()
             ],
@@ -81,7 +81,7 @@ def legacy_memory(directory):
     return path
 
 
-def legacy_checkpoint(path, target):
+def independent_checkpoint(path, target):
     """Use the previous sqlite3 checkpoint algorithm, independent of Core queries."""
     with closing(sqlite3.connect(path)) as db:
         db.row_factory = sqlite3.Row
@@ -133,11 +133,11 @@ def schema_signature(path):
         }
 
 
-def test_existing_memory_checkpoint_and_revision_branch_are_compatible(tmp_path):
-    path = legacy_memory(tmp_path / "legacy #?")
+def test_memory_checkpoint_restart_and_revision_branch(tmp_path):
+    path = seed_memory(tmp_path / "sqlite #?")
     old_schema = schema_signature(path)
     checkpoint = tmp_path / "old-checkpoint.json"
-    saved, checksum = legacy_checkpoint(path, checkpoint)
+    saved, checksum = independent_checkpoint(path, checkpoint)
     memory = CivilizationState(path.parent, "Rome")
     assert schema_signature(path) == old_schema
     assert memory.verify(checkpoint, checksum) == saved
@@ -169,27 +169,19 @@ def test_existing_memory_checkpoint_and_revision_branch_are_compatible(tmp_path)
     assert path.stat().st_mode & 0o777 == 0o600
 
 
-@pytest.mark.parametrize("kind", ["memory", "accounting"])
-def test_new_schema_matches_pre_migration_schema(tmp_path, kind):
-    legacy = tmp_path / "legacy.sqlite3"
-    with closing(sqlite3.connect(legacy)) as db:
-        db.executescript((FIXTURES / f"legacy_{kind}_schema.sql").read_text())
-    current = CivilizationState(tmp_path / "new", "Rome") if kind == "memory" else JobAccounting(tmp_path / "new")
-    assert schema_signature(current.path) == schema_signature(legacy)
-
-
-def test_old_memory_gains_missing_export_queue_and_indexes(tmp_path):
-    path = legacy_memory(tmp_path / "legacy")
+def test_old_memory_format_is_rejected_without_migration(tmp_path):
+    path = seed_memory(tmp_path / "old-format")
     with closing(sqlite3.connect(path)) as db, db:
-        db.execute("DROP TABLE export_jobs")
-        db.execute("DELETE FROM meta WHERE key='incrementalExports'")
-        for index in ("records_by_job", "jobs_by_turn", "outbox_by_job"):
-            db.execute("DROP INDEX " + index)
+        db.execute("UPDATE meta SET value='2' WHERE key='format'")
+    before = path.read_bytes()
+    with pytest.raises(ValueError, match="fresh match"):
+        CivilizationState(path.parent, "Rome")
+    assert path.read_bytes() == before
+
+
+def test_restart_rebuilds_missing_disposable_exports(tmp_path):
+    path = seed_memory(tmp_path / "state")
     memory = CivilizationState(path.parent, "Rome")
-    with closing(sqlite3.connect(path)) as db:
-        assert db.execute("SELECT id FROM export_jobs").fetchall() == [("previous",)]
-        indexes = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='index'")}
-    assert {"records_by_job", "jobs_by_turn", "outbox_by_job"} <= indexes
     memory.export(tmp_path / "views")
     assert (tmp_path / "views/turn_4/receipts.jsonl").is_file()
 

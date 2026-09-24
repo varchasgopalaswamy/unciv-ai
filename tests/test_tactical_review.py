@@ -174,7 +174,14 @@ def test_losses_invalidate_relevant_plans_and_scheduled_reviews_survive_restart(
     restarted.observe_player(view, "resumed")
     restarted.refresh_memory("resumed", [defense])
     result = restarted.patch(
-        "resumed", [{"op": "revise", "id": defense, "content": plan(subjects=["defense"], reviewAfterTurn=30)}]
+        "resumed",
+        [
+            {
+                "op": "amend",
+                "id": defense,
+                "fields": {k: v for k, v in (plan(subjects=["defense"], reviewAfterTurn=30)).items() if k != "type"},
+            }
+        ],
     )
     assert result["changes"][0]["accepted"]
     assert not current(restarted, defense)["needsReview"]

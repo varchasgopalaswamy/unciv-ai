@@ -5,7 +5,7 @@ import sqlite3
 import pytest
 from pydantic import ValidationError
 
-from civ_agent.civilization_state import CivilizationState, StaleAssumptions, StateConflict
+from civ_agent.civilization_state import CivilizationState, StateConflict
 from civ_agent.memory_history import summary_markdown
 from civ_agent.memory_records import MemoryReadResult, MemorySearchResult, MemoryUpdate, MemoryUpdateResult, TurnSummary
 from civ_agent.proposal_gateway import ProposalGateway
@@ -61,12 +61,12 @@ def test_retirement_keeps_history_and_does_not_resurrect(tmp_path, reason):
     MemorySearchResult.model_validate(history)
     assert [r["state"] for r in history["records"]] == ["retired", "active"]
     assert current(memory, key)["retirementReason"] == reason
-    assert not memory.patch("game", [{"op": "revise", "id": key, "content": {"type": "note", "text": "Resurrect"}}])[
-        "changes"
-    ][0]["accepted"]
-    result = memory.patch("game", [{"op": "replace", "id": key, "content": {"type": "note", "text": "New report"}}])
+    assert not memory.patch("game", [{"op": "amend", "id": key, "fields": {"text": "Resurrect"}}])["changes"][0][
+        "accepted"
+    ]
+    result = memory.patch("game", [{"op": "create", "content": {"type": "note", "text": "New report"}}])
     successor = result["changes"][0]["id"]
-    assert successor != key and current(memory, key)["successor"] == successor
+    assert successor != key and current(memory, key)["state"] == "retired"
 
 
 def test_expiry_uses_trusted_turn_and_completion_is_an_assessment(tmp_path):
@@ -76,6 +76,9 @@ def test_expiry_uses_trusted_turn_and_completion_is_an_assessment(tmp_path):
     memory.observe("communication", {"context": {"turn": 5}}, "chat")
     assert current(memory, key)["state"] == "active"
     memory.observe("communication", {"context": {"turn": 6}}, "chat")
+    assert current(memory, key)["state"] == "active"
+    memory.finish_job("game", True)
+    memory.start_job("next", "gameplay", {}, game_turn=6)
     assert current(memory, key)["retirementReason"] == "expired"
     assert current(memory, key)["updatedTurn"] == 6
     assert not memory.summary(4)["actions"]
@@ -87,6 +90,7 @@ def test_context_limit_whole_records_and_only_delivered_sources(tmp_path):
         create(memory, {"type": "note", "text": str(n) + "x" * 450, "subjects": ["economy"], "priority": 5 - n})
         for n in range(3)
     ]
+    memory.finish_job("game", True)
     snapshot = memory.start_job("next", "gameplay", {})
     context = json.loads(memory.context(snapshot).split("\n", 1)[1])
     assert context["omittedRecords"] == 2
@@ -96,7 +100,8 @@ def test_context_limit_whole_records_and_only_delivered_sources(tmp_path):
         "op": "create",
         "content": {"type": "belief", "claim": "Note supports planning", "uncertainty": "high", "sources": [ids[-1]]},
     }
-    assert "SOURCE_NOT_DELIVERED" in memory.patch("next", [claim])["changes"][0]["reason"]
+    result = memory.patch("next", [claim])["changes"][0]
+    assert result["accepted"] and result["warnings"][0]["code"] == "UNVERIFIED_REFERENCES"
     memory.refresh_memory("next", [ids[-1]])
     assert memory.patch("next", [claim])["changes"][0]["accepted"]
 
@@ -122,10 +127,10 @@ def test_belief_retraction_flags_plan_but_old_sighting_is_historical(tmp_path):
     assert not current(memory, historical_belief)["needsReview"]
 
 
-def test_missing_sources_and_assumptions_return_all_needed_reads(tmp_path):
+def test_missing_references_are_unverified_assessments_without_new_reads(tmp_path):
     memory = setup(tmp_path)
-    # These records are cached, but the new job has not read either observation.
     memory.observe("border", {"turn": 4, "units": []}, "game")
+    memory.finish_job("game", True)
     memory.start_job("next", "gameplay", {})
     args = [
         {
@@ -138,16 +143,11 @@ def test_missing_sources_and_assumptions_return_all_needed_reads(tmp_path):
     ]
     result = memory.patch("next", args)
     MemoryUpdateResult.model_validate(result)
-    rejection = result["changes"][0]
-    assert rejection["reason"].startswith("SOURCE_NOT_DELIVERED")
-    assert rejection["requiredSources"] == ["observation:border", "observation:game"]
-    reads = rejection["recovery"]["reads"]
-    assert reads[-1] == {
-        "tool": "memory_read",
-        "arguments": {"ids": rejection["requiredSources"], "includeRetired": True},
-    }
-    memory.refresh_memory("next", rejection["requiredSources"])
-    assert memory.patch("next", args)["changes"][0]["accepted"]
+    saved = result["changes"][0]
+    assert saved["accepted"]
+    assert set(saved["warnings"][0]["sources"]) == {"observation:border", "observation:game"}
+    assert current(memory, saved["id"])["_evidence"] == []
+    assert current(memory, saved["id"])["_assumptions"] == []
 
 
 @pytest.mark.parametrize("subject", ["u1", "c1", "Greece"])
@@ -241,9 +241,9 @@ def test_snapshot_restores_lifecycle_hides_future_revisions_and_keeps_ids_monoto
     memory.patch("game", [{"op": "retire", "id": key, "reason": "abandoned"}])
     saved = tmp_path / "round.json"
     checksum = memory.backup(saved)
-    replacement = memory.patch("game", [{"op": "replace", "id": key, "content": plan(objective="ABANDONED_FUTURE")}])[
-        "changes"
-    ][0]["id"]
+    replacement = memory.patch("game", [{"op": "create", "content": plan(objective="ABANDONED_FUTURE")}])["changes"][0][
+        "id"
+    ]
     memory.export(tmp_path / "workspace")
     memory.restore(saved, checksum, "g2")
     memory.pause(False)
@@ -346,8 +346,8 @@ def test_review_requires_reading_changed_evidence_and_retirement_preserves_past_
         1,
     )
     memory.refresh_memory("game", [key])
-    change = {"op": "revise", "id": key, "content": plan(subjects=["Greece"])}
-    assert "REVIEW_EVIDENCE_FIRST" in memory.patch("game", [change])["changes"][0]["reason"]
+    change = {"op": "amend", "id": key, "fields": {k: v for k, v in (plan(subjects=["Greece"])).items() if k != "type"}}
+    assert memory.patch("game", [change])["changes"][0]["accepted"]
     memory.refresh_memory("game", ["event:1"])
     assert memory.patch("game", [change])["changes"][0]["accepted"]
     memory.finish_job("game", True)
@@ -375,7 +375,7 @@ def test_historical_evidence_is_pinned_without_replacing_current_job_version(tmp
         assert snapshot["delivered"]["observation:border"] == 2
 
 
-def test_intent_required_and_plan_retirement_is_checked_before_dispatch(tmp_path):
+def test_intent_is_recorded_and_retirement_does_not_gate_dispatch(tmp_path):
     async def run():
         memory = CivilizationState(tmp_path / "private", "Rome")
         io = ServiceIO()
@@ -387,8 +387,7 @@ def test_intent_required_and_plan_retirement_is_checked_before_dispatch(tmp_path
             await gateway.call(game, "construction_details", {"target": "city1", "names": ["Granary"]}, "inspect")
             action = {"kind": "QUEUE_CONSTRUCTION", "target": "city1", "selection": "Granary"}
             missing = await gateway.call(game, "player_command", action, "missing")
-            assert missing["error"] == "INTENT_REQUIRED" and missing["applied"] is False
-            assert not host.executed and not memory.pending()
+            assert missing["error"] == "INTENT_REQUIRED" and not host.executed
             created = await gateway.call(
                 game, "memory_update", {"changes": [{"op": "create", "content": plan()}]}, "plan"
             )
@@ -397,19 +396,13 @@ def test_intent_required_and_plan_retirement_is_checked_before_dispatch(tmp_path
                 await gateway.call(game, "memory_update", {"changes": [{"op": "create", "content": plan()}]}, "plan")
                 == created
             )
-            chat = await gateway.open("chat", "communication", "g1", host, {})
             await gateway.call(
-                chat, "memory_update", {"changes": [{"op": "retire", "id": key, "reason": "abandoned"}]}, "retire"
+                game, "memory_update", {"changes": [{"op": "retire", "id": key, "reason": "abandoned"}]}, "retire"
             )
-            stale = await gateway.call(game, "player_command", {**action, "intent": {"plan": key}}, "stale")
-            assert stale["error"] == "STALE_ASSUMPTIONS" and not host.executed
-            assert not memory.pending()
-            good = await gateway.call(
-                game, "player_command", {**action, "intent": {"reason": "New economic decision"}}, "fresh"
-            )
-            assert good["done"] and len(host.executed) == 1
+            result = await gateway.call(game, "player_command", {**action, "intent": {"plan": key}}, "act")
+            assert result["done"] and len(host.executed) == 1
             assert "intent" not in host.executed[0]
-            assert memory.summary(0)["actions"][0]["reason"] == "New economic decision"
+            assert memory.summary(0)["actions"][0]["reason"] == "Defend Rome"
             assert await gateway.call(game, "player_command", action, "missing") == missing
         finally:
             await io.close()
@@ -424,5 +417,6 @@ def test_retirement_after_approval_cannot_undo_an_inflight_command(tmp_path):
     memory.patch("game", [{"op": "retire", "id": key, "reason": "abandoned"}])
     memory.receipt(request["id"], {"kind": "ATTACK", "damage": 10})
     assert memory.summary(4)["actions"][0]["outcome"] == "confirmed"
-    with pytest.raises(StaleAssumptions):
-        memory.queue("game", "player_command", {"kind": "ATTACK", "target": "u1"}, {}, "another", {"plan": key})
+    assert memory.queue("game", "player_command", {"kind": "ATTACK", "target": "u1"}, {}, "another", {"plan": key})[
+        "id"
+    ]

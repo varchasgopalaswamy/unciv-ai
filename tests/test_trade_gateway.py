@@ -453,7 +453,7 @@ def test_friendship_proposal_uses_the_same_small_decision_and_durable_request_pa
     asyncio.run(run())
 
 
-def test_new_economic_policy_invalidates_an_outstanding_trade_decision(tmp_path):
+def test_private_policy_changes_do_not_gate_an_inspected_trade_decision(tmp_path):
     async def run():
         io = ServiceIO()
         memory = CivilizationState(tmp_path / "private", "Rome")
@@ -485,20 +485,8 @@ def test_new_economic_policy_invalidates_an_outstanding_trade_decision(tmp_path)
             stale = await gateway.call(
                 chat, "trade_decide", {"proposal": "d1", "decision": "accept", "intent": {"plan": "mem1"}}, "accept"
             )
-            assert stale["error"] == "STALE_ASSUMPTIONS" and stale["recoverable"] and not stale["applied"]
-            assert stale["changedRecords"] == ["mem1"]
-            assert stale["recovery"]["reads"] == [
-                {"tool": "memory_read", "arguments": {"ids": ["mem1"], "includeRetired": True}},
-                {"tool": "trade_read", "arguments": {"proposal": "d1"}},
-            ]
-            assert not host.writes
-            await gateway.call(chat, "memory_read", {"ids": ["mem1"], "includeRetired": True}, "reconsider")
-            assert "outcome" in await gateway.call(
-                chat,
-                "trade_decide",
-                {"proposal": "d1", "decision": "accept", "intent": {"plan": "mem1"}},
-                "fresh-decision",
-            )
+            assert "outcome" in stale
+            assert host.writes
         finally:
             await io.close()
 

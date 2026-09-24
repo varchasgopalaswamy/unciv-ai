@@ -6,4 +6,5 @@ for current behavior.
 
 ## Reports
 
+- [Private notebook redesign — September 23, 2026](reports/Notebook-redesign-2026-09-23.md)
 - [Tactical and memory evaluation — September 23, 2026](reports/Tactical-memory-evaluation-2026-09-23.md)

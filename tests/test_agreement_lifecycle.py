@@ -5,7 +5,7 @@ import json
 import pytest
 from jsonschema import Draft202012Validator
 
-from civ_agent.civilization_state import CivilizationState, StaleAssumptions, StateConflict
+from civ_agent.civilization_state import CivilizationState, StateConflict
 from civ_agent.proposal_gateway import ProposalGateway
 from civ_agent.service_io import ServiceIO
 from tests.test_proposal_gateway import Host
@@ -111,7 +111,8 @@ def test_agreement_tools_route_reads_with_private_sources_and_exact_replay(tmp_p
                 {"changes": [{"op": "create", "content": plan(sources=["observation:agreement/a1"])}]},
                 "unread-source",
             )
-            assert "SOURCE_NOT_DELIVERED" in unavailable["changes"][0]["reason"]
+            assert unavailable["changes"][0]["accepted"]
+            assert unavailable["changes"][0]["warnings"][0]["code"] == "UNVERIFIED_REFERENCES"
             shown = await gateway.call(job, "agreement_read", {"agreement": "a1"}, "read")
             assert shown["agreement"] == host.agreement
             assert shown["evidence"] == "observation:agreement/a1"
@@ -168,8 +169,9 @@ def test_agreement_ending_flags_dependencies_and_relevant_plans_without_promotin
     assert memory.snapshot("gameplay")["records"]["event:1"]["category"] == "statement"
     assert memory.snapshot("gameplay")["records"]["event:2"]["category"] == "observation"
     assert memory.has_wake()
-    with pytest.raises(StaleAssumptions):
-        memory.queue("game", "player_command", {"kind": "BUY_CONSTRUCTION"}, {}, "old-plan", {"plan": dependent})
+    assert memory.queue("game", "player_command", {"kind": "BUY_CONSTRUCTION"}, {}, "old-plan", {"plan": dependent})[
+        "id"
+    ]
 
 
 @pytest.mark.parametrize(
@@ -200,9 +202,10 @@ def test_reviewed_lifecycle_event_stays_reviewed_on_reconnect_and_restart(tmp_pa
     event = ended_event()
     memory.ingest("g1", [event], 1)
     memory.refresh_memory("game", [key, "event:1"])
-    assert memory.patch("game", [{"op": "revise", "id": key, "content": plan(subjects=["Greece"])}])["changes"][0][
-        "accepted"
-    ]
+    assert memory.patch(
+        "game",
+        [{"op": "amend", "id": key, "fields": {k: v for k, v in (plan(subjects=["Greece"])).items() if k != "type"}}],
+    )["changes"][0]["accepted"]
     memory.ingest("g1", [event], 1)
     assert not current(memory, key)["needsReview"]
     restarted = CivilizationState(tmp_path / "private", "Rome")
@@ -266,25 +269,24 @@ def test_lifecycle_event_invalidates_older_list_even_if_full_read_is_current(tmp
     assert current(memory, dependent)["needsReview"]
     assert current(memory, "observation:agreements")["requiresRefresh"]
     assert not current(memory, "observation:agreement/a1").get("requiresRefresh")
-    with pytest.raises(StaleAssumptions):
-        memory.queue(
-            "game",
-            "player_command",
-            {"kind": "BUY_CONSTRUCTION"},
-            {},
-            "stale-list",
-            {
-                "reason": "Spend expected income",
-                "assumptions": [{"text": "Income continues", "source": "observation:agreements"}],
-            },
-        )
+    assert memory.queue(
+        "game",
+        "player_command",
+        {"kind": "BUY_CONSTRUCTION"},
+        {},
+        "historical-intent",
+        {
+            "reason": "Spend expected income",
+            "assumptions": [{"text": "Income continues", "source": "observation:agreements"}],
+        },
+    )["id"]
     with pytest.raises(StateConflict, match="agreement_list"):
         memory.observe("agreements", {"agreements": [agreement()]}, "game")
     memory.observe("agreements", {"agreements": [ended]}, "game")
     assert not current(memory, "observation:agreements").get("requiresRefresh")
 
 
-def test_agreement_event_rejects_direct_stale_action_assumptions_and_routes_refresh(tmp_path):
+def test_historical_intent_does_not_block_friendship_and_live_agreement_reads_still_refresh(tmp_path):
     async def run():
         io = ServiceIO()
         memory = CivilizationState(tmp_path / "private", "Rome")
@@ -306,11 +308,7 @@ def test_agreement_event_rejects_direct_stale_action_assumptions_and_routes_refr
                 },
                 "stale-action",
             )
-            assert result["error"] == "STALE_ASSUMPTIONS" and result["applied"] is False
-            assert result["recovery"]["reads"] == [
-                {"tool": "agreement_read", "arguments": {"agreement": "a1"}},
-                {"tool": "trade_options", "arguments": {"partner": "Greece"}},
-            ]
+            assert "error" not in result
             assert not memory.pending()
             await gateway.call(job, "memory_read", {"ids": ["observation:agreement/a1"]}, "stale-cache")
             stale_source = await gateway.call(
@@ -328,7 +326,7 @@ def test_agreement_event_rejects_direct_stale_action_assumptions_and_routes_refr
                 },
                 "unrefreshed-source",
             )
-            assert "SOURCE_NEEDS_REFRESH" in stale_source["changes"][0]["reason"]
+            assert stale_source["changes"][0]["accepted"]
             host.agreement.update(version=2, status="ENDED", receive=[], remainingTurns=0)
             refreshed = await gateway.call(job, "agreement_read", {"agreement": "a1"}, "refresh")
             assert refreshed["agreement"]["status"] == "ENDED"

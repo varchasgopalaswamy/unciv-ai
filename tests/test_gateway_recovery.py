@@ -1,6 +1,7 @@
 import asyncio
 import json
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 
@@ -9,6 +10,7 @@ from civ_agent.civilization_state import CivilizationState, StateConflict
 from civ_agent.proposal_gateway import ProposalGateway
 from civ_agent.service_io import ServiceIO
 from tests.test_proposal_gateway import Host
+from tests.test_structured_memory import current
 
 
 @pytest.mark.parametrize("enacted", [False, True])
@@ -105,7 +107,7 @@ def test_checkpoint_checks_database_identity_and_referenced_evidence(tmp_path):
         memory.verify(path, checksum)
 
 
-def test_new_private_policy_requires_reconsideration_but_own_updates_are_immediately_usable(tmp_path):
+def test_communication_contributions_do_not_gate_commands_or_modify_plans(tmp_path):
     async def run():
         memory = CivilizationState(tmp_path / "private", "Rome")
         io = ServiceIO()
@@ -125,46 +127,75 @@ def test_new_private_policy_requires_reconsideration_but_own_updates_are_immedia
                     "successCriteria": "Objective achieved",
                 },
             }
-            await gateway.call(chat, "memory_update", {"changes": [change]}, "change")
-            stale = await gateway.call(
+            plan = await gateway.call(planning, "memory_update", {"changes": [change]}, "plan")
+            key = plan["changes"][0]["id"]
+            contributed = await gateway.call(chat, "memory_update", {"changes": [change]}, "contribute")
+            assert contributed["changes"][0]["contribution"]
+            assert not (await gateway.call(planning, "memory_search", {"type": "contribution"}, "inbox"))["records"]
+            action = {"kind": "MOVE_UNIT", "target": "unit1", "destination": {"x": 1, "y": 0}, "intent": {"plan": key}}
+            moved = await gateway.call(planning, "player_command", action, "move")
+            assert moved["done"] and len(host.executed) == 1
+            changed = await gateway.call(
                 planning,
-                "player_command",
-                {"kind": "MOVE_UNIT", "target": "unit1", "destination": {"x": 1, "y": 0}, "intent": {"plan": "mem1"}},
-                "old-plan",
+                "memory_update",
+                {"changes": [{"op": "amend", "id": key, "fields": {"objective": "Defend the capital"}}]},
+                "amend",
             )
-            assert stale["error"] == "STALE_ASSUMPTIONS" and stale["applied"] is False and stale["recoverable"]
-            assert stale["changedRecords"] == ["mem1"]
-            assert stale["recovery"]["reads"] == [
-                {"tool": "memory_read", "arguments": {"ids": ["mem1"], "includeRetired": True}}
-            ]
-            assert not memory.requests_for_job(planning.id) and not host.executed
-            await gateway.call(planning, "memory_read", {"ids": ["mem1"], "includeRetired": True}, "reconsider")
-            change["op"], change["id"] = "revise", "mem1"
-            change["content"]["objective"] = "Move back to defend the capital"
-            await gateway.call(planning, "memory_update", {"changes": [change]}, "new-plan")
-            assert (
-                await gateway.call(
-                    planning,
-                    "player_command",
-                    {
-                        "kind": "MOVE_UNIT",
-                        "target": "unit1",
-                        "destination": {"x": 1, "y": 0},
-                        "intent": {"plan": "mem1"},
-                    },
-                    "old-plan",
-                )
-                == stale
-            )  # A transport replay never executes the obsolete decision after refresh.
-            assert not host.executed
-            assert (
-                await gateway.call(
-                    planning,
-                    "player_command",
-                    {"kind": "MOVE_UNIT", "target": "unit1", "destination": {"x": 1, "y": 0}},
-                    "defend",
-                )
-            )["done"]
+            assert changed["changes"][0]["accepted"]
+            assert await gateway.call(planning, "player_command", action, "move") == moved
+            assert len(host.executed) == 1
+            assert memory.run_failure() is None
+        finally:
+            await io.close()
+
+    asyncio.run(run())
+
+
+def test_search_does_not_silently_deliver_notices_that_arrived_after_its_result(tmp_path):
+    async def run():
+        memory = CivilizationState(tmp_path / "private", "Rome")
+        io = ServiceIO()
+        gateway = ProposalGateway(memory, io, tmp_path / "workspace")
+        try:
+            job = await gateway.open("game", "gameplay", "g1", Host(), {})
+            result = await gateway.call(
+                job,
+                "memory_update",
+                {
+                    "changes": [
+                        {
+                            "op": "create",
+                            "content": {
+                                "type": "plan",
+                                "objective": "Defend Rome",
+                                "approach": "Guard the border",
+                                "successCriteria": "Rome survives",
+                                "subjects": ["Greece"],
+                            },
+                        }
+                    ]
+                },
+                "create",
+            )
+            key = result["changes"][0]["id"]
+            search = memory.search_memory
+
+            def then_receive_news(*args):
+                result = search(*args)
+                memory.ingest("g1", [{"id": 1, "kind": "diplomacy", "body": {"author": "Rome", "target": "Greece"}}], 1)
+                return result
+
+            with patch.object(memory, "search_memory", side_effect=then_receive_news):
+                found = await gateway.call(job, "memory_search", {"type": "plan"}, "search")
+            assert not found["records"][0]["needsReview"]
+            revised = await gateway.call(
+                job,
+                "memory_update",
+                {"changes": [{"op": "amend", "id": key, "fields": {"approach": "Bring reinforcements"}}]},
+                "amend",
+            )
+            assert revised["changes"][0]["record"]["needsReview"]
+            assert current(memory, key)["needsReview"]
         finally:
             await io.close()
 

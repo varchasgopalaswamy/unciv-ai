@@ -8,12 +8,11 @@ from contextlib import asynccontextmanager
 import pytest
 
 from civ_agent.civilization_state import CivilizationState, StateConflict
-from civ_agent.memory_records import MemoryReadResult
 from civ_agent.proposal_gateway import ProposalGateway
 from civ_agent.service_io import ServiceIO
 from civ_agent.state_updates import apply_overview_update, overview_update, stamp
 from tests.test_proposal_gateway import Host
-from tests.test_structured_memory import create, current, plan
+from tests.test_structured_memory import create, plan
 
 
 def stamped(value, revision="r1", epoch="g1"):
@@ -277,11 +276,10 @@ def test_successive_actions_use_updates_and_only_changed_inspections_expire(tmp_
                     }
                 ],
             )
-            assert not stale["changes"][0]["accepted"] and "ASSUMPTION_CHANGED" in str(stale)
+            assert stale["changes"][0]["accepted"]
             for source in ("observation:game", "observation:unit/unit1"):
-                assert not memory.patch(job.id, [{"op": "create", "content": plan(sources=[source])}])["changes"][0][
-                    "accepted"
-                ]
+                assessment = memory.patch(job.id, [{"op": "create", "content": plan(sources=[source])}])["changes"][0]
+                assert assessment["accepted"] and assessment["warnings"]
             missing = await gateway.call(job, "player_command", MOVE, "unread-move")
             assert missing["error"] == "DETAIL_REQUIRED"
             second = await gateway.call(job, "player_command", {**MOVE, "target": "unit2"}, "other-move")
@@ -305,15 +303,23 @@ def test_actions_deliver_flagged_plans_without_delivering_unread_evidence(tmp_pa
                 memory, plan(assumptions=[{"text": "The position is unchanged", "source": source}]), job=job.id
             )
             result = await gateway.call(job, "player_command", MOVE, "move")
-            updated = result["memoryUpdates"][0]
-            assert updated["record"]["id"] == key
-            canonical = current(memory, key)["_assumptions"][0]["key"]
-            assert updated["record"]["needsReview"] and updated["record"]["reviewSources"] == [canonical]
-            MemoryReadResult.model_validate({"records": [updated["record"]]})
-            assert updated["version"] == job.memory["records"][key]["version"]
+            assert "memoryUpdates" not in result
+            updated = memory.snapshot("gameplay")["records"][key]
+            assert updated["version"] == 1
+            assert job.delivered_overview is not None
+            assert job.delivered_overview["strategyReview"]["plans"][0]["id"] == key
+            assert job.delivered_overview["strategyReview"]["plans"][0]["needsReview"]
             assert apply_overview_update(base, result["stateUpdate"]) == job.delivered_overview
             assert job.delivered_overview is not None and "memoryUpdates" not in job.delivered_overview
-            args = {"changes": [{"op": "revise", "id": key, "content": plan(approach="Hold the new position")}]}
+            args = {
+                "changes": [
+                    {
+                        "op": "amend",
+                        "id": key,
+                        "fields": {k: v for k, v in (plan(approach="Hold the new position")).items() if k != "type"},
+                    }
+                ]
+            }
             revision = await gateway.call(job, "memory_update", args, "review")
             # The revised plan explicitly drops the old positional assumption;
             # it need not inspect an abandoned dependency to do so.
@@ -328,25 +334,23 @@ def test_actions_deliver_flagged_plans_without_delivering_unread_evidence(tmp_pa
     asyncio.run(run())
 
 
-def test_overview_delivers_known_retirements_without_delivering_unselected_records(tmp_path):
+def test_communication_cannot_retire_notebook_entries_or_deliver_later_contributions(tmp_path):
     async def run():
         async with session(tmp_path) as (gateway, job, _, memory):
-            await gateway.call(job, "player_turn", {}, "start")
+            base = await gateway.call(job, "player_turn", {}, "start")
             key = create(memory, plan(), job=job.id)
             chat = await gateway.open("chat", "communication", "g1", job.connection, {}, 0)
-            unseen = create(memory, plan(objective="Undelivered plan"), job=chat.id)
-            assert memory.patch(chat.id, [{"op": "retire", "id": key, "reason": "abandoned"}])["changes"][0]["accepted"]
-            base = await gateway.call(job, "player_turn", {}, "refresh")
-            assert [update["record"]["id"] for update in base["memoryUpdates"]] == [key]
-            assert base["memoryUpdates"][0]["record"]["state"] == "retired"
-            assert job.delivered_overview is not None and "memoryUpdates" not in job.delivered_overview
+            unseen = create(memory, plan(objective="Undelivered contribution"), job=chat.id)
+            assert not memory.patch(chat.id, [{"op": "retire", "id": key, "reason": "abandoned"}])["changes"][0][
+                "accepted"
+            ]
             await inspect(gateway, job)
             result = await gateway.call(job, "player_command", MOVE, "move")
             assert apply_overview_update(base, result["stateUpdate"]) == job.delivered_overview
             assert "memoryUpdates" not in result
-            rejected = memory.patch(job.id, [{"op": "create", "content": plan(sources=[unseen])}])["changes"][0]
-            assert rejected["reason"].startswith("SOURCE_NOT_DELIVERED")
-            assert rejected["requiredSources"] == [unseen]
+            assessment = memory.patch(job.id, [{"op": "create", "content": plan(sources=[unseen])}])["changes"][0]
+            assert assessment["accepted"] and assessment["warnings"][0]["sources"] == [unseen]
+            assert not memory.refresh_memory(job.id, [unseen])
 
     asyncio.run(run())
 
@@ -459,7 +463,8 @@ def test_invalid_state_update_stops_for_inspection_and_keeps_committed_receipt(t
                 def fail_commit(db, job, id, name, arguments, result=None):
                     nonlocal fail_once
                     if fail_once and result and result.get("stateUpdate", {}).get("kind") == "delta":
-                        assert result["memoryUpdates"][0]["record"]["id"] == key
+                        assert "memoryUpdates" not in result
+                        assert result["stateUpdate"]["set"]["strategyReview"]["plans"][0]["id"] == key
                         fail_once = False
                         raise OSError("Interrupted response write")
                     return original(db, job, id, name, arguments, result)

@@ -108,15 +108,7 @@ def test_gateway_counts_cached_tools_replays_and_rejections(tmp_path):
             batch = {
                 "changes": [
                     {"op": "create", "content": {"type": "note", "text": "PRIVATE_NOTE"}},
-                    {
-                        "op": "create",
-                        "content": {
-                            "type": "belief",
-                            "claim": "PRIVATE_CLAIM",
-                            "uncertainty": "high",
-                            "sources": ["unread"],
-                        },
-                    },
+                    {"op": "amend", "id": "missing", "fields": {"text": "PRIVATE_CLAIM"}},
                 ]
             }
             edited = await gateway.call(job, "memory_update", batch, "batch")
@@ -141,7 +133,7 @@ def test_gateway_counts_cached_tools_replays_and_rejections(tmp_path):
                 "accepted": 1,
                 "rejected": 1,
                 "rejectedBatches": 1,
-                "rejectionReasons": {"SOURCE_NOT_DELIVERED": 1},
+                "rejectionReasons": {"UNKNOWN_MEMORY": 1},
                 "complete": True,
             }
             assert "PRIVATE" not in json.dumps(report)

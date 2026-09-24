@@ -10,7 +10,6 @@ import re
 import secrets
 from collections.abc import Callable
 from contextlib import contextmanager
-from difflib import get_close_matches
 from pathlib import Path
 from typing import Any
 
@@ -24,13 +23,12 @@ from civ_agent.memory_records import (
     MEMORY_TYPES,
     HistoryReadResult,
     Intent,
-    MemoryContentError,
     MemoryUpdate,
-    amended_content,
     public_record,
 )
 from civ_agent.memory_store import EvidenceRequired, RecordStore, encode, select_context, semantic
 from civ_agent.model_view import model_view
+from civ_agent.notebook import Notebook
 from civ_agent.observations import DetailQuery, detail_fingerprint, native_observation, project_detail
 from civ_agent.protocol import JsonObject
 from civ_agent.schemas import validate
@@ -69,25 +67,14 @@ class CivilizationState:
         self.engine = sqlite_engine(self.path)
         with self.transaction() as db:
             exists = inspect(db).has_table("meta")
-            if exists and self._meta(db, "format") != 2:
+            if exists and self._meta(db, "format") != 3:
                 raise MemoryFormatError("Unsupported memory format; start a fresh match in a new state directory.")
             tables.metadata.create_all(db)
-            # create_all does not add missing indexes to an existing table.
-            for table in tables.metadata.tables.values():
-                for index in table.indexes:
-                    index.create(db, checkfirst=True)
             existing = self._meta(db, "civilization")
             if existing is not None and existing != civilization:
                 raise StateConflict("CIVILIZATION_CONFLICT")
             self._set(db, "civilization", civilization)
-            self._set(db, "format", 2)
-            if self._meta(db, "incrementalExports") is not True:
-                db.execute(
-                    insert(tables.export_jobs)
-                    .from_select(["id"], select(tables.live_jobs.c.id))
-                    .prefix_with("OR IGNORE")
-                )
-                self._set(db, "incrementalExports", True)
+            self._set(db, "format", 3)
             if self._meta(db, "storeId") is None:
                 self._set(db, "storeId", secrets.token_hex(16))
             # A process restart never resumes a model's uncommitted computation.
@@ -236,13 +223,7 @@ class CivilizationState:
     def _advance_turn(self, db, turn):
         if type(turn) is int and turn >= 0:
             self._set(db, "gameTurn", max(turn, self._meta(db, "gameTurn", 0)))
-            RecordStore(db, self._meta(db, "gameTurn")).expire()
             RecordStore(db, self._meta(db, "gameTurn")).review_plans()
-
-    @staticmethod
-    def _deliver(snapshot, chosen):
-        snapshot["records"].update(chosen)
-        snapshot.setdefault("delivered", {}).update({key: record["version"] for key, record in chosen.items()})
 
     def observe(self, key: str, body: JsonObject, job: str | None = None):
         with self.transaction() as db:
@@ -301,7 +282,7 @@ class CivilizationState:
             snapshot = json.loads(
                 db.execute(select(tables.jobs.c.snapshot).where(tables.jobs.c.id == job)).scalar_one()
             )
-            self._deliver(snapshot, {key: {"version": version, "category": "observation", "body": body}})
+            RecordStore.deliver(snapshot, {key: {"version": version, "category": "observation", "body": body}})
             db.execute(tables.jobs.update().where(tables.jobs.c.id == job).values(snapshot=encode(snapshot)))
         return version
 
@@ -331,6 +312,7 @@ class CivilizationState:
                 "epoch": self._meta(db, "epoch"),
                 "purpose": purpose,
                 "records": records,
+                "contributionIds": [key for key, r in records.items() if r["category"] == "contribution"],
                 "events": events,
                 "cursor": max(cursor, high),
             }
@@ -338,7 +320,7 @@ class CivilizationState:
             snapshot["contextIds"] = list(selected)
             snapshot["omitted"] = omitted
             delivered = {**selected, **{f"event:{event['id']}": records[f"event:{event['id']}"] for event in events}}
-            self._deliver(snapshot, delivered)
+            RecordStore.deliver(snapshot, delivered)
             return snapshot
 
     def _changed_observation(self, db, key, value, prior):
@@ -406,7 +388,21 @@ class CivilizationState:
                 and key in snapshot.get("delivered", {})
                 and snapshot["delivered"][key] != record["version"]
             }
-            self._deliver(snapshot, changed)
+            RecordStore.deliver(snapshot, changed)
+            # strategyReview delivers advisory notices, without delivering a new
+            # notebook revision or the contents of the referenced observations.
+            for key, record in records.items():
+                if (
+                    record["category"] == "plan"
+                    and record["body"].get("state") == "active"
+                    and record["body"].get("needsReview")
+                    and key in snapshot.get("delivered", {})
+                ):
+                    cached = snapshot["records"][key]
+                    cached["body"].update(
+                        {field: record["body"][field] for field in ("needsReview", "_review", "_noticeVersion")}
+                    )
+                    RecordStore.deliver(snapshot, {key: cached})
             db.execute(tables.jobs.update().where(tables.jobs.c.id == job).values(snapshot=encode(snapshot)))
             result = respond(records, changed)
             self._call_record(db, job, call_id, name, arguments, result)
@@ -508,7 +504,7 @@ class CivilizationState:
                     )
                 )
         RecordStore(db, self._meta(db, "gameTurn")).flag_many(changes)
-        self._deliver(
+        RecordStore.deliver(
             snapshot,
             {key: value for key, value in observed.items() if key.removeprefix("observation:") in delivered},
         )
@@ -543,6 +539,10 @@ class CivilizationState:
                 "records": [public_record(key, record) for key, record in selected.items()],
                 "omittedRecords": snapshot["omitted"],
                 "newEvents": snapshot["events"],
+                "pendingContributions": sum(
+                    r["category"] == "contribution" and r["body"].get("state") == "active"
+                    for r in snapshot["records"].values()
+                ),
             }
         )
 
@@ -556,6 +556,23 @@ class CivilizationState:
                 raise StateConflict("STATE_PAUSED")
             if self._meta(db, "epoch") != snapshot["epoch"]:
                 raise StateConflict("STALE_EPOCH")
+            if purpose == "gameplay":
+                writer = db.execute(
+                    select(tables.jobs.c.id).where(
+                        tables.jobs.c.purpose == "gameplay",
+                        tables.jobs.c.status == "RUNNING",
+                        tables.jobs.c.epoch == snapshot["epoch"],
+                    )
+                ).scalar_one_or_none()
+                if writer is not None:
+                    raise StateConflict("NOTEBOOK_WRITER_BUSY")
+                # Expiry happens at the next writer boundary, never underneath
+                # a gameplay conversation or its background memory phase.
+                RecordStore(db, game_turn if game_turn is not None else self._meta(db, "gameTurn")).expire()
+                current = self._records(db)
+                for key in snapshot.get("contextIds", []):
+                    if key in current:
+                        RecordStore.deliver(snapshot, {key: current[key]})
             db.execute(
                 insert(tables.jobs).values(
                     id=job,
@@ -648,12 +665,9 @@ class CivilizationState:
         with self.transaction() as db:
             self._set(db, "runFailure", None)
 
-    def conflict_recovery(self, job, keys, name, arguments):
+    def conflict_recovery(self, keys, name, arguments):
         with self.transaction() as db:
-            snapshot = json.loads(
-                db.execute(select(tables.jobs.c.snapshot).where(tables.jobs.c.id == job)).scalar_one()
-            )
-            return recovery_reads(db, keys, name, arguments, snapshot.get("historicalEvidence", {}))
+            return recovery_reads(db, keys, name, arguments)
 
     def export_failure(self):
         failure = self.run_failure()
@@ -698,9 +712,8 @@ class CivilizationState:
             return result
 
     def patch(self, job: str, changes: list[JsonObject], call_id: str | None = None) -> JsonObject:
-        """Typed, independent optimistic edits; cache the batch in the same commit."""
+        """Commit independent notebook edits and their replayable result together."""
         changes = validate(MemoryUpdate, {"changes": changes}).model_dump()["changes"]
-        results = []
         with self.transaction() as db:
             self._check_run_failure(db)
             self._validate(db, job, {})
@@ -710,152 +723,14 @@ class CivilizationState:
                 ).fetchone()
                 if prior and prior[0]:
                     return json.loads(prior[0])
-            row = (
-                db.execute(select(tables.jobs.c.snapshot, tables.jobs.c.game_turn).where(tables.jobs.c.id == job))
-                .mappings()
-                .one()
-            )
+            row = db.execute(select(tables.jobs).where(tables.jobs.c.id == job)).mappings().one()
             snapshot = json.loads(row["snapshot"])
-            store = RecordStore(db, self._meta(db, "gameTurn", row["game_turn"]))
-            for change in changes:
-                key = change.get("id")
-                try:
-                    old = store.all(keys=[key]).get(key, {}) if key else {}
-                    revising = change["op"] in {"revise", "amend"}
-                    unread_review = []
-                    if change["op"] != "create":
-                        if not old or old["category"] not in MEMORY_TYPES:
-                            raise ValueError("UNKNOWN_MEMORY")
-                        version = snapshot.get("delivered", {}).get(key)
-                        if version is None:
-                            raise ValueError("READ_MEMORY_FIRST")
-                        self._validate(db, job, {key: version})
-                        if old["body"].get("state") == "retired" and change["op"] != "replace":
-                            raise ValueError("RETIRED_MEMORY: create an explicit replacement")
-                        missing = [
-                            ref["key"]
-                            for ref in old["body"].get("_review", [])
-                            if snapshot.get("delivered", {}).get(ref["key"], 0) < ref["version"]
-                        ]
-                        unread_review = [ref for ref in old["body"].get("_review", []) if ref["key"] in missing]
-                    content = None
-                    if change["op"] != "retire":
-                        proposed = (
-                            amended_content(old["body"], change["fields"])
-                            if change["op"] == "amend"
-                            else change["content"]
-                        )
-                        content = store.content(proposed, snapshot, old.get("body"))
-                        dropped = {ref["key"] for ref in old.get("body", {}).get("_assumptions", [])} - {
-                            ref["key"] for ref in content["_assumptions"]
-                        }
-                        unread_review = [ref for ref in unread_review if ref["key"] not in dropped]
-                        if revising and unread_review and not snapshot.get("memoryOnly"):
-                            raise EvidenceRequired(
-                                "REVIEW_EVIDENCE_FIRST: read the changed evidence before revising",
-                                [ref["key"] for ref in unread_review],
-                            )
-                        if revising and content["type"] != old["category"]:
-                            raise ValueError("Use replace to change a record's type")
-                        if content["type"] == "soul" and any(
-                            k != key and r["category"] == "soul" and r["body"].get("state") == "active"
-                            for k, r in store.all().items()
-                        ):
-                            raise ValueError("SOUL_EXISTS: read and revise the existing principles")
-                        if (
-                            content["type"] == "plan"
-                            and store.turn is not None
-                            and content.get("reviewAfterTurn") is not None
-                            and content["reviewAfterTurn"] <= store.turn
-                        ):
-                            raise ValueError("REVIEW_TURN_IN_PAST: choose a future review turn")
-                        if (
-                            content.get("expiresTurn") is not None
-                            and store.turn is not None
-                            and content["expiresTurn"] <= store.turn
-                        ):
-                            raise ValueError("EXPIRY_IN_PAST")
-                    successor = None
-                    if change["op"] in {"create", "replace"}:
-                        successor = store.handle()
-                    if change["op"] in {"retire", "replace"}:
-                        body = {
-                            **old["body"],
-                            "state": "retired",
-                            "updatedTurn": store.turn,
-                            "retirementReason": change.get("reason", "superseded"),
-                            "assessment": change.get("assessment", ""),
-                            "successor": successor,
-                        }
-                        version = store.write(key, old["category"], body, job)
-                        self._deliver(snapshot, {key: {"version": version, "category": old["category"], "body": body}})
-                        store.flag(keys=[key], reason=f"{key} {body['retirementReason']}")
-                    if content is not None:
-                        target = successor or key
-                        body = {
-                            **content,
-                            "createdTurn": old["body"]["createdTurn"] if revising else store.turn,
-                            "updatedTurn": store.turn,
-                            "state": "active",
-                            "needsReview": [],
-                        }
-                        if snapshot.get("memoryOnly"):
-                            current = store.all()
-                            changed = [
-                                {"key": ref["key"], "version": current[ref["key"]]["version"]}
-                                for ref in content.get("_assumptions", [])
-                                if ref["key"] in current and current[ref["key"]]["version"] != ref["version"]
-                            ]
-                            if unread_review or changed:
-                                body["needsReview"] = ["Evidence changed after the completed turn; review before reuse"]
-                                body["_review"] = unread_review + changed
-                        version = store.write(target, content["type"], body, job)
-                        self._deliver(
-                            snapshot, {target: {"version": version, "category": content["type"], "body": body}}
-                        )
-                        if revising and old["category"] == "belief" and semantic(old["body"]) != semantic(body):
-                            store.flag(keys=[key], reason=f"Belief {key} revised")
-                    results.append(
-                        {
-                            "id": successor or key,
-                            "accepted": True,
-                            **({"retired": key} if change["op"] == "replace" else {}),
-                        }
-                    )
-                except StaleAssumptions as error:
-                    results.append(
-                        {
-                            "id": key,
-                            "accepted": False,
-                            "reason": str(error),
-                            "recoverable": True,
-                            "changedRecords": error.keys,
-                            "conflicts": error.details,
-                            "recovery": self._memory_recovery(db, snapshot, error.keys),
-                        }
-                    )
-                except EvidenceRequired as error:
-                    results.append(
-                        {
-                            "id": key,
-                            "accepted": False,
-                            "reason": str(error),
-                            "recoverable": True,
-                            "requiredSources": error.keys,
-                            "recovery": self._memory_recovery(db, snapshot, error.keys, target=key),
-                        }
-                    )
-                except MemoryContentError as error:
-                    results.append(
-                        {"id": key, "accepted": False, "reason": str(error), "recoverable": True, **error.details}
-                    )
-                except (StateConflict, ValueError) as error:
-                    results.append({"id": key, "accepted": False, "reason": str(error)})
+            notebook = Notebook(
+                db, snapshot, job, row["purpose"], self._meta(db, "gameTurn", row["game_turn"]), row["game_turn"]
+            )
+            result = {"changes": [notebook.update(change) for change in changes]}
             db.execute(tables.jobs.update().where(tables.jobs.c.id == job).values(snapshot=encode(snapshot)))
-            result = {"changes": results}
             if call_id is not None:
-                # Use the original, validated call arguments for identity. The
-                # patch's normalized defaults must not change its replay key.
                 call = db.execute(
                     select(tables.calls.c.arguments).where(tables.calls.c.job == job, tables.calls.c.id == call_id)
                 ).fetchone()
@@ -864,77 +739,21 @@ class CivilizationState:
                 assert result is not None
             return result
 
-    @staticmethod
-    def _memory_recovery(db, snapshot, keys, target=None):
-        current = RecordStore(db).all()
-        unknown = [key for key in keys if key not in current and key not in snapshot.get("historicalEvidence", {})]
-        known = [key for key in keys if key in current]
-        # Refresh the edited record after actual dependency reads, which can
-        # change its review flags. A typo alone needs no private-record refresh.
-        if known and target is not None:
-            known.append(target)
-        recovery: JsonObject
-        if not snapshot.get("memoryOnly"):
-            recovery = recovery_reads(db, known, "memory_update", {})
-        else:
-            private = list(dict.fromkeys(key for key in known if current[key]["category"] in MEMORY_TYPES))
-            recovery = {
-                "reads": [
-                    {"tool": "memory_read", "arguments": {"ids": private[offset : offset + 20], "includeRetired": True}}
-                    for offset in range(0, len(private), 20)
-                ],
-                "instruction": "Reconcile with current private records using the completed turn's evidence. Keep review flags for newer evidence. If an edit needs evidence not read during the turn, defer that edit; no live game or chat reads are available in the memory phase.",
-            }
-            unavailable = list(
-                dict.fromkeys(
-                    key
-                    for key in keys
-                    if key not in private
-                    and key not in snapshot.get("delivered", {})
-                    and key not in snapshot.get("historicalEvidence", {})
-                )
-            )
-            if unavailable:
-                recovery["unavailableSources"] = unavailable
-                recovery["instruction"] += (
-                    " unavailableSources were not delivered before handoff and cannot be fetched by this memory job. "
-                    "Rereading the plan does not deliver them; reviewSources are review notices, not usable citations. "
-                    "Save independent changes using evidence already read, omitting unsupported citations and claims, "
-                    "or leave the dependent edit for a later job. Do not retry the unchanged rejected edit."
-                )
-        if unknown:
-            # Suggestions contain only previously delivered references. Never
-            # silently correct a typo or deliver new game state during reflection.
-            available: dict[str, JsonObject] = {
-                key: {"source": key, "version": version} for key, version in snapshot.get("delivered", {}).items()
-            }
-            for alias, ref in snapshot.get("historicalEvidence", {}).items():
-                candidate = {"source": alias, "record": ref["key"], "version": ref["version"]}
-                query = snapshot["records"].get(ref["key"], {}).get("body", {}).get("query")
-                if query:
-                    candidate["query"] = query
-                available[alias] = candidate
-                if ref["version"] >= available.get(ref["key"], {}).get("version", 0):
-                    available[ref["key"]] = candidate
-            recovery["sourceSuggestions"] = [
-                {"requested": key, "candidates": [available[match] for match in get_close_matches(key, available, n=3)]}
-                for key in dict.fromkeys(unknown)
-            ][:5]
-            recovery["instruction"] += (
-                " Unknown source IDs cannot be repaired by rereading the plan. Check the suggested references and their queries; use one only if it supports your statement."
-            )
-        return recovery
-
     def search_memory(self, job, arguments):
         with self.transaction() as db:
             self._validate(db, job, {})
             snapshot = json.loads(
                 db.execute(select(tables.jobs.c.snapshot).where(tables.jobs.c.id == job)).scalar_one()
             )
-            result, keys = RecordStore(db).search(**arguments, memory_only=bool(snapshot.get("memoryOnly")))
+            result, keys = RecordStore(db).search(
+                **arguments,
+                memory_only=bool(snapshot.get("memoryOnly")),
+                contribution_ids=snapshot.get("contributionIds", []),
+            )
             if not arguments.get("history"):
-                current = self._records(db)
-                self._deliver(snapshot, {key: current[key] for key in keys})
+                current = snapshot["records"] if snapshot.get("memoryOnly") else self._records(db)
+                RecordStore.deliver(snapshot, {key: current[key] for key in keys})
+                result["records"] = [public_record(key, current[key]) for key in keys]
             else:
                 for record in result["records"]:
                     alias = record["evidence"]
@@ -977,41 +796,32 @@ class CivilizationState:
             snapshot = json.loads(
                 db.execute(select(tables.jobs.c.snapshot).where(tables.jobs.c.id == job)).scalar_one()
             )
+            if snapshot.get("memoryOnly"):
+                raise StateConflict("MEMORY_ONLY: commands are unavailable after handoff")
             store = RecordStore(db, self._meta(db, "gameTurn"))
             pinned: JsonObject = {}
             if intent is not None:
                 intent = validate(Intent, intent).model_dump()
-                if intent["plan"]:
-                    key = intent["plan"]
-                    current = store.all().get(key)
-                    version = snapshot.get("delivered", {}).get(key)
-                    if not current or version is None:
-                        raise StaleAssumptions([key], conflict_details(db, job, [key], cause="plan_not_read"))
-                    self._validate(db, job, {key: version})
-                    if (
-                        current["category"] != "plan"
-                        or current["body"].get("state") != "active"
-                        or current["body"].get("needsReview")
-                    ):
-                        raise StaleAssumptions(
-                            [key], conflict_details(db, job, [key], cause="plan_not_active_or_reviewed")
-                        )
-                    pinned["plan"] = {"key": key, "version": version, "objective": current["body"]["objective"]}
-                pinned["assumptions"] = store.pin(snapshot, [a["source"] for a in intent["assumptions"] if a["source"]])
-                self._validate(db, job, {ref["key"]: ref["version"] for ref in pinned["assumptions"]})
-                for ref in pinned["assumptions"]:
-                    current = store.all()[ref["key"]]
-                    if current["body"].get("requiresRefresh"):
-                        raise StaleAssumptions(
-                            [ref["key"]], conflict_details(db, job, [ref["key"]], cause="source_requires_refresh")
-                        )
-                    if current["category"] in MEMORY_TYPES and (
-                        current["body"].get("state") != "active" or current["body"].get("needsReview")
-                    ):
-                        raise StaleAssumptions(
-                            [ref["key"]],
-                            conflict_details(db, job, [ref["key"]], cause="assumption_not_active_or_reviewed"),
-                        )
+                # Intent is an audit annotation. Only command dependencies above
+                # participate in freshness/authority checks.
+                key = intent.get("plan")
+                prior = snapshot["records"].get(key)
+                if (
+                    key
+                    and prior
+                    and snapshot.get("delivered", {}).get(key) == prior["version"]
+                    and prior["category"] == "plan"
+                ):
+                    pinned["plan"] = {"key": key, "version": prior["version"], "objective": prior["body"]["objective"]}
+                elif key:
+                    pinned["unverifiedPlan"] = key
+                pinned["assumptions"] = []
+                for assumption in intent["assumptions"]:
+                    if assumption.get("source"):
+                        try:
+                            pinned["assumptions"].extend(store.pin(snapshot, [assumption["source"]]))
+                        except EvidenceRequired:
+                            pinned.setdefault("unverifiedSources", []).append(assumption["source"])
             decision = store.handle("dec")
             store.write(
                 decision,
@@ -1226,6 +1036,15 @@ class CivilizationState:
             )
         return result
 
+    def delivered_records(self, job, keys):
+        """Copy the job's delivered versions into an adapter cache without another read."""
+        with self.transaction() as db:
+            self._validate(db, job, {})
+            snapshot = json.loads(
+                db.execute(select(tables.jobs.c.snapshot).where(tables.jobs.c.id == job)).scalar_one()
+            )
+            return {key: snapshot["records"][key] for key in keys if key in snapshot.get("delivered", {})}
+
     def refresh_memory(self, job, keys, cursor=None, include_retired=False):
         with self.transaction() as db:
             self._validate(db, job, {})
@@ -1233,17 +1052,23 @@ class CivilizationState:
             snapshot = json.loads(row[0])
             current = self._records(db)
             if snapshot.get("memoryOnly"):
-                current = {key: record for key, record in current.items() if record["category"] in MEMORY_TYPES} | {
+                current = {
                     key: record
                     for key, record in snapshot["records"].items()
-                    if key in snapshot.get("delivered", {}) and record["category"] not in MEMORY_TYPES
+                    if record["category"] in MEMORY_TYPES | {"contribution"} or key in snapshot.get("delivered", {})
                 }
+            current = {
+                key: r
+                for key, r in current.items()
+                if r["category"] != "notice"
+                and (r["category"] != "contribution" or key in snapshot.get("contributionIds", []))
+            }
             chosen = {
                 key: current[key]
                 for key in keys
                 if key in current and (include_retired or current[key]["body"].get("state") != "retired")
             }
-            self._deliver(snapshot, chosen)
+            RecordStore.deliver(snapshot, chosen)
             if cursor is not None:
                 snapshot["cursor"] = max(snapshot["cursor"], cursor)
             db.execute(tables.jobs.update().where(tables.jobs.c.id == job).values(snapshot=encode(snapshot)))
@@ -1490,6 +1315,8 @@ class CivilizationState:
         if source.is_symlink() or hashlib.sha256(source.read_bytes()).hexdigest() != checksum:
             raise StateConflict("CHECKPOINT_INVALID")
         saved = json.loads(source.read_text())
+        if json.loads(dict(saved["meta"]).get("format", "null")) != 3:
+            raise MemoryFormatError("Unsupported memory checkpoint format; start a fresh match.")
         with self.transaction() as db:
             if saved["civilization"] != self.civilization or saved["storeId"] != self._meta(db, "storeId"):
                 raise StateConflict("CHECKPOINT_INVALID")

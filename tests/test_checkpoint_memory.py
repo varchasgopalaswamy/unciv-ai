@@ -182,7 +182,7 @@ def test_restore_keeps_captured_memory_and_receipts_and_marks_unfinished_reflect
     key = create(memory, {"type": "note", "text": "Committed before capture"})
     saved = tmp_path / "round.json"
     checksum = memory.backup(saved)
-    memory.patch("game", [{"op": "revise", "id": key, "content": {"type": "note", "text": "ABANDONED FUTURE"}}])
+    memory.patch("game", [{"op": "amend", "id": key, "fields": {"text": "ABANDONED FUTURE"}}])
     memory.finish_job("game", complete_after_capture)
     # Restore is repeatable, including after a completion in the abandoned timeline.
     for _ in range(2):

@@ -96,16 +96,20 @@ def memory(root, player, events, record):
             store.write("event:" + str(event["id"]), "observation", event)
         if resource:
             end = next(e for e in events if e["body"]["agreement"] == record["agreement"])
-            flagged = {
-                **plan,
-                "needsReview": ["Agreement event needs review"],
-                "_review": [{"key": "event:" + str(end["id"]), "version": 1}],
-            }
-            store.write("mem1", "plan", flagged)
+            store.write(
+                "notice:mem1",
+                "notice",
+                {
+                    "record": "mem1",
+                    "reasons": ["Agreement event needs review"],
+                    "sources": [{"key": "event:" + str(end["id"]), "version": 1}],
+                },
+            )
             store.write(key, "observation", {"agreement": record}, "review")
             reviewed = {
                 **plan,
                 "objective": "Replace lost trade income",
+                "_seenNotice": 1,
                 "_evidence": [{"key": key, "version": 2, "category": "observation"}],
             }
             store.write("mem1", "plan", reviewed, "review")
@@ -384,16 +388,24 @@ def test_reject_incomplete_or_tampered_evidence(scenario, change):
                 elif change == "unread_tools":
                     db.execute("UPDATE calls SET name='chat_read'")
                 else:
-                    version = 3 if change == "no_review" else 2
-                    key = "observation:agreement/a2" if change == "no_refresh" else "mem1"
+                    version = 1 if change == "unrelated_review" else 2
+                    key = (
+                        "observation:agreement/a2"
+                        if change == "no_refresh"
+                        else "mem1"
+                        if change == "no_review"
+                        else "notice:mem1"
+                    )
+                    if key == "notice:mem1":
+                        version = 1
                     row = db.execute("SELECT body FROM records WHERE key=? AND version=?", (key, version)).fetchone()
                     body = json.loads(row[0])
                     if change == "no_review":
-                        body["needsReview"] = ["Still needs review"]
+                        body["_seenNotice"] = 0
                     elif change == "no_refresh":
                         body["agreement"]["status"] = "ACTIVE"
                     else:
-                        body["_review"] = [{"key": "unrelated", "version": 1}]
+                        body["sources"] = [{"key": "unrelated", "version": 1}]
                     db.execute("UPDATE records SET body=? WHERE key=? AND version=?", (encode(body), key, version))
     saved["gameJson"] = json.dumps(game)
     assert not audit(scenario)["verified"], change
@@ -457,9 +469,9 @@ def test_memory_review_handles_retirement_and_read_event_race(scenario, change):
                 "state": "retired",
                 "assessment": "Imported resource is gone; abandon reliance on this deal",
             }
-            db.execute("UPDATE records SET body=? WHERE key='mem1' AND version=3", (encode(body),))
+            db.execute("UPDATE records SET body=? WHERE key='mem1' AND version=2", (encode(body),))
         else:
-            flag = db.execute("SELECT rowid FROM records WHERE key='mem1' AND version=2").fetchone()[0]
+            flag = db.execute("SELECT rowid FROM records WHERE key='notice:mem1' AND version=1").fetchone()[0]
             read = db.execute(
                 "SELECT rowid FROM records WHERE key='observation:agreement/a2' AND version=2"
             ).fetchone()[0]

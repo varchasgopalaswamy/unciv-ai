@@ -26,18 +26,59 @@ class RecordStore:
     def __init__(self, db, turn=None):
         self.db, self.turn = db, turn
 
-    def all(self, *, categories=None, keys=None):
+    def all(self, *, categories=None, keys=None, project=True):
         query = select(tables.records).select_from(tables.current_records)
         if categories is not None:
             query = query.where(tables.records.c.category.in_(categories))
         if keys is not None:
             query = query.where(tables.records.c.key.in_(keys))
-        return {
+        records = {
             row["key"]: {"version": row["version"], "category": row["category"], "body": json.loads(row["body"])}
             for row in self.db.execute(query).mappings()
         }
 
+        if project:
+            notices = {k: r for k, r in records.items() if r["category"] == "notice"}
+            missing = [
+                "notice:" + k
+                for k, r in records.items()
+                if r["category"] in MEMORY_TYPES and "notice:" + k not in notices
+            ]
+            if missing:
+                notices.update(self.all(keys=missing, project=False))
+            for key, record in records.items():
+                if record["category"] in MEMORY_TYPES:
+                    self.project_notices(key, record, notices)
+        return records
+
+    @staticmethod
+    def project_notices(key, record, notices):
+        """Advisory projection: receiving news never revises notebook content."""
+        notice = notices.get("notice:" + key, {})
+        body = record["body"]
+        pending = notice.get("version", 0) > body.get("_seenNotice", 0)
+        body["needsReview"] = notice.get("body", {}).get("reasons", []) if pending else []
+        body["_review"] = notice.get("body", {}).get("sources", []) if pending else []
+        body["_noticeVersion"] = notice.get("version", 0)
+
+    @staticmethod
+    def deliver(snapshot, chosen):
+        snapshot["records"].update(chosen)
+        snapshot.setdefault("delivered", {}).update({key: record["version"] for key, record in chosen.items()})
+        if not snapshot.get("memoryOnly"):
+            for key, record in chosen.items():
+                if record["category"] in MEMORY_TYPES:
+                    body = record["body"]
+                    snapshot.setdefault("notices", {})["notice:" + key] = {
+                        "version": body.get("_noticeVersion", 0),
+                        "body": {"reasons": body.get("needsReview", []), "sources": body.get("_review", [])},
+                    }
+
     def write(self, key, category, body, job=None):
+        if category in MEMORY_TYPES:
+            body = {
+                k: v for k, v in body.items() if k not in {"needsReview", "reviewSources", "_review", "_noticeVersion"}
+            }
         prior = (
             self.db.execute(
                 select(tables.records).select_from(tables.current_records).where(tables.records.c.key == key)
@@ -105,135 +146,83 @@ class RecordStore:
         return evidence
 
     def content(self, content: JsonObject, snapshot: JsonObject, previous: JsonObject | None = None) -> JsonObject:
+        """Store assessments with optional historical references; never certify their truth."""
         if len(encode(content)) > 8000:
             raise ValueError("MEMORY_TOO_LARGE")
-        sources = content.get("sources", []) + content.get("contradictingSources", [])
-        assumptions = [a["source"] for a in content.get("assumptions", []) if a.get("source")]
         previous = previous or {}
-        retained = dict(
-            zip(
-                previous.get("sources", []) + previous.get("contradictingSources", []),
-                previous.get("_evidence", []),
-                strict=False,
+        retained = previous.get("_citations", {})
+        citations, missing = {}, []
+        names = list(
+            dict.fromkeys(
+                content.get("sources", [])
+                + content.get("contradictingSources", [])
+                + [a["source"] for a in content.get("assumptions", []) if a.get("source")]
+                + ([content["plan"]] if content.get("plan") else [])
             )
         )
-        # A revision may retain its own citations without re-reading the original
-        # observations. Only explicit assumptions require current evidence.
-        references: list[list[JsonObject]] = []
-        missing: list[str] = []
-        for names, prior in ((sources, retained), (assumptions, None)):
+        for source in names:
             try:
-                references.append(self.pin(snapshot, names, prior))
-            except EvidenceRequired as error:
-                missing.extend(error.keys)
-        if missing:
-            raise EvidenceRequired("SOURCE_NOT_DELIVERED: use delivered evidence or read the source first", missing)
-        evidence, pinned = references
-        related = []
-        if content.get("plan"):
-            try:
-                related = self.pin(
-                    snapshot,
-                    [content["plan"]],
-                    {previous["plan"]: previous["_relatedPlan"]} if previous.get("_relatedPlan") else None,
-                )
-            except ValueError:
-                raise ValueError(
-                    "RELATED_PLAN_REQUIRED: note.plan must be an existing plan ID already read with memory_read or memory_search. Omit plan for an unrelated note; put prose in text."
-                ) from None
-            if related[0]["category"] != "plan":
-                raise ValueError(
-                    "RELATED_PLAN_REQUIRED: note.plan must reference a plan record. Omit plan for an unrelated note."
-                )
-        current = self.all()
-        refresh = [
-            ref["key"]
-            for ref in pinned
-            if not snapshot.get("memoryOnly") and current.get(ref["key"], {}).get("body", {}).get("requiresRefresh")
-        ]
-        if refresh:
-            raise EvidenceRequired("SOURCE_NEEDS_REFRESH: read the current agreement before assuming it", refresh)
-        changed = [
-            ref["key"]
-            for ref in pinned
-            if current.get(ref["key"], {}).get("version") != ref["version"]
-            and not (snapshot.get("memoryOnly") and ref["category"] not in MEMORY_TYPES)
-        ]
-        if changed:
-            raise EvidenceRequired("ASSUMPTION_CHANGED: read the current evidence before revising", changed)
-        review = []
-        for ref in pinned:
-            value = current.get(ref["key"], {})
-            if value.get("category") in MEMORY_TYPES and (
-                value.get("version") != ref["version"]
-                or value["body"].get("state") != "active"
-                or value["body"].get("needsReview")
-            ):
-                review.append(ref["key"])
-        if review:
-            raise EvidenceRequired("SOURCE_NEEDS_REVIEW: read and reconsider the referenced memory", review)
+                citations[source] = self.pin(snapshot, [source], retained)[0]
+            except EvidenceRequired:
+                missing.append(source)
         return {
             **content,
-            "_evidence": evidence,
-            "_assumptions": pinned,
-            **({"_relatedPlan": related[0]} if related else {}),
+            "_citations": citations,
+            "_evidence": [
+                citations[s]
+                for s in content.get("sources", []) + content.get("contradictingSources", [])
+                if s in citations
+            ],
+            "_assumptions": [
+                citations[a["source"]] for a in content.get("assumptions", []) if a.get("source") in citations
+            ],
+            **({"_relatedPlan": citations[content["plan"]]} if content.get("plan") in citations else {}),
+            "unverifiedSources": missing,
         }
 
     def flag(self, keys=(), subjects=(), reason="Evidence changed", review_keys=(), plans=()):
-        """Flag only declared assumptions or relevant subject-specific plans."""
         self.flag_many([dict(keys=keys, subjects=subjects, reason=reason, review_keys=review_keys, plans=plans)])
 
     def flag_many(self, changes):
-        """Load the dependency graph once and write each affected memory once.
-
-        Observation bodies can dwarf private memory. Only their head versions are
-        needed here; never deserialize the historical map/detail catalogue for
-        every changed observation.
-        """
+        """Publish direct advisory notices separately; no recursive dependency graph."""
         if not changes:
             return
-        records = self.all(categories={"plan", "belief"})
-        records = {key: r for key, r in records.items() if r["body"].get("state") == "active"}
-        review_keys = {key for change in changes for key in (change.get("review_keys") or change.get("keys", ()))}
-        versions = {
-            key: version
-            for key, version in self.db.execute(select(tables.heads).where(tables.heads.c.key.in_(review_keys)))
-        }
-        updated = {}
-        for change in changes:
-            changed = set(change.get("keys", ()))
-            subjects, plans = set(change.get("subjects", ())), set(change.get("plans", ()))
-            reason = change["reason"]
-            review = {key: versions[key] for key in (change.get("review_keys") or changed) if key in versions}
-            visited = set()
-            while True:
-                added = set()
-                for key, record in records.items():
-                    if key in visited:
-                        continue
-                    body = updated.get(key, record["body"])
-                    affected = any(ref["key"] in changed for ref in body.get("_assumptions", []))
-                    affected |= record["category"] == "plan" and (
-                        key in plans or bool(set(body.get("subjects", [])) & subjects)
-                    )
-                    if not affected:
-                        continue
-                    visited.add(key)
-                    added.add(key)
-                    references = {ref["key"]: ref["version"] for ref in body.get("_review", [])}
-                    references.update(review)
-                    candidate = {
-                        **body,
-                        "needsReview": list(dict.fromkeys([*body.get("needsReview", []), reason])),
-                        "_review": [{"key": k, "version": v} for k, v in sorted(references.items())],
-                    }
-                    if candidate != body:
-                        updated[key] = {**candidate, "updatedTurn": self.turn}
-                if not added:
-                    break
-                changed.update(added)
-        for key, body in updated.items():
-            self.write(key, records[key]["category"], body)
+        records = self.all(categories={"plan", "belief"}, project=False)
+        notices = self.all(categories={"notice"}, project=False)
+        source_keys = {key for change in changes for key in (change.get("review_keys") or change.get("keys", ()))}
+        versions = dict(self.db.execute(select(tables.heads).where(tables.heads.c.key.in_(source_keys))).all())
+        for key, record in records.items():
+            body = record["body"]
+            if body.get("state") != "active":
+                continue
+            prior = notices.get("notice:" + key, {})
+            pending = prior.get("version", 0) > body.get("_seenNotice", 0)
+            reasons = list(prior.get("body", {}).get("reasons", [])) if pending else []
+            sources = {r["key"]: r["version"] for r in prior.get("body", {}).get("sources", [])} if pending else {}
+            affected = False
+            for change in changes:
+                referenced = any(ref["key"] in change.get("keys", ()) for ref in body.get("_assumptions", []))
+                relevant = record["category"] == "plan" and (
+                    key in change.get("plans", ())
+                    or bool(set(body.get("subjects", [])) & set(change.get("subjects", ())))
+                )
+                if not referenced and not relevant:
+                    continue
+                affected = True
+                reasons.append(change["reason"])
+                sources.update(
+                    {k: versions[k] for k in (change.get("review_keys") or change.get("keys", ())) if k in versions}
+                )
+            if affected:
+                self.write(
+                    "notice:" + key,
+                    "notice",
+                    {
+                        "record": key,
+                        "reasons": list(dict.fromkeys(reasons))[-8:],
+                        "sources": [{"key": k, "version": v} for k, v in sorted(sources.items())][-20:],
+                    },
+                )
 
     def review_plans(self):
         if self.turn is None:
@@ -270,11 +259,24 @@ class RecordStore:
                 self.flag(keys=[key], reason=f"{key} expired")
 
     def search(
-        self, *, type=None, subject="", state="active", query="", history=False, id="", offset=0, memory_only=False
+        self,
+        *,
+        type=None,
+        subject="",
+        state="active",
+        query="",
+        history=False,
+        id="",
+        offset=0,
+        memory_only=False,
+        contribution_ids=(),
     ):
-        conditions: list[ColumnElement[bool]] = []
+        conditions: list[ColumnElement[bool]] = [
+            tables.records.c.category != "notice",
+            (tables.records.c.category != "contribution") | tables.records.c.key.in_(contribution_ids),
+        ]
         if memory_only:
-            conditions.append(tables.records.c.category.in_(MEMORY_TYPES))
+            conditions.append(tables.records.c.category.in_(MEMORY_TYPES | {"contribution"}))
         if type:
             conditions.append(tables.records.c.category == type)
         if subject:
@@ -339,7 +341,7 @@ def select_context(snapshot, limit, topics=()):
     candidates = [
         (key, value)
         for key, value in snapshot["records"].items()
-        if value["category"] in MEMORY_TYPES and value["body"].get("state") == "active"
+        if value["category"] in MEMORY_TYPES | {"contribution"} and value["body"].get("state") == "active"
     ]
     candidates.sort(
         key=lambda item: (

@@ -29,28 +29,22 @@ it. Routine intent can use a fresh `intent.reason` without saving a plan first.
 
 ## Evidence and concurrent communication
 
-- Game observations remain the versions actually delivered during the completed
-  turn. The memory phase cannot fetch fresh game state, discover gameplay tools,
-  send diplomatic messages or execute commands. Exact cached call replays return
-  the original response; recovery of an accepted `END_TURN` never sends it again.
-- Private notes and plans may be refreshed to resolve a concurrent communication
-  edit. Normal optimistic version checks still reject an overwrite based on an
-  older copy. Memory search is restricted to private record types.
-- Changed evidence and unread review flags stay attached to revised plans, except
-  dependencies explicitly removed by the new plan. A
-  frozen observation can support a historical belief, but does not establish that
-  an ongoing assumption is still true. If an edit needs new game evidence, defer
-  that edit until gameplay can inspect it. Repeated stale failures still stop the
-  run through the existing host-side diagnostic path.
-- History reads use the frozen actions for the completed turn, allow earlier
-  history, and reject later turns. Memory metadata records the actual write turn;
-  the job and source versions retain the original evidence context.
+The gameplay conversation is the civilization's sole notebook writer until its
+memory phase completes. Communication jobs append immutable contributions, which
+become available to the next gameplay activation. They cannot change the outgoing
+writer's entries. The same civilization's next turn waits for that writer to finish.
 
-Historical citations and note-to-plan links do not require an active or reviewed
-source record. Existing citations survive a revision without a fresh evidence
-read; retained ongoing assumptions still require validation. This lets the
-outgoing player record an unsuccessful plan while newer information remains
-flagged for its next gameplay turn.
+Game observations, historical actions and available contributions stay at the
+completed turn's boundary. Memory reads cannot fetch new game or chat state.
+Optional historical references do not need current evidence; unavailable references
+are retained as explicitly unverified assessments without exposing their contents.
+
+New information creates separate advisory notices. It never changes notebook
+versions, vetoes edits or requires a plan revision before a command. An edit can
+acknowledge notices already delivered to its conversation; later notices remain
+for the next turn. Repeated notebook conflicts are local edit outcomes, not match
+failures. Command-state conflicts and durability failures keep their diagnostic
+failure path. See the [notebook contract](Structured-memory.md).
 
 ### Edit accounting
 
@@ -107,7 +101,7 @@ prints a warning before continuing. Confirmed actions and committed memory edits
 remain; unsaved notes are unavailable. The activation retains its failed status,
 incomplete memory marker and partial provider accounting. Neither gameplay nor
 reflection is replayed. A new failure during the resumed run still stops it.
-Internal state failures, repeated stale assumptions, unconfirmed shutdown and
+Internal state failures, repeated stale command-state conflicts, unconfirmed shutdown and
 archive errors are not acknowledged by this recovery path.
 
 `gameplayElapsedMs` ends at handoff. `finalizationElapsedMs` runs from handoff
@@ -153,19 +147,19 @@ the same receipt file. Previously generated history remains intact. Missing
 generated files are rebuilt, and rollback removes abandoned projections.
 
 Dirty work is cleared only after file writes succeed. An interrupted export is
-safe to repeat. Existing structured-memory databases gain the indexes and queue
-automatically and receive one initial full export; no new match is required.
+safe to repeat. A new notebook receives one initial full export.
 Memory writes do not render files before replying, and gameplay job closure no
 longer performs a duplicate export. Turn archives also cache earlier receipt IDs
 until an attempt changes, avoiding repeated full-history parsing.
 
 ## Validation and measurement
 
-The full Python suite passed with 610 tests and 90 subtests; the opt-in installed
+At the original background-memory change, the full Python suite passed with 610
+tests and 90 subtests; the opt-in installed
 Codex capture test was skipped. Five finalization tests passed again after the
 final pause/deadline check. Ruff lint and formatting, Pyrefly and diff checks passed.
 
-Regression tests cover frozen evidence, concurrent memory edits, recovered
+Regression tests cover frozen evidence, concurrent contributions, recovered
 handoff receipts, timeouts, pause, lost acknowledgements, incremental exports,
 missing files and same-turn retries. A real HTTPS test holds export for more than
 the former five-second timeout while status stays responsive. A scheduler test
@@ -189,5 +183,5 @@ or resumed.
 Memory, history/export, checkpoint, stale-recovery and accounting queries now use
 SQLAlchemy Core with the existing SQLite files. Shared schema definitions and
 query expressions preserve transaction durability, revision filtering and
-recovery. See [database access](Database-access.md) for compatibility checks and
+recovery. See [database access](Database-access.md) for transaction checks and
 the comparison against all 36 saved Greece turn summaries.

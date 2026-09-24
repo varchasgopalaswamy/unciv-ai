@@ -40,7 +40,7 @@ Run shell examples from the repository root unless a page says otherwise.
 | [Agent context and tools](architecture/Agent-context.md) | Prepared reads, discovery, response projection and flavor filtering |
 | [Prompt caching](architecture/Prompt-caching.md) | Stable instructions, variable context and cache measurement |
 | [Command state updates](architecture/Command-state-updates.md) | Receipts, deterministic changes and observation freshness |
-| [Structured memory](architecture/Structured-memory.md) | Records, provenance, intent, retirement and generated files |
+| [Private notebook](architecture/Structured-memory.md) | Writer ownership, contributions, advisory notices, provenance and recovery |
 | [Background turn memory](architecture/Background-turn-memory.md) | Handoff, concurrent reflection, finalization and checkpoints |
 | [Database access](architecture/Database-access.md) | SQLAlchemy/SQLite ownership and transactions |
 

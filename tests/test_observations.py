@@ -139,8 +139,8 @@ def test_detail_tools_cache_reads_require_refresh_and_cannot_acknowledge_unread_
             assert "No attacks" not in str(shown)
             for source in ("observation:unit/unit1", "observation:game", "observation:communication"):
                 rejected = memory.patch(job.id, [{"op": "create", "content": plan(sources=[source])}])
-                assert not rejected["changes"][0]["accepted"]
-                assert "SOURCE_NOT_DELIVERED" in str(rejected)
+                assert rejected["changes"][0]["accepted"]
+                assert rejected["changes"][0]["warnings"][0]["sources"] == [source]
             with pytest.raises(StateConflict, match="chat_read"):
                 await gateway.call(
                     job,

@@ -24,6 +24,7 @@ from civ_agent.memory_records import (
     REQUIRED_COMMANDS,
     REQUIRED_TOOLS,
     Intent,
+    MemoryContributions,
     MemoryReadResult,
     MemorySearchResult,
     MemoryUpdate,
@@ -303,8 +304,8 @@ class ProposalGateway:
                         "the next action; unchanged inspections remain valid. An argument error with applied=false "
                         "alone needs no refresh; follow recovery.reads when supplied."
                         " A response's memoryUpdates contains versioned private records, separate from the overview; "
-                        "replace older copies by ID, retaining newer versions on replay. Inspect their reviewSources "
-                        "before revision; receiving a record does not read its cited evidence."
+                        "replace older copies by ID, retaining newer versions on replay. Review notices are advisory "
+                        "and never require a memory edit or prohibit an action."
                     )
                     entry["outputSchema"] = TurnOverview.model_json_schema()
                 elif tool["name"] in {"research_details", "policy_details"}:
@@ -385,7 +386,11 @@ class ProposalGateway:
                         "destructiveHint": False,
                         "openWorldHint": False,
                     },
-                    "inputSchema": TOOL_MODELS[name].model_json_schema(),
+                    "inputSchema": (
+                        MemoryContributions
+                        if name == "memory_update" and job.purpose != "gameplay"
+                        else TOOL_MODELS[name]
+                    ).model_json_schema(),
                 }
             )
             if name in TOOL_OUTPUT_MODELS:
@@ -462,7 +467,7 @@ class ProposalGateway:
         )
         add(
             "memory_read",
-            "Read current records by ID. Active records by default; includeRetired explicitly to inspect or replace retired records. Observations describe earlier facts; statements are claims, not world facts.",
+            "Read records by ID. Active records by default; includeRetired to inspect archived entries. Observations describe earlier facts; statements and notebook entries are assessments. Background memory reads the completed turn's snapshot.",
         )
         add(
             "memory_search",
@@ -470,7 +475,19 @@ class ProposalGateway:
         )
         add(
             "memory_update",
-            "Create, revise, amend, replace or retire typed private memory. Read before editing existing records. amend uses {op:'amend',id,fields:{approach:'...'}} for changed content fields; omitted fields remain, lists replace rather than append. revise supplies full content; replace creates a successor. Code owns IDs and metadata. Each source list has a 20-citation limit: select relevant support, leaving old citations in historical revisions. Existing citations can be retained without rereading them. Copy delivered evidence IDs exactly: observation:overview, short detail handles (e123), record/message IDs, or observation:communication after chat_read. Notes accept text and optional plan ID, not sources. Beliefs require claim, uncertainty and sources. Explicit assumptions require current evidence; remove obsolete ones when changing strategy. Review flagged plans before using them for intent. Keep objectives, decisions, reasons and unresolved questions; receipts already preserve routine state and turn events. Retirement preserves history and does not cancel a promise.",
+            (
+                "Append private contributions with create. Existing notebook entries are read-only to communication jobs. "
+                "The next gameplay activation receives contributions and decides how to use them. "
+                if job.purpose != "gameplay"
+                else "Create, amend or retire private notebook entries. Read before editing. amend supplies only changed "
+                "content fields; omitted fields stay, lists replace. Communication contributions are immutable: "
+                "use them to create/amend entries and retire them when handled. "
+            )
+            + "Keep durable objectives, reasons and questions; receipts preserve routine facts. "
+            "Code records authoring context. Citations are optional historical references, at most 20 per list; "
+            "unavailable references produce warnings and never become verified evidence. "
+            "needsReview/reviewSources are advisory. Plans and beliefs do not authorize or prohibit actions. "
+            "Retirement preserves history and does not cancel a promise.",
         )
         job.catalogue = copy.deepcopy(tools)
         return tools
@@ -584,9 +601,7 @@ class ProposalGateway:
                         "recoverable": True,
                         "changedRecords": conflict.keys,
                         "conflicts": conflict.details,
-                        "recovery": await self.io.call(
-                            self.memory.conflict_recovery, job.id, conflict.keys, name, arguments
-                        ),
+                        "recovery": await self.io.call(self.memory.conflict_recovery, conflict.keys, name, arguments),
                     }
             result = await self.settle_gameplay(job, name, result)
             result = await self.update_after_action(job, name, arguments, call_id, result)
@@ -596,13 +611,11 @@ class ProposalGateway:
                     "memoryPhase": {
                         "allowedTools": sorted(MEMORY_PHASE_TOOLS),
                         "instruction": (
-                            "The next player may act now. Batch useful changed plans, beliefs, notes and retirements; "
-                            "skip unchanged records. Use this conversation's evidence; no new game reads or messages. "
-                            "Amend changed content fields when useful. Select at most 20 relevant citations per source list; old revisions preserve earlier evidence. "
-                            "Copy evidence handles exactly. Historical citations and note.plan links may reference "
-                            "retired records; ongoing assumptions and action intent require current reviewed records. "
-                            "If another job changed a record, read it before reconciling; retain review flags for newer "
-                            "evidence. Finish after saving useful changes. No final narrative is needed."
+                            "The next player may act now. Save useful notebook changes with create, amend or retire; "
+                            "skip unchanged records. Use this conversation's observations; no new game reads or messages. "
+                            "Citations are optional historical links, not proof that a belief is true. "
+                            "Review notices are advisory. Communication contributions arriving after this turn will "
+                            "be available next turn. Finish after saving useful changes; no final narrative is needed."
                         ),
                     },
                 }
@@ -859,7 +872,7 @@ class ProposalGateway:
                 "error": "INTENT_REQUIRED",
                 "applied": False,
                 "recoverable": True,
-                "instruction": 'Nothing was dispatched. Add intent as an object: {"reason":"your reason"}, or {"plan":"existing active plan ID"}. This error alone requires no state refresh.',
+                "instruction": 'Nothing was dispatched. Add intent as an object: {"reason":"your reason"}, or {"plan":"plan ID"}. This error alone requires no state refresh.',
             }
         if name == "memory_update":
             try:
@@ -991,18 +1004,22 @@ class ProposalGateway:
             result = await self.io.call(self.memory.search_memory, job.id, arguments)
             if not arguments.get("history"):
                 chosen = await self.io.call(
-                    self.memory.refresh_memory,
+                    self.memory.delivered_records,
                     job.id,
                     [r["id"] for r in result["records"]],
-                    include_retired=arguments.get("state") in {"all", "retired"},
                 )
                 job.memory["records"].update(chosen)
             return public_result(MemorySearchResult.model_validate(result).model_dump(exclude_unset=True))
         if name == "memory_update":
             result = await self.io.call(self.memory.patch, job.id, arguments["changes"], call_id)
-            accepted = [change["id"] for change in result["changes"] if change["accepted"]]
-            refreshed = await self.io.call(self.memory.refresh_memory, job.id, accepted, include_retired=True)
-            job.memory["records"].update(refreshed)
+            for change in result["changes"]:
+                if change["accepted"]:
+                    record = change["record"]
+                    job.memory["records"][change["id"]] = {
+                        "version": change["version"],
+                        "category": record["type"],
+                        "body": record.get("body", {k: v for k, v in record.items() if k != "id"}),
+                    }
             return MemoryUpdateResult.model_validate(result).model_dump(exclude_unset=True)
         if name == "player_command":
             if job.purpose != "gameplay":

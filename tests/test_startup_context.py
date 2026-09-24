@@ -175,7 +175,7 @@ def test_private_startup_context_follows_observation_reviews_and_expiry(tmp_path
             context = json.loads(prepared["memoryContext"].split("\n", 1)[1])
             records = {record["id"]: record for record in context["records"]}
             assert records[key]["needsReview"]
-            assert records[expiring]["state"] == "retired"
+            assert records[expiring]["state"] == ("retired" if purpose == "gameplay" else "active")
             assert "memoryUpdates" not in prepared["reads"].get("player_turn", {})
             prompt = startup_prompt(prepared, purpose, "Play this turn")
             assert prompt.user.count(prepared["memoryContext"]) == 1
@@ -191,10 +191,18 @@ def test_private_startup_context_follows_observation_reviews_and_expiry(tmp_path
             result = await gateway.call(
                 job,
                 "memory_update",
-                {"changes": [{"op": "revise", "id": key, "content": plan(reviewAfterTurn=5)}]},
+                {
+                    "changes": [
+                        {
+                            "op": "amend",
+                            "id": key,
+                            "fields": {k: v for k, v in (plan(reviewAfterTurn=5)).items() if k != "type"},
+                        }
+                    ]
+                },
                 "review",
             )
-            assert result["changes"][0]["accepted"]
+            assert result["changes"][0]["accepted"] is (purpose == "gameplay")
         finally:
             await io.close()
 
