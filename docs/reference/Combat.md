@@ -13,8 +13,19 @@ This is a bounded combat slice, not full game coverage.
 current orders and healing, available/disabled tactical orders, promotion experience
 and prerequisites, and legal attacks. `cities[].attacks` lists bombardment targets.
 Attack previews contain the target and origin coordinates, path, movement cost,
-rounded displayed strengths, modifiers and health-capped damage ranges. They do not
-expose the random value that will resolve an attack.
+rounded displayed strengths, modifiers and health-capped damage ranges. Execution
+and previews share the engine's damage-exchange calculation. Both damage rolls
+apply together. If both units would die, the unit with less total damage (existing
+wounds plus the uncapped incoming roll) survives at 1 HP; ties favor the defender.
+A melee attack that reduces a city to its defeat threshold preserves the attacker
+at 1 HP when necessary. This follows the lethal-exchange rules in
+[Civ V's SDK combat source](https://github.com/dmnd/CvGameCoreSource/blob/master/CvGameCoreDLL_Expansion1/CvUnitCombat.cpp),
+with Unciv's defeated-city representation of 1 HP.
+
+Previews vary both damage rolls independently and never expose the random values
+that will resolve an attack. Each combatant's range describes its own possible
+damage: the two minima or maxima need not happen together. For example, equally
+wounded units can each show 0–1 remaining HP because either may survive.
 The `consequences` summary puts current and damage-based remaining HP together,
 flags possible destruction/capture, and shows visible context around the attack
 origin and possible melee advance. See [action consequences](Tactical-review.md#action-consequences)
@@ -130,3 +141,38 @@ with `civ-agent host inspect` to verify the resulting position independently.
 Battlefield, conquest and victory states remain in the automated combat tests.
 They are test data builders without standalone gameplay launchers or scenario
 instructions. The current gameplay exercise is [trade-cycle](../scenarios/Trade-cycle-scenario.md).
+
+## Lethal-exchange regression
+
+The 2026-09-23 correction replaces early termination of the ordinary damage
+exchange with Civ V's simultaneous damage and survivor adjustment. Desktop
+previews, player-operation previews and host HP projections use the same engine
+calculation. The default attack origin also now matches the attacker's tile, so
+execution applies the river penalty shown in previews.
+
+The saved Rome turn-38 attack was replayed from an isolated copy of
+`build/notebook-evaluation-20260923/stalled-city/round-checkpoints/g31tlqkdxzlnr4-round-38.json`.
+The 1-HP Warrior attacks the 12-HP Brute at (-8, -7) from (-9, -7):
+
+| Observation | Before correction | After correction |
+| --- | --- | --- |
+| Previewed damage to Warrior | 1 | 0–1 |
+| Previewed damage to Brute | 12 | 11–12 |
+| Actual Warrior HP | 0 | 0 |
+| Actual Brute HP | 11 | 1 |
+
+The corrected receipt reports 11 damage to the Brute, `defenderDestroyed: false`
+and `resolution: Completed`. Its remaining HP is hidden from Rome after losing
+visibility; the operator's native-state check confirms 1 HP. The replay script,
+input save and results are retained in `build/combat-fix-replay-20260924/`.
+This is a deterministic attack replay, not a new model playthrough or completion
+of Rome's interrupted five-turn evaluation.
+
+Validation: 288 engine tests and 18 host integration tests passed, plus host
+formatting checks. Coverage includes both sole-death directions, mutually lethal
+rolls with unequal prior wounds, defender-favored ties, city capture at 1 HP,
+ranged/city bombardment, independent preview bounds, read-only and hidden-roll
+checks, river penalties, combat-history visibility, air/naval missions and exact
+receipt replay. The combat-history boundary test's allowlist was also updated
+to the existing `attackWithResult`/`nukeWithResult` entry-point names; the stale
+names failed against code already present before this correction.

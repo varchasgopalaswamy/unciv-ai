@@ -9,6 +9,8 @@ import java.util.concurrent.TimeUnit
 class TacticalConsequencesIntegrationTest {
     @Test fun `damage projections expose lethal risk without preventing the action`() = run("combat")
 
+    @Test fun `lethal exchanges show possible survivors and receipts match preview bounds`() = run("lethal")
+
     @Test fun `movement consequences match native movement attacks and settlement`() = run("movement")
 
     @Test fun `endpoint context cannot reveal hidden enemies`() = run("privacy")

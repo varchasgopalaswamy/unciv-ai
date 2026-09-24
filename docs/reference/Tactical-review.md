@@ -28,9 +28,12 @@ They show visible hostile units, other owned military units and unseen-tile coun
 within two hexes of the attack origin and possible melee advance destination.
 The attacker itself is excluded from the friendly-presence list. Enemy positions
 are the positions visible at inspection time, including the target; this is not a
-simulated board after combat. Damage arithmetic can differ from the actual outcome
-when a combatant dies early, a defender withdraws, or an aircraft is intercepted.
-City HP bottoms out at one; capture remains separate from destruction.
+simulated board after combat. Native damage bounds include the lethal-exchange
+adjustment that leaves one survivor when both damage rolls would kill. The
+remaining-HP ranges are separate bounds; their endpoints need not occur together.
+Withdrawal, aircraft interception and triggered effects such as healing can still
+change the outcome. City HP bottoms out at one; capture remains separate from
+destruction, and a captured city's later HP is not its pre-capture damage projection.
 `attackerConsumedOnAttack` separately identifies native self-destructing attacks,
 such as a Guided Missile, even when the damage-based HP range stays positive.
 
@@ -95,7 +98,9 @@ reload. It also tests hostile classification, fog filtering and a wrapping-map s
 These are deterministic interface/engine regressions, not a model performance
 benchmark or proof that the agents will consistently choose good tactics.
 
-`TacticalConsequencesIntegrationTest` checks lethal HP projections, advisory legal
+`TacticalConsequencesIntegrationTest` checks lethal HP projections, a 1-HP Warrior
+against a 12-HP Brute, uncertain survivors, confirmed results after loss of visibility,
+exact receipt replay, advisory legal
 attacks, exhausted movement before attack/founding, friendly stacking, future-route
 uncertainty, read-only previews and unchanged answers when a hidden enemy is added.
 The [saved positions](../scenarios/Strategic-positions.md) separately evaluate model

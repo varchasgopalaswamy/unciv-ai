@@ -14,6 +14,7 @@ object TacticalConsequencesProbe {
         try {
             when (args[1]) {
                 "combat" -> combat(Path.of(args[0]))
+                "lethal" -> lethal(Path.of(args[0]))
                 "movement" -> movement(Path.of(args[0]))
                 "privacy" -> privacy(Path.of(args[0]))
                 else -> error("Unknown case")
@@ -110,6 +111,61 @@ object TacticalConsequencesProbe {
         check(future.turns.last().afterMove!!.foundCity == "RECHECK_ON_ARRIVAL")
         session.execute(TurnCommandRequest("settler-move", turn.epoch, turn.revision, TurnCommandKind.MOVE_UNIT, civilian.handle, destination = site.destination))
         check(session.turn().map.units.single { it.handle == civilian.handle }.canFoundCity)
+    }
+
+    private fun lethal(root: Path) {
+        for (barbarian in listOf(true, false)) {
+            SettlementPreviewProbe.fixture(root.resolve(if (barbarian) "brute" else "tied")).use { runtime ->
+                val game = runtime.game
+                val player = game.getCivilization("Rome")
+                player.units.getCivUnits().toList().forEach { it.destroy() }
+                val warrior = player.units.placeUnitNearTile(HexCoord(4, 0), "Warrior")!!
+                val enemy = if (barbarian) game.civilizations.single { it.isBarbarian } else game.getCivilization("Greece")
+                val defender = enemy.units.placeUnitNearTile(HexCoord(5, 0), if (barbarian) "Brute" else "Warrior")!!
+                warrior.health = if (barbarian) 1 else 10
+                defender.health = if (barbarian) 12 else 10
+                if (!barbarian) {
+                    player.diplomacyFunctions.makeCivilizationsMeet(enemy)
+                    player.getDiplomacyManager(enemy)!!.declareWar()
+                }
+                player.popupAlerts.clear()
+                player.viewableTiles = game.tileMap.values.toSet()
+                val session = PlayerHost(runtime).bindPlayer("Rome")
+                val nativeBefore = json().toJson(game)
+                val turn = session.turn()
+                val unit = turn.map.units.single()
+                val attack = unit.combat!!.attacks.single { it.attackFrom == unit.position }
+                val consequences = attack.consequences!!
+                check(nativeBefore == json().toJson(game)) { "Preview changed native state" }
+                check(consequences.attacker.remainingMax > 0 || consequences.defender.remainingMax > 0) {
+                    "Preview falsely promises mutual destruction: $consequences"
+                }
+                if (!barbarian) {
+                    check(consequences.attacker.remainingMin == 0 && consequences.attacker.remainingMax == 1)
+                    check(consequences.defender.remainingMin == 0 && consequences.defender.remainingMax == 1)
+                }
+
+                val command = TurnCommandRequest("lethal", turn.epoch, turn.revision, TurnCommandKind.ATTACK, unit.handle, destination = attack.destination, attackFrom = attack.attackFrom)
+                val receipt = session.execute(command)
+                val outcome = receipt.combat!!
+                check(outcome.attacked && outcome.resolution == "Completed")
+                check(warrior.isDestroyed xor defender.isDestroyed)
+                check(warrior.health + defender.health == 1)
+                check(outcome.damageToAttacker in attack.minDamageToAttacker..attack.maxDamageToAttacker)
+                check(outcome.damageToDefender in attack.minDamageToDefender..attack.maxDamageToDefender)
+                check(warrior.health in consequences.attacker.remainingMin..consequences.attacker.remainingMax)
+                check(defender.health in consequences.defender.remainingMin..consequences.defender.remainingMax)
+                check(outcome.attackerDestroyed == warrior.isDestroyed && outcome.defenderDestroyed == defender.isDestroyed)
+                // Death may remove vision; a completed receipt still reports the confirmed outcome.
+                if (warrior.isDestroyed) {
+                    check(!defender.isVisibleTo(player))
+                    check(outcome.defenderHealth == null && !outcome.defenderDestroyed)
+                }
+                val nativeAfter = json().toJson(game)
+                check(session.execute(command) == receipt)
+                check(json().toJson(game) == nativeAfter) { "Receipt replay repeated the attack" }
+            }
+        }
     }
 
     private fun privacy(root: Path) = SettlementPreviewProbe.fixture(root).use { runtime ->

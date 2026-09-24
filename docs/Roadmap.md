@@ -48,11 +48,14 @@ Implemented from the live review; ordinary-game impact still needs measurement:
 
 Remaining recommendations:
 
-1. **Correct combat projections and stopping guidance.** The
+1. **Clarify stopping after completed combat.** The
    [notebook evaluation](archive/reports/Notebook-redesign-2026-09-23.md#gameplay-and-the-independent-stop)
    stopped during Rome's turn 38 after a 1-HP Warrior dealt 1 damage instead of
-   the preview's predicted 12. Potential melee damage must account for combat
-   ending at the first defeat. A confirmed receipt with enemy health hidden by
+   the preview's predicted 12. The engine now uses Civ V's simultaneous damage
+   exchange and survivor adjustment, and previews share that calculation.
+   [Replaying the saved attack](reference/Combat.md#lethal-exchange-regression)
+   dealt 11 damage and left the Brute at 1 HP, within the corrected preview.
+   A confirmed receipt with enemy health hidden by
    lost visibility should not trigger the uncertain-dispatch stop. The saved
    checkpoint reproduces the issue; Rome's five-turn evaluation remains incomplete.
 2. **Improve decisions from existing information.** France still lost a Settler

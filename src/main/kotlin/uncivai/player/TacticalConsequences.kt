@@ -26,7 +26,7 @@ data class PositionContext(
 @Serializable
 data class MilitaryPresence(val name: String, val position: TilePosition, val health: Int, val distance: Int)
 
-/** Arithmetic on the displayed native damage range; combat may end before all damage is dealt. */
+/** Native exchange bounds include lethal adjustments; interception and triggered effects are separate. */
 @Serializable
 data class HealthProjection(val current: Int, val remainingMin: Int, val remainingMax: Int, val destructionPossible: Boolean)
 
