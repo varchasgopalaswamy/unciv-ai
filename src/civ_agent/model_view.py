@@ -1,4 +1,4 @@
-"""Remove audited native flavor from copies, never from player-authored wording.
+"""Project gameplay facts, omitting native flavor and controller internals.
 
 Match owned protocol structures, not arbitrary text/description keys or phrases.
 Raw host observations and receipts remain the audit source. See the projection
@@ -17,21 +17,6 @@ NARRATIVE_ALERTS = {
     "WarDeclaration",
     "Defeated",
     "GameHasBeenWon",
-}
-NATIVE_MESSAGES = {
-    "DemandToStopSettlingCitiesNear",
-    "DemandToStopSpreadingReligion",
-    "DemandToStopSpyingOnUs",
-    "DemandToNotAttackUs",
-    "CitySettledNearOtherCivDespiteOurPromise",
-    "ReligionSpreadDespiteOurPromise",
-    "SpyingOnUsDespiteOurPromise",
-    "AttackedUsDespitePromise",
-    "BorderConflict",
-    "TilesStolen",
-    "Denounced",
-    "AcceptingDemand",
-    "RejectingDemand",
 }
 
 
@@ -75,25 +60,13 @@ def player_alert(alert: JsonObject) -> JsonObject:
         }
     if isinstance(value.get("nativeDiplomacy"), dict):
         native = dict(value["nativeDiplomacy"])
-        native["event"] = native.get("event") or kind
-        native["sender"] = native.get("sender") or native["civilizationId"]
-        # Older hosts lack structured incident identities. Keep their incident
-        # descriptions until those facts can be represented without dialogue.
-        if kind in NATIVE_MESSAGES or native.get("incidentCityState") is not None:
-            native.pop("content", None)
-            native["options"] = [{k: v for k, v in option.items() if k != "text"} for option in native["options"]]
-            for option in native["options"]:
-                if "declaresWar" not in option:
-                    option["declaresWar"] = option["name"] == "DeclareWar" or (
-                        kind == "DemandToNotAttackUs" and option["name"] == "Refuse"
-                    )
+        native.pop("content", None)
+        native["options"] = [{k: v for k, v in option.items() if k != "text"} for option in native["options"]]
         value["nativeDiplomacy"] = native
     if isinstance(value.get("friendship"), dict):
         friendship = dict(value["friendship"])
         friendship["sender"] = friendship["civilizationId"]
-        # On old hosts the only duration is in the native button label.
-        if "duration" in friendship:
-            friendship.pop("content", None)
+        friendship.pop("content", None)
         value["friendship"] = friendship
     return value
 
@@ -105,6 +78,59 @@ def model_view(value: Any) -> Any:
     if not isinstance(value, dict):
         return value
     value = dict(value)
+    # Match owned response shapes: words such as "deadline" and "mode" can also
+    # occur in player-authored promises and must not be stripped indiscriminately.
+    if {"partner", "give", "receive", "canInitiate"} <= value.keys():
+        for key in ("mode", "initiationRule", "negotiation"):
+            value.pop(key, None)
+    if {"proposal", "author", "partner", "status"} <= value.keys():
+        for key in (
+            "mode",
+            "deadlineMillis",
+            "counterofferLimit",
+            "counteroffersRemaining",
+            "nativeRequestId",
+            "awaitingNativeTurn",
+            "pausesGameplay",
+        ):
+            value.pop(key, None)
+        if value.get("failure") == "The negotiation deadline elapsed.":
+            value["failure"] = "This proposal expired."
+        if value.get("unavailableReason") == "The negotiation deadline elapsed.":
+            value["unavailableReason"] = "This proposal expired."
+        if value.get("unavailableReason") == "Awaiting the built-in AI's native turn.":
+            value["unavailableReason"] = "Awaiting a response."
+    if {"civilizationId", "missingLuxuriesOffered", "spareLuxuriesToOffer"} <= value.keys():
+        value.pop("mode", None)
+    if {"id", "kind", "body", "wake"} <= value.keys():
+        value.pop("wake")
+    if "id" in value and isinstance(value.get("type"), str):
+        if value["type"] in {"strategy", "handoff", "belief", "note"}:
+            value.pop("basis", None)
+        elif value["type"] == "contribution" and isinstance(value.get("body"), dict):
+            value["body"] = {k: v for k, v in value["body"].items() if k != "basis"}
+    if {"turn", "canEndTurn"} <= value.keys() or {"offers", "consents", "trades"} <= value.keys():
+        value.pop("negotiation", None)
+    if value.get("kind") == "delta" and isinstance(value.get("set"), dict):
+        value["set"] = {k: v for k, v in value["set"].items() if k != "negotiation"}
+    if {"queries", "commands"} <= value.keys():
+        for key in ("protocolVersion", "completeGameplay", "durableRecovery"):
+            value.pop(key, None)
+    if isinstance(value.get("trade"), dict) and "error" not in value:
+        value.pop("instruction", None)
+    if isinstance(value.get("error"), dict) and value["error"].get("code") == "TURN_REVIEW_REQUIRED":
+        value["error"] = {
+            **value["error"],
+            "message": "Read player_turn for the current turn review, then reconsider END_TURN.",
+        }
+        value.update(
+            applied=False,
+            recoverable=True,
+            recovery={
+                "reads": [{"tool": "player_turn", "arguments": {}}],
+                "instruction": "Refresh the turn review, then issue END_TURN with gameplay choices only.",
+            },
+        )
     if {"handle", "kind", "canAcknowledge"} <= value.keys():
         value = player_alert(value)
     if {"civilizationId", "native"} <= value.keys() and isinstance(value["native"], dict):

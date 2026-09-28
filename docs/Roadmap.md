@@ -1,6 +1,6 @@
 # Current roadmap
 
-Updated September 23, 2026. This is the current work summary; completed sprint
+Updated September 25, 2026. This is the current work summary; completed sprint
 checklists and measurements live in the [archive](archive/README.md).
 
 ## Active acceptance: complete an ordinary Vanilla game
@@ -30,8 +30,14 @@ Implemented from the live review; ordinary-game impact still needs measurement:
   contributions for the next activation. Review notices are separate, advisory
   records. Optional citations retain provenance without certifying an assessment.
   Notebook conflicts do not halt games; command-state checks remain enforced.
-  Format 3 requires a fresh match, with no compatibility or migration path.
-  See the [redesign and validation report](archive/reports/Notebook-redesign-2026-09-23.md).
+  Provisional strategy and next-turn handoff now replace persistent plans.
+  Handoff updates cannot reaffirm strategy or clear its review notices. Format 4
+  requires fresh private stores, without compatibility or migration. See the
+  [current contract](architecture/Structured-memory.md) and
+  [comparison procedure](scenarios/Strategic-positions.md#memory-comparisons).
+  The [24-trial comparison](archive/reports/Strategy-handoff-evaluation-2026-09-25.md)
+  completed 27 player turns without rejected memory edits; it does not yet
+  establish better strategy or faster turns.
 - **Memory telemetry.** Accepted/rejected edits, affected batches, and rejection
   reasons now come from the durable call journal and appear in host exports,
   console summaries, and the TUI separately from API success.
@@ -72,7 +78,7 @@ Current efficiency behavior is documented in
 [agent context](architecture/Agent-context.md),
 [command updates](architecture/Command-state-updates.md),
 [prompt caching](architecture/Prompt-caching.md) and
-[background memory](architecture/Background-turn-memory.md).
+[background reviews](architecture/Background-turn-memory.md).
 The original numbered efficiency tasks and synchronous finalization cleanup are
 implemented; do not reopen them from an archived checklist.
 

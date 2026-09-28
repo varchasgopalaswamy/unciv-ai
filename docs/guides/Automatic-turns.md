@@ -56,7 +56,7 @@ intentional negotiation deadline and native-save verification.
 Agents aim to win using the enabled victory conditions in `player_turn.rules`.
 Prepared exercises instead supply `player_turn.scenario.instructions`.
 The common prompt also covers gameplay rules, receipt/retry handling, and the current turn review. The service owns request IDs and
-adds archive and final-summary instructions once, then selected notes and new events.
+supplies stable instructions, permitted observations and selected private knowledge.
 Restart agent services after changing their prompt code; already running services
 continue using the version they loaded.
 
@@ -106,7 +106,7 @@ selected name and Codex validates support. The installed Codex 0.153.4 protocol
 accepts nonempty effort names rather than prescribing a fixed list. No model or
 effort override is imposed when these flags are omitted.
 
-The scheduler saves its overrides in `runner/run.json`; `resume` keeps them without
+The scheduler saves its overrides in `runner/monitoring.sqlite3`; `resume` keeps them without
 repeating the flags and rejects conflicting overrides. The service also persists
 the resolved model and effort for the player's match, reports them in activation status,
 and reapplies them to each fresh turn conversation and after a restart. Changing
@@ -116,73 +116,26 @@ appear in scheduler output, its saved session metadata, and the service's privat
 players. Interactive `civ-agent agent start` accepts the same two options; see
 [local launchers](Local-launchers.md).
 
-Each activation explicitly identifies the game turn it must play. A report about an
-earlier turn does not satisfy that request. After a committed handoff, the supervisor
-starts the next player while the outgoing conversation may finish private memory
-updates. This memory-only phase gets its own allowance equal to the configured
-activation timeout and preserves the completed turn's game evidence. The same
-civilization's next activation waits for its finalization. Round checkpoints save committed memory and unfinished jobs so the
-next player can start while reflection continues. See [background turn memory](../architecture/Background-turn-memory.md)
-for permissions, accounting, cancellation and recovery.
+Each activation identifies the game turn it must play. After native handoff, the
+next player can start while provider completion and accounting drain. There is
+no model-driven post-turn memory phase. Independent strategy reviews run every K
+turns starting at K (default 5). Other civilizations can play while a review runs,
+but its civilization's next turn waits for the report before starting its model.
+This wait does not consume that turn's timeout.
+See [background reviews](../architecture/Background-turn-memory.md).
 
-## Turn folders and memory
+## Private memory and recorded history
 
-Each civilization gets a readable workspace. For the default local setup:
+Each service keeps its own private memory database, durable review inputs, receipts
+and event journal. Models receive selected information through memory/history
+tools; workspace reports are never an authority. Completed and interrupted
+attempts remain inspectable without generating folders for every turn.
 
-```text
-STATE_DIR/agents/
-  Rome/
-    turn_0/
-      commands.jsonl   Dense commands, observations and receipts from retained attempts
-      summary.md       Short account of actions, reasons and outcomes
-      summary.json     Typed decisions, receipts and memory assessments
-      attempts/
-        attempt_1/
-          commands.jsonl   That attempt's commands and receipts
-          summary.md       Public report and attempt outcome
-          events.jsonl     Full public messages and tool events
-          source.json      Match, civilization, game turn and attempt metadata
-    turn_1/
-      commands.jsonl
-      summary.md
-  Greece/
-    turn_0/
-      commands.jsonl
-      summary.md
-```
-
-Folders, summaries, receipts and the player API use the same zero-based turn number:
-turn 0 is `turn_0`, turn 1 is `turn_1`, and so on.
-Use a fresh state directory for this archive format; older archives are not migrated.
-Names such as Rome and Greece appear directly; unusual characters are encoded so
-names cannot escape their directories or collide with another civilization's name.
-The archive records failed or interrupted attempts as well as completed turns.
-Each attempt retains its diagnostics. Normal interruptions preserve confirmed
-actions, messages and memory; fresh jobs use selected notes and new events.
-Older detailed evidence is available through the gateway's memory/history tools.
-Explicit whole-match restoration archives the abandoned epoch's histories.
-See [chat, memory and recovery](Chat-memory-and-recovery.md) for the current
-concurrency, context and recovery contract.
-
-Each summary has one heading with the turn number returned by the player API.
-`summary.json` records typed decisions, confirmed outcomes, observations and memory
-assessments; `summary.md` renders these in at most 200 words. For example:
-
-```markdown
-# Turn 0
-
-- Queued Granary in c1: Improve the capital's food supply.
-```
-
-After `END_TURN` succeeds, the agent returns its final report without further tool
-calls. The report remains in the transcript. Summaries come from committed records
-and receipts, including after interruption or reconciliation without a final
-response. Retry information and debugging labels remain in detailed attempt files.
-See [structured memory](../architecture/Structured-memory.md) for typed records, retirement, source
-references and the intent field on consequential actions.
-
-Canonical memory lives in private SQLite records. Markdown files are projections;
-edits to these copies cannot change the next job's context.
+The scheduler records sanitized events in `runner/monitoring.sqlite3`, indexed by
+player, zero-based game turn, activation and epoch. Resume rewinds the interrupted
+active turn and uses restored private notes and observations. Earlier operator
+streams remain available under their original epochs. See [monitoring](../architecture/Monitoring.md)
+and [chat, memory and recovery](Chat-memory-and-recovery.md).
 
 ## Live output and saved history
 
@@ -205,9 +158,9 @@ append-only and stays in terminal scrollback.
 
 Completed turns show gameplay/bookkeeping time, game API calls, and input, cached,
 output and reasoning tokens. Cached tokens are part of input tokens; reasoning
-tokens are part of output tokens. Totals use a matching local host export from
-`telemetry/turns.jsonl`. Game API totals count host `tool:` calls once, excluding
-the overlapping `command:` breakdown. If the export is unavailable, timing and
+tokens are part of output tokens. Totals use matching host records from the
+monitoring database. Game API totals count host `tool:` calls once, excluding
+the overlapping `command:` breakdown. If the host record is unavailable, timing and
 usage cover the finalized activation only and are labeled accordingly. Partial
 usage is marked partial. Missing counts display `unavailable`; model-request counts
 are currently available only in offline benchmark traces. Display adds no model
@@ -217,7 +170,7 @@ Add `--verbose` to also display preloaded startup context, tool calls, results,
 streamed tool output and exposed reasoning summaries. Large tool results have
 short terminal previews. Full sanitized history is always saved without terminal
 formatting, regardless of verbosity, and each activation prints its local
-`history.md` path. Errors also print that path for inspection.
+`runner/monitoring.sqlite3` path. Use the dashboard or an explicit export to inspect it.
 
 Color and verbosity apply to the current invocation, so they can be changed on resume:
 
@@ -226,11 +179,10 @@ uv run civ-agent match resume --state-dir /tmp/civ-economy-1 --color never --ver
 ```
 
 The agent service appends accepted events through one ordered background I/O
-worker. Markdown and turn archives refresh periodically (every two seconds plus
-rendering time), and unchanged versions are skipped. Accepted events are durable
-before terminal status. After handoff, derived files finish through asynchronous
-finalization; other terminal paths flush those files before publishing completion.
-Status requests and heartbeats remain on the HTTPS event loop while this work runs.
+worker. Events and accounting are durable before completion. The periodic
+service task samples accounting only; no Markdown, notebooks or turn archives are
+rendered during gameplay or recovery. Status and heartbeat requests remain on the
+HTTPS event loop while durable writes run.
 
 The scheduler requires the current service's history and health APIs. Missing
 terminal history blocks that civilization's next turn. A second stale conflict on one operation,
@@ -245,32 +197,12 @@ duplicate JSON while preserving MCP compatibility; see
 [agent context and tools](../architecture/Agent-context.md#responses-focused-reads-and-commands).
 Existing event logs retain their original contents and cursors.
 
-The supervisor fetches the events over the existing authenticated HTTPS service
-connection and stores them on the scheduler machine under:
-
-```text
-STATE_DIR/runner/history/Rome/
-  source.json                     Match and civilization binding
-  turn_0/
-    commands.jsonl                Finalized copy of the player's detailed archive
-    summary.md                    Finalized copy of the player's short summary
-    attempt_<activation UUID>/
-      history.md                  Readable conversation and tool history
-      events.jsonl                Timestamped events, including streamed deltas
-      source.json                 Match, civilization, turn and activation identifiers
-```
-
-Open `summary.md` to browse the match quickly, or an attempt's `history.md` to inspect
-the complete exposed conversation. The cursor is recovered from the saved events on
-resume, so earlier events are not duplicated or printed again. Final events are
-collected before the activation is cleared. Each agent service also retains its
-original events and Markdown under `SERVICE_DIR/history/<activation hash>/`.
-The default `SERVICE_DIR` is `STATE_DIR/agent-services/Rome`, with the civilization
-name changed for each service. Completed archives are fetched over HTTPS, so the
-scheduler's readable mirror also works when the player workspace is on another
-machine. Separate attempts stay in separate folders. Each civilization folder binds
-to a match epoch and refuses to mix a different match into it.
-The files are owner-only and are never sent to another player.
+The supervisor fetches events over authenticated HTTPS and commits them directly
+to SQLite. Event sequence numbers recover the cursor after restart, so earlier
+events are not duplicated or printed again. Final events are collected before an
+activation is cleared. Each service also keeps its original private journal under
+`SERVICE_DIR/history/<activation hash>/events.jsonl`, enabling remote services and
+saved review inputs. Operator records are owner-only and never sent to a player.
 
 Reasoning entries contain the summaries that Codex exposes. The service requests
 summaries with `summary: "auto"`; availability depends on the model. Raw reasoning
@@ -278,25 +210,23 @@ and encrypted reasoning payloads are excluded. This follows the distinction in t
 [Codex app-server item documentation](https://learn.chatgpt.com/docs/app-server#items).
 Credentials are redacted, and terminal control characters are removed from display.
 
-For conversations from before event logging was enabled, export this match's saved
-Codex histories on the machine holding those conversations:
+To generate readable conversations and telemetry on demand:
 
 ```sh
-uv run civ-agent history export        # Both saved players
-uv run civ-agent history export Greece
+uv run civ-agent history export --state-dir /path/to/match
+uv run civ-agent history export Greece --state-dir /path/to/match
+uv run civ-agent history export Rome --state-dir /path/to/match --notebooks
 ```
 
-The exporter prints readable paths under `STATE_DIR/runner/history-imports/`.
-Each export creates a fresh directory, preserving earlier exports. It reads only
-the conversation IDs recorded in this match's `runner/run.json` and leaves the
-original Codex histories unchanged. `--codex-home`, `--state-dir` and `--output-dir`
-support other local locations. Older conversations without recorded reasoning
-summaries cannot supply those summaries retroactively.
+Each export creates a fresh directory under `STATE_DIR/exports/`. It reads only
+committed monitoring records, without contacting services or starting models.
+`--notebooks` includes notes, turn summaries and receipts from local private
+memory databases, using read-only connections that leave active jobs untouched.
+Use `--output-dir` to choose another destination. Older file-based monitoring is
+not imported; start a fresh match with the current version.
 
-Start this workflow with a new match directory after updating the scheduler and both
-services. Earlier scheduler formats are rejected rather than silently migrating an
-interrupted game. Existing match logs and Codex conversations are left untouched;
-the legacy exporter above remains available for reviewing them.
+The file-to-database import preserves the current turn-recovery format. Matches
+with earlier checkpoint or memory formats require a fresh match directory.
 
 ## Pause, inspect and resume
 
@@ -325,20 +255,19 @@ the host's durable handoff counter. If `END_TURN` committed, it retains the comp
 turn even when its response never reached the agent. The finalized summary can then
 be used for later turns.
 
-If no handoff committed, confirmed commands and memory still remain. The service
-settles uncertain requests using exact host receipts before the scheduler starts
-fresh computation. It does not rewind the player automatically.
+If no handoff committed, resume restores the coordinated checkpoint from the start
+of that player's turn and starts a fresh conversation. Messages and agent state
+are restored together with the game. The old attempt remains in operator archives.
+A completed handoff is retained even when its response was lost.
 
-For the emergency option, stop the supervisor and run `civ-agent match rollback
---state-dir DIR --round N`. This restores every player and the game from a completed
-round checkpoint under a new epoch, retaining usage and operator audit records.
-A partial restore stays fenced until the same rollback command finishes. Details
-and prerequisites are in [the recovery runbook](Chat-memory-and-recovery.md).
+Pending strategic reviewers restart from their durable frozen inputs. The default is three
+attempts per task; exhaustion stops for inspection. Increase `--review-attempts` on
+`game resume` (or the agent server) to authorize more attempts. Operator pauses and exhausted time budgets do
+not start additional retries.
 
-If the host reports `HALTED` after a mutation or checkpoint error, stop and restart
-the host from its durable checkpoint first, then run `civ-agent match resume`. An
-in-memory rollback cannot resolve an uncertain disk write; the restored checkpoint
-determines whether `END_TURN` committed. Resume cannot clear `HALTED` itself.
+A partial restore stays fenced and the next resume continues it. A `HALTED` host
+must first restart from its native checkpoint so the scheduler can determine
+whether the handoff committed. See [turn recovery](../architecture/Turn-recovery.md).
 
 Limits and usage persist across resume. Wall time includes paused time and downtime.
 Increase a limit explicitly when continuing a completed short run:
@@ -424,10 +353,10 @@ activation. Authenticated control redirects and plaintext URLs are rejected.
 
 ## State and remaining limits
 
-`STATE_DIR/runner/run.json` stores explicit civilization conversation IDs, in-flight
+The `state/run` record in `STATE_DIR/runner/monitoring.sqlite3` stores explicit civilization conversation IDs, in-flight
 activation, original start/deadline, consumed invocations, usage and stop reason.
 Agent services keep durable activation records and Codex keeps each turn's conversation
-history. Each civilization's working directory holds its own turn archives and notes.
+history. Each civilization has a separate private memory database and service journal.
 Separate directories are not a filesystem security boundary: trusted local services
 still inherit the user's Codex login, configuration and available tools.
 
@@ -437,10 +366,11 @@ the match epoch, server instance, active civilization and durable handoff counte
 under the same executor lock as gameplay. Only one lease owns the match. A handoff
 counter increments per player turn; it is operator metadata, absent from player
 snapshots. Epoch and receipts persist in checkpoints; activation tokens do not.
-Scheduled recovery preserves confirmed actions and reconciles exact requests.
-Round manifests coordinate the native game, shared communication and each private
-memory store. Explicit whole-match restoration creates a new epoch and revokes
-the abandoned timeline's credentials; partial restoration cannot resume gameplay.
+Recovery reconciles durable handoffs before deciding what to replay. The current
+turn boundary coordinates the native game, shared communication and each private
+memory store. Resume rewinds an interrupted turn, creates a new epoch and revokes
+the abandoned timeline's credentials. Completed turns stay committed; partial
+restoration cannot resume gameplay.
 
 Automated tests exercise HTTPS authentication/certificates, real engine development
 over twenty rounds with restart, stale activations, duplicate schedulers, lease
@@ -453,13 +383,12 @@ surfaces remain outside the implemented gameplay slice.
 
 A winning capture can finish the game without an `END_TURN`. The supervisor checks
 that authoritative terminal state before scheduling further gameplay. It drains the active
-service, archives committed final commands with a terminal outcome, and preserves
+service, records committed final commands with a terminal outcome, and preserves
 the existing handoff count. Capture decisions remain playable until resolved.
 
 The operator-only `results` response contains separately filtered results for each
 human civilization. The supervisor sends each service only its own payload over
-HTTPS; the service writes `result.json` and `result.md` in that civilization's
-workspace. These files include the outcome, pending combat reports and complete informational
+HTTPS; the service durably stores its private `result.json`. This record includes the outcome, pending combat reports and complete informational
 popup text, including defeated leaders' final messages. This starts
 no extra model turn. Manual sessions can use the read-only `player_result` tool.
 

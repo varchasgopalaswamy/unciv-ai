@@ -15,6 +15,38 @@ import java.util.concurrent.TimeUnit
 
 class GameLaunchIntegrationTest {
     @Test
+    fun `ordinary launch accepts custom map and civilization roster without source changes`() {
+        val root = Files.createTempDirectory("custom-launch-")
+        try {
+            val checkpoint = root.resolve("checkpoint.json")
+            launch(
+                root,
+                "custom",
+                listOf(
+                    "--new-game", "--checkpoint", checkpoint.toString(), "--seed", "42",
+                    "--agent-player", "Germany", "--agent-player", "Rome", "--built-in-ai", "China",
+                    "--map-radius", "26", "--city-states", "8",
+                ),
+                0,
+            )
+            val original = Files.readString(checkpoint)
+            val saved = Json.parseToJsonElement(original).jsonObject
+            val game = Json.parseToJsonElement(saved.getValue("gameJson").jsonPrimitive.content).jsonObject
+            val parameters = game.getValue("gameParameters").jsonObject
+            assertEquals("8", parameters.getValue("numberOfCityStates").jsonPrimitive.content)
+            val players = parameters.getValue("players").jsonArray.map { it.jsonObject }
+            assertEquals(listOf("Germany", "Rome", "China"), players.map { it.getValue("chosenCiv").jsonPrimitive.content })
+            assertTrue(players.take(2).all { it.getValue("playerType").jsonPrimitive.content == "Human" })
+            val map = game.getValue("tileMap").jsonObject.getValue("mapParameters").jsonObject
+            assertEquals("26", map.getValue("mapSize").jsonObject.getValue("radius").jsonPrimitive.content)
+            launch(root, "resume-custom", listOf("--resume-checkpoint", checkpoint.toString()), 0)
+            assertEquals(original, Files.readString(checkpoint))
+        } finally {
+            deleteTreeWithoutFollowingLinks(root)
+        }
+    }
+
+    @Test
     fun `agreement lifecycle CLI creates resumes and rejects a mismatched scenario`() {
         val root = Files.createTempDirectory("agreement-lifecycle-launch-")
         try {
@@ -59,7 +91,7 @@ class GameLaunchIntegrationTest {
             launch(root, "create", listOf("--new-game", "--checkpoint", checkpoint.toString(), "--scenario", "trade-cycle"), 0)
             val original = Files.readString(checkpoint)
             val saved = Json.parseToJsonElement(original).jsonObject
-            assertEquals("4", saved.getValue("formatVersion").jsonPrimitive.content)
+            assertEquals("6", saved.getValue("formatVersion").jsonPrimitive.content)
             val game = Json.parseToJsonElement(saved.getValue("gameJson").jsonPrimitive.content).jsonObject
             val map = game.getValue("tileMap").jsonObject
             val parameters = map.getValue("mapParameters").jsonObject

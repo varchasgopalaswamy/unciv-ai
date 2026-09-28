@@ -14,7 +14,13 @@ import com.unciv.models.ruleset.RulesetCache
 
 /** Ordinary engine creation, with human slots so external players retain control. */
 internal object VanillaGameSetup {
-    fun create(seed: Long, cityStates: Int = 0, builtInAI: List<String> = emptyList()): GameInfo {
+    fun create(
+        seed: Long,
+        cityStates: Int = 0,
+        builtInAI: List<String> = emptyList(),
+        agentPlayers: List<String> = listOf("Rome", "Greece", "France"),
+        size: MapSize = MapSize.Small,
+    ): GameInfo {
         val parameters = GameParameters().apply {
             baseRuleset = BaseRuleset.Civ_V_Vanilla.fullName
             difficulty = "Prince"
@@ -22,9 +28,12 @@ internal object VanillaGameSetup {
             startingEra = "Ancient era"
             numberOfCityStates = cityStates
             shufflePlayerOrder = false
-            players = arrayListOf(Player("Rome", PlayerType.Human), Player("Greece", PlayerType.Human), Player("France", PlayerType.Human))
             val ruleset = RulesetCache.getComplexRuleset(this)
-            require(builtInAI.distinct().size == builtInAI.size && builtInAI.all { it !in setOf("Rome", "Greece", "France") && ruleset.nations[it]?.isMajorCiv == true }) { "Built-in AI civilizations must be distinct major nations other than Rome, Greece and France" }
+            val nations = agentPlayers + builtInAI
+            require(agentPlayers.isNotEmpty() && nations.distinct().size == nations.size && nations.all { ruleset.nations[it]?.isMajorCiv == true }) {
+                "Players must be distinct major nations, with at least one externally controlled player"
+            }
+            players = ArrayList(agentPlayers.map { Player(it, PlayerType.Human) })
             players.addAll(builtInAI.map { Player(it, PlayerType.AI) })
             victoryTypes = ArrayList(ruleset.victories.keys)
             maxTurns = ruleset.speeds.getValue(speed).numTotalTurns()
@@ -32,7 +41,7 @@ internal object VanillaGameSetup {
         val map = MapParameters().apply {
             baseRuleset = parameters.baseRuleset
             type = MapType.pangaea
-            mapSize = MapSize.Small
+            mapSize = size
             this.seed = seed
         }
         return GameStarter.startNewGame(GameSetupInfo(parameters, map))

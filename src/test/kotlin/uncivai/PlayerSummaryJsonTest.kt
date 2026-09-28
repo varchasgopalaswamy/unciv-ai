@@ -89,9 +89,7 @@ class PlayerSummaryJsonTest {
                 "completedReceipt",
                 "summary",
                 "cities",
-                "renameCity",
                 "freeGreatPersonChoice",
-                "chooseFreeGreatPerson",
             ),
             sessionMethods.keys,
         )
@@ -105,7 +103,7 @@ class PlayerSummaryJsonTest {
         assertEquals(uncivai.player.MissionPreview::class.java, sessionMethods.getValue("missionPreview").returnType)
         assertEquals(listOf(uncivai.player.MissionPreviewRequest::class.java), sessionMethods.getValue("missionPreview").parameterTypes.toList())
         assertEquals(uncivai.player.VictoryProgress::class.java, sessionMethods.getValue("victoryProgress").returnType)
-        assertEquals(listOf(List::class.java), sessionMethods.getValue("victoryProgress").parameterTypes.toList())
+        assertEquals(listOf(uncivai.player.VictoryProgressRequest::class.java), sessionMethods.getValue("victoryProgress").parameterTypes.toList())
         assertEquals(PlayerSummary::class.java, sessionMethods.getValue("summary").returnType)
         assertEquals(listOf(uncivai.player.TurnCommandRequest::class.java), sessionMethods.getValue("completedReceipt").parameterTypes.toList())
         assertEquals(uncivai.player.TurnCommandReceipt::class.java, sessionMethods.getValue("completedReceipt").returnType)
@@ -114,26 +112,11 @@ class PlayerSummaryJsonTest {
             uncivai.player.OwnedCitiesSnapshot::class.java,
             sessionMethods.getValue("cities").returnType,
         )
-        assertEquals(
-            listOf(uncivai.player.RenameCityRequest::class.java),
-            sessionMethods.getValue("renameCity").parameterTypes.toList(),
-        )
-        assertEquals(
-            uncivai.player.RenameCityReceipt::class.java,
-            sessionMethods.getValue("renameCity").returnType,
-        )
+
         assertEquals(0, sessionMethods.getValue("freeGreatPersonChoice").parameterCount)
         assertEquals(
             uncivai.player.FreeGreatPersonSnapshot::class.java,
             sessionMethods.getValue("freeGreatPersonChoice").returnType,
-        )
-        assertEquals(
-            listOf(uncivai.player.ChooseFreeGreatPersonRequest::class.java),
-            sessionMethods.getValue("chooseFreeGreatPerson").parameterTypes.toList(),
-        )
-        assertEquals(
-            uncivai.player.ChooseFreeGreatPersonReceipt::class.java,
-            sessionMethods.getValue("chooseFreeGreatPerson").returnType,
         )
     }
 

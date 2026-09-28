@@ -1,6 +1,8 @@
-"""Format-3 notebook, observation journal and command recovery schema."""
+"""Notebook, observation journal and turn recovery schema."""
 
 from sqlalchemy import Column, ForeignKey, Index, Integer, MetaData, Table, Text, and_, literal_column, select
+
+FORMAT_VERSION = 7
 
 metadata = MetaData()
 meta = Table(
@@ -63,7 +65,19 @@ heads = Table(
 inbox = Table("inbox", metadata, Column("id", Integer, ForeignKey(events.c.id), primary_key=True, nullable=True))
 outgoing = Table("outgoing", metadata, Column("id", Text, ForeignKey(outbox.c.id), primary_key=True, nullable=True))
 live_jobs = Table("live_jobs", metadata, Column("id", Text, ForeignKey(jobs.c.id), primary_key=True, nullable=True))
-export_jobs = Table("export_jobs", metadata, Column("id", Text, ForeignKey(jobs.c.id), primary_key=True, nullable=True))
+reviews = Table(
+    "reviews",
+    metadata,
+    Column("job", Text, ForeignKey(jobs.c.id), primary_key=True),
+    Column("turn", Integer, nullable=False),
+    Column("status", Text, nullable=False),
+    Column("inputs", Text),
+    Column("settings", Text, nullable=False),
+    Column("timeout", Integer, nullable=False),
+    Column("attempts", Integer, nullable=False),
+    Column("advice", Text),
+    Column("error", Text),
+)
 Index("records_by_job", records.c.job)
 Index("jobs_by_turn", jobs.c.game_turn, jobs.c.purpose)
 Index("outbox_by_job", outbox.c.job)

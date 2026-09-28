@@ -18,14 +18,6 @@ class EventPage(TypedDict):
     available: bool
 
 
-class ExportedHistory(TypedDict):
-    civilization: str
-    threadId: str
-    history: str
-    events: str
-    reasoningSummaries: int
-
-
 class AgentProcess(Protocol):
     async def start(self, token: str, model: str | None) -> None: ...
 

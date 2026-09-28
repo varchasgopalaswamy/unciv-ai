@@ -7,6 +7,7 @@ import sqlite3
 from collections import Counter
 from pathlib import Path
 
+from civ_agent.monitoring import path_for, read_collection
 from civ_agent.observations import DetailQuery, project_detail
 from civ_agent.proposal_gateway import public_result
 from civ_agent.tls import write_private_json
@@ -117,7 +118,7 @@ def verify(root, sessions):
     metrics = measure(calls, snapshots)
     telemetry = next(
         row["job"]["telemetry"]
-        for row in map(json.loads, (root / "telemetry/jobs.jsonl").read_text().splitlines())
+        for row in read_collection(path_for(root), "jobs")
         if row["jobId"] == record["activationId"]
     )
     counts = Counter(name for call_id, name, _, _ in call_rows if not call_id.startswith("startup:"))
@@ -138,7 +139,7 @@ def verify(root, sessions):
         local = json.loads(db.execute("SELECT payload FROM jobs WHERE id=?", (record["activationId"],)).fetchone()[0])
     assert local["usage"] == record["usage"]
     assert local["telemetry"]["apiCalls"] == telemetry["apiCalls"]
-    windows = list(map(json.loads, (root / "telemetry/host-api.jsonl").read_text().splitlines()))
+    windows = read_collection(path_for(root), "host-api")
     metrics["hostApiWindows"] = [
         {"handoff": row["handoff"], "gameTurn": row["gameTurn"], "apiCalls": row["actors"]["Rome"]}
         for row in windows
@@ -155,11 +156,7 @@ def verify(root, sessions):
         assert metrics["namedReads"].get("construction_details")
         assert metrics["commandsMatchingDeliveredOffers"].get("SET_RESEARCH_QUEUE")
         assert metrics["commandsMatchingDeliveredOffers"].get("QUEUE_CONSTRUCTION")
-        turn = next(
-            row
-            for row in map(json.loads, (root / "telemetry/turns.jsonl").read_text().splitlines())
-            if record["activationId"] in row["jobs"]
-        )
+        turn = next(row for row in read_collection(path_for(root), "turns") if record["activationId"] in row["jobs"])
         assert turn["accountingComplete"] and turn["turn"]["status"] == "completed"
         assert turn["agentCalls"] == telemetry["apiCalls"]
         window = next(

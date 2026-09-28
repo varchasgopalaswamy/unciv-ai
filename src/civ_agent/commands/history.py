@@ -1,217 +1,116 @@
-"""Export this match's existing Codex conversations into private, readable history."""
+"""Explicit operator exports of recorded conversations and telemetry."""
 
 import argparse
-import hashlib
 import json
 import os
-import re
 import sys
 import tempfile
 from pathlib import Path
 
-from civ_agent.agent_history import HistoryLog
-from civ_agent.protocol import ExportedHistory
-from civ_agent.tls import private_directory, write_private_json
+from sqlalchemy import select
+from sqlalchemy.exc import SQLAlchemyError
+
+from civ_agent.memory_exports import export_files, notebook_files
+from civ_agent.monitoring import get_record, path_for, read_database, records
+from civ_agent.runner_history import render_markdown
+from civ_agent.tls import private_directory, regular_file, write_private, write_private_json
+from civ_agent.turn_archive import civilization_directory_name
 
 
 class ExportError(ValueError):
     pass
 
 
-def text_content(content):
-    if isinstance(content, str):
-        return content
-    if not isinstance(content, list):
-        return ""
-    return "\n".join(
-        item["text"]
-        for item in content
-        if isinstance(item, dict)
-        and item.get("type") in {"input_text", "output_text", "text", "summary_text"}
-        and isinstance(item.get("text"), str)
-    )
-
-
-def public_events(source, thread_id):
-    """Read only public conversation items; never export system/developer prompts or raw reasoning."""
-    identified = False
-    with source.open("rb") as stream:
-        for line in stream:
-            try:
-                entry = json.loads(line)
-            except (ValueError, UnicodeError):
-                raise ExportError(
-                    "The Codex history contains an incomplete or invalid record; retry after the activation stops."
-                ) from None
-            payload = entry.get("payload", {})
-            if not isinstance(payload, dict):
-                continue
-            if entry.get("type") == "session_meta":
-                if payload.get("id") != thread_id:
-                    raise ExportError("Conversation identity does not match the runner's saved thread ID.")
-                identified = True
-            if not identified:
-                raise ExportError("Codex history is missing its conversation identity.")
-            source_time = entry.get("timestamp")
-            if entry.get("type") == "event_msg" and payload.get("type") in {
-                "task_started",
-                "task_complete",
-                "turn_aborted",
-            }:
-                # task_complete repeats the final message, already recorded as a response item.
-                yield (
-                    "lifecycle",
-                    {"phase": payload["type"], "turnId": payload.get("turn_id"), "sourceTime": source_time},
+def export_history(state_dir: Path, output_dir: Path, civilization: str | None = None, *, notebooks: bool = False):
+    """Export committed monitoring rows without contacting a service or the model."""
+    with read_database(path_for(state_dir)) as db:
+        query = select(records.c.payload).where(records.c.collection == "streams")
+        if civilization is not None:
+            query = query.where(records.c.civilization == civilization)
+        sources = [json.loads(value) for value in db.scalars(query.order_by(records.c.revision))]
+        if not sources:
+            raise ExportError("No recorded conversations match this selection.")
+        export_root = Path(tempfile.mkdtemp(prefix="export-", dir=private_directory(output_dir)))
+        entries = []
+        for source in sources:
+            directory = export_root
+            for component in (
+                source["epoch"],
+                source["civilization"],
+                f"turn_{source['gameTurn']}",
+                source["activationId"],
+            ):
+                directory = private_directory(directory / civilization_directory_name(component))
+            values = db.scalars(
+                select(records.c.payload)
+                .where(
+                    records.c.collection == "events",
+                    records.c.epoch == source["epoch"],
+                    records.c.civilization == source["civilization"],
+                    records.c.activation == source["activationId"],
                 )
-            if entry.get("type") != "response_item":
-                continue
-            kind = payload.get("type")
-            common = {"itemId": payload.get("call_id") or payload.get("id"), "sourceTime": source_time}
-            if kind == "message":
-                role = payload.get("role")
-                if (
-                    role not in {"user", "assistant"}
-                    or payload.get("phase") in {"analysis", "reasoning"}
-                    or payload.get("channel") == "analysis"
-                ):
-                    continue
-                text = text_content(payload.get("content"))
-                if (
-                    role == "user"
-                    and not text.startswith("You are playing Unciv as ")
-                    and "Use only the civ MCP tools" not in text
-                ):
-                    # Environment bootstrap and unrelated injected context are not game prompts.
-                    continue
-                if text:
-                    yield (
-                        "user_message" if role == "user" else "assistant_message",
-                        {**common, "text": text, "phase": payload.get("phase")},
-                    )
-            elif kind == "reasoning":
-                summary = text_content(payload.get("summary"))
-                if summary:
-                    yield "reasoning_summary", {**common, "text": summary}
-            elif kind in {"function_call", "custom_tool_call"}:
-                yield (
-                    "tool_call",
-                    {
-                        **common,
-                        "type": kind,
-                        "tool": payload.get("name"),
-                        "arguments": payload.get("arguments", payload.get("input")),
-                    },
-                )
-            elif kind in {"function_call_output", "custom_tool_call_output"}:
-                yield "tool_result", {**common, "type": kind, "output": payload.get("output")}
-
-
-def credentials_to_redact(state_dir):
-    """Read this match's known credentials only, never the user's Codex authentication files."""
-    secrets = []
-    for path in [state_dir / "operator.json", state_dir / "players.json"]:
-        if path.exists():
-            value = json.loads(path.read_text())
-            if isinstance(value.get("token"), str):
-                secrets.append(value["token"])
-            for player in value.get("players", []):
-                if isinstance(player.get("token"), str):
-                    secrets.append(player["token"])
-    for endpoint in (state_dir / "agent-services").glob("*/endpoint.json"):
-        value = json.loads(endpoint.read_text())
-        token_path = Path(value["tokenFile"]).expanduser()
-        if token_path.is_file():
-            token = json.loads(token_path.read_text()).get("token")
-            if isinstance(token, str):
-                secrets.append(token)
-    return secrets
-
-
-def export_history(
-    state_dir: Path, codex_home: Path, output_dir: Path, civilization: str | None = None
-) -> list[ExportedHistory]:
-    state = json.loads((state_dir / "runner/run.json").read_text())
-    sessions = state.get("sessions", {})
-    if not isinstance(sessions, dict) or not sessions:
-        raise ExportError("The runner has no saved agent conversation IDs.")
-    names = list(sessions)
-    if civilization:
-        names = [name for name in names if name.casefold() == civilization.casefold()]
-        if len(names) != 1:
-            raise ExportError("Civilization does not uniquely match a saved runner conversation.")
-    selected = []
-    for name in names:
-        thread_id = sessions[name].get("threadId")
-        if not isinstance(thread_id, str) or not re.fullmatch(r"[A-Za-z0-9-]{1,128}", thread_id):
-            raise ExportError("A selected civilization has no valid saved conversation ID.")
-        matches = list((codex_home / "sessions").rglob("*" + thread_id + ".jsonl"))
-        if len(matches) != 1:
-            raise ExportError(
-                f"Cannot find a unique local Codex conversation for {name}. Run this export on its agent machine."
+                .order_by(records.c.sequence)
             )
-        selected.append((name, thread_id, matches[0]))
-    secrets = credentials_to_redact(state_dir)
-    export_root = Path(tempfile.mkdtemp(prefix="import-", dir=private_directory(output_dir)))
-    entries: list[ExportedHistory] = []
-    for name, thread_id, source in selected:
-        directory = export_root / hashlib.sha256(name.encode()).hexdigest()
-        log = HistoryLog(directory, secrets)
-        log.append(
-            "lifecycle",
-            {
-                "phase": "IMPORTED",
-                "civilization": name,
-                "epoch": state.get("epoch"),
-                "threadId": thread_id,
-                "note": "Existing public conversation items; reasoning summaries are included only when Codex recorded them.",
-            },
-        )
-        summaries = 0
-        for kind, data in public_events(source, thread_id):
-            log.append(kind, data, event_time=data.get("sourceTime"))
-            summaries += kind == "reasoning_summary"
-        log.render()
-        entries.append(
-            {
-                "civilization": name,
-                "threadId": thread_id,
-                "history": str(log.markdown),
-                "events": str(log.path),
-                "reasoningSummaries": summaries,
-            }
-        )
-    write_private_json(export_root / "index.json", {"epoch": state.get("epoch"), "conversations": entries})
+            events = [json.loads(value) for value in values]
+            write_private(directory / "events.jsonl", "".join(json.dumps(event) + "\n" for event in events).encode())
+            write_private(directory / "history.md", render_markdown(source, events).encode())
+            entries.append(
+                {**source, "history": str(directory / "history.md"), "events": str(directory / "events.jsonl")}
+            )
+        for collection in ("turns", "jobs", "host-api", "diplomacy"):
+            query = select(records.c.payload).where(records.c.collection == collection)
+            if civilization is not None and collection != "diplomacy":
+                query = query.where(records.c.civilization == civilization)
+            values = db.scalars(query.order_by(records.c.revision))
+            if civilization is not None and collection == "diplomacy":
+                values = (value for value in values if civilization in json.loads(value)["participants"])
+            write_private(export_root / (collection + ".jsonl"), "".join(value + "\n" for value in values).encode())
+        # These are operator reports; the result may include every player's score.
+        for name in ("run", "result"):
+            write_private_json(export_root / (name + ".json"), get_record(db, "state", name) or {})
+        write_private_json(export_root / "index.json", {"conversations": entries})
+    if notebooks:
+        for name in dict.fromkeys(source["civilization"] for source in sources):
+            service = state_dir / "agent-services" / civilization_directory_name(name)
+            memory = service / "civilization/memory.sqlite3"
+            if not memory.exists():
+                raise ExportError(f"No local private notebook for {name}; export it on the agent machine.")
+            with read_database(memory) as db:
+                files = notebook_files(db)
+            destination = private_directory(export_root / "notebooks" / civilization_directory_name(name))
+            export_files(destination, destination, files)
+            result = service / "result.json"
+            if result.exists():
+                regular_file(result, private=True)
+                write_private(destination / "result.json", result.read_bytes())
     return entries
 
 
 def parser(*, add_help: bool = True) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__, add_help=add_help)
-    parser.add_argument("civilization", nargs="?", help="Export one player, e.g. Greece (default: all saved players)")
     parser.add_argument(
         "--state-dir", type=Path, default=Path(os.environ.get("UNCIV_HOST_DIR", "~/.local/state/unciv-host/demo"))
     )
-    parser.add_argument("--codex-home", type=Path, default=Path(os.environ.get("CODEX_HOME", "~/.codex")))
+    parser.add_argument("civilization", nargs="?", help="Export one player (default: all players and epochs)")
     parser.add_argument(
-        "--output-dir", type=Path, help="Default: STATE_DIR/runner/history-imports; each export creates a new directory"
+        "--notebooks", action="store_true", help="Also export the selected local players' private notebooks"
     )
+    parser.add_argument("--output-dir", type=Path, help="Default: STATE_DIR/exports; creates a new directory")
     return parser
 
 
 def run(args: argparse.Namespace) -> int:
     try:
         state_dir = args.state_dir.expanduser().resolve()
-        output = args.output_dir.expanduser().resolve() if args.output_dir else state_dir / "runner/history-imports"
-        entries = export_history(state_dir, args.codex_home.expanduser().resolve(), output, args.civilization)
-        for entry in entries:
-            print(
-                f"{entry['civilization']}: {entry['history']} ({entry['reasoningSummaries']} recorded reasoning summaries)"
-            )
+        output = args.output_dir.expanduser().resolve() if args.output_dir else state_dir / "exports"
+        for entry in export_history(state_dir, output, args.civilization, notebooks=args.notebooks):
+            print(f"{entry['civilization']} turn {entry['gameTurn']}: {entry['history']}")
         return 0
-    except (OSError, ValueError, KeyError, TypeError) as error:
+    except (OSError, ValueError, KeyError, TypeError, SQLAlchemyError) as error:
         message = (
             str(error)
             if isinstance(error, ExportError)
-            else "Cannot export history; check the state, Codex directory and output permissions."
+            else "Cannot read or write monitoring records; check paths, permissions and storage."
         )
-        print("civ-agent history export: " + message, file=sys.stderr)
+        print("civ-agent history: " + message, file=sys.stderr)
         return 2

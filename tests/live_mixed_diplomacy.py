@@ -261,6 +261,7 @@ async def exercise(root: Path, model: str, reasoning: str, resume: bool = False)
                         "confirmedHandoff": before["handoff"] + 1,
                     },
                 )
+                assert finalized is not None
                 assert finalized["committedHandoff"] == before["handoff"] + 1
                 cursor = 0
                 with (root / f"{civ}-{before['turn']}-events.jsonl").open("w") as log:

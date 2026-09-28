@@ -7,7 +7,7 @@ from typing import Literal
 
 from pydantic import Field
 
-from civ_agent.observations import DetailQuery, project_detail
+from civ_agent.observations import EXTERNAL_DETAIL_TOOLS, DetailQuery, project_detail
 from civ_agent.protocol import JsonObject
 from civ_agent.schemas import BoundaryModel
 
@@ -20,6 +20,7 @@ COLLECTION_KEYS = {
     "notifications": "handle",
     "diplomacy": "civilizationId",
     "cityStates": "civilizationId",
+    "wonderOpportunities": "name",
 }
 
 
@@ -93,7 +94,7 @@ def overview_update(previous: JsonObject | None, current: JsonObject, invalidate
 def apply_overview_update(previous: JsonObject | None, update: JsonObject) -> JsonObject:
     """Reference reducer for consumers/tests. A replay never reapplies an old delta."""
     if previous is not None:
-        previous = {key: value for key, value in previous.items() if key != "memoryUpdates"}
+        previous = {key: value for key, value in previous.items() if key not in {"memoryUpdates", "invalidatedDetails"}}
     if update["kind"] == "full":
         return copy.deepcopy(update["overview"])
     if update["kind"] != "delta" or previous is None:
@@ -119,6 +120,14 @@ def apply_overview_update(previous: JsonObject | None, update: JsonObject) -> Js
 def changed_details(previous: JsonObject | None, current: JsonObject, reads: list[DetailQuery]) -> list[DetailQuery]:
     changed = []
     for query in reads:
+        if query.tool in EXTERNAL_DETAIL_TOOLS:
+            if (
+                previous is None
+                or previous.get("revision") != current.get("revision")
+                or not same_json(previous.get("communication"), current.get("communication"))
+            ):
+                changed.append(query)
+            continue
         if (
             previous is None
             or (

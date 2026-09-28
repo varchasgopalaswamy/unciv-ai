@@ -11,6 +11,28 @@ import java.nio.file.Files
 
 class HostCliTest {
     @Test
+    fun `custom size options are exclusive and only apply to creation`() {
+        val directory = Files.createTempDirectory("host-cli-map-")
+        try {
+            val checkpoint = directory.resolve("game.json")
+            val base = listOf("--new-game", "--checkpoint", checkpoint.toString(), "--data-dir", directory.toString())
+            lateinit var parsed: CliOptions
+            HostCli { parsed = it }.parse(base + listOf("--map-size", "Large", "--agent-player", "Germany"))
+            assertEquals("Large", parsed.mapSize)
+            assertEquals(listOf("Germany"), parsed.agentPlayers)
+            for (extra in listOf(listOf("--map-radius", "1"), listOf("--map-radius", "26", "--map-size", "Large"), listOf("--map-size", "Large", "--scenario", "trade-cycle"))) {
+                assertThrows(UsageError::class.java) { HostCli { error("Invalid map reached startup") }.parse(base + extra) }
+            }
+            Files.createFile(checkpoint)
+            assertThrows(UsageError::class.java) {
+                HostCli { error("Resume map reached startup") }.parse(listOf("--resume-checkpoint", checkpoint.toString(), "--data-dir", directory.toString(), "--map-size", "Large"))
+            }
+        } finally {
+            deleteTreeWithoutFollowingLinks(directory)
+        }
+    }
+
+    @Test
     fun `city state count applies only to new ordinary games`() {
         val directory = Files.createTempDirectory("host-cli-city-states-")
         try {

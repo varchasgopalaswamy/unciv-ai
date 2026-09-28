@@ -4,11 +4,12 @@ import argparse
 from collections.abc import Sequence
 from importlib.metadata import version
 
-from civ_agent import match_recovery, match_watch, scheduler
+from civ_agent import match_watch, scheduler
 from civ_agent.commands import (
     agent,
     agent_server,
     chat,
+    game,
     history,
     host,
     inspect,
@@ -23,6 +24,11 @@ def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(prog="civ-agent", description=__doc__)
     result.add_argument("--version", action="version", version=f"%(prog)s {version('civ-agent')}")
     groups = result.add_subparsers(dest="command", required=True)
+
+    games = groups.add_parser("game", help="Launch a complete local game").add_subparsers(required=True)
+    for action in ("start", "resume"):
+        command = games.add_parser(action, parents=[game.parser(add_help=False, action=action)])
+        command.set_defaults(handler=game.run)
 
     host_commands = groups.add_parser("host", help="Start the game host or inspect a saved game").add_subparsers(
         required=True
@@ -66,12 +72,6 @@ def parser() -> argparse.ArgumentParser:
     for action, description in descriptions.items():
         command = matches.add_parser(action, parents=[scheduler.parser(add_help=False)], help=description)
         command.set_defaults(handler=scheduler.run, action=action)
-    rollback = matches.add_parser(
-        "rollback",
-        parents=[match_recovery.parser(add_help=False)],
-        help="Emergency restoration of every player and the game to a completed round checkpoint",
-    )
-    rollback.set_defaults(handler=match_recovery.run)
     verify_trade = matches.add_parser(
         "verify-trade-cycle",
         parents=[verify_trade_cycle.parser(add_help=False)],
@@ -95,7 +95,7 @@ def parser() -> argparse.ArgumentParser:
 
     histories = groups.add_parser("history", help="Export recorded player conversations").add_subparsers(required=True)
     export = histories.add_parser(
-        "export", parents=[history.parser(add_help=False)], help="Export existing public Codex history"
+        "export", parents=[history.parser(add_help=False)], help="Export recorded conversations and telemetry on demand"
     )
     export.set_defaults(handler=history.run)
     messages = groups.add_parser("chat", help="Public/private messages and social commitments").add_subparsers(

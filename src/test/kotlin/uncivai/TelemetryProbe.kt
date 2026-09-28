@@ -8,13 +8,23 @@ import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.long
+import uncivai.player.PlayerHost
 import uncivai.player.TurnCommandKind
 import uncivai.player.TurnCommandRequest
-import java.nio.file.Files
 import java.nio.file.Path
+import java.sql.DriverManager
 
 /** Real HTTPS calls, ordinary native AI turns, and telemetry after a checkpoint restart. */
 object TelemetryProbe {
+    private fun monitoring(root: Path, collection: String): List<JsonObject> = DriverManager.getConnection("jdbc:sqlite:${root.resolve("runner/monitoring.sqlite3")}").use { db ->
+        db.prepareStatement("SELECT payload FROM monitor_records WHERE collection=? ORDER BY revision").use { statement ->
+            statement.setString(1, collection)
+            statement.executeQuery().use { rows ->
+                buildList { while (rows.next()) add(Json.parseToJsonElement(rows.getString(1)).jsonObject) }
+            }
+        }
+    }
+
     @JvmStatic
     fun main(args: Array<String>) {
         val root = Path.of(args.single())
@@ -59,7 +69,7 @@ object TelemetryProbe {
                 check(runtime.game.getCivilization("Egypt").cities.isNotEmpty()) { "Native AI did not take its ordinary turn" }
                 val status = api.status()
                 check(status.modelUsage["input_tokens"] == 300L && status.modelUsage["output_tokens"] == 90L)
-                val turns = Files.readAllLines(root.resolve("telemetry/turns.jsonl")).map { Json.parseToJsonElement(it).jsonObject }
+                val turns = monitoring(root, "turns")
                 check(turns.size == 3 && turns.all { it.getValue("usage").jsonObject.getValue("total_tokens").jsonPrimitive.long == 130L })
                 check(turns.all { it.getValue("accountingComplete").jsonPrimitive.boolean })
                 check(turns.all { it.getValue("gameplayElapsedMs").jsonPrimitive.long == 850L })
@@ -82,37 +92,54 @@ object TelemetryProbe {
             check(state.telemetry.windows.values.flatMap { it.actors.values }.sumOf { it["tool:player_turn"]?.incomplete ?: 0 } == 1L)
             // A restore starts a new history branch without refunding calls or tokens.
             runtime.executor.communicationPaused = true
-            val snapshot = runtime.executor.roundSnapshot()
-            runtime.executor.restoreRound(snapshot, "restored-epoch")
+            val snapshot = runtime.executor.turnSnapshot()
+            runtime.executor.restoreTurn(snapshot, "restored-epoch")
             check(state.jobs.values.sumOf { it.usage!!.inputTokens } == 300L)
             check(runtime.executor.communicationState.telemetry.turns.size == 3)
+            check(runtime.executor.communicationState.jobs.values.all { it.expires == 0L })
+            // A background reviewer belongs to its original turn across an epoch change.
+            runtime.executor.communicationPaused = false
+            // A single-slot configuration serializes work but must still admit reviews.
+            runtime.executor.communicationState.maxConcurrent = 1
+            val parent = state.jobs.entries.single { it.value.civilization == "Rome" }.key
+            val roman = PlayerHost(runtime).bindPlayer("Rome")
+            check(roman.communication(obj("op" to "job_claim", "epoch" to runtime.epoch, "job" to "review-retry", "purpose" to "review", "parentJob" to parent)).getValue("granted").jsonPrimitive.boolean)
+            val retry = runtime.executor.communicationState.jobs.getValue("review-retry")
+            check(retry.epoch == originalEpoch && retry.handoff == state.jobs.getValue(parent).handoff)
+            val reviewReport = finalReport.copy(apiCalls = emptyMap(), gameplayElapsedMs = 0, finalizationElapsedMs = 60, memoryEdits = MemoryEditCounts())
+            roman.communication(obj("op" to "job_report", "epoch" to runtime.epoch, "job" to "review-retry", "usage" to ModelUsage(50, 5, 10, 0).recordJson(), "telemetry" to reviewReport.recordJson()))
+            roman.communication(obj("op" to "job_release", "epoch" to runtime.epoch, "job" to "review-retry"))
+            val romanTurn = monitoring(root, "turns").single { it.getValue("turn").jsonObject.getValue("civilization").jsonPrimitive.content == "Rome" }
+            check(romanTurn.getValue("usage").jsonObject.getValue("total_tokens").jsonPrimitive.long == 190L)
             runtime.executor.accessGame { game ->
                 game.getCivilization("France").units.getCivUnits().toList().forEach { it.destroy() }
                 game.getCivilization("Rome").tech.techsResearched.addAll(game.ruleset.technologies.keys)
                 game.victoryData = VictoryData(game.getCivilization("Egypt"), "Scientific", game.turns)
                 runtime.executor.commitCheckpoint()
             }
-            val result = Json.parseToJsonElement(Files.readString(root.resolve("telemetry/game-result.json"))).jsonObject
+            val result = monitoring(root, "state").single { "result" in it }
             check(result.getValue("status").jsonPrimitive.content == "completed")
             check(result.getValue("result").jsonObject.getValue("winner").jsonPrimitive.content == "Egypt")
             val scores = result.getValue("scores").jsonArray.map { it.jsonObject }.associateBy { it.getValue("civilization").jsonPrimitive.content }
             check(scores.keys == (civilizations + "Egypt").toSet())
             check(scores.getValue("Egypt").getValue("controller").jsonPrimitive.content == "BUILT_IN_AI")
             check(scores.getValue("France").getValue("defeated").jsonPrimitive.boolean)
-            check(result.getValue("usage").jsonObject.getValue("total_tokens").jsonPrimitive.long == 390L)
+            check(result.getValue("usage").jsonObject.getValue("total_tokens").jsonPrimitive.long == 450L)
             val memory = result.getValue("memoryEdits").jsonObject
             check(memory.getValue("accepted").jsonPrimitive.long == 9L && memory.getValue("rejected").jsonPrimitive.long == 3L)
             check(memory.getValue("batches").jsonPrimitive.long == 6L && memory.getValue("complete").jsonPrimitive.boolean)
             check(memory.getValue("rejectionReasons").jsonObject.getValue("SOURCE_NOT_DELIVERED").jsonPrimitive.long == 3L)
             check(result.getValue("players").jsonArray.filter { it.jsonObject.getValue("civilization").jsonPrimitive.content in civilizations }.all { it.jsonObject.getValue("memoryEdits") == edits.recordJson() })
             check(scores.getValue("Rome").getValue("score").jsonPrimitive.long > scores.getValue("Egypt").getValue("score").jsonPrimitive.long)
-            // Exports are replaceable and terminal scores remain frozen across restart.
-            Files.writeString(root.resolve("telemetry/game-result.json"), "damaged export")
+            // Only operator telemetry can be rebuilt; scheduler records are untouched.
+            DriverManager.getConnection("jdbc:sqlite:${root.resolve("runner/monitoring.sqlite3")}").use { db ->
+                db.createStatement().use { it.executeUpdate("UPDATE monitor_records SET payload='{}' WHERE collection='state' AND key='result'") }
+            }
         }
         HeadlessRuntime.loadCheckpoint(checkpoint, root.resolve("final-restart")).use {
-            val result = Json.parseToJsonElement(Files.readString(root.resolve("telemetry/game-result.json"))).jsonObject
+            val result = monitoring(root, "state").single { "result" in it }
             check(result.getValue("result").jsonObject.getValue("winner").jsonPrimitive.content == "Egypt")
-            check(result.getValue("usage").jsonObject.getValue("total_tokens").jsonPrimitive.long == 390L)
+            check(result.getValue("usage").jsonObject.getValue("total_tokens").jsonPrimitive.long == 450L)
             check(result.getValue("memoryEdits").jsonObject.getValue("rejected").jsonPrimitive.long == 3L)
         }
     }

@@ -18,13 +18,18 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+from sqlalchemy.exc import SQLAlchemyError
+
 from civ_agent.agent_results import ResultError, validate_result
 from civ_agent.agent_settings import add_settings_arguments, valid_setting
-from civ_agent.match_recovery import RoundCoordinator
+from civ_agent.match_recovery import TurnCoordinator
+from civ_agent.monitoring import MonitorStore, read_record
 from civ_agent.runner_history import EventHistory, HistoryError
 from civ_agent.terminal_output import TerminalOutput
 from civ_agent.turn_display import display_turn
 from civ_agent.turn_finalization import finish_turn
+
+RUN_STATE_VERSION = 4
 
 
 class RunnerError(Exception):
@@ -154,7 +159,18 @@ class JsonEndpoint:
                 else 65536
             )
             timeout = (
-                max(self.timeout, 60) if operation in {"finalize_terminal", "interrupt", "archive"} else self.timeout
+                max(self.timeout, 60)
+                if operation
+                in {
+                    "finalize_terminal",
+                    "interrupt",
+                    "archive",
+                    "snapshot",
+                    "verify_snapshot",
+                    "restore",
+                    "cancel_jobs",
+                }
+                else self.timeout
             )
             with self.opener.open(request, timeout=timeout) as response:
                 body = response.read(maximum + 1)
@@ -234,12 +250,14 @@ class Agent(JsonEndpoint):
             "barrier",
             "snapshot",
             "verify_snapshot",
+            "retain_snapshot",
             "restore",
             "cancel_jobs",
             "open_interactive",
             "close_interactive",
             "flush_accounting",
             "health",
+            "turn_readiness",
         }:
             status = result.get("status")
             if not isinstance(status, dict):
@@ -263,18 +281,6 @@ class Agent(JsonEndpoint):
             return status
         except (ValueError, TypeError, KeyError):
             raise OperatorError("Invalid agent-service response; stopped for inspection.") from None
-
-    def archive(self, activation):
-        value = super().call("archive", activationId=activation)
-        if (
-            value.get("civilization") != self.civilization
-            or type(value.get("gameTurn")) is not int
-            or value["gameTurn"] < 0
-            or not isinstance(value.get("commands"), str)
-            or not isinstance(value.get("summary"), str)
-        ):
-            raise OperatorError("Invalid player turn archive.")
-        return value
 
     def result(self, payload):
         try:
@@ -326,7 +332,7 @@ def agent_services(state_dir, config_file=None):
 class RunStore:
     def __init__(self, root):
         self.root = root
-        self.path = root / "run.json"
+        self.path = root / "monitoring.sqlite3"
         self.control = root / "control.json"
         self.lock = None
 
@@ -348,15 +354,18 @@ class RunStore:
             self.lock = None
 
     def load(self):
-        value = read_json(self.path)
-        if not isinstance(value, dict) or value.get("version") != 2:
+        value = read_record(self.path, "state", "run")
+        if not isinstance(value, dict) or value.get("version") != RUN_STATE_VERSION:
             raise RunnerError(
-                "This runner state predates per-turn conversations or has an unsupported format. Start a new match directory for the new layout."
+                "Unsupported runner state format. Turn recovery requires a new match; use the old code to resume older matches."
             )
         return value
 
     def save(self, state):
-        atomic_json(self.path, state)
+        MonitorStore(self.path).put("state", "run", state)
+
+    def exists(self):
+        return read_record(self.path, "state", "run") is not None
 
     def requested(self):
         if not self.control.exists():
@@ -394,15 +403,16 @@ class Scheduler:
         self.finalizations = {}
         self.finalization_cleanup_failed = False
         self.state.setdefault("pendingFinalizations", [])
-        previous = [*self.state["pendingFinalizations"], *([state["inFlight"]] if state.get("inFlight") else [])]
-        self.resumed_activations = {p["activationId"] for p in previous} if resume else set()
+        self.resume = resume
+        self.services_connected = False
+        self.turns = TurnCoordinator(self.store.root.parent, self.operator, self.agents, self.lease)
 
     def history_for(self, flight, player_token=None):
         key = flight["activationId"]
         if key not in self.histories:
             agent = self.agent_for(flight)
             self.histories[key] = EventHistory(
-                self.store.root / "history",
+                self.store.path,
                 self.state["epoch"],
                 flight["civilization"],
                 key,
@@ -411,7 +421,7 @@ class Scheduler:
                 verbose=self.verbose,
                 renderer=self.output,
             )
-            self.output.line("History", str(self.histories[key].markdown), civilization=flight["civilization"])
+            self.output.line("History", str(self.store.path), civilization=flight["civilization"])
         return self.histories[key]
 
     def poll_events(self, flight, *, drain=False, player_token=None):
@@ -485,7 +495,7 @@ class Scheduler:
             raise RunnerError("Host epoch changed. Existing conversations cannot be applied to this game.")
         flight = self.state.get("inFlight")
         if flight and status["handoff"] < flight["handoff"]:
-            raise RunnerError("Host handoff moved backwards; inspect checkpoint recovery before resuming.")
+            raise RunnerError("Host handoff moved backwards outside turn recovery.")
         for pending in self.state["pendingFinalizations"]:
             if pending["epoch"] != status["epoch"] or pending["confirmedHandoff"] > status["handoff"]:
                 raise RunnerError("Pending finalization does not belong to the current host history.")
@@ -595,7 +605,11 @@ class Scheduler:
         self.record_agent(status, flight)
         if status.get("confirmedHandoff") != host_status["handoff"]:
             raise RunnerError("Agent did not durably accept the handoff or fence its tools.")
-        pending = {**flight, "epoch": self.state["epoch"], "confirmedHandoff": host_status["handoff"]}
+        pending = {
+            **flight,
+            "epoch": self.state["epoch"],
+            "confirmedHandoff": host_status["handoff"],
+        }
         self.state["pendingFinalizations"].append(pending)
         self.state["handoffs"] += 1
         self.state["inFlight"] = None
@@ -603,6 +617,8 @@ class Scheduler:
         self.start_finalizations()
 
     def start_finalizations(self):
+        if not self.services_connected:
+            return
         for pending in self.state["pendingFinalizations"]:
             key = pending["activationId"]
             if pending["epoch"] != self.state["epoch"]:
@@ -611,12 +627,13 @@ class Scheduler:
                 self.finalizations[key] = self.finalizer.submit(
                     finish_turn,
                     self.agent_for(pending),
-                    dict(pending),
+                    pending,
                     self.history_for(pending),
-                    accept_failed_memory=key in self.resumed_activations,
                 )
 
     def collect_finalizations(self, *, wait=False, civilization=None):
+        if not self.services_connected:
+            return
         self.start_finalizations()
         last_heartbeat = time.monotonic()
         cancelled = set()
@@ -636,24 +653,10 @@ class Scheduler:
                     raise RunnerError(
                         f"Turn bookkeeping remains pending for {pending['civilization']}: {error}"
                     ) from None
+                if status is None:
+                    del self.finalizations[pending["activationId"]]
+                    return
                 self.record_agent(status, pending)
-                if status.get("memoryFailureAcknowledged"):
-                    self.state.setdefault("acknowledgedMemoryFailures", {})[pending["activationId"]] = {
-                        "civilization": pending["civilization"],
-                        "gameTurn": pending["gameTurn"],
-                        "epoch": pending["epoch"],
-                        "committedHandoff": pending["confirmedHandoff"],
-                        "error": status["error"],
-                        "usageComplete": status.get("usageComplete", False),
-                        "acknowledgedAt": time.time(),
-                    }
-                    self.output.line(
-                        "Warning",
-                        f"Resuming after turn {pending['gameTurn']} memory work failed ({status['error']}). "
-                        "Confirmed actions and saved memory are retained; unsaved edits are unavailable. "
-                        + ("Reported token usage remains incomplete." if not status.get("usageComplete") else ""),
-                        civilization=pending["civilization"],
-                    )
                 self.state["sessions"][pending["civilization"]]["completedTurn"] = pending["gameTurn"]
                 self.state["pendingFinalizations"].remove(pending)
                 del self.finalizations[pending["activationId"]]
@@ -690,21 +693,13 @@ class Scheduler:
         self.record_agent(finalized, flight)
         if finalized.get("terminalOutcome") is not True:
             raise RunnerError("Agent service did not confirm the terminal turn archive.")
-        archive = agent.archive(flight["activationId"])
-        if archive["gameTurn"] != flight["gameTurn"]:
-            raise RunnerError("Agent service returned another turn's archive.")
-        try:
-            history = self.history_for(flight)
-            history.publish_archive(archive)
-        except HistoryError as failure:
-            raise RunnerError(f"Terminal turn archive could not be mirrored: {failure}") from None
         self.state["sessions"][flight["civilization"]]["completedTurn"] = flight["gameTurn"]
         self.state["inFlight"] = None
         self.save()
         self.display_turn(flight, finalized)
         self.output.line(
             "Result",
-            f"Game ended during the turn; confirmed actions are retained in {history.turn_directory}.",
+            "Game ended during the turn; confirmed actions and events are retained.",
             civilization=flight["civilization"],
         )
 
@@ -753,7 +748,7 @@ class Scheduler:
             agent.result(payload)
             delivered.append(civilization)
             self.save()
-            self.output.line("Result", "Delivered to result.json and result.md.", civilization=civilization)
+            self.output.line("Result", "Final result recorded by the player service.", civilization=civilization)
         self.note("complete", "Game finished. Every player received its final result and permitted combat reports.")
 
     def reconcile(self, status):
@@ -790,36 +785,37 @@ class Scheduler:
             self.queue_finalization(flight, status)
             self.output.notice("Confirmed the previous activation's committed handoff; continuing from host state.")
             return True
-        # Confirmed actions and messages survive ordinary interruption. A fresh
-        # job will inspect current state; its service reconciles durable requests.
-        if not agent_missing:
-            archive = agent.archive(flight["activationId"])
-            if archive["gameTurn"] != flight["gameTurn"]:
-                raise RunnerError("Agent service returned another turn's archive.")
-            try:
-                self.history_for(flight).publish_archive(archive)
-            except HistoryError as failure:
-                raise RunnerError(f"Interrupted turn archive could not be mirrored: {failure}") from None
-        self.state["sessions"][flight["civilization"]]["threadId"] = None
-        self.state["inFlight"] = None
-        self.save()
-        self.output.notice(
-            f"Preserved {flight['civilization']}'s confirmed work; the next attempt uses a fresh conversation.",
-        )
-        return True
+        raise RunnerError("The interrupted activation was not restored from its turn checkpoint.")
 
     def run(self):
         result = self._run()
         return 2 if self.finalization_cleanup_failed else result
 
+    def connect_services(self):
+        for civilization, agent in self.agents.items():
+            connection = self.operator.call(
+                "connect", leaseId=self.lease, epoch=self.state["epoch"], civilization=civilization
+            )
+            agent.call(
+                "connect",
+                epoch=self.state["epoch"],
+                playerToken=connection["playerToken"],
+                model=self.state.get("model"),
+                reasoningEffort=self.state.get("reasoningEffort"),
+                timeoutSeconds=max(
+                    self.state["limits"]["activationSeconds"],
+                    connection["status"].get("negotiationTimeoutSeconds", 300),
+                ),
+            )
+        self.turns.release()
+        self.services_connected = True
+        self.state.update(status="running", reason=None)
+        self.state.pop("waitingForReview", None)
+        self.save()
+
     def _run(self):
         try:
-            rounds = RoundCoordinator(self.store.root.parent, self.operator, self.agents, self.lease)
-            journal = rounds.root / "restore.json"
-            if journal.exists() and not read_json(journal).get("complete"):
-                raise RunnerError("Emergency restoration is incomplete. Repeat match rollback before resuming.")
             initial = self.operator.call("status")["status"]
-            self.check_status(initial)
             flight = self.state.get("inFlight")
             if (
                 flight
@@ -830,9 +826,6 @@ class Scheduler:
                 raise RunnerError(
                     "Host returned to manual control during this unfinished turn. Finish the turn manually before resuming the scheduler."
                 )
-            if initial["phase"] == "FINISHED":
-                self.complete_game(initial)
-                return 0
             if initial["phase"] == "HALTED":
                 if self.state.get("inFlight"):
                     flight = self.state["inFlight"]
@@ -845,34 +838,20 @@ class Scheduler:
             self.owns_lease = True
             self.state["leaseId"] = self.lease
             self.save()
-            if not self.reconcile(acquired["status"]):
-                return 0 if self.state["status"] == "complete" else 2
-            self.start_finalizations()
+            if self.resume:
+                acquired["status"] = self.turns.recover(acquired["status"], self.state)
+                self.histories.clear()
+            self.check_status(acquired["status"])
             self.operator.call(
                 "job_limits",
                 leaseId=self.lease,
                 maxInvocations=self.state["limits"]["maxInvocations"],
                 maxConcurrent=self.state["limits"].get("maxConcurrent", 4),
-                maxPerCivilization=self.state["limits"].get("maxPerCivilization", 2),
+                maxPerCivilization=self.state["limits"].get("maxPerCivilization", 3),
             )
-            for civilization, agent in self.agents.items():
-                connection = self.operator.call(
-                    "connect", leaseId=self.lease, epoch=self.state["epoch"], civilization=civilization
-                )
-                agent.call(
-                    "connect",
-                    epoch=self.state["epoch"],
-                    playerToken=connection["playerToken"],
-                    model=self.state.get("model"),
-                    reasoningEffort=self.state.get("reasoningEffort"),
-                    timeoutSeconds=max(
-                        self.state["limits"]["activationSeconds"],
-                        connection["status"].get("negotiationTimeoutSeconds", 300),
-                    ),
-                )
-            rounds.release()
-            self.state.update(status="running", reason=None)
-            self.save()
+            self.connect_services()
+            if not self.reconcile(acquired["status"]):
+                return 0 if self.state["status"] == "complete" else 2
             while True:
                 self.collect_finalizations()
                 requested = self.store.requested() or ("pause" if self.interrupted else None)
@@ -891,13 +870,11 @@ class Scheduler:
                 if reason:
                     self.note("budget_exhausted", reason)
                     return 0
-                if status.get("roundStart"):
-                    rounds.capture(status, self.state)
                 if self.store.requested() or self.interrupted:
                     continue
                 if not self.invoke(status):
                     return 0 if self.state["status"] in {"paused", "stopped", "budget_exhausted", "complete"} else 2
-        except (RunnerError, OSError, ValueError) as failure:
+        except (RunnerError, OSError, ValueError, HistoryError, SQLAlchemyError) as failure:
             self.note("needs_inspection", str(failure))
             return 2
         finally:
@@ -923,7 +900,7 @@ class Scheduler:
                             pass
                 try:
                     self.collect_finalizations(wait=True)
-                except RunnerError as failure:
+                except (RunnerError, HistoryError) as failure:
                     self.finalization_cleanup_failed = True
                     self.note("needs_inspection", str(failure))
                 for agent in self.agents.values():
@@ -944,6 +921,9 @@ class Scheduler:
         if agent is None:
             raise RunnerError("No HTTPS agent service is configured for the active civilization.")
         self.collect_finalizations(wait=True, civilization=civilization)
+        if not self.wait_for_review(status, agent):
+            return False
+        self.turns.capture(status, self.state)
         requested = self.store.requested() or ("pause" if self.interrupted else None)
         if requested:
             self.note("stopped" if requested == "stop" else "paused", "Operator requested " + requested + ".")
@@ -1001,6 +981,9 @@ class Scheduler:
             "effectiveSettings",
             {"model": self.state.get("model"), "reasoningEffort": self.state.get("reasoningEffort")},
         )
+        # Validate the durable mirror before starting model work. A history
+        # identity conflict must not stay hidden until after a committed turn.
+        self.history_for(flight, token)
         agent_status = agent.call(
             "start",
             activationId=activation,
@@ -1099,26 +1082,109 @@ class Scheduler:
         elif interrupted in {"host_paused", "host_restarted"}:
             self.note(
                 "paused",
-                "Host interrupted the activation. Resume preserves confirmed work and starts a fresh planning job.",
+                "Host interrupted the activation. Resume rewinds this turn and starts a fresh conversation.",
             )
         elif interrupted == "budget":
             self.note("budget_exhausted", "Wall-time budget exhausted during an activation.")
         elif interrupted == "timeout":
             self.note(
                 "paused",
-                "Activation timed out without a confirmed handoff. Resume preserves confirmed work and starts a fresh planning job.",
+                "Activation timed out without a confirmed handoff. Resume rewinds this turn and starts a fresh conversation.",
             )
         elif agent_status["phase"] != "COMPLETED":
             self.note(
                 "paused",
-                "Agent service failed without a confirmed handoff. Resume preserves confirmed work and starts a fresh planning job.",
+                "Agent service failed without a confirmed handoff. Resume rewinds this turn and starts a fresh conversation.",
             )
         else:
             self.note(
                 "paused",
-                "Agent returned without a committed handoff. Resume preserves confirmed work and starts a fresh planning job.",
+                "Agent returned without a committed handoff. Resume rewinds this turn and starts a fresh conversation.",
             )
         return False
+
+    def wait_for_review(self, status, agent):
+        """Wait before checkpointing or activating this civ, outside its gameplay timeout."""
+        civilization = status["activeCivilization"]
+
+        def pending_review():
+            result = agent.call("turn_readiness", epoch=status["epoch"], gameTurn=status["turn"])
+            if (
+                result.get("civilization") != civilization
+                or result.get("epoch") != status["epoch"]
+                or type(result.get("gameTurn")) is not int
+                or result.get("gameTurn") != status["turn"]
+                or "pendingReview" not in result
+            ):
+                raise RunnerError("Invalid turn readiness response; stopped for inspection.")
+            pending = result["pendingReview"]
+            if pending is not None and (
+                not isinstance(pending, dict)
+                or not isinstance(pending.get("job"), str)
+                or not pending["job"]
+                or pending.get("status") not in {"PREPARED", "PENDING"}
+                or type(pending.get("turn")) is not int
+                or not 0 <= pending["turn"] < status["turn"]
+                or type(pending.get("attempts")) is not int
+                or pending["attempts"] < 0
+            ):
+                raise RunnerError("Invalid pending review response; stopped for inspection.")
+            return pending
+
+        pending = pending_review()
+        if pending is None:
+            return True
+        self.output.line(
+            "Status",
+            f"Waiting for strategic review from turn {pending['turn']} before starting turn {status['turn']}.",
+            civilization=civilization,
+        )
+        current, next_heartbeat = status, 0
+        try:
+            while True:
+                requested = self.store.requested() or ("pause" if self.interrupted else None)
+                if requested:
+                    self.note("stopped" if requested == "stop" else "paused", "Operator requested " + requested + ".")
+                    return False
+                if time.monotonic() >= next_heartbeat:
+                    current = self.operator.call("heartbeat", leaseId=self.lease)["status"]
+                    self.check_status(current)
+                    if current["phase"] == "FINISHED":
+                        self.complete_game(current)
+                        return False
+                    if current["phase"] == "HALTED":
+                        self.note("needs_inspection", "Host is HALTED.")
+                        return False
+                    if any(
+                        current[key] != status[key]
+                        for key in ("serverInstance", "handoff", "turn", "activeCivilization")
+                    ):
+                        raise RunnerError("Host changed while waiting for a strategic review; resume to reconcile.")
+                    self.check_agent_health()
+                    next_heartbeat = time.monotonic() + 3
+                reason = self.budget_reason(current)
+                if reason:
+                    self.note("budget_exhausted", reason)
+                    return False
+                self.collect_finalizations()
+                if pending is None:
+                    self.output.line(
+                        "Status", "Strategic review ready; starting the next turn.", civilization=civilization
+                    )
+                    return True
+                waiting = {"civilization": civilization, "gameTurn": status["turn"], "review": pending}
+                if self.state.get("waitingForReview") != waiting:
+                    self.state["waitingForReview"] = waiting
+                    self.save()
+                time.sleep(0.25)
+                pending = pending_review()
+                if pending is None:
+                    # A finished review may have used the last invocation or
+                    # completed alongside a pause. Recheck before activation.
+                    next_heartbeat = 0
+        finally:
+            self.state.pop("waitingForReview", None)
+            self.save()
 
     def check_agent_health(self):
         """Report subscription health and stop on fatal failures, including off-turn jobs."""
@@ -1188,7 +1254,7 @@ def parser(*, add_help: bool = True) -> argparse.ArgumentParser:
     result.add_argument("--max-seconds", type=positive, help="Wall-time budget including pauses (default: 3600)")
     result.add_argument("--turn-timeout", type=positive, help="Timeout per activation (default: 180 seconds)")
     result.add_argument("--max-concurrent-jobs", type=positive, default=4, help="Match-wide model concurrency")
-    result.add_argument("--jobs-per-civilization", type=int, choices=(1, 2), default=2)
+    result.add_argument("--jobs-per-civilization", type=int, choices=(1, 2, 3), default=3)
     add_settings_arguments(
         result,
         model_help="Optional model override for all players; fixed for this run",
@@ -1208,7 +1274,7 @@ def new_state(options, status):
         maxPerCivilization=options.jobs_per_civilization,
     )
     return dict(
-        version=2,
+        version=RUN_STATE_VERSION,
         runId=str(uuid.uuid4()),
         epoch=status["epoch"],
         initialTurn=status["turn"],
@@ -1230,9 +1296,9 @@ def new_state(options, status):
 def extend_limits(state, options):
     """Explicit increases retain all previous usage and the original wall-time origin."""
     if options.model is not None and options.model != state.get("model"):
-        raise RunnerError("Resume retains the run's model and conversations.")
+        raise RunnerError("Resume retains the run's model setting.")
     if options.reasoning_effort is not None and options.reasoning_effort != state.get("reasoningEffort"):
-        raise RunnerError("Resume retains the run's reasoning effort and conversations.")
+        raise RunnerError("Resume retains the run's reasoning effort setting.")
     changes = (
         ("maxTurns", options.max_turns),
         ("maxInvocations", options.max_invocations),
@@ -1270,7 +1336,7 @@ def run(options: argparse.Namespace) -> int:
         store = RunStore(state_dir / "runner")
         if options.action == "status":
             status = operator.call("status")["status"]
-            state = store.load() if store.path.exists() else None
+            state = store.load() if store.exists() else None
             print(json.dumps(dict(host=status, runner=state), indent=2))
             return 0
         if options.action in {"pause", "stop"}:
@@ -1281,7 +1347,7 @@ def run(options: argparse.Namespace) -> int:
             except RunnerError:
                 pass  # The running scheduler reads the control request and stops its child.
             else:
-                if store.path.exists():
+                if store.exists():
                     state = store.load()
                     state.update(
                         status="paused" if options.action == "pause" else "stopped",
@@ -1297,14 +1363,14 @@ def run(options: argparse.Namespace) -> int:
         store.acquire()
         agents = agent_services(state_dir, options.agents_config.expanduser() if options.agents_config else None)
         if options.action == "start":
-            if store.path.exists():
+            if store.exists():
                 raise RunnerError(
                     "A persisted run already exists. Use resume; budgets and conversations are never reset silently."
                 )
             state = new_state(options, operator.call("status")["status"])
             store.save(state)
         else:
-            if not store.path.exists():
+            if not store.exists():
                 raise RunnerError("No persisted run exists; use start first.")
             state = store.load()
             extend_limits(state, options)
@@ -1323,8 +1389,9 @@ def run(options: argparse.Namespace) -> int:
         output = scheduler.output
         for signum in (signal.SIGINT, signal.SIGTERM):
             old_signals[signum] = signal.signal(signum, lambda _signum, _frame: setattr(scheduler, "interrupted", True))
-        return scheduler.run()
-    except (RunnerError, OSError) as failure:
+        result = scheduler.run()
+        return 130 if scheduler.interrupted else result
+    except (RunnerError, OSError, SQLAlchemyError) as failure:
         output.finish_line()
         TerminalOutput(color=getattr(options, "color", "auto"), file=sys.stderr).line(
             "Error", f"civ-agent match: {failure}"

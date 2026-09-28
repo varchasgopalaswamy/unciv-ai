@@ -7,6 +7,7 @@ import sqlite3
 from collections import Counter
 from pathlib import Path
 
+from civ_agent.monitoring import path_for, read_collection
 from civ_agent.observations import overview
 from civ_agent.proposal_gateway import public_result
 from civ_agent.state_updates import apply_overview_update, stamp
@@ -89,11 +90,7 @@ def verify(root, sessions):
     metrics = measure(calls, snapshots, record["activationId"])
     assert metrics["reconstructedSnapshots"] > 0 and metrics["commandsWithoutInterveningOverview"] > 0
     assert metrics["updates"].get("turn_ended") == 1
-    turn = next(
-        row
-        for row in map(json.loads, (root / "telemetry/turns.jsonl").read_text().splitlines())
-        if record["activationId"] in row["jobs"]
-    )
+    turn = next(row for row in read_collection(path_for(root), "turns") if record["activationId"] in row["jobs"])
     assert turn["accountingComplete"] and turn["turn"]["status"] == "completed"
     with contextlib.closing(
         sqlite3.connect(f"file:{root / 'agent-services/Rome/telemetry/accounting.sqlite3'}?mode=ro", uri=True)

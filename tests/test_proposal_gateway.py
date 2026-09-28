@@ -8,6 +8,7 @@ from civ_agent.civilization_state import CivilizationState, StateConflict
 from civ_agent.proposal_gateway import ProposalGateway
 from civ_agent.protocol import JsonObject
 from civ_agent.service_io import ServiceIO
+from tests.memory_helpers import stored_records
 
 
 class Host:
@@ -76,6 +77,8 @@ class Host:
         if name == "player_communication":
             if args["op"] == "negotiation":
                 return {"negotiation": {"active": False}}
+            if args["op"] == "trade_options":
+                return {"partner": args["partner"], "mode": "SHARED", "give": [], "receive": []}
             if args["op"] == "state":
                 return {
                     "civilization": self.civilization,
@@ -104,7 +107,9 @@ def test_gateway_owns_bookkeeping_and_retries_exact_call(tmp_path):
         tool = (await gateway.tools(job))[0]
         validator = Draft202012Validator(tool["inputSchema"])
         assert validator.is_valid({"kind": "MOVE_UNIT", "target": "unit1", "destination": {"x": 1, "y": 0}})
-        assert not validator.is_valid({"kind": "MOVE_UNIT", "target": "unit1"})
+        invalid = await gateway.call(job, "player_command", {"kind": "MOVE_UNIT", "target": "unit1"}, "invalid")
+        assert invalid["error"] == "INVALID_COMMAND_ARGUMENTS" and invalid["applied"] is False
+        assert "destination" in invalid["missingFields"] and host.executed == []
         view = await gateway.call(job, "player_turn", {}, "1")
         assert "revision" not in view and "epoch" not in view
         await gateway.call(job, "unit_details", {"target": "unit1"}, "inspect")
@@ -175,16 +180,16 @@ def test_social_promises_do_not_restrict_hostile_commands(tmp_path, action, deta
                         {
                             "op": "create",
                             "content": {
-                                "type": "plan",
-                                "objective": "Keep peace with Greece",
-                                "approach": "Honor the stated promise",
-                                "successCriteria": "No attacks before turn 8",
+                                "type": "strategy",
+                                "assessment": "Keep peace with Greece",
+                                "reasons": ["Honor the stated promise"],
+                                "reconsiderWhen": ["No attacks before turn 8"],
                                 "subjects": ["Greece"],
                             },
                         }
                     ]
                 },
-                "plan",
+                "strategy",
             )
             await gateway.call(job, "player_turn", {}, "observe")
             await gateway.call(job, detail, arguments, "inspect")
@@ -202,7 +207,7 @@ def test_social_promises_do_not_restrict_hostile_commands(tmp_path, action, deta
                     ],
                     1,
                 )
-                assert memory.snapshot("gameplay")["records"]["mem1"]["body"]["needsReview"]
+                assert stored_records(memory)["mem1"]["body"]["needsReview"]
             result = await gateway.call(
                 job,
                 "player_command",
@@ -215,9 +220,9 @@ def test_social_promises_do_not_restrict_hostile_commands(tmp_path, action, deta
             assert "socialVersion" not in host.executed[0]
             assert host.offers[0]["effective"]
             # A changed promise can flag related memory, but an independent
-            # decision remains legal without rewriting or withdrawing that plan.
+            # decision remains legal without rewriting or withdrawing that strategy.
             if new_consent:
-                assert memory.snapshot("gameplay")["records"]["mem1"]["body"]["needsReview"]
+                assert stored_records(memory)["mem1"]["body"]["needsReview"]
         finally:
             await gateway.close(job, True)
             await io.close()
@@ -242,7 +247,7 @@ def test_greeting_preserves_economic_job_and_chat_cannot_issue_gameplay(tmp_path
                 "kind": "QUEUE_CONSTRUCTION",
                 "target": "city1",
                 "selection": "Market",
-                "intent": {"reason": "Advance the test objective"},
+                "intent": {"reason": "Advance the test assessment"},
             },
             "3",
         )
@@ -252,6 +257,8 @@ def test_greeting_preserves_economic_job_and_chat_cannot_issue_gameplay(tmp_path
             await gateway.call(communication, "player_command", {"kind": "END_TURN"}, "4")
         await gateway.close(job, True)
         await gateway.close(communication, True)
+        assert not (tmp_path / "workspace/memory-index.md").exists()
+        assert not (tmp_path / "workspace/chat.jsonl").exists()
         await io.close()
 
     asyncio.run(run())
@@ -337,10 +344,10 @@ def test_wrong_player_credential_cannot_supply_evidence_or_change_memory(tmp_pat
                             {
                                 "op": "create",
                                 "content": {
-                                    "type": "plan",
-                                    "objective": "Spend Greek gold",
-                                    "approach": "Carry out the stated objective",
-                                    "successCriteria": "Objective achieved",
+                                    "type": "strategy",
+                                    "assessment": "Spend Greek gold",
+                                    "reasons": ["Carry out the stated assessment"],
+                                    "reconsiderWhen": ["Objective achieved"],
                                     "subjects": ["economy"],
                                 },
                             }
@@ -350,7 +357,7 @@ def test_wrong_player_credential_cannot_supply_evidence_or_change_memory(tmp_pat
             ):
                 with pytest.raises(StateConflict, match="PLAYER_CREDENTIAL_MISMATCH"):
                     await gateway.call(job, name, arguments, name)
-            assert not memory.snapshot("gameplay")["records"]
+            assert not stored_records(memory)
             assert not host.executed
         finally:
             await gateway.close(job, False)
@@ -366,7 +373,7 @@ def test_game_overview_and_chat_read_deliver_distinct_evidence(tmp_path):
         gateway = ProposalGateway(memory, io, tmp_path / "workspace")
         host = Host()
         original = host.tool
-        ledger = {"offers": [{"proposal": "p1", "terms": "No attacks before turn 8"}], "consents": []}
+        ledger = {"offers": [{"proposal": "p1", "version": 1, "terms": "No attacks before turn 8"}], "consents": []}
 
         async def observed_host(name, args):
             value = await original(name, args)
@@ -380,16 +387,17 @@ def test_game_overview_and_chat_read_deliver_distinct_evidence(tmp_path):
         job = await gateway.open("planning", "gameplay", "g1", host, {})
         try:
             shown = await gateway.call(job, "player_turn", {}, "read")
-            stored = memory.snapshot("gameplay")["records"]["observation:game"]["body"]
+            stored = stored_records(memory)["observation:game"]["body"]
             assert stored["communication"]["offers"] == ledger["offers"]
-            assert shown["communication"]["commitments"] == [{"proposal": "p1"}]
+            assert "communication" not in shown  # Versioned promises have one model-facing home: chat_read.
             assert "No attacks" not in str(shown)
             ledger["consents"].append(
                 {
                     "proposal": "p1",
+                    "version": 1,
                     "author": "Greece",
                     "decision": "accept",
-                    "intent": {"reason": "Advance the test objective"},
+                    "intent": {"reason": "Advance the test assessment"},
                 }
             )
             await gateway.call(job, "chat_read", {}, "new-consent")
@@ -412,7 +420,7 @@ def test_game_overview_and_chat_read_deliver_distinct_evidence(tmp_path):
                 },
                 "remember",
             )
-            records = memory.snapshot("gameplay")["records"]
+            records = stored_records(memory)
             assert records["observation:game"]["body"]["communication"]["consents"] == []
             assert records["observation:communication"]["body"]["consents"] == ledger["consents"]
             assert [r["key"] for r in records["mem1"]["body"]["_evidence"]] == [

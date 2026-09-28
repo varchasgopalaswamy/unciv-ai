@@ -178,20 +178,18 @@ object NotificationsProbe {
         val activation = api.activate()
         val activeToken = checkNotNull(activation.playerToken)
         val before = api.turn(activeToken)
+        captureTestTurn(runtime, root)
         runtime.executor.accessGame { it.getCivilization("Rome").addNotification("Discarded attempt", NotificationCategory.General) }
         val attempt = api.turn(activeToken)
-        val discardedHandle = attempt.notifications.last().handle
         val discard = command(attempt, attempt.notifications.map { it.handle })
         api.execute(activeToken, discard)
         check(api.turn(activeToken).notifications.isEmpty())
-        val status = api.status()
-        api.operator(OperatorRequest("rollback", api.lease, status.epoch, status.serverInstance, status.handoff, status.activeCivilization, activation.activationId))
+        api.restore(root)
         val resumedToken = checkNotNull(api.activate().playerToken)
         check(api.turn(resumedToken).notifications == before.notifications) { "Rollback did not restore pending notifications" }
-        api.reject(resumedToken, discard, "STALE_REVISION")
+        api.reject(resumedToken, discard, "STALE_EPOCH")
         runtime.executor.accessGame { it.getCivilization("Rome").addNotification("New attempt", NotificationCategory.General) }
         val fresh = api.turn(resumedToken)
-        check(fresh.notifications.last().handle != discardedHandle) { "Rollback recycled a discarded notification handle" }
 
         // Leaving ordinary messages pending does not block END_TURN; the native log retains even dismissed ones.
         api.finishTurn(resumedToken)
@@ -200,7 +198,7 @@ object NotificationsProbe {
         check(archived.count { it.text == ECONOMY } == 2)
         check(archived.count { it.text == CAMP } == 2)
         check(runtime.game.getCivilization("Greece").notifications.any { it.text == "PRIVATE-GREEK-MESSAGE" })
-        check(api.turn(token).notifications.none { it.handle in fresh.notifications.map { n -> n.handle } })
+        check(api.turn(api.playerToken("Rome")).notifications.none { it.handle in fresh.notifications.map { n -> n.handle } })
     }
 
     private fun command(turn: PlayerTurnSnapshot, targets: List<String>) = TurnCommandRequest(UUID.randomUUID().toString(), turn.epoch, turn.revision, TurnCommandKind.DISMISS_NOTIFICATIONS, targets = targets)

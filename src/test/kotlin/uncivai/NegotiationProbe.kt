@@ -9,7 +9,6 @@ import kotlinx.serialization.json.long
 import uncivai.player.PlayerHost
 import uncivai.player.PlayerSessionException
 import uncivai.player.PlayerSessionFailure
-import uncivai.player.RenameCityRequest
 import uncivai.player.TurnCommandKind
 import uncivai.player.TurnCommandRequest
 import java.nio.file.Path
@@ -49,9 +48,6 @@ object NegotiationProbe {
                 )) {
                     api.reject(token, request, "NEGOTIATION_ACTIVE")
                 }
-                val legacy = PlayerHost(runtime).bindPlayer("Rome")
-                val failed = runCatching { legacy.renameCity(RenameCityRequest("legacy", epoch, city.handle, "Changed")) }.exceptionOrNull()
-                check((failed as PlayerSessionException).reason == PlayerSessionFailure.NEGOTIATION_ACTIVE)
                 check(runtime.game.getCivilization("Rome").cities.single { it.name == "Antium" }.population.population == 3)
                 check(runtime.executor.handoff == 0L && runtime.game.currentPlayer == "Rome")
                 check(offer("Rome")["error"] != null) // New IDs cannot bypass the counter limit.

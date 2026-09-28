@@ -18,7 +18,7 @@ From the repository directory:
 ```sh
 git submodule update --init --recursive
 uv sync --locked
-.venv/bin/python scripts/run_vanilla_game.py
+.venv/bin/civ-agent game start
 ```
 
 The launcher starts Rome, Greece and France with `gpt-5.6-luna` at medium

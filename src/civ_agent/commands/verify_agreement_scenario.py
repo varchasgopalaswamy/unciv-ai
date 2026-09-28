@@ -312,7 +312,7 @@ def _memory(root, player, epoch, agreements, resource_record):
         "agreementListUsed": any(r["name"] == "agreement_list" and "agreements" in r["result"] for r in calls),
         "agreementReads": sorted(read_ids),
         "allEventsIngestedOnce": len(events) == len(expected) and all(events.count(e) == 1 for e in expected),
-        "sourcedPlanReviewed": resource_record is None,
+        "sourcedStrategyReviewed": resource_record is None,
     }
     if resource_record is None:
         report["endedAgreementRead"] = any(r["result"].get("agreement", {}).get("status") == "ENDED" for r in calls)
@@ -331,10 +331,10 @@ def _memory(root, player, epoch, agreements, resource_record):
 
     ended = [r for r in rows if r["key"] == key and r["body"].get("agreement", {}).get("status") == "ENDED"]
     report["endedAgreementRead"] = bool(ended)
-    for plan in (r for r in rows if r["category"] == "plan" and sourced(r["body"], "ACTIVE")):
-        revisions = sorted((r for r in rows if r["key"] == plan["key"]), key=lambda r: r["ordinal"])
-        for flagged in (r for r in rows if r["category"] == "notice" and r["body"].get("record") == plan["key"]):
-            if flagged["ordinal"] <= plan["ordinal"]:
+    for strategy in (r for r in rows if r["category"] == "strategy" and sourced(r["body"], "ACTIVE")):
+        revisions = sorted((r for r in rows if r["key"] == strategy["key"]), key=lambda r: r["ordinal"])
+        for flagged in (r for r in rows if r["category"] == "notice" and r["body"].get("record") == strategy["key"]):
+            if flagged["ordinal"] <= strategy["ordinal"]:
                 continue
             related = any(
                 ref["key"] == key
@@ -350,16 +350,16 @@ def _memory(root, player, epoch, agreements, resource_record):
                 if reviewed["ordinal"] <= flagged["ordinal"] or not reviewed["job"]:
                     continue
                 # A read may race ahead of event ingestion and itself trigger the flag.
-                fresh = any(plan["ordinal"] < r["ordinal"] < reviewed["ordinal"] for r in ended)
+                fresh = any(strategy["ordinal"] < r["ordinal"] < reviewed["ordinal"] for r in ended)
                 revision = (
                     body.get("state") == "active"
                     and body.get("_seenNotice", 0) >= flagged["version"]
                     and sourced(body, "ENDED")
                 )
-                retirement = body.get("state") == "retired" and bool(body.get("assessment", "").strip())
+                retirement = body.get("state") == "retired" and bool(body.get("retirementAssessment", "").strip())
                 if fresh and (revision or retirement):
-                    report["sourcedPlanReviewed"] = True
-                    report["plan"] = plan["key"]
+                    report["sourcedStrategyReviewed"] = True
+                    report["strategy"] = strategy["key"]
     return report
 
 
@@ -493,7 +493,7 @@ def audit(root: Path, checkpoint_path: Path | None = None, before_restart: Path 
             and m.get("allEventsIngestedOnce")
             for m in memory.values()
         ),
-        "sourcedPlansReviewed": all(memory[p].get("sourcedPlanReviewed") for p in ("Rome", "Greece")),
+        "sourcedStrategiesReviewed": all(memory[p].get("sourcedStrategyReviewed") for p in ("Rome", "Greece")),
     }
     return {
         "verified": all(checks.values()),
@@ -503,7 +503,7 @@ def audit(root: Path, checkpoint_path: Path | None = None, before_restart: Path 
         "memoryEvidence": memory,
         "gameTurn": game.get("turns", 0),
         "checkpointSha256": hashlib.sha256(raw).hexdigest(),
-        "evidenceNote": "Checks native state, authenticated receipts, recipient events and reachable private memory revisions. Baseline archives prove preserved data, not that processes restarted; review operator-process-log.json for stops and starts. Plan checks prove an agreement-sourced plan was flagged, refreshed and revised or explicitly retired; assess the strategic quality and explanations in private transcripts separately. Missing milestones or evidence never count as verified.",
+        "evidenceNote": "Checks native state, authenticated receipts, recipient events and reachable private memory revisions. Baseline archives prove preserved data, not that processes restarted; review operator-process-log.json for stops and starts. Strategy checks prove an agreement-sourced assessment was flagged, refreshed and revised or explicitly retired; assess the strategic quality and explanations in private transcripts separately. Missing milestones or evidence never count as verified.",
     }
 
 

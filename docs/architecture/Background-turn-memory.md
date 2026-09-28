@@ -1,187 +1,137 @@
-# Background turn memory and bookkeeping
+# Background strategic reviews and turn accounting
 
-Scheduled agents now keep the same model conversation open after a successful
-native `END_TURN`. The next player can act while the outgoing agent batches useful
-private memory changes. This uses the evidence already in its conversation;
-there is no separate reflection agent or second context preload.
+Gameplay ends at `END_TURN`. There is no mandatory model-written handoff,
+post-turn memory phase, or requirement to rewrite a strategy before acting.
+The host records commands, reasons, receipts, diplomacy and accounting itself.
+During gameplay, players can still save private information that observations
+and action records cannot reconstruct.
 
-## Turn lifecycle
+## Review schedule
 
-1. Gameplay calls durably record decisions, requests, engine receipts and tool
-   responses. These writes remain synchronous so a crash cannot silently replay
-   an accepted action.
-2. Successful `END_TURN` returns its receipt and a `memoryPhase` instruction.
-   Gameplay access ends immediately. The scheduler records the confirmed handoff
-   and pending finalization before activating the next player.
-3. The outgoing conversation may call only `memory_read`, `memory_search`,
-   `memory_update` and `history_read`. It should batch useful changes and finish
-   without a prose report. A turn with nothing worth saving needs no memory write.
-4. Model completion closes that job and freezes its structured summary. The
-   service generates archives asynchronously; the scheduler mirrors them and
-   records final usage. The same civilization's next activation and game
-   completion wait for pending work. Round checkpoints capture unfinished work
-   without waiting for the model to finish.
+`--review-interval K` defaults to **5**. Reviews are prepared at the end of turns
+K, 2K, 3K, and so on; there is no turn-100 threshold. The launcher retains the
+interval on resume. Independent agent servers accept the same option.
 
-This overlaps latency. It does not make memory reasoning or model requests free:
-post-turn requests and all their token categories belong to the original job.
-The agent can still revise memory during gameplay when an immediate decision needs
-it. Routine intent can use a fresh `intent.reason` without saving a plan first.
+A civilization has at most one pending review. Other civilizations continue while
+it runs, but that civilization's next gameplay turn waits for the report. For
+example, Greece and France can play while Rome reviews turn 5; Rome cannot start
+turn 6 until that review is saved.
 
-## Evidence and concurrent communication
+The scheduler waits before capturing the next turn checkpoint or creating a
+gameplay activation. The wait uses no gameplay model time or activation budget;
+the match wall-time budget still applies. It keeps the operator lease alive,
+checks service health, and responds to pause, stop and budget limits. The console
+and dashboard identify the waiting civilization and review turn. The service
+also rejects a direct gameplay start while an earlier review is unfinished.
 
-The gameplay conversation is the civilization's sole notebook writer until its
-memory phase completes. Communication jobs append immutable contributions, which
-become available to the next gameplay activation. They cannot change the outgoing
-writer's entries. The same civilization's next turn waits for that writer to finish.
+## Frozen input and publication
 
-Game observations, historical actions and available contributions stay at the
-completed turn's boundary. Memory reads cannot fetch new game or chat state.
-Optional historical references do not need current evidence; unavailable references
-are retained as explicitly unverified assessments without exposing their contents.
+Before a due `END_TURN` is dispatched, the service saves:
 
-New information creates separate advisory notices. It never changes notebook
-versions, vetoes edits or requires a plan revision before a command. An edit can
-acknowledge notices already delivered to its conversation; later notices remain
-for the next turn. Repeated notebook conflicts are local edit outcomes, not match
-failures. Command-state conflicts and durability failures keep their diagnostic
-failure path. See the [notebook contract](Structured-memory.md).
+- The player's permitted position, with its detailed city, unit and explored-map data.
+- All permitted victory sections and chart-history pages, plus research/policy
+  catalogues including named planning details.
+- The player's diplomatic context and received messages.
+- Recent confirmed actions and outcomes. Strategic rationales remain in the
+  audit history and are excluded from the review inputs.
+- The original model, reasoning effort and timeout settings.
 
-### Edit accounting
+Capturing data is service work, not another model request. A rejected handoff
+cannot launch a review. A successful native handoff, or its reconciled receipt,
+marks the saved task pending. The next player may then act while the reviewer runs.
 
-`telemetry.memoryEdits` reports `batches`, `accepted`, `rejected`,
-`rejectedBatches`, and `rejectionReasons`. These come from the committed memory
-call journal, so a lost response, replay, service restart, or game rollback does
-not lose or double-count edits. A successful API request can contain rejected
-edits; transport errors remain in `apiCalls`. Request validation failures that
-never attempt individual edits remain API errors alone. Reasons are bounded
-codes; private text and record contents are excluded.
+The reviewer receives its own conversation and credential, using the player's
+model, reasoning effort, fast-priority setting and optional strategy guide. Its
+context excludes private strategy, handoffs, contributions and previous model
+reasoning. Frozen detail tools have no live host connection. The reviewer cannot
+act, communicate, write memory, inspect private history or request live movement
+previews. Current tactical validation remains the gameplay player's responsibility.
+The initial prompt includes current diplomatic commitments; the older ledger and
+duplicated economic context stay behind explicit frozen reads.
 
-The host preserves these counts per job and aggregates them per turn, player,
-and game in its telemetry exports. Background edits belong to the outgoing turn.
-`memoryEdits.complete` describes counter coverage, separately from provider token
-usage completeness; aggregates with older, uninstrumented jobs are partial, and
-wholly unavailable counts remain null. Console turn summaries and the TUI show
-accepted/rejected edits and rejection reasons without additional API calls.
+The preload also summarizes known foreign cities from that frozen map: owner,
+position, original-major-capital status, last-observed turn and distance in hexes
+to the nearest own city. Visible cities include population, health and native
+defensive strength. Under fog, identity and ownership remain last-seen facts;
+current population and defenses are omitted. Unexplored cities are absent.
+Capital identity comes from observed city facts, not matching city names.
 
-## Timeouts, durability and recovery
+Frozen `victory_progress` accepts the same section, victory, metric, civilization
+and chart-range filters as gameplay. The service captures all permitted chart
+pages before handoff; subsequent reads filter that snapshot without contacting
+the advancing game. Native visibility, missing values, ranking scope and metric
+order are preserved. The initial review preload includes own/global status and
+rankings; chart history and demographics remain on demand to limit context size.
 
-The service gives post-handoff memory work its own allowance equal to the
-activation's configured `timeoutSeconds` (`--turn-timeout`), independently of
-time already spent on gameplay. The service persists and reports that allowance
-as `memoryTimeoutSeconds`; the full-game launcher's default is one hour. The
-finalization worker renews the agent lease while waiting. Pause, stop and the
-match deadline interrupt pending model
-work, including during a checkpoint/finalization barrier. Accepted edits remain
-durable; interrupted or failed provider accounting is not reported as complete.
+Reports compare enabled victory paths and propose short-, mid- and long-term
+plans over the same horizons. Each victory path names a next concrete objective,
+the investment required and expected payoff for the player and rivals, alongside
+remaining requirements, a projection and observed rival progress. Detail matches
+the game stage and evidence. Field descriptions identify the report's contents; the
+reviewer chooses its calculations and strategic conclusions. Projections can
+describe development milestones and conditions instead of a victory date. The
+service validates the report's structure and coverage.
 
-`finish_handoff` accepts the original activation-bound handoff proof.
-`begin_finalize` queues archive work and returns promptly. The scheduler polls
-`finalizationState` (`PENDING`, `RUNNING`, `COMPLETED`, `FAILED`) with a separate
-300-second archive budget. Status and heartbeats do not wait for file rendering.
-All normal turn completion, including resumed handoffs, uses this background
-protocol. The old synchronous `finalize` endpoint and capability fallbacks have
-been removed. Archive downloads, interruption and terminal-outcome archiving
-retain a 60-second HTTP timeout.
-An idempotent control request whose timeout loses its acknowledgement is retried
-once with the same proof; gameplay commands are not retried by this mechanism.
+The latest completed report is selected when a subsequent gameplay activation
+starts, with `asOfTurn`. It cannot change midway through that conversation or
+overwrite the player's notebook. The player weighs it against current facts and
+need not agree with it or copy it into another memory entry. Before the first
+scheduled review, gameplay uses its ordinary observations and optional memory.
 
-Pending work stays associated with its original epoch, turn and handoff even if
-other players have since acted. Rollback drains old writers before restoring the
-epoch. Archive failures retain pending finalization for recovery. A completion
-marker is published only after it is saved; telemetry acknowledgements can be
-retried independently. Restart preserves accepted memory, marks an unfinished
-model job failed and retains its partial summary for inspection. It does not
-restart paid model work automatically.
+## Recovery and failures
 
-A model timeout, provider interruption or service restart after handoff stops the
-run for inspection. On an explicit `match resume`, a failed memory attempt already
-present in the saved run can be acknowledged after its handoff, stopped process
-and archive are verified. The scheduler records `acknowledgedMemoryFailures` and
-prints a warning before continuing. Confirmed actions and committed memory edits
-remain; unsaved notes are unavailable. The activation retains its failed status,
-incomplete memory marker and partial provider accounting. Neither gameplay nor
-reflection is replayed. A new failure during the resumed run still stops it.
-Internal state failures, repeated stale command-state conflicts, unconfirmed shutdown and
-archive errors are not acknowledged by this recovery path.
+Review inputs commit before the native handoff. Inputs and the pending task are
+part of coordinated turn recovery. If a review finishes after a checkpoint and
+the game rewinds to that checkpoint, its report is discarded and the captured
+inputs become pending again. Reports and temporary inputs change atomically;
+inputs are removed only after the report is saved.
 
-`gameplayElapsedMs` ends at handoff. `finalizationElapsedMs` runs from handoff
-through memory completion and service archive finalization; it excludes the
-scheduler's subsequent archive copy. These intervals overlap another player's
-gameplay and must not be added to estimate match wall time.
+A restarted reviewer uses a fresh conversation and the same frozen inputs.
+`--review-attempts` defaults to 3. Attempts and spending survive a rewind;
+exhaustion is exposed through service health and stops the scheduler for
+inspection. Explicitly increasing the limit permits further attempts on resume.
+Pausing stops model processes and keeps pending inputs without launching retries.
+Persistence failures and unconfirmed process shutdown stop immediately; another
+reviewer is not launched while the previous process might still be running.
 
-## Round checkpoints during memory work
+Checkpoint holds drain admitted work and briefly defer report publication, while
+model computation can continue. The scheduler releases those holds before waiting
+for a report. Restoration closes abandoned reviewer processes and credentials
+before replacing state. A restored pending review must finish before that
+civilization's next gameplay activation.
 
-At a round boundary, the coordinator stops admitting new tool calls and lets
-accepted calls finish their writes and receipts. It then freezes committed memory,
-captures the host and each player's exact record versions and job snapshots,
-and publishes the manifest with the scheduler's pending finalizations. The hold
-is released after all components are durable. Calls arriving during capture wait
-inside the service and continue after release, without a model-visible error or
-retry. Model computation itself continues. Job completions during the hold are
-deferred until release.
+## Mechanical completion and telemetry
 
-The next player's turn can start while the previous round's last agent finishes
-its memory update. In a mixed game, placing humans first in the native turn order
-provides human turns during which the preceding round's agent memory can finish.
-The scheduler still waits for a civilization's own previous finalization before
-its next activation.
+After `END_TURN`, gameplay tools are fenced. The conversation finishes immediately;
+the service allows up to 60 seconds for provider completion, final usage and
+process shutdown. This is not a second thinking or writing budget. The scheduler
+can start the next player while that completion drains.
 
-Restoration cancels abandoned jobs, restores the captured memory revisions and
-job state, and rebuilds factual turn summaries from committed receipts. A memory
-job unfinished at capture is restored as interrupted even if it completed later.
-Its summary and operator diagnostics explicitly report incomplete reflection;
-only edits committed at capture are visible. Later notes and job completion
-metadata cannot leak into the restored timeline. No gameplay command or paid
-reflection is automatically rerun. Accounting remains outside the rewind.
+`finish_handoff` accepts an activation-specific native handoff proof.
+`begin_finalize` performs durable completion/accounting asynchronously, with
+idempotent retries for lost acknowledgements. A civilization's next activation
+waits for this mechanical completion and any pending strategic review.
 
-Regression coverage holds the last player's reflection across a checkpoint,
-checks next-player overlap and same-player ordering, drains an in-flight memory
-write, queues a write during capture, and restores before/after late job completion.
+Reviews are separate `review` jobs linked to the original gameplay job. All
+attempts' tokens, calls and durations appear in host telemetry and the original
+turn's totals; player totals also separate `reviewUsage`. Final provider counters
+can arrive after handoff, so accounting may initially be incomplete. Concurrent
+job durations must not be added to estimate game wall time.
 
-## Incremental exports
+SQLite remains authoritative. Gameplay and background completion do not generate
+Markdown or per-turn exports. Human-readable history is generated on request.
+The dashboard's Strategy tab reads the latest completed reports directly from
+the local review stores, alongside pending-review status and host job telemetry.
+It shows both the source turn and the first gameplay preload that received the
+advice, without implying that the player adopted it.
+See [telemetry](../reference/Telemetry.md), [private memory](Structured-memory.md)
+and [turn recovery](Turn-recovery.md).
 
-SQLite remains authoritative. A persistent `export_jobs` queue tracks jobs whose
-generated history needs rebuilding. Export regenerates current private views and
-only changed turn/communication groups; retries in the same turn contribute to
-the same receipt file. Previously generated history remains intact. Missing
-generated files are rebuilt, and rollback removes abandoned projections.
+## Validation
 
-Dirty work is cleared only after file writes succeed. An interrupted export is
-safe to repeat. A new notebook receives one initial full export.
-Memory writes do not render files before replying, and gameplay job closure no
-longer performs a duplicate export. Turn archives also cache earlier receipt IDs
-until an attempt changes, avoiding repeated full-history parsing.
-
-## Validation and measurement
-
-At the original background-memory change, the full Python suite passed with 610
-tests and 90 subtests; the opt-in installed
-Codex capture test was skipped. Five finalization tests passed again after the
-final pause/deadline check. Ruff lint and formatting, Pyrefly and diff checks passed.
-
-Regression tests cover frozen evidence, concurrent contributions, recovered
-handoff receipts, timeouts, pause, lost acknowledgements, incremental exports,
-missing files and same-turn retries. A real HTTPS test holds export for more than
-the former five-second timeout while status stays responsive. A scheduler test
-with fake model processes confirms Greece can finish gameplay before Rome writes
-its post-turn note. No paid models are used in those tests.
-
-The existing vanilla run stopped after Greece's turn 35, with France activated:
-the scheduler's five-second synchronous finalization request timed out. Greece's
-service did finish the bookkeeping, about 6.6 seconds after handoff. That elapsed
-time includes more than the HTTP request itself. Full-history memory export was
-repeated during finalization and at job close.
-
-On a private copy of that run's Greece database, the previous memory export took
-about 2.4 seconds. Exporting only dirty turn 35 took about 0.05 seconds; an
-unchanged export took about 0.014 seconds. This is a local export measurement,
-not a live gameplay or model-token benchmark. The original run was not modified
-or resumed.
-
-## Database access follow-up: implemented
-
-Memory, history/export, checkpoint, stale-recovery and accounting queries now use
-SQLAlchemy Core with the existing SQLite files. Shared schema definitions and
-query expressions preserve transaction durability, revision filtering and
-recovery. See [database access](Database-access.md) for transaction checks and
-the comparison against all 36 saved Greece turn summaries.
+Tests cover cadence, read-only frozen tools, other-player overlap, the next own
+turn waiting and receiving the report, model/effort/priority settings, failed and
+cancelled reviews, bounded attempts, checkpoint restoration, lost handoff
+responses and delayed usage. Waiting is tested beyond the gameplay timeout,
+including lease renewal, pause/resume and fatal review failures.
+They use fake model processes; no paid model is needed for lifecycle validation.

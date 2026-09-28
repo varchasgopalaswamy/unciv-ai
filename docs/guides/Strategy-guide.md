@@ -11,10 +11,10 @@ order, city count, mandatory diplomatic response, or gameplay restrictions.
 The guide is **off by default**. To supply it to Rome, Greece, and France:
 
 ```sh
-.venv/bin/python scripts/run_vanilla_game.py --strategy-guide
+.venv/bin/civ-agent game start --strategy-guide
 ```
 
-The full-game launcher and `python -m tests.live_vanilla` both accept
+The full-game launcher and `python -m tests.live_saved_position` both accept
 `--strategy-guide` and `--no-strategy-guide`. For one civilization's service:
 
 ```sh
@@ -22,9 +22,10 @@ The full-game launcher and `python -m tests.live_vanilla` both accept
 ```
 
 The setting applies to that service's scheduled gameplay, communication jobs,
-and interactive sessions. It does not affect built-in AI players. Pass the same
-flag again when restarting services or using `--resume`; the default for each
-launch is off. Changing it changes subsequent startup prompts; it cannot erase
+and interactive sessions. It does not affect built-in AI players. `game resume`
+retains the setting; use `--no-strategy-guide` to disable it. When launching an
+individual service directly, pass the flag on each launch. Changing it changes
+subsequent startup prompts; it cannot erase
 text already delivered in a conversation being recovered.
 
 ## Prompt size and caching

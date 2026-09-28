@@ -1,16 +1,13 @@
-"""Private, restart-safe mirrors of the agent service's exposed event stream."""
+"""Operator event persistence and console rendering, without automatic reports."""
 
-import hashlib
 import json
-import os
 import re
-import tempfile
-from pathlib import Path
+
+from sqlalchemy import select
 
 from civ_agent.model_status import status_text
+from civ_agent.monitoring import MonitorStore, get_record, put_record, read_database, record_key, records
 from civ_agent.terminal_output import TerminalOutput, visible_text
-from civ_agent.tls import TLSConfigError, private_directory, regular_file
-from civ_agent.turn_archive import civilization_directory_name
 
 KINDS = {
     "developer_message",
@@ -54,26 +51,6 @@ def clean(value, secrets):
     if isinstance(value, list):
         return [clean(item, secrets) for item in value]
     return value
-
-
-def atomic_text(path, text):
-    if path.exists() or path.is_symlink():
-        history_file(path)
-    descriptor, temporary = tempfile.mkstemp(prefix=".history-", dir=path.parent)
-    try:
-        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-            stream.write(text)
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(temporary, path)
-        parent = os.open(path.parent, os.O_DIRECTORY)
-        try:
-            os.fsync(parent)
-        finally:
-            os.close(parent)
-    finally:
-        if os.path.exists(temporary):
-            os.unlink(temporary)
 
 
 def message_key(event):
@@ -242,64 +219,16 @@ class LiveOutput:
                 self.line("Status", phase)
 
 
-def history_file(path):
-    try:
-        return regular_file(path, private=True)
-    except TLSConfigError:
-        raise HistoryError("History files must be regular owner-only files, without symbolic links.") from None
-
-
-def history_directory(path):
-    try:
-        return private_directory(path)
-    except TLSConfigError:
-        raise HistoryError("History paths must be owner-only directories, without symbolic links.") from None
-
-
-def bind_source(path, expected):
-    if path.exists() or path.is_symlink():
-        history_file(path)
-        try:
-            if json.loads(path.read_text(encoding="utf-8")) != expected:
-                raise ValueError()
-        except (ValueError, UnicodeError):
-            raise HistoryError(
-                "History belongs to a different match, player or activation; preserve it and choose a new history directory."
-            ) from None
-    else:
-        atomic_text(path, json.dumps(expected, ensure_ascii=True) + "\n")
-
-
 class EventHistory:
-    def __init__(
-        self, root, epoch, civilization, activation, secrets=(), *, game_turn=None, verbose=False, renderer=None
-    ):
-        def digest(value: str) -> str:
-            return hashlib.sha256(value.encode()).hexdigest()
-
-        self.source = dict(epoch=epoch, civilization=civilization, activationId=activation)
-        self.turn_directory: Path | None = None
-        if game_turn is None:
-            # Keep the original location for an already persisted activation whose
-            # scheduler state predates explicit game-turn metadata.
-            self.directory = history_directory(root)
-            for component in (digest(epoch), digest(civilization), digest(activation)):
-                self.directory = history_directory(self.directory / component)
-        else:
-            if type(game_turn) is not int or game_turn < 0:
-                raise HistoryError("History game turn must be a nonnegative integer.")
-            try:
-                player_name = civilization_directory_name(civilization)
-                attempt_name = civilization_directory_name(activation)
-            except ValueError:
-                raise HistoryError("Invalid player or activation name for history.") from None
-            player_directory = history_directory(history_directory(root) / player_name)
-            bind_source(player_directory / "source.json", dict(version=2, epoch=epoch, civilization=civilization))
-            self.turn_directory = history_directory(player_directory / f"turn_{game_turn}")
-            self.directory = history_directory(self.turn_directory / f"attempt_{attempt_name}")
-            self.source["gameTurn"] = game_turn
-        self.jsonl = self.directory / "events.jsonl"
-        self.markdown = self.directory / "history.md"
+    def __init__(self, path, epoch, civilization, activation, secrets=(), *, game_turn, verbose=False, renderer=None):
+        if type(game_turn) is not int or game_turn < 0:
+            raise HistoryError("History game turn must be a nonnegative integer.")
+        if not all(isinstance(value, str) and value for value in (epoch, civilization, activation)):
+            raise HistoryError("Invalid history identity.")
+        self.source = dict(epoch=epoch, civilization=civilization, activationId=activation, gameTurn=game_turn)
+        self.identity = dict(epoch=epoch, civilization=civilization, activation=activation, game_turn=game_turn)
+        self.key = record_key(epoch, civilization, activation)
+        self.store = MonitorStore(path)
         self.secrets = tuple(secrets)
         self.output = LiveOutput(
             civilization,
@@ -307,69 +236,36 @@ class EventHistory:
             verbose=verbose,
             renderer=renderer,
             owner=(epoch, civilization, activation),
-            history_path=self.markdown,
+            history_path=path,
         )
-        self.events = []
-        bind_source(self.directory / "source.json", self.source)
-        if self.jsonl.exists() or self.jsonl.is_symlink():
-            history_file(self.jsonl)
-            lines = self.jsonl.read_bytes().splitlines(keepends=True)
-            for index, line in enumerate(lines):
-                if not line.endswith(b"\n") and index == len(lines) - 1:
-                    # A killed append may leave only part of the last event. The
-                    # preceding complete JSONL records are the durable cursor.
-                    atomic_text(self.jsonl, b"".join(lines[:index]).decode("utf-8"))
-                    break
-                try:
-                    event = json.loads(line)
-                    if not isinstance(event, dict) or event.get("sequence") != len(self.events):
-                        raise ValueError()
-                except (ValueError, UnicodeError):
-                    raise HistoryError(
-                        "History is corrupt; preserve it and inspect the service's original event log."
-                    ) from None
-                self.events.append(event)
-                self.output.consume(event, emit=False)
-        self.write_markdown()
-
-    def publish_archive(self, archive):
-        """Mirror finalized player records fetched from its authenticated service."""
-        if self.turn_directory is None:
-            raise HistoryError("A game turn is required to mirror a player archive.")
-        if not isinstance(archive, dict) or (
-            type(archive.get("gameTurn")) is not int
-            or archive["gameTurn"] != self.source["gameTurn"]
-            or archive.get("civilization") != self.source["civilization"]
-            or not isinstance(archive.get("commands"), str)
-            or not isinstance(archive.get("summary"), str)
-        ):
-            raise HistoryError("Player archive does not match the requested civilization and turn.")
-        records = []
-        try:
-            for line in archive["commands"].splitlines():
-                record = json.loads(line)
-                if not isinstance(record, dict):
-                    raise ValueError()
-                records.append(clean(record, self.secrets))
-        except (ValueError, UnicodeError):
-            raise HistoryError("Player command archive is not valid JSONL.") from None
-        from civ_agent.memory_records import TurnSummary
-
-        try:
-            data = TurnSummary.model_validate(archive["summaryData"]).model_dump(exclude_none=True)
-            if data.get("turn") != archive["gameTurn"]:
-                raise ValueError()
-        except (KeyError, ValueError):
-            raise HistoryError("Invalid structured turn summary") from None
-        commands = "".join(json.dumps(record, ensure_ascii=True, separators=(",", ":")) + "\n" for record in records)
-        summary = clean(archive["summary"], self.secrets)
-        atomic_text(self.turn_directory / "commands.jsonl", commands)
-        atomic_text(self.turn_directory / "summary.md", summary)
-        atomic_text(self.turn_directory / "summary.json", json.dumps(clean(data, self.secrets), indent=2) + "\n")
+        with self.store.engine.begin() as db:
+            source = get_record(db, "streams", self.key)
+            if source is not None and source != self.source:
+                raise HistoryError("History belongs to another turn; preserve its original identity.")
+            put_record(db, "streams", self.key, self.source, **self.identity)
+        self.cursor = 0
+        # Restore only the console decoder state. There is no second in-memory
+        # copy of the complete transcript and no Markdown rebuild on each page.
+        for event in self.events:
+            if event["sequence"] != self.cursor:
+                raise HistoryError("History has a sequence gap.")
+            self.output.consume(event, emit=False)
+            self.cursor += 1
 
     @property
-    def cursor(self):
-        return len(self.events)
+    def events(self):
+        with read_database(self.store.path) as db:
+            values = db.scalars(
+                select(records.c.payload)
+                .where(
+                    records.c.collection == "events",
+                    records.c.epoch == self.source["epoch"],
+                    records.c.civilization == self.source["civilization"],
+                    records.c.activation == self.source["activationId"],
+                )
+                .order_by(records.c.sequence)
+            )
+            return [json.loads(value) for value in values]
 
     def append(self, events):
         accepted = []
@@ -380,7 +276,7 @@ class EventHistory:
             if sequence < self.cursor:
                 continue
             if sequence != self.cursor + len(accepted):
-                raise HistoryError("Agent event history has a gap; stopped mirroring to preserve its cursor.")
+                raise HistoryError("Agent event history has a gap; its cursor was not advanced.")
             sanitized = clean(event, self.secrets)
             if sanitized.get("kind") not in KINDS:
                 sanitized = dict(sequence=sequence, time=sanitized.get("time"), kind="omitted", data={})
@@ -389,42 +285,47 @@ class EventHistory:
             accepted.append(sanitized)
         if not accepted:
             return
-        if self.jsonl.exists() or self.jsonl.is_symlink():
-            history_file(self.jsonl)
-        descriptor = os.open(self.jsonl, os.O_APPEND | os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW, 0o600)
-        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+        with self.store.engine.begin() as db:
             for event in accepted:
-                stream.write(json.dumps(event, ensure_ascii=True, separators=(",", ":")) + "\n")
-            stream.flush()
-            os.fsync(stream.fileno())
-        self.events.extend(accepted)
-        self.write_markdown()
+                put_record(
+                    db,
+                    "events",
+                    record_key(self.key, event["sequence"]),
+                    event,
+                    sequence=event["sequence"],
+                    **self.identity,
+                )
+        self.cursor += len(accepted)
         for event in accepted:
             self.output.consume(event)
 
-    def write_markdown(self):
-        messages = Messages()
-        chunks = Chunks(self.secrets)
-        blocks, indices = [], {}
-        for event in self.events:
-            event = chunks.expand(event)
-            if event is None:
-                continue
-            key, _delta = messages.update(event)
-            if key is not None:
-                if key not in indices:
-                    indices[key] = len(blocks)
-                    blocks.append("")
-                blocks[indices[key]] = f"**{key[0]}**\n\n{messages.text[key]}"
-                continue
-            data, kind = event.get("data", {}), event.get("kind")
-            if kind in {"developer_message", "user_message"}:
-                label = "Developer instructions" if kind == "developer_message" else "Instructions"
-                blocks.append(f"**{label}**\n\n" + str(data.get("text", "")))
-            elif kind in {"tool_call", "tool_result", "lifecycle", "error", "action", "model_status"}:
-                text = json.dumps(data, ensure_ascii=False, indent=2)
-                fence = "`" * max(3, max((len(match.group()) + 1 for match in re.finditer(r"`+", text)), default=3))
-                blocks.append(f"**{kind.replace('_', ' ').capitalize()}**\n\n{fence}json\n{text}\n{fence}")
-        turn = f" — turn {self.source['gameTurn']}" if "gameTurn" in self.source else ""
-        header = f"# {visible_text(self.source['civilization'])}{turn} — activation {visible_text(self.source['activationId'])}\n\n"
-        atomic_text(self.markdown, header + "\n\n".join(blocks) + "\n")
+    def markdown(self):
+        return render_markdown(self.source, self.events)
+
+
+def render_markdown(source, events):
+    messages = Messages()
+    chunks = Chunks()
+    blocks, indices = [], {}
+    for event in events:
+        event = chunks.expand(event)
+        if event is None:
+            continue
+        key, _delta = messages.update(event)
+        if key is not None:
+            if key not in indices:
+                indices[key] = len(blocks)
+                blocks.append("")
+            blocks[indices[key]] = f"**{key[0]}**\n\n{messages.text[key]}"
+            continue
+        data, kind = event.get("data", {}), event.get("kind")
+        if kind in {"developer_message", "user_message"}:
+            label = "Developer instructions" if kind == "developer_message" else "Instructions"
+            blocks.append(f"**{label}**\n\n" + str(data.get("text", "")))
+        elif kind in {"tool_call", "tool_result", "lifecycle", "error", "action", "model_status"}:
+            text = json.dumps(data, ensure_ascii=False, indent=2)
+            fence = "`" * max(3, max((len(match.group()) + 1 for match in re.finditer(r"`+", text)), default=3))
+            blocks.append(f"**{kind.replace('_', ' ').capitalize()}**\n\n{fence}json\n{text}\n{fence}")
+    turn = f" — turn {source['gameTurn']}"
+    header = f"# {visible_text(source['civilization'])}{turn} — activation {visible_text(source['activationId'])}\n\n"
+    return header + "\n\n".join(blocks) + "\n"

@@ -8,6 +8,7 @@ import sqlite3
 from collections import Counter
 from pathlib import Path
 
+from civ_agent.monitoring import path_for, read_collection
 from civ_agent.protocol import JsonObject
 from civ_agent.runner_history import Chunks
 from civ_agent.telemetry import TOKEN_KEYS
@@ -66,10 +67,8 @@ def summarize(jobs):
 def collect(root, sessions, require_updates=False):
     verified = verify(root)
     assert verified["incompleteJobs"] == 0
-    jobs = {
-        row["jobId"]: row["job"] for row in map(json.loads, (root / "telemetry/jobs.jsonl").read_text().splitlines())
-    }
-    turns = list(map(json.loads, (root / "telemetry/turns.jsonl").read_text().splitlines()))
+    jobs = {row["jobId"]: row["job"] for row in read_collection(path_for(root), "jobs")}
+    turns = read_collection(path_for(root), "turns")
     assert all(row["accountingComplete"] and row["turn"]["status"] == "completed" for row in turns)
     activations = {}
     for pattern in ("*/activations/*.json", "*/chat-jobs/*.json"):

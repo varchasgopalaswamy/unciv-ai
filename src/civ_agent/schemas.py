@@ -31,7 +31,7 @@ class StartRequest(BoundaryModel):
     civilization: Annotated[str, Field(min_length=1, max_length=128)]
     gameTurn: NonnegativeInt
     handoff: NonnegativeInt
-    threadId: Identifier | None
+    threadId: None
     mcpUrl: str
     playerToken: PlayerToken = Field(repr=False)
     prompt: Annotated[str, Field(min_length=1, max_length=1_000_000, repr=False)]
@@ -81,22 +81,84 @@ def argument_shape(shape: JsonObject, definitions: JsonObject) -> JsonObject:
 
 def argument_issues(error: ValidationError, schema: JsonObject) -> list[JsonObject]:
     """Report error codes and schema-owned names, never invalid values or arbitrary keys."""
-    names: set[str] = set()
 
-    def collect(value):
-        if isinstance(value, dict):
-            names.update(value.get("properties", {}))
-            for part in value.values():
-                collect(part)
-        elif isinstance(value, list):
-            for part in value:
-                collect(part)
+    def resolve(shape):
+        while "$ref" in shape:
+            shape = schema.get("$defs", {}).get(shape["$ref"].rsplit("/", 1)[-1], {})
+        return shape
 
-    collect(schema)
+    def field_path(location):
+        shape, fields = schema, []
+        for part in location:
+            shape = resolve(shape)
+            mapping = shape.get("discriminator", {}).get("mapping", {})
+            if isinstance(part, str) and part in mapping:
+                shape = resolve({"$ref": mapping[part]})
+                continue  # Pydantic inserts union tags, which are not field names.
+            variants = shape.get("anyOf", shape.get("oneOf", []))
+            if variants:
+                shape = {}
+                for variant in variants:
+                    candidate = resolve(variant)
+                    if (isinstance(part, int) and "items" in candidate) or (
+                        isinstance(part, str) and part in candidate.get("properties", {})
+                    ):
+                        shape = candidate
+                        break
+            if isinstance(part, int) and "items" in shape:
+                fields.append(part)
+                shape = shape["items"]
+            elif isinstance(part, str) and part in shape.get("properties", {}):
+                fields.append(part)
+                shape = shape["properties"][part]
+            else:
+                break
+        return fields
+
     return [
-        {"fields": [part for part in issue["loc"] if isinstance(part, int) or part in names], "code": issue["type"]}
+        {"fields": field_path(issue["loc"]), "code": issue["type"]}
         for issue in error.errors(include_input=False, include_context=False, include_url=False)[:20]
     ]
+
+
+def argument_feedback(error: ValidationError, schema: JsonObject, prefix: list | None = None) -> JsonObject:
+    """Explain native validation constraints using counts/bounds, never rejected text."""
+    issues = argument_issues(error, schema)
+    limits, instructions = [], []
+    errors = error.errors(include_input=True, include_context=True, include_url=False)
+    for issue, detail in zip(issues, errors, strict=False):
+        fields = [*(prefix or []), *issue["fields"]]
+        label = ".".join(map(str, fields)) or "arguments"
+        context = detail.get("ctx", {})
+        value = detail.get("input")
+        limit: JsonObject = {"fields": fields}
+        code = detail["type"]
+        if code in {"too_long", "too_short", "string_too_long", "string_too_short"}:
+            upper = code.endswith("long")
+            bound = context.get("max_length" if upper else "min_length")
+            if not isinstance(bound, int):
+                continue
+            limit["maximum" if upper else "minimum"] = bound
+            if isinstance(value, (str, list, dict, tuple)):
+                limit["received"] = len(value)
+            unit = "characters" if code.startswith("string_") else "items"
+            instructions.append(f"{label} accepts {'at most' if upper else 'at least'} {bound} {unit}.")
+        elif code in {"less_than", "less_than_equal", "greater_than", "greater_than_equal"}:
+            upper = code.startswith("less")
+            inclusive = code.endswith("equal")
+            key = ("l" if upper else "g") + ("e" if inclusive else "t")
+            bound = context.get(key)
+            if not isinstance(bound, (int, float)):
+                continue
+            limit["maximum" if upper else "minimum"] = bound
+            limit["inclusive"] = inclusive
+            instructions.append(
+                f"{label} must be {'<=' if upper and inclusive else '<' if upper else '>=' if inclusive else '>'} {bound}."
+            )
+        else:
+            continue
+        limits.append(limit)
+    return {"invalidFields": issues, "limits": limits, "instruction": " ".join(instructions)}
 
 
 def start_error(error: ValidationError) -> str:

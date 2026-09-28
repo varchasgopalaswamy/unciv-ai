@@ -108,9 +108,6 @@ internal class AgreementLifecycle(private val runtime: GameExecutor) {
             }
             notifications[player.civID] = identitySet(player.notifications)
         }
-        // Single-activation rollback cannot rewind delivered agreement events. The existing
-        // coordinated round restore restores this registry and all recipient streams together.
-        if (state.players.values.any { it.records.isNotEmpty() }) runtime.communicationState.coordinatedRecovery = true
         return changed
     }
 
@@ -167,7 +164,8 @@ internal class AgreementLifecycle(private val runtime: GameExecutor) {
             "turn" to player.gameInfo.turns, "before" to before, "after" to record.current, "effects" to record.effects,
         )
         record.history.add(event)
-        runtime.communication.emit(listOf(player.civID), "agreement", event, setOf(player.civID))
+        val wakes = if (player.gameInfo.getCivilization(record.partner).isHuman()) setOf(player.civID) else emptySet()
+        runtime.communication.emit(listOf(player.civID), "agreement", event, wakes)
         runtime.turnSessions[player.civID]?.invalidate()
     }
 
@@ -206,6 +204,7 @@ internal class AgreementLifecycle(private val runtime: GameExecutor) {
                     "initialReceive" to record.initial["receive"],
                     "history" to record.history,
                     "effects" to record.effects,
+                    "cancellation" to obj("available" to false, "unavailableReason" to "Fixed-duration agreements cannot be cancelled directly."),
                 ),
             ),
         )
@@ -221,9 +220,9 @@ internal class AgreementLifecycle(private val runtime: GameExecutor) {
         "kind" to record.kind,
         "version" to record.version,
         "status" to record.status,
-        "representation" to if (record.kind == "TRADE") "NATIVE_TRADE_ROW" else "NATIVE_RELATIONSHIP",
+        "give" to record.current["give"],
+        "receive" to record.current["receive"],
         "remainingTurns" to if (record.status == "ENDED") 0 else (record.nativeTerms.give + record.nativeTerms.receive).map { it.duration }.filter { it >= 0 }.maxOrNull(),
-        "cancellation" to obj("available" to false, "unavailableReason" to "The native UI does not permit cancelling an enacted agreement directly."),
     )
 
     private fun terms(trade: Trade) = AgreementTerms(trade.ourOffers.map(::selection), trade.theirOffers.map(::selection))

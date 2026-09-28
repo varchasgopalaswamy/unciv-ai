@@ -1,6 +1,8 @@
 """Read existing operator accounting for display without changing scheduling or making API calls."""
 
-import json
+from sqlalchemy.exc import SQLAlchemyError
+
+from civ_agent.monitoring import path_for, read_record
 
 
 def number(value):
@@ -42,16 +44,13 @@ def memory_edits_text(counts):
 
 def turn_metrics(state_directory, flight):
     try:
-        with (state_directory / "telemetry/turns.jsonl").open() as source:
-            for line in source:
-                value = json.loads(line)
-                if not isinstance(value, dict) or not isinstance(value.get("turn"), dict):
-                    continue
-                turn = value["turn"]
-                if all(turn.get(key) == flight.get(key) for key in ("epoch", "civilization", "gameTurn", "handoff")):
-                    if flight.get("activationId") in value.get("jobs", []):
-                        return value
-    except (OSError, ValueError, TypeError):
+        value = read_record(path_for(state_directory), "turns", f"{flight['epoch']}/{flight['handoff']}")
+        if isinstance(value, dict) and isinstance(value.get("turn"), dict):
+            turn = value["turn"]
+            if all(turn.get(key) == flight.get(key) for key in ("epoch", "civilization", "gameTurn", "handoff")):
+                if flight.get("activationId") in value.get("jobs", []):
+                    return value
+    except (OSError, ValueError, TypeError, KeyError, SQLAlchemyError):
         pass
     return None
 
@@ -59,7 +58,7 @@ def turn_metrics(state_directory, flight):
 def display_turn(renderer, state_directory, flight, status):
     civilization = flight["civilization"]
     metrics = turn_metrics(state_directory, flight)
-    # Without a matching host export, status describes this activation only.
+    # Without a matching host record, status describes this activation only.
     usage = metrics.get("usage", {}) if metrics else status.get("usage", {})
     complete = metrics.get("accountingComplete") is True if metrics else status.get("usageComplete") is True
     available = complete or status.get("usageReported") is True

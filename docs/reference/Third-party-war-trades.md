@@ -72,7 +72,7 @@ war alerts and notifications.
 Engine state, trade consent, outcome, target event and request receipt share one
 atomic checkpoint. Exact retries cannot declare or pay twice. Native war popups can
 be read and acknowledged through the existing player commands before subsequent
-scheduled turns. Whole-round rollback restores the war, money and private records
+scheduled turns. Rewinding an interrupted turn restores the war, money and private records
 together and fences the abandoned epoch.
 
 The Python gateway checks observed target relations before dispatching war consent.

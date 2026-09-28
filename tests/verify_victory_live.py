@@ -5,6 +5,7 @@ import json
 from collections import Counter
 from pathlib import Path
 
+from civ_agent.monitoring import path_for, read_record
 from civ_agent.protocol import JsonObject
 from civ_agent.result_schema import PlayerResult
 
@@ -29,7 +30,7 @@ def verify(root: Path) -> JsonObject:
     assert kind in {"spaceship", "election"}
     checkpoint = json.loads((root / "exploration.json").read_text())
     game = json.loads(checkpoint["gameJson"])
-    run = json.loads((root / "runner" / "run.json").read_text())
+    run = read_record(path_for(root), "state", "run") or {}
     checks: dict[str, bool] = {}
     winner, victory_type = ("Rome", "Scientific") if kind == "spaceship" else ("Greece", "Diplomatic")
     checks["native_victory"] = (

@@ -19,14 +19,10 @@ def match(tmp_path):
         gzip.decompress(Path(__file__).with_name("fixtures").joinpath("trade-cycle.json.gz").read_bytes())
     )
     saved = data["checkpoint"]
-    rounds = tmp_path / "round-checkpoints"
+    rounds = tmp_path / "scenario-evidence"
     rounds.mkdir()
-    (rounds / f"{saved['epoch']}-round-0.json").write_text(
-        json.dumps({"host": {"gameJson": json.dumps(data["initialGame"])}})
-    )
-    (rounds / f"{saved['epoch']}-round-10.json").write_text(
-        json.dumps({"host": {"gameJson": json.dumps(data["fundingGame"])}})
-    )
+    (rounds / "initial.json").write_text(json.dumps(data["initialGame"]))
+    (rounds / "funding.json").write_text(json.dumps(data["fundingGame"]))
     write(tmp_path, saved)
     return tmp_path, saved
 
@@ -150,7 +146,7 @@ def test_late_acceptance_retry_does_not_count_as_a_second_negotiation(match):
 
 def test_missing_funding_snapshot_does_not_establish_that_funding_was_needed(match):
     root, saved = match
-    (root / "round-checkpoints" / f"{saved['epoch']}-round-10.json").unlink()
+    (root / "scenario-evidence" / "funding.json").unlink()
     report = verify_trade_cycle.audit(root)
     assert not report["verified"]
     assert not report["checks"]["researchFundingWasNecessary"]
@@ -158,10 +154,7 @@ def test_missing_funding_snapshot_does_not_establish_that_funding_was_needed(mat
 
 def test_initial_checkpoint_reports_pending_without_inventing_success(match):
     root, saved = match
-    initial = json.loads((root / "round-checkpoints" / f"{saved['epoch']}-round-0.json").read_text())["host"][
-        "gameJson"
-    ]
-    saved["gameJson"] = initial
+    saved["gameJson"] = (root / "scenario-evidence/initial.json").read_text()
     saved["handoff"] = 0
     saved["communication"]["trades"]["proposals"] = {}
     saved["communication"]["streams"] = {}

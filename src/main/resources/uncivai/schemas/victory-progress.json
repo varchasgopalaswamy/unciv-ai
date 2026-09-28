@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "names": {
+      "description": "Enabled victory names; empty selects all. Applies to own and global status.",
+      "type": "array",
+      "items": {"type": "string", "minLength": 1, "maxLength": 256, "pattern": "\\S"},
+      "maxItems": 16,
+      "uniqueItems": true
+    },
+    "sections": {
+      "description": "Defaults to our_status, global_status and rankings. Chart history and demographics are on demand.",
+      "type": "array",
+      "items": {"enum": ["our_status", "global_status", "rankings", "charts", "demographics"]},
+      "minItems": 1,
+      "maxItems": 5,
+      "uniqueItems": true
+    },
+    "metrics": {
+      "description": "Empty selects all enabled native metrics. Returned columns use native metric order.",
+      "type": "array",
+      "items": {"enum": ["Score", "Population", "Growth", "Production", "Gold", "Territory", "Force", "Happiness", "Technologies", "Culture", "TilesExplored"]},
+      "maxItems": 11,
+      "uniqueItems": true
+    },
+    "civilizations": {
+      "description": "Disclosed civilization names; empty selects all permitted rows. Filters global status, rankings and charts. Demographics aggregates retain their native scope.",
+      "type": "array",
+      "items": {"type": "string", "minLength": 1, "maxLength": 256, "pattern": "\\S"},
+      "maxItems": 64,
+      "uniqueItems": true
+    },
+    "fromTurn": {
+      "description": "Inclusive chart range start; requires charts. Defaults to the last 20 turns ending at toTurn. Continue pages using nextFromTurn.",
+      "type": ["integer", "null"], "minimum": 0, "maximum": 2147483647
+    },
+    "toTurn": {
+      "description": "Inclusive chart range end, no later than the current turn. Defaults to the current turn; retain requestedToTurn across pages.",
+      "type": ["integer", "null"], "minimum": 0, "maximum": 2147483647
+    }
+  },
+  "required": [],
+  "additionalProperties": false
+}

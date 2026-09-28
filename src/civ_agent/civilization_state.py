@@ -13,12 +13,12 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import and_, bindparam, func, insert, inspect, or_, select
+from sqlalchemy import bindparam, func, insert, inspect, or_, select
 
 from civ_agent import memory_schema as tables
 from civ_agent.agreement_memory import affected_subjects, lifecycle_terms
-from civ_agent.memory_exports import export_files, projection_files
-from civ_agent.memory_history import action_record, build_summary, summary_markdown
+from civ_agent.memory_exports import export_files, notebook_files
+from civ_agent.memory_history import action_record, build_summary
 from civ_agent.memory_records import (
     MEMORY_TYPES,
     HistoryReadResult,
@@ -26,15 +26,23 @@ from civ_agent.memory_records import (
     MemoryUpdate,
     public_record,
 )
-from civ_agent.memory_store import EvidenceRequired, RecordStore, encode, select_context, semantic
-from civ_agent.model_view import model_view
+from civ_agent.memory_snapshots import dump_snapshot, expand, job_states, load_snapshot
+from civ_agent.memory_store import EvidenceRequired, RecordStore, encode, expired_at, select_context, semantic
 from civ_agent.notebook import Notebook
 from civ_agent.observations import DetailQuery, detail_fingerprint, native_observation, project_detail
 from civ_agent.protocol import JsonObject
+from civ_agent.review_store import latest_advice
 from civ_agent.schemas import validate
 from civ_agent.sqlite_database import sqlite_engine
 from civ_agent.stale_recovery import conflict_details, record_conflicts, recovery_reads
 from civ_agent.tls import private_directory, write_private_json
+from civ_agent.turn_changes import turn_basis, turn_changes
+
+# Native offers belong to gameplay even when another message starts a conversation.
+COMMUNICATION_EVENTS = or_(
+    tables.events.c.kind != "trade",
+    func.json_extract(tables.events.c.body, "$.body.mode").is_distinct_from("NATIVE_AI"),
+)
 
 
 class StateConflict(ValueError):
@@ -67,14 +75,14 @@ class CivilizationState:
         self.engine = sqlite_engine(self.path)
         with self.transaction() as db:
             exists = inspect(db).has_table("meta")
-            if exists and self._meta(db, "format") != 3:
+            if exists and self._meta(db, "format") != tables.FORMAT_VERSION:
                 raise MemoryFormatError("Unsupported memory format; start a fresh match in a new state directory.")
             tables.metadata.create_all(db)
             existing = self._meta(db, "civilization")
             if existing is not None and existing != civilization:
                 raise StateConflict("CIVILIZATION_CONFLICT")
             self._set(db, "civilization", civilization)
-            self._set(db, "format", 3)
+            self._set(db, "format", tables.FORMAT_VERSION)
             if self._meta(db, "storeId") is None:
                 self._set(db, "storeId", secrets.token_hex(16))
             # A process restart never resumes a model's uncommitted computation.
@@ -148,9 +156,19 @@ class CivilizationState:
                     if event["kind"] == "engine":
                         for war in body.get("wars", []):
                             subjects.update((war["declaringCivilization"], war["targetCivilization"]))
+                    label = next(
+                        (
+                            body[field]
+                            for field in ("action", "kind", "event", "decision", "status")
+                            if isinstance(body.get(field), str)
+                        ),
+                        event["kind"],
+                    )
+                    if body.get("status") and label != body["status"]:
+                        label += " (" + body["status"] + ")"
                     RecordStore(db, self._meta(db, "gameTurn")).flag(
                         subjects=sorted(subjects),
-                        reason=f"Diplomatic event {event['id']} needs review",
+                        reason=label + ": " + ", ".join(sorted(subjects)),
                         review_keys=["event:" + str(event["id"])],
                     )
                 elif event["kind"] == "agreement":
@@ -213,17 +231,12 @@ class CivilizationState:
             self._set(db, "cursor", max(cursor, self._meta(db, "cursor", 0)))
 
     @staticmethod
-    def _records(db) -> JsonObject:
-        return RecordStore(db).all()
-
-    @staticmethod
     def _record(db, key, category, body, job=None):
         return RecordStore(db).write(key, category, body, job)
 
     def _advance_turn(self, db, turn):
         if type(turn) is int and turn >= 0:
             self._set(db, "gameTurn", max(turn, self._meta(db, "gameTurn", 0)))
-            RecordStore(db, self._meta(db, "gameTurn")).review_plans()
 
     def observe(self, key: str, body: JsonObject, job: str | None = None):
         with self.transaction() as db:
@@ -243,15 +256,15 @@ class CivilizationState:
                 )
             ).scalar_one()
             handle = "e" + str(record_id)
-            snapshot = json.loads(
-                db.execute(select(tables.jobs.c.snapshot).where(tables.jobs.c.id == job)).scalar_one()
+            snapshot = load_snapshot(
+                db, db.execute(select(tables.jobs.c.snapshot).where(tables.jobs.c.id == job)).scalar_one()
             )
             snapshot.setdefault("historicalEvidence", {})[handle] = {
                 "key": canonical,
                 "version": version,
                 "category": "observation",
             }
-            db.execute(tables.jobs.update().where(tables.jobs.c.id == job).values(snapshot=encode(snapshot)))
+            db.execute(tables.jobs.update().where(tables.jobs.c.id == job).values(snapshot=dump_snapshot(db, snapshot)))
             return version, {**body, "evidence": handle}
 
     def _observe(self, db, key, body, job):
@@ -260,9 +273,9 @@ class CivilizationState:
             raise StateConflict("STATE_PAUSED")
         if job is not None:
             self._validate(db, job, {})
-        self._advance_turn(db, body.get("context", {}).get("turn") if key == "communication" else body.get("turn"))
+        self._advance_turn(db, body.get("turn", body.get("context", {}).get("turn")))
         key = "observation:" + key
-        prior = self._records(db).get(key)
+        prior = RecordStore(db).all(keys=[key]).get(key)
         if (
             key.startswith("observation:agreement/")
             and prior
@@ -279,39 +292,58 @@ class CivilizationState:
         if key.startswith("observation:trade/"):
             self._settle_trade(db, body)
         if job is not None:
-            snapshot = json.loads(
-                db.execute(select(tables.jobs.c.snapshot).where(tables.jobs.c.id == job)).scalar_one()
+            snapshot = load_snapshot(
+                db, db.execute(select(tables.jobs.c.snapshot).where(tables.jobs.c.id == job)).scalar_one()
             )
             RecordStore.deliver(snapshot, {key: {"version": version, "category": "observation", "body": body}})
-            db.execute(tables.jobs.update().where(tables.jobs.c.id == job).values(snapshot=encode(snapshot)))
+            db.execute(tables.jobs.update().where(tables.jobs.c.id == job).values(snapshot=dump_snapshot(db, snapshot)))
         return version
 
-    def snapshot(self, purpose: str) -> JsonObject:
+    def snapshot(self, purpose: str, game_turn: int | None = None) -> JsonObject:
         with self.transaction() as db:
-            records = self._records(db)
+            records = RecordStore(db).all(categories=MEMORY_TYPES | {"contribution"})
             cursor = self._meta(db, "handled:" + purpose, 0)
-            events = [
-                json.loads(row["body"])
-                for row in db.execute(
-                    select(tables.events.c.body)
-                    .select_from(tables.events.join(tables.inbox))
-                    .where(tables.events.c.id > cursor)
-                    .order_by(tables.events.c.id)
-                    .limit(50)
-                ).mappings()
-            ]
-            page = (
-                select(tables.inbox.c.id)
-                .where(tables.inbox.c.id > cursor)
-                .order_by(tables.inbox.c.id)
-                .limit(50)
-                .subquery()
+            query = (
+                select(tables.events.c.id, tables.events.c.body)
+                .select_from(tables.events.join(tables.inbox))
+                .where(tables.events.c.id > cursor)
             )
-            high = db.execute(select(func.coalesce(func.max(page.c.id), 0))).scalar_one()
+            if purpose == "communication":
+                query = query.where(COMMUNICATION_EVENTS)
+            rows = db.execute(query.order_by(tables.events.c.id).limit(50)).mappings().all()
+            events = [json.loads(row["body"]) for row in rows]
+            records.update(RecordStore(db).all(keys=[f"event:{event['id']}" for event in events]))
+            high = max((row["id"] for row in rows), default=cursor)
             snapshot = {
                 "epoch": self._meta(db, "epoch"),
                 "purpose": purpose,
+                "gameTurn": game_turn if game_turn is not None else self._meta(db, "gameTurn"),
+                "strategicAdvice": latest_advice(
+                    db, game_turn if game_turn is not None else self._meta(db, "gameTurn")
+                ),
                 "records": records,
+                # Action freshness needs the dispatch boundary, not the bodies
+                # of every cached observation (nor a claim they were delivered).
+                "validationVersions": {
+                    key: version
+                    for key, version in db.execute(
+                        select(tables.heads).where(
+                            or_(
+                                tables.heads.c.key.in_(
+                                    {
+                                        "observation:turn",
+                                        "observation:economy",
+                                        "observation:research",
+                                        "observation:policy",
+                                    }
+                                ),
+                                tables.heads.c.key.startswith("observation:unit/"),
+                                tables.heads.c.key.startswith("observation:city/"),
+                                tables.heads.c.key.startswith("observation:diplomacy/"),
+                            )
+                        )
+                    )
+                },
                 "contributionIds": [key for key, r in records.items() if r["category"] == "contribution"],
                 "events": events,
                 "cursor": max(cursor, high),
@@ -326,19 +358,92 @@ class CivilizationState:
     def _changed_observation(self, db, key, value, prior):
         change = self._observation_change(key, value, prior)
         if change:
+            if key in {"observation:economy", "observation:victory_progress"}:
+                change["strategies"] = list(RecordStore(db).all(categories={"strategy"}))
             RecordStore(db, self._meta(db, "gameTurn")).flag_many([change])
 
     @staticmethod
     def _observation_change(key, value, prior):
         if not prior or semantic(prior["body"]) == semantic(value):
             return
+        if key in {"observation:game", "observation:overview", "observation:turn", "observation:tactics"}:
+            return  # Material changes are identified below, not every changed counter.
         subjects = []
+        reason = None
         if key.startswith("observation:agreement/"):
             before, after = prior["body"].get("agreement", {}), value.get("agreement", {})
-            if lifecycle_terms(before) != lifecycle_terms(after):
-                subjects.extend(affected_subjects({**after, "before": before, "after": after}))
-        if key.startswith("observation:diplomacy/") or value.get("absent"):
+            if lifecycle_terms(before) == lifecycle_terms(after):
+                return
+            subjects.extend(affected_subjects({**after, "before": before, "after": after}))
+            reason = f"Agreement {after.get('agreement')}: terms or status changed ({after.get('status')})"
+        if key == "observation:economy":
+            before, after = prior["body"].get("economy") or {}, value.get("economy") or {}
+            old = {r["name"]: r["available"] for r in before.get("resources", [])}
+            new = {r["name"]: r["available"] for r in after.get("resources", [])}
+            lost = sorted(name for name, amount in old.items() if amount > 0 and new.get(name, 0) <= 0)
+            changes = ["Resources no longer available: " + ", ".join(lost)] if lost else []
+            if before.get("happiness", 0) >= 0 > after.get("happiness", 0):
+                changes.append(f"Happiness fell below zero ({after['happiness']})")
+            if (before.get("goldenAge") or {}).get("turnsRemaining", 0) > 0 and (after.get("goldenAge") or {}).get(
+                "turnsRemaining", 0
+            ) == 0:
+                changes.append("Golden Age ended")
+            if not changes:
+                return
+            reason = "; ".join(changes)
+            subjects.extend(["economy", *lost])
+        if key == "observation:victory_progress":
+
+            def milestones(body):
+                result = {}
+                for path in body.get("victories", []):
+                    for milestone in path.get("milestones", []):
+                        name = path["name"] + ": " + milestone["description"]
+                        result[name] = milestone["status"]
+                        for part in milestone.get("parts", []):
+                            result[path["name"] + ": " + part["name"]] = f"{part['completed']}/{part['required']}"
+                        for objective in milestone.get("objectives", []):
+                            result[path["name"] + ": " + str(objective.get("name") or objective["kind"])] = objective[
+                                "completed"
+                            ]
+                for rival in body.get("rivals", []):
+                    result[rival["civilization"] + ": defeated"] = rival["defeated"]
+                    for path, milestone in rival.get("nextMilestones", {}).items():
+                        result[rival["civilization"] + ": " + path] = milestone
+                return result
+
+            before, after = milestones(prior["body"]), milestones(value)
+            if before == after:
+                return
+            # Section-filtered queries are different views, not progress events.
+            if prior["body"].get("sections") != value.get("sections") or prior["body"].get("query") != value.get(
+                "query"
+            ):
+                return
+            changed = [
+                f"{name}: {before.get(name)} → {after.get(name)}"
+                for name in sorted(before.keys() | after.keys())
+                if before.get(name) != after.get(name)
+            ]
+            reason = "Victory progress: " + "; ".join(changed[:4])
+        if key.startswith("observation:diplomacy/"):
+            before, after = prior["body"].get("relation", {}), value.get("relation", {})
+            fields = [
+                field
+                for field in ("atWar", "status", "relationship", "ally", "defeated")
+                if before.get(field) != after.get(field)
+            ]
+            if not fields:
+                return
+            reason = (
+                key.split("/", 1)[1]
+                + ": "
+                + "; ".join(f"{field} {before.get(field)} → {after.get(field)}" for field in fields)
+            )
             subjects.append(key.split("/", 1)[1])
+        if value.get("absent"):
+            reason = key + " is no longer present in the owned view"
+            subjects.append(key.split("/", 1)[-1])
         if key == "observation:communication":
 
             def relations(body):
@@ -346,7 +451,11 @@ class CivilizationState:
                 diplomacy = context.get("diplomacy", {})
                 entries = diplomacy.get("knownCivilizations", []) if isinstance(diplomacy, dict) else diplomacy
                 entries = context.get("knownCivilizations", entries)
-                return {r["civilizationId"]: semantic(r) for r in entries if "civilizationId" in r}
+                return {
+                    r["civilizationId"]: {field: r.get(field) for field in ("atWar", "status", "defeated")}
+                    for r in entries
+                    if "civilizationId" in r
+                }
 
             before, after = relations(prior["body"]), relations(value)
             subjects.extend(civ for civ in before.keys() | after.keys() if before.get(civ) != after.get(civ))
@@ -356,7 +465,18 @@ class CivilizationState:
                 previous = old.get(offer["proposal"], {})
                 if offer.get("effective") != previous.get("effective"):
                     subjects.extend(offer.get("participants", []))
-        return dict(keys=[key], subjects=subjects, reason=f"Changed {key}; reconsider assumptions")
+            if not subjects:
+                return
+            reason = "Diplomatic relations or social commitment status changed: " + ", ".join(sorted(set(subjects)))
+        if reason is None:
+            fields = sorted(
+                field
+                for field in value.keys() | prior["body"].keys()
+                if semantic(value.get(field)) != semantic(prior["body"].get(field))
+                and field not in {"turn", "revision", "epoch", "observedTurn"}
+            )
+            reason = key + " changed fields: " + ", ".join(fields[:8])
+        return dict(keys=[key], subjects=subjects, reason=reason)
 
     def observe_player(self, body: JsonObject, job: str, compact: JsonObject | None = None):
         with self.transaction() as db:
@@ -375,10 +495,19 @@ class CivilizationState:
     ):
         """Commit delivered evidence and its replayable response in one transaction."""
         with self.transaction() as db:
+            purpose = db.scalar(select(tables.jobs.c.purpose).where(tables.jobs.c.id == job))
+            if purpose == "gameplay" and body.get("phase") == "ACTIVE":
+                baseline = self._meta(db, "turnChangeBaseline")
+                if baseline and baseline["turn"] != body["turn"]:
+                    self._set(db, "openingChanges", turn_changes(baseline, body))
+                changes = self._meta(db, "openingChanges")
+                if changes:
+                    compact["changesSincePreviousTurn"] = changes
+                self._set(db, "turnChangeBaseline", turn_basis(body))
             observed = self._observe_player(db, body, job, compact)
-            records = self._records(db)
-            snapshot = json.loads(
-                db.execute(select(tables.jobs.c.snapshot).where(tables.jobs.c.id == job)).scalar_one()
+            records = RecordStore(db).all(categories=MEMORY_TYPES)
+            snapshot = load_snapshot(
+                db, db.execute(select(tables.jobs.c.snapshot).where(tables.jobs.c.id == job)).scalar_one()
             )
             changed = {
                 key: record
@@ -393,7 +522,7 @@ class CivilizationState:
             # notebook revision or the contents of the referenced observations.
             for key, record in records.items():
                 if (
-                    record["category"] == "plan"
+                    record["category"] == "strategy"
                     and record["body"].get("state") == "active"
                     and record["body"].get("needsReview")
                     and key in snapshot.get("delivered", {})
@@ -403,7 +532,7 @@ class CivilizationState:
                         {field: record["body"][field] for field in ("needsReview", "_review", "_noticeVersion")}
                     )
                     RecordStore.deliver(snapshot, {key: cached})
-            db.execute(tables.jobs.update().where(tables.jobs.c.id == job).values(snapshot=encode(snapshot)))
+            db.execute(tables.jobs.update().where(tables.jobs.c.id == job).values(snapshot=dump_snapshot(db, snapshot)))
             result = respond(records, changed)
             self._call_record(db, job, call_id, name, arguments, result)
             return {**observed, **changed}, result
@@ -435,12 +564,44 @@ class CivilizationState:
             scopes["diplomacy/" + relation["civilizationId"]] = {"turn": body.get("turn"), "relation": relation}
         self._validate(db, job, {})
         self._advance_turn(db, body.get("turn"))
-        snapshot = json.loads(db.execute(select(tables.jobs.c.snapshot).where(tables.jobs.c.id == job)).scalar_one())
-        previous_records = self._records(db)
-        detail_cache = self._meta(db, "detailInputs", {})
+        snapshot = load_snapshot(
+            db, db.execute(select(tables.jobs.c.snapshot).where(tables.jobs.c.id == job)).scalar_one()
+        )
+        strategies = RecordStore(db).all(categories={"strategy"})
+        # Old projections remain immutable evidence until inspected again. Only
+        # running readers and active strategic assumptions need live refreshes.
+        inspections = set()
+        for saved in db.scalars(
+            select(func.json_extract(tables.jobs.c.snapshot, "$.delivered"))
+            .select_from(tables.active_jobs)
+            .where(
+                tables.jobs.c.status == "RUNNING",
+            )
+        ):
+            inspections.update(json.loads(saved or "{}"))
+        for record in strategies.values():
+            if record["category"] == "strategy" and record["body"].get("state") == "active":
+                inspections.update(ref["key"] for ref in record["body"].get("_assumptions", []))
+        keys = {"observation:" + scope for scope in scopes} | inspections
+        # Retain enough entity history to report removals. Unused historical
+        # details, receipts and chat records need neither loading nor projection.
+        keys.update(
+            db.scalars(
+                select(tables.heads.c.key).where(
+                    or_(
+                        tables.heads.c.key.startswith("observation:unit/"),
+                        tables.heads.c.key.startswith("observation:city/"),
+                    )
+                )
+            )
+        )
+        previous_records = {**strategies, **RecordStore(db).all(keys=keys)}
+        detail_cache = {k: v for k, v in self._meta(db, "detailInputs", {}).items() if k in inspections}
         for key, previous in previous_records.items():
             scope = key.removeprefix("observation:")
             if scope.startswith("detail/"):
+                if key not in inspections:
+                    continue
                 query = DetailQuery.model_validate(previous["body"]["query"])
                 fingerprint = detail_fingerprint(body, query)
                 cached = {"version": previous["version"], "fingerprint": fingerprint}
@@ -484,7 +645,7 @@ class CivilizationState:
                     dict(
                         subjects=["defense", "economy"],
                         keys=["observation:tactics"],
-                        reason="New confirmed losses: reconsider defense and civilian protection",
+                        reason=f"Turn {body.get('turn')}: new confirmed losses",
                     )
                 )
             if tactics["militaryCount"] == 0 and previous.get("militaryCount") != 0:
@@ -492,7 +653,7 @@ class CivilizationState:
                     dict(
                         subjects=["defense"],
                         keys=["observation:tactics"],
-                        reason="No military units remain: reconsider defense",
+                        reason=f"Turn {body.get('turn')}: no military units remain",
                     )
                 )
             if "cityCount" in previous and tactics["cityCount"] < previous["cityCount"]:
@@ -500,7 +661,47 @@ class CivilizationState:
                     dict(
                         subjects=["defense", "expansion", "economy"],
                         keys=["observation:tactics"],
-                        reason="Owned city count fell: reconsider territorial and economic plans",
+                        reason=f"Turn {body.get('turn')}: owned city count fell",
+                    )
+                )
+            current_force = tactics.get("nonReconMilitaryCount")
+            old_force = previous.get("nonReconMilitaryCount")
+            if current_force is not None and old_force is not None:
+                reason = None
+                if current_force < old_force:
+                    reason = (
+                        f"Turn {body.get('turn')}: non-recon military count fell from {old_force} to {current_force}"
+                    )
+                elif (
+                    tactics["cityCount"] > previous.get("cityCount", tactics["cityCount"])
+                    and current_force <= old_force
+                ):
+                    reason = f"Turn {body.get('turn')}: owned city count grew without an increase in non-recon military"
+                if reason:
+                    changes.append(dict(subjects=["defense", "expansion"], keys=["observation:tactics"], reason=reason))
+        # Global strategy is relevant to material changes even when the model
+        # omitted subject tags. These notices report facts, never prescribe a response.
+        strategies = [
+            key
+            for key, r in previous_records.items()
+            if r["category"] == "strategy" and r["body"].get("state") == "active"
+        ]
+        for change in changes:
+            if set(change.get("keys", ())) & {"observation:tactics", "observation:economy"} and change.get("subjects"):
+                change["strategies"] = strategies
+                change["keys"] = [*change["keys"], "observation:overview", "observation:game"]
+        for relation in body.get("diplomacy", {}).get("knownCivilizations", []):
+            key = "observation:diplomacy/" + relation["civilizationId"]
+            old = previous_records.get(key, {}).get("body", {}).get("relation", {})
+            if old and old.get("atWar") != relation.get("atWar"):
+                changes.append(
+                    dict(
+                        strategies=strategies,
+                        keys=[key, "observation:overview", "observation:game"],
+                        reason=(
+                            f"Turn {body.get('turn')}: {relation['civilizationId']} war status "
+                            f"{old.get('atWar')} → {relation.get('atWar')}"
+                        ),
                     )
                 )
         RecordStore(db, self._meta(db, "gameTurn")).flag_many(changes)
@@ -508,7 +709,10 @@ class CivilizationState:
             snapshot,
             {key: value for key, value in observed.items() if key.removeprefix("observation:") in delivered},
         )
-        db.execute(tables.jobs.update().where(tables.jobs.c.id == job).values(snapshot=encode(snapshot)))
+        # Operator reports follow the latest native view independently of the
+        # versions actually delivered to this conversation.
+        snapshot["gameViewVersion"] = observed["observation:game"]["version"]
+        db.execute(tables.jobs.update().where(tables.jobs.c.id == job).values(snapshot=dump_snapshot(db, snapshot)))
         return observed
 
     def has_wake(self) -> bool:
@@ -519,6 +723,7 @@ class CivilizationState:
                     .select_from(tables.events.join(tables.inbox))
                     .where(
                         tables.events.c.wake == 1,
+                        COMMUNICATION_EVENTS,
                         tables.events.c.id
                         > max(self._meta(db, "handled:communication", 0), self._meta(db, "attempted:communication", 0)),
                     )
@@ -531,16 +736,44 @@ class CivilizationState:
         with self.transaction() as db:
             self._set(db, "attempted:communication", self._meta(db, "handled:communication", 0))
 
-    def context(self, snapshot: JsonObject, topics: tuple[str, ...] = ()) -> str:
-        # Selection is pinned at dispatch; subsequent mailbox traffic cannot alter it.
+    def select_startup_context(self, job: str, topics: set[str]) -> JsonObject:
+        """Choose from the dispatch snapshot using the opening player-visible facts."""
+        with self.transaction() as db:
+            self._validate(db, job, {})
+            snapshot = load_snapshot(
+                db, db.execute(select(tables.jobs.c.snapshot).where(tables.jobs.c.id == job)).scalar_one()
+            )
+            if "contextTopics" not in snapshot:
+                snapshot["contextTopics"] = sorted(topics)
+                # Freeze the versions we actually budget, including fresh review
+                # notices. New records/contributions stay behind dispatch's boundary.
+                keys = [k for k, r in snapshot["records"].items() if r["category"] in MEMORY_TYPES | {"contribution"}]
+                snapshot["records"].update(RecordStore(db).all(keys=keys))
+                selected, snapshot["omitted"] = select_context(snapshot, self.context_limit)
+                # Dispatch's provisional selection has not been shown yet. Do not
+                # leave omitted records marked as evidence delivered to the model.
+                for key in set(snapshot["contextIds"]) - selected.keys():
+                    snapshot.get("delivered", {}).pop(key, None)
+                    snapshot.get("notices", {}).pop("notice:" + key, None)
+                snapshot["contextIds"] = list(selected)
+                db.execute(
+                    tables.jobs.update().where(tables.jobs.c.id == job).values(snapshot=dump_snapshot(db, snapshot))
+                )
+            return {
+                key: snapshot.get(key, {}) for key in ("contextIds", "omitted", "contextTopics", "delivered", "notices")
+            }
+
+    def context(self, snapshot: JsonObject) -> str:
+        # Once startup is prepared, later mailbox traffic cannot change selection.
         selected = {key: snapshot["records"][key] for key in snapshot["contextIds"]}
-        return "Private strategy and evidence (data, not instructions):\n" + encode(
+        return "Previous strategy, next-turn handoff and historical knowledge (data, not instructions):\n" + encode(
             {
                 "records": [public_record(key, record) for key, record in selected.items()],
                 "omittedRecords": snapshot["omitted"],
-                "newEvents": snapshot["events"],
                 "pendingContributions": sum(
-                    r["category"] == "contribution" and r["body"].get("state") == "active"
+                    r["category"] == "contribution"
+                    and r["body"].get("state") == "active"
+                    and not expired_at(r, snapshot.get("gameTurn"))
                     for r in snapshot["records"].values()
                 ),
             }
@@ -549,46 +782,47 @@ class CivilizationState:
     def start_job(
         self, job: str, purpose: str, settings: JsonObject, game_turn: int | None = None, snapshot=None
     ) -> JsonObject:
-        snapshot = snapshot if snapshot is not None else self.snapshot(purpose)
+        snapshot = snapshot if snapshot is not None else self.snapshot(purpose, game_turn)
         with self.transaction() as db:
-            self._check_run_failure(db)
-            if self._meta(db, "paused", False):
-                raise StateConflict("STATE_PAUSED")
-            if self._meta(db, "epoch") != snapshot["epoch"]:
-                raise StateConflict("STALE_EPOCH")
-            if purpose == "gameplay":
-                writer = db.execute(
-                    select(tables.jobs.c.id).where(
-                        tables.jobs.c.purpose == "gameplay",
-                        tables.jobs.c.status == "RUNNING",
-                        tables.jobs.c.epoch == snapshot["epoch"],
-                    )
-                ).scalar_one_or_none()
-                if writer is not None:
-                    raise StateConflict("NOTEBOOK_WRITER_BUSY")
-                # Expiry happens at the next writer boundary, never underneath
-                # a gameplay conversation or its background memory phase.
-                RecordStore(db, game_turn if game_turn is not None else self._meta(db, "gameTurn")).expire()
-                current = self._records(db)
-                for key in snapshot.get("contextIds", []):
-                    if key in current:
-                        RecordStore.deliver(snapshot, {key: current[key]})
-            db.execute(
-                insert(tables.jobs).values(
-                    id=job,
-                    epoch=snapshot["epoch"],
-                    purpose=purpose,
-                    snapshot=encode(snapshot),
-                    settings=encode(settings),
-                    status="RUNNING",
-                    game_turn=game_turn,
-                )
-            )
-            db.execute(insert(tables.live_jobs).values(id=job))
-            db.execute(insert(tables.export_jobs).values(id=job).prefix_with("OR IGNORE"))
-            if purpose == "communication":
-                self._set(db, "attempted:communication", snapshot["cursor"])
+            self._start_job(db, job, purpose, settings, game_turn, snapshot)
         return snapshot
+
+    def _start_job(self, db, job, purpose, settings, game_turn, snapshot):
+        self._check_run_failure(db)
+        if self._meta(db, "paused", False):
+            raise StateConflict("STATE_PAUSED")
+        if self._meta(db, "epoch") != snapshot["epoch"]:
+            raise StateConflict("STALE_EPOCH")
+        if purpose == "gameplay":
+            writer = db.execute(
+                select(tables.jobs.c.id).where(
+                    tables.jobs.c.purpose == "gameplay",
+                    tables.jobs.c.status == "RUNNING",
+                    tables.jobs.c.epoch == snapshot["epoch"],
+                )
+            ).scalar_one_or_none()
+            if writer is not None:
+                raise StateConflict("NOTEBOOK_WRITER_BUSY")
+            # Expire temporary entries at the next gameplay writer boundary.
+            RecordStore(db, game_turn if game_turn is not None else self._meta(db, "gameTurn")).expire()
+            current = RecordStore(db).all(keys=snapshot.get("contextIds", []))
+            for key in snapshot.get("contextIds", []):
+                if key in current:
+                    RecordStore.deliver(snapshot, {key: current[key]})
+        db.execute(
+            insert(tables.jobs).values(
+                id=job,
+                epoch=snapshot["epoch"],
+                purpose=purpose,
+                snapshot=dump_snapshot(db, snapshot),
+                settings=encode(settings),
+                status="RUNNING",
+                game_turn=game_turn,
+            )
+        )
+        db.execute(insert(tables.live_jobs).values(id=job))
+        if purpose == "communication":
+            self._set(db, "attempted:communication", snapshot["cursor"])
 
     def finish_job(self, job: str, completed: bool):
         with self.transaction() as db:
@@ -601,43 +835,9 @@ class CivilizationState:
                 .values(status="COMPLETED" if completed else "INTERRUPTED")
             )
             snapshot = json.loads(row["snapshot"])
-            snapshot["closingRecords"] = self._records(db)
-            db.execute(tables.jobs.update().where(tables.jobs.c.id == job).values(snapshot=encode(snapshot)))
-            db.execute(insert(tables.export_jobs).values(id=job).prefix_with("OR IGNORE"))
             if completed:
                 key = "handled:" + row["purpose"]
                 self._set(db, key, max(snapshot["cursor"], self._meta(db, key, 0)))
-
-    def begin_memory_phase(self, job: str):
-        """Freeze delivered game evidence before allowing post-handoff memory work."""
-        with self.transaction() as db:
-            self._validate(db, job, {})
-            row = (
-                db.execute(select(tables.jobs.c.snapshot, tables.jobs.c.game_turn).where(tables.jobs.c.id == job))
-                .mappings()
-                .one()
-            )
-            snapshot = json.loads(row["snapshot"])
-            if not snapshot.get("memoryOnly"):
-                snapshot["handoffSummary"] = build_summary(db, turn=row["game_turn"])
-                snapshot["memoryOnly"] = True
-                db.execute(tables.jobs.update().where(tables.jobs.c.id == job).values(snapshot=encode(snapshot)))
-
-    def completed_summary(self, job: str):
-        with self.transaction() as db:
-            row = (
-                db.execute(select(tables.jobs.c.snapshot, tables.jobs.c.game_turn).where(tables.jobs.c.id == job))
-                .mappings()
-                .one()
-            )
-            snapshot = json.loads(row["snapshot"])
-            summary = build_summary(db, turn=row["game_turn"])
-            frozen = snapshot.get("handoffSummary")
-            if frozen is not None:
-                # Reflection changes private assessments, never the past game view.
-                summary["actions"] = frozen["actions"]
-                summary["observations"] = frozen["observations"]
-            return summary
 
     def _validate(self, db, job, dependencies):
         if self._meta(db, "paused", False):
@@ -676,7 +876,7 @@ class CivilizationState:
         return failure
 
     def fail_run(self, job, call_id, error, details, result):
-        """Fence mutations while retaining a confirmed receipt and its failed delivery diagnostics."""
+        """Fence mutations while retaining the call's outcome and failure diagnostics."""
         with self.transaction() as db:
             call = (
                 db.execute(select(tables.calls).where(tables.calls.c.job == job, tables.calls.c.id == call_id))
@@ -705,7 +905,10 @@ class CivilizationState:
                 "error": error,
                 "recoverable": False,
                 "diagnosticId": failure["diagnosticId"],
-                "instruction": "Stop. The action's confirmed receipt is preserved; never repeat it. The run requires operator inspection.",
+                "instruction": result.get(
+                    "instruction",
+                    "Stop. The action's confirmed receipt is preserved; never repeat it. The run requires operator inspection.",
+                ),
             }
             result = self._call_record(db, job, call_id, call["name"], json.loads(call["arguments"]), result)
             assert result is not None
@@ -724,12 +927,12 @@ class CivilizationState:
                 if prior and prior[0]:
                     return json.loads(prior[0])
             row = db.execute(select(tables.jobs).where(tables.jobs.c.id == job)).mappings().one()
-            snapshot = json.loads(row["snapshot"])
+            snapshot = load_snapshot(db, row["snapshot"])
             notebook = Notebook(
                 db, snapshot, job, row["purpose"], self._meta(db, "gameTurn", row["game_turn"]), row["game_turn"]
             )
             result = {"changes": [notebook.update(change) for change in changes]}
-            db.execute(tables.jobs.update().where(tables.jobs.c.id == job).values(snapshot=encode(snapshot)))
+            db.execute(tables.jobs.update().where(tables.jobs.c.id == job).values(snapshot=dump_snapshot(db, snapshot)))
             if call_id is not None:
                 call = db.execute(
                     select(tables.calls.c.arguments).where(tables.calls.c.job == job, tables.calls.c.id == call_id)
@@ -742,16 +945,15 @@ class CivilizationState:
     def search_memory(self, job, arguments):
         with self.transaction() as db:
             self._validate(db, job, {})
-            snapshot = json.loads(
-                db.execute(select(tables.jobs.c.snapshot).where(tables.jobs.c.id == job)).scalar_one()
+            snapshot = load_snapshot(
+                db, db.execute(select(tables.jobs.c.snapshot).where(tables.jobs.c.id == job)).scalar_one()
             )
             result, keys = RecordStore(db).search(
                 **arguments,
-                memory_only=bool(snapshot.get("memoryOnly")),
                 contribution_ids=snapshot.get("contributionIds", []),
             )
             if not arguments.get("history"):
-                current = snapshot["records"] if snapshot.get("memoryOnly") else self._records(db)
+                current = RecordStore(db).all(keys=keys)
                 RecordStore.deliver(snapshot, {key: current[key] for key in keys})
                 result["records"] = [public_record(key, current[key]) for key in keys]
             else:
@@ -767,7 +969,7 @@ class CivilizationState:
                         .one()
                     )
                     snapshot.setdefault("historicalEvidence", {})[alias] = dict(row)
-            db.execute(tables.jobs.update().where(tables.jobs.c.id == job).values(snapshot=encode(snapshot)))
+            db.execute(tables.jobs.update().where(tables.jobs.c.id == job).values(snapshot=dump_snapshot(db, snapshot)))
             return result
 
     def queue(
@@ -793,28 +995,30 @@ class CivilizationState:
                     raise StateConflict("CALL_CONFLICT")
                 return dict(previous)
             body = {**payload, "requestId": request_id}
-            snapshot = json.loads(
-                db.execute(select(tables.jobs.c.snapshot).where(tables.jobs.c.id == job)).scalar_one()
+            snapshot = load_snapshot(
+                db, db.execute(select(tables.jobs.c.snapshot).where(tables.jobs.c.id == job)).scalar_one()
             )
-            if snapshot.get("memoryOnly"):
-                raise StateConflict("MEMORY_ONLY: commands are unavailable after handoff")
             store = RecordStore(db, self._meta(db, "gameTurn"))
             pinned: JsonObject = {}
             if intent is not None:
                 intent = validate(Intent, intent).model_dump()
                 # Intent is an audit annotation. Only command dependencies above
                 # participate in freshness/authority checks.
-                key = intent.get("plan")
+                key = intent.get("strategy")
                 prior = snapshot["records"].get(key)
                 if (
                     key
                     and prior
                     and snapshot.get("delivered", {}).get(key) == prior["version"]
-                    and prior["category"] == "plan"
+                    and prior["category"] == "strategy"
                 ):
-                    pinned["plan"] = {"key": key, "version": prior["version"], "objective": prior["body"]["objective"]}
+                    pinned["strategy"] = {
+                        "key": key,
+                        "version": prior["version"],
+                        "assessment": prior["body"]["assessment"],
+                    }
                 elif key:
-                    pinned["unverifiedPlan"] = key
+                    pinned["unverifiedStrategy"] = key
                 pinned["assumptions"] = []
                 for assumption in intent["assumptions"]:
                     if assumption.get("source"):
@@ -873,14 +1077,14 @@ class CivilizationState:
                 .fetchone()
             )
             if row and row["result"] is None:
-                record = self._records(db)[row["decision"]]
+                record = RecordStore(db).all(keys=[row["decision"]])[row["decision"]]
                 self._record(db, row["decision"], "decision", {**record["body"], "outcome": "uncertain"}, row["job"])
 
     def _settle_trade(self, db, value):
         trade = value.get("trade") or {}
         if trade.get("status") in {None, "PENDING"}:
             return
-        records = self._records(db)
+        records = RecordStore(db).all(categories={"decision"})
         for row in db.execute(
             select(tables.outbox).select_from(tables.live_requests).where(tables.outbox.c.result.is_not(None))
         ).mappings():
@@ -943,7 +1147,7 @@ class CivilizationState:
                 .values(result=encode(result))
             )
             self._record(db, "receipt:" + request_id, "observation", result, row["job"])
-            record = self._records(db)[row["decision"]]
+            record = RecordStore(db).all(keys=[row["decision"]])[row["decision"]]
             self._record(
                 db,
                 row["decision"],
@@ -962,7 +1166,7 @@ class CivilizationState:
 
     def review_evidence(self, keys):
         with self.transaction() as db:
-            records = self._records(db)
+            records = RecordStore(db).all(keys=keys)
             return sorted(
                 {ref["key"] for key in keys for ref in records.get(key, {}).get("body", {}).get("_review", [])}
             )
@@ -1040,23 +1244,22 @@ class CivilizationState:
         """Copy the job's delivered versions into an adapter cache without another read."""
         with self.transaction() as db:
             self._validate(db, job, {})
-            snapshot = json.loads(
-                db.execute(select(tables.jobs.c.snapshot).where(tables.jobs.c.id == job)).scalar_one()
+            snapshot = load_snapshot(
+                db, db.execute(select(tables.jobs.c.snapshot).where(tables.jobs.c.id == job)).scalar_one()
             )
             return {key: snapshot["records"][key] for key in keys if key in snapshot.get("delivered", {})}
 
-    def refresh_memory(self, job, keys, cursor=None, include_retired=False):
+    def refresh_memory(self, job, keys, cursor=None, include_retired=False, startup=False):
         with self.transaction() as db:
             self._validate(db, job, {})
             row = db.execute(select(tables.jobs.c.snapshot).where(tables.jobs.c.id == job)).one()
-            snapshot = json.loads(row[0])
-            current = self._records(db)
-            if snapshot.get("memoryOnly"):
-                current = {
-                    key: record
-                    for key, record in snapshot["records"].items()
-                    if record["category"] in MEMORY_TYPES | {"contribution"} or key in snapshot.get("delivered", {})
-                }
+            snapshot = load_snapshot(db, row[0])
+            if startup:
+                # Selection and budgeting used these exact versions. Concurrent
+                # notebook edits are available through later explicit reads.
+                current = {key: snapshot["records"][key] for key in snapshot["contextIds"]}
+            else:
+                current = RecordStore(db).all(keys=keys)
             current = {
                 key: r
                 for key, r in current.items()
@@ -1071,7 +1274,7 @@ class CivilizationState:
             RecordStore.deliver(snapshot, chosen)
             if cursor is not None:
                 snapshot["cursor"] = max(snapshot["cursor"], cursor)
-            db.execute(tables.jobs.update().where(tables.jobs.c.id == job).values(snapshot=encode(snapshot)))
+            db.execute(tables.jobs.update().where(tables.jobs.c.id == job).values(snapshot=dump_snapshot(db, snapshot)))
             return chosen
 
     def chat_history(self, participant=None, query=""):
@@ -1102,22 +1305,6 @@ class CivilizationState:
         with self.transaction() as db:
             if job is not None:
                 self._validate(db, job, {})
-                row = (
-                    db.execute(select(tables.jobs.c.snapshot, tables.jobs.c.game_turn).where(tables.jobs.c.id == job))
-                    .mappings()
-                    .one()
-                )
-                snapshot = json.loads(row["snapshot"])
-                if snapshot.get("memoryOnly") and game_turn >= row["game_turn"]:
-                    if game_turn > row["game_turn"]:
-                        raise StateConflict("MEMORY_ONLY: history ends at the completed turn")
-                    actions = snapshot["handoffSummary"]["actions"]
-                    return {
-                        "turn": game_turn,
-                        "actions": actions[offset : offset + 20],
-                        "hasMore": offset + 20 < len(actions),
-                        "nextOffset": offset + len(actions[offset : offset + 20]),
-                    }
             rows = db.execute(
                 select(tables.outbox.c.decision)
                 .select_from(tables.live_requests.join(tables.jobs, tables.outbox.c.job == tables.jobs.c.id))
@@ -1126,7 +1313,7 @@ class CivilizationState:
                 .limit(21)
                 .offset(offset)
             ).fetchall()
-            records = self._records(db)
+            records = RecordStore(db).all(keys=[row[0] for row in rows[:20]])
             return HistoryReadResult.model_validate(
                 {
                     "turn": game_turn,
@@ -1140,114 +1327,13 @@ class CivilizationState:
         with self.transaction() as db:
             return build_summary(db, turn=game_turn, job=job)
 
-    def generation(self):
-        with self.transaction() as db:
-            return db.execute(
-                select(func.coalesce(func.max(tables.record_order), 0)).select_from(tables.current_records)
-            ).scalar_one()
-
     def export(self, workspace: Path):
-        """Refresh current views and dirty jobs; completed history is left intact."""
+        """Explicit human-readable export. Gameplay never calls this method."""
         with self.transaction() as db:
-            retained = set()
-            for row in db.execute(
-                select(tables.jobs.c.id, tables.jobs.c.game_turn, tables.jobs.c.purpose).select_from(tables.active_jobs)
-            ).mappings():
-                directory = (
-                    f"turn_{row['game_turn']}"
-                    if row["purpose"] == "gameplay" and row["game_turn"] is not None
-                    else f"communication/{row['id']}"
-                )
-                retained.add(directory + "/")
-                if any(
-                    not (workspace / directory / name).is_file()
-                    for name in ("receipts.jsonl", "summary.json", "summary.md")
-                ):
-                    # Projections are disposable: rebuild missing files from
-                    # canonical records, including exports to a new workspace.
-                    db.execute(insert(tables.export_jobs).values(id=row["id"]).prefix_with("OR IGNORE"))
-            records = self._records(db)
-            events = [
-                json.loads(row[0])
-                for row in db.execute(
-                    select(tables.events.c.body)
-                    .select_from(tables.events.join(tables.inbox))
-                    .order_by(tables.events.c.id)
-                )
-            ]
-            dirty_jobs = tables.jobs.alias("dirty_jobs")
-            changed = (
-                select(tables.export_jobs.c.id)
-                .select_from(tables.export_jobs.join(dirty_jobs, dirty_jobs.c.id == tables.export_jobs.c.id))
-                .where(
-                    or_(
-                        dirty_jobs.c.id == tables.jobs.c.id,
-                        and_(
-                            dirty_jobs.c.purpose == "gameplay",
-                            tables.jobs.c.purpose == "gameplay",
-                            dirty_jobs.c.game_turn == tables.jobs.c.game_turn,
-                        ),
-                    )
-                )
-                .exists()
-            )
-            requests = [
-                dict(row)
-                for row in db.execute(
-                    select(tables.outbox, tables.jobs.c.game_turn, tables.jobs.c.purpose)
-                    .select_from(tables.live_requests.join(tables.jobs, tables.outbox.c.job == tables.jobs.c.id))
-                    .where(changed)
-                    .order_by(tables.request_order)
-                ).mappings()
-            ]
-            files = projection_files(records, events)
-            groups = {}
-            for request in requests:
-                directory = (
-                    f"turn_{request['game_turn']}"
-                    if request["purpose"] == "gameplay" and request["game_turn"] is not None
-                    else f"communication/{request['job']}"
-                )
-                groups.setdefault(directory, []).append(request)
-            # Memory-only jobs also get a structured summary.
-            for row in db.execute(
-                select(tables.jobs.c.id, tables.jobs.c.game_turn, tables.jobs.c.purpose).select_from(
-                    tables.active_jobs.join(tables.export_jobs, tables.jobs.c.id == tables.export_jobs.c.id)
-                )
-            ).mappings():
-                directory = (
-                    f"turn_{row['game_turn']}"
-                    if row["purpose"] == "gameplay" and row["game_turn"] is not None
-                    else f"communication/{row['id']}"
-                )
-                groups.setdefault(directory, [])
-            for directory, group in groups.items():
-                files[directory + "/receipts.jsonl"] = "".join(
-                    encode(
-                        {
-                            "request": json.loads(row["payload"]),
-                            "receipt": model_view(json.loads(row["result"])) if row["result"] else None,
-                            "decision": row["decision"],
-                        }
-                    )
-                    + "\n"
-                    for row in group
-                )
-                summary = (
-                    build_summary(db, turn=int(directory[5:]))
-                    if directory.startswith("turn_")
-                    else build_summary(db, job=directory.split("/", 1)[1])
-                )
-                files[directory + "/summary.json"] = (
-                    json.dumps(model_view(summary), ensure_ascii=False, indent=2) + "\n"
-                )
-                files[directory + "/summary.md"] = summary_markdown(summary)
-            # Clear dirty work only after every disposable projection was written.
-            # A failed or interrupted export is safe to repeat after restart.
-            export_files(self.root, workspace, files, retained_prefixes=retained)
-            db.execute(tables.export_jobs.delete())
+            files = notebook_files(db)
+        export_files(self.root, workspace, files)
 
-    def backup(self, destination: Path) -> str:
+    def backup(self, destination: Path, service=None) -> str:
         if destination.exists():
             raise StateConflict("CHECKPOINT_EXISTS")
         private_directory(destination.parent)
@@ -1259,31 +1345,22 @@ class CivilizationState:
                 "heads": [list(row) for row in db.execute(select(tables.heads).order_by(tables.heads.c.key))],
                 "inbox": [row[0] for row in db.execute(select(tables.inbox.c.id).order_by(tables.inbox.c.id))],
                 "outgoing": [row[0] for row in db.execute(select(tables.outgoing.c.id).order_by(tables.outgoing.c.id))],
-                "records": [
-                    list(row)
-                    for row in db.execute(
-                        select(tables.reachable).order_by(tables.reachable.c.key, tables.reachable.c.version)
-                    )
-                ],
-                "jobs": [
-                    dict(row)
-                    for row in db.execute(
-                        select(tables.jobs).select_from(tables.active_jobs).order_by(tables.jobs.c.id)
-                    ).mappings()
-                ],
+                "jobs": job_states(db),
+                "reviews": [dict(row) for row in db.execute(select(tables.reviews)).mappings()],
             }
             snapshot["historySha256"] = self._history_digest(db, snapshot)
+            snapshot["service"] = service
         write_private_json(destination, snapshot)
         return hashlib.sha256(destination.read_bytes()).hexdigest()
 
     @staticmethod
     def _history_digest(db, saved):
-        """Verify referenced immutable evidence without copying it into every round."""
+        """Verify the current boundary's referenced evidence, without copying history."""
         checksum = hashlib.sha256()
         queries = (
             (
                 "records",
-                saved["records"],
+                saved["heads"],
                 select(tables.records).where(
                     tables.records.c.key == bindparam("ref0"), tables.records.c.version == bindparam("ref1")
                 ),
@@ -1315,19 +1392,19 @@ class CivilizationState:
         if source.is_symlink() or hashlib.sha256(source.read_bytes()).hexdigest() != checksum:
             raise StateConflict("CHECKPOINT_INVALID")
         saved = json.loads(source.read_text())
-        if json.loads(dict(saved["meta"]).get("format", "null")) != 3:
+        if json.loads(dict(saved["meta"]).get("format", "null")) != tables.FORMAT_VERSION:
             raise MemoryFormatError("Unsupported memory checkpoint format; start a fresh match.")
         with self.transaction() as db:
             if saved["civilization"] != self.civilization or saved["storeId"] != self._meta(db, "storeId"):
                 raise StateConflict("CHECKPOINT_INVALID")
             if saved["historySha256"] != self._history_digest(db, saved):
                 raise StateConflict("CHECKPOINT_HISTORY_CHANGED")
+            for job in saved["jobs"]:
+                if not db.execute(select(tables.jobs.c.id).where(tables.jobs.c.id == job["id"])).first():
+                    raise StateConflict("CHECKPOINT_HISTORY_MISSING")
+                if "snapshot" in job:
+                    expand(db, job["snapshot"])
         return saved
-
-    def fence(self, epoch: str):
-        with self.transaction() as db:
-            self._set(db, "epoch", epoch)
-            db.execute(tables.jobs.update().where(tables.jobs.c.status == "RUNNING").values(status="INTERRUPTED"))
 
     def pause(self, paused: bool):
         with self.transaction() as db:
@@ -1339,8 +1416,10 @@ class CivilizationState:
 
     def restore(self, source: Path, checksum: str, epoch: str):
         saved = self.verify(source, checksum)
-        interrupted = []
         with self.transaction() as db:
+            attempts = {
+                job: count for job, count in db.execute(select(tables.reviews.c.job, tables.reviews.c.attempts))
+            }
             for table in (tables.meta, tables.heads, tables.inbox, tables.outgoing, tables.live_jobs):
                 db.execute(table.delete())
             for table, rows in (
@@ -1352,28 +1431,19 @@ class CivilizationState:
                 if rows:
                     db.execute(insert(table), [dict(zip(table.c.keys(), row, strict=True)) for row in rows])
             for job in saved["jobs"]:
-                snapshot = json.loads(job["snapshot"])
-                if job["status"] == "RUNNING" and snapshot.get("memoryOnly"):
-                    snapshot["memoryPhaseInterrupted"] = True
-                    snapshot["closingRecords"] = self._records(db)
-                    interrupted.append({"job": job["id"], "gameTurn": job["game_turn"]})
-                # A job may have completed after capture. Its later completion
-                # and closing context must not leak into the restored timeline.
-                db.execute(
-                    tables.jobs.update()
-                    .where(tables.jobs.c.id == job["id"])
-                    .values(
-                        snapshot=encode(snapshot),
-                        status="INTERRUPTED" if job["status"] == "RUNNING" else job["status"],
-                    )
-                )
+                values = {"status": "INTERRUPTED" if job["status"] == "RUNNING" else job["status"]}
+                if "snapshot" in job:
+                    values["snapshot"] = encode(job["snapshot"])
+                db.execute(tables.jobs.update().where(tables.jobs.c.id == job["id"]).values(**values))
                 db.execute(insert(tables.live_jobs).values(id=job["id"]))
-            db.execute(tables.export_jobs.delete())
-            db.execute(insert(tables.export_jobs).from_select(["id"], select(tables.live_jobs.c.id)))
+            db.execute(tables.reviews.delete())
+            for task in saved["reviews"]:
+                task["attempts"] = max(task["attempts"], attempts.get(task["job"], 0))
+                db.execute(insert(tables.reviews).values(**task))
             self._set(db, "epoch", epoch)
             self._set(db, "paused", True)
             db.execute(tables.jobs.update().where(tables.jobs.c.status == "RUNNING").values(status="INTERRUPTED"))
-        return interrupted
+        return [task["job"] for task in saved["reviews"] if task["status"] == "PENDING"]
 
 
 def job_id() -> str:

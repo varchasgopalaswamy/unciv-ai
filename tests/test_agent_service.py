@@ -11,7 +11,7 @@ from aiohttp import web
 
 from civ_agent.agent_service import AgentService, ServiceError, server_ssl_context
 from civ_agent.protocol import JsonObject
-from civ_agent.tls import client_ssl_context, ensure_server_certificate
+from civ_agent.tls import client_ssl_context, ensure_server_certificate, write_private
 from tests.test_proposal_gateway import Host
 
 
@@ -64,14 +64,11 @@ class FakeCodex:
 
     async def request(self, method: str, payload: JsonObject) -> JsonObject:
         self.factory.calls.append((method, payload))
-        if method in {"thread/start", "thread/resume"}:
-            if method == "thread/start":
-                self.factory.thread_count += 1
-                self.thread_id = (
-                    "thread-one" if self.factory.thread_count == 1 else "thread-" + str(self.factory.thread_count)
-                )
-            else:
-                self.thread_id = payload["threadId"]
+        if method == "thread/start":
+            self.factory.thread_count += 1
+            self.thread_id = (
+                "thread-one" if self.factory.thread_count == 1 else "thread-" + str(self.factory.thread_count)
+            )
             return {
                 "thread": {"id": self.thread_id},
                 "model": payload.get("model", self.factory.default_model),
@@ -81,27 +78,25 @@ class FakeCodex:
                 "serviceTier": payload.get("serviceTier"),
             }
         if method == "turn/start":
-            record = self.factory.service.records[self.factory.service.active_id]
+            record = next(row for row in self.factory.service.records.values() if row.get("threadId") == self.thread_id)
             path = self.factory.service.records_dir / (
                 hashlib.sha256(record["activationId"].encode()).hexdigest() + ".json"
             )
-            assert json.loads(path.read_text())["threadId"] == self.thread_id, "Turn started before durable thread ID"
+            saved = json.loads(path.read_text())
+            model_record = saved
+            assert model_record["threadId"] == self.thread_id, "Turn started before durable thread ID"
             if self.factory.hold == "turn-start":
                 await asyncio.Future()
             self.factory.count += 1
             turn_id = "turn-" + str(self.factory.count)
-            # Native app-server starts fresh counters on every process even when resuming
-            # a persisted thread. A cumulative variant exercises other protocol sources.
+            # Every activation starts with a fresh conversation and fresh counters.
             last = {
                 "inputTokens": self.factory.input_tokens,
                 "cachedInputTokens": 2,
                 "outputTokens": 3,
                 "reasoningOutputTokens": 1,
             }
-            total = {
-                key: value * (self.factory.count if self.factory.cumulative_totals else 1)
-                for key, value in last.items()
-            }
+            total = dict(last)
             await self.notification(
                 "thread/tokenUsage/updated",
                 {
@@ -110,7 +105,7 @@ class FakeCodex:
                     "tokenUsage": {"total": total, "last": last},
                 },
             )
-            if self.factory.complete:
+            if getattr(self, "complete", self.factory.complete):
                 common = {"threadId": self.thread_id, "turnId": turn_id}
                 await self.notification(
                     "item/started",
@@ -145,7 +140,7 @@ class FakeCodex:
                             "id": "summary",
                             "type": "agentMessage",
                             "phase": "final_answer",
-                            "text": self.factory.summary,
+                            "text": getattr(self, "summary", self.factory.summary),
                         },
                     },
                 )
@@ -168,7 +163,6 @@ class FakeFactory:
         self.instances, self.tokens, self.calls = [], [], []
         self.count, self.complete, self.close_failure = 0, True, False
         self.hold: str | None = None
-        self.cumulative_totals = False
         self.input_tokens = 10
         self.default_model, self.default_effort = "configured-model", "medium"
         self.ignore_effort = False
@@ -235,11 +229,73 @@ class AgentServiceTestCase(unittest.IsolatedAsyncioTestCase):
 
 
 class AgentServiceTests(AgentServiceTestCase):
+    async def test_recovered_terminal_accounting_releases_orphaned_permits(self):
+        from unittest.mock import AsyncMock
+
+        from civ_agent.telemetry import JobAccounting
+
+        self.service.accounting.start("lost-job", "epoch-one", True)
+        self.service.accounting = JobAccounting(self.root / "service" / "telemetry")
+        report = self.service.accounting.pending()[0]
+        self.assertEqual(report["telemetry"]["phase"], "FAILED")
+        connection = AsyncMock()
+        connection.tool.return_value = {"granted": True}
+        await self.service.flush_telemetry(connection=connection, epoch="epoch-one")
+        self.assertEqual(connection.tool.call_args.args[1]["op"], "job_release")
+        self.assertEqual(connection.tool.call_args.args[1]["job"], "lost-job")
+        self.assertEqual(self.service.accounting.pending(), [])
+
+    async def test_rejected_accounting_on_reconnect_retains_report_and_identifies_telemetry_failure(self):
+        from unittest.mock import AsyncMock
+
+        self.service.accounting.start("recovered-job", "epoch-one", True)
+        report = self.service.accounting.pending()
+        connection = AsyncMock()
+        connection.tool.return_value = {"error": "INVALID_ARGUMENT"}
+        self.service.chat.connection, self.service.chat.epoch = connection, "epoch-one"
+        with self.assertRaisesRegex(ServiceError, "TELEMETRY_NOT_ACCEPTED"):
+            await self.service.flush_telemetry()
+        self.assertEqual(self.service.accounting.pending(), report)
+        connection.tool.return_value = {"granted": True}
+        await self.service.flush_telemetry()
+        self.assertEqual(self.service.accounting.pending(), [])
+
+    async def test_database_failure_stops_startup_with_a_nonretryable_error(self):
+        from unittest.mock import AsyncMock
+
+        from sqlalchemy.exc import SQLAlchemyError
+
+        self.service.gateway.open = AsyncMock(side_effect=SQLAlchemyError("Database failure"))
+        await self.service.start(self.payload())
+        result = await self.terminal()
+        self.assertEqual((result["phase"], result["error"]), ("FAILED", "STATE_STORE_FAILED"))
+
+    async def test_failed_terminal_save_is_visible_to_the_scheduler(self):
+        from unittest.mock import patch
+
+        from sqlalchemy.exc import SQLAlchemyError
+
+        persist = self.service._persist
+
+        def fail_terminal(record, **kwargs):
+            if record["phase"] == "COMPLETED":
+                raise SQLAlchemyError("Database failure")
+            return persist(record, **kwargs)
+
+        with patch.object(self.service, "_persist", side_effect=fail_terminal):
+            await self.service.start(self.payload())
+            with self.assertRaisesRegex(ServiceError, "DURABLE_RECORD_FAILED"):
+                await self.terminal()
+        failure = self.service.health()["runFailure"]
+        assert failure is not None
+        self.assertEqual(failure["error"], "DURABLE_RECORD_FAILED")
+        self.assertEqual(failure["job"], "activation-one")
+
     async def test_background_telemetry_rejection_is_a_visible_terminal_failure(self):
         from unittest.mock import AsyncMock, patch
 
         self.factory.complete = False
-        with patch("civ_agent.agent_service.HISTORY_RENDER_INTERVAL", 0.01):
+        with patch("civ_agent.agent_service.TELEMETRY_SAMPLE_INTERVAL", 0.01):
             await self.service.start(self.payload())
             async with asyncio.timeout(2):
                 while self.service.status()["phase"] == "STARTING":
@@ -300,12 +356,12 @@ class AgentServiceTests(AgentServiceTestCase):
         self.assertNotIn("P" * 43, diagnostics)
         self.assertNotIn("S" * 43, diagnostics)
         self.service = self.make_service()
-        await self.service.start(self.payload("activation-two", threadId="thread-one", playerToken="Q" * 43))
+        await self.service.start(self.payload("activation-two", playerToken="Q" * 43))
         second = await self.terminal()
         self.assertEqual(first["usage"], second["usage"])
         self.assertEqual(2, len(set(self.factory.tokens)))
         self.assertTrue(all(token not in {"P" * 43, "Q" * 43} for token in self.factory.tokens))
-        self.assertTrue(any(method == "thread/resume" for method, _ in self.factory.calls))
+        self.assertTrue(all(method != "thread/resume" for method, _ in self.factory.calls))
         self.assertTrue(all(process.closed for process in self.factory.instances))
         self.assertTrue(
             all(process.workspace.is_relative_to(self.root / "workspace/jobs") for process in self.factory.instances)
@@ -329,14 +385,11 @@ class AgentServiceTests(AgentServiceTestCase):
                 await self.service.start(payload)
         self.assertEqual(1, len(self.factory.instances))
 
-    async def test_fresh_turn_has_only_committed_light_summaries_and_readable_archives(self):
+    async def test_fresh_turn_uses_committed_memory_without_generating_reports(self):
         await self.service.start(self.payload())
         first = await self.terminal()
-        self.assertTrue((self.root / "workspace/turn_0/commands.jsonl").exists())
-        self.assertTrue((self.root / "workspace/turn_0/summary.md").exists())
-        assert self.service.archive is not None
-        with self.assertRaisesRegex(ValueError, "no confirmed host handoff"):
-            self.service.archive.context(1)
+        self.assertFalse((self.root / "workspace/turn_0").exists())
+        self.assertFalse((self.root / "service/turn-archive").exists())
         with self.assertRaisesRegex(ServiceError, "PREVIOUS_TURN_NOT_FINALIZED"):
             await self.service.start(self.payload("premature-next-turn", gameTurn=1, handoff=2))
         finalization = dict(activationId=first["activationId"], epoch="epoch-one", gameTurn=0, committedHandoff=1)
@@ -346,14 +399,15 @@ class AgentServiceTests(AgentServiceTestCase):
         with self.assertRaisesRegex(ServiceError, "INVALID_HANDOFF"):
             await self.service.finalize({**finalization, "committedHandoff": 2})
         with self.assertRaisesRegex(ServiceError, "GAME_TURN_ALREADY_COMMITTED"):
-            await self.service.start(self.payload("duplicate-turn", threadId=first["threadId"]))
-        with self.assertRaisesRegex(ServiceError, "THREAD_NOT_OWNED"):
+            await self.service.start(self.payload("duplicate-turn"))
+        with self.assertRaisesRegex(ServiceError, "INVALID_THREAD"):
             await self.service.start(self.payload("wrong-thread", gameTurn=1, handoff=2, threadId=first["threadId"]))
         with self.assertRaisesRegex(ServiceError, "WORKSPACE_EPOCH_CONFLICT"):
             await self.service.start(self.payload("wrong-epoch", epoch="other-epoch"))
 
         # The player may write local files; trusted completed memory remains service-owned.
-        (self.root / "workspace/turn_0/summary.md").write_text("TAMPERED_MEMORY_SENTINEL")
+        (self.root / "workspace/turn_0").mkdir(mode=0o700)
+        write_private(self.root / "workspace/turn_0/summary.md", b"TAMPERED_MEMORY_SENTINEL")
         await self.service.start(self.payload("next-turn", gameTurn=1, handoff=2))
         second = await self.terminal()
         self.assertNotEqual(first["threadId"], second["threadId"])
@@ -366,9 +420,10 @@ class AgentServiceTests(AgentServiceTestCase):
         instructions = starts[-1]["developerInstructions"]
         self.assertEqual(starts[0]["developerInstructions"], instructions)
         self.assertNotEqual(starts[0]["cwd"], starts[-1]["cwd"])
-        self.assertIn("The service writes all turn files. Do not create or edit them.", instructions)
-        self.assertIn("After END_TURN succeeds, follow its memoryPhase instructions", instructions)
-        self.assertNotIn("Private strategy and evidence", instructions)
+        self.assertIn("Do not access the filesystem", instructions)
+        self.assertNotIn("files: turn_", prompt)
+        self.assertIn("After END_TURN succeeds, finish immediately", instructions)
+        self.assertNotIn("Previous strategy, next-turn handoff and historical knowledge", instructions)
         self.assertNotIn("Civ tool discovery:", prompt)
         metadata = self.service.records[second["activationId"]]["startup"]
         self.assertEqual(hashlib.sha256(instructions.encode()).hexdigest(), metadata["instructionsSha256"])
@@ -385,7 +440,7 @@ class AgentServiceTests(AgentServiceTestCase):
         self.assertNotIn("HUGE_OLD_SNAPSHOT_SENTINEL", prompt)
         self.assertNotIn("TAMPERED_MEMORY_SENTINEL", prompt)
         self.assertEqual(0, prompt.count("# Turn 0\n"))
-        self.assertIn("Private strategy and evidence", prompt)
+        self.assertIn("Previous strategy, next-turn handoff and historical knowledge", prompt)
         for boilerplate in (
             "Host handoff",
             "Receipt evidence",
@@ -398,7 +453,7 @@ class AgentServiceTests(AgentServiceTestCase):
             "activation-one",
         ):
             self.assertNotIn(boilerplate, prompt)
-        self.assertIn("turn_1/", prompt)
+        self.assertNotIn("turn_1/", prompt)
         exported = await self.service.archived(first["activationId"])
         self.assertEqual(("Rome", 0), (exported["civilization"], exported["gameTurn"]))
         self.assertIn("HUGE_OLD_SNAPSHOT_SENTINEL", exported["commands"])
@@ -419,91 +474,6 @@ class AgentServiceTests(AgentServiceTestCase):
         second = await self.terminal()
         self.assertEqual(first["effectiveSettings"], second["effectiveSettings"])
         self.assertNotEqual(first["threadId"], second["threadId"])
-
-    async def test_rolled_back_attempt_is_archived_but_new_thread_and_memory_start_clean(self):
-        self.factory.summary = "ABORTED_STRATEGY_SENTINEL: built a road for trade."
-        await self.service.start(self.payload())
-        first = await self.terminal()
-        abortion = dict(activationId=first["activationId"], epoch="epoch-one", gameTurn=0, handoff=0)
-        aborted = await self.service.abort(abortion)
-        self.assertTrue(aborted["aborted"])
-        self.assertEqual(aborted, await self.service.abort(abortion))
-        with self.assertRaisesRegex(ServiceError, "ACTIVATION_ABORTED"):
-            await self.service.finalize(
-                dict(activationId=first["activationId"], epoch="epoch-one", gameTurn=0, committedHandoff=1)
-            )
-        with self.assertRaisesRegex(ServiceError, "THREAD_ABORTED"):
-            await self.service.start(self.payload("bad-resume", threadId=first["threadId"]))
-        self.factory.summary = "Moved the scout west to inspect the mountains."
-        await self.service.start(self.payload("fresh-retry"))
-        retry = await self.terminal()
-        self.assertNotEqual(first["threadId"], retry["threadId"])
-        prompt = [payload for method, payload in self.factory.calls if method == "turn/start"][-1]["input"][0]["text"]
-        self.assertNotIn("ABORTED_STRATEGY_SENTINEL", prompt)
-        await self.service.finalize(
-            dict(activationId=retry["activationId"], epoch="epoch-one", gameTurn=0, committedHandoff=1)
-        )
-        assert self.service.archive is not None
-        memory = self.service.archive.context(1)
-        self.assertNotIn("ABORTED_STRATEGY_SENTINEL", memory)
-        self.assertNotIn(self.factory.summary, memory)
-        dense = (await self.service.archived(retry["activationId"]))["commands"]
-        self.assertIn(
-            "ABORTED_STRATEGY_SENTINEL", (self.service.history.path(first["activationId"]) / "events.jsonl").read_text()
-        )
-        self.assertNotIn('"aborted":true', dense)
-        failed_commands = self.root / "workspace/turn_0/attempts/attempt_1/commands.jsonl"
-        self.assertIn("HUGE_OLD_SNAPSHOT_SENTINEL", failed_commands.read_text())
-        with self.assertRaisesRegex(ServiceError, "GAME_TURN_ALREADY_COMMITTED"):
-            await self.service.abort(dict(activationId=retry["activationId"], epoch="epoch-one", gameTurn=0, handoff=0))
-        await self.service.start(self.payload("next-turn", gameTurn=1, handoff=2))
-        await self.terminal()
-        next_prompt = [payload for method, payload in self.factory.calls if method == "turn/start"][-1]["input"][0][
-            "text"
-        ]
-        self.assertEqual(0, next_prompt.count(self.factory.summary))
-        self.assertEqual(0, next_prompt.count("# Turn 0\n"))
-        self.assertIn("Private strategy and evidence", next_prompt)
-        for excluded in (
-            "ABORTED_STRATEGY_SENTINEL",
-            "HUGE_OLD_SNAPSHOT_SENTINEL",
-            "Host handoff",
-            "Receipt evidence",
-            "## Attempt",
-            "rolled back",
-            "failed attempt",
-            "fresh-retry",
-            "epoch-one",
-            "activation-one",
-        ):
-            self.assertNotIn(excluded, next_prompt)
-
-    async def test_unknown_activation_abort_fences_delayed_start_and_allows_fresh_attempt(self):
-        abortion = dict(activationId="activation-one", epoch="epoch-one", gameTurn=0, handoff=0)
-        status = await self.service.abort(abortion)
-        self.assertTrue(status["aborted"])
-        self.assertIsNone(status["threadId"])
-        self.assertEqual(status, await self.service.abort(abortion))
-        with self.assertRaisesRegex(ServiceError, "ACTIVATION_ABORTED"):
-            await self.service.start(self.payload())
-        self.assertEqual([], self.factory.instances)
-        await self.service.close()
-        self.service = self.make_service()
-        with self.assertRaisesRegex(ServiceError, "ACTIVATION_ABORTED"):
-            await self.service.start(self.payload())
-        await self.service.start(self.payload("new-attempt"))
-        self.assertEqual("COMPLETED", (await self.terminal())["phase"])
-
-    async def test_fresh_thread_start_cannot_reuse_an_aborted_thread(self):
-        await self.service.start(self.payload())
-        first = await self.terminal()
-        await self.service.abort(dict(activationId=first["activationId"], epoch="epoch-one", gameTurn=0, handoff=0))
-        self.factory.thread_count = 0  # Simulate a stale app-server returning the old ID to thread/start.
-        turns_before = sum(method == "turn/start" for method, _ in self.factory.calls)
-        await self.service.start(self.payload("new-attempt"))
-        status = await self.terminal()
-        self.assertEqual(("FAILED", "INVALID_CODEX_THREAD"), (status["phase"], status["error"]))
-        self.assertEqual(turns_before, sum(method == "turn/start" for method, _ in self.factory.calls))
 
     async def test_only_terminal_owned_turn_can_be_finalized(self):
         self.factory.complete = False
@@ -532,11 +502,11 @@ class AgentServiceTests(AgentServiceTestCase):
         await self.service.start(self.payload("lost-thread", gameTurn=1, handoff=2))
         fresh = await self.terminal()
         self.assertNotEqual(next_turn["threadId"], fresh["threadId"])
-        await self.service.start(self.payload("retry-turn", gameTurn=1, handoff=2, threadId=next_turn["threadId"]))
+        await self.service.start(self.payload("retry-turn", gameTurn=1, handoff=2))
         await self.terminal()
         prompt = [payload for method, payload in self.factory.calls if method == "turn/start"][-1]["input"][0]["text"]
         self.assertNotIn(self.factory.summary, prompt)
-        self.assertIn("recovery of the same unfinished game turn", prompt)
+        self.assertNotIn("This turn is unfinished", prompt)
         threads = [payload for method, payload in self.factory.calls if method.startswith("thread/")]
         self.assertEqual(threads[0]["developerInstructions"], threads[-1]["developerInstructions"])
         self.assertNotIn("inputSchema", prompt)
@@ -579,14 +549,14 @@ class AgentServiceTests(AgentServiceTestCase):
         await self.service.close()
         self.factory.default_model, self.factory.default_effort = "changed-config", "low"
         self.service = self.make_service(model="changed-service", reasoning_effort="high")
-        await self.service.start(self.payload("resume", threadId="thread-one"))
+        await self.service.start(self.payload("resume"))
         second = await self.terminal()
         self.assertEqual(first["effectiveSettings"], second["effectiveSettings"])
-        thread = next(payload for method, payload in self.factory.calls if method == "thread/resume")
+        thread = [payload for method, payload in self.factory.calls if method == "thread/start"][-1]
         self.assertEqual("configured-model", thread["model"])
         self.assertEqual({"model_reasoning_effort": "medium"}, thread["config"])
         for override in ({"model": "changed-model"}, {"reasoningEffort": "high"}):
-            with self.assertRaisesRegex(ServiceError, "THREAD_SETTINGS_CONFLICT"):
+            with self.assertRaisesRegex(ServiceError, "INVALID_THREAD"):
                 await self.service.start(self.payload("conflicting-resume", threadId="thread-one", **override))
         self.assertEqual(2, len(self.factory.instances))
 
@@ -597,7 +567,7 @@ class AgentServiceTests(AgentServiceTestCase):
         first = await self.terminal()
         await self.service.close()
         self.service = self.make_service(fast=True)
-        await self.service.start(self.payload("resume-fast", threadId=first["threadId"]))
+        await self.service.start(self.payload("resume-fast"))
         second = await self.terminal()
         self.assertEqual(first["effectiveSettings"], second["effectiveSettings"])
         for method, payload in self.factory.calls:
@@ -608,7 +578,7 @@ class AgentServiceTests(AgentServiceTestCase):
                     self.assertEqual(
                         {"model_reasoning_effort": "medium", "features.fast_mode": True}, payload["config"]
                     )
-        self.assertTrue(any(method == "thread/resume" for method, _ in self.factory.calls))
+        self.assertTrue(all(method != "thread/resume" for method, _ in self.factory.calls))
         self.assertEqual("fast", second["requestedServiceTier"])
         self.assertEqual("fast", second["serviceTier"])
 
@@ -635,7 +605,7 @@ class AgentServiceTests(AgentServiceTestCase):
         status = await self.service.interrupt("activation-one")
         self.assertEqual("INTERRUPTED", status["phase"])
         self.assertEqual("INTERRUPTED", status["error"])
-        self.assertTrue(self.factory.instances[0].closed)
+        self.assertTrue(all(process.closed for process in self.factory.instances))
         self.assertEqual(status, await self.service.interrupt("activation-one"))
 
     async def test_timeout_covers_startup_and_heartbeat_covers_turn_start_rpc(self):
@@ -650,42 +620,20 @@ class AgentServiceTests(AgentServiceTestCase):
             self.assertEqual(error, status["error"])
             self.assertTrue(self.factory.instances[-1].closed)
 
-    async def test_memory_phase_uses_configured_timeout_and_retains_it_after_restart(self):
-        self.factory.complete = False
-        await self.service.start(self.payload(timeoutSeconds=3600, leaseSeconds=30))
-        async with asyncio.timeout(4):
-            while self.service.status()["phase"] != "RUNNING":
-                await asyncio.sleep(0.01)
-        await self.service.finish_handoff(
-            dict(activationId="activation-one", epoch="epoch-one", gameTurn=0, committedHandoff=1)
-        )
-        job = next(iter(self.service.gateway.jobs.values()))
-        assert job.handoff_at is not None
-        job.handoff_at -= 301
-        await asyncio.sleep(0.2)
-        self.assertEqual("RUNNING", self.service.status()["phase"])
-        self.assertEqual(3600, self.service.status()["memoryTimeoutSeconds"])
-        job.handoff_at -= 3300
-        stopped = await self.terminal()
-        self.assertEqual("MEMORY_PHASE_TIMEOUT", stopped["error"])
-        self.assertFalse(stopped["memoryPhaseComplete"])
-        self.assertFalse(stopped["usageComplete"])
-        self.assertTrue(self.factory.instances[-1].closed)
-        await self.service.close()
-        self.service = self.make_service()
-        self.assertEqual(3600, self.service.status("activation-one")["memoryTimeoutSeconds"])
-
     async def test_unconfirmed_shutdown_never_allows_next_activation(self):
         self.factory.complete = False
         self.factory.close_failure = True
         await self.service.start(self.payload())
+        async with asyncio.timeout(4):
+            while self.service.status()["phase"] != "RUNNING":
+                await asyncio.sleep(0.01)
         with self.assertRaises(ServiceError):
             await self.service.interrupt("activation-one")
         self.assertNotIn(self.service.status()["phase"], {"FAILED", "COMPLETED", "INTERRUPTED"})
         self.assertEqual("STOP_UNCONFIRMED", self.service.status()["error"])
         with self.assertRaises(ServiceError) as failure:
             await self.service.start(self.payload("second"))
-        self.assertEqual("AGENT_BUSY", failure.exception.code)
+        self.assertEqual("STOP_UNCONFIRMED", failure.exception.code)
 
     async def test_https_auth_origin_duplicate_headers_and_private_state_binding(self):
         loop = asyncio.get_running_loop()

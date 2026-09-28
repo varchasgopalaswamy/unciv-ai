@@ -76,6 +76,8 @@ class ConcurrentTradeHost:
                 "outcomes": [],
                 "trades": [] if self.trade is None else [copy.deepcopy(self.trade)],
             }
+        if op == "trade_options":
+            return {"partner": args["partner"], "mode": "SHARED", "give": [], "receive": []}
         if op == "read":
             stream = self.events[civ]
             host.changed.wait_for(lambda: len(stream) > args["cursor"], timeout=1)
@@ -102,6 +104,7 @@ class ConcurrentTradeHost:
                 "author": civ,
                 "partner": args["partner"],
                 "status": "PENDING",
+                "mode": "SHARED",
                 "clauses": [{"from": civ, "to": args["partner"], "item": item} for item in args["give"]]
                 + [{"from": args["partner"], "to": civ, "item": item} for item in args["receive"]],
             }

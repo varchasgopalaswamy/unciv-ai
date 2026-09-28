@@ -1,228 +1,315 @@
+"""Direct local launches, durable settings, and process cleanup."""
+
 import json
 import signal
 import subprocess
 import sys
 import time
-from pathlib import Path
 
 import pytest
 
-from scripts import run_vanilla_game as launcher
-from tests import live_vanilla
+from civ_agent import cli
+from civ_agent.commands import agent_server, game, host
+from civ_agent.monitoring import MonitorStore, path_for, read_record
+from civ_agent.tls import write_private_json
+
+
+def options(root, *flags, action="start"):
+    return game.parser(action=action).parse_args(["--state-dir", str(root), *flags])
 
 
 def saved_run(root, **changes):
-    (root / "runner").mkdir(parents=True, exist_ok=True)
-    checkpoint = {
-        "gameJson": json.dumps(
-            {
-                "civilizations": [{"civID": civ, "playerType": "Human"} for civ in live_vanilla.PLAYERS]
-                + [{"civID": "Egypt"}]
-            }
-        ),
-        "communication": {"jobs": {}},
-        "handoff": 0,
-    }
-    (root / "exploration.json").write_text(json.dumps(checkpoint))
+    write_private_json(root / "exploration.json", {"gameJson": "{}"})
+    write_private_json(
+        root / "players.json", {"players": [{"civilizationId": civ} for civ in ("Rome", "Greece", "France")]}
+    )
     state = {
-        "model": "gpt-5.6-luna",
-        "reasoningEffort": "medium",
+        "version": game.scheduler.RUN_STATE_VERSION,
+        "model": "gpt-6-luna",
+        "reasoningEffort": "high",
         "startedAt": time.time(),
-        "limits": {"maxTurns": 3, "maxInvocations": 36, "maxSeconds": 3600, "activationSeconds": 600},
+        "limits": {
+            "maxTurns": 3,
+            "maxInvocations": 36,
+            "maxSeconds": 3600,
+            "activationSeconds": 600,
+        },
         "status": "paused",
         "usage": {"input_tokens": 12345},
         **changes,
     }
-    (root / "runner/run.json").write_text(json.dumps(state))
+    MonitorStore(path_for(root)).put("state", "run", state)
     return state
 
 
-def test_full_game_defaults_and_existing_match_protection(tmp_path):
-    args = launcher.arguments(["--state-dir", str(tmp_path)])
-    command = launcher.launch_command(args, Path(sys.executable))
-    for name, expected in {
-        "max-turns": "331",
-        "max-invocations": "10000",
-        "max-seconds": "604800",
-        "turn-timeout": "3600",
-        "startup-timeout": "900",
-        "model": "gpt-6-luna",
-        "reasoning-effort": "medium",
-    }.items():
-        assert command[command.index("--" + name) + 1] == expected
-    saved = saved_run(tmp_path)
-    with pytest.raises(ValueError, match="already exists"):
-        launcher.launch_command(args, Path(sys.executable))
-    assert launcher.read_json(tmp_path / "runner/run.json") == saved
+def test_resume_requires_a_native_save_before_launching(tmp_path, fake_services, capsys):
+    assert game.run(options(tmp_path, action="resume")) == 2
+    assert "Resume requires exploration.json" in capsys.readouterr().err
+    assert fake_services[0] == []
 
 
 @pytest.fixture
 def fake_services(monkeypatch):
-    processes, scheduled = [], []
+    processes, scheduled, closed = [], [], []
 
     class Process:
-        def __init__(self, command, *, stdout, stderr):
-            self.command, self.stopped = command, False
-            stdout.write("MCP-READY:local\n" if command[1] == "host" else "AGENT-READY:local\n")
+        def __init__(self, command, *, stdout, stderr, start_new_session):
+            assert start_new_session
+            assert command[:4] == [sys.executable, "-u", "-m", "civ_agent"]
+            self.command = command[4:]
+            self.returncode: int | None = None
+            stdout.write("MCP-READY:local\n" if self.command[0] == "host" else "AGENT-READY:local\n")
             stdout.flush()
             processes.append(self)
 
         def poll(self):
-            return 0 if self.stopped else None
+            return self.returncode
 
         def terminate(self):
-            self.stopped = True
+            self.returncode = 0
+            closed.append(self)
 
-        def wait(self, timeout):
-            return 0
+        def wait(self, timeout=None):
+            return self.returncode
 
     def schedule(args):
         scheduled.append(args)
+        saved_run(args.state_dir, model=args.model, reasoningEffort=args.reasoning_effort, status="budget_exhausted")
         return 0
 
-    monkeypatch.setattr(live_vanilla.subprocess, "Popen", Process)
-    monkeypatch.setattr(live_vanilla.scheduler, "run", schedule)
-    return processes, scheduled
-
-
-def assert_agent_settings(fake_services, expected):
-    from civ_agent.commands import agent_server
-
-    processes, scheduled = fake_services
-    assert [(args.model, args.reasoning_effort) for args in scheduled] == [expected]
-    assert len(processes) == 4 and all(process.stopped for process in processes)
-    agents = [agent_server.parser().parse_args(process.command[3:]) for process in processes[1:]]
-    assert [args.civilization for args in agents] == ["Rome", "Greece", "France"]
-    assert all((args.model, args.reasoning_effort) == expected for args in agents)
-    return agents
+    monkeypatch.setattr(game.subprocess, "Popen", Process)
+    monkeypatch.setattr(game.scheduler, "run", schedule)
+    monkeypatch.setattr(game, "provenance", lambda _: None)
+    return processes, scheduled, closed
 
 
 @pytest.mark.parametrize(
-    "flags, enabled", [([], False), (["--strategy-guide"], True), (["--no-strategy-guide"], False)]
-)
-@pytest.mark.parametrize("fast", [False, True])
-@pytest.mark.parametrize(
-    "settings, expected",
+    "flags, enabled, fast",
     [
-        ([], ("gpt-6-luna", "medium")),
-        (["--model", "gpt-6-luna", "--reasoning-effort", "high"], ("gpt-6-luna", "high")),
-        (["--model", "chosen-model", "--reasoning-effort", "custom-effort"], ("chosen-model", "custom-effort")),
+        ([], False, False),
+        (["--strategy-guide", "--fast"], True, True),
+        (["--no-strategy-guide", "--no-fast"], False, False),
     ],
 )
-def test_launcher_options_reach_all_agent_services(
-    tmp_path, monkeypatch, fake_services, flags, enabled, fast, settings, expected
-):
-    command = launcher.launch_command(
-        launcher.arguments(["--state-dir", str(tmp_path), *flags, *settings, *(["--fast"] if fast else [])]),
-        Path(sys.executable),
+def test_direct_launch_and_shutdown_order(tmp_path, fake_services, flags, enabled, fast):
+    assert (
+        cli.main(
+            [
+                "game",
+                "start",
+                "--state-dir",
+                str(tmp_path),
+                "--model",
+                "chosen-model",
+                "--reasoning-effort",
+                "max",
+                *flags,
+            ]
+        )
+        == 3
     )
-    monkeypatch.setattr(sys, "argv", ["live_vanilla", *command[4:]])
-    assert live_vanilla.main() == 0
-    agents = assert_agent_settings(fake_services, expected)
-    assert all(args.strategy_guide == enabled for args in agents)
-    assert all(args.fast == fast for args in agents)
+    processes, scheduled, closed = fake_services
+    assert len(processes) == 4 and closed == processes[::-1]
+    assert len(scheduled) == 1
+    assert (scheduled[0].model, scheduled[0].reasoning_effort) == ("chosen-model", "max")
+    assert scheduled[0].max_turns == 331 and scheduled[0].turn_timeout == 3600
+    agents = [agent_server.parser().parse_args(p.command[2:]) for p in processes[1:]]
+    assert [a.civilization for a in agents] == ["Rome", "Greece", "France"]
+    assert all(
+        (a.model, a.reasoning_effort, a.strategy_guide, a.fast) == ("chosen-model", "max", enabled, fast)
+        for a in agents
+    )
+    assert all((a.review_interval, a.review_attempts) == (5, 3) for a in agents)
 
 
-@pytest.mark.parametrize("via_launcher", [False, True])
-def test_resume_inherits_saved_settings_before_starting_services(tmp_path, monkeypatch, fake_services, via_launcher):
-    saved = saved_run(tmp_path, reasoningEffort="high")
-    arguments = ["--state-dir", str(tmp_path), "--resume", "--port", "8971"]
-    if via_launcher:
-        args = launcher.arguments(arguments)
-        arguments = launcher.launch_command(args, Path(sys.executable))[4:]
-        assert (args.model, args.reasoning_effort) == ("gpt-5.6-luna", "high")
-    monkeypatch.setattr(sys, "argv", ["live_vanilla", *arguments])
-    assert live_vanilla.main() == 0
-    assert_agent_settings(fake_services, ("gpt-5.6-luna", "high"))
-    assert launcher.read_json(tmp_path / "runner/run.json") == saved
+def test_review_cadence_and_attempt_limit_are_forwarded_and_retained(tmp_path, fake_services):
+    assert game.run(options(tmp_path, "--review-interval", "7", "--review-attempts", "2")) == 3
+    agents = [agent_server.parser().parse_args(p.command[2:]) for p in fake_services[0][1:]]
+    assert all((a.review_interval, a.review_attempts) == (7, 2) for a in agents)
+    resume = options(tmp_path, action="resume")
+    game.resolve_options(resume)
+    assert (resume.review_interval, resume.review_attempts) == (7, 2)
 
 
-def test_checkpoint_run_records_and_uses_selected_settings(tmp_path, monkeypatch, fake_services):
-    source, target = tmp_path / "source", tmp_path / "target"
+@pytest.mark.parametrize("flag", ["--review-interval", "--review-attempts"])
+@pytest.mark.parametrize("value", ["0", "-1"])
+def test_review_options_require_positive_integers(tmp_path, flag, value):
+    with pytest.raises(SystemExit):
+        options(tmp_path, flag, value)
+    with pytest.raises(SystemExit):
+        agent_server.parser().parse_args(["Rome", flag, value])
+
+
+def test_map_and_roster_options_reach_native_launcher(tmp_path, fake_services):
+    args = options(
+        tmp_path,
+        "--agents",
+        "Rome",
+        "Germany",
+        "--built-in-ai",
+        "Egypt",
+        "China",
+        "--map-radius",
+        "26",
+        "--city-states",
+        "8",
+        "--seed",
+        "-42",
+    )
+    assert game.run(args) == 3
+    processes, _, _ = fake_services
+    native = host.parser().parse_args(processes[0].command[2:])
+    assert native.agent_player == ["Rome", "Germany"] and native.built_in_ai == ["Egypt", "China"]
+    assert (native.map_radius, native.map_size, native.city_states, native.seed) == (26, None, 8, -42)
+    assert len(processes) == 3
+
+
+def test_saved_position_comparison_uses_shared_services(tmp_path, fake_services, monkeypatch):
+    from tests import live_saved_position
+
+    source, target = tmp_path / "source", tmp_path / "comparison"
     saved_run(source)
-    for name in ("players.json", "operator.json"):
-        (source / name).write_text("{}")
-    monkeypatch.setattr(
-        live_vanilla.subprocess,
-        "check_output",
-        lambda command, **kwargs: "" if "--porcelain" in command else "revision\n",
+    write_private_json(
+        source / "exploration.json",
+        {
+            "gameJson": json.dumps(
+                {
+                    "civilizations": [{"civID": civ, "playerType": "Human"} for civ in ("Rome", "Greece", "France")]
+                    + [{"civID": "Egypt"}]
+                }
+            ),
+            "communication": {"jobs": {}},
+            "handoff": 0,
+        },
     )
+    write_private_json(source / "operator.json", {})
+    monkeypatch.setattr(live_saved_position.subprocess, "check_output", lambda *args, **kwargs: "revision\n")
     monkeypatch.setattr(
         sys,
         "argv",
         [
-            "live_vanilla",
-            "--state-dir",
-            str(target),
-            "--port",
-            "8971",
+            "live_saved_position",
             "--checkpoint",
             str(source / "exploration.json"),
             "--source-state",
             str(source),
+            "--state-dir",
+            str(target),
+            "--port",
+            "9000",
             "--model",
             "chosen-model",
             "--reasoning-effort",
-            "high",
+            "max",
         ],
     )
-    assert live_vanilla.main() == 0
-    assert_agent_settings(fake_services, ("chosen-model", "high"))
-    provenance = launcher.read_json(target / "live-run.json")
-    assert provenance is not None and (provenance["model"], provenance["reasoningEffort"]) == ("chosen-model", "high")
+    assert live_saved_position.main() == 0
+    processes, scheduled, closed = fake_services
+    assert len(processes) == 4 and closed == processes[::-1] and scheduled[0].model == "chosen-model"
+    metadata = game.read_json(target / "live-run.json")
+    assert metadata is not None and metadata["model"] == "chosen-model"
 
 
-def test_resume_preserves_larger_limits_usage_and_original_clock(tmp_path):
-    saved = saved_run(
-        tmp_path, limits={"maxTurns": 500, "maxInvocations": 20000, "maxSeconds": 900000, "activationSeconds": 4000}
+def test_resume_retains_runtime_settings_and_accounting(tmp_path, fake_services):
+    previous = saved_run(tmp_path)
+    write_private_json(
+        tmp_path / "launch-settings.json", {"port": 19000, "fast": True, "strategy_guide": True, "startup_timeout": 800}
     )
-    args = launcher.arguments(["--state-dir", str(tmp_path), "--resume", "--fast"])
-    command = launcher.launch_command(args, Path(sys.executable))
-    assert "--resume" in command and "--fast" in command and "--seed" not in command
-    for option, (key, _) in launcher.LIMITS.items():
-        assert command[command.index("--" + option.replace("_", "-")) + 1] == str(saved["limits"][key])
-    assert launcher.read_json(tmp_path / "runner/run.json") == saved
-    args.max_seconds = 100
-    with pytest.raises(ValueError, match="cannot decrease"):
-        launcher.launch_command(args, Path(sys.executable))
-    args.max_seconds = None
-    saved_run(tmp_path, startedAt=time.time() - 604801)
-    with pytest.raises(ValueError, match="original wall-time budget has expired"):
-        launcher.launch_command(args, Path(sys.executable))
+    args = options(tmp_path, action="resume")
+    game.resolve_options(args)
+    assert (args.port, args.fast, args.strategy_guide, args.startup_timeout) == (19000, True, True, 800)
+    assert (args.model, args.reasoning_effort) == ("gpt-6-luna", "high")
+    assert args.max_turns == 3 and args.turn_timeout == 600
+    assert read_record(path_for(tmp_path), "state", "run") == previous
+    assert game.run(args) == 3
+    processes, scheduled, _ = fake_services
+    assert "--new" not in processes[0].command and "--seed" not in processes[0].command
+    assert scheduled[0].action == "resume"
+    assert all("--fast" in p.command and "--strategy-guide" in p.command for p in processes[1:])
 
 
-def test_resume_requires_saved_state(tmp_path):
-    args = launcher.arguments(["--state-dir", str(tmp_path), "--resume"])
-    with pytest.raises(ValueError, match="requires exploration.json"):
-        launcher.launch_command(args, Path(sys.executable))
+def test_resume_rejects_older_recovery_state_before_starting_services(tmp_path, fake_services):
+    previous = saved_run(tmp_path, version=2)
+    with pytest.raises(game.scheduler.RunnerError, match="use the old code"):
+        game.resolve_options(options(tmp_path, action="resume"))
+    assert read_record(path_for(tmp_path), "state", "run") == previous
+    assert fake_services[0] == []
 
 
-@pytest.mark.parametrize("settings", [["--model", "gpt-6-luna"], ["--reasoning-effort", "medium"]])
-def test_resume_rejects_conflicting_settings_before_starting_services(tmp_path, monkeypatch, fake_services, settings):
-    saved = saved_run(tmp_path, reasoningEffort="high")
-    arguments = ["--state-dir", str(tmp_path), "--resume", "--port", "8971", *settings]
-    args = launcher.arguments(arguments)
-    with pytest.raises(ValueError, match="Resume retains the saved model gpt-5.6-luna with high reasoning"):
-        launcher.launch_command(args, Path(sys.executable))
-    monkeypatch.setattr(sys, "argv", ["live_vanilla", *arguments])
-    with pytest.raises(SystemExit) as stopped:
-        live_vanilla.main()
-    assert stopped.value.code == 2
-    assert fake_services == ([], [])
-    assert launcher.read_json(tmp_path / "runner/run.json") == saved
-
-
-@pytest.mark.parametrize("settings", [["--model", ""], ["--reasoning-effort", "with spaces"]])
-def test_invalid_model_settings_fail_before_launch(tmp_path, settings):
-    args = launcher.arguments(["--state-dir", str(tmp_path), *settings])
-    with pytest.raises(ValueError, match="Invalid model or reasoning effort"):
-        launcher.launch_command(args, Path(sys.executable))
+def test_resume_infers_host_port_and_can_disable_options(tmp_path):
+    saved_run(tmp_path)
+    write_private_json(tmp_path / "endpoints.json", {"hostUrl": "https://localhost:10971"})
+    write_private_json(tmp_path / "launch-settings.json", {"fast": True, "strategy_guide": True})
+    args = options(tmp_path, "--no-fast", "--no-strategy-guide", action="resume")
+    game.resolve_options(args)
+    assert args.port == 10971 and not args.fast and not args.strategy_guide
 
 
 @pytest.mark.parametrize(
-    ("status", "result", "child_code", "interrupted", "expected"),
+    "flags, message",
     [
-        ("complete", {"winner": "Egypt", "victoryType": "Time"}, 0, False, 0),
+        (["--max-seconds", "100"], "cannot decrease"),
+        (["--model", "other-model"], "Resume retains"),
+        (["--turn-timeout", "86401"], "cannot exceed"),
+    ],
+)
+def test_invalid_resume_preserves_state(tmp_path, fake_services, flags, message, capsys):
+    before = saved_run(tmp_path)
+    assert game.run(options(tmp_path, *flags, action="resume")) == 2
+    assert message in capsys.readouterr().err
+    assert fake_services == ([], [], [])
+    assert read_record(path_for(tmp_path), "state", "run") == before
+
+
+def test_expired_budget_and_overwrite_protection(tmp_path):
+    saved_run(tmp_path, startedAt=time.time() - 4000)
+    with pytest.raises(ValueError, match="already exists"):
+        game.resolve_options(options(tmp_path))
+    with pytest.raises(ValueError, match="wall-time budget has expired"):
+        game.resolve_options(options(tmp_path, action="resume"))
+    extended = options(tmp_path, "--max-seconds", "8000", action="resume")
+    game.resolve_options(extended)
+    assert extended.max_seconds == 8000
+
+
+def test_resume_after_initial_service_failure(tmp_path):
+    saved_run(tmp_path)
+    path_for(tmp_path).unlink()
+    args = options(tmp_path, action="resume")
+    game.resolve_options(args)
+    assert args.scheduler_action == "start" and args.action == "resume"
+
+
+def test_startup_failure_cleans_up_and_records_the_actual_cause(tmp_path, fake_services, monkeypatch):
+    original = game.subprocess.Popen
+
+    def failing(command, **kwargs):
+        process = original(command, **kwargs)
+        if command[4:7] == ["agent-server", "start", "Greece"]:
+            process.returncode = 42
+        return process
+
+    monkeypatch.setattr(game.subprocess, "Popen", failing)
+    assert game.run(options(tmp_path)) == 2
+    processes, scheduled, closed = fake_services
+    assert scheduled == [] and closed == processes[:2][::-1]
+    report = next((tmp_path / "launches").glob("*/stop.json"))
+    stopped = game.read_json(report)
+    assert stopped is not None and "Greece exited with 42" in stopped["reason"]
+    # A failure before the first board is saved can be retried without deleting logs.
+    game.resolve_options(options(tmp_path))
+
+
+@pytest.mark.parametrize("flags", [["--agents", "Rome", "Rome"], ["--built-in-ai", "Rome"], ["--port", "65534"]])
+def test_invalid_roster_or_port_fails_before_services(tmp_path, fake_services, flags):
+    assert game.run(options(tmp_path, *flags)) == 2
+    assert fake_services == ([], [], [])
+
+
+@pytest.mark.parametrize(
+    "status, result, code, interrupted, expected",
+    [
+        ("complete", {"winner": "Egypt"}, 0, False, 0),
         ("complete", None, 0, False, 2),
         ("paused", None, 0, False, 2),
         ("needs_inspection", None, 0, False, 2),
@@ -231,112 +318,61 @@ def test_invalid_model_settings_fail_before_launch(tmp_path, settings):
         ("paused", None, 7, False, 7),
     ],
 )
-def test_exit_status_distinguishes_blockers_from_native_completion(
-    tmp_path, status, result, child_code, interrupted, expected
-):
+def test_exit_status_requires_native_completion(tmp_path, status, result, code, interrupted, expected):
     saved_run(tmp_path, status=status, reason="Saved reason")
-    (tmp_path / "telemetry").mkdir()
-    launcher.write_json(
-        tmp_path / "telemetry/game-result.json", {"status": "completed" if result else "incomplete", "result": result}
+    MonitorStore(path_for(tmp_path)).put(
+        "state", "result", {"status": "completed" if result else "incomplete", "result": result}
     )
-    summary = launcher.stopped_state(tmp_path, child_code, interrupted)
-    assert summary["exitCode"] == expected
-    assert summary["result"] == result and summary["reason"] == "Saved reason"
+    summary = game.stopped_state(tmp_path, code, interrupted)
+    assert summary["exitCode"] == expected and summary["reason"] == "Saved reason"
 
 
-def test_launcher_captures_output_and_stop_report_without_restarting(tmp_path, monkeypatch, capsys):
+def test_colored_output_plain_log_and_stop_report(tmp_path, monkeypatch, capsys):
+    def schedule(args, _output):
+        saved_run(args.state_dir, reason="Turn did not hand off")
+        print("\x1b[36mstdout diagnostic\x1b[0m")
+        print("stderr diagnostic", file=sys.stderr)
+        return 0
+
     monkeypatch.delenv("NO_COLOR", raising=False)
-    root = tmp_path / "match with spaces"
-    worker = tmp_path / "fake_worker.py"
-    worker.write_text(
-        "import json, sys\nfrom pathlib import Path\n"
-        "root = Path(sys.argv[1]); (root/'runner').mkdir()\n"
-        "(root/'runner/run.json').write_text(json.dumps({'status':'paused','reason':'Turn did not hand off'}))\n"
-        "print('\\x1b[36mstdout diagnostic\\x1b[0m', flush=True)\n"
-        "print('stderr diagnostic', file=sys.stderr, end='', flush=True)\n"
-    )
-    monkeypatch.setattr(
-        launcher, "launch_command", lambda args, python: [str(python), "-u", str(worker), str(args.state_dir)]
-    )
-    assert (
-        launcher.main(
-            [
-                "--state-dir",
-                str(root),
-                "--color",
-                "always",
-                "--strategy-guide",
-                "--fast",
-                "--model",
-                "chosen-model",
-                "--reasoning-effort",
-                "high",
-            ]
-        )
-        == 2
-    )
+    monkeypatch.setattr(game, "run_services", schedule)
+    assert game.run(options(tmp_path, "--color", "always", "--fast", "--strategy-guide")) == 2
     output = capsys.readouterr().out
-    assert "\x1b[" in output.split("\x1b[36mstdout diagnostic")[0]
-    assert "\x1b[36mstdout diagnostic\x1b[0m" in output
-    assert "\x1b[" in output.split("stderr diagnostic")[1]
-    launches = list((root / "launches").iterdir())
-    assert len(launches) == 1
-    metadata = launcher.read_json(launches[0] / "launch.json")
-    assert metadata is not None and metadata["strategyGuide"]
-    assert metadata["requestedServiceTier"] == "fast"
-    assert (metadata["model"], metadata["reasoningEffort"]) == ("chosen-model", "high")
-    console = (launches[0] / "console.log").read_text()
-    assert "stdout diagnostic" in console and "stderr diagnostic" in console
-    assert "\x1b" not in console
-    assert "[Rome] Player: chosen-model · high reasoning" in console and "[Egypt] Player: Built-in AI" in console
-    assert "Priority: Fast requested." in console
-    assert "stderr diagnostic\n  Error: Stopped: paused; exit 2." in console
-    stopped = launcher.read_json(launches[0] / "stop.json")
-    assert stopped is not None
-    assert stopped["childExitCode"] == 0 and stopped["exitCode"] == 2
-    assert stopped["reason"] == "Turn did not hand off"
-    assert (launches[0] / "stop.json").stat().st_mode & 0o777 == 0o600
+    assert "\x1b[" in output and "stdout diagnostic" in output and "stderr diagnostic" in output
+    launch = next((tmp_path / "launches").iterdir())
+    assert "\x1b" not in (launch / "console.log").read_text()
+    stop = game.read_json(launch / "stop.json")
+    assert stop is not None and stop["reason"] == "Turn did not hand off"
+    assert (launch / "stop.json").stat().st_mode & 0o777 == 0o600
+    metadata = game.read_json(launch / "launch.json")
+    assert metadata is not None and metadata["requestedServiceTier"] == "fast"
 
 
-def test_launcher_resolves_color_before_piping_child_output(tmp_path, monkeypatch):
-    from io import StringIO
-
-    class Terminal(StringIO):
-        def isatty(self):
-            return True
-
-    monkeypatch.delenv("NO_COLOR", raising=False)
-    monkeypatch.setenv("TERM", "xterm-256color")
-    monkeypatch.setattr(sys, "stdout", Terminal())
-    args = launcher.arguments(["--state-dir", str(tmp_path)])
-    command = launcher.launch_command(args, Path(sys.executable))
-    assert command[command.index("--color") + 1] == "always"
-    monkeypatch.setenv("NO_COLOR", "1")
-    args.color = "always"
-    command = launcher.launch_command(args, Path(sys.executable))
-    assert command[command.index("--color") + 1] == "never"
-
-
-def test_term_signal_allows_child_to_flush_and_exit(tmp_path):
-    ready = tmp_path / "ready"
-    worker = tmp_path / "fake_worker.py"
+def test_term_during_startup_flushes_service_and_records_pause(tmp_path):
+    worker = tmp_path / "worker.py"
     worker.write_text(
-        "import os, signal, sys, time\nfrom pathlib import Path\n"
-        "def stop(*args):\n    print('flushed checkpoint', flush=True)\n    sys.exit(0)\n"
-        "signal.signal(signal.SIGINT, stop)\n"
-        "Path(sys.argv[1]).write_text(str(os.getpid()))\n"
-        "while True: time.sleep(0.1)\n"
+        "import signal, time, sys\nfrom pathlib import Path\n"
+        "def stop(*args):\n Path(sys.argv[1]).write_text('flushed'); sys.exit(0)\n"
+        "signal.signal(signal.SIGTERM, stop)\nprint('MCP-READY:local', flush=True)\n"
+        "while True: time.sleep(.01)\n"
     )
-    driver = (
-        "import json, sys\nfrom pathlib import Path\n"
-        "from scripts.run_vanilla_game import run_logged\n"
-        "def announce(message, end='\\n'): print(message, end=end, flush=True)\n"
-        "result = run_logged([sys.executable, '-u', sys.argv[1], sys.argv[2]], Path.cwd(), announce)\n"
-        "print(json.dumps(result), flush=True)\n"
+    driver = tmp_path / "driver.py"
+    driver.write_text(
+        "import time, sys, subprocess\nfrom pathlib import Path\n"
+        "from civ_agent.commands import game\nreal = subprocess.Popen\n"
+        "game.subprocess.Popen = lambda command, **kw: real([sys.executable, sys.argv[1], sys.argv[2]], **kw)\n"
+        "game.provenance = lambda path: None\n"
+        "def play(args, output):\n"
+        " with game.services(args.state_dir, 5, output.line) as start:\n"
+        "  start([], 'host', 'MCP-READY:')\n"
+        "  Path(sys.argv[3]).write_text('ready')\n"
+        "  while True: time.sleep(.01)\n"
+        "game.run_services = play\n"
+        "raise SystemExit(game.run(game.parser().parse_args(['--state-dir', sys.argv[4]])))\n"
     )
+    ready, flushed, root = tmp_path / "ready", tmp_path / "flushed", tmp_path / "match"
     process = subprocess.Popen(
-        [sys.executable, "-u", "-c", driver, str(worker), str(ready)],
-        cwd=launcher.REPOSITORY,
+        [sys.executable, str(driver), str(worker), str(flushed), str(ready), str(root)],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
@@ -345,13 +381,14 @@ def test_term_signal_allows_child_to_flush_and_exit(tmp_path):
         deadline = time.monotonic() + 10
         while not ready.exists() and process.poll() is None and time.monotonic() < deadline:
             time.sleep(0.02)
-        assert ready.exists(), "The fake service did not start"
+        assert ready.exists()
         process.send_signal(signal.SIGTERM)
         output, errors = process.communicate(timeout=10)
-        assert process.returncode == 0, errors
-        assert "flushed checkpoint" in output
-        assert json.loads(output.splitlines()[-1]) == [0, True]
-        assert not Path("/proc", ready.read_text()).exists()
+        assert process.returncode == 130, output + errors
+        assert flushed.read_text() == "flushed"
+        report = next((root / "launches").glob("*/stop.json"))
+        stopped = game.read_json(report)
+        assert stopped is not None and stopped["interrupted"] is True
     finally:
         if process.poll() is None:
             process.kill()

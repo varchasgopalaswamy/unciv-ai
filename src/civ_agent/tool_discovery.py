@@ -20,13 +20,11 @@ def tool_discovery_instructions(purpose: Literal["gameplay", "communication"]) -
         "Read definitions before calling any tool not supplied at startup. Fetch a small relevant set for the next "
         "decisions; reuse definitions already read. Skip the index for known names. To explore, print names only:\n"
         'text(ALL_TOOLS.filter(t => t.name.startsWith("mcp__civ__")).map(t => t.name));\n'
-        "Keyword searches also return names only. All job tools remain discoverable; do not preload the catalogue.\n\n"
-        'For tools accepting intent, use {reason:"why"} or {plan:"plan ID"}. '
-        "Intent records your reasoning; notebook review notices are advisory. "
-        "Save changed strategy, beliefs and useful durable notes; receipts already preserve routine state and actions. "
-        "Gameplay owns notebook revisions; communication may append contributions for the next gameplay turn. "
+        "Keyword searches also return names only. Do not preload the catalogue.\n\n"
+        'For tools accepting intent, use {reason:"why this action"}; strategy is an optional historical memory ID. '
+        "Intent records your reasoning. Follow memory_update's record and ownership rules. "
         "No memory write is needed when nothing useful changed. "
         "Follow error recovery.reads and instructions; stop if an action's outcome is uncertain. "
-        "Follow recoverable error responses. The host detects repeated stale command state; "
+        "Follow recoverable error responses. "
         "recoverable=false is terminal: stop without further tool calls."
     )

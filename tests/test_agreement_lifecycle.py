@@ -9,7 +9,7 @@ from civ_agent.civilization_state import CivilizationState, StateConflict
 from civ_agent.proposal_gateway import ProposalGateway
 from civ_agent.service_io import ServiceIO
 from tests.test_proposal_gateway import Host
-from tests.test_structured_memory import create, current, plan, setup
+from tests.test_structured_memory import create, current, setup, strategy
 
 
 def agreement():
@@ -108,7 +108,19 @@ def test_agreement_tools_route_reads_with_private_sources_and_exact_replay(tmp_p
             unavailable = await gateway.call(
                 job,
                 "memory_update",
-                {"changes": [{"op": "create", "content": plan(sources=["observation:agreement/a1"])}]},
+                {
+                    "changes": [
+                        {
+                            "op": "create",
+                            "content": {
+                                "type": "belief",
+                                "claim": "Income may support construction",
+                                "uncertainty": "high",
+                                "sources": ["observation:agreement/a1"],
+                            },
+                        }
+                    ]
+                },
                 "unread-source",
             )
             assert unavailable["changes"][0]["accepted"]
@@ -124,7 +136,7 @@ def test_agreement_tools_route_reads_with_private_sources_and_exact_replay(tmp_p
                     "changes": [
                         {
                             "op": "create",
-                            "content": plan(
+                            "content": strategy(
                                 assumptions=[{"text": "Income funds construction", "source": shown["evidence"]}]
                             ),
                         }
@@ -152,11 +164,26 @@ def test_agreement_tools_route_reads_with_private_sources_and_exact_replay(tmp_p
 def test_agreement_ending_flags_dependencies_and_relevant_plans_without_promoting_chat(tmp_path):
     memory = setup(tmp_path)
     memory.observe("agreement/a1", {"agreement": agreement()}, "game")
-    dependent = create(memory, plan(assumptions=[{"text": "Greece pays us", "source": "observation:agreement/a1"}]))
-    partner = create(memory, plan(subjects=["Greece"]))
-    economy = create(memory, plan(subjects=["economy"]))
-    unrelated = create(memory, plan(subjects=["France"]))
-    historical = create(memory, plan(sources=["observation:agreement/a1"]))
+    dependent = create(
+        memory,
+        strategy(
+            subjects=["Greece", "economy"],
+            assumptions=[{"text": "Greece pays us", "source": "observation:agreement/a1"}],
+        ),
+    )
+    partner = economy = dependent
+    unrelated = create(
+        memory, {"type": "belief", "claim": "France seems peaceful", "uncertainty": "high", "subjects": ["France"]}
+    )
+    historical = create(
+        memory,
+        {
+            "type": "belief",
+            "claim": "Greece previously paid us",
+            "uncertainty": "low",
+            "sources": ["observation:agreement/a1"],
+        },
+    )
     event = ended_event()
     memory.ingest("g1", [{**event, "kind": "message"}], 1)
     assert all(not current(memory, key)["needsReview"] for key in (dependent, partner, economy))
@@ -169,9 +196,14 @@ def test_agreement_ending_flags_dependencies_and_relevant_plans_without_promotin
     assert memory.snapshot("gameplay")["records"]["event:1"]["category"] == "statement"
     assert memory.snapshot("gameplay")["records"]["event:2"]["category"] == "observation"
     assert memory.has_wake()
-    assert memory.queue("game", "player_command", {"kind": "BUY_CONSTRUCTION"}, {}, "old-plan", {"plan": dependent})[
-        "id"
-    ]
+    assert memory.queue(
+        "game",
+        "player_command",
+        {"kind": "BUY_CONSTRUCTION"},
+        {},
+        "old-strategy",
+        {"strategy": dependent, "reason": "Defend Rome"},
+    )["id"]
 
 
 @pytest.mark.parametrize(
@@ -186,25 +218,29 @@ def test_agreement_ending_flags_dependencies_and_relevant_plans_without_promotin
     ],
 )
 def test_relationship_endings_select_relevant_plan_subjects(tmp_path, kind, term, subjects):
-    memory = setup(tmp_path)
-    plans = {
-        subject: create(memory, plan(subjects=[subject]))
-        for subject in ("Greece", "economy", "defense", "expansion", "France")
-    }
-    event = ended_event(kind=kind, before={"give": [], "receive": [term] if term else []})
-    memory.ingest("g1", [event], 1)
-    assert {subject for subject, key in plans.items() if current(memory, key)["needsReview"]} == subjects
+    for subject in ("Greece", "economy", "defense", "expansion", "France"):
+        memory = setup(tmp_path / subject)
+        key = create(memory, strategy(subjects=[subject]))
+        event = ended_event(kind=kind, before={"give": [], "receive": [term] if term else []})
+        memory.ingest("g1", [event], 1)
+        assert bool(current(memory, key)["needsReview"]) is (subject in subjects)
 
 
 def test_reviewed_lifecycle_event_stays_reviewed_on_reconnect_and_restart(tmp_path):
     memory = setup(tmp_path)
-    key = create(memory, plan(subjects=["Greece"]))
+    key = create(memory, strategy(subjects=["Greece"]))
     event = ended_event()
     memory.ingest("g1", [event], 1)
     memory.refresh_memory("game", [key, "event:1"])
     assert memory.patch(
         "game",
-        [{"op": "amend", "id": key, "fields": {k: v for k, v in (plan(subjects=["Greece"])).items() if k != "type"}}],
+        [
+            {
+                "op": "replace",
+                "id": key,
+                "content": strategy(subjects=["Greece"]),
+            }
+        ],
     )["changes"][0]["accepted"]
     memory.ingest("g1", [event], 1)
     assert not current(memory, key)["needsReview"]
@@ -224,7 +260,8 @@ def test_late_event_does_not_invalidate_a_plan_based_on_current_agreement(tmp_pa
     value = {**agreement(), "version": 2, "status": "ENDED", "receive": [], "remainingTurns": 0}
     memory.observe("agreement/a1", {"agreement": value}, "game")
     key = create(
-        memory, plan(subjects=["Greece"], assumptions=[{"text": "Income ended", "source": "observation:agreement/a1"}])
+        memory,
+        strategy(subjects=["Greece"], assumptions=[{"text": "Income ended", "source": "observation:agreement/a1"}]),
     )
     memory.ingest("g1", [ended_event()], 1)
     assert not current(memory, key)["needsReview"]
@@ -236,7 +273,7 @@ def test_countdown_reads_do_not_flag_subject_plans_but_native_expiry_does(tmp_pa
     value = agreement()
     value["receive"][0]["displayText"] = "Gold per turn 4 (5 turns)"
     memory.observe("agreement/a1", {"agreement": copy.deepcopy(value)}, "game")
-    key = create(memory, plan(subjects=["economy"]))
+    key = create(memory, strategy(subjects=["economy"]))
     value["version"] += 1
     value["remainingTurns"] = 4
     value["receive"][0].update(duration=4, displayText="Gold per turn 4 (4 turns)")
@@ -262,7 +299,7 @@ def test_older_read_response_cannot_erase_a_newer_lifecycle_event(tmp_path):
 def test_lifecycle_event_invalidates_older_list_even_if_full_read_is_current(tmp_path):
     memory = setup(tmp_path)
     memory.observe("agreements", {"agreements": [agreement()]}, "game")
-    dependent = create(memory, plan(assumptions=[{"text": "Income continues", "source": "observation:agreements"}]))
+    dependent = create(memory, strategy(assumptions=[{"text": "Income continues", "source": "observation:agreements"}]))
     ended = {**agreement(), "version": 2, "status": "ENDED", "remainingTurns": 0, "receive": []}
     memory.observe("agreement/a1", {"agreement": ended}, "game")
     memory.ingest("g1", [ended_event()], 1)
@@ -318,7 +355,7 @@ def test_historical_intent_does_not_block_friendship_and_live_agreement_reads_st
                     "changes": [
                         {
                             "op": "create",
-                            "content": plan(
+                            "content": strategy(
                                 assumptions=[{"text": "Income remains available", "source": "observation:agreement/a1"}]
                             ),
                         }
@@ -339,7 +376,7 @@ def test_historical_intent_does_not_block_friendship_and_live_agreement_reads_st
 
 def test_agreement_event_and_plan_flags_follow_checkpoint_rollback(tmp_path):
     memory = setup(tmp_path)
-    key = create(memory, plan(subjects=["Greece"]))
+    key = create(memory, strategy(subjects=["Greece"]))
     saved = tmp_path / "before-ending.json"
     checksum = memory.backup(saved)
     memory.ingest("g1", [ended_event(reason="DISCARDED_FUTURE")], 1)

@@ -10,11 +10,14 @@ from pydantic import ValidationError
 from civ_agent.civilization_state import CivilizationState
 from civ_agent.game_commands import COMMANDS, add_combat_commands, command_arguments, command_schema
 from civ_agent.memory_history import summary_markdown
+from civ_agent.observations import overview
 from civ_agent.proposal_gateway import ProposalGateway, tool_result
 from civ_agent.service_io import ServiceIO
+from civ_agent.startup_context import prepare_startup, startup_prompt
+from civ_agent.state_updates import apply_overview_update
 from civ_agent.tactical_review import TacticalReview, tactical_review
 from tests.test_proposal_gateway import Host
-from tests.test_structured_memory import create, current, plan, setup
+from tests.test_structured_memory import create, current, replacement, setup, strategy
 
 
 def france(turn=60):
@@ -36,14 +39,17 @@ def test_france_losses_and_missed_bombardment_are_prominent():
     view = reviewed()["tacticalReview"]
     TacticalReview.model_validate(view)
     assert view["militaryCount"] == 1
-    assert view["military"][0]["health"] == 75
-    assert view["military"][0]["availableAttacks"] > 0
+    roster = [u for u in overview(reviewed())["units"] if u["military"]]
+    assert roster[0]["health"] == 75
+    assert roster[0]["availableAttacks"] > 0
+    assert "military" not in view
     worker = next(u for u in view["civiliansNearHostiles"] if u["handle"] == "unit10")
-    assert not worker["militaryOnSameTile"]
+    assert not worker["otherMilitaryOnSameTile"]
     assert any(t["distance"] == 1 and t["position"] == {"x": -6, "y": -1} for t in worker["nearbyHostiles"])
     shot = view["cityBombardments"][0]
     assert (shot["minDamage"], shot["maxDamage"], shot["maxRetaliation"]) == (30, 32, 0)
     assert shot["command"]["target"] == "city2"
+    assert shot["inspection"] == {"tool": "city_details", "arguments": {"target": "city2", "sections": ["combat"]}}
     assert "attackFrom" not in shot["command"]
     assert any("captured our Worker" in loss["text"] for loss in view["recentLosses"])
 
@@ -69,6 +75,118 @@ def test_only_visible_hostile_military_is_summarized_and_preview_fields_are_not_
             assert ("command" in order) == order["available"]
 
 
+def captive_tile(snapshot):
+    tile = copy.deepcopy(snapshot["map"]["tiles"][0])
+    tile.update(
+        position={"x": 7, "y": -1},
+        visible=True,
+        units=[
+            {"name": "Brute", "civilization": "Barbarians", "health": 57, "military": True, "atWar": True},
+            {
+                "name": "Settler",
+                "civilization": "Barbarians",
+                "health": 100,
+                "military": False,
+                "atWar": True,
+                "recapture": {"originalOwner": "France", "unitAfterCapture": "Settler"},
+            },
+        ],
+    )
+    snapshot["map"]["tiles"] = [t for t in snapshot["map"]["tiles"] if t["position"] != tile["position"]] + [tile]
+    return tile
+
+
+def test_recapturable_civilians_are_visible_opportunities_separate_from_threats():
+    snapshot = france()
+    add_combat_commands(snapshot)
+    tile = captive_tile(snapshot)
+    hidden = copy.deepcopy(tile)
+    hidden["visible"] = False
+    hidden["position"] = {"x": 12, "y": 12}
+    snapshot["map"]["tiles"].append(hidden)
+    view = tactical_review(snapshot)
+    assert len(view.recapturableCivilians) == 1
+    captive = view.recapturableCivilians[0]
+    assert captive.name == captive.recapture.unitAfterCapture == "Settler"
+    assert captive.recapture.originalOwner == "France"
+    assert captive.civilization == "Barbarians" and captive.atWar
+    assert captive.guard is not None and (captive.guard.name, captive.guard.health) == ("Brute", 57)
+    assert all(threat.name != "Settler" for threat in view.visibleHostiles)
+    # A civilian with no visible guard can also belong to a player currently at peace.
+    tile["units"] = [tile["units"][1]]
+    tile["units"][0].update(civilization="Rome", atWar=False)
+    unguarded = tactical_review(snapshot).recapturableCivilians[0]
+    assert not unguarded.atWar and unguarded.guard is None
+    # Do not infer original ownership or a recovery result from a unit name/loss report.
+    tile["units"][0].pop("recapture")
+    absent = tactical_review(snapshot).model_dump(exclude_none=True)
+    assert absent["recapturableCivilians"] == [] and "recaptureConditions" not in absent
+
+
+def test_recapture_is_preloaded_and_command_updates_clear_it_without_an_extra_overview(tmp_path):
+    async def run():
+        io = ServiceIO()
+        memory = CivilizationState(tmp_path / "private", "France")
+        gateway = ProposalGateway(memory, io, tmp_path / "workspace")
+        host = Host()
+        host.civilization = "France"
+        host.view = france()
+        tile = captive_tile(host.view)
+        original = host.tool
+
+        async def tool(name, args):
+            if name in {"player_capabilities", "victory_progress"}:
+                return {}
+            return await original(name, args)
+
+        host.tool = tool
+        try:
+            job = await gateway.open("recapture", "gameplay", "g1", host, {}, game_turn=60)
+            prepared = await prepare_startup(gateway, job)
+            prompt = startup_prompt(prepared, "gameplay", "Play this turn")
+            reads = json.JSONDecoder().raw_decode(prompt.user.split("Prepared player-visible reads:\n", 1)[1])[0]
+            initial = reads["player_turn"]
+            assert initial["tacticalReview"]["recapturableCivilians"][0]["recapture"]["unitAfterCapture"] == "Settler"
+            region = await gateway.call(job, "map_region", {"center": tile["position"], "radius": 0}, "inspect-map")
+            assert region["data"]["tiles"][0]["units"][1]["recapture"] == tile["units"][1]["recapture"]
+            # A permitted action refresh no longer contains the captive (captured, dead or out of sight).
+            city = await gateway.call(job, "city_details", {"target": "city2", "sections": ["combat"]}, "inspect")
+            shot = city["data"]["entity"]["attacks"][0]["command"]
+            tile["units"] = []
+            result = await gateway.call(
+                job, "player_command", {**shot, "intent": {"reason": "Damage the Brute"}}, "act"
+            )
+            assert "stateUpdate" in result, result
+            current = apply_overview_update(initial, result["stateUpdate"])
+            assert current["tacticalReview"]["recapturableCivilians"] == []
+            assert "recaptureConditions" not in current["tacticalReview"]
+            assert any(q["tool"] == "map_region" for q in result["stateUpdate"]["invalidatedDetails"])
+        finally:
+            await io.close()
+
+    asyncio.run(run())
+
+
+def test_expansion_and_defender_losses_flag_advisory_plans(tmp_path):
+    memory = setup(tmp_path)
+    view = reviewed()
+    view["tacticalReview"]["nonReconMilitaryCount"] = 2
+    memory.observe_player(view, "game")
+    defense = create(memory, strategy(subjects=["defense"]))
+    view["tacticalReview"]["cityCount"] += 1
+    memory.observe_player(view, "game")
+    assert any("city count grew" in reason for reason in current(memory, defense)["needsReview"])
+    memory.refresh_memory("game", [defense])
+    assert memory.patch("game", [replacement(memory, defense, **{"reasons": ["Accept this risk"]})])["changes"][0][
+        "accepted"
+    ]
+    assert not current(memory, defense)["needsReview"]
+    view["tacticalReview"]["nonReconMilitaryCount"] = 1
+    memory.observe_player(view, "game")
+    assert any("non-recon military count fell" in reason for reason in current(memory, defense)["needsReview"])
+    assert memory.run_failure() is None
+
+
 def test_command_schemas_cover_every_host_action_and_reject_cross_action_fields():
     schema = command_schema()
     native = json.loads(Path("src/main/resources/uncivai/schemas/turn-command.json").read_text())
@@ -89,8 +207,10 @@ def test_command_schemas_cover_every_host_action_and_reject_cross_action_fields(
         "confirmWar": True,
     }
     for kind, ref in kinds.items():
-        required = schema["$defs"][ref.rsplit("/", 1)[1]]["required"]
+        required = COMMANDS.json_schema()["$defs"][ref.rsplit("/", 1)[1]]["required"]
         arguments = {"kind": kind, **{k: values[k] for k in required if k != "kind"}}
+        if kind == "RESPOND_FRIENDSHIP":
+            arguments["selection"] = "Accept"
         assert Draft202012Validator(schema).is_valid(arguments), kind
         assert command_arguments(arguments) == arguments
         request = {"requestId": "r1", "epoch": "g1", "revision": "rev1", **arguments}
@@ -102,7 +222,6 @@ def test_command_schemas_cover_every_host_action_and_reject_cross_action_fields(
         {"kind": "SET_AVOID_GROWTH", "target": "city1", "enabled": 1},
         {"kind": "DECLARE_WAR", "target": "Greece", "confirmWar": 1},
     ):
-        assert not Draft202012Validator(schema).is_valid(invalid)
         with pytest.raises(ValidationError):
             command_arguments(invalid)
 
@@ -124,7 +243,7 @@ def test_gateway_reports_shape_errors_but_tactical_concerns_do_not_require_defer
             job = await gateway.open("turn60", "gameplay", "g1", host, {}, game_turn=60)
             view = await gateway.call(job, "player_turn", {}, "read")
             assert view["tacticalReview"]["civiliansNearHostiles"]
-            assert view["strategyReview"] == {"plans": []}
+            assert view["strategyReview"] == {"assessments": []}
             encoded = tool_result(view)["content"][0]["text"]
             assert encoded.index('"tacticalReview"') < encoded.index('"cities"')
             city = await gateway.call(job, "city_details", {"target": "city2"}, "inspect")
@@ -156,42 +275,25 @@ def test_gateway_reports_shape_errors_but_tactical_concerns_do_not_require_defer
     asyncio.run(run())
 
 
-def test_losses_invalidate_relevant_plans_and_scheduled_reviews_survive_restart(tmp_path):
+def test_losses_flag_global_strategy_without_subject_tags_and_survive_restart(tmp_path):
     memory = setup(tmp_path)
-    defense = create(memory, plan(subjects=["defense"]))
-    economy = create(memory, plan(objective="Protect workers", subjects=["economy"]))
-    expansion = create(memory, plan(objective="Found a second city", subjects=["expansion"], reviewAfterTurn=70))
-    assert current(memory, defense).get("reviewAfterTurn") is None
-    # The current observation, not the model's prose, establishes the loss.
+    defense = create(memory, strategy())
+    note = create(memory, {"type": "note", "text": "Found a second city when practical"})
     view = reviewed(25)
     memory.observe_player(view, "game")
     assert any("losses" in reason for reason in current(memory, defense)["needsReview"])
-    assert any("losses" in reason for reason in current(memory, economy)["needsReview"])
-    assert not current(memory, expansion)["needsReview"]
+    assert not current(memory, note)["needsReview"]
     restarted = CivilizationState(tmp_path / "private", "Rome")
     assert current(restarted, defense)["needsReview"] == current(memory, defense)["needsReview"]
     restarted.start_job("resumed", "gameplay", {}, game_turn=25)
     restarted.observe_player(view, "resumed")
     restarted.refresh_memory("resumed", [defense])
-    result = restarted.patch(
-        "resumed",
-        [
-            {
-                "op": "amend",
-                "id": defense,
-                "fields": {k: v for k, v in (plan(subjects=["defense"], reviewAfterTurn=30)).items() if k != "type"},
-            }
-        ],
-    )
+    result = restarted.patch("resumed", [replacement(restarted, defense, assessment="Defense needs reinforcement")])
     assert result["changes"][0]["accepted"]
     assert not current(restarted, defense)["needsReview"]
     restarted.observe("communication", {"context": {"turn": 30}}, "resumed")
-    assert current(restarted, defense)["needsReview"] == [
-        "Scheduled progress review: check success criteria, then revise or retire this plan"
-    ]
-    before = restarted.snapshot("gameplay")["records"][defense]["version"]
-    restarted.observe("communication", {"context": {"turn": 30}}, "resumed")
-    assert restarted.snapshot("gameplay")["records"][defense]["version"] == before
+    # Advancing the calendar does not manufacture a strategy review.
+    assert not current(restarted, defense)["needsReview"]
 
 
 def test_loss_survives_the_short_summary_word_limit():

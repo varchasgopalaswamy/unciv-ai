@@ -11,17 +11,27 @@ from civ_agent.memory_records import MemoryReadResult, MemorySearchResult, Memor
 from civ_agent.proposal_gateway import ProposalGateway
 from civ_agent.service_io import ServiceIO
 from civ_agent.turn_archive import TurnArchive
+from tests.memory_helpers import stored_records
 from tests.test_proposal_gateway import Host
 
 
-def plan(**changes):
+def strategy(**changes):
     return {
-        "type": "plan",
-        "objective": "Defend Rome",
-        "approach": "Hold the border",
-        "successCriteria": "Rome survives",
+        "type": "strategy",
+        "assessment": "Defend Rome",
+        "reasons": ["Hold the border"],
+        "reconsiderWhen": ["Rome survives"],
         **changes,
     }
+
+
+def replacement(memory, key, **changes):
+    # Explicitly carry forward chosen fields in a complete replacement.
+    from civ_agent.memory_records import CONTENT_MODELS
+
+    old = current(memory, key)
+    content = {name: old[name] for name in CONTENT_MODELS[old["type"]].model_fields if name in old}
+    return {"op": "replace", "id": key, "content": {**content, **changes}}
 
 
 def setup(tmp_path, limit=12000):
@@ -40,7 +50,7 @@ def create(memory, content, job="game"):
 
 
 def current(memory, id):
-    return memory.snapshot("gameplay")["records"][id]["body"]
+    return stored_records(memory)[id]["body"]
 
 
 @pytest.mark.parametrize("reason", ["completed", "abandoned", "superseded", "retracted", "irrelevant"])
@@ -71,7 +81,7 @@ def test_retirement_keeps_history_and_does_not_resurrect(tmp_path, reason):
 
 def test_expiry_uses_trusted_turn_and_completion_is_an_assessment(tmp_path):
     memory = setup(tmp_path)
-    key = create(memory, plan(expiresTurn=6))
+    key = create(memory, strategy(expiresTurn=6))
     memory.start_job("chat", "communication", {})
     memory.observe("communication", {"context": {"turn": 5}}, "chat")
     assert current(memory, key)["state"] == "active"
@@ -113,15 +123,32 @@ def test_belief_retraction_flags_plan_but_old_sighting_is_historical(tmp_path):
         memory,
         {"type": "belief", "claim": "Greece may attack", "uncertainty": "medium", "sources": ["observation:border"]},
     )
-    campaign = create(memory, plan(assumptions=[{"text": "Greece may attack", "source": belief}]))
-    historical_belief = create(memory, plan(sources=[belief]))
-    history = create(memory, plan(objective="Remember the sighting", sources=["observation:border"]))
-    dependent = create(memory, plan(assumptions=[{"text": "Warrior remains nearby", "source": "observation:border"}]))
+    campaign = create(
+        memory,
+        strategy(
+            assumptions=[
+                {"text": "Greece may attack", "source": belief},
+                {"text": "Warrior remains nearby", "source": "observation:border"},
+            ]
+        ),
+    )
+    historical_belief = create(
+        memory,
+        {"type": "belief", "claim": "Historical diplomatic assessment", "uncertainty": "high", "sources": [belief]},
+    )
+    history = create(
+        memory,
+        {"type": "belief", "claim": "Historical sighting", "uncertainty": "low", "sources": ["observation:border"]},
+    )
+    dependent = campaign
     memory.observe("border", {"turn": 5, "units": ["Greek warrior"]}, "game")
     assert not current(memory, dependent)["needsReview"]
     memory.observe("border", {"turn": 5, "units": []}, "game")
     assert current(memory, dependent)["needsReview"]
     assert not current(memory, history)["needsReview"]
+    memory.refresh_memory("game", [campaign])
+    memory.patch("game", [replacement(memory, campaign)])
+    assert not current(memory, campaign)["needsReview"]
     memory.patch("game", [{"op": "retire", "id": belief, "reason": "retracted"}])
     assert current(memory, campaign)["needsReview"]
     assert not current(memory, historical_belief)["needsReview"]
@@ -135,7 +162,7 @@ def test_missing_references_are_unverified_assessments_without_new_reads(tmp_pat
     args = [
         {
             "op": "create",
-            "content": plan(
+            "content": strategy(
                 sources=["observation:game"],
                 assumptions=[{"text": "The border is clear", "source": "observation:border"}],
             ),
@@ -153,8 +180,10 @@ def test_missing_references_are_unverified_assessments_without_new_reads(tmp_pat
 @pytest.mark.parametrize("subject", ["u1", "c1", "Greece"])
 def test_subject_changes_flag_only_related_plans(tmp_path, subject):
     memory = setup(tmp_path)
-    key = create(memory, plan(subjects=[subject]))
-    unrelated = create(memory, plan(subjects=["economy"]))
+    key = create(memory, strategy(subjects=[subject]))
+    unrelated = create(
+        memory, {"type": "belief", "claim": "Economy is stable", "uncertainty": "medium", "subjects": ["economy"]}
+    )
     memory.ingest(
         "g1", [{"id": 1, "kind": "message", "body": {"participants": ["Greece", "Rome"], "text": "Hello"}}], 1
     )
@@ -188,8 +217,10 @@ def test_old_store_rejected_without_migration(tmp_path):
 
 def test_sponsored_war_flags_plans_about_the_target_without_treating_chat_as_fact(tmp_path):
     memory = setup(tmp_path)
-    target = create(memory, plan(subjects=["France"]))
-    unrelated = create(memory, plan(subjects=["Egypt"]))
+    target = create(memory, strategy(subjects=["France"]))
+    unrelated = create(
+        memory, {"type": "belief", "claim": "Egypt seems peaceful", "uncertainty": "high", "subjects": ["Egypt"]}
+    )
     body = {
         "participants": ["Rome", "Greece"],
         "action": "ENACT_TRADE",
@@ -205,8 +236,10 @@ def test_sponsored_war_flags_plans_about_the_target_without_treating_chat_as_fac
 
 def test_native_diplomatic_receipts_refresh_related_plans_but_plain_chat_does_not(tmp_path):
     memory = setup(tmp_path)
-    target = create(memory, plan(subjects=["Greece"]))
-    unrelated = create(memory, plan(subjects=["Egypt"]))
+    target = create(memory, strategy(subjects=["Greece"]))
+    unrelated = create(
+        memory, {"type": "belief", "claim": "Egypt seems peaceful", "uncertainty": "high", "subjects": ["Egypt"]}
+    )
     body = {"author": "Rome", "target": "Greece", "kind": "DENOUNCE", "status": "ENACTED", "turn": 4}
     memory.ingest("g1", [{"id": 1, "kind": "message", "body": body}], 1)
     assert not current(memory, target)["needsReview"]
@@ -215,7 +248,7 @@ def test_native_diplomatic_receipts_refresh_related_plans_but_plain_chat_does_no
     records = restored.snapshot("gameplay")["records"]
     assert records["event:1"]["category"] == "statement"
     assert records["event:2"]["category"] == "observation"
-    assert current(restored, target)["needsReview"] == ["Diplomatic event 2 needs review"]
+    assert current(restored, target)["needsReview"] == ["DENOUNCE (ENACTED): Greece, Rome"]
     assert not current(restored, unrelated)["needsReview"]
 
 
@@ -237,13 +270,13 @@ def test_search_pages_and_short_memory_ids_do_not_collide_with_messages(tmp_path
 
 def test_snapshot_restores_lifecycle_hides_future_revisions_and_keeps_ids_monotonic(tmp_path):
     memory = setup(tmp_path)
-    key = create(memory, plan())
+    key = create(memory, strategy())
     memory.patch("game", [{"op": "retire", "id": key, "reason": "abandoned"}])
     saved = tmp_path / "round.json"
     checksum = memory.backup(saved)
-    replacement = memory.patch("game", [{"op": "create", "content": plan(objective="ABANDONED_FUTURE")}])["changes"][0][
-        "id"
-    ]
+    replacement = memory.patch("game", [{"op": "create", "content": strategy(assessment="ABANDONED_FUTURE")}])[
+        "changes"
+    ][0]["id"]
     memory.export(tmp_path / "workspace")
     memory.restore(saved, checksum, "g2")
     memory.pause(False)
@@ -264,14 +297,14 @@ def test_snapshot_restores_lifecycle_hides_future_revisions_and_keeps_ids_monoto
 
 def test_summaries_survive_interruptions_preserve_reason_and_receipt_truth(tmp_path):
     memory = setup(tmp_path)
-    campaign = create(memory, plan(objective="Grow Rome"))
+    campaign = create(memory, strategy(assessment="Grow Rome"))
     queued = memory.queue(
         "game",
         "player_command",
         {"kind": "QUEUE_CONSTRUCTION", "target": "c1", "selection": "Granary"},
         {},
         "build",
-        {"plan": campaign},
+        {"strategy": campaign, "reason": "Grow Rome"},
     )
     memory.receipt(queued["id"], {"kind": "QUEUE_CONSTRUCTION", "queue": ["Granary"]})
     move = memory.queue(
@@ -328,25 +361,27 @@ def test_input_and_response_models_reject_invented_types_and_metadata():
             {"changes": [{"op": "create", "content": {"type": "note", "text": "x", "createdTurn": 99}}]}
         )
     with pytest.raises(ValidationError):
-        MemoryReadResult.model_validate({"records": [{"id": "mem1", "type": "plan", "text": "Not a typed plan"}]})
+        MemoryReadResult.model_validate(
+            {"records": [{"id": "mem1", "type": "strategy", "text": "Not a typed strategy"}]}
+        )
 
 
 def test_summary_word_limit_includes_heading_and_list_markers():
-    data = TurnSummary(turn=7, unresolved=["plan " * 500]).model_dump()
+    data = TurnSummary(turn=7, unresolved=["strategy " * 500]).model_dump()
     markdown = summary_markdown(data)
     assert len(markdown.split()) == 200 and markdown.endswith("…\n")
 
 
 def test_review_requires_reading_changed_evidence_and_retirement_preserves_past_summary(tmp_path):
     memory = setup(tmp_path)
-    key = create(memory, plan(subjects=["Greece"]))
+    key = create(memory, strategy(subjects=["Greece"]))
     memory.ingest(
         "g1",
         [{"id": 1, "kind": "engine", "body": {"participants": ["Greece", "Rome"], "action": "DECLARE_WAR", "turn": 4}}],
         1,
     )
     memory.refresh_memory("game", [key])
-    change = {"op": "amend", "id": key, "fields": {k: v for k, v in (plan(subjects=["Greece"])).items() if k != "type"}}
+    change = {"op": "replace", "id": key, "content": strategy(subjects=["Greece"])}
     assert memory.patch("game", [change])["changes"][0]["accepted"]
     memory.refresh_memory("game", ["event:1"])
     assert memory.patch("game", [change])["changes"][0]["accepted"]
@@ -389,17 +424,21 @@ def test_intent_is_recorded_and_retirement_does_not_gate_dispatch(tmp_path):
             missing = await gateway.call(game, "player_command", action, "missing")
             assert missing["error"] == "INTENT_REQUIRED" and not host.executed
             created = await gateway.call(
-                game, "memory_update", {"changes": [{"op": "create", "content": plan()}]}, "plan"
+                game, "memory_update", {"changes": [{"op": "create", "content": strategy()}]}, "strategy"
             )
             key = created["changes"][0]["id"]
             assert (
-                await gateway.call(game, "memory_update", {"changes": [{"op": "create", "content": plan()}]}, "plan")
+                await gateway.call(
+                    game, "memory_update", {"changes": [{"op": "create", "content": strategy()}]}, "strategy"
+                )
                 == created
             )
             await gateway.call(
                 game, "memory_update", {"changes": [{"op": "retire", "id": key, "reason": "abandoned"}]}, "retire"
             )
-            result = await gateway.call(game, "player_command", {**action, "intent": {"plan": key}}, "act")
+            result = await gateway.call(
+                game, "player_command", {**action, "intent": {"strategy": key, "reason": "Defend Rome"}}, "act"
+            )
             assert result["done"] and len(host.executed) == 1
             assert "intent" not in host.executed[0]
             assert memory.summary(0)["actions"][0]["reason"] == "Defend Rome"
@@ -412,11 +451,23 @@ def test_intent_is_recorded_and_retirement_does_not_gate_dispatch(tmp_path):
 
 def test_retirement_after_approval_cannot_undo_an_inflight_command(tmp_path):
     memory = setup(tmp_path)
-    key = create(memory, plan())
-    request = memory.queue("game", "player_command", {"kind": "ATTACK", "target": "u1"}, {}, "attack", {"plan": key})
+    key = create(memory, strategy())
+    request = memory.queue(
+        "game",
+        "player_command",
+        {"kind": "ATTACK", "target": "u1"},
+        {},
+        "attack",
+        {"strategy": key, "reason": "Defend Rome"},
+    )
     memory.patch("game", [{"op": "retire", "id": key, "reason": "abandoned"}])
     memory.receipt(request["id"], {"kind": "ATTACK", "damage": 10})
     assert memory.summary(4)["actions"][0]["outcome"] == "confirmed"
-    assert memory.queue("game", "player_command", {"kind": "ATTACK", "target": "u1"}, {}, "another", {"plan": key})[
-        "id"
-    ]
+    assert memory.queue(
+        "game",
+        "player_command",
+        {"kind": "ATTACK", "target": "u1"},
+        {},
+        "another",
+        {"strategy": key, "reason": "Defend Rome"},
+    )["id"]

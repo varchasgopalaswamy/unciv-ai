@@ -40,6 +40,12 @@ game needs an early rush to a fixed number of settlements.
 
 ## 2. Keep growth, production, and the treasury working together
 
+A higher settlement score is only one reason to change a Settler's destination.
+Consider the extra travel and scouting turns, the value of founding sooner, and
+what new information justifies waiting. Partly unseen surroundings do not by
+themselves prevent a legal current-tile founding action. You may still prefer to
+wait because of danger, happiness, or a better opportunity.
+
 Population can support more worked tiles and science, but growth pays best when
 there are useful tiles or specialist jobs available. A food-rich city with very
 little production may struggle to build the infrastructure that makes its size
@@ -96,6 +102,13 @@ turn spare gold and a peaceful relationship into later science, but delayed
 returns, cancellation through war, and benefits to a competitor matter.
 
 ## 3. Use diplomacy and military force for concrete purposes
+
+During peace, consider whether existing defenders could cover your cities and
+civilians if conditions changed. Scouts contribute reconnaissance but may offer
+little defensive strength. New cities, lost units, and obsolete equipment can
+change the tradeoff between another building and recruitment or upgrades. Visible
+foreign troops are useful information without proving hostile intent; an empty
+hostile-unit list does not establish that your defenses are sufficient.
 
 Diplomacy can buy time, reduce the number of threatening fronts, exchange scarce
 resources, or coordinate against a leader. Another player's request or claim is

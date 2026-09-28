@@ -8,7 +8,7 @@ from civ_agent.map_format import compact_tiles, encoded, expand_tiles
 from civ_agent.memory_store import semantic
 from civ_agent.observations import DetailQuery, project_detail
 from civ_agent.protocol import JsonObject
-from tests.test_structured_memory import create, current, plan, setup
+from tests.test_structured_memory import create, current, setup, strategy
 
 
 def tiles() -> list[JsonObject]:
@@ -89,7 +89,7 @@ def test_switching_old_full_map_evidence_to_compact_does_not_flag_a_plan(tmp_pat
     compact = {"turn": 5, "data": compact_tiles(source)}
     assert semantic(full) == semantic(compact)
     memory.observe("region", full, "game")
-    key = create(memory, plan(assumptions=[{"text": "The land is known", "source": "observation:region"}]))
+    key = create(memory, strategy(assumptions=[{"text": "The land is known", "source": "observation:region"}]))
     memory.observe("region", compact, "game")
     assert not current(memory, key)["needsReview"]
     source[0]["resource"] = "Iron"

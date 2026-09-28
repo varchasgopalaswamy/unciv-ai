@@ -2,6 +2,7 @@ package uncivai.player
 
 import com.unciv.logic.civilization.Civilization
 import com.unciv.logic.map.tile.RoadStatus
+import com.unciv.logic.map.tile.Tile
 import com.unciv.models.ruleset.unique.GameContext
 import kotlinx.serialization.Serializable
 import java.util.Collections
@@ -38,7 +39,7 @@ data class DevelopmentOpportunities(
     val citiesWithoutRailroadConnection: List<String>,
 )
 
-/** Own land only. Site eligibility does not certify a worker's route or remaining actions. */
+/** Owned tiles only. Site eligibility does not certify a builder's route or remaining actions. */
 internal fun observeDevelopmentOpportunities(player: Civilization): DevelopmentOpportunities {
     val rules = player.gameInfo.ruleset
     val roads = rules.roadImprovement?.let { it.techRequired == null || player.tech.isResearched(it.techRequired!!) } == true
@@ -51,33 +52,12 @@ internal fun observeDevelopmentOpportunities(player: Civilization): DevelopmentO
                 (tile.improvementIsPillaged || tile.improvement == null || !resource.isImprovedBy(tile.improvement!!))
         }.map { tile ->
             val resource = checkNotNull(tile.tileResource)
-            val improvements = resource.getImprovements().sorted().mapNotNull { name ->
-                val improvement = rules.tileImprovements[name] ?: return@mapNotNull null
-                if (improvement.isGreatImprovement()) return@mapNotNull null
-                val context = GameContext(civInfo = player, tile = tile)
-                val missing = improvement.requiredTechnologies(rules).filterNotNull().filterNot { player.tech.isResearched(it.name) }.map { it.name }
-                var problems = tile.improvementFunctions.getImprovementBuildingProblems(improvement, context).toList()
-                var firstJob: String? = if (tile.improvementIsPillaged && tile.improvement != null && resource.isImprovedBy(tile.improvement!!)) "Repair" else null
-                if (problems.any { !it.reportable }) {
-                    val removal = rules.tileRemovals.firstOrNull { it.name == "Remove ${tile.lastTerrain.name}" }
-                    if (removal != null) {
-                        val cleared = tile.clone(addUnits = false)
-                        cleared.setTerrainTransients()
-                        cleared.removeTerrainFeature(cleared.lastTerrain.name)
-                        val after = cleared.improvementFunctions.getImprovementBuildingProblems(improvement, GameContext(civInfo = player, tile = cleared)).toList()
-                        if (after.all { it.reportable }) {
-                            firstJob = removal.name
-                            problems = after
-                        }
-                    }
-                }
-                ResourceImprovement(name, problems.isEmpty() && firstJob == null && !tile.improvementIsPillaged, missing.sorted().toList(), problems.map { it.name }.sorted(), firstJob)
-            }
+            val improvements = resourceImprovements(player, tile)
             UnimprovedResource(
                 TilePosition(tile.position.x, tile.position.y), city.name, resource.name, resource.resourceType.name,
                 city.isWorked(tile), tile.isWater, tile.improvementIsPillaged, tile.improvementInProgress,
                 Collections.unmodifiableList(improvements),
-                if (tile.isWater) "WATER_IMPROVEMENT_UNIT" else "WORKER",
+                player.getEquivalentUnit(if (tile.isWater) "Work Boats" else "Worker").name,
             )
         }.toList()
     }.distinctBy { it.position }.sortedWith(compareBy({ it.city }, { it.position.x }, { it.position.y }))
@@ -88,4 +68,35 @@ internal fun observeDevelopmentOpportunities(player: Civilization): DevelopmentO
         if (roads) player.cities.filter { !it.isCapital() && !it.isConnectedToCapital() }.map { it.name }.sorted() else emptyList(),
         if (railroads) player.cities.filter { !it.isCapital() && !it.cityStats.isConnectedToCapital(RoadStatus.Railroad) }.map { it.name }.sorted() else emptyList(),
     )
+}
+
+/** Accepts a currently visible tile or a detached reconstruction of remembered facts. */
+internal fun resourceImprovements(player: Civilization, tile: Tile): List<ResourceImprovement> {
+    val rules = player.gameInfo.ruleset
+    val resource = checkNotNull(tile.tileResource)
+    return resource.getImprovements().sorted().mapNotNull { name ->
+        val improvement = rules.tileImprovements[name] ?: return@mapNotNull null
+        if (improvement.isGreatImprovement()) return@mapNotNull null
+        val context = GameContext(civInfo = player, tile = tile)
+        var problems = tile.improvementFunctions.getImprovementBuildingProblems(improvement, context).toList()
+        var firstJob: String? = if (tile.improvementIsPillaged && tile.improvement != null && resource.isImprovedBy(tile.improvement!!)) "Repair" else null
+        if (problems.any { !it.reportable }) {
+            val removal = rules.tileRemovals.firstOrNull { it.name == "Remove ${tile.lastTerrain.name}" }
+            if (removal != null) {
+                val cleared = tile.clone(addUnits = false)
+                cleared.setTerrainTransients()
+                cleared.removeTerrainFeature(cleared.lastTerrain.name)
+                val after = cleared.improvementFunctions.getImprovementBuildingProblems(improvement, GameContext(civInfo = player, tile = cleared)).toList()
+                if (after.all { it.reportable }) {
+                    firstJob = removal.name
+                    problems = after + tile.improvementFunctions.getImprovementBuildingProblems(removal, context).toList()
+                }
+            }
+        }
+        val steps = listOfNotNull(improvement, firstJob?.let { rules.tileImprovements[it] })
+        val missing = steps.flatMap { step ->
+            step.requiredTechnologies(rules).filterNotNull().filterNot { player.tech.isResearched(it.name) }.map { it.name }.toList()
+        }.distinct().sorted()
+        ResourceImprovement(name, problems.isEmpty() && firstJob == null && !tile.improvementIsPillaged, missing, problems.map { it.name }.distinct().sorted(), firstJob)
+    }
 }

@@ -7,10 +7,15 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.pool import NullPool
 
 
-def sqlite_engine(path: Path) -> Engine:
+def sqlite_engine(path: Path, *, wal: bool = False, read_only: bool = False) -> Engine:
+    url = (
+        URL.create("sqlite+pysqlite", database=path.resolve().as_uri(), query={"mode": "ro", "uri": "true"})
+        if read_only
+        else URL.create("sqlite+pysqlite", database=str(path))
+    )
     engine = create_engine(
-        URL.create("sqlite+pysqlite", database=str(path)),
-        connect_args={"timeout": 15},
+        url,
+        connect_args={"timeout": 0.1 if read_only else 15},
         poolclass=NullPool,
         hide_parameters=True,
     )
@@ -22,13 +27,16 @@ def sqlite_engine(path: Path) -> Engine:
         connection.isolation_level = None
         cursor = connection.cursor()
         try:
-            cursor.execute("PRAGMA synchronous=FULL")
-            cursor.execute("PRAGMA foreign_keys=ON")
+            if not read_only:
+                if wal:
+                    cursor.execute("PRAGMA journal_mode=WAL")
+                cursor.execute("PRAGMA synchronous=FULL")
+                cursor.execute("PRAGMA foreign_keys=ON")
         finally:
             cursor.close()
 
     @event.listens_for(engine, "begin")
     def begin(connection):
-        connection.exec_driver_sql("BEGIN IMMEDIATE")
+        connection.exec_driver_sql("BEGIN" if read_only else "BEGIN IMMEDIATE")
 
     return engine

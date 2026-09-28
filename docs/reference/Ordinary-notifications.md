@@ -39,7 +39,7 @@ for encampments, economic events, or other notification categories.
 
 Pending handles, dismissals, and receipts are part of checkpoint format **4**.
 Restart requires a fresh read before an uncommitted dismissal, while committed
-requests replay their original receipts. Turn and round rollback restore the
+requests replay their original receipts. Interrupted-turn recovery restores the
 pending list, and discarded handles are not reissued. Older host checkpoint
 formats require a new game.
 

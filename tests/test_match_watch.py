@@ -5,18 +5,33 @@ from unittest.mock import Mock
 from textual.widgets import DataTable, RichLog, Static, TabbedContent
 
 from civ_agent import cli, match_watch
+from civ_agent.monitoring import (
+    MonitorStore,
+    path_for,
+    put_record,
+    record_key,
+)
+from civ_agent.monitoring import records as table
 from civ_agent.protocol import JsonObject
+from civ_agent.runner_history import EventHistory
 from civ_agent.watch_state import WatchReader
 
 
-def write_json(path, value):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(value) + "\n")
+def put_state(root, key, value):
+    MonitorStore(path_for(root)).put("state", key, value)
 
 
-def write_lines(path, values):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("".join(json.dumps(value) + "\n" for value in values))
+def put_history(root, name, turn, job, values):
+    log = EventHistory(path_for(root), "g1", name, job, game_turn=turn)
+    log.append(values)
+
+
+def append_events(root, values):
+    put_history(root, "Rome", 2, "job2", values)
+
+
+def put_source(root, value):
+    MonitorStore(path_for(root)).put("streams", record_key("g1", "Rome", "job2"), value)
 
 
 def event(sequence, kind, **data):
@@ -25,17 +40,16 @@ def event(sequence, kind, **data):
 
 def fixture(root) -> tuple[JsonObject, list[JsonObject]]:
     usage = {"input_tokens": 2000, "cached_input_tokens": 1500, "output_tokens": 100, "reasoning_output_tokens": 20}
-    records = []
+    records: list[JsonObject] = []
     for handoff, (name, turn, phase) in enumerate(
         (("Rome", 1, "ended"), ("Greece", 1, "ended"), ("Rome", 2, "active"))
     ):
         job = f"job{handoff}"
-        directory = root / f"runner/history/{name}/turn_{turn}/attempt_{job}"
-        write_json(
-            directory / "source.json", {"epoch": "g1", "civilization": name, "gameTurn": turn, "activationId": job}
-        )
-        write_lines(
-            directory / "events.jsonl",
+        put_history(
+            root,
+            name,
+            turn,
+            job,
             [
                 event(0, "developer_message", text="Repeated startup context", source="service_startup"),
                 event(1, "assistant_delta", itemId="a", text=f"{name} is "),
@@ -79,10 +93,12 @@ def fixture(root) -> tuple[JsonObject, list[JsonObject]]:
         "pendingFinalizations": [],
         "usage": usage,
     }
-    write_json(root / "runner/run.json", run)
-    write_lines(root / "telemetry/turns.jsonl", records)
-    write_json(
-        root / "telemetry/game-result.json",
+    put_state(root, "run", run)
+    for row in records:
+        MonitorStore(path_for(root)).put("turns", "g1/" + str(row["turn"]["handoff"]), row)
+    put_state(
+        root,
+        "result",
         {
             "epoch": "g1",
             "status": "running",
@@ -101,7 +117,7 @@ def fixture(root) -> tuple[JsonObject, list[JsonObject]]:
 
 def test_reader_preserves_accounting_deduplicates_messages_and_never_writes(tmp_path):
     fixture(tmp_path)
-    before = {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
+    before = path_for(tmp_path).read_bytes()
     reader = WatchReader(tmp_path)
     view = reader.read()
     assert view.players == ["Rome", "Greece", "Egypt"]
@@ -114,29 +130,43 @@ def test_reader_preserves_accounting_deduplicates_messages_and_never_writes(tmp_
     assert [e for e in recent if e.label == "Developer instructions"][0].verbose
     assert not [e for e in recent if e.label == "Error"][0].verbose
     assert reader.read() == view
-    assert before == {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
+    assert before == path_for(tmp_path).read_bytes()
 
 
-def test_partial_append_corruption_and_atomic_replacement(tmp_path):
+def test_uncommitted_events_are_invisible_and_failed_reads_retain_previous_display(tmp_path):
     fixture(tmp_path)
     reader = WatchReader(tmp_path)
-    reader.read()
-    path = tmp_path / "runner/history/Rome/turn_2/attempt_job2/events.jsonl"
-    original = path.read_bytes()
-    new = json.dumps(event(7, "assistant_message", itemId="b", text="New decision")).encode()
-    path.write_bytes(original + new[:20])
-    assert not any(e.text == "New decision" for e in reader.read().activity)
-    path.write_bytes(original + new + b"\n")
+    original = reader.read()
+    store = MonitorStore(path_for(tmp_path))
+    key = record_key("g1", "Rome", "job2")
+    with store.engine.connect() as writer, writer.begin() as transaction:
+        put_record(
+            writer,
+            "events",
+            record_key(key, 7),
+            event(7, "assistant_message", itemId="b", text="New decision"),
+            epoch="g1",
+            civilization="Rome",
+            activation="job2",
+            sequence=7,
+        )
+        assert reader.read().activity == original.activity
+        transaction.rollback()
+    assert reader.read().activity == original.activity
+    append_events(tmp_path, [event(7, "assistant_message", itemId="b", text="New decision")])
     updated = reader.read()
     assert any(e.text == "New decision" for e in updated.activity)
-    path.write_bytes(b"not json\n")
-    corrupt = reader.read()
-    assert corrupt.errors and corrupt.activity == updated.activity
-    replacement = path.with_suffix(".tmp")
-    replacement.write_bytes(original)
-    replacement.replace(path)
-    repaired = reader.read()
-    assert not repaired.errors and not any(e.text == "New decision" for e in repaired.activity)
+    store.put(
+        "events",
+        record_key(key, 8),
+        {"sequence": 8, "kind": "assistant_message", "data": None},
+        epoch="g1",
+        civilization="Rome",
+        activation="job2",
+        sequence=8,
+    )
+    failed = reader.read()
+    assert failed.errors and failed.activity == updated.activity
 
 
 def test_old_epoch_and_other_players_history_are_not_mixed(tmp_path):
@@ -144,29 +174,35 @@ def test_old_epoch_and_other_players_history_are_not_mixed(tmp_path):
     reader = WatchReader(tmp_path)
     past = reader.read(("Rome", 1))
     assert all(e.civilization == "Rome" and e.turn == 1 for e in past.activity)
-    write_json(tmp_path / "runner/run.json", {**run, "epoch": "g2"})
+    put_state(tmp_path, "run", {**run, "epoch": "g2"})
     view = reader.read()
     assert view.result == {} and view.turns == () and view.activity == ()
     assert len(view.errors) >= 1
-    write_json(tmp_path / "runner/run.json", run)
-    path = tmp_path / "runner/history/Rome/turn_2/attempt_job2/source.json"
-    write_json(path, {"epoch": "g1", "civilization": "Greece", "gameTurn": 2, "activationId": "job2"})
+    put_state(tmp_path, "run", run)
+    put_source(tmp_path, {"epoch": "g1", "civilization": "Greece", "gameTurn": 2, "activationId": "job2"})
     view = reader.read(("Rome", 2))
     assert view.activity == () and view.errors
 
 
 def test_chunked_startup_is_hidden_and_control_sequences_are_inert(tmp_path):
     fixture(tmp_path)
-    path = tmp_path / "runner/history/Rome/turn_2/attempt_job2/events.jsonl"
     payload = json.dumps({"source": "service_startup", "text": "Private repeated preload"})
-    write_lines(
-        path,
+    put_history(
+        tmp_path,
+        "Rome",
+        2,
+        "chunked",
         [
             event(0, "developer_message", encoding="json", chunkIndex=0, chunkCount=2, text=payload[:20]),
             event(1, "developer_message", encoding="json", chunkIndex=1, chunkCount=2, text=payload[20:]),
             event(2, "assistant_message", itemId="visible", text="[bold]literal[/bold]\x1b[2J safe"),
         ],
     )
+    put_state(
+        tmp_path, "run", {"epoch": "g1", "inFlight": {"civilization": "Rome", "gameTurn": 2, "activationId": "chunked"}}
+    )
+    with MonitorStore(path_for(tmp_path)).engine.begin() as db:
+        db.execute(table.delete().where(table.c.collection == "turns"))
     view = WatchReader(tmp_path).read(("Rome", 2))
     assert view.activity[0].verbose and view.activity[0].text == "Private repeated preload"
     assert view.activity[1].text == "[bold]literal[/bold] safe"
@@ -174,6 +210,33 @@ def test_chunked_startup_is_hidden_and_control_sequences_are_inert(tmp_path):
 
 def log_text(app):
     return "\n".join(line.text for line in app.query_one("#activity", RichLog).lines)
+
+
+def test_dashboard_shows_review_wait_before_gameplay_starts(tmp_path):
+    run, _ = fixture(tmp_path)
+    flight = run.pop("inFlight")
+    run["waitingForReview"] = {
+        "civilization": "Rome",
+        "gameTurn": 2,
+        "review": {"job": "review-one", "turn": 1, "status": "PENDING", "attempts": 1},
+    }
+    put_state(tmp_path, "run", run)
+
+    async def check():
+        app = match_watch.MatchWatch(tmp_path, refresh=60)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            assert "Waiting for strategic review from turn 1" in str(app.query_one("#status", Static).render())
+            assert str(app.query_one("#players", DataTable).get_row("Rome")[1]) == "Review wait"
+            run.pop("waitingForReview")
+            run["inFlight"] = flight
+            put_state(tmp_path, "run", run)
+            await app.poll_records()
+            await pilot.pause()
+            assert "Waiting for strategic review" not in str(app.query_one("#status", Static).render())
+            assert str(app.query_one("#players", DataTable).get_row("Rome")[1]) == "Running"
+
+    asyncio.run(check())
 
 
 def test_dashboard_model_warning_clears_on_recovery_and_stays_in_history(tmp_path):
@@ -184,10 +247,8 @@ def test_dashboard_model_warning_clears_on_recovery_and_stays_in_history(tmp_pat
         "elapsedSeconds": 301,
     }
     run["inFlight"]["modelStatus"] = notice
-    write_json(tmp_path / "runner/run.json", run)
-    path = tmp_path / "runner/history/Rome/turn_2/attempt_job2/events.jsonl"
-    with path.open("a") as stream:
-        stream.write(json.dumps(event(7, "model_status", **notice)) + "\n")
+    put_state(tmp_path, "run", run)
+    append_events(tmp_path, [event(7, "model_status", **notice)])
 
     async def check():
         app = match_watch.MatchWatch(tmp_path, refresh=60)
@@ -199,9 +260,8 @@ def test_dashboard_model_warning_clears_on_recovery_and_stays_in_history(tmp_pat
             assert "idle timeout" in log_text(app)
             resumed = {"state": "responding", "message": "Model response resumed after 315s without progress."}
             run["inFlight"]["modelStatus"] = resumed
-            write_json(tmp_path / "runner/run.json", run)
-            with path.open("a") as stream:
-                stream.write(json.dumps(event(8, "model_status", **resumed)) + "\n")
+            put_state(tmp_path, "run", run)
+            append_events(tmp_path, [event(8, "model_status", **resumed)])
             await app.poll_records()
             await pilot.pause()
             assert "retrying" not in str(app.query_one("#status", Static).render())
@@ -214,8 +274,8 @@ def test_dashboard_model_warning_clears_on_recovery_and_stays_in_history(tmp_pat
 def test_dashboard_navigation_live_refresh_freeze_and_quit(tmp_path):
     run, _ = fixture(tmp_path)
     run["pendingFinalizations"] = [{"civilization": "Greece", "gameTurn": 1, "activationId": "job1"}]
-    write_json(tmp_path / "runner/run.json", run)
-    before = {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
+    put_state(tmp_path, "run", run)
+    before = path_for(tmp_path).read_bytes()
 
     async def check():
         app = match_watch.MatchWatch(tmp_path, refresh=60)
@@ -236,7 +296,7 @@ def test_dashboard_navigation_live_refresh_freeze_and_quit(tmp_path):
             assert "Repeated startup context" in log_text(app)
             await pilot.press("v", "space")
             assert app.frozen
-            write_json(tmp_path / "runner/run.json", {"epoch": "g1", "status": "paused", "reason": "Operator paused"})
+            put_state(tmp_path, "run", {"epoch": "g1", "status": "paused", "reason": "Operator paused"})
             await app.poll_records()
             assert app.snapshot.run["status"] == "running"
             await pilot.press("space")
@@ -262,9 +322,7 @@ def test_dashboard_navigation_live_refresh_freeze_and_quit(tmp_path):
             assert log.size.height >= 4 and log.is_vertical_scroll_end
             log.scroll_home(animate=False)
             await pilot.pause()
-            path = tmp_path / "runner/history/Rome/turn_2/attempt_job2/events.jsonl"
-            with path.open("a") as stream:
-                stream.write(json.dumps(event(7, "assistant_message", itemId="last", text="Latest action")) + "\n")
+            append_events(tmp_path, [event(7, "assistant_message", itemId="last", text="Latest action")])
             await app.poll_records()
             await pilot.pause()
             assert log.scroll_y == 0  # Refresh does not pull the reader away from older text.
@@ -272,13 +330,8 @@ def test_dashboard_navigation_live_refresh_freeze_and_quit(tmp_path):
         assert app.return_code == 0
 
     asyncio.run(check())
-    # Only the test's explicit pause and appended event changed saved records.
-    after = {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
-    assert {p for p in before if before[p] != after[p]} == {
-        tmp_path / "runner/run.json",
-        tmp_path / "runner/history/Rome/turn_2/attempt_job2/events.jsonl",
-    }
-    assert set(before) == set(after)
+    assert path_for(tmp_path).read_bytes() != before
+    assert not list(tmp_path.rglob("*.jsonl")) and not list(tmp_path.rglob("*.md"))
 
 
 def test_empty_and_completed_matches(tmp_path):
@@ -286,8 +339,9 @@ def test_empty_and_completed_matches(tmp_path):
         app = match_watch.MatchWatch(tmp_path, refresh=60)
         async with app.run_test(size=(80, 24)) as pilot:
             assert app.snapshot.players == []
-            write_json(
-                tmp_path / "telemetry/game-result.json",
+            put_state(
+                tmp_path,
+                "result",
                 {
                     "epoch": "g1",
                     "status": "completed",

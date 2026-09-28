@@ -41,12 +41,12 @@ data class SettlementSiteSummary(
     val uncertainty: String?,
 )
 
-internal fun observeSettlement(player: Civilization, unit: MapUnit, destination: TilePosition, active: Boolean, knowledge: Map<TilePosition, KnownSettlementTile> = emptyMap()): SettlementPreview? {
-    if (!UnitSettlement.hasFoundingAbility(unit)) return null
+internal fun observeSettlement(player: Civilization, unit: MapUnit?, destination: TilePosition, active: Boolean, knowledge: Map<TilePosition, KnownSettlementTile> = emptyMap()): SettlementPreview? {
+    if (unit != null && !UnitSettlement.hasFoundingAbility(unit)) return null
     val tile = player.gameInfo.tileMap.getOrNull(destination.x, destination.y)
-    val atDestination = tile === unit.currentTile
+    val atDestination = unit != null && tile === unit.currentTile
     val constants = player.gameInfo.ruleset.modOptions.constants
-    val unitBlockers = UnitSettlement.unitBlockers(unit).map { reason ->
+    val unitBlockers = (unit?.let { UnitSettlement.unitBlockers(it) } ?: emptyList()).map { reason ->
         SettlementBlocker(
             reason.name,
             when (reason) {
@@ -58,7 +58,7 @@ internal fun observeSettlement(player: Civilization, unit: MapUnit, destination:
             },
         )
     }.toMutableList()
-    if (!active) unitBlockers.add(SettlementBlocker("PLAYER_ACTION_UNAVAILABLE", "Founding is not currently an available player action."))
+    if (unit != null && !active) unitBlockers.add(SettlementBlocker("PLAYER_ACTION_UNAVAILABLE", "Founding is not currently an available player action."))
 
     val blockers = ArrayList<SettlementBlocker>()
     var uncertainty: String? = "The destination has not been observed."
@@ -66,7 +66,7 @@ internal fun observeSettlement(player: Civilization, unit: MapUnit, destination:
         val radius = maxOf(constants.minimalCityDistance, constants.minimalCityDistanceOnDifferentContinents)
         // Use visibility, never the presence of hidden cities, to decide whether a preview is uncertain.
         val fullyVisible = tile.getTilesInDistance(radius).all { it.isVisible(player) || it.getOwner() === player }
-        uncertainty = if (fullyVisible) null else "Nearby tiles are not all visible. Scout or recheck on arrival."
+        uncertainty = if (fullyVisible) null else "Surroundings partly unseen; current-tile founding availability is reported separately."
         if (tile.isWater) blockers.add(SettlementBlocker("WATER", "A city cannot be founded on water."))
         if (tile.isImpassible()) blockers.add(SettlementBlocker("IMPASSABLE", "A city cannot be founded on impassable terrain."))
         val rememberedTile = knowledge[destination]
@@ -89,10 +89,15 @@ internal fun observeSettlement(player: Civilization, unit: MapUnit, destination:
             }
         }
     }
+    val nativeFoundingAvailable = unit != null && atDestination && UnitSettlement.canFoundCity(unit)
+    // The native current-tile action is permitted information even with fog nearby.
+    // It also supersedes remembered restrictions that no longer apply here.
+    if (nativeFoundingAvailable) blockers.clear()
     return SettlementPreview(
         destination, atDestination,
-        if (atDestination) active && UnitSettlement.canFoundCity(unit) else null,
+        if (atDestination) active && nativeFoundingAvailable else null,
         when {
+            nativeFoundingAvailable -> "ELIGIBLE"
             blockers.isNotEmpty() -> "BLOCKED"
             uncertainty != null -> "UNKNOWN"
             else -> "ELIGIBLE"

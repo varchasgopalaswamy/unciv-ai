@@ -147,14 +147,12 @@ class TurnArchiveTests(unittest.TestCase):
         with self.assertRaises(TurnArchiveError):
             restored.update(0, "retry", events)
         with self.assertRaises(TurnArchiveError):
-            restored.update(0, "final", events, aborted=True)
-        with self.assertRaises(TurnArchiveError):
             restored.update(0, "final", events, handoff=1)
         with self.assertRaises(TurnArchiveError):
             restored.context(1)
 
-    def test_terminal_outcome_cannot_coexist_with_handoff_or_rollback(self):
-        for arguments in ({"terminal": True, "handoff": 1}, {"terminal": True, "aborted": True}, {"terminal": 1}):
+    def test_terminal_outcome_cannot_coexist_with_handoff(self):
+        for arguments in ({"terminal": True, "handoff": 1}, {"terminal": 1}):
             with self.subTest(arguments=arguments), self.assertRaises(TurnArchiveError):
                 self.archive.update(0, "final", [], **arguments)
 
@@ -312,58 +310,9 @@ class TurnArchiveTests(unittest.TestCase):
         self.assertEqual(len(artifacts["summaryData"]["actions"]), 200)
         self.assertIn("A reason. " * 10000, (self.workspace / "turn_0/attempts/attempt_1/events.jsonl").read_text())
 
-    def test_rolled_back_attempts_remain_detailed_but_do_not_supply_memory(self):
-        events = self.events(
-            *self.command(kind="MOVE_UNIT", target="ROLLED-BACK-UNIT"), self.report("ROLLED-BACK-STRATEGY")
-        )
-        self.archive.update(0, "aborted", events, phase="INTERRUPTED")
-        self.archive.update(0, "aborted", events, phase="INTERRUPTED", aborted=True)
-        self.archive.update(0, "aborted", events, phase="INTERRUPTED")
-        artifacts = self.archive.update(
-            0, "fresh", self.events(*self.command(), self.report("CURRENT-STRATEGY")), phase="COMPLETED", handoff=1
-        )
-        self.assertNotIn("ROLLED-BACK-STRATEGY", artifacts["summary"])
-        self.assertNotIn("replayed successful receipt", artifacts["summary"])
-        self.assertEqual("# Turn 0\n\n- End turn.\n", artifacts["summary"])
-        self.assertNotIn("CURRENT-STRATEGY", self.archive.context(1))
-        self.assertNotIn("ROLLED-BACK", self.archive.context(1))
-        self.assertNotIn("ROLLED-BACK", artifacts["commands"])
-        rows = [json.loads(line) for line in artifacts["commands"].splitlines()]
-        self.assertEqual([False, False], [row["aborted"] for row in rows])
-        self.assertTrue(artifacts["attempts"][0]["aborted"])
-        failed = self.workspace / "turn_0/attempts/attempt_1"
-        self.assertIn("ROLLED-BACK-STRATEGY", (failed / "summary.md").read_text())
-        self.assertIn("effects were discarded", (failed / "summary.md").read_text())
-        self.assertIn("ROLLED-BACK-UNIT", (failed / "commands.jsonl").read_text())
-        self.assertIn("ROLLED-BACK-STRATEGY", (failed / "events.jsonl").read_text())
-        metadata = json.loads((failed / "source.json").read_text())
-        self.assertTrue(metadata["aborted"])
-        self.assertFalse(metadata["committed"])
-        self.assertEqual(
-            ("Rome", "epoch", 0, 1),
-            (metadata["civilization"], metadata["epoch"], metadata["gameTurn"], metadata["attempt"]),
-        )
-        restored = TurnArchive(self.trusted, self.workspace, "Rome", "epoch")
-        self.assertNotIn("ROLLED-BACK", restored.context(1))
-        prior = (failed / "commands.jsonl").read_text()
-        self.archive.update(0, "aborted", events, phase="INTERRUPTED", aborted=True)
-        self.assertEqual(prior, (failed / "commands.jsonl").read_text())
-        with self.assertRaisesRegex(TurnArchiveError, "confirmed handoff"):
-            self.archive.update(0, "fresh", self.events(*self.command(), self.report("CURRENT-STRATEGY")), aborted=True)
-
-    def test_aborted_only_turn_has_no_active_commands_or_report(self):
-        events = self.events(*self.command(kind="FOUND_CITY", target="FAILED-CITY"), self.report("FAILED-REPORT"))
-        artifacts = self.archive.update(0, "failed", events, phase="FAILED", aborted=True)
-        self.assertEqual("", artifacts["commands"])
-        self.assertNotIn("FAILED-CITY", artifacts["summary"])
-        self.assertNotIn("FAILED-REPORT", artifacts["summary"])
-        self.assertNotIn("Attempt 1", artifacts["summary"])
-        self.assertEqual("# Turn 0\n", artifacts["summary"])
-        self.assertIn("FAILED-CITY", (self.workspace / "turn_0/attempts/attempt_1/commands.jsonl").read_text())
-
     def test_attempt_details_remain_sanitized_and_cannot_redirect_writes(self):
         events = self.events(self.report("Visible player-credential"))
-        self.archive.update(0, "failed", events, phase="FAILED", aborted=True)
+        self.archive.update(0, "failed", events, phase="FAILED")
         attempt_path = self.workspace / "turn_0/attempts/attempt_1"
         for path in attempt_path.iterdir():
             self.assertNotIn("player-credential", path.read_text())

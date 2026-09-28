@@ -3,13 +3,11 @@ package uncivai
 import com.unciv.logic.GameInfo
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
-import uncivai.player.ChooseFreeGreatPersonRequest
 import uncivai.player.PlayerFinalState
 import uncivai.player.PlayerHost
 import uncivai.player.PlayerSession
 import uncivai.player.PlayerSessionException
 import uncivai.player.PlayerSessionFailure
-import uncivai.player.RenameCityRequest
 import uncivai.player.TurnCommandRequest
 import uncivai.player.finalState
 import uncivai.player.gameFinished
@@ -49,11 +47,10 @@ internal data class OperatorStatus(
     val leaseId: String?,
     val leaseExpiresInMs: Long,
     val modelInvocations: Long = 0,
-    val roundStart: Boolean = false,
     val modelUsage: Map<String, Long> = emptyMap(),
     val negotiationWaitMillis: Long = 0,
     val negotiationTimeoutSeconds: Int = 300,
-    val telemetryExportError: String? = null,
+    val telemetryWriteError: String? = null,
 )
 
 @Serializable
@@ -128,14 +125,14 @@ class OperatorControl internal constructor(
 
                 "snapshot" -> {
                     requireLease(request.leaseId)
-                    return@accessOperatorGame OperatorResponse(status(game), checkpoint = runtime.roundSnapshot())
+                    return@accessOperatorGame OperatorResponse(status(game), checkpoint = runtime.turnSnapshot())
                 }
 
                 "restore" -> {
                     requireLease(request.leaseId)
                     activation = null
                     communicationSessions.clear()
-                    runtime.restoreRound(checkNotNull(request.checkpoint), checkNotNull(request.epoch), configuredCredentials)
+                    runtime.restoreTurn(checkNotNull(request.checkpoint), checkNotNull(request.epoch), configuredCredentials)
                     return@accessOperatorGame runtime.accessOperatorGame { OperatorResponse(status(it), leaseId) }
                 }
 
@@ -150,7 +147,6 @@ class OperatorControl internal constructor(
                     communicationSessions[token] = epoch to GuardedSession(session) { mutation ->
                         if (mutation || runtime.epoch != epoch || leaseId == null || leaseId != owner) deny()
                     }
-                    runtime.communicationState.coordinatedRecovery = true
                     runtime.commitCheckpoint()
                     return@accessOperatorGame OperatorResponse(status(game), leaseId, token)
                 }
@@ -181,7 +177,7 @@ class OperatorControl internal constructor(
                 "job_limits" -> {
                     requireLease(request.leaseId)
                     val state = runtime.communicationState
-                    if (checkNotNull(request.maxInvocations) < state.invocations || checkNotNull(request.maxConcurrent) !in 1..64 || checkNotNull(request.maxPerCivilization) !in 1..2) throw OperatorFailure("INVALID_ARGUMENT")
+                    if (checkNotNull(request.maxInvocations) < state.invocations || checkNotNull(request.maxConcurrent) !in 1..64 || checkNotNull(request.maxPerCivilization) !in 1..3) throw OperatorFailure("INVALID_ARGUMENT")
                     state.maxInvocations = request.maxInvocations
                     state.maxConcurrent = request.maxConcurrent
                     state.maxPerCivilization = request.maxPerCivilization
@@ -200,8 +196,6 @@ class OperatorControl internal constructor(
                     } else {
                         renew()
                     }
-                    // Also cover a supervisor crash after recording its intent but before activate.
-                    if (!finished(game)) runtime.beginScheduledTurn()
                 }
 
                 "heartbeat" -> {
@@ -216,7 +210,6 @@ class OperatorControl internal constructor(
                         throw OperatorFailure("STALE_TURN")
                     }
                     if (finished(game) || game.currentPlayerCiv.isDefeated()) throw OperatorFailure("PLAYER_UNAVAILABLE")
-                    runtime.beginScheduledTurn(request.activationId)
                     val previous = activation
                     if (previous != null && previous.id == request.activationId) {
                         if (previous.civilization != request.civilization || previous.handoff != request.handoff) throw OperatorFailure("ACTIVATION_CONFLICT")
@@ -225,26 +218,12 @@ class OperatorControl internal constructor(
                         val civilization = checkNotNull(request.civilization)
                         val session = host.bindPlayer(civilization)
                         activation = Activation(id, civilization, runtime.handoff, newToken(), session)
+                        runtime.telemetry.beginTurn(game, id)
                     }
                     renew()
                     runtime.resume()
                     val current = checkNotNull(activation)
                     return@accessOperatorGame OperatorResponse(status(game), leaseId, current.token, current.id)
-                }
-
-                "rollback" -> {
-                    requireLease(request.leaseId)
-                    if (runtime.communicationState.coordinatedRecovery) throw OperatorFailure("COORDINATED_RESTORE_REQUIRED")
-                    if (request.epoch != runtime.epoch || request.serverInstance != serverInstance || request.handoff != runtime.handoff || request.civilization != game.currentPlayer) {
-                        throw OperatorFailure("STALE_TURN")
-                    }
-                    // Validate the attempt before revoking a potentially newer activation.
-                    runtime.requireRollbackActivation(checkNotNull(request.activationId))
-                    activation = null
-                    runtime.rollbackScheduledTurn(request.activationId)
-                    renew()
-                    // The enclosing access block refers to the game that was replaced.
-                    return@accessOperatorGame runtime.accessOperatorGame { OperatorResponse(status(it), leaseId) }
                 }
 
                 "pause" -> {
@@ -271,7 +250,6 @@ class OperatorControl internal constructor(
                     activation = null
                     runtime.scheduled = false
                     runtime.communicationPaused = false
-                    runtime.discardTurnStart()
                     runtime.resume()
                 }
             }
@@ -336,7 +314,7 @@ class OperatorControl internal constructor(
         override fun missionPreview(request: uncivai.player.MissionPreviewRequest) = guarded { delegate.missionPreview(request) }
         override fun researchDetails(names: List<String>) = guarded { delegate.researchDetails(names) }
         override fun policyDetails(names: List<String>) = guarded { delegate.policyDetails(names) }
-        override fun victoryProgress(names: List<String>) = guarded { delegate.victoryProgress(names) }
+        override fun victoryProgress(request: uncivai.player.VictoryProgressRequest) = guarded { delegate.victoryProgress(request) }
         override fun completedReceipt(request: TurnCommandRequest) = guarded { delegate.completedReceipt(request) }
         override fun summary() = guarded { delegate.summary() }
         override fun cities() = guarded { delegate.cities() }
@@ -347,8 +325,6 @@ class OperatorControl internal constructor(
             check(true)
             delegate.execute(request)
         }
-        override fun renameCity(request: RenameCityRequest) = guarded(true) { delegate.renameCity(request) }
-        override fun chooseFreeGreatPerson(request: ChooseFreeGreatPersonRequest) = guarded(true) { delegate.chooseFreeGreatPerson(request) }
     }
 
     private fun status(game: GameInfo) = OperatorStatus(
@@ -369,13 +345,12 @@ class OperatorControl internal constructor(
         leaseId = leaseId,
         leaseExpiresInMs = if (leaseId == null) 0 else (expiresAt - clockMillis()).coerceAtLeast(0),
         modelInvocations = runtime.communicationState.invocations,
-        telemetryExportError = runtime.telemetry.exportError,
+        telemetryWriteError = runtime.telemetry.monitoringError,
         modelUsage = listOf("input_tokens", "cached_input_tokens", "output_tokens", "reasoning_output_tokens").associateWith { key ->
             runtime.communicationState.jobs.values.sumOf { job ->
                 job.usage?.tokens(key) ?: 0L
             }
         },
-        roundStart = game.civilizations.firstOrNull { it.isHuman() && it.isMajorCiv() && !it.isDefeated() }?.civID == game.currentPlayer,
     )
 
     private fun finished(game: GameInfo) = gameFinished(game)
@@ -394,7 +369,6 @@ class OperatorControl internal constructor(
             "acquire", "heartbeat", "release" -> setOf("leaseId")
             "pause" -> if (request.leaseId == null) emptySet() else setOf("leaseId")
             "activate" -> setOf("leaseId", "epoch", "serverInstance", "handoff", "civilization", "activationId")
-            "rollback" -> setOf("leaseId", "epoch", "serverInstance", "handoff", "civilization", "activationId")
             "connect" -> setOf("leaseId", "epoch", "civilization")
             "rotate_players", "restore_complete" -> setOf("leaseId", "epoch")
             "job_limits" -> setOf("leaseId", "maxInvocations", "maxConcurrent", "maxPerCivilization")

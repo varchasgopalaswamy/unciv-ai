@@ -15,6 +15,7 @@ from aiohttp import web
 from civ_agent.agent_service import AgentService, ServiceError, server_ssl_context
 from civ_agent.agent_settings import add_settings_arguments
 from civ_agent.civilization_state import MemoryFormatError
+from civ_agent.scheduler import positive
 from civ_agent.tls import (
     TLSConfigError,
     endpoint_configuration,
@@ -67,6 +68,15 @@ def parser(*, add_help: bool = True) -> argparse.ArgumentParser:
         type=int,
         default=12000,
         help="Private memory context limit for fresh jobs (default: 12000 characters)",
+    )
+    result.add_argument(
+        "--review-interval",
+        type=positive,
+        default=5,
+        help="Asynchronous strategy review every k turns, starting at turn k (default: 5)",
+    )
+    result.add_argument(
+        "--review-attempts", type=positive, default=3, help="Maximum attempts per background review (default: 3)"
     )
     add_settings_arguments(
         result,
@@ -145,6 +155,8 @@ def run(args: argparse.Namespace) -> int:
             model=args.model,
             reasoning_effort=args.reasoning_effort,
             memory_context_chars=args.memory_context_chars,
+            review_interval=args.review_interval,
+            review_attempts=args.review_attempts,
             strategy_guide=args.strategy_guide,
             fast=args.fast,
             gateway_url=host_origin(args.public_host, port) + "/mcp",

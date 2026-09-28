@@ -15,7 +15,7 @@ class SchedulerHistoryTest(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
-        self.root = Path(self.temporary.name)
+        self.root = Path(self.temporary.name) / "monitoring.sqlite3"
 
     def event(self, sequence, kind, **data):
         return dict(sequence=sequence, time="2026-09-07T12:00:00Z", kind=kind, data=data)
@@ -24,7 +24,7 @@ class SchedulerHistoryTest(unittest.TestCase):
         capture = io.StringIO()
         secret = "A" * 43
         with contextlib.redirect_stdout(capture):
-            history = EventHistory(self.root, "epoch", "Rome", "activation", (secret,))
+            history = EventHistory(self.root, "epoch", "Rome", "activation", (secret,), game_turn=0)
             history.append(
                 [
                     self.event(0, "user_message", text="Play turn 2."),
@@ -44,35 +44,32 @@ class SchedulerHistoryTest(unittest.TestCase):
                 ]
             )
         self.assertEqual(capture.getvalue().count("Built a Farm."), 1)
-        markdown = history.markdown.read_text()
+        markdown = history.markdown()
         self.assertEqual(markdown.count("Built a Farm."), 1)
         self.assertIn("Improve food first.", markdown)
         self.assertIn("Worker ready.", markdown)
         self.assertIn("player_units", markdown)
         for hidden in ("Improve food first.", "Worker ready.", "player_units", "Tool result:"):
             self.assertNotIn(hidden, capture.getvalue())
-        text = history.jsonl.read_text() + markdown + capture.getvalue()
+        text = json.dumps(history.events) + markdown + capture.getvalue()
         for forbidden in (secret, "DO_NOT_PERSIST_RAW_REASONING", "PRIVATE_CIPHERTEXT", "\x1b"):
             self.assertNotIn(forbidden, text)
         self.assertIn("[REDACTED]", text)
-        self.assertEqual(os.stat(history.jsonl).st_mode & 0o777, 0o600)
-        self.assertEqual(os.stat(history.markdown).st_mode & 0o777, 0o600)
+        self.assertEqual(os.stat(history.store.path).st_mode & 0o777, 0o600)
 
-    def test_cursor_survives_partial_append_and_does_not_reprint_old_events(self):
+    def test_cursor_survives_restart_and_does_not_reprint_old_events(self):
         with contextlib.redirect_stdout(io.StringIO()):
-            first = EventHistory(self.root, "epoch", "Rome", "activation")
+            first = EventHistory(self.root, "epoch", "Rome", "activation", game_turn=0)
             first.append([self.event(0, "assistant_message", itemId="first", text="First visible message.")])
-        with first.jsonl.open("ab") as stream:
-            stream.write(b'{"sequence":1,"kind":')
         capture = io.StringIO()
         with contextlib.redirect_stdout(capture):
-            resumed = EventHistory(self.root, "epoch", "Rome", "activation")
+            resumed = EventHistory(self.root, "epoch", "Rome", "activation", game_turn=0)
             self.assertEqual(resumed.cursor, 1)
             resumed.append([self.event(1, "assistant_message", itemId="second", text="Second visible message.")])
         self.assertNotIn("First visible message.", capture.getvalue())
         self.assertIn("Second visible message.", capture.getvalue())
-        self.assertEqual(len(resumed.jsonl.read_text().splitlines()), 2)
-        self.assertEqual(resumed.markdown.read_text().count("First visible message."), 1)
+        self.assertEqual(len(resumed.events), 2)
+        self.assertEqual(resumed.markdown().count("First visible message."), 1)
 
     def test_large_tool_result_chunks_reconstruct_across_restart(self):
         original = dict(itemId="tool", result={"largePayload": "full result " * 10000})
@@ -81,7 +78,7 @@ class SchedulerHistoryTest(unittest.TestCase):
         chunks = [encoded[:middle], encoded[middle:]]
         capture = io.StringIO()
         with contextlib.redirect_stdout(capture):
-            first = EventHistory(self.root, "epoch", "Rome", "activation")
+            first = EventHistory(self.root, "epoch", "Rome", "activation", game_turn=0)
             first.append(
                 [
                     self.event(
@@ -89,7 +86,7 @@ class SchedulerHistoryTest(unittest.TestCase):
                     )
                 ]
             )
-            resumed = EventHistory(self.root, "epoch", "Rome", "activation", verbose=True)
+            resumed = EventHistory(self.root, "epoch", "Rome", "activation", game_turn=0, verbose=True)
             resumed.append(
                 [
                     self.event(
@@ -98,5 +95,5 @@ class SchedulerHistoryTest(unittest.TestCase):
                 ]
             )
         self.assertIn("[Rome] Tool result:", capture.getvalue())
-        self.assertIn(original["result"]["largePayload"], resumed.markdown.read_text())
+        self.assertIn(original["result"]["largePayload"], resumed.markdown())
         self.assertEqual(resumed.cursor, 2)

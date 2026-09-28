@@ -65,14 +65,13 @@ class RecordStore:
     def deliver(snapshot, chosen):
         snapshot["records"].update(chosen)
         snapshot.setdefault("delivered", {}).update({key: record["version"] for key, record in chosen.items()})
-        if not snapshot.get("memoryOnly"):
-            for key, record in chosen.items():
-                if record["category"] in MEMORY_TYPES:
-                    body = record["body"]
-                    snapshot.setdefault("notices", {})["notice:" + key] = {
-                        "version": body.get("_noticeVersion", 0),
-                        "body": {"reasons": body.get("needsReview", []), "sources": body.get("_review", [])},
-                    }
+        for key, record in chosen.items():
+            if record["category"] in MEMORY_TYPES:
+                body = record["body"]
+                snapshot.setdefault("notices", {})["notice:" + key] = {
+                    "version": body.get("_noticeVersion", 0),
+                    "body": {"reasons": body.get("needsReview", []), "sources": body.get("_review", [])},
+                }
 
     def write(self, key, category, body, job=None):
         if category in MEMORY_TYPES:
@@ -102,12 +101,6 @@ class RecordStore:
             )
         )
         self.db.execute(insert(tables.heads).values(key=key, version=version).prefix_with("OR REPLACE"))
-        if job is not None:
-            self.db.execute(
-                insert(tables.export_jobs)
-                .from_select(["id"], select(tables.jobs.c.id).where(tables.jobs.c.id == job))
-                .prefix_with("OR IGNORE")
-            )
         return version
 
     def handle(self, prefix="mem"):
@@ -157,7 +150,7 @@ class RecordStore:
                 content.get("sources", [])
                 + content.get("contradictingSources", [])
                 + [a["source"] for a in content.get("assumptions", []) if a.get("source")]
-                + ([content["plan"]] if content.get("plan") else [])
+                + ([content["relatedMemory"]] if content.get("relatedMemory") else [])
             )
         )
         for source in names:
@@ -176,18 +169,24 @@ class RecordStore:
             "_assumptions": [
                 citations[a["source"]] for a in content.get("assumptions", []) if a.get("source") in citations
             ],
-            **({"_relatedPlan": citations[content["plan"]]} if content.get("plan") in citations else {}),
+            **(
+                {"_relatedMemory": citations[content["relatedMemory"]]}
+                if content.get("relatedMemory") in citations
+                else {}
+            ),
             "unverifiedSources": missing,
         }
 
-    def flag(self, keys=(), subjects=(), reason="Evidence changed", review_keys=(), plans=()):
-        self.flag_many([dict(keys=keys, subjects=subjects, reason=reason, review_keys=review_keys, plans=plans)])
+    def flag(self, keys=(), subjects=(), reason="Evidence changed", review_keys=(), strategies=()):
+        self.flag_many(
+            [dict(keys=keys, subjects=subjects, reason=reason, review_keys=review_keys, strategies=strategies)]
+        )
 
     def flag_many(self, changes):
         """Publish direct advisory notices separately; no recursive dependency graph."""
         if not changes:
             return
-        records = self.all(categories={"plan", "belief"}, project=False)
+        records = self.all(categories={"strategy", "belief"}, project=False)
         notices = self.all(categories={"notice"}, project=False)
         source_keys = {key for change in changes for key in (change.get("review_keys") or change.get("keys", ()))}
         versions = dict(self.db.execute(select(tables.heads).where(tables.heads.c.key.in_(source_keys))).all())
@@ -202,8 +201,8 @@ class RecordStore:
             affected = False
             for change in changes:
                 referenced = any(ref["key"] in change.get("keys", ()) for ref in body.get("_assumptions", []))
-                relevant = record["category"] == "plan" and (
-                    key in change.get("plans", ())
+                relevant = record["category"] == "strategy" and (
+                    key in change.get("strategies", ())
                     or bool(set(body.get("subjects", [])) & set(change.get("subjects", ())))
                 )
                 if not referenced and not relevant:
@@ -224,32 +223,16 @@ class RecordStore:
                     },
                 )
 
-    def review_plans(self):
-        if self.turn is None:
-            return
-        due = [
-            key
-            for key, r in self.all(categories={"plan"}).items()
-            if r["category"] == "plan"
-            and r["body"].get("state") == "active"
-            and r["body"].get("reviewAfterTurn") is not None
-            and r["body"]["reviewAfterTurn"] <= self.turn
-        ]
-        if due:
-            self.flag(
-                plans=due, reason="Scheduled progress review: check success criteria, then revise or retire this plan"
-            )
-
     def expire(self):
         if self.turn is None:
             return
-        for key, record in self.all(categories=MEMORY_TYPES).items():
+        for key, record in self.all(categories=MEMORY_TYPES | {"contribution"}).items():
             body = record["body"]
-            if (
-                record["category"] in MEMORY_TYPES
-                and body.get("state") == "active"
-                and body.get("expiresTurn") is not None
-                and body["expiresTurn"] <= self.turn
+            if body.get("state") == "active" and (
+                expired_at(record, self.turn)
+                or record["category"] == "handoff"
+                and type(body.get("basis", {}).get("turn")) is int
+                and body["basis"]["turn"] + 1 < self.turn
             ):
                 self.write(
                     key,
@@ -268,15 +251,12 @@ class RecordStore:
         history=False,
         id="",
         offset=0,
-        memory_only=False,
         contribution_ids=(),
     ):
         conditions: list[ColumnElement[bool]] = [
             tables.records.c.category != "notice",
             (tables.records.c.category != "contribution") | tables.records.c.key.in_(contribution_ids),
         ]
-        if memory_only:
-            conditions.append(tables.records.c.category.in_(MEMORY_TYPES | {"contribution"}))
         if type:
             conditions.append(tables.records.c.category == type)
         if subject:
@@ -330,32 +310,68 @@ def semantic(value):
     return value
 
 
-def select_context(snapshot, limit, topics=()):
-    subjects = set(topics)
+def handoff_eligible(record, turn):
+    authored = record["body"].get("basis", {}).get("turn")
+    return type(authored) is int and type(turn) is int and turn == authored + 1
+
+
+def expired_at(record, turn):
+    expiry = record["body"].get("expiresTurn")
+    return type(turn) is int and type(expiry) is int and expiry <= turn
+
+
+def select_context(snapshot, limit):
+    turn = snapshot.get("gameTurn")
+    subjects = set(snapshot.get("contextTopics", []))
     for event in snapshot["events"]:
         body = event.get("body", {})
+        event_turn = event.get("turn", body.get("turn"))
+        if type(turn) is int and type(event_turn) is int and event_turn < turn - 1:
+            continue
         subjects.update(body.get("participants", []))
         subjects.update(
             v for v in (body.get("author"), body.get("from"), body.get("to"), body.get("partner")) if isinstance(v, str)
         )
+    subjects = {subject.casefold() for subject in subjects}
+
+    def relevant(record):
+        return any(subject.casefold() in subjects for subject in record["body"].get("subjects", []))
+
     candidates = [
         (key, value)
         for key, value in snapshot["records"].items()
-        if value["category"] in MEMORY_TYPES | {"contribution"} and value["body"].get("state") == "active"
+        if value["category"] in MEMORY_TYPES | {"contribution"}
+        and value["body"].get("state") == "active"
+        and not expired_at(value, snapshot.get("gameTurn"))
+        and (value["category"] != "handoff" or snapshot["purpose"] == "gameplay" and handoff_eligible(value, turn))
+    ]
+    available = len(candidates)
+    # A spare character budget is not a reason to repeat old notes. Strategies,
+    # next-turn handoffs and unhandled contributions have explicit lifecycles;
+    # historical knowledge needs recency, a current subject, or a review notice.
+    candidates = [
+        (key, record)
+        for key, record in candidates
+        if record["category"] in {"strategy", "handoff", "contribution"}
+        or record["body"].get("needsReview")
+        or relevant(record)
+        or type(turn) is not int
+        or (record["body"].get("updatedTurn") or 0) >= turn - 2
     ]
     candidates.sort(
         key=lambda item: (
-            item[1]["category"] != "soul",
-            not bool(set(item[1]["body"].get("subjects", [])) & subjects),
+            {"strategy": 0, "handoff": 1}.get(item[1]["category"], 2),
+            not relevant(item[1]),
             not bool(item[1]["body"].get("needsReview")),
             -item[1]["body"].get("priority", 3),
+            -(item[1]["body"].get("updatedTurn") or 0),
             item[0],
         )
     )
-    chosen, used = {}, 0
+    chosen, used = {}, 2  # JSON array brackets, then commas between chosen records.
     for key, record in candidates:
-        size = len(encode(public_record(key, record))) + 1
+        size = len(encode(public_record(key, record))) + bool(chosen)
         if used + size <= limit:
             chosen[key] = record
             used += size
-    return chosen, len(candidates) - len(chosen)
+    return chosen, available - len(chosen)

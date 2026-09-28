@@ -28,11 +28,12 @@ and native turns advance to the subject. The retained files already include that
 advance, so subsequent runs start from identical saves. Terrain, units, resources,
 technology and treasury receive no fixture-authored edits.
 
-Each case starts with fresh private memory and a fresh host ledger. Historical
+Ordinary fixture runs start with fresh private memory and a fresh host ledger. Historical
 social conversations and plans are not imported. The agent's objective is the
 normal objective to win. Evaluation criteria are not added to its instructions.
 This tests decisions from the board position, not exact replay of historical
 reasoning. Opponent actions and model choices can vary after the saved start.
+The memory comparisons below describe explicit historical seeds for that separate experiment.
 
 ## Prepare and run
 
@@ -77,7 +78,7 @@ Select the September 23 failures with:
 Run a three-round opening (nine agent turns, plus native Egypt and two city states):
 
 ```bash
-.venv/bin/python -m tests.live_vanilla \
+.venv/bin/python -m tests.live_saved_position \
   --state-dir "$PWD/build/opening-max" --port 11571 \
   --seed 10923811242 --model gpt-6-luna --reasoning-effort max \
   --fast --strategy-guide --max-turns 3 --max-invocations 15 \
@@ -115,6 +116,103 @@ different from knowingly moving into visible danger. A loss is not automatically
 a bad decision, and waiting can be sensible. Inspect native legality and the
 agent's actual reads before assigning a failure. Short, single-sample runs cannot
 establish overall win rate or separate every prompt/model/opponent effect.
+
+## Memory comparisons
+
+`tests.live_memory_comparison` runs a paired comparison on prepared positions,
+with fresh stores and logs for every trial. It never resumes the source match.
+
+| Variant | Initial memory / implementation |
+| --- | --- |
+| `baseline` | Historical plan, using a separately preserved old Python source snapshot |
+| `knowledge` | Retained notes and beliefs only, using the current implementation |
+| `revised` | The same historical assessment split into provisional strategy and next-turn handoff |
+
+The knowledge control omits the **initial** strategy/handoff; agents may create
+their own during play. This measures the effect of inherited memory, not enforced
+amnesia. If the source has no retained notes or beliefs, this control starts with
+an empty notebook. All variants use the same prepared native save and corrected
+engine. An old runtime is supplied only to this evaluation subprocess; production
+has no compatibility mode.
+
+The original plan's freeform prose can also contain factual claims. Omitting it
+removes those claims alongside its intentions; shared current observations do
+not make this a perfect separation of historical facts from strategic advice.
+
+The operator manifest contains `positions`, each with `id`, `civilization`,
+`rounds` and `seeds` mapping the three variants to seed JSON paths relative to the
+manifest. Each seed contains `civilization` and `records`, with an authoring
+`turn` and typed `content` for each record. Seed dates must precede the evaluated
+turn. Historical text is preserved without importing hidden game state, future
+memory, or obsolete evidence handles. `--memory-seed` is accepted only with a
+fresh isolated `--position`.
+
+For the retained September 25 preparation:
+
+```bash
+.venv/bin/python -m tests.live_memory_comparison \
+  --manifest build/memory-evaluation/source/single-turn.json \
+  --prepared build/memory-evaluation/prepared \
+  --baseline-source build/memory-evaluation/baseline-src \
+  --state-dir build/memory-evaluation/comparison --port 11871 \
+  --case war-response --repetitions 2 \
+  --model gpt-6-luna --reasoning-effort max --fast --strategy-guide
+```
+
+The prepared cases cover Rome at war (turn 71), peaceful continuity (60), an
+unfinished settlement journey (69), and France's construction choices (70).
+The source saves retain historical consequences of the production-preview bug;
+the corrected engine is shared by every trial. They compare decisions from the
+same board, not the original game's uncorrupted trajectory.
+
+Use `--case` and `--variant` to bound a batch. The driver runs sequentially,
+rotates variant order across repetitions, verifies completed rounds, and stops
+on the first incomplete trial. Timeouts allow 15 minutes per service startup,
+20 minutes per activation and two hours per trial. It records source hashes,
+seeds, model settings and completion status. Preserve the suite directory and
+baseline snapshot alongside reports. `single-turn.json` schedules one player turn
+per trial: the full four-case/two-repeat matrix contains 24 turns. The retained
+`manifest.json` schedules two turns per trial, giving 48 turns for the full matrix.
+Use a bounded case before spending tokens on the larger batch.
+
+Assess actual choices and outcomes, not just changed prose. Compare defense,
+production/research changes, settlement progress and peaceful continuity, together
+with confirmed losses and costs. Continuing science can be justified; merely
+changing victory labels is not success. Use repeated trials before attributing
+behavior to memory rather than model variation. The existing reporting command
+reconciles usage and preserves decision evidence for each trial.
+
+### September 25 comparison
+
+The comparison completed all 24 trials: four positions, three memory variants
+and two repetitions. The first war trial in each variant also ran a second turn,
+giving 27 player turns in total. Matched metrics use only the first turn of every
+trial. All runs used GPT-6 Luna at max reasoning, fast priority and the optional
+guide, with identical prepared native saves within each case.
+
+All gameplay and background memory completed; 36 memory edits succeeded and none
+were rejected. Recorded provider, service and host usage agrees. Nineteen off-turn
+communication jobs were interrupted at the bounded-test shutdown; their usage
+remains explicitly incomplete. One rejected END_TURN attempt recovered after the
+agent selected an affordable policy.
+
+Both inherited-memory variants retained science research in both war trials;
+the knowledge control chose Bronze Working in both. Its stated aim of unlocking
+Spearmen overlooked already-buildable Pikemen. Five war trials lost the exposed
+Archer; the remaining knowledge-control trial saved the Archer but lost a Worker.
+France's builds varied within every memory variant, and all six peaceful trials
+kept the existing research/construction queues. None of the settlement trials
+founded a city; the Settler started with no movement remaining.
+
+The revised two-turn pilot preserved the strategy's turn-36 date when only its
+handoff changed, then explicitly replaced that strategy on turn 72. This validates
+the new semantics without establishing better strategic play. Matched gameplay
+time was almost unchanged: 1,703 seconds with old plans versus 1,709 with revised
+memory across eight first-turn activations each.
+
+See the [dated evaluation](../archive/reports/Strategy-handoff-evaluation-2026-09-25.md)
+for decisions, losses, costs and limitations. Detailed evidence and source
+snapshots remain under `build/memory-evaluation/`.
 
 ## September 23 tactical and memory evaluation
 

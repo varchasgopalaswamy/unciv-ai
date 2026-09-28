@@ -35,6 +35,7 @@ data class ResearchDetail(
 data class ResearchDetails(
     val epoch: String,
     val revision: String,
+    val turn: Int,
     val current: String?,
     val freeTechnologies: Int,
     val technologies: List<ResearchDetail>,
@@ -58,6 +59,7 @@ data class PolicyDetail(
 data class PolicyDetails(
     val epoch: String,
     val revision: String,
+    val turn: Int,
     val storedCulture: Int,
     val culturePerTurn: Int,
     val nextPolicyCost: Int,
@@ -73,6 +75,7 @@ internal fun observeResearchDetails(player: Civilization, turn: PlayerTurnSnapsh
     return ResearchDetails(
         turn.epoch,
         turn.revision,
+        turn.turn,
         player.tech.currentTechnologyName(),
         player.tech.freeTechs,
         frozenDetails(
@@ -120,6 +123,7 @@ internal fun observePolicyDetails(player: Civilization, turn: PlayerTurnSnapshot
     return PolicyDetails(
         turn.epoch,
         turn.revision,
+        turn.turn,
         manager.storedCulture,
         player.stats.statsForNextTurn.culture.roundToInt(),
         manager.getCultureNeededForNextPolicy(),

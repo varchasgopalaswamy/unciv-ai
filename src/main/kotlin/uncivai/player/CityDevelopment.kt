@@ -76,7 +76,7 @@ data class CityDevelopment(
 )
 
 @Serializable
-data class TechnologyProgress(val name: String, val researched: Boolean, val scienceStored: Int, val cost: Int, val turns: String)
+data class TechnologyProgress(val name: String, val researched: Boolean, val scienceStored: Int, val cost: Int, val turns: String, val unlocks: TechnologyUnlocks? = null)
 
 @Serializable
 data class ResearchDevelopment(val current: String?, val sciencePerTurn: String, val overflowScience: Int, val technologies: List<TechnologyProgress>)
@@ -145,8 +145,8 @@ internal fun observeCityDevelopment(city: City, active: Boolean = true): CityDev
                     perpetual = construction is PerpetualConstruction,
                     productionStored = nonperpetual?.let { if (first) queue.getWorkDone(name) else 0 },
                     productionCost = nonperpetual?.getProductionCost(player, city),
-                    productionPerTurn = nonperpetual?.let { queue.productionForConstruction(name) },
-                    turns = nonperpetual?.let { queue.turnsToConstruction(name, first) },
+                    productionPerTurn = queue.productionForConstruction(name),
+                    turns = nonperpetual?.let { constructionTurns(city, name, first) },
                     canRemove = active && operations.canRemoveConstruction(city, index),
                     moveToIndices = frozen(queue.constructionQueue.indices.filter { active && operations.canMoveConstruction(city, index, it) }),
                 )
@@ -162,7 +162,14 @@ internal fun observeResearchDevelopment(player: Civilization): ResearchDevelopme
     overflowScience = player.tech.getOverflowScience(),
     technologies = frozen(
         player.gameInfo.ruleset.technologies.keys.sorted().map { name ->
-            TechnologyProgress(name, player.tech.isResearched(name), player.tech.researchOfTech(name), player.tech.costOfTech(name), player.tech.turnsToTech(name))
+            TechnologyProgress(
+                name,
+                player.tech.isResearched(name),
+                player.tech.researchOfTech(name),
+                player.tech.costOfTech(name),
+                player.tech.turnsToTech(name),
+                if (name in player.tech.techsToResearch || player.tech.canBeResearched(name)) technologyUnlocks(player, name) else null,
+            )
         },
     ),
 )

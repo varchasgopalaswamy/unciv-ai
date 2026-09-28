@@ -1,4 +1,4 @@
-"""Reflection stays attached to its evidence; exports grow with changed work."""
+"""Reflection stays attached to its evidence; explicit exports use committed records."""
 
 import json
 from unittest.mock import patch
@@ -6,46 +6,12 @@ from unittest.mock import patch
 import pytest
 
 from civ_agent.civilization_state import CivilizationState, StateConflict
-from tests.test_structured_memory import create, current, plan, setup
-
-
-def test_reflection_reads_frozen_evidence_and_preserves_new_notices(tmp_path):
-    memory = setup(tmp_path)
-    memory.observe("border", {"turn": 4, "units": ["Greek warrior"]}, "game")
-    key = create(memory, plan(assumptions=[{"text": "Warrior remains nearby", "source": "observation:border"}]))
-    before = memory.snapshot("gameplay")["records"][key]["version"]
-    memory.begin_memory_phase("game")
-    memory.start_job("chat", "communication", {})
-    memory.observe("border", {"turn": 5, "units": []}, "chat")
-    memory.observe("new-report", {"turn": 5, "text": "NEW_INFORMATION"}, "chat")
-    assert memory.refresh_memory("game", ["observation:border"])["observation:border"]["body"]["units"] == [
-        "Greek warrior"
-    ]
-    assert memory.refresh_memory("game", ["observation:new-report"]) == {}
-    with pytest.raises(StateConflict, match="MEMORY_ONLY"):
-        memory.history(5, job="game")
-    with pytest.raises(StateConflict, match="MEMORY_ONLY"):
-        memory.queue("game", "player_command", {"kind": "END_TURN"}, {}, "after-handoff")
-    assert memory.snapshot("gameplay")["records"][key]["version"] == before
-    accepted = memory.patch(
-        "game", [{"op": "amend", "id": key, "fields": {"objective": "Defend the eastern approach"}}]
-    )
-    assert accepted["changes"][0]["accepted"]
-    saved = current(memory, key)
-    assert saved["updatedTurn"] == 5 and saved["basis"]["turn"] == 4
-    assert saved["needsReview"] and saved["_review"]
-    assert not memory.refresh_memory("game", [key])[key]["body"]["needsReview"]
-    memory.finish_job("game", True)
-    memory.start_job("next", "gameplay", {}, game_turn=5)
-    assert memory.refresh_memory("next", [key])[key]["body"]["needsReview"]
-    summary = memory.completed_summary("game")
-    assert "NEW_INFORMATION" not in json.dumps(summary)
+from tests.test_structured_memory import create, current, setup
 
 
 def test_communication_appends_contributions_at_the_next_writer_boundary(tmp_path):
     memory = setup(tmp_path)
     key = create(memory, {"type": "note", "text": "Original"})
-    memory.begin_memory_phase("game")
     memory.start_job("chat", "communication", {})
     memory.refresh_memory("chat", [key])
     rejected = memory.patch("chat", [{"op": "amend", "id": key, "fields": {"text": "New negotiated terms"}}])
@@ -63,28 +29,15 @@ def test_communication_appends_contributions_at_the_next_writer_boundary(tmp_pat
     assert contribution in snapshot["contributionIds"]
     found = memory.search_memory("next", {"type": "contribution"})["records"]
     assert found[0]["body"]["text"] == "New negotiated terms"
-    assert found[0]["body"]["basis"]["purpose"] == "communication"
+    assert "basis" not in found[0]["body"]
+    assert found[0]["type"] == "contribution"
     immutable = memory.patch("next", [{"op": "amend", "id": contribution, "fields": {"text": "Rewrite"}}])
     assert immutable["changes"][0]["reason"] == "IMMUTABLE_CONTRIBUTION"
     assert memory.patch("next", [{"op": "retire", "id": contribution, "reason": "completed"}])["changes"][0]["accepted"]
     assert current(memory, key)["text"] == "Completed-turn reasoning"
 
 
-def test_edit_response_carries_notice_delivery_into_background_work(tmp_path):
-    memory = setup(tmp_path)
-    memory.observe("border", {"units": 1}, "game")
-    key = create(memory, plan(assumptions=[{"text": "Guard nearby", "source": "observation:border"}]))
-    memory.observe("border", {"units": 0})
-    result = memory.patch("game", [{"op": "amend", "id": key, "fields": {"approach": "Reposition"}}])
-    assert result["changes"][0]["record"]["needsReview"]
-    memory.begin_memory_phase("game")
-    for approach in ("Defend the capital", "Bring reinforcements"):
-        revised = memory.patch("game", [{"op": "amend", "id": key, "fields": {"approach": approach}}])
-        assert not revised["changes"][0]["record"]["needsReview"]
-        assert not current(memory, key)["needsReview"]
-
-
-def test_exports_leave_completed_turns_untouched_and_recover_dirty_work(tmp_path):
+def test_explicit_exports_preserve_unchanged_files_and_recover_failed_writes(tmp_path):
     memory = setup(tmp_path)
     create(memory, {"type": "note", "text": "Old turn"})
     memory.finish_job("game", True)
@@ -95,13 +48,13 @@ def test_exports_leave_completed_turns_untouched_and_recover_dirty_work(tmp_path
     memory.start_job("next", "gameplay", {}, game_turn=5)
     create(memory, {"type": "note", "text": "New turn"}, "next")
     memory.finish_job("next", True)
-    from civ_agent.memory_history import build_summary
+    from civ_agent.memory_history import SummaryReader
 
-    with patch("civ_agent.civilization_state.build_summary", wraps=build_summary) as summaries:
+    with patch.object(SummaryReader, "build", autospec=True, side_effect=SummaryReader.build) as summaries:
         memory.export(workspace)
-        assert [call.kwargs for call in summaries.call_args_list] == [{"turn": 5}]
+        assert [call.args[1:] for call in summaries.call_args_list] == [(4, None), (5, None)]
         memory.export(workspace)
-        assert summaries.call_count == 1
+        assert summaries.call_count == 4
     assert (old.read_bytes(), old.stat().st_mtime_ns) == original
     memory.start_job("third", "gameplay", {}, game_turn=6)
     create(memory, {"type": "note", "text": "Unexported committed memory"}, "third")
@@ -115,13 +68,11 @@ def test_exports_leave_completed_turns_untouched_and_recover_dirty_work(tmp_path
     assert any(row["text"] == "Unexported committed memory" for row in summary["memoryChanges"])
     assert (old.read_bytes(), old.stat().st_mtime_ns) == original
     old.unlink()
-    with patch("civ_agent.civilization_state.build_summary", wraps=build_summary) as summaries:
-        restarted.export(workspace)
-        assert [call.kwargs for call in summaries.call_args_list] == [{"turn": 4}]
+    restarted.export(workspace)
     assert old.read_bytes() == original[0]
 
 
-def test_export_combines_attempts_when_only_one_job_is_dirty(tmp_path):
+def test_explicit_export_combines_attempts(tmp_path):
     memory = setup(tmp_path)
     memory.queue("game", "player_command", {"kind": "END_TURN"}, {}, "first")
     memory.finish_job("game", False)

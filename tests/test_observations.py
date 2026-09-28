@@ -20,13 +20,51 @@ from civ_agent.observations import (
 from civ_agent.proposal_gateway import ProposalGateway, public_result
 from civ_agent.protocol import JsonObject
 from civ_agent.service_io import ServiceIO
+from tests.memory_helpers import stored_records
 from tests.test_proposal_gateway import Host
-from tests.test_structured_memory import create, current, plan
+from tests.test_structured_memory import create, current, strategy
 from tests.test_tactical_review import reviewed
 
 
 def query(tool, **arguments):
     return DetailQuery.model_validate({"tool": tool, "arguments": arguments})
+
+
+def test_automation_status_is_preloaded_and_inspected_orders_have_commands():
+    snapshot = reviewed()
+    unit = snapshot["map"]["units"][0]
+    unit["combat"]["order"].update(action="Explore", automated=True)
+    unit["combat"]["orders"] = [
+        {"name": "STOP_AUTOMATION", "available": True, "unavailableReasons": []},
+        {"name": "AUTOMATE", "available": False, "unavailableReasons": ["Already automated"]},
+    ]
+    compact = overview(snapshot)["units"][0]
+    assert compact["order"] == "Explore" and compact["automated"]
+    detail = project_detail(snapshot, query("unit_details", target=unit["handle"], sections=["orders"]))
+    orders = detail["data"]["entity"]["combat"]["orders"]
+    assert orders[0]["command"] == {"kind": "SET_UNIT_ORDER", "target": unit["handle"], "selection": "STOP_AUTOMATION"}
+    assert "command" not in orders[1]
+
+
+def test_settlement_advice_is_compact_even_without_a_settler():
+    snapshot = reviewed()
+    snapshot["map"]["units"] = []
+    candidates = [
+        {"position": {"x": n, "y": 4}, "score": 100 - n, "nearestCity": "city1", "distance": 4 + n} for n in range(5)
+    ]
+    snapshot["settlement"] = {
+        "status": "KNOWN_SITES_AVAILABLE",
+        "knownEligibleSites": 5,
+        "uncertainSites": 0,
+        "blockedSites": 30,
+        "candidates": candidates,
+        "settlers": [],
+    }
+    compact = overview(snapshot)
+    assert compact["units"] == [] and compact["settlement"]["settlers"] == []
+    assert [c["position"] for c in compact["settlement"]["candidates"]] == [c["position"] for c in candidates[:3]]
+    assert compact["settlement"]["knownEligibleSites"] == 5
+    assert len(snapshot["settlement"]["candidates"]) == 5
 
 
 def test_worker_options_explicitly_describe_current_tile_and_link_visible_surroundings():
@@ -54,7 +92,7 @@ def test_compact_snapshot_keeps_decisions_and_all_details_remain_reachable():
     assert compact["combatReports"] == snapshot["combatReports"]
     assert compact["tacticalReview"] == snapshot["tacticalReview"]
     assert compact["socialAdvisories"] == snapshot["socialAdvisories"]
-    assert compact["turnReview"]["units"] == (snapshot.get("turnReview") or {}).get("units", [])
+    assert "units" not in compact["turnReview"]
     assert "map" not in compact and "purchases" not in compact["cities"][0]
     assert "moves" not in compact["units"][0]
     for name, entities in (("unit_details", snapshot["map"]["units"]), ("city_details", snapshot["cities"])):
@@ -86,10 +124,94 @@ def test_named_constructions_preserve_confirmations_and_unavailable_catalogue_en
     named = project_detail(snapshot, query("construction_details", target=city["handle"], names=["Future Wonder"]))
     assert named["data"]["constructions"][0]["purchase"] == purchase
     assert not named["data"]["constructions"][0]["canQueue"]
-    required = required_detail({"kind": "BUY_CONSTRUCTION", "target": city["handle"], "selection": "Future Wonder"})
+    command = {"kind": "BUY_CONSTRUCTION", "target": city["handle"], "selection": "Future Wonder"}
+    required = required_detail(command)
     assert required is not None
-    assert not detail_satisfies(DetailQuery.model_validate(catalogue["query"]), required)
-    assert detail_satisfies(DetailQuery.model_validate(named["query"]), required)
+    assert not detail_satisfies(DetailQuery.model_validate(catalogue["query"]), required, command)
+    assert detail_satisfies(DetailQuery.model_validate(named["query"]), required, command)
+
+
+def test_conversion_can_be_compared_before_queueing_and_only_current_output_is_preloaded():
+    snapshot = reviewed()
+    city = snapshot["cities"][0]
+    city["constructionOptions"] = ["Science", "Gold"]
+    city["constructionQueue"] = ["Worker"]
+    conversion = {"stat": "Science", "productionPerTurn": "20", "baseYieldPerProduction": 0.25, "yieldPerTurn": "9.2"}
+    city["productionConversions"] = {
+        "Science": conversion,
+        "Gold": {**conversion, "stat": "Gold", "yieldPerTurn": "5"},
+    }
+    named = project_detail(snapshot, query("construction_details", target=city["handle"], names=["Science"]))
+    entry = named["data"]["constructions"][0]
+    assert entry["conversion"] == conversion
+    assert entry["canQueue"] and entry["progress"] == []
+    assert entry["command"]["selection"] == "Science"
+    entry["conversion"]["yieldPerTurn"] = "999"
+    assert conversion["yieldPerTurn"] == "9.2"
+    catalogue = project_detail(snapshot, query("construction_details", target=city["handle"]))
+    assert next(c for c in catalogue["data"]["constructions"] if c["name"] == "Science")["conversion"] == conversion
+    production = project_detail(snapshot, query("city_details", target=city["handle"], sections=["production"]))
+    assert production["data"]["entity"]["productionConversions"] == city["productionConversions"]
+    citizens = project_detail(snapshot, query("city_details", target=city["handle"], sections=["citizens"]))
+    assert "productionConversions" not in citizens["data"]["entity"]
+    assert "constructionConversion" not in overview(snapshot)["cities"][0]
+    city["constructionQueue"] = ["Science"]
+    assert overview(snapshot)["cities"][0]["constructionConversion"] == conversion
+    assert "productionConversions" not in overview(snapshot)["cities"][0]
+
+
+def test_wonder_benefits_and_blockers_are_shared_while_named_reads_retain_production_accounting():
+    snapshot = reviewed()
+    city = snapshot["cities"][0]
+    city["constructionOptions"] = []
+    option = {
+        "city": city["handle"],
+        "canQueue": False,
+        "queued": False,
+        "productionCost": 164,
+        "productionStored": 0,
+        "productionPerTurn": 32,
+        "turns": 6,
+        "unavailableReasons": ["Requires a University in all non-Puppeted cities"],
+    }
+    estimate = {
+        "production": {"cost": 164, "stored": 0, "overflow": 0, "perTurn": 32, "turnsIfStartedNow": 6},
+        "queueUnavailableReasons": option["unavailableReasons"],
+        "whileBuilding": {"change": {}},
+        "completion": None,
+    }
+    city["constructionEstimates"] = {"Oxford University": estimate}
+    snapshot["wonderOpportunities"] = [
+        {
+            "name": "Oxford University",
+            "kind": "NATIONAL",
+            "benefits": "+3 Science; Free Technology",
+            "greatPersonPoints": {},
+            "specialistSlots": {},
+            "cities": [option, {**option, "city": "city2", "turns": 12}],
+        }
+    ]
+    compact = overview(snapshot)["wonderOpportunities"][0]
+    assert compact == {
+        "name": "Oxford University",
+        "kind": "NATIONAL",
+        "benefits": "+3 Science; Free Technology",
+        "productionCost": 164,
+        "cities": [],
+        "unavailableCities": [{"cities": [city["handle"], "city2"], "reasons": option["unavailableReasons"]}],
+    }
+    named = project_detail(snapshot, query("construction_details", target=city["handle"], names=["Oxford University"]))
+    assert not named["data"]["constructions"][0]["canQueue"]
+    assert named["data"]["constructions"][0]["production"] == estimate["production"]
+    assert named["data"]["constructions"][0]["queueUnavailableReasons"] == option["unavailableReasons"]
+    option.update(canQueue=True, unavailableReasons=[])
+    estimate["queueUnavailableReasons"] = []
+    city["constructionOptions"] = ["Oxford University"]
+    compact = overview(snapshot)["wonderOpportunities"][0]
+    assert compact["cities"] == [{"city": city["handle"], "turns": 6, "productionStored": 0, "productionPerTurn": 32}]
+    assert compact["unavailableCities"][0]["cities"] == ["city2"]
+    catalogue = project_detail(snapshot, query("construction_details", target=city["handle"]))
+    assert catalogue["data"]["constructions"][0]["production"] == estimate["production"]
 
 
 def test_map_regions_respect_wrap_fog_and_observed_coordinates():
@@ -138,7 +260,20 @@ def test_detail_tools_cache_reads_require_refresh_and_cannot_acknowledge_unread_
             shown = await gateway.call(job, "player_turn", {}, "overview")
             assert "No attacks" not in str(shown)
             for source in ("observation:unit/unit1", "observation:game", "observation:communication"):
-                rejected = memory.patch(job.id, [{"op": "create", "content": plan(sources=[source])}])
+                rejected = memory.patch(
+                    job.id,
+                    [
+                        {
+                            "op": "create",
+                            "content": {
+                                "type": "belief",
+                                "claim": "Unverified report",
+                                "uncertainty": "high",
+                                "sources": [source],
+                            },
+                        }
+                    ],
+                )
                 assert rejected["changes"][0]["accepted"]
                 assert rejected["changes"][0]["warnings"][0]["sources"] == [source]
             with pytest.raises(StateConflict, match="chat_read"):
@@ -156,7 +291,7 @@ def test_detail_tools_cache_reads_require_refresh_and_cannot_acknowledge_unread_
             assert len(calls) == before
             tools = {t["name"]: t for t in await gateway.tools(job)}
             assert Draft202012Validator(tools["unit_details"]["outputSchema"]).is_valid(detail)
-            create(memory, plan(sources=[detail["evidence"]]), job=job.id)
+            create(memory, strategy(sources=[detail["evidence"]]), job=job.id)
             assert await gateway.call(job, "player_command", action, "missing") == rejected
             receipt = await gateway.call(job, "player_command", action, "move")
             assert receipt["done"] and len(host.executed) == 1
@@ -181,7 +316,7 @@ def test_only_changed_detail_invalidates_its_assumptions_and_survives_restart(tm
             await gateway.call(job, "player_turn", {}, "read")
             detail = await gateway.call(job, "unit_details", {"target": "unit1"}, "inspect")
             key = create(
-                memory, plan(assumptions=[{"text": "Unit is healthy", "source": detail["evidence"]}]), job=job.id
+                memory, strategy(assumptions=[{"text": "Unit is healthy", "source": detail["evidence"]}]), job=job.id
             )
             host.view["cities"][0]["name"] = "Roma"
             host.revision = "renamed"
@@ -199,7 +334,7 @@ def test_only_changed_detail_invalidates_its_assumptions_and_survives_restart(tm
             snapshot["map"]["units"] = []
             restarted.observe_player(snapshot, "next", overview(snapshot))
             canonical = current(memory, key)["_assumptions"][0]["key"]
-            stored = restarted.snapshot("gameplay")["records"][canonical]["body"]
+            stored = stored_records(restarted)[canonical]["body"]
             assert not stored["available"] and stored["data"] == {}
         finally:
             await io.close()
@@ -235,10 +370,18 @@ def test_social_advisories_are_shown_without_staling_native_evidence(tmp_path, n
 
         async def with_trade_advisories(name, args):
             if name == "player_communication" and args["op"] == "trade_options":
-                return {"give": [{"type": "WarDeclaration", "war": {"socialAdvisories": copy.deepcopy(advisories)}}]}
+                return {
+                    "mode": "SHARED",
+                    "give": [{"type": "WarDeclaration", "war": {"socialAdvisories": copy.deepcopy(advisories)}}],
+                }
             if name == "player_communication" and args["op"] == "trade_read":
                 return {
-                    "trade": {"proposal": "d1", "version": 1, "socialAdvisories": copy.deepcopy(advisories)},
+                    "trade": {
+                        "proposal": "d1",
+                        "version": 1,
+                        "mode": "SHARED",
+                        "socialAdvisories": copy.deepcopy(advisories),
+                    },
                     "history": [{"version": 1, "socialAdvisories": copy.deepcopy(advisories)}],
                 }
             return await original(name, args)
@@ -252,10 +395,10 @@ def test_social_advisories_are_shown_without_staling_native_evidence(tmp_path, n
             await gateway.call(game, name, arguments, "initial")
             key = create(
                 memory,
-                plan(assumptions=[{"text": "The native situation is unchanged", "source": source}]),
+                strategy(assumptions=[{"text": "The native situation is unchanged", "source": source}]),
                 job=game.id,
             )
-            before = memory.snapshot("gameplay")["records"][source]
+            before = stored_records(memory)[source]
             advisories.append(
                 {
                     "proposal": "p1",
@@ -269,9 +412,9 @@ def test_social_advisories_are_shown_without_staling_native_evidence(tmp_path, n
             )
             shown = await gateway.call(chat, name, arguments, "advisory")
             assert "Consider this promise" in json.dumps(shown)
-            assert memory.snapshot("gameplay")["records"][source] == before
+            assert stored_records(memory)[source] == before
             assert not current(memory, key)["needsReview"]
-            # The gameplay job can still use its native evidence and chosen plan
+            # The gameplay job can still use its native evidence and chosen strategy
             # without reading the annotation or declaring a social override.
             result = await gateway.call(
                 game,
@@ -281,7 +424,7 @@ def test_social_advisories_are_shown_without_staling_native_evidence(tmp_path, n
                     "target": "unit1",
                     "destination": {"x": 1, "y": 0},
                     "attackFrom": {"x": 0, "y": 0},
-                    "intent": {"plan": key},
+                    "intent": {"strategy": key, "reason": "Defend Rome"},
                 },
                 "act",
             )
@@ -289,12 +432,9 @@ def test_social_advisories_are_shown_without_staling_native_evidence(tmp_path, n
             # Terms remain available as ordinary communication evidence for
             # remembering or discussing the promise itself.
             await gateway.call(chat, "chat_read", {}, "ledger")
-            social = create(memory, plan(sources=["observation:communication"]), job=chat.id)
+            social = create(memory, strategy(sources=["observation:communication"]), job=chat.id)
             assert current(memory, social)["_evidence"][0]["key"] == "observation:communication"
-            assert (
-                memory.snapshot("communication")["records"]["observation:communication"]["body"]["offers"]
-                == host.offers
-            )
+            assert stored_records(memory)["observation:communication"]["body"]["offers"] == host.offers
         finally:
             await gateway.close(game, True)
             await gateway.close(chat, True)

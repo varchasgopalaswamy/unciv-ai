@@ -45,6 +45,7 @@ object GreatPeopleRunProbe {
                         api.acquire()
                         val activation = api.activate()
                         val before = facts(runtime)
+                        captureTestTurn(runtime, root)
                         val actions = actions(runtime, api, checkNotNull(activation.playerToken), "Rome")
                         save(root, GreatPeopleRecovery(actions, before, facts(runtime), checkNotNull(activation.activationId)))
                         api.operator(OperatorRequest("release", api.lease))
@@ -201,13 +202,12 @@ object GreatPeopleRunProbe {
         check(facts(runtime) == saved.after) { "Mid-turn effects did not survive checkpoint reload" }
         replay(api, root, saved.actions)
         api.acquire()
-        val status = api.status()
-        api.operator(OperatorRequest("rollback", api.lease, status.epoch, status.serverInstance, status.handoff, "Rome", saved.activationId))
+        api.restore(root)
         check(facts(runtime) == saved.before) { "Rollback failed to restore people, tiles, research, policies or production" }
         val actions = ArrayList<GreatPersonAction>()
         for (civ in listOf("Rome", "Greece")) {
             val token = checkNotNull(api.activate().playerToken)
-            if (civ == "Rome") api.reject(token, saved.actions.first().request, "STALE_REVISION")
+            if (civ == "Rome") api.reject(token, saved.actions.first().request, "STALE_EPOCH")
             actions += actions(runtime, api, token, civ)
             api.finishTurn(token)
         }

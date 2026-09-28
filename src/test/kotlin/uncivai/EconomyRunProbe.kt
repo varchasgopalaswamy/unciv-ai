@@ -112,6 +112,7 @@ object EconomyRunProbe {
         check(worked) { "Worker never connected the Iron" }
         check(runtime.game.tileMap[HexCoord(-3, 0)].improvement == "Mine")
         val before = facts(runtime)
+        captureTestTurn(runtime, root)
         val actions = economicActions(runtime, api, token)
         val after = facts(runtime)
         save(root, EconomyRecovery(actions, before, after, checkNotNull(activation.activationId)))
@@ -203,12 +204,11 @@ object EconomyRunProbe {
         for (action in saved.actions) check(api.execute(api.playerToken("Rome"), action.request) == action.receipt)
         check(gameplayCheckpoint(root.resolve("checkpoint.json")) == stable)
         api.acquire()
-        val status = api.status()
-        api.operator(OperatorRequest("rollback", api.lease, status.epoch, status.serverInstance, status.handoff, "Rome", saved.activationId))
+        api.restore(root)
         check(facts(runtime) == saved.before) { "Rollback did not restore gold, units, tiles, buildings and resources" }
         val activation = api.activate()
         val token = checkNotNull(activation.playerToken)
-        api.reject(token, saved.actions.first().request, "STALE_REVISION")
+        api.reject(token, saved.actions.first().request, "STALE_EPOCH")
         val actions = economicActions(runtime, api, token)
         api.finishTurn(token)
         api.finishTurn(checkNotNull(api.activate().playerToken))

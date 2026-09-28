@@ -92,7 +92,7 @@ message, natural cooldown, off-turn decline/counteroffer/acceptance, restarts be
 and after acceptance, native payment/treaty checks and continued scheduled rounds.
 `PeaceTradeProbe` covers an internal prepared war, invalid terms, lost funds,
 concurrent proposals, an old attack, native resource/GPT effects, exact retry,
-round rollback and checkpoint failures before/after replacement. Existing combat
+interrupted-turn restoration, committed-turn protection and checkpoint failures before/after replacement. Existing combat
 verification also makes peace through this shared path.
 
 Python HTTPS scheduler/service tests exercise the same counteroffer/acceptance

@@ -26,7 +26,7 @@ Run shell examples from the repository root unless a page says otherwise.
 | [Ordinary Vanilla setup](guides/Vanilla-game.md) | Manual multi-process launch and game settings |
 | [Automatic turns](guides/Automatic-turns.md) | Scheduler, HTTPS services, model settings and recovery |
 | [Match dashboard](guides/Match-dashboard.md) | TUI, live output and model-connection status |
-| [Chat, memory and recovery](guides/Chat-memory-and-recovery.md) | Human communication, history and whole-match rollback |
+| [Chat, memory and recovery](guides/Chat-memory-and-recovery.md) | Human communication, history and interrupted-turn recovery |
 | [Optional strategy guide](guides/Strategy-guide.md) | Advisory strategy context, CLI toggle and size measurements |
 | [Saved strategic positions](scenarios/Strategic-positions.md) | Reusable failure cases, live model comparisons and opening benchmarks |
 
@@ -34,6 +34,7 @@ Run shell examples from the repository root unless a page says otherwise.
 
 | Reference | Contents |
 | --- | --- |
+| [Turn recovery](architecture/Turn-recovery.md) | Coordinated turn rewind, durable notes and stop policy |
 | [Python architecture](architecture/Python-architecture.md) | Services, model jobs and module ownership |
 | [Kotlin architecture](architecture/Kotlin-architecture.md) | Engine boundary, input contracts and request handling |
 | [Gameplay and asynchronous chat](architecture/Async-chat-architecture.md) | Cross-service flow and recovery diagram |
@@ -99,3 +100,5 @@ Update the relevant guide or reference when behavior changes. Put completed task
 plans and dated results in the archive, carrying any unresolved work into the
 roadmap. Preserve evidence and its date; old measurements are not current
 performance guarantees. Use relative links and update them when moving a page.
+
+- [Monitoring storage and exports](architecture/Monitoring.md): dashboard data, durable records and existing-game import.

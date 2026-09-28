@@ -67,6 +67,7 @@ object MixedDiplomacyProbe {
                 val shared = command("trade_offer", "partner" to "France", "give" to listOf(gold(5)), "receive" to emptyList<JsonObject>())["trade"]!!.jsonObject
                 check(shared["mode"]!!.jsonPrimitive.content == "SHARED")
                 check(runtime.game.getCivilization("France").tradeRequests.isEmpty())
+                check(runtime.executor.communicationState.streams.getValue("France").any { it.kind == "trade" && it.body["proposal"] == shared["proposal"] && it.wake })
                 val accept = api.communicate(tokens.getValue("France"), obj("op" to "trade_decide", "epoch" to runtime.epoch, "requestId" to "human-accept", "proposal" to shared["proposal"], "version" to shared["version"], "decision" to "accept"))
                 check(accept["trade"]!!.jsonObject["status"]!!.jsonPrimitive.content == "ENACTED")
                 // Native AI requests never acquire the shared pause and have no wall-clock deadline.
@@ -86,6 +87,7 @@ object MixedDiplomacyProbe {
                 check(api.communicate(tokens.getValue("Rome"), sent) == receipt)
                 friendship = command("friendship_offer", "partner" to "China")["trade"]!!.jsonObject
                 check(friendship["status"]!!.jsonPrimitive.content == "PENDING")
+                verifyNativeDelivery(runtime)
                 runtime.executor.commitCheckpoint()
             }
         }
@@ -124,6 +126,7 @@ object MixedDiplomacyProbe {
                 val incoming = command("state")["trades"]!!.jsonArray.map { it.jsonObject }.single { it["author"]!!.jsonPrimitive.content == "China" && it["status"]!!.jsonPrimitive.content == "PENDING" }
                 val read = command("trade_read", "proposal" to incoming["proposal"])["trade"]!!.jsonObject
                 check(read["acceptAvailable"]!!.jsonPrimitive.boolean) { read.toString() }
+                verifyNativeDelivery(runtime)
                 val accepted = command("trade_decide", "proposal" to read["proposal"], "version" to read["version"], "decision" to "accept")
                 check(accepted["trade"]!!.jsonObject["status"]!!.jsonPrimitive.content == "ENACTED")
                 check(rome.gold == transferred + 13)
@@ -159,6 +162,9 @@ object MixedDiplomacyProbe {
                 val friendshipStatus = friendshipResult["status"]!!.jsonPrimitive.content
                 check(friendshipStatus in setOf("ENACTED", "DECLINED")) { friendshipResult.toString() }
                 check(rome.getDiplomacyManager(china)!!.hasFlag(DiplomacyFlags.DeclarationOfFriendship) == (friendshipStatus == "ENACTED"))
+                verifyNativeDelivery(runtime)
+                val nativeEndings = runtime.executor.communicationState.streams.getValue("Rome").filter { it.kind == "agreement" && it.body["partner"]?.jsonPrimitive?.content == "China" }
+                check(nativeEndings.isNotEmpty() && nativeEndings.none { it.wake })
                 Files.writeString(root.resolve("evidence.json"), obj("pending" to pending, "enacted" to enacted, "incomingAcceptance" to accepted, "denunciation" to denunciation, "nativeTurnResult" to nativeTurnResult, "friendshipResult" to friendshipResult, "nativeTurn" to runtime.game.turns).toString())
             }
         }
@@ -169,6 +175,13 @@ object MixedDiplomacyProbe {
     }
 
     private fun gold(amount: Int) = obj("type" to "Gold", "name" to "Gold", "amount" to amount, "duration" to -1)
+
+    private fun verifyNativeDelivery(runtime: HeadlessRuntime) {
+        val state = runtime.executor.communicationState
+        val nativeIds = state.trades.proposals.values.map { it.last() }.filter { it.mode == "NATIVE_AI" }.map { it.proposal }.toSet()
+        val events = state.streams.values.flatten().filter { it.body["proposal"]?.jsonPrimitive?.content in nativeIds }
+        check(events.isNotEmpty() && events.none { it.wake }) { "Native offers and outcomes must remain recorded without waking communication jobs" }
+    }
 
     private fun verifyResponseAdvice(root: Path) {
         for ((type, choice) in listOf(AlertType.Denounced to "DeclareWar", AlertType.DemandToNotAttackUs to "Refuse")) {
@@ -291,7 +304,7 @@ object MixedDiplomacyProbe {
             val greece = runtime.game.getCivilization("Greece")
             check(runtime.game.getCivilization("Rome").getDiplomacyManager(greece)!!.hasFlag(DiplomacyFlags.Denunciation) == afterReplace)
             val fresh = rome.turn()
-            val retry = if (afterReplace) {
+            val retry = if (afterReplace || request["nativeAction"]!!.jsonObject["revision"]!!.jsonPrimitive.content == fresh.revision) {
                 request
             } else {
                 check(runCatching { rome.communication(request) }.isFailure)

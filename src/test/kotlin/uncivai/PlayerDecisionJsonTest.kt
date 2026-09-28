@@ -6,12 +6,9 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
-import uncivai.player.ChooseFreeGreatPersonReceipt
-import uncivai.player.ChooseFreeGreatPersonRequest
 import uncivai.player.FreeGreatPersonDecision
 import uncivai.player.FreeGreatPersonSnapshot
 import uncivai.player.PlayerCommandJson
-import java.lang.reflect.Modifier
 
 class PlayerDecisionJsonTest {
     @Test
@@ -60,85 +57,6 @@ class PlayerDecisionJsonTest {
             decision.get("options").map { it.asString() },
         )
         assertNoEngineObjects(encoded)
-    }
-
-    @Test
-    fun `request receipt and DTO reflection expose only the command schema`() {
-        val request = ChooseFreeGreatPersonRequest(
-            requestId = "request-1",
-            epoch = "epoch-3",
-            decisionHandle = "decision-3",
-            unitName = "Great Scientist",
-        )
-        val receipt = ChooseFreeGreatPersonReceipt(
-            requestId = request.requestId,
-            epoch = request.epoch,
-            decisionHandle = request.decisionHandle,
-            unitName = request.unitName,
-            remainingChoices = 1,
-        )
-
-        val requestJson = PlayerCommandJson.encode(request)
-        val receiptJson = PlayerCommandJson.encode(receipt)
-        assertEquals(
-            """{"requestId":"request-1","epoch":"epoch-3","decisionHandle":"decision-3","unitName":"Great Scientist"}""",
-            requestJson,
-        )
-        assertEquals(
-            """{"requestId":"request-1","epoch":"epoch-3","decisionHandle":"decision-3","unitName":"Great Scientist","remainingChoices":1}""",
-            receiptJson,
-        )
-        assertEquals(
-            listOf("requestId", "epoch", "decisionHandle", "unitName"),
-            JsonReader().parse(requestJson).childNames(),
-        )
-        assertEquals(
-            listOf("requestId", "epoch", "decisionHandle", "unitName", "remainingChoices"),
-            JsonReader().parse(receiptJson).childNames(),
-        )
-        assertNoEngineObjects(requestJson + receiptJson)
-
-        assertFields(
-            FreeGreatPersonSnapshot::class.java,
-            linkedMapOf(
-                "epoch" to String::class.java,
-                "decision" to FreeGreatPersonDecision::class.java,
-            ),
-        )
-        assertFields(
-            FreeGreatPersonDecision::class.java,
-            linkedMapOf(
-                "handle" to String::class.java,
-                "remainingChoices" to Int::class.javaPrimitiveType,
-                "mayaLimited" to Boolean::class.javaPrimitiveType,
-                "options" to List::class.java,
-            ),
-        )
-        assertFields(
-            ChooseFreeGreatPersonRequest::class.java,
-            linkedMapOf(
-                "requestId" to String::class.java,
-                "epoch" to String::class.java,
-                "decisionHandle" to String::class.java,
-                "unitName" to String::class.java,
-            ),
-        )
-        assertFields(
-            ChooseFreeGreatPersonReceipt::class.java,
-            linkedMapOf(
-                "requestId" to String::class.java,
-                "epoch" to String::class.java,
-                "decisionHandle" to String::class.java,
-                "unitName" to String::class.java,
-                "remainingChoices" to Int::class.javaPrimitiveType,
-            ),
-        )
-    }
-
-    private fun assertFields(type: Class<*>, expected: LinkedHashMap<String, Class<*>?>) {
-        val fields = type.declaredFields.filterNot { Modifier.isStatic(it.modifiers) }
-        assertEquals(expected, fields.associate { it.name to it.type })
-        assertTrue(fields.all { Modifier.isFinal(it.modifiers) })
     }
 
     private fun assertNoEngineObjects(encoded: String) {

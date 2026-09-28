@@ -1,20 +1,21 @@
 """Read an operator's saved match records without contacting or changing the game."""
 
 import datetime as dt
-import hashlib
 import json
-import stat as file_stat
-from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import cast
 
+from sqlalchemy import and_, func, or_, select
+from sqlalchemy.exc import SQLAlchemyError
+
+from civ_agent.diplomacy_view import DiplomaticEvent
+from civ_agent.monitoring import path_for, read_database, record_key, records
 from civ_agent.protocol import JsonObject
 from civ_agent.runner_history import HistoryError, LiveOutput
+from civ_agent.strategy_view import StrategyReader, StrategyView
 from civ_agent.terminal_output import visible_text
-from civ_agent.turn_archive import civilization_directory_name
 
-MAX_FILE_BYTES = 64 * 1024 * 1024
+MAX_EVENT_BATCH = 1000
 MAX_MESSAGE_CHARS = 16000
 MAX_ACTIVITY = 600
 
@@ -28,6 +29,18 @@ class Activity:
     label: str
     text: str
     verbose: bool = False
+    participants: tuple[str, ...] = ()
+    published_at: float = 0
+
+    @property
+    def sort_key(self):
+        # Communications have no wall-clock timestamp. Order them by publication
+        # within their game turn so new messages appear at the live end of the feed.
+        try:
+            timestamp = dt.datetime.fromisoformat(self.time).timestamp()
+        except ValueError:
+            timestamp = self.published_at
+        return self.turn, timestamp, self.key
 
 
 class ActivityOutput:
@@ -39,6 +52,7 @@ class ActivityOutput:
         self.time = ""
         self.verbose = False
         self.open_key = None
+        self.count = 0
 
     def finish_line(self, owner=None):
         self.open_key = None
@@ -50,7 +64,7 @@ class ActivityOutput:
             text = text[:MAX_MESSAGE_CHARS] + "\n… Full text is in the saved history."
         self.entries.append(
             Activity(
-                f"{self.identity}:{len(self.entries):08d}",
+                f"{self.identity}:{self.count:08d}",
                 self.civilization,
                 self.turn,
                 self.time,
@@ -59,6 +73,9 @@ class ActivityOutput:
                 self.verbose and label not in {"Error", "History"},
             )
         )
+
+        self.count += 1
+        self.entries = self.entries[-MAX_ACTIVITY:]
 
     def stream(self, owner, item, civilization, label, value, *, final=False):
         key = (owner, item)
@@ -73,27 +90,29 @@ class ActivityOutput:
             self.finish_line()
 
 
+def consume_activity(output, decoder, event):
+    event = decoder.chunks.expand(event)
+    if event is None:
+        return
+    data = event.get("data", {})
+    if not isinstance(data, dict) or not isinstance(event.get("kind"), str):
+        raise ValueError("Invalid history event")
+    output.time = str(event.get("time", ""))
+    output.verbose = event["kind"] in {
+        "tool_call",
+        "tool_result",
+        "tool_output",
+        "reasoning_summary",
+        "reasoning_summary_delta",
+    } or (event["kind"] in {"developer_message", "user_message"} and data.get("source") == "service_startup")
+    decoder.consume(event)
+
+
 def activities(path: Path, source: JsonObject, lines: list[JsonObject]) -> tuple[Activity, ...]:
     output = ActivityOutput(str(path), source["civilization"], source["gameTurn"])
-    decoder = LiveOutput(
-        source["civilization"], verbose=True, renderer=output, history_path=path.with_name("history.md")
-    )
+    decoder = LiveOutput(source["civilization"], verbose=True, renderer=output, history_path=path)
     for event in lines:
-        event = decoder.chunks.expand(event)
-        if event is None:
-            continue
-        data = event.get("data", {})
-        if not isinstance(data, dict) or not isinstance(event.get("kind"), str):
-            raise ValueError("Invalid history event")
-        output.time = str(event.get("time", ""))
-        output.verbose = event["kind"] in {
-            "tool_call",
-            "tool_result",
-            "tool_output",
-            "reasoning_summary",
-            "reasoning_summary_delta",
-        } or (event["kind"] in {"developer_message", "user_message"} and data.get("source") == "service_startup")
-        decoder.consume(event)
+        consume_activity(output, decoder, event)
     return tuple(output.entries[-MAX_ACTIVITY:])
 
 
@@ -105,6 +124,10 @@ class WatchSnapshot:
     activity: tuple[Activity, ...]
     errors: tuple[str, ...]
     updated_at: float | None
+    diplomacy: tuple[DiplomaticEvent, ...] = ()
+    negotiation: JsonObject | None = None
+    diplomacy_available: bool = False
+    strategies: tuple[StrategyView, ...] = ()
 
     @property
     def epoch(self):
@@ -131,100 +154,126 @@ class WatchSnapshot:
 class WatchReader:
     def __init__(self, root: Path):
         self.root = root
-        self.cache: dict[Path, tuple[tuple, object]] = {}
-        self.used: set[Path] = set()
-        self.errors: list[str] = []
-        self.updated_at: float | None = None
+        self.path = path_for(root)
+        self.identity = None
+        self.revision = 0
+        self.documents = {}
+        self.turns = {}
+        self.streams = {}
+        self.diplomacy = {}
+        self.review_jobs = {}
+        self.strategy_reader = StrategyReader(root)
+        self.cache = {}
+        self.errors = []
+        self.updated_at = None
+        self.previous = WatchSnapshot({}, {}, (), (), (), None)
 
-    def load[T](self, path: Path, parse: Callable[[bytes], T], default: T) -> T:
-        self.used.add(path)
-        previous = self.cache.get(path)
-        try:
-            stat = path.stat()
-            if not file_stat.S_ISREG(stat.st_mode):
-                raise ValueError("Expected a regular record file")
-            self.updated_at = max(self.updated_at or 0, stat.st_mtime)
-            signature = (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns)
-            if previous and signature == previous[0]:
-                return cast(T, previous[1])
-            if stat.st_size > MAX_FILE_BYTES:
-                raise ValueError("Record exceeds the viewer's 64 MiB limit")
-            with path.open("rb") as stream:
-                body = stream.read(MAX_FILE_BYTES + 1)
-            if len(body) > MAX_FILE_BYTES:
-                raise ValueError("Record exceeds the viewer's 64 MiB limit")
-            value = parse(body)
-            self.cache[path] = (signature, value)
-            return value
-        except FileNotFoundError:
-            # Records may not exist during launch, or while a new attempt is being published.
-            return default
-        except (OSError, ValueError, TypeError, KeyError, HistoryError) as error:
-            self.errors.append(f"{path.relative_to(self.root)}: {type(error).__name__}; showing last readable records")
-            return cast(T, previous[1]) if previous else default
-
-    def document(self, path) -> JsonObject:
-        def parse(body):
-            value = json.loads(body)
-            if not isinstance(value, dict):
-                raise ValueError("Expected an object")
-            return value
-
-        return self.load(path, parse, {})
-
-    @staticmethod
-    def json_lines(body) -> list[JsonObject]:
-        values = []
-        for line in body.splitlines(keepends=True):
-            if not line.endswith(b"\n"):
-                # Appending processes can expose an unfinished final record. Read it next time.
-                break
-            value = json.loads(line)
-            if not isinstance(value, dict):
-                raise ValueError("Expected an object")
-            values.append(value)
-        return values
-
-    def history(self, epoch, civilization, turn, activation) -> tuple[Activity, ...]:
-        try:
-            player = civilization_directory_name(civilization)
-            attempt = civilization_directory_name(activation)
-        except ValueError:
-            self.errors.append("Invalid history identity; skipped")
+    def history(self, db, epoch, civilization, turn, activation):
+        key = record_key(epoch, civilization, activation)
+        source = self.streams.get(key)
+        if source is None:
             return ()
-        directory = self.root / "runner/history" / player / f"turn_{turn}" / f"attempt_{attempt}"
-        if not directory.exists():
-            # The first history format used hashes rather than readable turn directories.
-            directory = self.root / "runner/history"
-            for component in (epoch, civilization, activation):
-                directory /= hashlib.sha256(component.encode()).hexdigest()
-        source = self.document(directory / "source.json")
-        if not source:
+        if source != dict(epoch=epoch, civilization=civilization, gameTurn=turn, activationId=activation):
+            self.errors.append("History belongs to another turn or player; skipped")
             return ()
-        if any(
-            source.get(k) != v
-            for k, v in {"epoch": epoch, "civilization": civilization, "activationId": activation}.items()
-        ):
-            self.errors.append("History belongs to another match epoch or player; skipped")
-            return ()
-        if source.get("gameTurn", turn) != turn:
-            self.errors.append("History turn does not match its records; skipped")
-            return ()
-        source = {**source, "gameTurn": turn}
-        path = directory / "events.jsonl"
-        return self.load(path, lambda body: activities(path, source, self.json_lines(body)), ())
+        if key not in self.cache:
+            output = ActivityOutput(key, civilization, turn)
+            self.cache[key] = (output, LiveOutput(civilization, verbose=True, renderer=output), 0)
+        output, decoder, cursor = self.cache[key]
+        values = db.execute(
+            select(records.c.payload, records.c.updated_ms)
+            .where(
+                records.c.collection == "events",
+                records.c.epoch == epoch,
+                records.c.civilization == civilization,
+                records.c.activation == activation,
+                records.c.sequence >= cursor,
+            )
+            .order_by(records.c.sequence)
+            .limit(MAX_EVENT_BATCH)
+        )
+        for value, updated_ms in values:
+            event = json.loads(value)
+            if event.get("sequence") != cursor:
+                raise HistoryError("History event sequence has a gap")
+            if not isinstance(event.get("data"), dict):
+                raise ValueError("Invalid history event")
+            consume_activity(output, decoder, event)
+            self.updated_at = max(self.updated_at or 0, updated_ms / 1000)
+            cursor += 1
+            self.cache[key] = (output, decoder, cursor)
+        return tuple(output.entries)
 
     def read(self, selected: tuple[str, int] | None = None) -> WatchSnapshot:
-        self.used, self.errors, self.updated_at = set(), [], None
-        run = self.document(self.root / "runner/run.json")
-        result = self.document(self.root / "telemetry/game-result.json")
+        self.errors = []
+        try:
+            stat = self.path.stat()
+            identity = (stat.st_dev, stat.st_ino)
+            if self.identity != identity:
+                self.identity = identity
+                self.revision = 0
+                self.updated_at = None
+                self.documents, self.turns, self.streams, self.cache = {}, {}, {}, {}
+                self.diplomacy = {}
+                self.review_jobs = {}
+                self.strategy_reader = StrategyReader(self.root)
+            with read_database(self.path) as db:
+                snapshot = self._read(db, selected)
+            strategies = self.strategy_reader.read(
+                snapshot.run.get("sessions", {}),
+                snapshot.epoch,
+                [value["job"] for value in self.review_jobs.values()],
+            )
+            self.previous = replace(snapshot, strategies=strategies)
+            return self.previous
+        except FileNotFoundError:
+            return WatchSnapshot({}, {}, (), (), (), None)
+        except (OSError, ValueError, TypeError, KeyError, HistoryError, SQLAlchemyError) as error:
+            return replace(
+                self.previous, errors=(f"Monitoring database: {type(error).__name__}; showing last readable records",)
+            )
+
+    def _read(self, db, selected):
+        changes = db.execute(
+            select(records)
+            .where(
+                or_(
+                    records.c.collection.in_(["state", "turns", "streams", "diplomacy"]),
+                    and_(
+                        records.c.collection == "jobs",
+                        func.json_extract(records.c.payload, "$.job.purpose") == "review",
+                    ),
+                ),
+                records.c.revision > self.revision,
+            )
+            .order_by(records.c.revision)
+        ).mappings()
+        for row in changes:
+            collection = {
+                "state": self.documents,
+                "turns": self.turns,
+                "streams": self.streams,
+                "diplomacy": self.diplomacy,
+                "jobs": self.review_jobs,
+            }[row["collection"]]
+            value = json.loads(row["payload"])
+            if not isinstance(value, dict):
+                raise ValueError("Expected an object")
+            collection[row["key"]] = (
+                DiplomaticEvent.from_record(value, row["revision"], row["updated_ms"] / 1000)
+                if row["collection"] == "diplomacy"
+                else value
+            )
+            self.revision = row["revision"]
+            self.updated_at = max(self.updated_at or 0, row["updated_ms"] / 1000)
+        run = self.documents.get("run", {})
+        result = self.documents.get("result", {})
         epoch = run.get("epoch") or result.get("epoch")
         if result and result.get("epoch") != epoch:
             self.errors.append("Telemetry belongs to another epoch; waiting for current records")
             result = {}
-        records = self.load(self.root / "telemetry/turns.jsonl", self.json_lines, [])
         turns = {}
-        for record in records:
+        for record in self.turns.values():
             turn = record.get("turn")
             if not isinstance(turn, dict) or turn.get("epoch") != epoch:
                 continue
@@ -235,7 +284,7 @@ class WatchReader:
             ):
                 self.errors.append("Malformed turn telemetry; skipped")
                 continue
-            turns[turn["handoff"]] = record  # Exports replace previous accounting for an existing turn.
+            turns[turn["handoff"]] = record  # Later revisions replace accounting for an existing turn.
         ordered = tuple(turns[key] for key in sorted(turns))
         wanted: dict[tuple[str, int], list[str]] = {}
         counts: dict[str, int] = {}
@@ -259,11 +308,57 @@ class WatchReader:
         if isinstance(epoch, str):
             for (civilization, turn), attempts in wanted.items():
                 for activation in dict.fromkeys(a for a in attempts if isinstance(a, str)):
-                    entries.extend(self.history(epoch, civilization, turn, activation))
-        self.cache = {path: value for path, value in self.cache.items() if path in self.used}
-        entries.sort(key=lambda entry: (entry.time, entry.key))
+                    entries.extend(self.history(db, epoch, civilization, turn, activation))
+        used = {
+            record_key(epoch, civilization, activation)
+            for (civilization, _), attempts in wanted.items()
+            for activation in attempts
+        }
+        self.cache = {key: value for key, value in self.cache.items() if key in used}
+        diplomacy = tuple(e for e in self.diplomacy.values() if e.epoch == epoch)
+        latest_turn = max((r["turn"]["gameTurn"] for r in ordered), default=0)
+        if type((run.get("inFlight") or {}).get("gameTurn")) is int:
+            latest_turn = max(latest_turn, run["inFlight"]["gameTurn"])
+        for event in diplomacy:
+            if not event.visible or event.turn is None:
+                continue
+            if selected is not None:
+                if selected[0] not in event.participants or event.turn != selected[1]:
+                    continue
+            elif event.turn < latest_turn - 1:
+                continue
+            if event.kind == "trade" and event.body.get("status") == "SUPERSEDED":
+                continue
+            text = event.headline
+            if event.body.get("failure"):
+                text += " Reason: " + event.body["failure"]
+            text = text[:300] + ("… (Diplomacy tab has the full text)" if len(text) > 300 else "")
+            label = "Social promise" if event.kind in {"offer", "consent"} else "Diplomacy"
+            entries.append(
+                Activity(
+                    f"diplomacy:{event.order:012d}",
+                    event.author,
+                    event.turn,
+                    "",
+                    label,
+                    text,
+                    participants=event.participants,
+                    published_at=event.published_at,
+                )
+            )
+        entries.sort(key=lambda entry: entry.sort_key)
+        diplomatic_state = self.documents.get("diplomacy", {})
+        available = diplomatic_state.get("epoch") == epoch and epoch is not None
         return WatchSnapshot(
-            run, result, ordered, tuple(entries[-MAX_ACTIVITY:]), tuple(dict.fromkeys(self.errors)), self.updated_at
+            run,
+            result,
+            ordered,
+            tuple(entries[-MAX_ACTIVITY:]),
+            tuple(dict.fromkeys(self.errors)),
+            self.updated_at,
+            diplomacy,
+            diplomatic_state.get("activeNegotiation") if available else None,
+            available,
         )
 
 

@@ -84,7 +84,7 @@ and retry rules. It cannot be counteroffered into different terms. A social chat
 promise does not sign it. An incoming native friendship popup is also readable:
 `RESPOND_FRIENDSHIP` takes its alert handle and `Accept` or `Decline`, after reading
 the full decision. Accepting either path records a `DECLARE_FRIENDSHIP` engine
-outcome and invalidates affected gameplay plans.
+outcome and adds advisory notices to relevant private assessments.
 
 The model supplies only the proposal ID and decision when accepting:
 
@@ -124,7 +124,7 @@ negotiation retains the settings with which it began.
 
 ## Execution and recovery
 
-Trade computation and messages remain asynchronous, while gameplay waits for the
+Shared human/agent trade computation and messages remain asynchronous, while gameplay waits for the
 negotiation to close. A gameplay offer call returns the settled canonical proposal.
 The service waits through HTTPS long-polling outside its dispatch lock and memory
 actor; separate communication jobs, including the initiating civilization's job,
@@ -133,22 +133,40 @@ after their own command. No model polls or repeatedly restarts to wait for repli
 Ordinary gameplay timeout accounting excludes this service wait; heartbeat leases,
 the negotiation deadline and whole-match time limits still apply.
 
-Routine communication starts with `chat_read`. Its compact `context` contains
-the current turn, that player's scenario role, own economic totals and known
+Routine communication prepares `chat_read(includeContext=true)`. Its top-level
+`turn` and compact `context` contain that player's scenario role, own economic totals and known
 diplomatic relations. Exact quantities and terms come from the trade tools. The
 full `player_turn` view remains available on demand for questions that need map
 or city detail; negotiation does not require fetching its action menus.
+Gameplay startup omits this extra context because it already prepares the turn
+overview. Both use current offers, pending trade IDs and active agreement summaries
+by default. `includeHistory=true` explicitly requests the retained ledger;
+selected old messages/terms remain available through history and detail tools.
+Native AI offers belong to the gameplay agent. Their proposal and completion
+events are recorded without communication wake-ups, and native offers are omitted
+from communication inboxes. Native agreement endings also wait for gameplay.
+Both new native offers and responses to existing ones require a gameplay job;
+the gateway enforces this even when a communication job is already running.
+Gameplay's prepared `chat_read` retains their pending IDs, alongside the turn
+overview's native decision blockers. No native trade terms or legality rules change.
 
-If another job changes a relevant private plan or observation before dispatch,
+If another job changes a required command observation before dispatch,
 the gateway returns `STALE_ASSUMPTIONS` with `applied: false`, `recoverable: true`,
 the changed record keys and `recovery.reads`. No command was sent. The agent reads
 those records, reconsiders the affected action and either makes a fresh decision
 or skips work already completed by the other job. A second stale rejection of the
 same operation stops the run with `REPEATED_STALE_ASSUMPTIONS` and durable
-diagnostics; it cannot be deferred to continue the benchmark. Unrelated messages do not invalidate a
-plan. Replaying the rejected call returns the same rejection even after a refresh;
+diagnostics; it cannot be deferred to continue the benchmark. Private assessments
+and their review notices do not independently block commands. Replaying the
+rejected call returns the same rejection even after a refresh;
 it cannot execute an obsolete decision. Uncertain transmitted requests still
 stop the job and require receipt reconciliation.
+
+If gameplay and communication both accept the same shared proposal, a stale acceptance
+first checks its current status with the host. When that exact proposal version
+is already `ENACTED`, it reaches the native handler, which returns the existing
+outcome without repeating transfers. Pending offers, changed versions and other
+decisions still use the stale-state recovery checks above.
 
 The non-current participant can counteroffer or consent without switching Unciv's
 active player. A new negotiation requires the current player and running gameplay.
@@ -180,8 +198,8 @@ Proposal versions live at `communication.trades.proposals` inside the private ho
 checkpoint. Recipient events, observed terms and confirmed receipts enter the
 existing private memory/history system. `chat_read` includes compact trade IDs and
 statuses; full details are on demand. Agents can cite `observation:trade/<ID>` in
-their notes. Whole-match rollback restores these host records, the engine and each
-player's memory together under the existing new-epoch recovery protocol.
+their notes. Rewinding an interrupted turn restores these host records, the engine
+and each player's memory together under a new epoch. Completed turns stay committed.
 
 ## Playable verification scenario
 
@@ -207,7 +225,7 @@ Engine tests cover owned friendship popup responses and traded-city disposition
 authority, including stale decisions and original-owner war restrictions.
 
 `NegotiationProbe` verifies the shared counteroffer cap, blocked game commands and
-legacy mutations, private pause metadata, terminal decisions, persistent deadlines,
+player commands, private pause metadata, terminal decisions, persistent deadlines,
 unattended expiry and resumed gameplay. `EngineTradeProbe` performs authenticated
 HTTPS negotiation while Rome retains the same gameplay activation. Greece counters
 out of turn, and Rome accepts through communication. It checks exact canonical

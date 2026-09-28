@@ -58,9 +58,10 @@ code supplies request IDs, credentials and revisions for their commands.
 - `player_result`: your victory/defeat result and pending combat reports, also available
   after scheduling stops. Combat fields, orders and capture choices are documented in
   [basic combat](Combat.md).
-- Existing summary and prototype tools remain available during migration. Their
-  mutation tools are disabled when durable checkpoints are enabled; use
-  `player_command` in that mode.
+- `player_summary`, `owned_cities` and `free_great_person_choice` provide small
+  native queries. Renaming and free Great Person selection use `player_command`
+  with `RENAME_CITY` and `CHOOSE_FREE_GREAT_PERSON`; there are no separate mutation
+  endpoints or receipt caches for these actions.
 
 Example, with values copied from `player_turn`:
 
@@ -85,7 +86,7 @@ Copy identifiers from the latest observation instead of predicting values. The
 game epoch is a compact random identifier beginning with `g`, separating counters
 in independent games. Credentials are separate from these references.
 
-Checkpoint format 2 persists handles, counters and report identities. Restart
+Checkpoint format 6 persists handles, counters and report identities. Restart
 preserves them. Rollback restores game state while retaining every player's
 highest issued counters, so discarded handles and revisions cannot identify new
 objects or authorize stale commands. Older checkpoint formats require a new game.
@@ -257,17 +258,17 @@ When the supervisor resumes an interrupted attempt, it first checks the committe
 handoff counter. A completed `END_TURN` is retained even if its response was lost.
 A committed terminal victory is also retained, even without a handoff; its final
 commands are archived and each player receives its own result over HTTPS.
-Otherwise the authenticated operator `rollback` operation restores the full
-turn-start game and receipt state, rotates stale-state revisions and revokes old
-temporary credentials. Commands from the discarded attempt are no longer effects
-of the current game, even if they returned successful receipts before interruption.
-The match epoch stays the same. The next attempt uses a fresh conversation, while
-failed-attempt logs remain available for inspection and outside turn-summary memory.
-Rollback requires the current lease, epoch, server instance, handoff, active
-civilization and activation ID. Its durable attempt binding prevents delayed retries
-from resetting a newer attempt; it is not a player API operation. A `HALTED` host rejects rollback:
-restart it from the durable checkpoint before resuming the supervisor, so an
-uncertain checkpoint write cannot cause a committed handoff to be undone.
+Otherwise the scheduler restores the coordinated start-of-turn boundary through
+operator `barrier`, `snapshot`, `restore`, `rotate_players` and `restore_complete`
+operations and the corresponding agent-service endpoints. The game, communication
+and private state rewind together under a new epoch. Commands from the discarded
+attempt no longer have effects, even if they previously returned receipts.
+
+The native host rejects a boundary whose handoff has already committed and never
+rewinds a terminal victory. A `HALTED` host must restart from disk before recovery.
+A restore journal keeps a partially restored match fenced until explicit resume
+finishes it. Historical round checkpoints and the host-only rollback endpoint have
+been removed. See [turn recovery](../architecture/Turn-recovery.md).
 See [automatic recovery](../guides/Automatic-turns.md#pause-inspect-and-resume).
 
 ## Limits of this implementation
@@ -282,8 +283,11 @@ mission operations below. Worker automation, road-connection orders and remainin
 instant improvements are outstanding. Citizen specialists, focus changes, tile
 purchases and Gold construction purchases are supported; other currencies and
 full city controls remain incomplete.
-Explored terrain and ownership follow the map UI's current data; improvement names
-use Unciv's remembered values. This is not a complete historical map snapshot. Consult
+Explored terrain, ownership and infrastructure use current or last-seen facts,
+including discoveries during intermediate movement steps. Technology can reveal
+resources in explored fog without refreshing hidden mutable facts. Improvement
+names also retain Unciv's permitted remembered values. Loaded saves can contain
+explored tiles whose mutable facts the host has never observed. Consult
 the coverage ledger for the remaining work.
 
 ## Great People and on-demand research/policy details

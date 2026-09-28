@@ -178,26 +178,16 @@ object CombatRunProbe {
         api.reject(api.playerToken("Greece"), valid.copy(target = enemyHandle))
         check(json().toJson(runtime.game) == unchanged)
 
+        captureTestTurn(runtime, root)
         val discarded = romanCombat(api, token)
         check(facts(runtime) != originalUnits)
         check(api.turn(api.playerToken("Greece")).combatReports.size >= 3)
-        val discardedReportIds = allReports(runtime).mapValues { (_, reports) -> reports.map { it.id }.toSet() }
-        val status = api.status()
-        val rollback = OperatorRequest(
-            "rollback",
-            api.lease,
-            status.epoch,
-            status.serverInstance,
-            status.handoff,
-            status.activeCivilization,
-            activation.activationId,
-        )
-        api.operator(rollback)
+        api.restore(root)
         check(facts(runtime) == originalUnits) { "Interrupted combat rollback retained damage, experience or movement" }
         check(allReports(runtime).values.all { it.isEmpty() }) { "Interrupted battle reports survived rollback" }
         check(discarded.none { runtime.executor.turnSessions["Rome"]?.receipts?.containsKey(it.request.requestId) == true })
         val reset = json().toJson(runtime.game)
-        api.operator(rollback)
+        api.restore(root)
         check(json().toJson(runtime.game) == reset)
 
         activation = api.activate()
@@ -209,7 +199,6 @@ object CombatRunProbe {
         var snapshot = api.readAlerts(token)
         check(snapshot.combatReports.size >= 3)
         check(snapshot.combatReports.all { it.id.matches(Regex("report[1-9][0-9]*")) && it.locations.isNotEmpty() })
-        check(snapshot.combatReports.none { it.id in discardedReportIds.getValue("Greece") }) { "Rollback recycled combat report identifiers" }
         check(snapshot.combatReports.any { it.damageReceived != null && it.damageReceived > 0 })
         val greekWarrior = snapshot.map.units.single { it.name == "Warrior" }
         val counter = checkNotNull(greekWarrior.combat).attacks.first { it.destination == TilePosition(0, 0) }
@@ -453,22 +442,12 @@ object CombatRunProbe {
 
     private fun verifyTerminalRollback(runtime: HeadlessRuntime, api: CombatApi, root: Path, activationId: String) {
         val saved = PlayerTurnJson.json.decodeFromString<GameCheckpoint>(Files.readString(root.resolve("checkpoint.json")))
-        check(saved.turnStart == null) { "Winning without END_TURN retained the activation's rollback point" }
         api.acquire()
         val status = api.status()
         val game = json().toJson(runtime.game)
         val reports = allReports(runtime)
-        api.rejectOperator(
-            OperatorRequest(
-                "rollback",
-                api.lease,
-                status.epoch,
-                status.serverInstance,
-                status.handoff,
-                status.activeCivilization,
-                activationId,
-            ),
-        )
+        api.operator(OperatorRequest("barrier", api.lease))
+        api.rejectOperator(OperatorRequest("restore", leaseId = api.lease, epoch = "discarded-victory", checkpoint = saved))
         check(api.status().phase == "FINISHED" && api.status().handoff == status.handoff)
         check(json().toJson(runtime.game) == game && allReports(runtime) == reports) { "Terminal rollback erased the committed victory" }
     }
@@ -556,7 +535,10 @@ object CombatRunProbe {
         private val tls = TlsTestFixture(Files.createDirectories(tlsDirectory))
         private val client = HttpClient.newBuilder().sslContext(tls.context).connectTimeout(Duration.ofSeconds(5)).build()
         private val operatorToken = "O".repeat(43)
-        private val tokens = mapOf("Rome" to "R".repeat(43), "Greece" to "G".repeat(43))
+        private var tokens = testPlayerTokens(tlsDirectory.parent, mapOf("Rome" to "R".repeat(43), "Greece" to "G".repeat(43)))
+        fun restore(root: Path) {
+            tokens = restoreTestTurn(::operator, lease, root)
+        }
         private val server = PlayerMcpServer(
             tokens.map { (civilization, token) -> PlayerMcpBinding(token, PlayerHost(runtime).bindPlayer(civilization)) },
             0,

@@ -1,5 +1,10 @@
 # Ordinary Vanilla game
 
+For a complete local match, use `civ-agent game start`; see
+[the full-game guide](Full-vanilla-run.md) for map, roster and resume options.
+The steps below are for starting and controlling services individually.
+
+
 Without `--scenario`, a new host creates an ordinary game between **Rome, Greece,
 and France**. Each civilization's objective is **to win the game**. Gameplay and
 communication jobs use this objective, choose their own strategy, and preserve

@@ -8,6 +8,7 @@ import uncivai.player.PlayerSessionException
 import uncivai.player.PlayerSessionFailure
 import uncivai.player.PlayerTurnJson
 import uncivai.player.VictoryProgress
+import uncivai.player.VictoryProgressRequest
 import java.nio.file.Files
 import java.nio.file.Path
 
@@ -43,6 +44,9 @@ object VictoryProgressProbe {
             check(initial.score == rome.calculateTotalScore().toInt())
             check(initial.maxTurns == game.gameParameters.maxTurns)
             check(initial.victories.single { it.name == "Scientific" }.milestones.map { it.status } == listOf("Current", "Incomplete"))
+            val plannedParts = initial.victories.single { it.name == "Scientific" }.milestones.last().parts
+            check(plannedParts.sumOf { it.required } == 6 && plannedParts.all { it.completed == 0 })
+            check(plannedParts.single { it.name == "SS Booster" }.required == 3)
             // Changing an unmet rival's score and private science milestone must not affect this view.
             runtime.executor.accessGame {
                 france.addGold(10000)
@@ -79,11 +83,11 @@ object VictoryProgressProbe {
                 val token = api.playerToken("Rome")
                 val https = PlayerTurnJson.json.decodeFromString<VictoryProgress>(api.tool(token, "victory_progress").toString())
                 check(https == advanced)
-                val selected = session.victoryProgress(listOf("Scientific"))
+                val selected = session.victoryProgress(VictoryProgressRequest(names = listOf("Scientific")))
                 check(selected.victories.single() == scientific)
                 check(selected.rivals.single().nextMilestones.keys == setOf("Scientific"))
                 try {
-                    session.victoryProgress(listOf("not an enabled victory"))
+                    session.victoryProgress(VictoryProgressRequest(names = listOf("not an enabled victory")))
                     error("Unknown victory accepted")
                 } catch (error: PlayerSessionException) {
                     check(error.reason == PlayerSessionFailure.INVALID_ARGUMENT)

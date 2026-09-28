@@ -9,20 +9,26 @@ WebSocket.
 flowchart TB
     subgraph Operator["Operator tools"]
         Scheduler["Scheduler<br/>Turns, leases and job budgets"]
-        Recovery["RoundCoordinator<br/>Round checkpoints and emergency restore"]
-        Manifests[("Complete round manifests<br/>Host snapshot and private-memory references")]
+        Recovery["TurnCoordinator<br/>Capture and rewind the active turn"]
+        Manifests[("Current turn boundary<br/>Host snapshot and private-memory references")]
+        Monitoring[("Monitoring SQLite<br/>Events, run state and telemetry")]
+        Export["Explicit history export"]
+        Files["Readable reports<br/>Conversations, notebooks and telemetry"]
         Scheduler --> Recovery
         Recovery --> Manifests
+        Scheduler --> Monitoring
+        Monitoring --> Export
+        Export --> Files
     end
 
     subgraph Civilization["Civilization service — repeated for each player"]
         Control["AgentService · HTTPS /agent<br/>Activation and process lifecycle"]
         Chat["ChatRuntime<br/>Independent event receiver and batched dispatch"]
-        Memory[("CivilizationState · private SQLite<br/>Evidence, plans, jobs, inbox and exact receipts")]
+        Memory[("CivilizationState · private SQLite<br/>Evidence, assessments, jobs, inbox and exact receipts")]
         Gameplay["Codex gameplay job<br/>Fresh selected context"]
         Conversation["Codex communication job<br/>Can run outside the player's game turn"]
         Gateway["ProposalGateway · HTTPS /mcp<br/>Job permissions, credentials, request IDs,<br/>dependency checks and retries"]
-        Files["Readable exports<br/>SOUL, strategy, relationships,<br/>chat, turn summaries and receipts"]
+        Journal[("Private event journal<br/>Authenticated stream and saved note context")]
 
         Control --> Chat
         Control -->|"Dispatch without waiting for completion"| Gameplay
@@ -33,9 +39,9 @@ flowchart TB
         Gameplay <-->|"HTTPS tool calls and results"| Gateway
         Conversation <-->|"HTTPS tools; communication and memory writes"| Gateway
         Gateway <-->|"Short state transactions"| Memory
-        Memory -->|"Generate memory and receipt views"| Files
-        Control -->|"Capture job history"| Files
-        Chat -->|"Capture communication history"| Files
+        Memory -->|"Read-only notebook export"| Export
+        Control -->|"Capture job history"| Journal
+        Chat -->|"Capture communication history"| Journal
     end
 
     subgraph Host["Trusted Kotlin host"]
@@ -54,6 +60,8 @@ flowchart TB
     end
 
     Scheduler <-->|"HTTPS control and status"| Control
+    Journal -->|"Authenticated event pages"| Scheduler
+    Executor -->|"Changed telemetry rows after checkpoint"| Monitoring
     Scheduler <-->|"HTTPS authority and budgets"| OperatorAPI
     Gateway <-->|"HTTPS observations, commands and receipts"| PlayerAPI
     Chat <-->|"HTTPS event long polling and job permits"| PlayerAPI
@@ -64,13 +72,18 @@ flowchart TB
 Only application code waits for events. Gameplay and communication computations
 can overlap while memory transactions and action approval remain serialized.
 Communication jobs can inspect permitted game information, but cannot issue
-gameplay commands. Models select actions and entity IDs; the gateway supplies
+gameplay commands or act on native AI trade/friendship offers. Those offers and
+their outcomes stay in the gameplay inbox and do not wake communication jobs.
+Shared human/agent negotiations still wake their participants asynchronously.
+Models select actions and entity IDs; the gateway supplies
 transport credentials, request identities and observed versions.
 
-Normal interruption preserves confirmed work. The dashed recovery paths represent
-coordinated checkpointing and explicit whole-match restoration; restore creates a
-new epoch, rotates credentials, restores all private memory views and retains usage
-accounting. The manifest is published only after every component is durable.
+Explicit resume rewinds an interrupted active turn. The dashed recovery paths
+capture and restore the game, shared communications and every player's private
+state together. Restore creates a new epoch, rotates credentials and retains
+usage accounting. Completed turns stay committed; pending strategic reviewers restart
+from frozen inputs. The current boundary is published only after every component
+is durable. See [turn recovery](Turn-recovery.md).
 
 See the [implementation guide](../guides/Chat-memory-and-recovery.md) for launch commands,
 memory layout, verification and remaining coverage/isolation limits.

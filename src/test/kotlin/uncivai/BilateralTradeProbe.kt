@@ -13,6 +13,7 @@ import kotlinx.serialization.json.jsonPrimitive
 import uncivai.player.PlayerHost
 import uncivai.player.TurnCommandKind
 import uncivai.player.TurnCommandRequest
+import java.nio.file.Files
 import java.nio.file.Path
 
 /** Exact native effects, including off-turn consent, city authority and durable retries. */
@@ -21,6 +22,7 @@ object BilateralTradeProbe {
     fun main(args: Array<String>) {
         val root = Path.of(args[0])
         val checkpoint = root.resolve("game.json")
+        val interrupted = root.resolve("interrupted.json")
         lateinit var friendship: JsonObject
         lateinit var cityOffer: JsonObject
         lateinit var accepted: JsonObject
@@ -155,6 +157,7 @@ object BilateralTradeProbe {
                 check(api.turn(api.playerToken("Greece")).cities.any { it.name == "Antium" })
                 check(calls.options()["activeAgreements"]!!.toString().contains(cityOffer["name"]!!.jsonPrimitive.content))
                 check(api.communicate(api.playerToken("Greece"), request) == accepted)
+                Files.copy(checkpoint, interrupted)
                 api.finishTurn(active)
                 api.finishTurn(checkNotNull(api.activate().playerToken))
             }
@@ -173,7 +176,14 @@ object BilateralTradeProbe {
             }
             runtime.executor.pause()
             runtime.executor.communicationPaused = true
-            runtime.executor.restoreRound(restorePoint, "bilateral-restored")
+            val failure = runCatching { runtime.executor.restoreTurn(restorePoint, "completed-turn") }.exceptionOrNull()
+            check(failure is OperatorFailure && failure.code == "TURN_ALREADY_COMMITTED")
+            check(greece.cities.any { it.id == cityId })
+        }
+        HeadlessRuntime.loadCheckpoint(interrupted, root.resolve("interrupted-restart")).use { runtime ->
+            runtime.executor.pause()
+            runtime.executor.communicationPaused = true
+            runtime.executor.restoreTurn(restorePoint, "bilateral-restored")
             runtime.executor.accessGame { game ->
                 check(game.getCivilization("Rome").cities.any { it.id == cityId })
                 check(game.getCivilization("Greece").cities.none { it.id == cityId })

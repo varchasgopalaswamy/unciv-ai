@@ -6,5 +6,8 @@ for current behavior.
 
 ## Reports
 
+- [Routine strategic review — France, September 28, 2026](reports/Strategic-review-France-2026-09-28.md)
+- [Agent API consistency audit — September 26, 2026](reports/Agent-api-consistency-audit-2026-09-26.md)
+- [Strategy and handoff evaluation — September 25, 2026](reports/Strategy-handoff-evaluation-2026-09-25.md)
 - [Private notebook redesign — September 23, 2026](reports/Notebook-redesign-2026-09-23.md)
 - [Tactical and memory evaluation — September 23, 2026](reports/Tactical-memory-evaluation-2026-09-23.md)

@@ -5,6 +5,7 @@ from typing import Annotated, Literal
 
 from pydantic import Field, field_validator
 
+from civ_agent.construction_estimates import ESTIMATE_BASIS, city_construction_data
 from civ_agent.protocol import JsonObject
 from civ_agent.schemas import BoundaryModel
 
@@ -64,7 +65,14 @@ UNIT_FIELDS = {
 }
 CITY_FIELDS = {
     "status": ("captureOptions",),
-    "production": ("constructionQueue", "constructionOptions", "constructionChoice", "development.constructions"),
+    "production": (
+        "constructionQueue",
+        "constructionOptions",
+        "constructionChoice",
+        "productionConversions",
+        "constructionEstimates",
+        "development.constructions",
+    ),
     "citizens": (
         "development.unassignedPopulation",
         "development.foodStored",
@@ -95,7 +103,7 @@ CITY_FIELDS = {
         "management.buildingSales",
     ),
     "purchases": ("purchases",),
-    "combat": ("attacks",),
+    "combat": ("attacks", "health", "maxHealth", "defensiveStrength"),
 }
 UNIT_IDENTITY = (
     "handle",
@@ -120,7 +128,12 @@ CITY_IDENTITY = (
 
 def project_entity(entity: JsonObject, tool: str, sections: list[str]) -> JsonObject:
     if "all" in sections:
-        return copy.deepcopy(entity)
+        result = copy.deepcopy(entity)
+        if tool == "city_details":
+            city_construction_data(result)
+            if result.get("constructionEstimates"):
+                result["constructionEstimateBasis"] = ESTIMATE_BASIS
+        return result
     fields = UNIT_FIELDS if tool == "unit_details" else CITY_FIELDS
     paths = list(UNIT_IDENTITY if tool == "unit_details" else CITY_IDENTITY)
     paths.extend(path for section in sections for path in fields[section])
@@ -136,6 +149,15 @@ def project_entity(entity: JsonObject, tool: str, sections: list[str]) -> JsonOb
         else:
             if parts[-1] in source:
                 target[parts[-1]] = copy.deepcopy(source[parts[-1]])
+    if tool == "city_details" and "constructionEstimates" in projected:
+        projected["constructionEstimates"] = {
+            name: estimate
+            for name, estimate in projected["constructionEstimates"].items()
+            if name in entity.get("constructionQueue", [])
+        }
+        projected["constructionEstimateBasis"] = ESTIMATE_BASIS
+    if tool == "city_details":
+        city_construction_data(projected)
     return projected
 
 
@@ -160,6 +182,7 @@ CITY_COMMAND_SECTIONS = {
     "REMOVE_CONSTRUCTION": "production",
     "MOVE_CONSTRUCTION": "production",
     "BUY_TILE": "purchases",
+    "BUY_CONSTRUCTION": "purchases",
     "SELL_BUILDING": "economy",
     "CITY_ATTACK": "combat",
     "MANAGE_CAPTURED_CITY": "status",

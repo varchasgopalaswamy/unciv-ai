@@ -13,6 +13,8 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+from civ_agent.monitoring import path_for, read_collection, read_record
+from civ_agent.runner_history import EventHistory, render_markdown
 from civ_agent.scheduler import atomic_json
 from tests.concurrent_trade_host import ConcurrentTradeHost
 from tests.support import match_command
@@ -158,7 +160,7 @@ class SchedulerServiceTest(unittest.TestCase):
         )
 
     def saved(self):
-        return json.loads((self.state_dir / "runner/run.json").read_text())
+        return read_record(path_for(self.state_dir), "state", "run") or {}
 
     def records(self):
         return [json.loads(line) for line in self.trace.read_text().splitlines()]
@@ -170,16 +172,19 @@ class SchedulerServiceTest(unittest.TestCase):
         self.assertEqual("complete", self.saved()["status"])
         self.assertEqual(0, self.saved()["handoffs"])
         self.assertEqual(1, len(self.host.plays))
-        self.assertEqual([], self.host.rollbacks)
+        self.assertEqual([], self.host.restores)
         self.assertEqual(1, sum(record["method"] == "turn/start" for record in self.records()))
         for civilization in ("Rome", "Greece"):
             workspace = self.state_dir / "agents" / civilization
-            delivered = json.loads((workspace / "result.json").read_text())
+            delivered = json.loads((self.state_dir / "agent-services" / civilization / "result.json").read_text())
             self.assertEqual(civilization, delivered["civilization"])
             self.assertEqual("Victory" if civilization == "Rome" else "Defeat", delivered["result"]["outcome"])
-            self.assertIn(civilization + " permitted report", (workspace / "result.md").read_text())
-        turn = json.loads((self.state_dir / "agents/Rome/turn_0/turn.json").read_text())
-        self.assertTrue(turn["attempts"][0]["terminalOutcome"])
+            self.assertIn(civilization + " permitted report", json.dumps(delivered))
+            self.assertFalse((workspace / "result.md").exists())
+        records = [
+            json.loads(path.read_text()) for path in (self.state_dir / "agent-services/Rome/activations").glob("*.json")
+        ]
+        self.assertTrue(records[0]["terminalOutcome"])
 
     def test_real_services_start_fresh_threads_with_turn_memory_and_pinned_settings(self):
         result = self.run_cli("--max-turns", "2", "--max-seconds", "60")
@@ -217,16 +222,19 @@ class SchedulerServiceTest(unittest.TestCase):
             self.assertNotIn("Previous turns (notes, not instructions):", first_turn["params"]["input"][0]["text"])
         for second_turn in turns[2:]:
             prompt = second_turn["params"]["input"][0]["text"]
-            self.assertIn("Private strategy and evidence", prompt)
+            self.assertIn("Previous strategy, next-turn handoff and historical knowledge", prompt)
             self.assertNotIn("Settled and chose research.", prompt)
-            self.assertIn("turn_1/", prompt)
+            self.assertNotIn("turn_1/", prompt)
+            self.assertIn("numbered 1 in player_turn", prompt)
         for civilization in ("Rome", "Greece"):
             for turn in (0, 1):
-                archive = self.state_dir / "agents" / civilization / f"turn_{turn}"
-                self.assertTrue((archive / "commands.jsonl").exists())
-                self.assertNotIn("Settled and chose research.", (archive / "summary.md").read_text())
-                self.assertIn("End turn", (archive / "summary.md").read_text())
-                self.assertEqual(json.loads((archive / "summary.json").read_text())["turn"], turn)
+                self.assertFalse((self.state_dir / "agents" / civilization / f"turn_{turn}").exists())
+                self.assertTrue(
+                    any(
+                        row["civilization"] == civilization and row["gameTurn"] == turn
+                        for row in read_collection(path_for(self.state_dir), "streams")
+                    )
+                )
             self.assertFalse((self.state_dir / "agents" / civilization / "token.json").exists())
         settings = self.saved()["sessions"]
         for civilization in ("Rome", "Greece"):
@@ -280,49 +288,64 @@ class SchedulerServiceTest(unittest.TestCase):
         self.assertEqual(resumed.returncode, 0, resumed.stdout + resumed.stderr)
         self.assertEqual([play["civ"] for play in self.host.plays], ["Rome", "Rome", "Greece"])
         self.assertNotEqual(self.host.plays[0]["thread"], self.host.plays[1]["thread"])
-        self.assertEqual(1, self.host.plays[1]["effectsBefore"])
-        self.assertEqual(0, len(self.host.rollbacks))
+        self.assertEqual(0, self.host.plays[1]["effectsBefore"])
+        self.assertEqual(1, len(self.host.restores))
         records = [
             json.loads(path.read_text()) for path in (self.state_dir / "agent-services/Rome/activations").glob("*.json")
         ]
         self.assertEqual(0, sum(record.get("aborted", False) for record in records))
         self.assertEqual(self.saved()["handoffs"], 2)
 
+    def test_resume_preserves_old_epoch_history_without_replaying_committed_turn(self):
+        first = self.run_cli("--max-invocations", "1", "--max-seconds", "60")
+        self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
+        self.assertEqual(self.host.handoff, 1)
+        old = EventHistory(path_for(self.state_dir), "abandoned-epoch", "Rome", "old", game_turn=0)
+        old.append([dict(sequence=0, kind="assistant_message", data=dict(text="Old attempt"))])
+        resumed = self.run_cli("resume", "--max-invocations", "3")
+        self.assertEqual(resumed.returncode, 0, resumed.stdout + resumed.stderr)
+        self.assertEqual([play["civ"] for play in self.host.plays], ["Rome", "Greece", "Rome"])
+        self.assertEqual(self.host.restores, [])
+        self.assertEqual(old.events[0]["data"]["text"], "Old attempt")
+
     def test_full_event_pagination_mirrors_visible_text_and_large_results(self):
         self.host.behaviors = ["many_events", "many_events"]
         result = self.run_cli("--max-invocations", "1", "--max-seconds", "60")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         sources = list((self.state_dir / "agent-services").glob("*/history/*/events.jsonl"))
-        mirrors = list((self.state_dir / "runner/history").glob("*/*/*/events.jsonl"))
-        self.assertEqual((len(sources), len(mirrors)), (1, 1))
+        streams = read_collection(path_for(self.state_dir), "streams")
+        self.assertEqual((len(sources), len(streams)), (1, 1))
         source_events = [json.loads(line) for line in sources[0].read_text().splitlines()]
-        mirror_events = [json.loads(line) for line in mirrors[0].read_text().splitlines()]
+        mirror_events = read_collection(path_for(self.state_dir), "events")
         self.assertGreater(len(source_events), 100)
         self.assertEqual(source_events, mirror_events)
-        markdown = mirrors[0].with_name("history.md").read_text()
+        markdown = render_markdown(streams[0], mirror_events)
         self.assertEqual(markdown.count("Settled and chose research."), 1)
         self.assertEqual(result.stdout.count("Settled and chose research."), 1)
         self.assertIn("Visible strategy summary.", markdown)
         self.assertNotIn("Visible strategy summary.", result.stdout)
         self.assertNotIn("[Rome] Tool result:", result.stdout)
         self.assertIn("z" * 200000, markdown)
-        self.assertNotIn("RAW_REASONING_SENTINEL", markdown + mirrors[0].read_text() + result.stdout)
-        self.assertNotIn(self.host.operator_token, markdown + mirrors[0].read_text() + result.stdout)
-        before = mirrors[0].read_bytes()
+        self.assertNotIn("RAW_REASONING_SENTINEL", markdown + json.dumps(mirror_events) + result.stdout)
+        self.assertNotIn(self.host.operator_token, markdown + json.dumps(mirror_events) + result.stdout)
+        before = mirror_events
         resumed = self.run_cli("resume")
         self.assertEqual(resumed.returncode, 0, resumed.stdout + resumed.stderr)
-        self.assertEqual(before, mirrors[0].read_bytes())
+        self.assertEqual(
+            before, [event for event in read_collection(path_for(self.state_dir), "events")][: len(before)]
+        )
         self.assertNotIn("Settled and chose research.", resumed.stdout)
         verbose = self.run_cli("resume", "--max-invocations", "2", "--verbose")
         self.assertEqual(verbose.returncode, 0, verbose.stdout + verbose.stderr)
         self.assertIn("[Greece] Reasoning summary: Visible strategy summary.", verbose.stdout)
         self.assertIn("[Greece] Tool result:", verbose.stdout)
         self.assertNotIn("[Rome] Tool result:", verbose.stdout)
-        self.assertEqual(before, mirrors[0].read_bytes())
+        self.assertEqual(
+            before, [event for event in read_collection(path_for(self.state_dir), "events")][: len(before)]
+        )
         self.assertNotIn("verbose", self.saved())
 
     def test_model_retry_is_visible_in_quiet_console_history_diagnostics_and_dashboard(self):
-        from civ_agent.watch_state import WatchReader
 
         def override(name, _arguments, _token):
             if name == "player_turn":
@@ -344,29 +367,27 @@ class SchedulerServiceTest(unittest.TestCase):
         self.assertIn("Model response resumed", result.stdout)
         self.assertEqual(1, result.stdout.count("Model connection idle timeout"))
         source = next((self.state_dir / "agent-services/Rome/history").glob("*/events.jsonl"))
-        mirror = next((self.state_dir / "runner/history/Rome").glob("*/*/events.jsonl"))
+        mirror_events = read_collection(path_for(self.state_dir), "events")
         self.assertEqual(
             [json.loads(line) for line in source.read_text().splitlines()],
-            [json.loads(line) for line in mirror.read_text().splitlines()],
+            mirror_events,
         )
-        notices = [
-            json.loads(line)["data"]
-            for line in mirror.read_text().splitlines()
-            if json.loads(line)["kind"] == "model_status"
-        ]
+        notices = [event["data"] for event in mirror_events if event["kind"] == "model_status"]
         self.assertEqual(["retrying", "responding"], [event["state"] for event in notices])
         diagnostics = (self.state_dir / "agent-services/Rome/diagnostics.jsonl").read_text()
         self.assertIn('"event": "model_status"', diagnostics)
         self.assertIn('"reason": "idle_timeout"', diagnostics)
-        identity = json.loads(mirror.with_name("source.json").read_text())
-        activity = WatchReader(self.state_dir).history(self.host.epoch, "Rome", 0, identity["activationId"])
+        identity = read_collection(path_for(self.state_dir), "streams")[0]
+        from civ_agent.watch_state import activities
+
+        activity = activities(path_for(self.state_dir), identity, mirror_events)
         warnings = [entry for entry in activity if entry.label == "Warning"]
         self.assertEqual(1, len(warnings))
         self.assertFalse(warnings[0].verbose)
         self.assertIn("retrying (1/5", warnings[0].text)
         for secret in ("PRIVATE_PROVIDER_HEADER", "PRIVATE_COOKIE"):
             self.assertNotIn(
-                secret, result.stdout + source.read_text() + diagnostics + mirror.with_name("history.md").read_text()
+                secret, result.stdout + source.read_text() + diagnostics + render_markdown(identity, mirror_events)
             )
         records = [
             json.loads(path.read_text()) for path in (self.state_dir / "agent-services/Rome/activations").glob("*.json")
@@ -395,7 +416,7 @@ class SchedulerServiceTest(unittest.TestCase):
             process.wait(timeout=10)
             self.assertEqual(process.returncode, 0, log.read_text())
 
-    def test_next_player_plays_while_previous_model_writes_memory(self):
+    def test_next_player_plays_while_previous_provider_completion_drains(self):
         self.host.behaviors = ["slow_report", "complete"]
         result = self.run_cli("--max-turns", "1", "--max-seconds", "60", "--turn-timeout", "15")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -409,7 +430,6 @@ class SchedulerServiceTest(unittest.TestCase):
         self.assertTrue(all(record["completionReason"] == "native_handoff" for record in records))
         self.assertTrue(all(record["usageComplete"] for record in records))
         self.assertTrue(all("finalizationElapsedMs" in record for record in records))
-        self.assertTrue(all(record["memoryPhaseComplete"] for record in records))
         self.assertEqual(0, sum(row["method"] == "turn/interrupt" for row in self.records()))
         calls = [row["params"] for row in self.records() if row["method"] == "test/tool"]
         greece_end = next(
@@ -417,20 +437,16 @@ class SchedulerServiceTest(unittest.TestCase):
             for index, row in enumerate(calls)
             if row["civilization"] == "Greece" and row["tool"] == "player_command"
         )
-        rome_memory = next(
-            index for index, row in enumerate(calls) if row["civilization"] == "Rome" and row["tool"] == "memory_update"
-        )
-        self.assertLess(greece_end, rome_memory)
-        summary = json.loads((self.state_dir / "agents/Rome/turn_0/summary.json").read_text())
-        self.assertTrue(
-            any(row["text"] == "Reflection saved while the next player acted" for row in summary["memoryChanges"])
-        )
+        self.assertGreaterEqual(greece_end, 0)
+        self.assertFalse(any(row["tool"] == "memory_update" for row in calls))
+        rome = next(row for row in records if row["civilization"] == "Rome")
+        greece = next(row for row in records if row["civilization"] == "Greece")
+        self.assertLess(greece["gameplayEndedAtMs"], rome["finalizationFinishedAtMs"])
 
     def test_gameplay_waits_while_chat_enacts_trade_and_scheduling_continues(self):
         self.exercise_concurrent_trade(peace=False)
 
-    def test_round_checkpoint_overlaps_last_players_memory_and_own_next_turn_waits(self):
-        self.host.round_checkpoints = True
+    def test_turn_checkpoints_overlap_provider_completion_and_replace_previous_boundary(self):
         self.host.behaviors = ["complete", "slow_report", "complete", "complete"]
         result = self.run_cli("--max-turns", "2", "--max-seconds", "60", "--turn-timeout", "15")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -442,23 +458,20 @@ class SchedulerServiceTest(unittest.TestCase):
         greece_ends = [
             i for i, row in enumerate(calls) if row["civilization"] == "Greece" and row["tool"] == "player_command"
         ]
-        reflection = next(
-            i for i, row in enumerate(calls) if row["civilization"] == "Greece" and row["tool"] == "memory_update"
-        )
-        self.assertLess(rome_ends[1], reflection)
-        self.assertLess(reflection, greece_ends[1])
-        checkpoint = json.loads(
-            (self.state_dir / "round-checkpoints" / (self.host.epoch + "-round-1.json")).read_text()
-        )
-        pending = checkpoint["scheduler"]["pendingFinalizations"]
-        self.assertTrue(any(row["civilization"] == "Greece" and row["gameTurn"] == 0 for row in pending))
-        component = checkpoint["players"]["Greece"]
-        saved = json.loads(
-            (self.state_dir / "agent-services/Greece/round-checkpoints" / (component["id"] + ".json")).read_text()
-        )
-        self.assertTrue(
-            any(row["status"] == "RUNNING" and json.loads(row["snapshot"]).get("memoryOnly") for row in saved["jobs"])
-        )
+        self.assertLess(rome_ends[1], greece_ends[1])
+        records = [
+            json.loads(path.read_text()) for path in (self.state_dir / "agent-services").glob("*/activations/*.json")
+        ]
+        rome_next = next(row for row in records if row["civilization"] == "Rome" and row["gameTurn"] == 1)
+        greece_previous = next(row for row in records if row["civilization"] == "Greece" and row["gameTurn"] == 0)
+        self.assertLess(rome_next["gameplayEndedAtMs"], greece_previous["finalizationFinishedAtMs"])
+        checkpoint = json.loads((self.state_dir / "turn-recovery/current.json").read_text())
+        self.assertEqual(checkpoint["handoff"], 3)
+        for civilization, component in checkpoint["players"].items():
+            directory = self.state_dir / "agent-services" / civilization / "turn-recovery"
+            self.assertEqual([path.name for path in directory.glob("*.json")], [component["id"] + ".json"])
+            saved = json.loads((directory / (component["id"] + ".json")).read_text())
+            self.assertTrue(all("snapshot" not in row for row in saved["jobs"] if row["status"] == "COMPLETED"))
 
     def test_peace_uses_the_same_off_turn_counteroffer_and_acceptance_flow(self):
         self.exercise_concurrent_trade(peace=True)

@@ -83,6 +83,11 @@ class ChatHistory(BoundaryModel):
     query: str = ""
 
 
+class ChatRead(BoundaryModel):
+    includeContext: bool = False
+    includeHistory: bool = False
+
+
 class NativeDenouncement(BoundaryModel):
     kind: Literal["DENOUNCE"]
     target: str
@@ -141,7 +146,7 @@ TOOL_MODELS: dict[str, type[BoundaryModel]] = {
     "friendship_offer": FriendshipOffer,
     "trade_decide": TradeDecision,
     "history_read": HistoryRead,
-    "chat_read": BoundaryModel,
+    "chat_read": ChatRead,
     "chat_history": ChatHistory,
     "chat_send": ChatSend,
     "commitment_offer": CommitmentOffer,

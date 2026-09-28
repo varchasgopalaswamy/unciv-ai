@@ -60,6 +60,129 @@ def relation() -> JsonObject:
     }
 
 
+def test_controller_metadata_is_omitted_but_trade_terms_and_player_words_survive():
+    terms = [
+        {
+            "from": "Rome",
+            "to": "Greece",
+            "item": {"type": "Luxury_Resource", "name": "Silver", "amount": 1, "duration": 25},
+        }
+    ]
+    trade = {
+        "proposal": "d1",
+        "version": 2,
+        "author": "Rome",
+        "partner": "Greece",
+        "status": "PENDING",
+        "clauses": terms,
+        "mode": "SHARED",
+        "deadlineMillis": 99999,
+        "counterofferLimit": 3,
+        "counteroffersRemaining": 2,
+        "nativeRequestId": None,
+        "pausesGameplay": True,
+        "awaitingNativeTurn": False,
+        "acceptAvailable": True,
+        "counterofferAvailable": True,
+    }
+    raw = {
+        "trade": trade,
+        "instruction": "The service waits while communication jobs handle replies.",
+        "options": {
+            "partner": "Greece",
+            "give": [terms[0]["item"]],
+            "receive": [],
+            "canInitiate": True,
+            "mode": "SHARED",
+            "initiationRule": "Publishing pauses all gameplay",
+            "negotiation": {"active": False},
+        },
+        "opportunity": {
+            "civilizationId": "Greece",
+            "missingLuxuriesOffered": [],
+            "spareLuxuriesToOffer": [],
+            "mode": "SHARED",
+        },
+        "overview": {"turn": 5, "canEndTurn": True, "negotiation": {"active": False}},
+        "chat": {"offers": [], "consents": [], "trades": [trade], "negotiation": {"active": True}},
+        "event": {"id": 1, "kind": "trade", "body": trade, "wake": True},
+        "capabilities": {
+            "queries": ["player_turn"],
+            "commands": ["END_TURN"],
+            "durableRecovery": True,
+            "protocolVersion": 1,
+            "completeGameplay": False,
+        },
+        "message": {"author": "Greece", "text": "The deadline is turn 25; please pause expansion."},
+        "promise": {"terms": "Wait for my reply", "expiresTurn": 25, "conditions": "While at peace"},
+        "unknown": {"mode": "peaceful", "deadlineMillis": 10, "wake": "at dawn"},
+    }
+    before = copy.deepcopy(raw)
+    view = model_view(raw)
+    assert raw == before and model_view(view) == view
+    expected = {
+        k: trade[k]
+        for k in (
+            "proposal",
+            "version",
+            "author",
+            "partner",
+            "status",
+            "clauses",
+            "acceptAvailable",
+            "counterofferAvailable",
+        )
+    }
+    assert view["trade"] == view["chat"]["trades"][0] == view["event"]["body"] == expected
+    assert "instruction" not in view and "wake" not in view["event"]
+    assert "mode" not in view["options"] and "initiationRule" not in view["options"]
+    assert (
+        "negotiation" not in view["options"]
+        and "negotiation" not in view["overview"]
+        and "negotiation" not in view["chat"]
+    )
+    assert "mode" not in view["opportunity"]
+    assert view["capabilities"] == {"queries": ["player_turn"], "commands": ["END_TURN"]}
+    assert view["options"]["canInitiate"] and view["options"]["give"][0]["duration"] == 25
+    for key in ("message", "promise", "unknown"):
+        assert view[key] == raw[key]
+
+
+def test_saved_trade_evidence_and_memory_keep_game_dates_without_job_metadata():
+    raw = {
+        "category": "note",
+        "body": {
+            "text": "Negotiate Sugar for Silver",
+            "updatedTurn": 62,
+            "basis": {"job": "job-private", "purpose": "gameplay", "turn": 62},
+        },
+    }
+    record = public_record("mem1", raw)
+    assert record == {"id": "mem1", "type": "note", "text": "Negotiate Sugar for Silver", "updatedTurn": 62}
+    assert raw["body"]["basis"]["job"] == "job-private"
+    assert model_view({**record, "basis": raw["body"]["basis"]}) == record
+    contribution = {"id": "mem2", "type": "contribution", "body": raw["body"]}
+    assert "basis" not in model_view(contribution)["body"]
+    assert contribution["body"]["basis"]["job"] == "job-private"
+    expired = {
+        "proposal": "d1",
+        "author": "Rome",
+        "partner": "Greece",
+        "status": "EXPIRED",
+        "deadlineMillis": 123,
+        "failure": "The negotiation deadline elapsed.",
+        "unavailableReason": "The negotiation deadline elapsed.",
+        "acceptAvailable": False,
+    }
+    envelope = {"structuredContent": expired, "content": [{"type": "text", "text": json.dumps(expired)}]}
+    view = model_view(envelope)
+    assert view["structuredContent"]["status"] == "EXPIRED"
+    assert not view["structuredContent"]["acceptAvailable"]
+    assert view["structuredContent"]["failure"] == "This proposal expired."
+    assert json.loads(view["content"][0]["text"]) == view["structuredContent"]
+    assert "deadlineMillis" not in json.dumps(view)
+
+
 def test_projection_preserves_gameplay_and_player_wording_without_mutating_audit_data():
     raw = {
         "alerts": [alert()],
@@ -209,43 +332,11 @@ def test_all_audited_dialogs_and_research_details_omit_flavor_but_keep_facts():
     assert model_view(shown) == shown
 
 
-def test_unknown_popup_and_legacy_incident_facts_are_not_silently_lost():
+def test_unknown_popup_effects_are_not_silently_lost():
     unknown = alert("NewEvent")
     unknown["content"] = content(None, ["Important unclassified effect"])
     assert model_view(unknown)["content"]["paragraphs"] == ["Important unclassified effect"]
     assert model_view(unknown)["content"]["acknowledgement"] == "FLAVOR_BUTTON"
-    unknown["nativeDiplomacy"] = {
-        "civilizationId": "Egypt",
-        "content": content(None, ["Kabul was attacked"]),
-        "options": [],
-    }
-    assert model_view(unknown)["nativeDiplomacy"]["content"]["paragraphs"] == ["Kabul was attacked"]
-
-
-def test_legacy_friendship_duration_and_refusal_war_effect_are_preserved():
-    friendship = alert("DeclarationOfFriendship")
-    friendship["content"] = None
-    friendship["friendship"] = {
-        "civilizationId": "Egypt",
-        "content": {
-            "title": "Ramesses",
-            "paragraphs": ["Declare friendship?"],
-            "acknowledgement": "Declare Friendship (30 turns)",
-        },
-        "accept": {"available": True},
-        "canDecline": True,
-    }
-    assert model_view(friendship)["friendship"]["content"]["acknowledgement"] == "Declare Friendship (30 turns)"
-    demand = alert("DemandToNotAttackUs")
-    demand["content"] = None
-    demand["nativeDiplomacy"] = {
-        "civilizationId": "Egypt",
-        "content": content(None, ["FLAVOR_SPEECH"]),
-        "options": [{"name": "Refuse", "text": "DECLARE WAR", "available": True, "consequences": []}],
-    }
-    shown = model_view(demand)
-    assert shown["nativeDiplomacy"]["options"][0]["declaresWar"]
-    assert "FLAVOR_" not in json.dumps(shown)
 
 
 def test_quest_narrative_is_replaced_only_when_structured_objectives_are_present():
@@ -330,9 +421,9 @@ def test_startup_deltas_details_receipts_replays_and_historical_evidence_share_p
             memory.export(tmp_path / "workspace")
             assert "FLAVOR_" not in (tmp_path / "workspace/turn_0/summary.json").read_text()
             assert "FLAVOR_" not in (tmp_path / "workspace/turn_0/receipts.jsonl").read_text()
-            # Already-cached legacy responses also pass through the model boundary.
-            memory.call(job.id, "legacy", "player_turn", {}, {"alerts": [alert()]})
-            assert "FLAVOR_" not in json.dumps(await gateway.call(job, "player_turn", {}, "legacy"))
+            # Cached audit responses also pass through the model boundary.
+            memory.call(job.id, "cached", "player_turn", {}, {"alerts": [alert()]})
+            assert "FLAVOR_" not in json.dumps(await gateway.call(job, "player_turn", {}, "cached"))
             assert len(host.executed) == 1
         finally:
             await io.close()

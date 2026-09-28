@@ -11,7 +11,7 @@ class TacticalReviewIntegrationTest {
     fun `visible threats and worker rescue survive a checkpoint restart`() {
         val root = Files.createTempDirectory("tactical-review-")
         try {
-            for (stage in listOf("rescue", "wrap")) {
+            for (stage in listOf("rescue", "wrap", "captives")) {
                 val log = root.resolve("$stage.log")
                 val process = ProcessBuilder(
                     Path.of(System.getProperty("java.home"), "bin", "java").toString(),

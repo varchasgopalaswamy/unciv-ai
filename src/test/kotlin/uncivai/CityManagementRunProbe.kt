@@ -114,6 +114,7 @@ object CityManagementRunProbe {
         api.acquire()
         val activation = api.activate()
         val before = facts(runtime)
+        captureTestTurn(runtime, root)
         val actions = actions(runtime, api, checkNotNull(activation.playerToken), "Rome")
         save(root, CityManagementRecovery(actions, before, facts(runtime), checkNotNull(activation.activationId)))
         api.operator(OperatorRequest("release", api.lease))
@@ -220,12 +221,11 @@ object CityManagementRunProbe {
         check(facts(runtime) == saved.after) { "City changes did not survive restart" }
         replay(api, root, saved.actions)
         api.acquire()
-        val status = api.status()
-        api.operator(OperatorRequest("rollback", api.lease, status.epoch, status.serverInstance, status.handoff, "Rome", saved.activationId))
+        api.restore(root)
         check(facts(runtime) == saved.before) { "Rollback did not restore city assignments, buildings, food, points and gold" }
         val activation = api.activate()
         var token = checkNotNull(activation.playerToken)
-        api.reject(token, saved.actions.first().request, "STALE_REVISION")
+        api.reject(token, saved.actions.first().request, "STALE_EPOCH")
         val actions = actions(runtime, api, token, "Rome").toMutableList()
         api.finishTurn(token)
         token = checkNotNull(api.activate().playerToken)

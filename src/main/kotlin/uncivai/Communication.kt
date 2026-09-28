@@ -12,6 +12,7 @@ import uncivai.player.PlayerSessionFailure
 import uncivai.player.TurnCommandKind
 import uncivai.player.TurnCommandReceipt
 import uncivai.player.communicationContext
+import uncivai.player.gameFinished
 import java.security.SecureRandom
 
 /** Shared records and recipient streams are part of the same commit as game receipts. */
@@ -25,15 +26,12 @@ internal data class CommunicationState(
     val consents: MutableList<SocialConsent> = mutableListOf(),
     val outcomes: MutableList<EngineOutcome> = mutableListOf(),
     val requests: MutableMap<String, CommunicationReceipt> = mutableMapOf(),
-    // Decode existing checkpoints; social changes no longer fence game commands.
-    val peaceVersions: MutableMap<String, Long> = mutableMapOf(),
     val acceptedVersions: MutableMap<String, Int> = mutableMapOf(),
     val jobs: MutableMap<String, CommunicationJob> = mutableMapOf(),
     var invocations: Long = 0,
     var maxInvocations: Long = 1000,
     var maxConcurrent: Int = 4,
-    var maxPerCivilization: Int = 2,
-    var coordinatedRecovery: Boolean = false,
+    var maxPerCivilization: Int = 3,
     var restorePending: Boolean = false,
     val revokedCredentials: MutableSet<String> = mutableSetOf(),
     val playerCredentials: MutableMap<String, String> = mutableMapOf(),
@@ -71,6 +69,7 @@ internal class Communication(private val runtime: GameExecutor) {
             val stream = state.streams.getOrPut(recipient) { mutableListOf() }
             stream.add(CommunicationEvent(stream.size + 1, kind, body, recipient in wakes))
         }
+        runtime.telemetry.communicationChanged()
     }
 
     fun handle(civilization: String, arguments: JsonObject): JsonObject {
@@ -192,12 +191,15 @@ internal class Communication(private val runtime: GameExecutor) {
         val active = state.jobs.values.filter { it.expires > now }
         if (request.op == "job_claim" && prior == null) {
             val purpose = checkNotNull(request.purpose)
+            val parent = request.parentJob?.let { state.jobs[it] ?: fail() }
+            if ((purpose == "review") != (parent != null) || parent != null && (parent.civilization != civilization || parent.purpose != "gameplay")) fail()
             if (runtime.communicationPaused || state.invocations >= state.maxInvocations || active.size >= state.maxConcurrent ||
+                (purpose == "review" && (active.size >= (state.maxConcurrent - 1).coerceAtLeast(1) || runtime.accessGame(::gameFinished))) ||
                 active.count { it.civilization == civilization } >= state.maxPerCivilization || active.any { it.civilization == civilization && it.purpose == purpose }
             ) {
                 return obj("granted" to false)
             }
-            state.jobs[id] = runtime.accessGame { game -> CommunicationJob(civilization, purpose, now + 90000, epoch = runtime.epoch, handoff = runtime.handoff, gameTurn = game.turns, claimedAtMs = now) }
+            state.jobs[id] = runtime.accessGame { game -> CommunicationJob(civilization, purpose, now + 90000, epoch = parent?.epoch ?: runtime.epoch, handoff = parent?.handoff ?: runtime.handoff, gameTurn = parent?.gameTurn ?: game.turns, claimedAtMs = now) }
             state.invocations++
         } else if (prior != null) {
             if (request.op !in setOf("job_release", "job_report") && prior.expires <= now) return obj("granted" to false)
@@ -229,7 +231,7 @@ internal class Communication(private val runtime: GameExecutor) {
         } else {
             fail()
         }
-        runtime.telemetry.changed()
+        runtime.telemetry.changed(id)
         runtime.commitCheckpoint()
         return obj("granted" to true)
     }

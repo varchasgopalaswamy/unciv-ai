@@ -68,6 +68,27 @@ class HostLauncherTest(unittest.TestCase):
         command = self.execute.call_args.args[1]
         self.assertEqual("Egypt", command[command.index("--built-in-ai") + 1])
 
+    def test_custom_map_and_roster_reach_engine_and_credentials(self):
+        self.assertEqual(
+            0,
+            self.run_launcher(
+                "--new",
+                "--agent-player",
+                "Germany",
+                "--agent-player",
+                "Rome",
+                "--built-in-ai",
+                "China",
+                "--map-radius",
+                "26",
+            ),
+        )
+        players = json.loads((self.state / "players.json").read_text())["players"]
+        self.assertEqual(["Germany", "Rome"], [entry["civilizationId"] for entry in players])
+        command = self.execute.call_args.args[1]
+        self.assertEqual("26", command[command.index("--map-radius") + 1])
+        self.assertEqual(2, command.count("--agent-player"))
+
     def test_native_ai_option_cannot_change_a_saved_game(self):
         self.checkpoint()
         self.assertEqual(2, self.run_launcher("--built-in-ai", "Egypt"))

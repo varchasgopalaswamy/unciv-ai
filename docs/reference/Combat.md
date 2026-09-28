@@ -46,9 +46,19 @@ attacks require it. Pydantic validates each command's argument shape before disp
 | `MANAGE_CAPTURED_CITY` | Owned city's available `captureOptions` | CityView |
 
 Every command uses the normal `requestId`, `epoch` and latest `revision`. Orders are
-`FORTIFY`, `FORTIFY_UNTIL_HEALED`, `SLEEP`, `SLEEP_UNTIL_HEALED`, `SKIP` and `WAKE`.
+`FORTIFY`, `FORTIFY_UNTIL_HEALED`, `SLEEP`, `SLEEP_UNTIL_HEALED`, `SKIP`, `WAKE`,
+`EXPLORE`, `STOP_EXPLORATION`, `AUTOMATE` and `STOP_AUTOMATION`.
 Unavailable reasons explain restrictions. Promotion availability includes movement,
 experience, prerequisites and the desktop rule against promotion after attacking.
+
+`EXPLORE` uses native automatic exploration; `AUTOMATE` uses native unit automation,
+including choosing improvements for Workers. Both persist across turns and saves.
+The compact roster shows `order: "Explore"` and the separate `automated` flag;
+`unit_details(sections=["orders"])` supplies available controls and copyable commands.
+Exploration can be scheduled with no movement left; starting general automation
+requires movement. Both stop controls work with no movement left. Native completion
+notifications appear through ordinary notifications. Stopping worker automation
+preserves the tile's current improvement work; `STOP_WORKER_JOB` cancels that job.
 
 Attacks target visible enemies already at war. Hidden targets, foreign handles and
 unoffered origins are rejected. Planned routes ignore hidden obstacles; actual

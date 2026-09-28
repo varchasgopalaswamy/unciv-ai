@@ -4,7 +4,7 @@ import json
 import os
 
 from civ_agent.result_schema import PlayerResult
-from civ_agent.tls import private_directory, regular_file, write_private, write_private_json
+from civ_agent.tls import private_directory, regular_file, write_private_json
 
 
 class ResultError(ValueError):
@@ -48,30 +48,11 @@ class PlayerResultStore:
         previous = self.load()
         if previous is not None and previous != payload:
             raise ResultError("RESULT_CONFLICT")
-        # Persist the trusted record first. A lost response or a damaged workspace copy
-        # can be retried using this record, without re-running a model or a game command.
+        # One authoritative delivery record makes lost acknowledgements retryable.
         write_private_json(self.path, payload)
         descriptor = os.open(self.directory, os.O_RDONLY | os.O_DIRECTORY)
         try:
             os.fsync(descriptor)
         finally:
             os.close(descriptor)
-        private_directory(self.workspace)
-        write_private_json(self.workspace / "result.json", payload)
-        result = payload["result"]
-        lines = [f"# {self.civilization}: {result['outcome']}", "", result["title"], ""]
-        lines.extend(paragraph + "\n" for paragraph in result["paragraphs"])
-        for message in payload["messages"]:
-            lines.extend([message["title"], ""])
-            lines.extend(paragraph + "\n" for paragraph in message["paragraphs"])
-            if message.get("quote"):
-                lines.extend([message["quote"], ""])
-            responses = [message["acknowledgement"], *message.get("additionalAcknowledgements", [])]
-            lines.extend(["Displayed responses: " + "; ".join(responses), ""])
-        if payload["combatReports"]:
-            lines.extend(["Final combat reports:", ""])
-            lines.extend(
-                f"- Turn {report['turn']}: {report['text'] or report['kind']}" for report in payload["combatReports"]
-            )
-        write_private(self.workspace / "result.md", ("\n".join(lines).rstrip() + "\n").encode())
         return {"civilization": self.civilization, "epoch": payload["epoch"], "received": True}

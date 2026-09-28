@@ -1,10 +1,16 @@
+"""Notes and beliefs support partial edits; brief replacement is tested separately."""
+
 import json
 
 import pytest
 from pydantic import ValidationError
 
 from civ_agent.memory_records import MemoryUpdate, MemoryUpdateResult, memory_argument_error
-from tests.test_structured_memory import create, current, plan, setup
+from tests.test_structured_memory import create, current, setup
+
+
+def belief(**changes):
+    return {"type": "belief", "claim": "Egypt may attack", "uncertainty": "medium", **changes}
 
 
 def test_amend_keeps_omitted_fields_and_replaces_citations_without_losing_history(tmp_path):
@@ -14,99 +20,94 @@ def test_amend_keeps_omitted_fields_and_replaces_citations_without_losing_histor
         name = f"fact{index}"
         memory.observe(name, {"value": index}, "game")
         sources.append(f"observation:{name}")
-    key = create(memory, plan(sources=sources, expiresTurn=9))
+    key = create(memory, belief(sources=sources, expiresTurn=9))
     old = current(memory, key)
     memory.finish_job("game", True)
     memory.start_job("next", "gameplay", {}, game_turn=5)
     memory.refresh_memory("next", [key])
-    result = memory.patch("next", [{"op": "amend", "id": key, "fields": {"approach": "Withdraw", "expiresTurn": None}}])
+    result = memory.patch("next", [{"op": "amend", "id": key, "fields": {"uncertainty": "high", "expiresTurn": None}}])
     assert result["changes"][0]["accepted"]
     updated = current(memory, key)
     assert updated["sources"] == old["sources"] and updated["_evidence"] == old["_evidence"]
-    assert updated["objective"] == old["objective"] and updated["createdTurn"] == old["createdTurn"]
-    assert updated["approach"] == "Withdraw" and updated["expiresTurn"] is None
-    result = memory.patch("next", [{"op": "amend", "id": key, "fields": {"sources": sources[-1:]}}])
-    assert result["changes"][0]["accepted"]
+    assert updated["claim"] == old["claim"] and updated["createdTurn"] == old["createdTurn"]
+    assert updated["uncertainty"] == "high" and updated["expiresTurn"] is None
+    assert memory.patch("next", [{"op": "amend", "id": key, "fields": {"sources": sources[-1:]}}])["changes"][0][
+        "accepted"
+    ]
     assert current(memory, key)["sources"] == sources[-1:]
-    history = memory.search_memory("next", {"id": key, "history": True})["records"]
-    assert any(r["sources"] == sources for r in history)
+    assert memory.search_memory("next", {"id": key, "history": True})["records"][-1]["sources"] == sources
 
 
-@pytest.mark.parametrize("fields", [{"createdTurn": 99}, {"needsReview": []}, {"type": "note"}, {"objective": None}])
-def test_amend_rejects_metadata_type_and_invalid_values_without_partial_writes(tmp_path, fields):
+@pytest.mark.parametrize("fields", [{"createdTurn": 99}, {"needsReview": []}, {"type": "note"}, {"claim": None}])
+def test_amend_rejects_metadata_and_invalid_content_without_partial_write(tmp_path, fields):
     memory = setup(tmp_path)
-    key = create(memory, plan())
-    before = memory.snapshot("gameplay")["records"][key]
-    result = memory.patch("game", [{"op": "amend", "id": key, "fields": {"approach": "Should not be saved", **fields}}])
-    MemoryUpdateResult.model_validate(result)
+    key = create(memory, belief())
+    before = current(memory, key)
+    result = memory.patch("game", [{"op": "amend", "id": key, "fields": fields}])
     assert not result["changes"][0]["accepted"]
-    assert memory.snapshot("gameplay")["records"][key] == before
+    assert current(memory, key) == before
 
 
-def test_amend_is_owned_by_gameplay_and_assumptions_are_advisory(tmp_path):
+def test_amend_is_owned_by_gameplay(tmp_path):
     memory = setup(tmp_path)
-    memory.observe("border", {"units": 1}, "game")
-    key = create(memory, plan(assumptions=[{"text": "Border covered", "source": "observation:border"}]))
-    memory.start_job("other", "communication", {})
-    memory.refresh_memory("other", [key])
-    rejected = memory.patch("other", [{"op": "amend", "id": key, "fields": {"approach": "New plan"}}])
-    assert rejected["changes"][0]["reason"] == "NOTEBOOK_READ_ONLY"
-    memory.observe("border", {"units": 0}, "other")
-    kept = memory.patch("game", [{"op": "amend", "id": key, "fields": {"approach": "Hold"}}])
-    assert kept["changes"][0]["accepted"]
-    assert current(memory, key)["needsReview"]
-    memory.refresh_memory("game", [key])
-    dropped = memory.patch("game", [{"op": "amend", "id": key, "fields": {"approach": "Reassess", "assumptions": []}}])
-    assert dropped["changes"][0]["accepted"]
-    assert not current(memory, key)["needsReview"]
-
-
-def test_source_limit_errors_give_counts_and_do_not_echo_evidence(tmp_path):
-    sources = [f"private-evidence-{i}" for i in range(21)]
-    arguments = {"changes": [{"op": "create", "content": plan(sources=sources)}]}
-    with pytest.raises(ValidationError) as caught:
-        MemoryUpdate.model_validate(arguments)
-    error = memory_argument_error(arguments, caught.value)
-    assert error["limits"] == [{"fields": ["changes", 0, "content", "sources"], "maximum": 20, "received": 21}]
-    assert "private-evidence" not in json.dumps(error)
-    memory = setup(tmp_path)
-    key = create(memory, plan())
-    result = memory.patch("game", [{"op": "amend", "id": key, "fields": {"sources": sources}}])
-    MemoryUpdateResult.model_validate(result)
-    assert not result["changes"][0]["accepted"]
-    assert result["changes"][0]["limits"] == [{"fields": ["fields", "sources"], "maximum": 20, "received": 21}]
-    assert "private-evidence" not in json.dumps(result)
+    key = create(memory, belief())
+    memory.start_job("chat", "communication", {})
+    result = memory.patch("chat", [{"op": "amend", "id": key, "fields": {"uncertainty": "low"}}])
+    assert result["changes"][0]["reason"] == "NOTEBOOK_READ_ONLY"
 
 
 def test_amend_batch_keeps_successful_edits_and_replays_once(tmp_path):
     memory = setup(tmp_path)
     first = create(memory, {"type": "note", "text": "Original"})
-    second = create(memory, plan())
+    second = create(memory, belief())
     changes = [
-        {"op": "amend", "id": first, "fields": {"text": "Keep the new objective"}},
-        {"op": "amend", "id": second, "fields": {"objective": None}},
+        {"op": "amend", "id": first, "fields": {"text": "New information"}},
+        {"op": "amend", "id": second, "fields": {"claim": None}},
     ]
-    result = memory.patch("game", changes, "amend-batch")
+    result = memory.patch("game", changes, "batch")
+    MemoryUpdateResult.model_validate(result)
     assert [item["accepted"] for item in result["changes"]] == [True, False]
     saved = memory.snapshot("gameplay")["records"]
-    assert saved[first]["body"]["text"] == "Keep the new objective"
-    assert saved[second]["body"]["objective"] == "Defend Rome"
-    assert memory.patch("game", changes, "amend-batch") == result
+    assert saved[first]["body"]["text"] == "New information"
+    assert saved[second]["body"]["claim"] == "Egypt may attack"
+    assert memory.patch("game", changes, "batch") == result
     assert memory.snapshot("gameplay")["records"] == saved
 
 
-def test_unavailable_citations_warn_without_rejecting_an_assessment_or_delivering_content(tmp_path):
+@pytest.mark.parametrize(
+    "field,value,bound,unit",
+    [
+        ("subjects", ["PRIVATE_TAG"] * 23, 20, "items"),
+        ("sources", ["PRIVATE_EVIDENCE"] * 21, 20, "items"),
+        ("claim", "PRIVATE_TEXT" * 200, 2000, "characters"),
+    ],
+)
+def test_constraints_name_the_actual_field_without_echoing_content(tmp_path, field, value, bound, unit):
+    arguments = {"changes": [{"op": "create", "content": belief(**{field: value})}]}
+    with pytest.raises(ValidationError) as caught:
+        MemoryUpdate.model_validate(arguments)
+    error = memory_argument_error(arguments, caught.value)
+    assert error["limits"] == [{"fields": ["changes", 0, "content", field], "maximum": bound, "received": len(value)}]
+    assert f"{field} accepts at most {bound} {unit}" in error["instruction"]
+    assert "PRIVATE_" not in json.dumps(error)
     memory = setup(tmp_path)
-    key = create(memory, plan(sources=["observation:game"]))
-    memory.begin_memory_phase("game")
+    key = create(memory, belief())
+    before = current(memory, key)
+    result = memory.patch("game", [{"op": "amend", "id": key, "fields": {field: value}}])["changes"][0]
+    assert result["limits"] == [{"fields": ["fields", field], "maximum": bound, "received": len(value)}]
+    assert "PRIVATE_" not in json.dumps(result)
+    assert current(memory, key) == before
+    assert memory.patch("game", [{"op": "amend", "id": key, "fields": {field: value[:bound]}}])["changes"][0][
+        "accepted"
+    ]
+
+
+def test_unavailable_citations_warn_without_granting_new_evidence(tmp_path):
+    memory = setup(tmp_path)
+    key = create(memory, belief())
     memory.start_job("chat", "communication", {})
-    memory.observe("later-trade", {"turn": 5, "text": "FUTURE_TRADE_CONTENT"}, "chat")
-    changes = [{"op": "amend", "id": key, "fields": {"approach": "Withdraw", "sources": ["observation:later-trade"]}}]
-    result = memory.patch("game", changes)["changes"][0]
-    assert result["accepted"]
-    assert result["warnings"][0]["sources"] == ["observation:later-trade"]
-    assert "FUTURE_TRADE_CONTENT" not in json.dumps(result)
-    assert memory.refresh_memory("game", ["observation:later-trade"]) == {}
-    assert current(memory, key)["_evidence"] == []
-    assert current(memory, key)["unverifiedSources"] == ["observation:later-trade"]
-    assert memory.run_failure() is None
+    memory.observe("later-trade", {"turn": 5, "secret": "NOT_DELIVERED"}, "chat")
+    result = memory.patch("game", [{"op": "amend", "id": key, "fields": {"sources": ["observation:later-trade"]}}])
+    assert result["changes"][0]["accepted"] and result["changes"][0]["warnings"]
+    assert "NOT_DELIVERED" not in json.dumps(result)
+    assert memory.refresh_memory("game", ["observation:later-trade"])  # An explicit in-turn read delivers new evidence.

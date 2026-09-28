@@ -38,7 +38,7 @@ def seed_memory(directory):
             [
                 (key, encode(value))
                 for key, value in {
-                    "format": 3,
+                    "format": tables.FORMAT_VERSION,
                     "civilization": "Rome",
                     "epoch": "old-epoch",
                     "storeId": "existing-store",
@@ -82,22 +82,25 @@ def seed_memory(directory):
 
 
 def independent_checkpoint(path, target):
-    """Use the previous sqlite3 checkpoint algorithm, independent of Core queries."""
+    """Build a current-format checkpoint with independent sqlite3 queries."""
     with closing(sqlite3.connect(path)) as db:
         db.row_factory = sqlite3.Row
-        saved = {
+        saved: dict = {
             "civilization": "Rome",
             "storeId": "existing-store",
             "meta": [list(row) for row in db.execute("SELECT * FROM meta ORDER BY key")],
             "heads": [list(row) for row in db.execute("SELECT * FROM heads ORDER BY key")],
             "inbox": [row[0] for row in db.execute("SELECT id FROM inbox ORDER BY id")],
             "outgoing": [row[0] for row in db.execute("SELECT id FROM outgoing ORDER BY id")],
-            "records": [list(row) for row in db.execute(ANCESTORS + "SELECT * FROM reachable ORDER BY key,version")],
-            "jobs": [dict(row) for row in db.execute("SELECT j.* FROM jobs j JOIN live_jobs USING(id) ORDER BY j.id")],
+            "jobs": [
+                dict(row)
+                for row in db.execute("SELECT j.id,j.status FROM jobs j JOIN live_jobs USING(id) ORDER BY j.id")
+            ],
         }
+        saved.update(reviews=[], service=None)
         digest = hashlib.sha256()
         for table, references, query in (
-            ("records", saved["records"], "SELECT * FROM records WHERE key=? AND version=?"),
+            ("records", saved["heads"], "SELECT * FROM records WHERE key=? AND version=?"),
             ("events", [(id,) for id in saved["inbox"]], "SELECT * FROM events WHERE id=?"),
             (
                 "outbox",
@@ -169,10 +172,11 @@ def test_memory_checkpoint_restart_and_revision_branch(tmp_path):
     assert path.stat().st_mode & 0o777 == 0o600
 
 
-def test_old_memory_format_is_rejected_without_migration(tmp_path):
+@pytest.mark.parametrize("old_format", [2, 3, 4, 5, 6])
+def test_old_memory_format_is_rejected_without_migration(tmp_path, old_format):
     path = seed_memory(tmp_path / "old-format")
     with closing(sqlite3.connect(path)) as db, db:
-        db.execute("UPDATE meta SET value='2' WHERE key='format'")
+        db.execute("UPDATE meta SET value=? WHERE key='format'", (str(old_format),))
     before = path.read_bytes()
     with pytest.raises(ValueError, match="fresh match"):
         CivilizationState(path.parent, "Rome")
@@ -236,7 +240,7 @@ def test_existing_accounting_recovers_spending_and_acknowledgements(tmp_path):
     usage = {"input_tokens": 100, "cached_input_tokens": 20, "output_tokens": 30, "reasoning_output_tokens": 10}
     payload = {"epoch": "old-epoch", "claimed": True, "usage": usage, "telemetry": report}
     with closing(sqlite3.connect(path)) as db, db:
-        db.executescript((FIXTURES / "legacy_accounting_schema.sql").read_text())
+        db.executescript((FIXTURES / "accounting_schema.sql").read_text())
         db.execute("INSERT INTO jobs VALUES (?,?,0)", ("old-job", json.dumps(payload)))
         db.execute(
             "INSERT INTO calls(id,job,keys,started) VALUES (?,?,?,?)",

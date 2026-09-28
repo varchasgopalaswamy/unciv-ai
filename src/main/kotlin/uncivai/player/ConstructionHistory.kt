@@ -19,7 +19,7 @@ data class ConstructionChoice(
     val chosenTurn: Int?,
     val observedSinceTurn: Int,
     val turnsObserved: Int,
-    val newOptions: List<String>,
+    val availableSinceChoice: List<String>,
 )
 
 internal fun observeConstructionChoice(city: City, options: List<String>, state: TurnSessionState): ConstructionChoice? {

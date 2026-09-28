@@ -8,6 +8,7 @@ import uncivai.player.PlayerIdentifier
 import uncivai.player.PlayerSessionException
 import uncivai.player.PlayerSessionFailure
 import uncivai.player.TurnSessionState
+import uncivai.player.captureSettlementKnowledge
 import uncivai.player.detached
 import uncivai.player.gameFinished
 import uncivai.player.observation
@@ -34,6 +35,23 @@ class GameExecutor internal constructor(
     internal var epoch = "g" + java.lang.Long.toUnsignedString(SecureRandom().nextLong(), 36)
         private set
     internal val turnSessions = HashMap<String, TurnSessionState>()
+
+    init {
+        observeVisibility()
+    }
+
+    private fun observeVisibility() {
+        for (player in game.civilizations.filter { it.isHuman() && it.isMajorCiv() }) {
+            player.cache.onViewableTilesUpdated = { tiles ->
+                val state = turnSessions.getOrPut(player.civID) { TurnSessionState() }
+                captureSettlementKnowledge(player, state, tiles)
+            }
+        }
+    }
+
+    private fun stopObservingVisibility() {
+        game.civilizations.forEach { it.cache.onViewableTilesUpdated = null }
+    }
     internal var communicationState = CommunicationState()
     internal val communication = Communication(this)
     internal val telemetry = Telemetry(this)
@@ -72,7 +90,6 @@ class GameExecutor internal constructor(
     internal var handoff = 0L
     internal var scheduler: OperatorControl? = null
     private var checkpointStore: CheckpointStore? = null
-    private var turnStart: TurnStartCheckpoint? = null
     internal val durableRecovery get() = checkpointStore != null
 
     @Volatile
@@ -137,7 +154,8 @@ class GameExecutor internal constructor(
         try {
             store.writeInitial(CheckpointStore.capture(game, epoch, paused, turnSessions, handoff, scheduled, communication = communicationState))
             checkpointStore = store
-            telemetry.export(game, store.path)
+            telemetry.publish(game, store.path)
+            TradeCycleScenarioSetup.recordEvidence(game, communicationState, store.path.parent)
         } catch (failure: Throwable) {
             store.close()
             throw failure
@@ -149,12 +167,13 @@ class GameExecutor internal constructor(
             communication.trades.nativeBridge.synchronize(game)
             communication.agreements.synchronize(game)
             telemetry.synchronize(game)
-            // A handoff or terminal result and dropping its rollback point are one commit.
-            if (turnStart?.handoff != handoff || gameFinished(game)) turnStart = null
-            checkpointStore?.write(CheckpointStore.capture(game, epoch, paused, turnSessions, handoff, scheduled, turnStart, communicationState, communicationPaused))
+            checkpointStore?.write(CheckpointStore.capture(game, epoch, paused, turnSessions, handoff, scheduled, communicationState, communicationPaused))
             turnSessions.values.forEach { it.checkpointRevision = it.revision }
             communicationChanges.committed(communicationState)
-            checkpointStore?.let { telemetry.export(game, it.path) }
+            checkpointStore?.let {
+                telemetry.publish(game, it.path)
+                TradeCycleScenarioSetup.recordEvidence(game, communicationState, it.path.parent)
+            }
         } catch (failure: Throwable) {
             haltAfterMutation(failure)
         }
@@ -174,64 +193,39 @@ class GameExecutor internal constructor(
         paused = checkpoint.paused || scheduled
         handoff = checkpoint.handoff
         check(handoff >= 0) { "Invalid handoff counter" }
-        turnStart = checkpoint.turnStart
-        turnStart?.let {
-            check(scheduled && it.handoff == handoff && it.civilization == game.currentPlayer && it.turn == game.turns) {
-                "Checkpoint turn-start state is inconsistent"
-            }
-        }
         restorePlayers(checkpoint.players, checkpoint.gameJson)
         checkpointStore = store
-        if (scheduled || pendingTelemetry) commitCheckpoint() else telemetry.export(game, store.path)
+        if (scheduled || pendingTelemetry) commitCheckpoint() else telemetry.publish(game, store.path)
     }
 
-    /** Capture before issuing any activation credential, and retain it across retries. */
-    internal fun beginScheduledTurn(activationId: String? = null) = accessGame {
-        check(scheduled && durableRecovery)
-        if (turnStart?.handoff == handoff && activationId in turnStart!!.rolledBackActivationIds) throw OperatorFailure("STALE_ACTIVATION")
-        if (turnStart?.handoff != handoff) {
-            val saved = CheckpointStore.capture(game, epoch, paused, turnSessions, handoff, scheduled)
-            turnStart = TurnStartCheckpoint(handoff, game.currentPlayer, game.turns, saved.gameJson, saved.players)
-        } else if (activationId == null || activationId == turnStart?.activationId) {
-            return@accessGame
-        }
-        if (activationId != null) {
-            turnStart = checkNotNull(turnStart).copy(activationId = activationId)
-            telemetry.beginTurn(game, activationId)
-        }
-        commitCheckpoint()
-    }
-
-    internal fun discardTurnStart() {
-        turnStart = null
-    }
-
-    internal fun roundSnapshot(): GameCheckpoint = accessGame {
+    internal fun turnSnapshot(): GameCheckpoint = accessGame {
         check(paused && communicationPaused && scheduled)
         val captured = CheckpointStore.capture(game, epoch, true, turnSessions, handoff, true, communication = communicationState, communicationPaused = true)
         kotlinx.serialization.json.Json.decodeFromString<GameCheckpoint>(kotlinx.serialization.json.Json.encodeToString(captured))
     }
 
-    internal fun restoreRound(saved: GameCheckpoint, newEpoch: String, configuredCredentials: Set<String> = emptySet()) = accessGame {
+    internal fun restoreTurn(saved: GameCheckpoint, newEpoch: String, configuredCredentials: Set<String> = emptySet()) = accessGame {
         check(paused && communicationPaused && scheduled)
+        if (gameFinished(game)) throw OperatorFailure("GAME_FINISHED")
+        if (saved.handoff != handoff) throw OperatorFailure("TURN_ALREADY_COMMITTED")
         val replacement = UncivFiles.gameInfoFromString(saved.gameJson)
         check(!replacement.isSimulation() && replacement.gameParameters.mods.isEmpty())
         check(replacement.civilizations.filter { it.isHuman() }.map { it.civID }.toSet() == game.civilizations.filter { it.isHuman() }.map { it.civID }.toSet())
         val accounting = communicationState
         try {
+            stopObservingVisibility()
             game = replacement
             onGameReplaced(replacement)
             epoch = newEpoch
             handoff = saved.handoff
-            turnStart = null
             turnSessions.clear()
             restorePlayers(saved.players, saved.gameJson)
+            observeVisibility()
             val restoredCommunication = kotlinx.serialization.json.Json.decodeFromString<CommunicationState>(kotlinx.serialization.json.Json.encodeToString(saved.communication))
             communicationState = restoredCommunication.copy(
-                jobs = accounting.jobs, invocations = accounting.invocations,
+                jobs = accounting.jobs.mapValues { (_, job) -> job.copy(expires = 0) }.toMutableMap(), invocations = accounting.invocations,
                 telemetry = accounting.telemetry,
                 maxInvocations = accounting.maxInvocations, maxConcurrent = accounting.maxConcurrent, maxPerCivilization = accounting.maxPerCivilization,
-                coordinatedRecovery = true,
                 restorePending = true,
                 revokedCredentials = (accounting.revokedCredentials + accounting.playerCredentials.keys + configuredCredentials).toMutableSet(),
                 playerCredentials = mutableMapOf(),
@@ -246,49 +240,6 @@ class GameExecutor internal constructor(
             }
             commitCheckpoint()
             communicationChanges.invalidate()
-        } catch (failure: Throwable) {
-            haltAfterMutation(failure)
-        }
-    }
-
-    /** Check before fencing credentials so a delayed retry cannot stop a newer attempt. */
-    internal fun requireRollbackActivation(activationId: String) {
-        if (gameFinished(game)) throw OperatorFailure("GAME_FINISHED")
-        val saved = turnStart ?: throw OperatorFailure("TURN_CHECKPOINT_UNAVAILABLE")
-        if (saved.activationId != null && saved.activationId != activationId) throw OperatorFailure("STALE_ACTIVATION")
-    }
-
-    /** Caller has fenced the activation; replaying this operation restores the same game. */
-    internal fun rollbackScheduledTurn(activationId: String) = accessGame {
-        if (gameFinished(game)) throw OperatorFailure("GAME_FINISHED")
-        val saved = turnStart ?: throw OperatorFailure("TURN_CHECKPOINT_UNAVAILABLE")
-        if (!scheduled || saved.handoff != handoff || saved.civilization != game.currentPlayer || saved.turn != game.turns) {
-            throw OperatorFailure("STALE_TURN")
-        }
-        requireRollbackActivation(activationId)
-        if (activationId in saved.rolledBackActivationIds) return@accessGame
-        try {
-            val replacement = UncivFiles.gameInfoFromString(saved.gameJson)
-            check(replacement.currentPlayer == saved.civilization && replacement.turns == saved.turn)
-            check(!replacement.isSimulation() && replacement.gameParameters.mods.isEmpty())
-            game = replacement
-            onGameReplaced(replacement)
-            paused = true
-            val issued = turnSessions.mapValues { it.value.identifiers.snapshot() }
-            turnSessions.clear()
-            restorePlayers(saved.players, saved.gameJson)
-            for ((civilization, counters) in issued) {
-                turnSessions.getOrPut(civilization) { TurnSessionState() }.identifiers.retainIssued(counters)
-            }
-            // A discarded attempt must never regain authority through an old revision.
-            turnSessions.values.forEach {
-                it.revision = it.identifiers.next(PlayerIdentifier.REVISION)
-                it.fingerprint = null
-                it.observedRevision = null
-                it.freeGreatPersonDecision = null
-            }
-            turnStart = saved.copy(activationId = activationId, rolledBackActivationIds = saved.rolledBackActivationIds + activationId)
-            commitCheckpoint()
         } catch (failure: Throwable) {
             haltAfterMutation(failure)
         }
@@ -315,6 +266,8 @@ class GameExecutor internal constructor(
                 unitHandles.putAll(saved.unitHandles)
                 constructionSelections.putAll(saved.constructionSelections)
                 settlementKnowledge.putAll(saved.settlementKnowledge.associateBy { it.position })
+                settlementTechnologies.addAll(saved.settlementTechnologies)
+                settlerHistory.putAll(saved.settlerHistory)
                 player.popupAlerts.forEachIndexed { index, alert ->
                     saved.alertHandles[index]?.let { alertHandles[alert] = it }
                 }
@@ -346,6 +299,7 @@ class GameExecutor internal constructor(
     override fun close() {
         synchronized(lifecycleLock) {
             synchronized(game) {
+                stopObservingVisibility()
                 closed = true
                 communicationChanges.invalidate()
                 tradeDeadlines.shutdownNow()

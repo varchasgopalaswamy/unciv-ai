@@ -17,23 +17,6 @@ data class FreeGreatPersonDecision(
 )
 
 @Serializable
-data class ChooseFreeGreatPersonRequest(
-    val requestId: String,
-    val epoch: String,
-    val decisionHandle: String,
-    val unitName: String,
-)
-
-@Serializable
-data class ChooseFreeGreatPersonReceipt(
-    val requestId: String,
-    val epoch: String,
-    val decisionHandle: String,
-    val unitName: String,
-    val remainingChoices: Int,
-)
-
-@Serializable
 internal data class FreeGreatPersonFingerprint(
     val remainingChoices: Int,
     val mayaLimitedChoices: Int,

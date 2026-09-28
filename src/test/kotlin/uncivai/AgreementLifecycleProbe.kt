@@ -36,7 +36,7 @@ object AgreementLifecycleProbe {
         resourceLossRetainsRelationshipFlags(root.resolve("resource-flags"))
         warAndPrivateWorld(root.resolve("war"))
         for (afterReplace in listOf(false, true)) failedExpiration(root.resolve("failure-$afterReplace"), afterReplace)
-        roundRecovery(root.resolve("round"))
+        turnRecovery(root.resolve("turn"))
         println("Agreement lifecycle verified: $root")
     }
 
@@ -334,7 +334,7 @@ object AgreementLifecycleProbe {
         error("Lifecycle fixture choices did not settle")
     }
 
-    private fun roundRecovery(root: Path) {
+    private fun turnRecovery(root: Path) {
         val checkpoint = root.resolve("game.json")
         lateinit var before: GameCheckpoint
         lateinit var original: List<JsonObject>
@@ -352,10 +352,8 @@ object AgreementLifecycleProbe {
                 nativeTrade(runtime.game, "Rome", "Greece", listOf(gpt(2, 5)), emptyList())
                 runtime.executor.commitCheckpoint()
                 issuedAfter = agreements(runtime, "Rome").map(::id).single { it != id(original.single()) }
-                repeat(4) { api.finishTurn(checkNotNull(api.activate().playerToken)) }
-                check(read(runtime, "Rome", id(original.single())).text("status") == "ENDED")
                 api.operator(OperatorRequest("barrier", api.lease))
-                runtime.executor.restoreRound(before, "agreement-restored")
+                runtime.executor.restoreTurn(before, "agreement-restored")
                 check(agreements(runtime, "Rome").map { read(runtime, "Rome", id(it)) } == original)
                 check(events(runtime, "Rome").none { it.text("change") == "ENDED" })
                 check(runCatching { read(runtime, "Rome", issuedAfter) }.exceptionOrNull() is PlayerSessionException)
@@ -377,6 +375,8 @@ object AgreementLifecycleProbe {
         check(actual.size == native.size) { "$viewer has ${actual.size} active rows for ${native.size} native trades" }
         actual.zip(native).forEach { (summary, trade) ->
             val full = read(runtime, viewer, id(summary))
+            check(summary["give"] == full["give"] && summary["receive"] == full["receive"])
+            check("representation" !in summary && "cancellation" !in summary)
             fun nativeFields(key: String) = JsonArray(full.getValue(key).jsonArray.map { item -> JsonObject(item.jsonObject.filterKeys { it in setOf("type", "name", "amount", "duration") }) })
             check(nativeFields("give") == offers(trade.ourOffers)) { "Outgoing clauses differ from native: $full" }
             check(nativeFields("receive") == offers(trade.theirOffers)) { "Incoming clauses differ from native: $full" }

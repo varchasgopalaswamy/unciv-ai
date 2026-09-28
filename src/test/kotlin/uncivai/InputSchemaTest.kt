@@ -79,15 +79,34 @@ class InputSchemaTest {
     }
 
     @Test
+    fun `victory selections reject malformed values and preserve query bounds`() {
+        val schema = InputSchemas.victoryProgress
+        val query = uncivai.player.VictoryProgressRequest(sections = listOf("charts"), metrics = listOf("Production"), fromTurn = 5, toTurn = 25)
+        val encoded = PlayerTurnJson.json.encodeToJsonElement(uncivai.player.VictoryProgressRequest.serializer(), query).jsonObject
+        assertEquals(query, schema.decode(uncivai.player.VictoryProgressRequest.serializer(), encoded))
+        assertEquals(uncivai.player.VictoryProgressRequest(), schema.decode(uncivai.player.VictoryProgressRequest.serializer(), obj()))
+        for (bad in listOf(
+            obj("sections" to listOf("charts", "charts")), obj("sections" to emptyList<String>()),
+            obj("sections" to listOf("hidden")), obj("metrics" to listOf("Science")),
+            obj("metrics" to listOf("Gold", "Gold")), obj("fromTurn" to -1),
+            obj("fromTurn" to "10"), obj("toTurn" to 2147483648L), obj("includeHidden" to true),
+            obj("civilizations" to listOf("Rome", "Rome")), obj("civilizations" to listOf(" ")),
+        )) {
+            assertThrows(PlayerSessionException::class.java) { schema.validate(bad) }
+        }
+    }
+
+    @Test
     fun `game command schema matches serialized defaults enums and full integer bounds`() {
         val schemaKinds = InputSchemas.turnCommand.document.getValue("properties").jsonObject.getValue("kind").jsonObject.getValue("enum").jsonArray.map { it.jsonPrimitive.content }.toSet()
         assertEquals(TurnCommandKind.entries.map { it.name }.toSet(), schemaKinds)
         for (kind in TurnCommandKind.entries) {
-            val command = TurnCommandRequest("r1", "g1", "rev1", kind, socialVersion = 4)
+            val command = TurnCommandRequest("r1", "g1", "rev1", kind)
             val encoded = Json.parseToJsonElement(PlayerTurnJson.encode(command)).jsonObject
             assertEquals(command, InputSchemas.turnCommand.decode(TurnCommandRequest.serializer(), encoded))
         }
         val command = obj("requestId" to "r1", "epoch" to "g1", "revision" to "rev1", "kind" to "MOVE_UNIT")
+        assertThrows(PlayerSessionException::class.java) { InputSchemas.turnCommand.validate(JsonObject(command + obj("socialVersion" to 4))) }
         for (position in listOf(obj("x" to "1", "y" to 2), obj("x" to 2147483648L, "y" to 2), obj("x" to 1))) {
             assertThrows(PlayerSessionException::class.java) { InputSchemas.turnCommand.validate(JsonObject(command + obj("destination" to position))) }
         }

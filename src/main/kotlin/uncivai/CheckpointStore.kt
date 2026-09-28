@@ -28,28 +28,15 @@ import java.nio.file.StandardOpenOption
 /** Trusted full-state artifact. Never serve this file through a player endpoint. */
 @Serializable
 internal data class GameCheckpoint(
-    val formatVersion: Int = 4,
+    val formatVersion: Int = 6,
     val epoch: String,
     val paused: Boolean,
     val gameJson: String,
     val players: Map<String, SavedPlayerState>,
     val handoff: Long = 0,
     val scheduled: Boolean = false,
-    val turnStart: TurnStartCheckpoint? = null,
     val communication: CommunicationState = CommunicationState(),
     val communicationPaused: Boolean = false,
-)
-
-/** The pre-activation state, persisted atomically alongside every command checkpoint. */
-@Serializable
-internal data class TurnStartCheckpoint(
-    val handoff: Long,
-    val civilization: String,
-    val turn: Int,
-    val gameJson: String,
-    val players: Map<String, SavedPlayerState>,
-    val activationId: String? = null,
-    val rolledBackActivationIds: Set<String> = emptySet(),
 )
 
 @Serializable
@@ -74,6 +61,8 @@ internal data class SavedPlayerState(
     val freeGreatPersonDecision: SharedFreeGreatPersonDecision? = null,
     val constructionSelections: Map<String, List<uncivai.player.ConstructionSelection>> = emptyMap(),
     val settlementKnowledge: List<uncivai.player.KnownSettlementTile> = emptyList(),
+    val settlementTechnologies: Set<String>,
+    val settlerHistory: Map<Int, uncivai.player.SettlerHistory> = emptyMap(),
 )
 
 internal class CheckpointStore(
@@ -118,7 +107,7 @@ internal class CheckpointStore(
     fun read(): GameCheckpoint {
         acquire()
         val document = checkpointJson.parseToJsonElement(Files.readString(path))
-        require(document.jsonObject["formatVersion"]?.jsonPrimitive?.intOrNull == 4) { "Unsupported checkpoint version; start a new game" }
+        require(document.jsonObject["formatVersion"]?.jsonPrimitive?.intOrNull == 6) { "Unsupported checkpoint version; start a new game" }
         val saved = checkpointJson.decodeFromJsonElement<GameCheckpoint>(document)
         require(saved.epoch.isNotEmpty()) { "Invalid checkpoint epoch" }
         return saved
@@ -150,12 +139,11 @@ internal class CheckpointStore(
     companion object {
         private val checkpointJson = Json { encodeDefaults = true }
 
-        fun capture(game: GameInfo, epoch: String, paused: Boolean, states: Map<String, TurnSessionState>, handoff: Long = 0, scheduled: Boolean = false, turnStart: TurnStartCheckpoint? = null, communication: CommunicationState = CommunicationState(), communicationPaused: Boolean = false): GameCheckpoint = GameCheckpoint(
+        fun capture(game: GameInfo, epoch: String, paused: Boolean, states: Map<String, TurnSessionState>, handoff: Long = 0, scheduled: Boolean = false, communication: CommunicationState = CommunicationState(), communicationPaused: Boolean = false): GameCheckpoint = GameCheckpoint(
             epoch = epoch,
             paused = paused,
             handoff = handoff,
             scheduled = scheduled,
-            turnStart = turnStart,
             communication = communication,
             communicationPaused = communicationPaused,
             gameJson = json().toJson(game),
@@ -179,6 +167,8 @@ internal class CheckpointStore(
                     freeGreatPersonDecision = state.freeGreatPersonDecision,
                     constructionSelections = state.constructionSelections.toMap(),
                     settlementKnowledge = state.settlementKnowledge.values.toList(),
+                    settlementTechnologies = state.settlementTechnologies.toSet(),
+                    settlerHistory = state.settlerHistory.toMap(),
                 )
             },
         )

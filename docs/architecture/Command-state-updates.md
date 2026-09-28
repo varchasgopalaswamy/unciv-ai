@@ -67,6 +67,21 @@ Finish unrelated research, production and alert actions before fetching the fina
 preview, then issue its command. Ordinary independent reads can still be batched;
 batching several final previews before any movement can waste the later previews.
 
+Independent native reads (`research_details`, `policy_details`, `victory_progress`, `player_result`)
+and social/trade reads (`chat_read`, `trade_options`, `trade_read`, `agreement_list`,
+`agreement_read`) return their exact `query`. They expire conservatively whenever
+an observed native revision or social context changes. Their content cannot be
+reconstructed from the cached overview, so the service sends invalidation notices
+without automatically requerying them. Reread only information needed for a later
+decision. Historical memory and immutable action history are not current-state
+inspections and do not participate in this invalidation.
+
+Explicit `player_turn` reads and communication mutation responses can also carry
+top-level `invalidatedDetails`. This is response metadata, excluded from the
+overview and its state ID. Negotiation/recovery cleanup preserves pending notices
+until the next response can deliver them. A full overview does not itself refresh
+an independent native or trade read.
+
 Only the overview reconstructed from the delivered base and delta counts as newly
 read. Internally refreshed details remain unread until requested. Changed detail
 cannot support a current assumption without a new read; an older delivered version
@@ -112,13 +127,13 @@ Retrying a call ID returns its saved response without executing the action or
 rolling the service's current observation backward. Interruption after the native
 receipt but before the response can recover with a fresh read/full overview,
 without repeating the action. Cancellation clears the in-memory baseline and
-inspections. Restart and rollback require fresh jobs/baselines; existing epoch
+inspections, retaining their invalidation notices for the next response. Restart and rollback require fresh jobs/baselines; existing epoch
 checks reject the abandoned timeline.
 
-Gameplay trade/friendship settlements and explicit native diplomatic actions also
+Gameplay trade/friendship settlements, social commitment changes and explicit native diplomatic actions also
 refresh state. Native-AI offers return pending without waiting for the AI's turn.
 Ordinary communication sends do not force a game-state read; communication jobs
-retain their explicit-read behavior. A negotiation that rejects a command still
+receive invalidation notices after mutations and retain their explicit-read behavior. A negotiation that rejects a command still
 requires a fresh decision. Unknown command outcomes continue through durable
 receipt reconciliation.
 

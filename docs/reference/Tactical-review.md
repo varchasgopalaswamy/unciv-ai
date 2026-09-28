@@ -5,19 +5,33 @@ They inform decisions without imposing strategic priorities.
 
 `tacticalReview` shows:
 
-- The owned military roster, health, base melee/ranged strength, current orders and
-  offered attack counts, including units already fortified or asleep.
-- Visible hostile military units and civilians or injured military units within
+- Military counts; the full owned roster, health, strength, roles, orders and
+  attack counts are provided once in `player_turn.units`.
+- Visible hostile military units and owned civilians or military units within
   two hexes of them. The Kotlin host uses engine visibility, unit classification,
   diplomatic status and map distances, including wrapping maps. Enemy civilians
   are not classified as attacking threats.
-- Every currently offered city bombardment, damage ranges and copyable arguments.
+  `militaryNearHostiles` includes healthy units as well as injured ones.
+- `recapturableCivilians`: currently visible foreign-owned civilians whose native
+  original owner is this player, with their position, current owner, war status,
+  visible military guard (if any), and `recapture.unitAfterCapture`. A captured
+  Settler that is still a Settler returns as a Settler; a Worker returns as a
+  Worker. This describes the result of a successful legal capture, not whether
+  any owned unit can capture it this turn. Clearing a guard with ranged fire
+  alone does not recover the civilian. Native uncapturable units are excluded.
+  Original ownership of other players' units is not disclosed. Entries also
+  appear in `map_region` unit observations as `recapture`, and disappear when the
+  civilian leaves visibility, is destroyed, or returns to the player's roster.
+- Every currently offered city bombardment, damage ranges, copyable arguments and
+  its required `city_details(sections=["combat"])` inspection.
 - Confirmed losses from the delivered combat reports, city count, Settlers and
-  queued Settlers, treasury, income and happiness.
+  cities currently producing Settlers. A Settler later in the queue is not current
+  production. Treasury, income and happiness appear once in `economy`.
 
 Proximity is a warning, not an enemy movement prediction. It ignores hidden units
 and does not establish that a destination is safe. A military unit on the same
-tile is reported without promising that it can protect a civilian. Damage ranges
+tile is reported as `otherMilitaryOnSameTile`, excluding the subject unit itself,
+without promising that it can protect a civilian. Damage ranges
 are engine previews; receipts and later observations establish actual results.
 
 ## Action consequences
@@ -51,15 +65,16 @@ These details live in action inspections; the compact unit summary still contain
 counts of movement and attack options. Risks remain advisory and never remove a
 native-legal action.
 
-`strategyReview` lists only active plans with review flags, by ID and reason.
-Players choose their own plan categories and may supply a future `reviewAfterTurn`;
-the service does not invent review deadlines or require coverage of named topics.
-Confirmed losses and city losses trigger relevant reviews earlier. See
-[structured memory](../architecture/Structured-memory.md). The service does not assess freeform
-success criteria or automatically decide that a second city or a war is desirable.
+`strategyReview.assessments` lists active strategy assessments with advisory
+notices, by ID and reason. There are no scheduled review dates or required topics.
+Confirmed losses and changes in city count or war status notify the strategy even
+without subject tags. See [structured memory](../architecture/Structured-memory.md).
+The service does not judge an assessment or decide which response is desirable.
 
 Before `END_TURN`, native pending decisions must be resolved and the current
-`turnReview.id` must have been observed. Idle units, available bombardments and
+native review must have been observed by the service, which supplies its ID.
+The model reviews `units` and pending decisions; `turnReview` contains only the
+confirmed-action count. Idle units, available bombardments and
 nearby threats do not block the turn. A player may optionally supply `deferReason`
 as audit context; neither the gateway nor host requires an explanation.
 
@@ -95,6 +110,11 @@ engine, rejects the malformed city command without mutation, fires the offered
 shot, moves the Worker into the city and advances through the barbarian turn. It
 checks native ownership/position and the persisted receipt after checkpoint
 reload. It also tests hostile classification, fog filtering and a wrapping-map seam.
+The captured-civilian case checks a guarded Settler, an unguarded Worker, other
+players' civilians and native uncapturable units. It recaptures the Settler through
+a legal melee attack, verifies that it remains a Settler, and checks removal of
+recapture information after recovery, destruction and loss of visibility. Python
+regressions check turn-start preloading, map details and command-update removal.
 These are deterministic interface/engine regressions, not a model performance
 benchmark or proof that the agents will consistently choose good tactics.
 

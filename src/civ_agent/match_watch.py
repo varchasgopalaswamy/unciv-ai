@@ -12,7 +12,9 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.widgets import DataTable, Footer, Header, RichLog, Static, TabbedContent, TabPane
 
+from civ_agent.diplomacy_view import conversations, trade_status
 from civ_agent.model_status import status_text
+from civ_agent.strategy_view import report_text
 from civ_agent.terminal_output import player_style, visible_text
 from civ_agent.turn_display import api_calls, memory_edits_text, number, seconds
 from civ_agent.watch_state import WatchReader, WatchSnapshot, event_time
@@ -43,6 +45,7 @@ class MatchWatch(App):
     Screen { background: $surface; }
     Header { background: $panel; }
     #status { height: auto; min-height: 2; max-height: 5; padding: 0 1; }
+    #negotiation { height: auto; padding: 0 1; color: $warning; }
     #players { height: 7; border: round $primary; margin: 0 1; }
     #metrics { height: auto; max-height: 5; padding: 0 2; }
     #scope { height: 1; padding: 0 2; color: $text-muted; }
@@ -50,6 +53,10 @@ class MatchWatch(App):
     TabPane { padding: 0; }
     RichLog { height: 1fr; padding: 0 1; }
     #turns, #calls { height: 1fr; }
+    #conversations { height: auto; max-height: 8; }
+    #diplomacy-help { height: auto; padding: 0 1; color: $text-muted; }
+    #strategies { height: auto; max-height: 7; }
+    #strategy-status { height: auto; max-height: 5; padding: 0 1; }
     #call-help { height: auto; padding: 0 1; color: $text-muted; }
     Footer { background: $panel; }
     """
@@ -61,6 +68,8 @@ class MatchWatch(App):
         Binding("l", "live", "Live turn"),
         Binding("f", "follow", "Follow log"),
         Binding("v", "verbose", "Verbose"),
+        Binding("d", "diplomacy", "Diplomacy"),
+        Binding("s", "strategy", "Strategy"),
     ]
 
     def __init__(self, state_directory: Path, *, verbose=False, refresh=1.0):
@@ -78,16 +87,31 @@ class MatchWatch(App):
         self.last_activity = None
         self.reading = False
         self.turn_rows: dict[str, tuple[str, int]] = {}
+        self.conversation: str | None = None
+        self.last_diplomacy = None
+        self.strategy_civilization: str | None = None
+        self.last_strategy = None
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
         yield Static("Waiting for match records…", id="status", markup=False)
+        yield Static(id="negotiation", markup=False)
         yield DataTable(id="players", cursor_type="row", zebra_stripes=True)
         yield Static(id="metrics", markup=False)
         yield Static(id="scope", markup=False)
         with TabbedContent(initial="activity-tab"):
             with TabPane("Activity", id="activity-tab"):
                 yield RichLog(id="activity", wrap=True, min_width=1, max_lines=6000, markup=False)
+            with TabPane("Diplomacy", id="diplomacy-tab"):
+                yield Static(
+                    "Select a conversation to read messages, offers and decisions.", id="diplomacy-help", markup=False
+                )
+                yield DataTable(id="conversations", cursor_type="row", zebra_stripes=True)
+                yield RichLog(id="diplomacy", wrap=True, min_width=1, markup=False)
+            with TabPane("Strategy", id="strategy-tab"):
+                yield DataTable(id="strategies", cursor_type="row", zebra_stripes=True)
+                yield Static(id="strategy-status", markup=False)
+                yield RichLog(id="strategy", wrap=True, min_width=1, markup=False)
             with TabPane("Turns · Enter to inspect", id="turns-tab"):
                 yield DataTable(id="turns", cursor_type="row", zebra_stripes=True)
             with TabPane("API calls", id="calls-tab"):
@@ -104,9 +128,11 @@ class MatchWatch(App):
             "players": ("Player", "Status", "Turn", "Score", "Input", "Cached", "Output", "Game API"),
             "turns": ("Turn", "Player", "Status", "Gameplay", "Bookkeeping", "Game API", "Input", "Output", "Usage"),
             "calls": ("API", "Calls", "Errors", "Replays", "Time"),
+            "conversations": ("Participants", "Status", "Latest turn"),
+            "strategies": ("Player", "Review status", "Report turn", "Preloaded turn", "Review time"),
         }.items():
             self.query_one(f"#{identity}", DataTable).add_columns(*columns)
-        self.query_one("#players", DataTable).border_title = "Players · Enter to filter activity"
+        self.query_one("#players", DataTable).border_title = "Players · Enter to filter"
         self.query_one("#activity", RichLog).focus()
         await self.poll_records()
         self.set_interval(self.refresh_seconds, self.poll_records)
@@ -136,6 +162,20 @@ class MatchWatch(App):
             log = self.query_one("#activity", RichLog)
             follow = self.follow_log and log.is_vertical_scroll_end
             self.call_after_refresh(self.render_activity, follow_override=follow)
+            self.call_after_refresh(self.render_diplomacy, force=True)
+            self.call_after_refresh(self.render_strategy, force=True)
+
+    def on_tabbed_content_tab_activated(self, event: TabbedContent.TabActivated):
+        diplomatic = event.pane.id == "diplomacy-tab"
+        reading = diplomatic or event.pane.id == "strategy-tab"
+        self.query_one("#metrics", Static).display = not reading
+        self.query_one("#scope", Static).display = not reading
+        if diplomatic:
+            self.call_after_refresh(self.render_diplomacy, force=True)
+        elif event.pane.id == "activity-tab":
+            self.call_after_refresh(self.render_activity)
+        elif event.pane.id == "strategy-tab":
+            self.call_after_refresh(self.render_strategy, force=True)
 
     def update_table(self, identity, rows):
         if self.table_values.get(identity) == rows:
@@ -170,7 +210,8 @@ class MatchWatch(App):
         snapshot = self.snapshot
         run, result = snapshot.run, snapshot.result
         flight = run.get("inFlight") or {}
-        current = flight or (snapshot.latest_turn() or {}).get("turn", {})
+        review_wait = run.get("waitingForReview") or {}
+        current = flight or review_wait or (snapshot.latest_turn() or {}).get("turn", {})
         status = str(run.get("status") or result.get("status") or "Waiting for match records").replace("_", " ")
         title = Text(
             f"{status.capitalize()}  ·  Turn {current.get('gameTurn', '—')}  ·  {visible_text(current.get('civilization', '—'))}",
@@ -188,6 +229,11 @@ class MatchWatch(App):
             title.append("  ·  VIEW FROZEN", style="bold yellow")
         if run.get("reason"):
             title.append("\n" + visible_text(run["reason"]), style="yellow")
+        if review_wait:
+            title.append(
+                f"\nWaiting for strategic review from turn {review_wait['review']['turn']} before this player's next turn.",
+                style="yellow",
+            )
         model_status = flight.get("modelStatus") or {}
         if (
             run.get("status") == "running"
@@ -204,6 +250,20 @@ class MatchWatch(App):
         for error in snapshot.errors[:2]:
             title.append("\n" + visible_text(error), style="yellow")
         self.query_one("#status", Static).update(title)
+        negotiation = snapshot.negotiation
+        banner = self.query_one("#negotiation", Static)
+        banner.display = negotiation is not None
+        if negotiation:
+            remaining = max(0, (negotiation.get("deadlineMillis", 0) - int(time.time() * 1000)) // 1000)
+            timing = f"{remaining}s remaining" if remaining else "deadline elapsed; awaiting host outcome"
+            banner.update(
+                Text(
+                    visible_text(
+                        f"Gameplay paused: {negotiation.get('author')} ↔ {negotiation.get('partner')} · {trade_status(negotiation)} · {timing}"
+                    ),
+                    style="bold yellow",
+                )
+            )
 
         scores = {r["civilization"]: r for r in result.get("scores", [])}
         players = {r["civilization"]: r for r in result.get("players", [])}
@@ -217,6 +277,8 @@ class MatchWatch(App):
                 phase = "Built-in AI" if score["controller"] == "BUILT_IN_AI" else "Human"
             elif name in pending:
                 phase = "Bookkeeping"
+            elif review_wait.get("civilization") == name:
+                phase = "Review wait"
             elif flight.get("civilization") == name:
                 phase = str(flight.get("agentPhase", "Starting")).replace("_", " ").capitalize()
                 if phase == "Running" and model_status.get("state") in {"waiting", "retrying"}:
@@ -318,14 +380,148 @@ class MatchWatch(App):
             )
         )
         self.render_activity()
+        self.render_diplomacy()
+        self.render_strategy()
+
+    def render_strategy(self, *, force=False):
+        views = [
+            v for v in self.snapshot.strategies if self.civilization is None or v.civilization == self.civilization
+        ]
+        self.update_table(
+            "strategies",
+            [
+                (
+                    v.civilization,
+                    (
+                        player_text(v.civilization, self.no_color),
+                        v.status,
+                        v.report["turn"] if v.report else "—",
+                        v.delivered_turn if v.delivered_turn is not None else "—",
+                        seconds(((v.job or {}).get("telemetry") or {}).get("elapsedMs")),
+                    ),
+                )
+                for v in views
+            ],
+        )
+        self.query_one("#strategies", DataTable).styles.height = min(4 if self.size.height < 30 else 7, len(views) + 2)
+        if not any(v.civilization == self.strategy_civilization for v in views):
+            self.strategy_civilization = views[0].civilization if views else None
+        view = next((v for v in views if v.civilization == self.strategy_civilization), None)
+        heading = Text()
+        if view:
+            heading.append_text(player_text(view.civilization, self.no_color))
+            heading.append(f" · {view.status}")
+            if view.pending:
+                heading.append(f" · attempt {view.pending['attempts']}")
+                if view.pending.get("error"):
+                    heading.append("\nLast failure: " + visible_text(view.pending["error"]), style="yellow")
+            if view.report:
+                heading.append(f"\nLatest adviser report · based on turn {view.report['turn']} · ", style="bold")
+                heading.append(
+                    f"provided to gameplay on turn {view.delivered_turn}."
+                    if view.delivered_turn is not None
+                    else "awaiting the next gameplay turn."
+                )
+                heading.append(" Recommendations remain advisory.", style="dim")
+            if view.job:
+                heading.append("\nReview usage · " + usage_text(view.job.get("usage") or {}), style="dim")
+        else:
+            heading.append("No agent strategy reports for this selection.", style="dim")
+        self.query_one("#strategy-status", Static).update(heading)
+        if self.query_one(TabbedContent).active != "strategy-tab":
+            return
+        content = (
+            self.snapshot.epoch,
+            self.strategy_civilization,
+            view.report if view else None,
+            view.error if view else None,
+            bool(view and view.pending),
+        )
+        if content == self.last_strategy and not force:
+            return
+        new_selection = self.last_strategy is None or content[:2] != self.last_strategy[:2]
+        self.last_strategy = content
+        log = self.query_one("#strategy", RichLog)
+        offset = log.scroll_y
+        log.clear()
+        log.write(
+            report_text(view) if view else Text("Select an agent to read its latest completed report."),
+            scroll_end=False,
+        )
+        self.call_after_refresh(log.scroll_to, y=0 if new_selection else offset, animate=False)
+
+    def render_diplomacy(self, *, force=False):
+        groups = conversations(self.snapshot.diplomacy, self.civilization, self.selected[1] if self.selected else None)
+        self.update_table(
+            "conversations",
+            [
+                (
+                    c.key,
+                    (
+                        visible_text(c.title),
+                        visible_text(c.status),
+                        c.events[-1].turn if c.events[-1].turn is not None else "—",
+                    ),
+                )
+                for c in groups
+            ],
+        )
+        self.query_one("#conversations", DataTable).styles.height = min(
+            4 if self.size.height < 30 else 8, len(groups) + 2
+        )
+        if not any(c.key == self.conversation for c in groups):
+            self.conversation = groups[0].key if groups else None
+        selected = next((c for c in groups if c.key == self.conversation), None)
+        help_text = "Select a conversation · shared statements and confirmed game outcomes · social promises are labeled separately."
+        if not self.snapshot.diplomacy_available:
+            help_text = "Diplomacy records unavailable. Restart the host with the current build to publish saved communications."
+        elif self.selected:
+            help_text = f"Conversations active on turn {self.selected[1]}; full conversation history shown."
+        self.query_one("#diplomacy-help", Static).update(Text(help_text))
+        if self.query_one(TabbedContent).active != "diplomacy-tab":
+            return
+        content = (self.snapshot.epoch, selected)
+        if content == self.last_diplomacy and not force:
+            return
+        new_selection = (
+            self.last_diplomacy is None
+            or self.last_diplomacy[0] != self.snapshot.epoch
+            or ((self.last_diplomacy[1].key if self.last_diplomacy[1] else None) != self.conversation)
+        )
+        self.last_diplomacy = content
+        log = self.query_one("#diplomacy", RichLog)
+        offset = log.scroll_y
+        follow = self.follow_log and (new_selection or log.is_vertical_scroll_end)
+        text = Text()
+        if selected:
+            for event, detail in selected.transcript():
+                label = (
+                    "Social promise"
+                    if event.kind in {"offer", "consent"}
+                    else "Trade"
+                    if event.kind == "trade"
+                    else "Diplomacy"
+                )
+                text.append(f"T{event.turn if event.turn is not None else '?'} · {label}\n", style="bold cyan")
+                text.append(detail + "\n\n")
+        else:
+            text.append("No recorded diplomatic conversations for this selection.", style="dim")
+        log.clear()
+        log.write(text, scroll_end=False)
+        if follow:
+            self.call_after_refresh(log.scroll_end, animate=False)
+        else:
+            self.call_after_refresh(log.scroll_to, y=offset, animate=False)
 
     def render_activity(self, *, follow_override=None):
+        if self.query_one(TabbedContent).active != "activity-tab":
+            return
         entries = tuple(
             e
             for e in self.snapshot.activity
-            if (self.civilization is None or e.civilization == self.civilization)
+            if (self.civilization is None or e.civilization == self.civilization or self.civilization in e.participants)
             and (self.verbose or not e.verbose)
-            and (self.selected is None or (e.civilization, e.turn) == self.selected)
+            and (self.selected is None or e.turn == self.selected[1])
         )
         if entries == self.last_activity and follow_override is None:
             return
@@ -338,7 +534,8 @@ class MatchWatch(App):
             follow = follow_override
         text = Text()
         for entry in entries:
-            text.append(f"{event_time(entry.time)}  ", style="dim")
+            if entry.time:
+                text.append(f"{event_time(entry.time)}  ", style="dim")
             text.append_text(player_text(entry.civilization, self.no_color))
             text.append(
                 f" · T{entry.turn} · {visible_text(entry.label)}\n",
@@ -359,6 +556,14 @@ class MatchWatch(App):
             self.call_after_refresh(log.scroll_to, y=offset, animate=False)
 
     async def on_data_table_row_selected(self, event: DataTable.RowSelected):
+        if event.data_table.id == "strategies":
+            self.strategy_civilization = str(event.row_key.value)
+            self.render_strategy()
+            return
+        if event.data_table.id == "conversations":
+            self.conversation = str(event.row_key.value)
+            self.render_diplomacy()
+            return
         if event.data_table.id == "players":
             self.civilization = str(event.row_key.value)
             self.selected = None
@@ -392,12 +597,21 @@ class MatchWatch(App):
         self.follow_log = not self.follow_log
         if self.follow_log:
             self.query_one("#activity", RichLog).scroll_end(animate=False)
+            self.query_one("#diplomacy", RichLog).scroll_end(animate=False)
         self.render_records()
 
     def action_verbose(self):
         self.verbose = not self.verbose
         self.last_activity = None
         self.render_records()
+
+    def action_diplomacy(self):
+        self.query_one(TabbedContent).active = "diplomacy-tab"
+        self.query_one("#conversations", DataTable).focus()
+
+    def action_strategy(self):
+        self.query_one(TabbedContent).active = "strategy-tab"
+        self.query_one("#strategies", DataTable).focus()
 
 
 def parser(*, add_help=True):

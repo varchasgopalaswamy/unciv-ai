@@ -1,6 +1,7 @@
 import asyncio
 import copy
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -14,6 +15,7 @@ from civ_agent.protocol import JsonObject
 from civ_agent.service_io import ServiceIO
 from civ_agent.startup_context import (
     core_definitions,
+    memory_topics,
     prepare_startup,
     startup_instructions,
     startup_prompt,
@@ -23,7 +25,228 @@ from civ_agent.state_updates import apply_overview_update
 from civ_agent.strategy_guide import strategy_reference
 from civ_agent.telemetry import JobAccounting
 from tests.test_agent_service import StartupHost
-from tests.test_structured_memory import create, plan
+from tests.test_structured_memory import create, strategy
+
+
+def test_victory_comparison_is_preloaded_once_and_chart_queries_pass_through(tmp_path):
+    comparison = {
+        "turn": 95,
+        "score": 384,
+        "sections": ["our_status", "global_status", "rankings"],
+        "metrics": [{"name": "Production", "meaning": "Empire production per turn"}],
+        "rankings": {
+            "comparedCivilizations": 2,
+            "rows": [
+                {"civilization": "Egypt", "values": [108], "ranks": [1]},
+                {
+                    "civilization": "Rome",
+                    "values": [48],
+                    "ranks": [2],
+                    "trend": {"fromTurn": 84, "toTurn": 94, "changes": [13]},
+                },
+            ],
+        },
+        "charts": None,
+    }
+    query = {"sections": ["charts"], "metrics": ["Production"], "civilizations": ["Rome"], "fromTurn": 80, "toTurn": 94}
+    chart = {"turn": 95, "charts": {"turns": [80], "nextFromTurn": 81, "requestedToTurn": 94}}
+
+    class VictoryHost(StartupHost):
+        def __init__(self, factory):
+            super().__init__(factory)
+            self.victory_calls = []
+
+        async def list_tools(self):
+            tools = await super().list_tools()
+            schema_path = (
+                Path(__file__).resolve().parents[1] / "src/main/resources/uncivai/schemas/victory-progress.json"
+            )
+            for tool in tools:
+                if tool["name"] == "victory_progress":
+                    tool["inputSchema"] = json.loads(schema_path.read_text())
+            return tools
+
+        async def tool(self, name, args):
+            if name == "victory_progress":
+                self.victory_calls.append(copy.deepcopy(args))
+                return copy.deepcopy(chart if args else comparison)
+            return await super().tool(name, args)
+
+    async def run():
+        io = ServiceIO()
+        memory = CivilizationState(tmp_path / "memory", "Rome")
+        gateway = ProposalGateway(memory, io, tmp_path / "workspace")
+        host = VictoryHost(
+            SimpleNamespace(service=SimpleNamespace(active_id="job", records={"job": {"epoch": "g1", "gameTurn": 95}}))
+        )
+        try:
+            job = await gateway.open("job", "gameplay", "g1", host, {}, 95)
+            prepared = await prepare_startup(gateway, job)
+            comparison_query = {"tool": "victory_progress", "arguments": {}}
+            assert prepared["reads"]["victory_progress"] == {**comparison, "query": comparison_query}
+            prompt = startup_prompt(prepared, "gameplay", "Play this turn")
+            reads = json.JSONDecoder().raw_decode(prompt.user.split("Prepared player-visible reads:\n", 1)[1])[0]
+            assert reads["victory_progress"] == {**comparison, "query": comparison_query}
+            assert host.victory_calls == [{}]
+            assert (await gateway.call(job, "victory_progress", query, "history")) == {
+                **chart,
+                "query": {"tool": "victory_progress", "arguments": query},
+            }
+            assert host.victory_calls == [{}, query]
+        finally:
+            await io.close()
+
+    asyncio.run(run())
+
+
+def test_startup_selects_old_knowledge_from_fresh_facts_without_admitting_late_contributions(tmp_path):
+    async def run():
+        memory, io = CivilizationState(tmp_path / "memory", "Rome"), ServiceIO()
+        gateway = ProposalGateway(memory, io, tmp_path / "workspace")
+        memory.bind("g1")
+        memory.start_job("previous", "gameplay", {}, game_turn=0)
+        war = create(
+            memory,
+            {
+                "type": "note",
+                "text": "Egypt broke an earlier withdrawal promise.",
+                "subjects": ["egypt"],
+                "priority": 5,
+            },
+            "previous",
+        )
+        city = create(
+            memory, {"type": "note", "text": "Rome's food tiles need improvement.", "subjects": ["city1"]}, "previous"
+        )
+        unrelated = create(
+            memory,
+            {"type": "note", "text": "An old Greek trade price.", "subjects": ["Greece"], "priority": 5},
+            "previous",
+        )
+        memory.finish_job("previous", True)
+        host = StartupHost(
+            SimpleNamespace(service=SimpleNamespace(active_id="job", records={"job": {"epoch": "g1", "gameTurn": 10}}))
+        )
+        host.view["diplomacy"] = {"knownCivilizations": [{"civilizationId": "Egypt", "atWar": True}]}
+        host.view["cities"][0]["development"] = {"foodPerTurn": 0}
+        try:
+            job = await gateway.open("job", "gameplay", "g1", host, {}, 10)
+            assert not job.memory["contextIds"] and not job.memory["events"]
+            memory.start_job("late-chat", "communication", {}, game_turn=10)
+            late = create(
+                memory, {"type": "note", "text": "Contribution after dispatch", "subjects": ["Egypt"]}, "late-chat"
+            )
+            prepared = await prepare_startup(gateway, job)
+            context = json.loads(prepared["memoryContext"].split("\n", 1)[1])
+            assert {record["id"] for record in context["records"]} == {war, city}
+            assert context["omittedRecords"] == 1
+            assert unrelated not in job.memory["contextIds"] and late not in job.memory["records"]
+            assert memory.delivered_records(job.id, [war, city]).keys() == {war, city}
+            assert not memory.delivered_records(job.id, [unrelated, late])
+            assert "Egypt" in job.memory["contextTopics"] and "growth" in job.memory["contextTopics"]
+            await gateway.select_startup_memory(job, {"Greece"})
+            assert set(job.memory["contextIds"]) == {war, city}  # Pin once the opening context is prepared.
+        finally:
+            await io.close()
+
+    asyncio.run(run())
+
+
+def test_startup_reselection_keeps_budget_and_does_not_deliver_displaced_records(tmp_path):
+    async def run():
+        memory, io = CivilizationState(tmp_path / "memory", "Rome", 1000), ServiceIO()
+        gateway = ProposalGateway(memory, io, tmp_path / "workspace")
+        memory.bind("g1")
+        memory.start_job("old", "gameplay", {}, game_turn=0)
+        war = create(memory, {"type": "note", "text": "Old war knowledge. " * 27, "subjects": ["Egypt"]}, "old")
+        memory.finish_job("old", True)
+        memory.start_job("recent", "gameplay", {}, game_turn=9)
+        recent = create(
+            memory, {"type": "note", "text": "Recent unrelated note. " * 25, "subjects": ["Greece"]}, "recent"
+        )
+        memory.finish_job("recent", True)
+        host = StartupHost(
+            SimpleNamespace(service=SimpleNamespace(active_id="job", records={"job": {"epoch": "g1", "gameTurn": 10}}))
+        )
+        host.view["diplomacy"] = {"knownCivilizations": [{"civilizationId": "Egypt", "atWar": True}]}
+        try:
+            job = await gateway.open("job", "gameplay", "g1", host, {}, 10)
+            assert job.memory["contextIds"] == [recent]
+            prepared = await prepare_startup(gateway, job)
+            context = json.loads(prepared["memoryContext"].split("\n", 1)[1])
+            assert [record["id"] for record in context["records"]] == [war]
+            assert (
+                len(json.dumps(context["records"], ensure_ascii=False, separators=(",", ":"))) <= memory.context_limit
+            )
+            assert not memory.delivered_records(job.id, [recent])
+            result = memory.patch(job.id, [{"op": "amend", "id": recent, "fields": {"text": "Unread edit"}}])
+            assert not result["changes"][0]["accepted"] and result["changes"][0]["reason"] == "MEMORY_CONFLICT"
+        finally:
+            await io.close()
+
+    asyncio.run(run())
+
+
+def test_startup_memory_budget_uses_frozen_versions_despite_concurrent_edits(tmp_path):
+    async def run():
+        memory, io = CivilizationState(tmp_path / "memory", "Rome"), ServiceIO()
+        gateway = ProposalGateway(memory, io, tmp_path / "workspace")
+        memory.bind("g1")
+        memory.start_job("writer", "gameplay", {}, game_turn=4)
+        keys = [
+            create(memory, {"type": "note", "text": "Short report", "subjects": ["Egypt"]}, "writer") for _ in range(8)
+        ]
+        host = StartupHost(
+            SimpleNamespace(service=SimpleNamespace(active_id="chat", records={"chat": {"epoch": "g1", "gameTurn": 4}}))
+        )
+        original = gateway.select_startup_memory
+
+        async def select_then_edit(job, topics):
+            await original(job, topics)
+            changed = memory.patch(
+                "writer",
+                [{"op": "amend", "id": key, "fields": {"text": "Updated border report. " * 80}} for key in keys],
+            )
+            assert all(change["accepted"] for change in changed["changes"])
+
+        gateway.select_startup_memory = select_then_edit
+        try:
+            job = await gateway.open("chat", "communication", "g1", host, {}, 4)
+            prepared = await prepare_startup(gateway, job)
+            context = json.loads(prepared["memoryContext"].split("\n", 1)[1])
+            assert (
+                len(json.dumps(context["records"], ensure_ascii=False, separators=(",", ":"))) <= memory.context_limit
+            )
+            assert {r["id"] for r in context["records"]} == set(keys)
+            assert all(r["text"] == "Short report" for r in context["records"])
+            latest = await gateway.call(job, "memory_read", {"ids": keys}, "explicit-read")
+            assert all(r["text"].startswith("Updated border report.") for r in latest["records"])
+        finally:
+            await io.close()
+
+    asyncio.run(run())
+
+
+def test_memory_topics_use_only_structured_delivered_facts_and_current_social_records():
+    reads = {
+        "player_turn": {
+            "researchQueue": ["Mining"],
+            "cities": [{"handle": "city1", "name": "Rome", "foodPerTurn": -1, "constructionQueue": ["Granary"]}],
+            "economy": {"happiness": -1, "resources": [{"name": "Iron", "available": 0, "used": 2}]},
+            "changesSincePreviousTurn": {"resourcesNoLongerAvailable": ["Silk"]},
+            "diplomacy": [{"civilizationId": "Greece", "atWar": False}],
+        },
+        "chat_read": {
+            "agreements": [{"agreement": "a1", "partner": "France"}],
+            "offers": [{"proposal": "p1", "participants": ["Egypt", "Rome"], "terms": "unstructured-text-sentinel"}],
+        },
+    }
+    topics = memory_topics(reads)
+    assert {"Mining", "city1", "Rome", "Granary", "growth", "economy", "Iron", "Silk", "France", "Egypt"} <= topics
+    assert not {"Greece", "unstructured-text-sentinel", "science"} & topics
+    assert memory_topics(
+        {"chat_read": {"context": {"knownCivilizations": [{"civilizationId": "Egypt", "atWar": True}]}}}
+    ) == {"Egypt", "war", "defense"}
 
 
 def test_prepared_reads_establish_evidence_and_update_base_without_model_calls(tmp_path):
@@ -53,15 +276,56 @@ def test_prepared_reads_establish_evidence_and_update_base_without_model_calls(t
             "chosenTurn": 0,
             "observedSinceTurn": 0,
             "turnsObserved": 4,
-            "newOptions": ["Workshop", "Market"],
+            "availableSinceChoice": ["Workshop", "Market"],
         }
+        host.view["cities"][0]["constructionQueue"] = ["Science"]
+        host.view["cities"][0]["productionConversions"] = {
+            "Science": {
+                "stat": "Science",
+                "productionPerTurn": "20",
+                "baseYieldPerProduction": 0.25,
+                "yieldPerTurn": "9.2",
+            }
+        }
+        host.view["wonderOpportunities"] = [
+            {
+                "name": "The Oracle",
+                "kind": "WORLD",
+                "benefits": "+3 Culture; Free Social Policy",
+                "greatPersonPoints": {"Great Scientist": 1},
+                "specialistSlots": {},
+                "cities": [{"city": "city1", "canQueue": True, "turns": 8}],
+            }
+        ]
         host.view["economy"] = {"development": {"unimprovedResources": [], "unconnectedCities": ["Antium"]}}
         host.view["diplomacyOpportunities"] = {"luxuryTrades": [], "expiringTerms": []}
+        host.view["militaryReadiness"] = {
+            "roleCounts": {"RECON": 1},
+            "unitsExcludingRecon": 0,
+            "cities": [{"city": "city1", "garrison": None, "nearbyDefenders": []}],
+            "visibleBorderForces": [],
+            "recruitment": [{"city": "city1", "units": ["Warrior"]}],
+        }
         host.view["settlement"] = {
             "status": "ONLY_UNCERTAIN_SITES",
             "knownEligibleSites": 0,
             "uncertainSites": 4,
             "candidates": [{"position": {"x": i, "y": 4}, "score": 100 - i} for i in range(4)],
+            "settlers": [
+                {
+                    "unit": "unit1",
+                    "firstObservedTurn": 0,
+                    "turnsObserved": 5,
+                    "turnsWithoutMovement": 3,
+                    "recentDestinationChanges": [],
+                    "currentSite": {"canFoundNow": True, "siteStatus": "ELIGIBLE", "uncertainty": "Partly unseen"},
+                    "destination": {
+                        "position": {"x": 3, "y": 4},
+                        "score": 97,
+                        "route": {"status": "ROUTE_OFFERED", "estimatedTurns": 2, "speculative": True},
+                    },
+                }
+            ],
         }
         try:
             job = await gateway.open("job", "gameplay", "g1", host, {}, 0)
@@ -70,21 +334,28 @@ def test_prepared_reads_establish_evidence_and_update_base_without_model_calls(t
             assert set(prepared["reads"]) == {"player_turn", "player_capabilities", "victory_progress", "chat_read"}
             view = prepared["reads"]["player_turn"]
             assert view == job.delivered_overview
-            assert job.social_read and job.verified and not job.details_read
+            assert job.social_read and job.verified
+            assert {q.tool for q in job.details_read} == {"victory_progress", "chat_read"}
             assert "observation:overview" in job.memory["records"]
-            assert prepared["reads"]["player_capabilities"]["version"]
+            assert "queries" in prepared["reads"]["player_capabilities"]
+            assert "version" not in prepared["reads"]["player_capabilities"]
             assert "revision" not in view and "epoch" not in view
             assert "stateId" in view
             assert view["units"][0]["upgrades"][0]["goldCost"] == 50
             assert view["units"][0]["inspections"]["UPGRADE_UNIT"]["arguments"]["sections"] == ["economy"]
-            assert view["cities"][0]["constructionChoice"]["newOptions"] == ["Workshop", "Market"]
+            assert view["cities"][0]["constructionChoice"]["availableSinceChoice"] == ["Workshop", "Market"]
             assert view["economy"]["development"]["unconnectedCities"] == ["Antium"]
             assert view["diplomacyOpportunities"] == host.view["diplomacyOpportunities"]
             assert view["settlement"]["uncertainSites"] == 4 and len(view["settlement"]["candidates"]) == 3
+            assert view["settlement"]["settlers"] == host.view["settlement"]["settlers"]
+            assert view["units"][0]["settlementStatus"] == "CAN_FOUND_NOW"
+            assert view["militaryReadiness"] == host.view["militaryReadiness"]
+            assert view["wonderOpportunities"][0]["benefits"] == host.view["wonderOpportunities"][0]["benefits"]
+            assert view["wonderOpportunities"][0]["cities"] == [{"city": "city1", "turns": 8}]
+            assert view["cities"][0]["constructionConversion"]["yieldPerTurn"] == "9.2"
             assert {tool["name"] for tool in prepared["coreTools"]} == {
                 "mcp__civ__player_turn",
                 "mcp__civ__player_command",
-                "mcp__civ__memory_update",
                 "mcp__civ__memory_read",
                 "mcp__civ__unit_details",
                 "mcp__civ__map_region",
@@ -92,11 +363,17 @@ def test_prepared_reads_establish_evidence_and_update_base_without_model_calls(t
             for tool in prepared["coreTools"]:
                 Draft202012Validator.check_schema(tool["inputSchema"])
             assert "social promises" in prepared["readInstructions"]["chat_read"]
-            assert json.loads(startup_text(prepared).split("\n")[-1]) == prepared["reads"]
+            assert (
+                json.loads(startup_text(prepared).split("Prepared player-visible reads:\n", 1)[1].split("\n\n", 1)[0])
+                == prepared["reads"]
+            )
             action = view["alerts"][0]["command"]
             assert action == {"kind": "ACKNOWLEDGE_ALERT", "target": "alert1"}
             result = await gateway.call(job, "player_command", action, "ack")
             assert apply_overview_update(view, result["stateUpdate"]) == job.delivered_overview
+            assert "militaryReadiness" not in result["stateUpdate"]["set"]
+            assert "settlement" not in result["stateUpdate"]["set"]
+            assert "wonderOpportunities" not in result["stateUpdate"]["set"]
             assert len(host.executed) == 1
             assert view["endTurn"]["command"] == {"kind": "END_TURN"}
             assert "deferReason" not in view["endTurn"]["command"]
@@ -153,7 +430,13 @@ def test_private_startup_context_follows_observation_reviews_and_expiry(tmp_path
         memory.bind("g1")
         memory.start_job("previous", "gameplay", {})
         memory.observe_player({"turn": 0}, "previous")
-        key = create(memory, plan(reviewAfterTurn=1), job="previous")
+        offer = {"proposal": "p1", "version": 1, "participants": ["Rome", "Greece"], "effective": False}
+        memory.observe("communication", {"context": {"turn": 0}, "offers": [offer]}, "previous")
+        key = create(
+            memory,
+            strategy(assumptions=[{"text": "Diplomatic situation is stable", "source": "observation:communication"}]),
+            job="previous",
+        )
         expiring = create(memory, {"type": "note", "text": "Temporary report", "expiresTurn": 1}, job="previous")
         memory.finish_job("previous", True)
         host = StartupHost(
@@ -165,6 +448,7 @@ def test_private_startup_context_follows_observation_reviews_and_expiry(tmp_path
             result: JsonObject = await original(name, args)
             if name == "player_communication" and args["op"] == "state":
                 result["context"] = {"turn": 1}
+                result["offers"] = [{**offer, "effective": True}]
             return result
 
         host.tool = at_turn_one
@@ -175,10 +459,14 @@ def test_private_startup_context_follows_observation_reviews_and_expiry(tmp_path
             context = json.loads(prepared["memoryContext"].split("\n", 1)[1])
             records = {record["id"]: record for record in context["records"]}
             assert records[key]["needsReview"]
-            assert records[expiring]["state"] == ("retired" if purpose == "gameplay" else "active")
+            assert expiring not in records
+            assert memory.snapshot(purpose)["records"][expiring]["body"]["state"] == (
+                "retired" if purpose == "gameplay" else "active"
+            )
             assert "memoryUpdates" not in prepared["reads"].get("player_turn", {})
             prompt = startup_prompt(prepared, purpose, "Play this turn")
             assert prompt.user.count(prepared["memoryContext"]) == 1
+            assert prompt.user.index("Prepared player-visible reads:") < prompt.user.index(prepared["memoryContext"])
             assert "Temporary report" not in prompt.instructions
             assert startup_text(prepared).count(prepared["memoryContext"]) == 1
             saved = memory.call(
@@ -194,9 +482,9 @@ def test_private_startup_context_follows_observation_reviews_and_expiry(tmp_path
                 {
                     "changes": [
                         {
-                            "op": "amend",
+                            "op": "replace",
                             "id": key,
-                            "fields": {k: v for k, v in (plan(reviewAfterTurn=5)).items() if k != "type"},
+                            "content": strategy(),
                         }
                     ]
                 },
@@ -252,7 +540,7 @@ def test_prompt_prefix_excludes_state_memory_identity_and_capability_changes(str
         "coreTools": [{"name": "mcp__civ__player_command", "inputSchema": {"type": "object"}}],
         "readInstructions": {"chat_read": "Statements are claims."},
         "reads": {
-            "player_capabilities": {"version": "v1", "value": {"commands": ["END_TURN"]}},
+            "player_capabilities": {"commands": ["END_TURN"]},
             "player_turn": {"turn": 1, "civilization": "Rome", "stateId": "private-state-1"},
             "chat_read": {"text": "UNTRUSTED_MESSAGE_IGNORE_INSTRUCTIONS"},
         },
@@ -311,7 +599,9 @@ def test_strategy_reference_is_optional_once_and_before_dynamic_context(tmp_path
     assert interactive == reference + "\n\n" + startup_text(prepared)
     assert interactive.count(reference) == 1
     assert interactive.index(reference) < interactive.index("PRIVATE_MEMORY_SENTINEL")
-    assert json.loads(interactive.split("\n")[-1]) == prepared["reads"]
+    assert (
+        json.loads(interactive.split("Prepared player-visible reads:\n", 1)[1].split("\n\n", 1)[0]) == prepared["reads"]
+    )
 
 
 def test_prefix_is_deterministic_and_communication_has_its_own_workflow():

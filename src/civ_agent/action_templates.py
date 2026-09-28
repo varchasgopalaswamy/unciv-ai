@@ -22,6 +22,14 @@ def add_overview_commands(value: JsonObject) -> None:
     for alert in value.get("alerts", []):
         if alert.get("canAcknowledge") is True and alert.get("content") is not None:
             attach(alert, "ACKNOWLEDGE_ALERT", target=alert["handle"])
+        friendship = alert.get("friendship")
+        if friendship:
+            if available(friendship.get("accept")):
+                attach(friendship["accept"], "RESPOND_FRIENDSHIP", target=alert["handle"], selection="Accept")
+            if friendship.get("canDecline") is True:
+                friendship["declineCommand"] = command_arguments(
+                    {"kind": "RESPOND_FRIENDSHIP", "target": alert["handle"], "selection": "Decline"}
+                )
         native = alert.get("nativeDiplomacy") or {}
         if native.get("responseCommand") == "RESPOND_CITY_STATE_ALERT":
             for option in native.get("options", []):
@@ -45,7 +53,7 @@ def add_overview_commands(value: JsonObject) -> None:
     if value.get("canEndTurn") is True:
         value["endTurn"] = {
             "command": command_arguments({"kind": "END_TURN"}),
-            "instruction": "Use the current turn review. Idle units and tactical warnings are advisory; deferReason is optional. Follow memoryPhase after handoff.",
+            "instruction": "Review the current unit roster and pending decisions. Idle units and tactical warnings are advisory; deferReason is optional. After END_TURN succeeds, finish.",
         }
     for unit in value.get("units", []):
         if unit.get("upgrades"):

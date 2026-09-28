@@ -65,6 +65,12 @@ def parser(*, add_help: bool = True) -> argparse.ArgumentParser:
         help="add a native AI major to a new ordinary game; may be repeated",
     )
     parser.add_argument(
+        "--agent-player", action="append", default=[], help="Agent civilization; repeat to replace the default roster"
+    )
+    size = parser.add_mutually_exclusive_group()
+    size.add_argument("--map-size", type=str.title, choices=("Tiny", "Small", "Medium", "Large", "Huge"))
+    size.add_argument("--map-radius", type=int, choices=range(2, 501), metavar="2-500")
+    parser.add_argument(
         "--trade-counteroffers",
         type=int,
         choices=range(101),
@@ -154,16 +160,18 @@ def launch(options):
         raise ValueError("--city-states applies only to a new ordinary game.")
     if options.built_in_ai and (resuming or options.scenario is not None):
         raise ValueError("--built-in-ai applies only to a new ordinary game.")
-    if len(set(options.built_in_ai)) != len(options.built_in_ai) or any(
-        civ in ("Rome", "Greece", "France") for civ in options.built_in_ai
-    ):
+    if (options.agent_player or options.map_size or options.map_radius) and (resuming or options.scenario is not None):
+        raise ValueError("Player and map options apply only to a new ordinary game.")
+    agents = options.agent_player or ["Rome", "Greece", "France"]
+    nations = agents + options.built_in_ai
+    if len(set(nations)) != len(nations):
         raise ValueError("Built-in AI civilizations must be distinct from the agent players.")
     if bool(options.tls_config) != bool(options.ca_file):
         raise ValueError("--tls-config and --ca-file must be supplied together.")
     if options.tls_config and (options.listen_host or options.public_host):
         raise ValueError("A custom TLS configuration already supplies listenHost and publicHost.")
 
-    civilizations = ("Rome", "Greece") if options.scenario == "trade-cycle" else ("Rome", "Greece", "France")
+    civilizations = ("Rome", "Greece") if options.scenario == "trade-cycle" else agents
     if options.scenario == "mixed-diplomacy":
         civilizations = ("Rome", "Greece", "France", "Egypt")
     ensure_players(
@@ -204,6 +212,12 @@ def launch(options):
             command.extend(["--city-states", str(options.city_states)])
         for civilization in options.built_in_ai:
             command.extend(["--built-in-ai", civilization])
+        for civilization in options.agent_player:
+            command.extend(["--agent-player", civilization])
+        if options.map_size:
+            command.extend(["--map-size", options.map_size])
+        if options.map_radius:
+            command.extend(["--map-radius", str(options.map_radius)])
         if options.seed is not None:
             command.extend(["--seed", str(options.seed)])
     if options.scenario is not None:

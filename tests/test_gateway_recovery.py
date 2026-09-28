@@ -10,7 +10,7 @@ from civ_agent.civilization_state import CivilizationState, StateConflict
 from civ_agent.proposal_gateway import ProposalGateway
 from civ_agent.service_io import ServiceIO
 from tests.test_proposal_gateway import Host
-from tests.test_structured_memory import current
+from tests.test_structured_memory import current, replacement
 
 
 @pytest.mark.parametrize("enacted", [False, True])
@@ -121,24 +121,29 @@ def test_communication_contributions_do_not_gate_commands_or_modify_plans(tmp_pa
             change = {
                 "op": "create",
                 "content": {
-                    "type": "plan",
-                    "objective": "Hold defensive positions",
-                    "approach": "Carry out the stated objective",
-                    "successCriteria": "Objective achieved",
+                    "type": "strategy",
+                    "assessment": "Hold defensive positions",
+                    "reasons": ["Carry out the stated assessment"],
+                    "reconsiderWhen": ["Objective achieved"],
                 },
             }
-            plan = await gateway.call(planning, "memory_update", {"changes": [change]}, "plan")
-            key = plan["changes"][0]["id"]
+            strategy = await gateway.call(planning, "memory_update", {"changes": [change]}, "strategy")
+            key = strategy["changes"][0]["id"]
             contributed = await gateway.call(chat, "memory_update", {"changes": [change]}, "contribute")
             assert contributed["changes"][0]["contribution"]
             assert not (await gateway.call(planning, "memory_search", {"type": "contribution"}, "inbox"))["records"]
-            action = {"kind": "MOVE_UNIT", "target": "unit1", "destination": {"x": 1, "y": 0}, "intent": {"plan": key}}
+            action = {
+                "kind": "MOVE_UNIT",
+                "target": "unit1",
+                "destination": {"x": 1, "y": 0},
+                "intent": {"strategy": key, "reason": "Defend Rome"},
+            }
             moved = await gateway.call(planning, "player_command", action, "move")
             assert moved["done"] and len(host.executed) == 1
             changed = await gateway.call(
                 planning,
                 "memory_update",
-                {"changes": [{"op": "amend", "id": key, "fields": {"objective": "Defend the capital"}}]},
+                {"changes": [replacement(memory, key, assessment="Defend the capital")]},
                 "amend",
             )
             assert changed["changes"][0]["accepted"]
@@ -166,10 +171,10 @@ def test_search_does_not_silently_deliver_notices_that_arrived_after_its_result(
                         {
                             "op": "create",
                             "content": {
-                                "type": "plan",
-                                "objective": "Defend Rome",
-                                "approach": "Guard the border",
-                                "successCriteria": "Rome survives",
+                                "type": "strategy",
+                                "assessment": "Defend Rome",
+                                "reasons": ["Guard the border"],
+                                "reconsiderWhen": ["Rome survives"],
                                 "subjects": ["Greece"],
                             },
                         }
@@ -186,12 +191,12 @@ def test_search_does_not_silently_deliver_notices_that_arrived_after_its_result(
                 return result
 
             with patch.object(memory, "search_memory", side_effect=then_receive_news):
-                found = await gateway.call(job, "memory_search", {"type": "plan"}, "search")
+                found = await gateway.call(job, "memory_search", {"type": "strategy"}, "search")
             assert not found["records"][0]["needsReview"]
             revised = await gateway.call(
                 job,
                 "memory_update",
-                {"changes": [{"op": "amend", "id": key, "fields": {"approach": "Bring reinforcements"}}]},
+                {"changes": [replacement(memory, key, reasons=["Bring reinforcements"])]},
                 "amend",
             )
             assert revised["changes"][0]["record"]["needsReview"]

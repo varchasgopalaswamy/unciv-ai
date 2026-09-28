@@ -11,9 +11,11 @@ from unittest.mock import Mock
 import pytest
 
 from civ_agent import cli, scheduler
-from civ_agent.commands import agent, agent_server, history, host, inspect
+from civ_agent.commands import agent, agent_server, game, history, host, inspect
 
 COMMANDS = [
+    ("game start", game),
+    ("game resume", game),
     ("host start", host),
     ("host inspect", inspect),
     ("agent start", agent),

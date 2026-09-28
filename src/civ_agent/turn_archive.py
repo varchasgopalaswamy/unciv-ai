@@ -278,7 +278,6 @@ class TurnArchive:
         *,
         phase=None,
         handoff=None,
-        aborted=False,
         terminal=False,
         structured_summary=None,
     ):
@@ -292,10 +291,8 @@ class TurnArchive:
             raise TurnArchiveError("An activation identity is required.")
         if handoff is not None and (type(handoff) is not int or handoff < 1):
             raise TurnArchiveError("Committed handoff must be a positive integer.")
-        if type(terminal) is not bool or (terminal and (handoff is not None or aborted)):
-            raise TurnArchiveError("Terminal completion requires a separate, non-aborted outcome.")
-        if type(aborted) is not bool:
-            raise TurnArchiveError("Aborted must be a boolean.")
+        if type(terminal) is not bool or (terminal and handoff is not None):
+            raise TurnArchiveError("Terminal completion requires a separate outcome.")
         if phase is not None and phase not in {"STARTING", "RUNNING", "STOPPING", "COMPLETED", "INTERRUPTED", "FAILED"}:
             raise TurnArchiveError("Invalid activation phase.")
         source_events = list(events)
@@ -320,7 +317,6 @@ class TurnArchive:
                     "phase": None,
                     "handoff": None,
                     "sourceCount": 0,
-                    "aborted": False,
                 }
                 attempts.append(attempt)
             if attempt["sourceCount"] > len(source_events):
@@ -329,15 +325,10 @@ class TurnArchive:
                 raise TurnArchiveError("A confirmed handoff cannot change.")
             if handoff is not None and any(item["handoff"] not in (None, handoff) for item in attempts):
                 raise TurnArchiveError("A game turn cannot have two committed handoffs.")
-            if (aborted or attempt.get("aborted")) and (handoff is not None or attempt["handoff"] is not None):
-                raise TurnArchiveError("A confirmed handoff cannot be marked rolled back.")
             terminal = terminal or attempt.get("terminalOutcome", False)
-            if terminal and (
-                aborted or attempt.get("aborted") or handoff is not None or attempt["handoff"] is not None
-            ):
-                raise TurnArchiveError("A terminal outcome cannot be rolled back or replaced with a handoff.")
+            if terminal and (handoff is not None or attempt["handoff"] is not None):
+                raise TurnArchiveError("A terminal outcome cannot be replaced with a handoff.")
             attempt["terminalOutcome"] = terminal
-            attempt["aborted"] = aborted or attempt.get("aborted", False)
             attempt["sourceCount"] = len(source_events)
             if phase is not None:
                 attempt["phase"] = phase
@@ -354,13 +345,12 @@ class TurnArchive:
                     raise TurnArchiveError("Summary turn does not match archive")
                 artifacts["summaryData"] = data
                 artifacts["summary"] = summary_markdown(data)
-            attempt_artifacts = self._render(game_turn, turn_path, [attempt], include_aborted=True)
+            attempt_artifacts = self._render(game_turn, turn_path, [attempt], details=True)
             attempt_metadata = {
                 **self.binding,
                 "gameTurn": game_turn,
                 "attempt": attempt["attempt"],
                 "phase": attempt["phase"],
-                "aborted": attempt["aborted"],
                 "committed": attempt["handoff"] is not None or attempt.get("terminalOutcome", False),
                 "terminalOutcome": attempt.get("terminalOutcome", False),
             }
@@ -409,7 +399,7 @@ class TurnArchive:
         for earlier_turn, earlier_path in self._turns():
             if earlier_turn >= game_turn:
                 break
-            attempts = [attempt for attempt in self._attempts(earlier_path) if not attempt.get("aborted")]
+            attempts = self._attempts(earlier_path)
             version = []
             for attempt in attempts:
                 path = earlier_path / f"attempt_{attempt['attempt']}.jsonl"
@@ -432,10 +422,10 @@ class TurnArchive:
             seen_requests.update(cached[1])
         return seen_requests
 
-    def _render(self, game_turn, turn_path, attempts, *, include_aborted=False):
+    def _render(self, game_turn, turn_path, attempts, *, details=False):
         seen_requests = self._earlier_requests(game_turn)
         public_attempts = [
-            {key: attempt[key] for key in ("attempt", "phase", "handoff", "aborted")}
+            {key: attempt[key] for key in ("attempt", "phase", "handoff")}
             | {"terminalOutcome": attempt.get("terminalOutcome", False)}
             for attempt in attempts
         ]
@@ -449,18 +439,9 @@ class TurnArchive:
             if committed is not None
             else "Host handoff: unconfirmed. A completed assistant response does not establish that the game turn ended.\n",
         ]
-        aborted_count = sum(bool(attempt.get("aborted")) for attempt in attempts)
-        if aborted_count:
-            summary.append(
-                "This attempt was rolled back. The commands, receipts and reports below are for debugging; their effects were discarded.\n"
-                if include_aborted
-                else f"{aborted_count} failed attempt(s) were rolled back; debugging details are in attempts/.\n"
-            )
         dense = []
         structured = TurnSummary(turn=game_turn).model_dump()
         for attempt in attempts:
-            if attempt.get("aborted") and not include_aborted:
-                continue
             events = self._read_events(turn_path, attempt)
             results = {
                 event["data"].get("itemId"): event["data"]
@@ -472,7 +453,7 @@ class TurnArchive:
             for event in events:
                 if event["kind"] in _TOOL_KINDS:
                     if event["kind"] != "tool_output" or event["data"].get("itemId") not in results:
-                        dense.append({"attempt": attempt["attempt"], "aborted": attempt.get("aborted", False), **event})
+                        dense.append({"attempt": attempt["attempt"], **event})
                 if event["kind"] != "tool_call" or event.get("incompleteChunk"):
                     continue
                 call = event["data"]
@@ -571,7 +552,7 @@ class TurnArchive:
             "gameTurn": game_turn,
             "turn": game_turn,
             "commands": _jsonl(dense),
-            "summary": "\n".join(summary) if include_aborted else summary_markdown(structured),
+            "summary": "\n".join(summary) if details else summary_markdown(structured),
             "summaryData": structured,
             "attempts": public_attempts,
         }

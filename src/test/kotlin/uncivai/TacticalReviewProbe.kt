@@ -12,11 +12,15 @@ import com.unciv.models.metadata.BaseRuleset
 import com.unciv.models.metadata.GameParameters
 import com.unciv.models.metadata.GameSetupInfo
 import com.unciv.models.metadata.Player
+import com.unciv.models.ruleset.unique.UniqueType
+import kotlinx.serialization.json.jsonObject
 import uncivai.player.PlayerHost
+import uncivai.player.PlayerTurnJson
 import uncivai.player.TilePosition
 import uncivai.player.TurnCommandKind
 import uncivai.player.TurnCommandReceipt
 import uncivai.player.TurnCommandRequest
+import uncivai.player.VisibleUnit
 import java.nio.file.Path
 import java.util.UUID
 import kotlin.math.abs
@@ -28,6 +32,10 @@ object TacticalReviewProbe {
         val root = Path.of(args[0])
         if (args[1] == "wrap") {
             wrapping(root)
+            return
+        }
+        if (args[1] == "captives") {
+            captives(root)
             return
         }
         val checkpoint = root.resolve("checkpoint.json")
@@ -107,6 +115,75 @@ object TacticalReviewProbe {
             check(worker.currentTile === france.cities.single().getCenterTile())
             check(PlayerHost(runtime).bindPlayer("France").completedReceipt(shotRequest) == shotReceipt)
         }
+    }
+
+    private fun captives(root: Path) = SettlementPreviewProbe.fixture(root.resolve("captives")).use { runtime ->
+        val game = runtime.game
+        val player = game.getCivilization("Rome")
+        val barbarians = game.getCivilization("Barbarians")
+        val settler = player.units.getCivUnits().single()
+        val brute = checkNotNull(barbarians.units.placeUnitNearTile(HexCoord(3, 0), "Brute"))
+        // Native movement captures the Settler and leaves a visible military guard on it.
+        place(brute, settler.currentTile.position)
+        check(settler.civ === barbarians && settler.originalOwningCiv === player && settler.name == "Settler")
+        brute.health = 1
+        val warrior = checkNotNull(player.units.placeUnitNearTile(HexCoord(1, 0), "Warrior"))
+        val worker = checkNotNull(player.units.placeUnitNearTile(HexCoord(1, 2), "Worker"))
+        worker.capturedBy(barbarians)
+        val other = checkNotNull(game.getCivilization("Greece").units.placeUnitNearTile(HexCoord(2, 2), "Worker"))
+        other.capturedBy(barbarians)
+        val uncapturable = checkNotNull(player.units.placeUnitNearTile(HexCoord(0, 2), "Great Scientist"))
+        check(uncapturable.hasUnique(UniqueType.Uncapturable))
+        // Transfer ownership directly to exercise the native destruction exception.
+        uncapturable.capturedBy(barbarians)
+        val hidden = checkNotNull(player.units.placeUnitNearTile(HexCoord(0, 8), "Settler"))
+        hidden.capturedBy(barbarians)
+        player.cache.updateViewableTiles()
+        check(!hidden.isVisibleTo(player) && hidden.currentTile.isExplored(player))
+        check(listOf(settler, worker, other, uncapturable).all { it.isVisibleTo(player) })
+        val session = PlayerHost(runtime).bindPlayer("Rome")
+        val nativeBefore = json().toJson(game)
+        val before = session.turn()
+        check(json().toJson(game) == nativeBefore) { "Recapture observation changed native state" }
+        val recaptures = before.map.tiles.flatMap { tile -> tile.units.mapNotNull { it.recapture } }
+        check(recaptures.map { it.unitAfterCapture }.sorted() == listOf("Settler", "Worker"))
+        check(recaptures.all { it.originalOwner == "Rome" })
+        val captiveTile = before.map.tiles.single { it.position == TilePosition(2, 0) }
+        check(captiveTile.units.single { it.military }.name == "Brute")
+        check(captiveTile.units.single { !it.military }.recapture?.unitAfterCapture == "Settler")
+        for (visible in captiveTile.units) {
+            val encoded = PlayerTurnJson.json.encodeToJsonElement(VisibleUnit.serializer(), visible).jsonObject
+            check(("recapture" in encoded) == !visible.military) { "Only relevant units should carry recapture data" }
+            check(PlayerTurnJson.json.decodeFromJsonElement(VisibleUnit.serializer(), encoded) == visible)
+        }
+        check(before.map.tiles.single { it.position == TilePosition(0, 8) }.units.isEmpty())
+        // Losing vision removes the captive entirely, even though it is still alive and explored.
+        player.viewableTiles = player.viewableTiles - settler.currentTile
+        check(session.turn().map.tiles.single { it.position == TilePosition(2, 0) }.units.isEmpty())
+        player.cache.updateViewableTiles()
+        val turn = session.turn()
+        val unit = turn.map.units.single { it.name == "Warrior" }
+        val attack = checkNotNull(unit.combat).attacks.single {
+            it.destination == TilePosition(2, 0) && it.attackFrom == unit.position
+        }
+        session.execute(
+            TurnCommandRequest(
+                "recapture-settler",
+                turn.epoch,
+                turn.revision,
+                TurnCommandKind.ATTACK,
+                unit.handle,
+                destination = attack.destination,
+                attackFrom = attack.attackFrom,
+            ),
+        )
+        check(brute.isDestroyed && warrior.currentTile === settler.currentTile)
+        check(settler.civ === player && settler.name == "Settler") { "Recapture must restore a Settler, not a Worker" }
+        val after = session.turn()
+        check(after.map.units.any { it.name == "Settler" && it.position == TilePosition(2, 0) })
+        check(after.map.tiles.single { it.position == TilePosition(2, 0) }.units.all { it.recapture == null })
+        worker.destroy()
+        check(session.turn().map.tiles.flatMap { it.units }.none { it.recapture != null })
     }
 
     private fun wrapping(root: Path) {

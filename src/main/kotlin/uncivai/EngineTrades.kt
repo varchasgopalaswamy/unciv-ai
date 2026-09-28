@@ -70,9 +70,6 @@ internal data class EngineTradeState(
     // Shared short references stay bound to the same engine city across transfer and restart.
     // This private lookup is never part of a player response.
     val cityHandles: MutableMap<String, String> = mutableMapOf(),
-    // Retained only for checkpoints written before social promises stopped gating trades.
-    // These legacy counters have no effect on consent or native trade legality.
-    val warConsentVersions: MutableMap<String, Long> = mutableMapOf(),
     var activeProposal: String? = null,
     var openedAtMillis: Long = 0,
     var completedWaitMillis: Long = 0,
@@ -300,7 +297,6 @@ internal class EngineTrades(private val runtime: GameExecutor) {
         if (previous != null) replace(previous.copy(status = "SUPERSEDED"), civilization)
         state.proposals.getOrPut(id) { mutableListOf() }.add(proposal)
         if (previous == null) {
-            runtime.communicationState.coordinatedRecovery = true
             state.activeProposal = id
             state.openedAtMillis = runtime.clockMillis()
             runtime.scheduleTradeDeadline(proposal.deadlineMillis)
@@ -468,7 +464,9 @@ internal class EngineTrades(private val runtime: GameExecutor) {
     }
     internal fun publish(proposal: EngineTradeProposal, actor: String) {
         val body = JsonObject(json.encodeToJsonElement(proposal).jsonObject + obj("participants" to proposal.participants()))
-        runtime.communication.emit(proposal.participants(), "trade", body, proposal.participants().toSet() - actor)
+        // Native requests are decisions for the recipient's gameplay turn.
+        val wakes = if (proposal.mode == "SHARED") proposal.participants().toSet() - actor else emptySet()
+        runtime.communication.emit(proposal.participants(), "trade", body, wakes)
     }
     internal fun unavailable(reason: String, proposal: EngineTradeProposal? = null, civilization: String? = null) = obj("error" to "TRADE_UNAVAILABLE", "reason" to reason, "trade" to proposal?.let { view(it, checkNotNull(civilization)) })
 }

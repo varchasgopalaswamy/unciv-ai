@@ -133,14 +133,19 @@ class JobAccounting:
                 return
             report["sequence"] += 1
             terminal = report["phase"] in TERMINAL
-            report["phase"] = record["phase"]
+            # A rewind can restore an older activation record, but accounting
+            # describes the work that actually ran. Completion evidence survives.
+            if not report["usageComplete"]:
+                report["phase"] = record["phase"]
             if id in self.starts and not terminal:
                 report["elapsedMs"] = max(report["elapsedMs"], int((time.monotonic() - self.starts[id]) * 1000))
             report["negotiationWaitMs"] = max(report["negotiationWaitMs"], int(wait_seconds * 1000))
             settings = record.get("effectiveSettings", record.get("settings", {}))
             report.update(model=settings.get("model"), reasoningEffort=settings.get("reasoningEffort"))
-            report["usageReported"] = bool(record.get("usageReported", False))
-            report["usageComplete"] = report["usageReported"] and bool(record.get("usageComplete", False))
+            report["usageReported"] = report["usageReported"] or bool(record.get("usageReported", False))
+            report["usageComplete"] = report["usageComplete"] or (
+                bool(record.get("usageReported", False)) and bool(record.get("usageComplete", False))
+            )
             for field in ("gameplayElapsedMs", "finalizationElapsedMs"):
                 if field in record:
                     report[field] = max(report.get(field, 0), record[field])

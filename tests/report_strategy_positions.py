@@ -8,6 +8,8 @@ from pathlib import Path
 from sqlalchemy import URL, create_engine, select
 
 from civ_agent import memory_schema as tables
+from civ_agent.memory_snapshots import record_bodies
+from civ_agent.monitoring import path_for, read_collection, read_record
 from civ_agent.protocol import JsonObject
 from civ_agent.telemetry import TOKEN_KEYS
 from tests.verify_tool_discovery_live import discovery_metrics
@@ -98,7 +100,7 @@ def position_changes(initial, final):
 
 
 def analyze(root, sessions, rounds=None):
-    latest = {row["turnId"]: row for row in json_lines(root / "telemetry/turns.jsonl")}
+    latest = {row["turnId"]: row for row in read_collection(path_for(root), "turns")}
     turns = [row for row in latest.values() if row["turn"]["status"] == "completed"]
     turns.sort(key=lambda row: row["turn"]["handoff"])
     if rounds and turns:
@@ -106,7 +108,7 @@ def analyze(root, sessions, rounds=None):
         turns = [row for row in turns if row["turn"]["gameTurn"] < first + rounds]
     assert turns and all(row["accountingComplete"] for row in turns), "Incomplete turn accounting"
     job_ids = {job for row in turns for job in row["jobs"]}
-    jobs = {row["jobId"]: row["job"] for row in json_lines(root / "telemetry/jobs.jsonl")}
+    jobs = {row["jobId"]: row["job"] for row in read_collection(path_for(root), "jobs")}
     traces = {path.name[-42:-6]: path for path in sessions.rglob("rollout-*.jsonl")}
     activations, missing_traces = [], []
     for path in root.glob("agent-services/*/activations/*.json"):
@@ -174,9 +176,7 @@ def analyze(root, sessions, rounds=None):
                                 "tool": row["name"],
                                 "arguments": arguments,
                                 "result": {
-                                    k: v
-                                    for k, v in result.items()
-                                    if k not in {"stateUpdate", "memoryUpdates", "memoryPhase"}
+                                    k: v for k, v in result.items() if k not in {"stateUpdate", "memoryUpdates"}
                                 },
                             }
                         )
@@ -185,9 +185,10 @@ def analyze(root, sessions, rounds=None):
                 rows = db.execute(select(tables.jobs.c.id, tables.jobs.c.snapshot).where(tables.jobs.c.id.in_(job_ids)))
                 by_job = {}
                 for job, saved in rows:
-                    record = json.loads(saved).get("closingRecords", {}).get("observation:game")
-                    if record:
-                        by_job[job] = record["body"]
+                    version = json.loads(saved).get("gameViewVersion")
+                    if version is not None:
+                        ref = ("observation:game", version)
+                        by_job[job] = record_bodies(db, [ref])[ref]["body"]
                 for job, snapshot in by_job.items():
                     observations.append(
                         {
@@ -242,7 +243,7 @@ def analyze(root, sessions, rounds=None):
         "initialNativePositions": initial,
         "finalNativePositions": final,
         "outcomes": position_changes(initial, final) if initial and final else None,
-        "runner": json.loads((root / "runner/run.json").read_text()).get("status"),
+        "runner": (read_record(path_for(root), "state", "run") or {}).get("status"),
         "limitation": "Final native positions include opponent actions after the last handoff. Omitted for historical round-limited reports whose final checkpoint is from a later turn.",
     }
 

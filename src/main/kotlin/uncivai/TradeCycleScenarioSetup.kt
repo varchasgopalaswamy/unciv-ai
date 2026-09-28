@@ -1,12 +1,16 @@
 package uncivai
 
 import com.unciv.Constants
+import com.unciv.json.json
 import com.unciv.logic.GameInfo
 import com.unciv.logic.civilization.diplomacy.DiplomacyFlags
 import com.unciv.logic.trade.TradeOffer
 import com.unciv.logic.trade.TradeOfferType
 import kotlinx.serialization.json.jsonPrimitive
 import uncivai.player.GameplayScenario
+import java.nio.file.Files
+import java.nio.file.Path
+import java.nio.file.StandardCopyOption
 
 /** A complete bilateral exercise. Progress comes from committed proposals, never agent notes. */
 internal object TradeCycleScenarioSetup {
@@ -43,6 +47,28 @@ internal object TradeCycleScenarioSetup {
         }
     }
 
+    /** Two scenario-specific audit positions, independent of turn recovery. */
+    fun recordEvidence(game: GameInfo, state: CommunicationState, root: Path) {
+        if (game.tileMap.mapParameters.name != MAP_NAME) return
+        val history = proposals(state)
+        val name = when {
+            history.isEmpty() -> "initial.json"
+            history.size == Step.FUNDED_TREATIES_AND_CITIES.ordinal -> "funding.json"
+            else -> return
+        }
+        val directory = root.resolve("scenario-evidence")
+        Files.createDirectories(directory)
+        val target = directory.resolve(name)
+        if (name == "initial.json" && Files.exists(target)) return
+        val temporary = Files.createTempFile(directory, ".evidence-", ".json")
+        try {
+            Files.writeString(temporary, json().toJson(game))
+            Files.move(temporary, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
+        } finally {
+            Files.deleteIfExists(temporary)
+        }
+    }
+
     /** Rome receives every proposal in this two-player exercise. Event order survives restart. */
     fun proposals(state: CommunicationState): List<List<EngineTradeProposal>> = state.streams["Rome"].orEmpty()
         .filter { it.kind == "trade" }
@@ -75,24 +101,24 @@ internal object TradeCycleScenarioSetup {
             )
         }
         if (history.lastOrNull()?.last()?.turn == game.turns) {
-            return view("CONTINUE_TURN", "This round's negotiation is complete. Inspect its outcome and update concise economy/relationship notes with evidence. The next step starts on Rome's next turn. Communication jobs should not open it.", routine)
+            return view("CONTINUE_TURN", "This round's negotiation is complete. Inspect its outcome and update concise economy/relationship notes with evidence. The next step starts on Rome's next turn.", routine)
         }
         return instructions(Step.entries[history.size], civilization, null)
     }
 
     private fun instructions(step: Step, civilization: String, pending: EngineTradeProposal?): GameplayScenario {
-        val role = if (civilization == "Rome") "Only your ACTIVE gameplay job opens this step, once. Communication jobs only handle the existing proposal." else "Rome opens this step during its gameplay turn. Handle its proposal in your communication job, even off turn; do not initiate another deal."
+        val role = if (civilization == "Rome") "Open this step once during your turn. During diplomatic exchanges, respond to the existing proposal." else "Rome opens this step during its turn. Respond to its proposal, even off turn; do not initiate another deal."
         val common = listOf(
             "Trade-cycle step ${step.ordinal + 1}/${Step.entries.size}: ${step.name}. $role ${pending?.let { "Current proposal: ${it.proposal}." } ?: "No proposal exists for this step yet."}",
-            "Read trade_options for legal items and exact durations/costs, and trade_read before deciding or countering. Give/receive are from YOUR perspective. The service handles versions and waits; never poll. After settlement refresh player_turn, record concise sourced economy/relationship facts, and finish the turn. Only one new negotiation per Rome turn.",
+            "Read trade_options for legal items and exact durations/costs, and trade_read before deciding or countering. Give/receive are from YOUR perspective. After settlement inspect the outcome and updated game state, record concise sourced economy/relationship facts, and finish the turn. Only one new negotiation per Rome turn.",
         )
         val task = when (step) {
             Step.PAID_PEACE -> "The prepared war is eligible for peace. Rome initially offers mutual Peace Treaty plus 40 immediate Gold to Greece. Greece must counter once: give the matching Peace Treaty, receive the matching Peace Treaty and 30 Gold. Rome reads and accepts that counter. Keep both treaty terms; no attacks."
             Step.DECLINE -> "Rome offers Greece a gift of 7 immediate Gold, receiving nothing. Greece reads it and DECLINES. This deliberate decline is success for this step; nobody transfers gold or reopens it."
-            Step.WITHDRAW -> "Rome offers Greece a gift of 11 immediate Gold, receiving nothing. Greece reads it, does not accept or counter, and sends Rome one private message asking it to withdraw. Rome's communication job reads its own pending offer and WITHDRAWS it. Withdrawal is the intended outcome."
-            Step.DEADLINE -> "Rome offers Greece a gift of 13 immediate Gold, receiving nothing. Greece reads it but makes NO decision, counteroffer or reply. Both communication jobs finish without waiting. Let the host deadline expire this proposal; the suspended gameplay tool resumes automatically. EXPIRED is success here; do not reopen."
+            Step.WITHDRAW -> "Rome offers Greece a gift of 11 immediate Gold, receiving nothing. Greece reads it, does not accept or counter, and sends Rome one private message asking it to withdraw. Rome reads its own pending offer and WITHDRAWS it. Withdrawal is the intended outcome."
+            Step.DEADLINE -> "Rome offers Greece a gift of 13 immediate Gold, receiving nothing. Greece reads it but makes NO decision, counteroffer or reply. Leave this proposal unanswered so it expires. EXPIRED is success here; do not reopen."
             Step.GIFT -> "Rome offers Greece a gift of 17 immediate Gold, receiving nothing. Greece reads and accepts. Verify the engine confirmation; this is an actual one-sided gift."
-            Step.RESOURCE_BARGAIN -> "Use one proposal and exactly three counters. Every version transfers Rome's 1 Silk and 2 Iron to Greece, and Greece's 1 Gold Ore to Rome. Initial: Greece also pays 4 GPT. First counter, by Greece: instead pay 3 GPT + 10 Gold. Second counter, by Rome: ask 2 GPT + 20 Gold. Third counter, by Greece: pay 2 GPT + 25 Gold. Rome checks counteroffersRemaining=0, reads and accepts the final terms. Never accept an earlier price or open another proposal."
+            Step.RESOURCE_BARGAIN -> "Use one proposal and exactly three counters. Every version transfers Rome's 1 Silk and 2 Iron to Greece, and Greece's 1 Gold Ore to Rome. Initial: Greece also pays 4 GPT. First counter, by Greece: instead pay 3 GPT + 10 Gold. Second counter, by Rome: ask 2 GPT + 20 Gold. Third counter, by Greece: pay 2 GPT + 25 Gold. Rome reads and accepts those final terms. Never accept an earlier price or open another proposal."
             Step.FRIENDSHIP -> "Rome uses friendship_offer for Declaration of Friendship. Greece reads the fixed engine terms and accepts with trade_decide. Do not substitute a social commitment. Inspect unavailable treaty reasons: mutual embassies still need to be established."
             Step.EMBASSY_IN_ROME -> "Rome offers only its own Accept Embassy item, receiving nothing. Greece accepts. Verify that Greece now has an embassy in Rome's capital and Rome does not yet have one in Athens; this is directional."
             Step.EMBASSY_IN_ATHENS -> "Rome requests only Greece's Accept Embassy item, giving nothing. Greece accepts. Verify mutual embassies and newly available treaty options."

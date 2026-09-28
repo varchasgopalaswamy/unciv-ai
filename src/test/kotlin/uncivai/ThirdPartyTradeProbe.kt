@@ -20,6 +20,7 @@ import kotlinx.serialization.json.jsonPrimitive
 import uncivai.player.PlayerHost
 import uncivai.player.TurnCommandKind
 import uncivai.player.TurnCommandRequest
+import java.nio.file.Files
 import java.nio.file.Path
 import java.util.UUID
 
@@ -44,7 +45,8 @@ object ThirdPartyTradeProbe {
 
     private fun lifecycle(root: Path) {
         val checkpoint = root.resolve("game.json")
-        lateinit var round: GameCheckpoint
+        val interrupted = root.resolve("interrupted.json")
+        lateinit var boundary: GameCheckpoint
         lateinit var proposal: JsonObject
         lateinit var accept: JsonObject
         lateinit var receipt: JsonObject
@@ -54,7 +56,7 @@ object ThirdPartyTradeProbe {
                 api.acquire()
                 api.activate()
                 api.operator(OperatorRequest("barrier", api.lease))
-                round = checkNotNull(api.operator(OperatorRequest("snapshot", api.lease)).checkpoint)
+                boundary = checkNotNull(api.operator(OperatorRequest("snapshot", api.lease)).checkpoint)
                 api.operator(OperatorRequest("unbarrier", api.lease))
                 api.activate()
                 val calls = Calls(runtime, api)
@@ -109,6 +111,7 @@ object ThirdPartyTradeProbe {
                 api.reject(token, TurnCommandRequest("stale-war", before.epoch, before.revision, TurnCommandKind.END_TURN).reviewedFor(before), "STALE_REVISION")
                 val france = api.turn(api.playerToken("France"))
                 check(france.alerts.any { it.kind == "WarDeclaration" && it.content != null })
+                Files.copy(checkpoint, interrupted)
                 api.finishTurn(token)
                 repeat(3) { api.finishTurn(checkNotNull(api.activate().playerToken)) }
             }
@@ -121,14 +124,21 @@ object ThirdPartyTradeProbe {
             check(runtime.game.getCivilization("Greece").isAtWarWith(runtime.game.getCivilization("France")))
             runtime.executor.pause()
             runtime.executor.communicationPaused = true
-            runtime.executor.restoreRound(round, "third-party-restored")
+            val failure = runCatching { runtime.executor.restoreTurn(boundary, "completed-turn") }.exceptionOrNull()
+            check(failure is OperatorFailure && failure.code == "TURN_ALREADY_COMMITTED")
+            check(runtime.game.getCivilization("Greece").isAtWarWith(runtime.game.getCivilization("France")))
+        }
+        HeadlessRuntime.loadCheckpoint(interrupted, root.resolve("interrupted-restart")).use { runtime ->
+            runtime.executor.pause()
+            runtime.executor.communicationPaused = true
+            runtime.executor.restoreTurn(boundary, "third-party-restored")
             check(runtime.executor.communicationState.trades.proposals.isEmpty())
             check(runtime.executor.communicationState.outcomes.isEmpty())
             runtime.executor.accessGame { game ->
                 check(game.getCivilization("Rome").gold == 1000 && game.getCivilization("Greece").gold == 1000)
                 check(!game.getCivilization("Greece").isAtWarWith(game.getCivilization("France")))
             }
-            check(runCatching { greece.communication(accept) }.isFailure)
+            check(runCatching { PlayerHost(runtime).bindPlayer("Greece").communication(accept) }.isFailure)
         }
     }
 

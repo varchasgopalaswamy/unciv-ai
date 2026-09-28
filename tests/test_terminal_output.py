@@ -7,6 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 
 from civ_agent.agent_history import HistoryStore
+from civ_agent.monitoring import MonitorStore, path_for
 from civ_agent.protocol import JsonObject
 from civ_agent.runner_history import EventHistory
 from civ_agent.terminal_output import TerminalOutput, color_enabled, visible_text
@@ -68,20 +69,22 @@ def test_quiet_output_keeps_receipts_errors_and_identical_audit_records(tmp_path
     for verbose in (False, True):
         output = io.StringIO()
         renderer = TerminalOutput(color="never", file=output)
-        history = EventHistory(tmp_path / str(verbose), "epoch", "Rome", "job", verbose=verbose, renderer=renderer)
+        history = EventHistory(
+            tmp_path / str(verbose), "epoch", "Rome", "job", game_turn=0, verbose=verbose, renderer=renderer
+        )
         history.append(events)
         text = output.getvalue()
         assert ("PRELOADED READS" in text) is verbose
         assert ("REPEATED INSTRUCTIONS" in text) is verbose
         assert ("unit_details" in text) is verbose
         assert "Founded Rome at (1, 2)." in text and "DETAIL_REQUIRED" in text
-        assert str(history.markdown) in text
+        assert str(history.store.path) in text
         assert "Next I will research Mining." in text
         histories.append(history)
-    assert histories[0].jsonl.read_bytes() == histories[1].jsonl.read_bytes()
+    assert histories[0].events == histories[1].events
     quiet = io.StringIO()
     resumed = EventHistory(
-        tmp_path / "False", "epoch", "Rome", "job", renderer=TerminalOutput(color="never", file=quiet)
+        tmp_path / "False", "epoch", "Rome", "job", game_turn=0, renderer=TerminalOutput(color="never", file=quiet)
     )
     resumed.append(events + [event(7, "action", itemId="action:two", description="Research queue: Mining.")])
     assert "Founded" not in quiet.getvalue() and "Research queue: Mining." in quiet.getvalue()
@@ -116,7 +119,7 @@ def test_turn_summary_uses_matching_host_totals_without_double_counting(tmp_path
         },
     }
     (tmp_path / "telemetry").mkdir()
-    (tmp_path / "telemetry/turns.jsonl").write_text(json.dumps(metrics) + "\n")
+    MonitorStore(path_for(tmp_path)).put("turns", f"{metrics['turn']['epoch']}/{metrics['turn']['handoff']}", metrics)
     output = io.StringIO()
     display_turn(TerminalOutput(color="never", file=output), tmp_path, flight, {})
     text = output.getvalue()
@@ -135,7 +138,7 @@ def test_turn_summary_uses_matching_host_totals_without_double_counting(tmp_path
         assert turn_metrics(tmp_path, {**flight, key: other}) is None
     # Earlier attempts may have reported tokens even if this attempt has not.
     metrics["accountingComplete"] = False
-    (tmp_path / "telemetry/turns.jsonl").write_text(json.dumps(metrics) + "\n")
+    MonitorStore(path_for(tmp_path)).put("turns", f"{metrics['turn']['epoch']}/{metrics['turn']['handoff']}", metrics)
     output.seek(0)
     output.truncate()
     display_turn(TerminalOutput(color="never", file=output), tmp_path, flight, {"usageReported": False})

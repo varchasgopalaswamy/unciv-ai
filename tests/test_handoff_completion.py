@@ -1,4 +1,4 @@
-"""Post-turn memory uses the same conversation without retaining gameplay access."""
+"""Native handoffs end tool access while final provider usage is drained."""
 
 import asyncio
 import json
@@ -95,7 +95,7 @@ class HandoffFailureTests(AgentServiceTestCase):
             assert (await self.service.finalize(proof))["finalizationState"] == "COMPLETED"
             assert flush.await_count == 2
 
-    async def test_handoff_receipt_recovery_enters_memory_phase(self):
+    async def test_handoff_receipt_recovery_fences_all_tools(self):
         self.factory.complete = False
         await self.service.start(self.payload())
         async with asyncio.timeout(2):
@@ -119,41 +119,27 @@ class HandoffFailureTests(AgentServiceTestCase):
         )
         assert job.gameplay_fenced
         result = await self.service.gateway.call(job, "player_command", arguments, "end")
-        assert "memory_update" in result["memoryPhase"]["allowedTools"]
+        assert "memoryPhase" not in result
+        assert await self.service.gateway.tools(job) == []
         assert len(self.service.memory.requests_for_job(job.id)) == 1
-        updated = await self.service.gateway.call(
-            job,
-            "memory_update",
-            {"changes": [{"op": "create", "content": {"type": "note", "text": "Retained after handoff recovery"}}]},
-            "reflection",
-        )
-        assert updated["changes"][0]["accepted"]
+        with pytest.raises(StateConflict, match="TURN_ENDED"):
+            await self.service.gateway.call(job, "memory_update", {"changes": []}, "late")
 
-    async def test_memory_phase_timeout_stops_model_and_keeps_accepted_memory(self):
+    async def test_completion_timeout_stops_model_and_preserves_committed_turn(self):
         self.factory.complete = False
         await self.service.start(self.payload())
         async with asyncio.timeout(2):
             while self.service.status()["phase"] == "STARTING":
                 await asyncio.sleep(0.001)
         job = self.service.gateway.jobs[self.factory.tokens[-1]]
-        await self.service.gateway.call(
-            job, "player_command", {"kind": "END_TURN", "deferReason": "Hold position"}, "end"
-        )
-        await self.service.gateway.call(
-            job,
-            "memory_update",
-            {"changes": [{"op": "create", "content": {"type": "note", "text": "Committed before timeout"}}]},
-            "reflection",
-        )
-        self.service.records[job.id]["memoryTimeoutSeconds"] = 0
+        await self.service.gateway.call(job, "player_command", {"kind": "END_TURN"}, "end")
+        assert job.handoff_at is not None
+        job.handoff_at -= 61
         status = await self.terminal()
-        assert status["phase"] == "FAILED" and status["error"] == "MEMORY_PHASE_TIMEOUT"
-        assert not status["memoryPhaseComplete"] and not status["usageComplete"]
+        assert status["phase"] == "FAILED" and status["error"] == "COMPLETION_TIMEOUT"
+        assert not status["usageComplete"]
         assert job.model_stopped.is_set() and self.factory.instances[-1].closed
-        assert any(
-            row["text"] == "Committed before timeout"
-            for row in self.service.records[job.id]["frozenTurnSummary"]["memoryChanges"]
-        )
+        assert len(self.service.memory.requests_for_job(job.id)) == 1
 
     async def test_failed_handoff_record_stops_model_and_retains_accepted_turn(self):
         self.factory.complete = False
@@ -165,7 +151,7 @@ class HandoffFailureTests(AgentServiceTestCase):
         save = self.service._save
 
         async def failing(record, **kwargs):
-            if record.get("memoryPhase") and record["phase"] == "RUNNING":
+            if record.get("gameplayEndedAtMs") and record["phase"] == "RUNNING":
                 raise OSError("Storage unavailable")
             return await save(record, **kwargs)
 
@@ -190,7 +176,7 @@ class HandoffFailureTests(AgentServiceTestCase):
         assert any(action["action"] == "End turn" for action in self.service.memory.summary(0)["actions"])
 
 
-def test_handoff_continues_same_model_for_memory_then_finalizes(tmp_path, monkeypatch):
+def test_handoff_drains_final_usage_without_additional_model_work(tmp_path, monkeypatch):
     async def run():
         factory = HandoffFactory()
         factory.complete = False
@@ -242,7 +228,7 @@ def test_handoff_continues_same_model_for_memory_then_finalizes(tmp_path, monkey
                 job, "player_command", {"kind": "END_TURN", "deferReason": "Hold position"}, "end"
             )
             assert result["stateUpdate"]["kind"] == "turn_ended"
-            assert "memory_update" in result["memoryPhase"]["allowedTools"]
+            assert "memoryPhase" not in result
             assert (
                 await service.gateway.call(
                     job, "player_command", {"kind": "END_TURN", "deferReason": "Hold position"}, "end"
@@ -258,27 +244,10 @@ def test_handoff_continues_same_model_for_memory_then_finalizes(tmp_path, monkey
                 ("chat_send", {"to": "Greece", "text": "Hello"}),
                 ("trade_read", {"proposal": "trade1"}),
             ]:
-                with pytest.raises(StateConflict, match="MEMORY_ONLY"):
+                with pytest.raises(StateConflict, match="TURN_ENDED"):
                     await service.gateway.call(job, name, arguments, "late-" + name)
-            updated = await service.gateway.call(
-                job,
-                "memory_update",
-                {"changes": [{"op": "create", "content": {"type": "note", "text": "Scout east next turn"}}]},
-                "reflection",
-            )
-            note = updated["changes"][0]["id"]
-            assert updated["changes"][0]["accepted"]
-            assert not (service.workspace / f"notes/{note}.md").exists()
-            assert (await service.gateway.call(job, "memory_read", {"ids": [note]}, "read-note"))["records"][0][
-                "text"
-            ] == "Scout east next turn"
-            assert {tool["name"] for tool in await service.gateway.tools(job)} == {
-                "memory_read",
-                "memory_update",
-                "memory_search",
-                "history_read",
-            }
-            # Include model requests made after handoff in the original turn's usage.
+            assert await service.gateway.tools(job) == []
+            # Final provider counters still belong to this turn.
             await service._notification(
                 "thread/tokenUsage/updated",
                 {
@@ -303,15 +272,14 @@ def test_handoff_continues_same_model_for_memory_then_finalizes(tmp_path, monkey
             assert status["phase"] == "COMPLETED"
             assert status["completionReason"] == "native_handoff"
             assert status["usage"]["input_tokens"] == 20
-            assert status["usageComplete"] and status["memoryPhaseComplete"]
+            assert status["usageComplete"]
             assert "COMPLETED" not in exports
             assert factory.instances[-1].closed
             assert [name for name, _ in factory.calls].count("turn/start") == 1
             assert [name for name, _ in factory.calls].count("turn/interrupt") == 0
             assert "frozenTurnSummary" not in status
-            frozen = service.records["job"]["frozenTurnSummary"]
+            frozen = service.memory.summary(0)
             assert any(action["action"] == "End turn" for action in frozen["actions"])
-            assert any(change["text"] == "Scout east next turn" for change in frozen["memoryChanges"])
             proof = {"activationId": "job", "epoch": "epoch", "gameTurn": 0, "committedHandoff": 1}
             with pytest.raises(ServiceError, match="INVALID_BINDING"):
                 await service.finish_handoff({**proof, "epoch": "other"})
@@ -324,10 +292,9 @@ def test_handoff_continues_same_model_for_memory_then_finalizes(tmp_path, monkey
             )
             finalized = await service.finalize(proof)
             assert finalized["committedHandoff"] == 1
-            assert "COMPLETED" in exports
+            assert exports == []
             assert finalized["gameplayElapsedMs"] >= 0 and finalized["finalizationElapsedMs"] >= 0
             assert (await service.finalize(proof))["finalizationElapsedMs"] == finalized["finalizationElapsedMs"]
-            assert (service.workspace / f"notes/{note}.md").exists()
             history = service.history.path("job") / "events.jsonl"
             events = [json.loads(line) for line in history.read_text().splitlines()]
             withheld = [event for event in events if event["data"].get("source") == "service_handoff"]
@@ -354,7 +321,7 @@ def test_finished_game_accounting_flush_retries_without_starting_models(tmp_path
             assert name == "player_communication"
             if arguments["op"] == "state":
                 return {"civilization": "Rome", "epoch": "epoch"}
-            assert arguments["op"] == "job_report"
+            assert arguments["op"] == "job_release"
             self.reports.append(arguments)
             if self.lose_ack:
                 self.lose_ack = False

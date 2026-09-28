@@ -81,7 +81,6 @@ object VerbalBetrayalProbe {
                     TurnCommandKind.DECLARE_WAR,
                     target = "Rome",
                     confirmWar = true,
-                    socialVersion = Long.MAX_VALUE, // Historical clients cannot turn a chat counter into a rule.
                 )
             val receipt = greece.execute(request)
             check(greece.execute(request) == receipt) { "Retry declared war twice" }
@@ -128,7 +127,7 @@ object VerbalBetrayalProbe {
             check(advised.map == before.map && advised.cities == before.cities) { "Social promises changed native combat options" }
             val unit = before.map.units.first { it.combat!!.attacks.any { option -> !option.defenderIsCity } }
             val attack = unit.combat!!.attacks.first { !it.defenderIsCity }
-            val command = TurnCommandRequest("attack", before.epoch, before.revision, TurnCommandKind.ATTACK, target = unit.handle, destination = attack.destination, attackFrom = attack.attackFrom, socialVersion = 0)
+            val command = TurnCommandRequest("attack", before.epoch, before.revision, TurnCommandKind.ATTACK, target = unit.handle, destination = attack.destination, attackFrom = attack.attackFrom)
             val receipt = rome.execute(command)
             check(receipt.combat!!.attacked)
             check(rome.execute(command) == receipt)

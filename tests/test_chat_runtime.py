@@ -77,6 +77,8 @@ def test_polling_health_reports_failures_and_recovery_without_losing_cursor(tmp_
             assert isinstance(last_success, int) and last_success >= last_failure
             assert service.health()["communicationJobError"] == "COMMUNICATION_JOB_FAILED"
             assert service.health()["runFailure"] is None
+            assert not (service.workspace / "chat.jsonl").exists()
+            assert not (service.workspace / "memory-index.md").exists()
             await service.chat.close()
             assert health()["status"] == "DISCONNECTED"
             assert health()["failures"] == 2

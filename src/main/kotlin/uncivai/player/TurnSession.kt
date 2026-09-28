@@ -35,7 +35,10 @@ internal class TurnSessionState(savedIdentifiers: Map<PlayerIdentifier, Long> = 
     val cityHandles = HashMap<String, String>()
     val unitHandles = HashMap<Int, String>()
     val constructionSelections = HashMap<String, List<ConstructionSelection>>()
+    val constructionEstimates = ConstructionEstimateCache()
     val settlementKnowledge = HashMap<TilePosition, KnownSettlementTile>()
+    val settlementTechnologies = HashSet<String>()
+    val settlerHistory = HashMap<Int, SettlerHistory>()
     val alertHandles = java.util.IdentityHashMap<PopupAlert, String>()
     val notificationHandles = java.util.IdentityHashMap<Notification, String>()
     val dismissedNotifications = HashSet<String>()
@@ -60,6 +63,7 @@ internal class TurnSessionState(savedIdentifiers: Map<PlayerIdentifier, Long> = 
 
     fun invalidate() {
         fingerprint = null
+        constructionEstimates.clear()
         movementPreviews.clear()
         missionPreviews.clear()
     }
@@ -172,7 +176,14 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
 
     fun policyDetails(names: List<String>): PolicyDetails = details(names, ::observePolicyDetails)
 
-    fun victoryProgress(names: List<String>): VictoryProgress = details(names, ::observeVictoryProgress)
+    fun victoryProgress(request: VictoryProgressRequest): VictoryProgress = runtime.accessGame { game ->
+        val state = state()
+        val player = player(game)
+        val turn = snapshot(game, player, state)
+        val result = observeVictoryProgress(player, turn, request)
+        if (state.checkpointRevision != state.revision) runtime.commitCheckpoint()
+        result
+    }
 
     private fun <T> details(names: List<String>, observe: (Civilization, PlayerTurnSnapshot, List<String>) -> T): T = runtime.accessGame { game ->
         val state = state()
@@ -722,6 +733,8 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
         updateSettlementKnowledge(player, state)
         state.constructionSelections.keys.retainAll(player.cities.map { it.id }.toSet())
         val map = observeMap(player, state, canAct = ordinaryActions)
+        val constructions = player.cities.associate { it.id to immutable(operations.queueableConstructions(it).sorted()) }
+        val constructionEstimates = state.constructionEstimates.observe(player)
         val fingerprint = PlayerTurnSnapshot(
             epoch = runtime.epoch,
             revision = "",
@@ -734,14 +747,19 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
             notifications = observeNotifications(player, state, ordinaryActions),
             cities = immutable(
                 player.cities.filter { it.civ === player }.map { city ->
-                    val constructionOptions = immutable(operations.queueableConstructions(city).sorted())
+                    val constructionOptions = constructions.getValue(city.id)
                     TurnCity(
                         handle = state.cityHandle(city.id),
                         name = city.name,
                         puppet = city.isPuppet,
                         constructionQueue = immutable(city.cityConstructions.constructionQueue),
                         constructionOptions = constructionOptions,
+                        health = city.health,
+                        maxHealth = com.unciv.logic.battle.CityCombatant(city).getMaxHealth(),
+                        defensiveStrength = com.unciv.logic.battle.CityCombatant(city).getDefendingStrength(null),
                         constructionChoice = observeConstructionChoice(city, constructionOptions, state),
+                        productionConversions = observeProductionConversions(city, constructionOptions),
+                        constructionEstimates = constructionEstimates.getValue(city.id),
                         development = observeCityDevelopment(city, active = ordinaryActions),
                         attacks = immutable(if (ordinaryActions) PlayerCombatOperations(player).attacks(city).map { it.observation() } else emptyList()),
                         captureOptions = immutable(captures.cityChoices(city).map { it.observation(ordinaryActions) }),
@@ -760,8 +778,12 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
             greatPersonOptions = immutable(player.greatPeople.getFreeGreatPersonOptions().map { it.name }.sorted()),
             idleUnits = player.units.getDueUnits().count(),
             map = map,
-            settlement = observeSettlementOpportunities(player, state),
+            settlement = observeSettlementOpportunities(player, state, ordinaryActions),
+            militaryReadiness = observeMilitaryReadiness(player, state, constructions),
+            wonderOpportunities = observeWonderOpportunities(player, state, constructions),
             research = observeResearchDevelopment(player),
+            culture = observeCulture(player),
+            greatPeople = observeGreatPeopleProgress(player),
             diplomacy = diplomacy,
             diplomacyOpportunities = observeDiplomacyOpportunities(player, runtime, diplomacy.knownCivilizations),
             economy = observeEconomy(player),

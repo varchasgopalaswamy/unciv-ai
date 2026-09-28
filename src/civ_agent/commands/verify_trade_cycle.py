@@ -260,8 +260,8 @@ def audit(root: Path, checkpoint_path: Path | None = None):
         )
         for c in city_clauses
     )
-    initial_path = root / "round-checkpoints" / f"{saved['epoch']}-round-0.json"
-    initial = json.loads(json.loads(initial_path.read_text())["host"]["gameJson"]) if initial_path.exists() else None
+    initial_path = root / "scenario-evidence/initial.json"
+    initial = json.loads(initial_path.read_text()) if initial_path.exists() else None
     starting = {c["civName"]: c for c in initial["civilizations"] if c.get("civName") in PLAYERS} if initial else {}
     original_cities = {city["id"]: city for civ in starting.values() for city in civ.get("cities", [])}
     needs_decision = {
@@ -272,8 +272,8 @@ def audit(root: Path, checkpoint_path: Path | None = None):
         and original_cities.get(engine_id, {}).get("foundingCiv")
         and original_cities[engine_id]["foundingCiv"] not in {c["from"], c["to"]}
     }
-    funding_path = root / "round-checkpoints" / f"{saved['epoch']}-round-{final['turn'] if final else -1}.json"
-    funding_game = json.loads(json.loads(funding_path.read_text())["host"]["gameJson"]) if funding_path.exists() else {}
+    funding_path = root / "scenario-evidence/funding.json"
+    funding_game = json.loads(funding_path.read_text()) if funding_path.exists() else {}
     funding_gold = {
         c["civName"]: c.get("gold", 0) for c in funding_game.get("civilizations", []) if c.get("civName") in PLAYERS
     }

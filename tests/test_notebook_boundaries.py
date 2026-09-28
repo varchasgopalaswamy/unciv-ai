@@ -8,7 +8,7 @@ from sqlalchemy import select
 from civ_agent import memory_schema as tables
 from civ_agent.civilization_state import CivilizationState, StaleAssumptions, StateConflict
 from civ_agent.memory_records import MemoryUpdate
-from tests.test_structured_memory import create, current, plan, setup
+from tests.test_structured_memory import create, current, setup, strategy
 
 
 def test_repeated_notebook_conflicts_preserve_independent_edits_and_do_not_halt(tmp_path):
@@ -36,20 +36,29 @@ def test_repeated_notebook_conflicts_preserve_independent_edits_and_do_not_halt(
 
 def test_stale_command_state_still_blocks_dispatch_but_intent_does_not(tmp_path):
     memory = setup(tmp_path)
-    key = create(memory, plan())
+    key = create(memory, strategy())
     memory.patch("game", [{"op": "retire", "id": key, "reason": "abandoned"}])
     memory.observe("border", {"units": 1}, "game")
     memory.observe("border", {"units": 2})
     with pytest.raises(StaleAssumptions):
-        memory.queue("game", "player_command", {"kind": "ATTACK"}, {"observation:border": 1}, "stale", {"plan": key})
+        memory.queue(
+            "game",
+            "player_command",
+            {"kind": "ATTACK"},
+            {"observation:border": 1},
+            "stale",
+            {"strategy": key, "reason": "Defend Rome"},
+        )
     assert not memory.pending()
-    request = memory.queue("game", "player_command", {"kind": "ATTACK"}, {}, "fresh", {"plan": key})
+    request = memory.queue(
+        "game", "player_command", {"kind": "ATTACK"}, {}, "fresh", {"strategy": key, "reason": "Defend Rome"}
+    )
     assert request["id"]
 
 
 def test_contributions_and_notices_restore_with_their_timeline(tmp_path):
     memory = setup(tmp_path)
-    key = create(memory, plan(subjects=["Greece"]))
+    key = create(memory, strategy(subjects=["Greece"]))
     memory.start_job("chat", "communication", {})
     retained = create(memory, {"type": "note", "text": "Earlier negotiation"}, "chat")
     memory.finish_job("game", True)
@@ -77,7 +86,6 @@ def test_restart_releases_writer_preserves_contributions_and_fences_old_job(tmp_
     memory = setup(tmp_path)
     memory.start_job("chat", "communication", {})
     contribution = create(memory, {"type": "note", "text": "Keep this message"}, "chat")
-    memory.begin_memory_phase("game")
     restarted = CivilizationState(memory.root, "Rome")
     with pytest.raises(StateConflict, match="STALE_JOB"):
         restarted.patch("game", [])
@@ -91,7 +99,7 @@ def test_restart_releases_writer_preserves_contributions_and_fences_old_job(tmp_
 
 def test_notice_projection_never_changes_stored_notebook_content(tmp_path):
     memory = setup(tmp_path)
-    key = create(memory, plan(subjects=["Greece"]))
+    key = create(memory, strategy(subjects=["Greece"]))
     with memory.transaction() as db:
         original = db.execute(select(tables.records).where(tables.records.c.key == key)).all()
     memory.ingest("g1", [{"id": 1, "kind": "diplomacy", "body": {"target": "Greece", "author": "Rome"}}], 1)
@@ -101,7 +109,7 @@ def test_notice_projection_never_changes_stored_notebook_content(tmp_path):
     assert "needsReview" not in json.loads(original[0].body)
 
 
-@pytest.mark.parametrize("operation", ["revise", "replace"])
+@pytest.mark.parametrize("operation", ["revise"])
 def test_removed_operations_have_no_compatibility_branch(operation):
     with pytest.raises(ValueError):
-        MemoryUpdate.model_validate({"changes": [{"op": operation, "id": "mem1", "content": plan()}]})
+        MemoryUpdate.model_validate({"changes": [{"op": operation, "id": "mem1", "content": strategy()}]})

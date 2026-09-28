@@ -17,6 +17,13 @@ from civ_agent.action_templates import (
     add_overview_commands,
     add_unit_commands,
 )
+from civ_agent.construction_estimates import (
+    ESTIMATE_BASIS,
+    completion_summary,
+    construction_estimate,
+    overview_estimates,
+    queue_progress,
+)
 from civ_agent.entity_sections import (
     CITY_COMMAND_SECTIONS,
     UNIT_COMMAND_SECTIONS,
@@ -27,6 +34,15 @@ from civ_agent.entity_sections import (
 )
 from civ_agent.game_commands import Position
 from civ_agent.map_format import compact_tiles
+from civ_agent.mechanics_overview import (
+    citizens_summary,
+    exploration_summary,
+    happiness_buildings,
+    region_distance,
+    research_summary,
+    resource_summary,
+    settlement_summary,
+)
 from civ_agent.protocol import JsonObject
 from civ_agent.schemas import BoundaryModel
 
@@ -54,6 +70,15 @@ class DetailQuery(BoundaryModel):
         "player_details",
         "movement_preview",
         "mission_preview",
+        "research_details",
+        "policy_details",
+        "victory_progress",
+        "player_result",
+        "trade_options",
+        "trade_read",
+        "agreement_list",
+        "agreement_read",
+        "chat_read",
     ]
     arguments: JsonObject
 
@@ -74,21 +99,41 @@ DETAIL_MODELS: dict[str, type[BoundaryModel]] = {
     "player_details": PlayerDetails,
 }
 
+# Native/communication reads cannot be regenerated from the cached turn snapshot.
+# Conservatively expire them when an observed native or social state changes.
+EXTERNAL_DETAIL_TOOLS = {
+    "research_details",
+    "policy_details",
+    "victory_progress",
+    "player_result",
+    "trade_options",
+    "trade_read",
+    "agreement_list",
+    "agreement_read",
+    "chat_read",
+}
+
 
 class CitySummary(BoundaryModel):
     handle: str
     name: str
     position: Position | None = None
     population: int | None = None
+    health: int | None = None
+    maxHealth: int | None = None
+    defensiveStrength: int | None = None
     foodPerTurn: int | None = None
     turnsToGrowth: int | None = None
     turnsToStarvation: int | None = None
     constructionQueue: list[str]
-    constructionTurns: int | None = None
     constructionChoice: JsonObject | None = None
+    constructionConversion: JsonObject | None = None
+    constructionEstimates: JsonObject = Field(default_factory=dict)
     puppet: bool
     inResistance: bool
     availableAttacks: int
+    yields: JsonObject = Field(default_factory=dict)
+    citizens: JsonObject = Field(default_factory=dict)
 
 
 class UnitSummary(BoundaryModel):
@@ -98,16 +143,21 @@ class UnitSummary(BoundaryModel):
     health: int
     movement: str
     military: bool
+    strength: int | None = None
+    rangedStrength: int | None = None
+    role: str | None = None
     idle: bool
     movementSupported: bool
     legalDestinations: int
     availableAttacks: int
-    canFoundCity: bool
+    canFoundCity: bool = False
     settlementStatus: str | None = None
     order: str | None = None
+    automated: bool = False
     workerJob: str | None = None
-    availablePromotions: int
-    greatPersonAbilities: int
+    workerJobTurnsRemaining: int | None = None
+    availablePromotions: int = 0
+    greatPersonAbilities: int = 0
     canAssembleSpaceshipPart: bool = False
     canGiftToCityState: bool = False
     movementOrder: JsonObject | None = None
@@ -132,6 +182,7 @@ class PlayerNotification(BoundaryModel):
 class TurnOverview(BoundaryModel):
     stateId: str | None = None
     memoryUpdates: list[JsonObject] | None = None
+    invalidatedDetails: list[DetailQuery] | None = None
     turn: int
     phase: str
     canEndTurn: bool
@@ -146,10 +197,12 @@ class TurnOverview(BoundaryModel):
     scenario: JsonObject | None = None
     result: JsonObject | None = None
     victory: JsonObject = Field(default_factory=dict)
-    negotiation: JsonObject = Field(default_factory=dict)
     cities: list[CitySummary] = Field(default_factory=list)
     units: list[UnitSummary] = Field(default_factory=list)
     researchQueue: list[str] = Field(default_factory=list)
+    research: JsonObject | None = None
+    culture: JsonObject | None = None
+    greatPeople: list[JsonObject] = Field(default_factory=list)
     researchOptions: list[str] = Field(default_factory=list)
     policyOptions: list[str] = Field(default_factory=list)
     greatPersonOptions: list[str] = Field(default_factory=list)
@@ -162,32 +215,101 @@ class TurnOverview(BoundaryModel):
     diplomacy: list[JsonObject] = Field(default_factory=list)
     diplomacyOpportunities: JsonObject | None = None
     cityStates: list[JsonObject] = Field(default_factory=list)
-    communication: JsonObject = Field(default_factory=dict)
     socialAdvisories: list[JsonObject] = Field(default_factory=list)
     turnReview: JsonObject = Field(default_factory=dict)
+    changesSincePreviousTurn: JsonObject | None = None
     mapSummary: JsonObject = Field(default_factory=dict)
+    exploration: JsonObject = Field(default_factory=dict)
     settlement: JsonObject | None = None
+    militaryReadiness: JsonObject | None = None
+    wonderOpportunities: list[JsonObject] = Field(default_factory=list)
+    constructionEstimateBasis: str | None = None
     evidence: str = "observation:overview"
+
+
+def wonder_summary(wonder: JsonObject, cities: list[JsonObject]) -> JsonObject:
+    """Own all overview wonder estimates, sharing benefits and common blockers."""
+    result = {
+        key: copy.deepcopy(wonder[key])
+        for key in ("name", "kind", "benefits", "greatPersonPoints", "specialistSlots")
+        if wonder.get(key)
+    }
+    costs = {city["productionCost"] for city in wonder["cities"] if "productionCost" in city}
+    if len(costs) == 1:
+        result["productionCost"] = next(iter(costs))
+    available, blocked = [], {}
+    estimates = {city["handle"]: city.get("constructionEstimates", {}).get(wonder["name"]) for city in cities}
+    for city in wonder["cities"]:
+        if city.get("canQueue") or city.get("queued"):
+            option = {
+                "city": city["city"],
+                "turns": city["turns"],
+                **{key: city[key] for key in ("productionStored", "productionPerTurn") if key in city},
+            }
+            estimate = estimates.get(city["city"])
+            reasons = (estimate or {}).get("queueUnavailableReasons") or city.get("unavailableReasons")
+            if reasons:
+                option["queueUnavailableReasons"] = copy.deepcopy(reasons)
+            overflow = (estimate or {}).get("production", {}).get("overflow")
+            if overflow:
+                option["productionOverflow"] = overflow
+            if estimate and estimate.get("completion") is not None:
+                option["completion"] = {
+                    key: value
+                    for key, value in completion_summary(estimate["completion"]).items()
+                    if key in {"yieldChange", "maintenanceChange", "growth"}
+                }
+            if estimate and estimate.get("whileBuilding", {}).get("change"):
+                option["whileBuildingChange"] = copy.deepcopy(estimate["whileBuilding"]["change"])
+            if city.get("queued"):
+                option["queued"] = True
+            if len(costs) > 1:
+                option["productionCost"] = city["productionCost"]
+            available.append(option)
+        else:
+            reasons = tuple(city.get("unavailableReasons", []))
+            blocked.setdefault(reasons, []).append(city["city"])
+    result["cities"] = available
+    if blocked:
+        result["unavailableCities"] = [
+            {"cities": cities, "reasons": list(reasons)} for reasons, cities in blocked.items()
+        ]
+    return result
 
 
 def overview(snapshot: JsonObject) -> JsonObject:
     """No legal-offer lists, map tiles, yield breakdowns or repeated receipt bodies."""
-    value = {key: copy.deepcopy(snapshot[key]) for key in TurnOverview.model_fields if key in snapshot}
+    value = {
+        key: copy.deepcopy(snapshot[key])
+        for key in TurnOverview.model_fields
+        if key in snapshot and key not in {"cities", "settlement", "research"}
+    }
+    value["wonderOpportunities"] = [
+        wonder_summary(wonder, snapshot.get("cities", [])) for wonder in snapshot.get("wonderOpportunities", [])
+    ]
+    if any(city.get("constructionEstimates") for city in snapshot.get("cities", [])):
+        value["constructionEstimateBasis"] = ESTIMATE_BASIS
     value["cities"] = []
+    wonders = {wonder["name"] for wonder in snapshot.get("wonderOpportunities", [])}
     for city in snapshot.get("cities", []):
         development = city.get("development") or {}
-        progress = development.get("constructions", [])
         value["cities"].append(
             {
                 **{key: city[key] for key in ("handle", "name", "constructionQueue", "puppet")},
+                **{key: city[key] for key in ("health", "maxHealth", "defensiveStrength") if key in city},
                 **{
                     key: development.get(key)
                     for key in ("position", "population", "foodPerTurn", "turnsToGrowth", "turnsToStarvation")
                 },
-                "constructionTurns": progress[0].get("turns") if progress else None,
                 "constructionChoice": city.get("constructionChoice"),
+                "constructionEstimates": overview_estimates(city, wonders),
+                "constructionConversion": (city.get("productionConversions") or {}).get(
+                    city["constructionQueue"][0] if city["constructionQueue"] else ""
+                ),
                 "inResistance": development.get("inResistance", False),
                 "availableAttacks": len(city.get("attacks", [])),
+                "yields": {y["stat"]: y["amount"] for y in development.get("yields", [])},
+                "citizens": citizens_summary(city),
             }
         )
     value["units"] = []
@@ -210,7 +332,10 @@ def overview(snapshot: JsonObject) -> JsonObject:
                     )
                 },
                 "movementOrder": unit.get("movementOrder"),
-                "settlementStatus": (unit.get("settlement") or {}).get("siteStatus"),
+                **{key: combat.get(key) for key in ("strength", "rangedStrength", "role") if unit["military"]},
+                "settlementStatus": "CAN_FOUND_NOW"
+                if unit["canFoundCity"]
+                else (unit.get("settlement") or {}).get("siteStatus"),
                 "missions": [m["mission"] for m in (unit.get("air") or {}).get("missions", []) if m.get("available")],
                 "transported": (unit.get("air") or {}).get("transported", False),
                 "carriedUnits": (unit.get("air") or {}).get("carriedUnits", []),
@@ -219,7 +344,9 @@ def overview(snapshot: JsonObject) -> JsonObject:
                 "legalDestinations": len(unit.get("moves", [])),
                 "availableAttacks": len(combat.get("attacks", [])),
                 "order": (combat.get("order") or {}).get("action"),
+                "automated": (combat.get("order") or {}).get("automated", False),
                 "workerJob": (unit.get("worker") or {}).get("currentJob"),
+                "workerJobTurnsRemaining": (unit.get("worker") or {}).get("remainingTurns"),
                 "availablePromotions": sum(
                     p.get("available", False) for p in (combat.get("promotions") or {}).get("choices", [])
                 ),
@@ -240,6 +367,14 @@ def overview(snapshot: JsonObject) -> JsonObject:
         for key, item in (snapshot.get("economy") or {}).items()
         if key in {"treasury", "goldPerTurn", "happiness", "unitMaintenance", "unitSupply", "goldenAge", "development"}
     }
+    value["economy"]["resources"] = resource_summary(snapshot.get("economy") or {})
+    value["economy"]["happinessBudget"] = {
+        "sources": copy.deepcopy((snapshot.get("economy") or {}).get("happinessBreakdown", [])),
+        "existingCityBuildings": happiness_buildings(snapshot),
+        "limits": "Building gains are separate current-population comparisons, not an additive budget. New luxuries require acquisition/connection; duplicate luxuries do not ordinarily add happiness. See settlement for new-city costs and potential resources.",
+    }
+    value["research"] = research_summary(snapshot)
+    value["exploration"] = exploration_summary(snapshot)
     value["diplomacy"] = [
         {
             key: item
@@ -266,35 +401,47 @@ def overview(snapshot: JsonObject) -> JsonObject:
                 "ally",
                 "protecting",
                 "quests",
+                "bonuses",
+                "resources",
+                "allyInfluence",
+                "uniqueUnit",
             }
         }
         for state in snapshot.get("diplomacy", {}).get("cityStates", [])
     ]
-    social = snapshot.get("communication", {})
-    value["communication"] = {
-        "commitments": [
-            {
-                key: item
-                for key, item in offer.items()
-                if key in {"proposal", "participants", "kind", "effective", "expiresTurn"}
-            }
-            for offer in social.get("offers", [])
-        ],
-        "trades": social.get("trades", []),
-    }
     review = snapshot.get("turnReview") or {}
-    value["turnReview"] = {"units": review.get("units", []), "confirmedActions": len(review.get("actions", []))}
+    value["turnReview"] = {"confirmedActions": len(review.get("actions", []))}
     value["mapSummary"] = {
         "exploredTiles": len(snapshot.get("map", {}).get("tiles", [])),
         "frontierTiles": len(snapshot.get("map", {}).get("frontier", [])),
     }
     if snapshot.get("settlement") is not None:
-        value["settlement"] = {
-            **copy.deepcopy(snapshot["settlement"]),
-            "candidates": copy.deepcopy(snapshot["settlement"].get("candidates", [])[:3]),
-        }
+        value["settlement"] = settlement_summary(snapshot["settlement"])
     add_overview_commands(value)
-    return TurnOverview.model_validate(value).model_dump(exclude_none=True)
+    result = TurnOverview.model_validate(value).model_dump(exclude_none=True)
+    # Roster deltas replace entire rows. Omitted optional capabilities therefore
+    # disappear on update; health/movement/idle and meaningful zero counts stay.
+    optional = {
+        "canFoundCity",
+        "automated",
+        "availablePromotions",
+        "greatPersonAbilities",
+        "canAssembleSpaceshipPart",
+        "canGiftToCityState",
+        "canCreateWaterImprovement",
+        "missions",
+        "transported",
+        "carriedUnits",
+        "interceptionReady",
+        "upgrades",
+    }
+    for unit in result["units"]:
+        for key in optional:
+            if key == "canFoundCity" and "settlementStatus" in unit:
+                continue
+            if not unit.get(key):
+                unit.pop(key, None)
+    return result
 
 
 def native_observation(value: Any) -> Any:
@@ -315,30 +462,40 @@ def detail_scope(query: DetailQuery) -> str:
     return "detail/" + hashlib.sha256(canonical.encode()).hexdigest()[:16]
 
 
-def region_distance(a: JsonObject, b: JsonObject, wrap: JsonObject | None) -> int:
-    def distance(offset: int):
-        dx = a["x"] - b["x"] + offset * (wrap["x"] if wrap else 0)
-        dy = a["y"] - b["y"] + offset * (wrap["y"] if wrap else 0)
-        return max(abs(dx), abs(dy), abs(dx - dy))
-
-    return min(distance(offset) for offset in (-1, 0, 1)) if wrap else distance(0)
+def map_region_inputs(snapshot: JsonObject, args: JsonObject):
+    view = snapshot.get("map", {})
+    center, radius, wrap = args["center"], args.get("radius", 2), view.get("wrapOffset")
+    tiles, frontier = view.get("tiles", []), view.get("frontier", [])
+    available = any(tile["position"] == center for tile in tiles) or center in frontier
+    return {
+        "available": available,
+        "tiles": [tile for tile in tiles if region_distance(tile["position"], center, wrap) <= radius]
+        if available
+        else [],
+        "frontier": [p for p in frontier if region_distance(p, center, wrap) <= radius] if available else [],
+    }
 
 
 def detail_inputs(snapshot: JsonObject, query: DetailQuery):
     """Conservative dependencies for refreshing a cached projection, excluding clocks."""
     name, args = query.tool, query.arguments
-    if name in {"unit_details", "city_details", "construction_details"}:
+    if name in {"unit_details", "city_details"}:
         entities = snapshot.get("map", {}).get("units", []) if name == "unit_details" else snapshot.get("cities", [])
-        return next((e for e in entities if e["handle"] == args["target"]), None)
+        entity = next((e for e in entities if e["handle"] == args["target"]), None)
+        return project_entity(entity, name, args.get("sections", ["all"])) if entity is not None else None
+    if name == "construction_details":
+        return project_detail(snapshot, query)["data"]
     if name in {"movement_preview", "mission_preview"}:
         return snapshot.get("revision")
-    if name == "map_region" or args.get("section") == "map_index":
+    if name == "map_region":
+        return map_region_inputs(snapshot, args)
+    if args.get("section") == "map_index":
         return {key: snapshot.get("map", {}).get(key) for key in ("tiles", "frontier", "wrapOffset")}
     section = args["section"]
     fields = {
         "turn_history": ("turnReview", "previousTurnReview"),
         "research": ("research", "researchQueue", "researchOptions", "freeTechnologies"),
-        "policies": ("policyOptions", "freePolicies"),
+        "policies": ("culture", "policyOptions", "freePolicies"),
     }.get(section, (section,))
     return {key: snapshot.get(key) for key in fields}
 
@@ -378,6 +535,7 @@ def project_detail(snapshot: JsonObject, query: DetailQuery) -> JsonObject:
                 progress = (entity.get("development") or {}).get("constructions", [])
                 options = entity.get("constructionOptions", [])
                 names = args.get("names", [])
+                estimates = entity.get("constructionEstimates", {})
                 catalogue = sorted(set(options) | purchases.keys() | {p["name"] for p in progress})
                 data = {
                     "city": entity["handle"],
@@ -387,19 +545,40 @@ def project_detail(snapshot: JsonObject, query: DetailQuery) -> JsonObject:
                         {
                             "name": n,
                             "canQueue": n in options,
-                            "purchase": purchases.get(n)
+                            "purchase": (
+                                {
+                                    key: value
+                                    for key, value in purchases[n].items()
+                                    if key not in {"requiredTechnologies", "resourceRequirements"}
+                                    or key not in estimates.get(n, {})
+                                }
+                                if n in purchases
+                                else None
+                            )
                             if names
                             else (
                                 {k: v for k, v in purchases[n].items() if k in {"goldCost", "available"}}
                                 if n in purchases
                                 else None
                             ),
-                            "progress": [p for p in progress if p["name"] == n],
+                            "progress": [
+                                queue_progress(p, estimates.get(n, {}).get("production"))
+                                for p in progress
+                                if p["name"] == n
+                            ],
+                            **(construction_estimate(estimates[n], detailed=bool(names)) if n in estimates else {}),
+                            **(
+                                {"conversion": entity["productionConversions"][n]}
+                                if n in entity.get("productionConversions", {})
+                                else {}
+                            ),
                         }
                         for n in (names or catalogue)
                     ],
                     "descriptionsIncluded": bool(names),
                 }
+                if estimates:
+                    data["estimateBasis"] = ESTIMATE_BASIS
                 data = copy.deepcopy(data)
                 add_construction_commands(data)
     elif name in {"movement_preview", "mission_preview"}:
@@ -407,19 +586,17 @@ def project_detail(snapshot: JsonObject, query: DetailQuery) -> JsonObject:
         available = False
         data = {"requiresRefresh": True}
     elif name == "map_region":
-        map_view = snapshot.get("map", {})
         center, radius = args["center"], args.get("radius", 2)
-        wrap = map_view.get("wrapOffset")
         # Use an observed position: arbitrary coordinates must not imply discovered terrain.
-        positions = [t["position"] for t in map_view.get("tiles", [])] + map_view.get("frontier", [])
-        available = center in positions
+        region = map_region_inputs(snapshot, args)
+        available = region["available"]
         if available:
-            tiles = [t for t in map_view.get("tiles", []) if region_distance(t["position"], center, wrap) <= radius]
+            tiles = region["tiles"]
             data = {
                 "center": center,
                 "radius": radius,
                 **(compact_tiles(tiles) if args.get("format", "compact") == "compact" else {"tiles": tiles}),
-                "frontier": [p for p in map_view.get("frontier", []) if region_distance(p, center, wrap) <= radius],
+                "frontier": region["frontier"],
             }
     elif name == "player_details":
         section = args["section"]
@@ -433,7 +610,7 @@ def project_detail(snapshot: JsonObject, query: DetailQuery) -> JsonObject:
             fields = {
                 "turn_history": ("turnReview", "previousTurnReview"),
                 "research": ("research", "researchQueue", "researchOptions", "freeTechnologies"),
-                "policies": ("policyOptions", "freePolicies"),
+                "policies": ("culture", "policyOptions", "freePolicies"),
             }.get(section, (section,))
             data = {key: snapshot.get(key) for key in fields}
     return DetailResult(
@@ -465,7 +642,7 @@ def required_detail(command: JsonObject) -> DetailQuery | None:
         or target is None
     ):
         return None  # Full decision content is always in the overview.
-    if kind in {"QUEUE_CONSTRUCTION", "BUY_CONSTRUCTION"}:
+    if kind == "QUEUE_CONSTRUCTION":
         return DetailQuery(tool="construction_details", arguments={"target": target, "names": [command["selection"]]})
     unit = kind in UNIT_COMMAND_SECTIONS
     section = (UNIT_COMMAND_SECTIONS if unit else CITY_COMMAND_SECTIONS).get(kind, "all")
@@ -474,7 +651,11 @@ def required_detail(command: JsonObject) -> DetailQuery | None:
     )
 
 
-def detail_satisfies(read: DetailQuery, required: DetailQuery) -> bool:
+def detail_satisfies(read: DetailQuery, required: DetailQuery, command: JsonObject | None = None) -> bool:
+    if command and command["kind"] == "BUY_CONSTRUCTION" and read.tool == "construction_details":
+        return read.arguments.get("target") == command["target"] and command["selection"] in read.arguments.get(
+            "names", []
+        )
     if required.tool == "construction_details" and read.arguments.get("target") == required.arguments["target"]:
         sections = set(read.arguments.get("sections", ["all"]))
         return (read.tool == "city_details" and ("all" in sections or {"production", "purchases"} <= sections)) or (

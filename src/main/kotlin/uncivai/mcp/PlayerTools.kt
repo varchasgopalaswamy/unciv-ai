@@ -21,7 +21,6 @@ import uncivai.InputSchema
 import uncivai.InputSchemas
 import uncivai.PlayerApiAccounting
 import uncivai.awaitCommunication
-import uncivai.player.ChooseFreeGreatPersonRequest
 import uncivai.player.MovementPreview
 import uncivai.player.MovementPreviewRequest
 import uncivai.player.PlayerCommandJson
@@ -31,10 +30,10 @@ import uncivai.player.PlayerSessionException
 import uncivai.player.PlayerSummaryJson
 import uncivai.player.PlayerTurnJson
 import uncivai.player.PolicyDetails
-import uncivai.player.RenameCityRequest
 import uncivai.player.ResearchDetails
 import uncivai.player.TurnCommandRequest
 import uncivai.player.VictoryProgress
+import uncivai.player.VictoryProgressRequest
 
 internal fun createPlayerToolsServer(session: PlayerSession): Server = Server(
     serverInfo = Implementation(name = "unciv-player", version = "0.1.0"),
@@ -70,7 +69,7 @@ internal fun createPlayerToolsServer(session: PlayerSession): Server = Server(
 
     addTool(
         name = "player_capabilities",
-        description = "Return implemented gameplay operations and explicit coverage and recovery limitations.",
+        description = "List available observation tools and game actions.",
         inputSchema = NO_ARGUMENTS_SCHEMA,
         toolAnnotations = QUERY_ANNOTATIONS,
     ) { request ->
@@ -131,7 +130,7 @@ internal fun createPlayerToolsServer(session: PlayerSession): Server = Server(
 
     addTool(
         name = "movement_preview",
-        description = "Preview a destination using Unciv pathfinding. Supply an owned unit handle and destination x/y. Returns adjacent paths grouped by estimated turns; speculative paths can change as terrain and units become visible. Founding units also get settlement: siteStatus ELIGIBLE/BLOCKED/UNKNOWN, visible native siteBlockers, and separate unitBlockers such as NO_MOVEMENT. UNKNOWN means nearby visibility is incomplete; it does not prohibit movement or founding. canFoundNow applies only while occupying the destination. Movement availability is not settlement eligibility; inspect this before choosing a city site, then recheck unit_details sections=[settlement] on arrival. Read this at the current revision before SET_UNIT_DESTINATION with the same target and destination. That command moves now and saves the native order for later turns. Inspect unit.movementOrder; CANCEL_UNIT_MOVEMENT stops it. Estimates are not promises of arrival.",
+        description = "Preview a destination using Unciv pathfinding. Supply an owned unit handle and destination x/y. Returns adjacent paths grouped by estimated turns; speculative paths can change as terrain and units become visible. Founding units also get settlement: siteStatus ELIGIBLE/BLOCKED/UNKNOWN, visible native siteBlockers, and separate unitBlockers such as NO_MOVEMENT. UNKNOWN means nearby visibility is incomplete; it does not prohibit movement or founding. canFoundNow applies only while occupying the destination. Movement availability is not settlement eligibility; inspect this before choosing a city site, then recheck unit_details sections=[settlement] on arrival. Read this before SET_UNIT_DESTINATION with the same target and destination; refresh the preview after another action. That command moves now and saves the native order for later turns. Inspect unit.movementOrder; CANCEL_UNIT_MOVEMENT stops it. Estimates are not promises of arrival.",
         inputSchema = InputSchemas.movementPreview.toolSchema(),
         toolAnnotations = QUERY_ANNOTATIONS,
     ) { request ->
@@ -165,12 +164,13 @@ internal fun createPlayerToolsServer(session: PlayerSession): Server = Server(
 
     addTool(
         name = "victory_progress",
-        description = "Read victory-screen milestones, completion and current progress, your score and turn limit. Includes next milestones only for rivals whose progress the UI permits you to see. Omit names for all displayed victory types, or select up to 16 exact names returned by this query. Time victory uses score and turn limit; it has no UI milestone column. This read does not acknowledge popups or confirm actions.",
-        inputSchema = DETAIL_INPUT_SCHEMA,
+        description = "Read Victory Status. Default: own milestones, permitted global progress, and compact current rankings with recorded changes over up to 10 turns. Arrays use the shared metrics column order; metric meanings distinguish technology/policy counts and treasury from per-turn yields. Select sections, metrics or disclosed civilizations for focused reads. Charts return recorded history and a separate live point; nulls mean missing data. Use nextFromTurn and the same toTurn to read subsequent pages (at most 50 turns and 2000 numeric cells per page). Rankings compare disclosed civilizations before filtering; demographics uses native snapshot aggregates. Availability explains hidden tabs. Time victory uses score and turn limit, without a milestone column. This read does not acknowledge popups or confirm actions.",
+        inputSchema = InputSchemas.victoryProgress.toolSchema(),
         toolAnnotations = QUERY_ANNOTATIONS,
     ) { request ->
         measuredPlayerResult(session, "victory_progress", request.arguments) {
-            PlayerTurnJson.json.encodeToString(VictoryProgress.serializer(), session.victoryProgress(request.arguments.detailNames()))
+            val query = InputSchemas.victoryProgress.decode(VictoryProgressRequest.serializer(), request.arguments ?: buildJsonObject {})
+            PlayerTurnJson.json.encodeToString(VictoryProgress.serializer(), session.victoryProgress(query))
         }
     }
 
@@ -199,18 +199,6 @@ internal fun createPlayerToolsServer(session: PlayerSession): Server = Server(
     }
 
     addTool(
-        name = "rename_city",
-        description = "Rename an owned city. Repeating the same successful request payload is idempotent.",
-        inputSchema = RENAME_CITY_INPUT_SCHEMA,
-        toolAnnotations = COMMAND_ANNOTATIONS,
-    ) { request ->
-        measuredPlayerResult(session, "rename_city", request.arguments) {
-            val renameRequest = InputSchemas.renameCity.decode(RenameCityRequest.serializer(), request.arguments ?: throw InvalidToolArgumentsException())
-            PlayerCommandJson.encode(session.renameCity(renameRequest))
-        }
-    }
-
-    addTool(
         name = "free_great_person_choice",
         description = "Return the authenticated player's current free Great Person decision, if any.",
         inputSchema = NO_ARGUMENTS_SCHEMA,
@@ -219,18 +207,6 @@ internal fun createPlayerToolsServer(session: PlayerSession): Server = Server(
         measuredPlayerResult(session, "free_great_person_choice", request.arguments) {
             request.arguments.requireNoArguments()
             PlayerCommandJson.encode(session.freeGreatPersonChoice())
-        }
-    }
-
-    addTool(
-        name = "choose_free_great_person",
-        description = "Choose an offered free Great Person. Repeating the same successful request payload is idempotent.",
-        inputSchema = CHOOSE_FREE_GREAT_PERSON_INPUT_SCHEMA,
-        toolAnnotations = COMMAND_ANNOTATIONS,
-    ) { request ->
-        measuredPlayerResult(session, "choose_free_great_person", request.arguments) {
-            val choiceRequest = InputSchemas.chooseGreatPerson.decode(ChooseFreeGreatPersonRequest.serializer(), request.arguments ?: throw InvalidToolArgumentsException())
-            PlayerCommandJson.encode(session.chooseFreeGreatPerson(choiceRequest))
         }
     }
 }
@@ -250,8 +226,6 @@ private val COMMAND_ANNOTATIONS = ToolAnnotations(
 private val NO_ARGUMENTS_SCHEMA = InputSchemas.empty.toolSchema()
 private val DETAIL_INPUT_SCHEMA = InputSchemas.details.toolSchema()
 private val TURN_COMMAND_INPUT_SCHEMA = InputSchemas.turnCommand.toolSchema()
-private val RENAME_CITY_INPUT_SCHEMA = InputSchemas.renameCity.toolSchema()
-private val CHOOSE_FREE_GREAT_PERSON_INPUT_SCHEMA = InputSchemas.chooseGreatPerson.toolSchema()
 
 /** ToolSchema supports properties/required/defs; communication's variant schema is nested
  * so operation-specific required fields and additionalProperties survive SDK serialization. */

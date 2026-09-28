@@ -32,7 +32,16 @@ private fun launchHost(options: CliOptions) {
             } else if (options.scenario in setOf("war-paid", "war-joint")) {
                 HeadlessRuntime.createWarExercise(options.dataDirectory, checkNotNull(options.scenario), options.seed ?: 413L)
             } else {
-                HeadlessRuntime.createVanillaGame(options.dataDirectory, options.seed ?: System.currentTimeMillis(), options.cityStates ?: 0, options.builtInAI)
+                val size = options.mapRadius?.let { com.unciv.logic.map.MapSize(it) }
+                    ?: com.unciv.logic.map.MapSize(options.mapSize ?: "Small")
+                HeadlessRuntime.createVanillaGame(
+                    options.dataDirectory,
+                    options.seed ?: System.currentTimeMillis(),
+                    options.cityStates ?: 0,
+                    options.builtInAI,
+                    options.agentPlayers.ifEmpty { listOf("Rome", "Greece", "France") },
+                    size,
+                )
             }
         } else if (options.resumeCheckpoint != null) {
             HeadlessRuntime.loadCheckpoint(options.resumeCheckpoint, options.dataDirectory, expectedMap)

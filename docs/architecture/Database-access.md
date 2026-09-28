@@ -1,6 +1,6 @@
 # Database access with SQLAlchemy Core
 
-The memory and accounting stores use SQLAlchemy Core with SQLite. Core defines
+The memory, accounting and Python monitoring stores use SQLAlchemy Core with SQLite. Core defines
 tables and composes parameterized statements; the domain code still explicitly
 controls memory revisions, receipts, visibility and recovery. There are no ORM
 sessions or additional database services.
@@ -15,6 +15,9 @@ sessions or additional database services.
 - [telemetry.py](../../src/civ_agent/telemetry.py) defines the accounting schema and
   uses Core for job reports, call counts and acknowledgement updates. Accounting
   remains outside game rollback.
+- [monitoring.py](../../src/civ_agent/monitoring.py) defines operator records for
+  scheduler state, events and host metrics. The Kotlin JDBC writer shares this
+  schema. See [monitoring](Monitoring.md) for ownership and incremental reads.
 - [sqlite_database.py](../../src/civ_agent/sqlite_database.py) owns connection and
   transaction setup. The existing `ServiceIO` worker runs synchronous database
   work outside the HTTPS event loop.
@@ -29,7 +32,9 @@ resumable with the current runtime.
 Each transaction opens a connection and closes it afterward through `NullPool`.
 SQLite uses `synchronous=FULL`, foreign-key enforcement and a 15-second lock wait.
 The connection disables the driver's legacy implicit transaction handling;
-SQLAlchemy's begin hook explicitly issues `BEGIN IMMEDIATE`. This preserves the
+Writer connections explicitly issue `BEGIN IMMEDIATE`. Read-only viewer/export
+connections use `mode=ro` and ordinary `BEGIN`, with a short lock wait. The operator
+monitoring store uses WAL for concurrent readers and writers. This preserves the
 memory store's locking and gives accounting read/modify/write operations the
 same explicit serialization. Success commits; exceptions roll back.
 
@@ -59,7 +64,7 @@ Immutable history, delivered evidence, command-state validation and rollback
 retain their transaction boundaries.
 
 Heartbeats renew the native lease without joining the database/history queue.
-Periodic accounting and telemetry use the background renderer and retain durable
+Periodic accounting and telemetry use the background accounting task and retain durable
 unsent reports. `service_io_slow` diagnostics separate queue and work milliseconds
 and name the operation without recording its arguments or private contents.
 
@@ -72,27 +77,21 @@ refresh, including fingerprint initialization, fell from about 9.0 seconds to
 
 ## Store format and rollback
 
-The notebook uses format 3. Older memory files and checkpoints are rejected;
+The notebook uses format 7. Older memory files and checkpoints are rejected;
 there is no migration or compatibility path. Use a fresh match after this change.
 
-Within the current format, checkpoint hashes cover reachable immutable records,
-events and command receipts. Restoring an earlier head excludes discarded future
+Within the current format, checkpoint hashes cover the referenced immutable record
+heads, events and command receipts. Both stored jobs and their checkpoints use compact record
+references; completed jobs are not copied into checkpoints. Unused historical
+detail bodies are not loaded during dispatch or ordinary refreshes. Restoring an earlier head excludes discarded future
 revisions while retaining their rows and never reusing identifiers. Notebook
 entries, communication contributions and advisory notices share this durable
 revision mechanism. Their meanings and write ownership are separate.
 
 ## Validation
 
-`test_sqlalchemy_storage.py` independently checks current checkpoint hashes, rollback
-ancestry, monotonically allocated identifiers, old-format rejection and accounting
-recovery. It also checks foreign-key failures roll back the entire transaction, uncommitted writes
-remain invisible to readers, and another writer cannot enter before commit.
-The existing memory, gateway, HTTPS, scheduling and recovery suites exercise the
-converted runtime paths.
-
-During the SQLAlchemy conversion, the full Python suite passed with 616 tests and
-90 subtests. On a copy of the saved Greece game, all 36 turn summaries matched the previous
-`sqlite3` implementation exactly. A dirty turn-35 export took about 0.064 seconds;
-an unchanged export took about 0.018 seconds. This confirms the incremental-export
-behavior remains effective; SQLAlchemy itself is a maintainability change, not
-a measured gameplay speedup. Those measurements predate notebook format 3.
+Storage and service tests cover transaction rollback, immutable evidence, review
+recovery, privacy boundaries and usage reconciliation. Monitoring tests additionally
+exercise a writer committing while a read-only viewer holds an older snapshot,
+event cursor recovery, explicit exports, import rollback and the TUI controls.
+There is no periodic notebook export or export cache to validate.

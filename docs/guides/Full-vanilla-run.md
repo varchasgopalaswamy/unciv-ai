@@ -3,7 +3,7 @@
 From the repository directory, using the existing project environment:
 
 ```sh
-.venv/bin/python scripts/run_vanilla_game.py
+.venv/bin/civ-agent game start
 ```
 
 The launcher starts the host, the three agent services and the ordinary scheduler.
@@ -13,46 +13,47 @@ and all five native victory types. Agents choose their actions without guided
 milestones. The host builds through its normal source-checkout launcher.
 
 Use `--model` and `--reasoning-effort` to select settings for all three agents,
-including gameplay, chat and background memory work:
+including gameplay, chat and background strategic reviews:
 
 ```sh
-.venv/bin/python scripts/run_vanilla_game.py --model gpt-6-luna --reasoning-effort high
+.venv/bin/civ-agent game start --model gpt-6-luna --reasoning-effort high
 ```
 
 The launcher forwards these settings to the scheduler and every agent service.
 Launch metadata records the requested settings; job telemetry records the effective
 settings reported by Codex. Editing the launcher does not change running services.
 
-Add `--strategy-guide` to provide all three agents with an
-[optional short Civ V strategy reference](Strategy-guide.md). It is explicitly
-advisory and off by default; `--no-strategy-guide` also disables it. Pass the flag
-again on resume if you want to keep providing it.
+## Choose the game
 
-Add `--fast` to request [Codex Fast mode](https://learn.chatgpt.com/docs/agent-configuration/speed)
-for all three agents, including gameplay, chat and background memory work:
+Map and roster changes are ordinary options; there is no Kotlin edit required:
 
 ```sh
-.venv/bin/python scripts/run_vanilla_game.py --fast
+.venv/bin/civ-agent game start --state-dir ~/.local/state/unciv-host/my-game \
+  --map-radius 26 --city-states 8 \
+  --agents Rome Greece France --built-in-ai Egypt \
+  --model gpt-6-luna --reasoning-effort high --strategy-guide --fast
 ```
 
-Pass `--fast` again on resume, alongside `--resume` and your existing
-`--state-dir`. It sets the Codex service tier to `fast` and enables its fast-mode
-feature and keeps your selected model and reasoning effort. Without the flag,
-Codex retains its configured or resumed-conversation tier. The launch log records
-the requested tier, and agent job records retain the tier reported by Codex.
-Fast-mode availability and pricing follow your Codex account and model.
+Use `--map-size Tiny|Small|Medium|Large|Huge` instead of `--map-radius` for an
+Unciv preset. Map names are case-insensitive. A new game's default remains Small
+Pangaea with three agents and Egypt; the example above chooses a larger map.
+Supply `--built-in-ai` without names for no built-in opponents. Native rules
+validate civilization names and map generation. `--seed` selects a reproducible
+map; otherwise the seed is random and recorded in the launch metadata.
 
-The default persistent match directory is
-`~/.local/state/unciv-host/vanilla-full`. Ports **8971–8974** must be available.
-The terminal shows progress and the launcher also saves its output. A terminal
-multiplexer such as `tmux` can keep it running when you disconnect.
+`--strategy-guide` supplies the [optional strategy reference](Strategy-guide.md).
+`--fast` requests fast priority for model work. Both default to off and are saved
+for resume. Their `--no-...` forms explicitly disable them. Model and reasoning
+settings apply to gameplay, communication and background strategic reviews.
 
-For a different directory or ports:
+The default match directory is `~/.local/state/unciv-host/vanilla-full`.
+The host uses port **8971**, followed by one consecutive port per agent; change
+this with `--port`. `--repo-dir` selects the host source checkout, and
+`--unciv-dir` selects an engine checkout for both code and runtime assets.
+The host builds through its normal source launcher.
 
-```sh
-.venv/bin/python scripts/run_vanilla_game.py \
-  --state-dir "$HOME/.local/state/unciv-host/my-vanilla-game" --port 8985
-```
+The launcher starts the existing services and calls the scheduler directly.
+Ordinary play does not run a test module or another launcher subprocess.
 
 ## Limits and stopping
 
@@ -100,35 +101,41 @@ and per-turn timings. Quitting the viewer leaves the game running.
 For the default directory:
 
 ```sh
-.venv/bin/python scripts/run_vanilla_game.py --resume
+.venv/bin/civ-agent game resume
 ```
 
-For a custom directory, supply the same `--state-dir` and port again. The launcher
-refuses to overwrite a saved match without `--resume`. Resume retains accounting,
-checkpoints and confirmed work, using the existing scheduler's recovery flow.
+For a custom directory, supply the same `--state-dir`. The port, guide, priority,
+startup timeout and checkout choices are saved in `launch-settings.json`.
+`game start` refuses to overwrite a saved board. Resume retains accounting and
+rewinds to the start of the interrupted turn, including communication and private state.
+Completed native handoffs are retained.
 It also inherits the saved model and reasoning effort, including for games started
 with older defaults. Explicitly conflicting settings are rejected before services
 start; choose a new match directory to use a different model or reasoning effort.
-It requires both `exploration.json` and `runner/run.json`; if startup failed before
-these exist, inspect the startup logs first.
+It requires `exploration.json` and the original player credentials. If startup
+saved the board before saving scheduler state in `runner/monitoring.sqlite3`, resume starts scheduling that
+saved board. If no board was created, fix the startup error and repeat `game start`.
 
-If a model timeout or provider/service interruption happened during post-turn
-memory work, the native handoff is already committed. Explicit resume verifies
-and archives that stopped attempt, records and prints an acknowledgement of its
-incomplete memory work, and continues from the saved board. Committed memory
-edits remain; unsaved notes are unavailable and partial token usage stays marked
-incomplete. New failures still stop for inspection; internal state, shutdown and
-archive errors still require repair. No game actions or memory reasoning are
-replayed. Post-turn memory work uses the configured `--turn-timeout` allowance,
-starting at handoff, rather than a separate five-minute cap.
+Reviews run asynchronously at the end of turns 5, 10, 15, etc. Set
+`--review-interval K` to change that cadence and starting turn; it is retained on
+resume. A review uses the player's model, effort, priority and optional strategy
+guide. Other civilizations can play while it runs; the reviewed civilization's
+next turn waits for the report and preloads it as dated advice. Waiting does not
+consume its gameplay timeout. There are no mandatory post-turn memory writes.
 
-Full-game defaults raise a previous short batch's limits, while retaining any
-larger saved limits. Explicit limits may only increase. The elapsed-time limit is
-measured from the **original scheduler start**, including pauses; it is not reset
+Pending reviews restart from frozen inputs after an interruption. The default
+is three attempts; `--review-attempts 4` explicitly permits another attempt.
+Interrupted gameplay still rewinds to the start of the active turn. A committed
+handoff is retained, and provider accounting remains incomplete when final usage
+was not received. Older memory/scheduler formats require their original code;
+this version requires a fresh match directory.
+
+Resume retains the saved limits exactly. Explicit limits may only increase.
+The elapsed-time limit is measured from the **original scheduler start**, including pauses; it is not reset
 on resume. For example, extend that total allowance to fourteen days with:
 
 ```sh
-.venv/bin/python scripts/run_vanilla_game.py --resume --max-seconds 1209600
+.venv/bin/civ-agent game resume --max-seconds 1209600
 ```
 
 ## What to bring back for analysis
@@ -140,21 +147,20 @@ the whole match directory until the failure has been diagnosed.
 Each launch gets its own `launches/TIMESTAMP-PID/` directory containing:
 
 - `console.log`: scheduler output, diagnostics and the final stop reason.
-- `launch.json`: exact command, start time, source/engine revision and model settings.
+- `launch.json`: resolved options, start time, source/engine revision and model settings.
 - `stop.json`: exit status, scheduler reason, unfinished activation, usage and any
   native result/scores available at shutdown.
 
 The match also retains:
 
 - `host.log`, `Rome.log`, `Greece.log`, `France.log`: appended service logs.
-- `exploration.json` and `round-checkpoints/`: native state and coordinated recovery points.
-- `runner/run.json` and `runner/history/`: progress, per-turn histories and summaries.
+- `exploration.json` and `turn-recovery/`: native state and the current coordinated turn boundary.
+- `runner/monitoring.sqlite3`: scheduler progress, event streams, telemetry and scores.
 - `agent-services/`: per-civilization memory, audits, diagnostics and accounting databases.
-- `telemetry/`: per-turn/job token counts, API calls, timings and the native game result.
 
 Exit codes distinguish a native completion (`0`), a stop requiring inspection
-(`2`), an exhausted limit (`3`) and a user interrupt (`130`). A nonzero child
-process status is propagated. A scheduler returning zero with a blocked turn is
+(`2`), an exhausted limit (`3`) and a user interrupt (`130`). A failed service
+startup records its exit status and log path. A scheduler returning zero with a blocked turn is
 reported as a stop requiring inspection, not a completed game.
 
 The launcher is covered by tests using fake processes, including signal cleanup,
@@ -162,3 +168,15 @@ saved-limit protection, diagnostic capture and completion classification. It
 does not add gameplay rules or a new recovery mechanism. See the
 [roadmap](../Roadmap.md#active-acceptance-complete-an-ordinary-vanilla-game) for
 full-game acceptance and [telemetry](../reference/Telemetry.md) for the accounting contract.
+
+## Short opening benchmark
+
+Use the same launcher with a fresh directory and a smaller round budget:
+
+```sh
+.venv/bin/civ-agent game start --state-dir /tmp/unciv-opening --seed 20260920 --max-turns 3
+```
+
+Reaching the requested limit returns exit code 3 and saves the same telemetry as
+a full game. The saved-position evaluation driver in `tests/live_saved_position.py`
+is only for preparing isolated comparisons and seeding evaluation memory.

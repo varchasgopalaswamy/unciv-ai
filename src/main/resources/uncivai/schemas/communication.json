@@ -136,6 +136,9 @@
         },
         "purpose": {
           "$ref": "#/$defs/purpose"
+        },
+        "parentJob": {
+          "$ref": "#/$defs/job"
         }
       },
       "required": [
@@ -627,6 +630,7 @@
     "purpose": {
       "enum": [
         "gameplay",
+        "review",
         "communication"
       ]
     },

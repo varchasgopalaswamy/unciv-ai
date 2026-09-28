@@ -20,13 +20,37 @@ terminal. `NO_COLOR` enables a monochrome display.
   The turn's wall timer includes pauses; the turn table separately reports native
   gameplay and bookkeeping measurements.
 - Player scores and controllers, including built-in AI and human players when the
-  game exports them. Agent rows distinguish gameplay from background bookkeeping.
+  host records them. Agent rows distinguish gameplay from background bookkeeping.
 - Recorded input, cached-input, output, and reasoning-token counts. Cached tokens
   are part of input; reasoning tokens are part of output. Accounting can remain
   partial while a turn or its bookkeeping is in progress.
   Selecting a turn shows that turn's token breakdown above the activity feed.
 - Assistant messages, confirmed actions, errors, and lifecycle changes. Repeated
   startup context and detailed tool activity are hidden unless verbose mode is on.
+- Concise diplomatic messages, offers, counteroffers and outcomes in Activity,
+  including communication outside the active player's turn. These are the actual
+  shared communications, not private model reasoning. Long messages are shortened
+  here; the Diplomacy tab shows their full text.
+- A negotiation banner when a formal shared offer pauses gameplay. It identifies
+  the participants, whose response is needed and the remaining host deadline.
+  An elapsed deadline remains labeled as awaiting the host outcome until the host
+  records it; the viewer never expires a deal itself. Native AI offers do not
+  display a gameplay pause.
+- A Diplomacy tab grouping messages and offers by participants, with pending
+  negotiations first and public chat in a separate conversation. Select a row to
+  read the exchanged messages, exact directional trade terms, offer versions,
+  additions/removals in counteroffers, decisions and failure reasons. Native
+  enactment is distinct from social promises; the viewer does not interpret
+  ambiguous promises or adjudicate whether they were broken.
+- A Strategy tab showing each agent's latest completed adviser report, its source
+  turn and the first turn whose gameplay preload included it. Select a civilization
+  to read the assessment, short-, mid- and long-term plans, each victory path's next
+  objective, investment, expected payoff and projection,
+  rival disruption and diplomacy. Advice is not a record of adopted decisions.
+  The last completed report stays visible while another review runs. Pending work,
+  attempt counts, failures, duration and token usage appear alongside it.
+  If that civilization's next turn arrives before the report is saved, the main
+  banner shows the review being awaited and its player row shows `Review wait`.
 - Model connection warnings remain visible without verbose mode. A quiet model
   produces a notice after 60 seconds without progress, updated at most once a
   minute. This indicates a wait, not a confirmed timeout. Pending tool calls,
@@ -48,12 +72,16 @@ terminal. `NO_COLOR` enables a monochrome display.
 | Control | Effect |
 | --- | --- |
 | Tab / Shift-Tab | Move between controls. |
-| Click a tab | Switch between Activity, Turns, and API calls. |
-| Enter on a player | Filter activity and totals to that player. |
+| Click a tab | Switch between Activity, Diplomacy, Strategy, Turns, and API calls. |
+| Enter on a player | Filter activity, totals, strategy, and diplomacy involving that player. |
+| `d` | Open Diplomacy and focus the conversation list. |
+| Enter on a conversation | Read its messages, proposals and outcomes. |
+| `s` | Open Strategy and focus the civilization list. |
+| Enter on a strategy row | Read that civilization's latest completed strategic report. |
 | Enter on a turn | Inspect that player's recorded activity for that turn. |
 | `a` | Return to all players and recent activity. |
 | `l` | Return to recent activity for the selected player. |
-| `f` | Toggle following the end of the activity log. Scrolling up also preserves your reading position. |
+| `f` | Toggle following the end of the Activity and Diplomacy logs. Scrolling up also preserves your reading position. |
 | Space | Freeze/unfreeze dashboard updates. The game continues. |
 | `v` | Toggle verbose context, tool details, and exposed reasoning summaries. |
 | `q` / Ctrl-C | Close the viewer. The game continues. |
@@ -61,18 +89,38 @@ terminal. `NO_COLOR` enables a monochrome display.
 The activity view retains up to 600 recent entries from the latest two recorded
 turns per player, plus ongoing gameplay and bookkeeping attempts. Selecting a turn
 loads that turn's attempts. Long entries are bounded in the display; full records
-remain in `runner/history/`. Verbose mode can also be selected at launch:
+remain in `runner/monitoring.sqlite3` and can be exported on demand. Verbose mode can also be selected at launch:
 
 ```sh
 uv run civ-agent match watch --state-dir /path/to/match --verbose
 ```
 
+Diplomacy retains complete conversation history. A selected turn narrows the list
+to conversations with activity on that turn; their full history is still shown.
+The metrics panel is hidden while reading Diplomacy to leave room for messages
+in small terminals. Saved communications have game-turn numbers, but no original
+wall-clock timestamps, so the display does not invent times for them.
+Within a game turn, Activity positions them by database publication time so newly
+arrived communications appear at the live end of the feed.
+
+Strategy also hides the metrics panel and preserves the report's scroll position
+on refresh. It always shows the latest completed report on the current timeline;
+selecting an older activity turn does not select historical advice. The date on
+each report matters: a review may finish several turns after its position was
+captured. A blank `Preloaded turn` means it has not yet appeared in a gameplay
+activation, not that the agent rejected it.
+
 ## Data and validation
 
-This is a local operator view of `runner/run.json`, `telemetry/game-result.json`,
-`telemetry/turns.jsonl`, and the scheduler's sanitized event mirrors. It makes no
-game API or model requests and does not write to the match directory. Viewing,
-filtering, freezing, and exiting do not change the scheduler or native game.
+This is a local operator view of `runner/monitoring.sqlite3`. Strategy also reads
+the local agents' `agent-services/<civilization>/civilization/memory.sqlite3`
+databases for committed reports and pending tasks. It uses read-only
+connections and short transactions; it makes no game API or model requests.
+Viewing, filtering, freezing and exiting do not change scheduler or native state.
+See [monitoring storage](../architecture/Monitoring.md) for ownership. Review
+databases on another machine are unavailable to this local viewer until accessible
+at the match's normal local paths. Private notes and frozen review inputs are not
+loaded to display the reports.
 
 The metrics area also shows accepted/rejected memory edits, batches containing
 rejections, and reason counts for the selected turn, player, or game. These are
@@ -81,15 +129,23 @@ edits. Older reports display unavailable or partial memory accounting rather tha
 assuming there were no rejections. The ordinary console includes the same counts
 when reporting a completed turn.
 
-The reader caches unchanged files, accepts atomic replacements, waits for incomplete
-JSONL appends, and retains the last readable records with a visible warning if a
-file is temporarily corrupt. Epoch and source checks keep histories from different
-players or restored timelines from being combined. Message deltas and final text
-use the same deduplication as the append-only console renderer.
+The reader fetches changed rows by revision and new events by sequence number.
+It reads committed data only and retains the last readable view with a warning
+when storage is unavailable. Epoch and source checks keep different players and
+restored timelines separate. Message deltas and final text use the same decoder
+as the console. A poll reads at most 1,000 new events per selected stream, then
+closes its transaction before rendering.
+
+The host projects committed recipient streams into the operator database,
+deduplicating shared copies of a message. New records are published after the
+checkpoint commits. Restart backfills saved communication history, and a turn
+rewind publishes the retained history under its new epoch; abandoned events stay
+outside the current view. Already-running hosts need a rebuild and restart to
+publish these records. No additional migration or model requests are needed.
 
 The service records `model_status` events in its private `diagnostics.jsonl` and
-turn history; the scheduler mirrors them to `runner/history/` and prints them in
-the normal console log. Gameplay, background memory, and communication jobs use
+turn history; the scheduler records them in the monitoring database and prints them in
+the normal console log. Gameplay, background reviews, and communication jobs use
 the same model monitor. These notices do not add model requests, change timeouts,
 or retry native game commands. Existing turn failure/interrupt behavior still
 applies when Codex exhausts its retries.
@@ -106,6 +162,16 @@ unrecognized future log formats still leave the elapsed-wait notices available.
 keyboard navigation, live refresh, freezing, small terminals, completion, and
 clean viewer exit. The UI uses [Textual](https://textual.textualize.io/) and its
 [headless test harness](https://textual.textualize.io/guide/testing/).
+
+`tests/test_diplomacy_watch.py` covers counteroffer differences, recipient filters,
+host-confirmed negotiation pauses, rewind isolation and small-terminal rendering.
+The host's `EngineTradeProbe` verifies the projection against real trade enactment,
+expiry, repeated social decisions and restart/rewind recovery.
+
+`tests/test_strategy_watch.py` covers report publication, first preload delivery,
+pending reviews and retries, player/timeline isolation, read-only access, scroll
+preservation, freezing, keyboard selection and small terminals. Existing completed
+reports need no export or migration: restart the viewer to see the Strategy tab.
 
 `tests/test_model_status.py` exercises waits, retries, tool execution, stale event
 filtering, and bounded log parsing without wall-clock delays. The scheduler/service

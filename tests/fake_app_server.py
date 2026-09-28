@@ -34,7 +34,7 @@ async def exercise_trade(civilization, communication, view, call):
         "intent": {"reason": "Advance the test objective"},
     }
     if communication:
-        await call("memory_search", {"type": "plan"})
+        await call("memory_search", {"type": "strategy"})
         await call("trade_read", {"proposal": "d1"})
         if civilization == "Greece":
             await call(
@@ -44,10 +44,10 @@ async def exercise_trade(civilization, communication, view, call):
                         {
                             "op": "create",
                             "content": {
-                                "type": "plan",
-                                "objective": "Counteroffer prepared; gameplay resumes after settlement.",
-                                "approach": "Carry out the stated objective",
-                                "successCriteria": "Objective achieved",
+                                "type": "strategy",
+                                "assessment": "Counteroffer prepared; gameplay resumes after settlement.",
+                                "reasons": ["Carry out the stated objective"],
+                                "reconsiderWhen": ["Objective achieved"],
                                 "subjects": ["Rome"],
                             },
                         }
@@ -276,7 +276,11 @@ async def main():
                         )
                         return value
 
-                view = await call("chat_read" if communication else "player_turn", {})
+                view = (
+                    await call("chat_read", {"includeContext": True})
+                    if communication
+                    else await call("player_turn", {})
+                )
                 scenario = view.get("scenario") or view.get("context", {}).get("scenario", {})
                 if scenario.get("testModelRetry"):
                     # Match the real warning which isn't emitted as a protocol event
@@ -312,20 +316,8 @@ async def main():
                     raise RuntimeError("Gateway rejected fake gameplay")
                 behavior = result["behavior"]
                 if behavior == "slow_report":
-                    assert result.get("memoryPhase"), "Scheduled handoff must return the memory-only continuation"
+                    assert "memoryPhase" not in result
                     await asyncio.sleep(4)
-                    saved = await call(
-                        "memory_update",
-                        {
-                            "changes": [
-                                {
-                                    "op": "create",
-                                    "content": {"type": "note", "text": "Reflection saved while the next player acted"},
-                                }
-                            ]
-                        },
-                    )
-                    assert saved["changes"][0]["accepted"]
             if behavior in {"hang", "after_handoff_hang"}:
                 await asyncio.Event().wait()
             if behavior == "crash":

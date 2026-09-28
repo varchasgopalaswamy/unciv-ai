@@ -1,4 +1,4 @@
-"""Handoff proof, overlapping archive work, and retry without replaying gameplay."""
+"""Handoff proof, overlapping bookkeeping, and retry without replaying gameplay."""
 
 import copy
 import threading
@@ -58,7 +58,6 @@ class Agent:
                 "civilization": self.civilization,
                 "phase": "COMPLETED",
                 "threadId": key,
-                "memoryTimeoutSeconds": 300,
                 "usage": {"input_tokens": 10},
             }
             self.operator.handoff += 1
@@ -71,7 +70,7 @@ class Agent:
             row["finalizationState"] = "RUNNING"
         if row.get("finalizationState") == "RUNNING" and self.release.is_set():
             if self.fail:
-                row.update(finalizationState="FAILED", finalizationError="archive temporarily unavailable")
+                row.update(finalizationState="FAILED", finalizationError="accounting temporarily unavailable")
             else:
                 self.proofs.append(row["confirmedHandoff"])
                 row.update(finalizationState="COMPLETED", committedHandoff=row["confirmedHandoff"])
@@ -79,9 +78,6 @@ class Agent:
 
     def events(self, activation, cursor):
         return {"available": True, "events": [], "nextCursor": cursor, "hasMore": False}
-
-    def archive(self, activation):
-        return {"gameTurn": self.rows[activation]["gameTurn"]}
 
 
 def make_scheduler(tmp_path, state=None, operator=None, agents=None):
@@ -102,18 +98,19 @@ def make_scheduler(tmp_path, state=None, operator=None, agents=None):
         "limits": {"activationSeconds": 20},
     }
     scheduler = Scheduler(store, operator, agents, state)
-    published = []
+    scheduler.services_connected = True
+    scheduler.state["status"] = "running"
+    scheduler.turns.capture = lambda status, scheduler: None
     scheduler.history_for = lambda *args, **kwargs: SimpleNamespace(
         cursor=0,
         append=lambda events: None,
         output=SimpleNamespace(finish_line=lambda: None, line=lambda *args: None),
-        publish_archive=published.append,
     )
-    return scheduler, saved, published
+    return scheduler, saved
 
 
-def test_next_player_plays_while_previous_archive_is_held(tmp_path):
-    scheduler, saved, published = make_scheduler(tmp_path)
+def test_next_player_plays_while_previous_bookkeeping_is_held(tmp_path):
+    scheduler, saved = make_scheduler(tmp_path)
     try:
         assert scheduler.invoke(scheduler.operator.status())
         assert scheduler.agents["Rome"].entered.wait(2)
@@ -122,9 +119,8 @@ def test_next_player_plays_while_previous_archive_is_held(tmp_path):
         assert saved[-1]["inFlight"] is None
         assert scheduler.invoke(scheduler.operator.status())
         assert scheduler.operator.activated == ["Rome", "Greece"]
-        assert not published
         assert len(scheduler.state["pendingFinalizations"]) == 2
-        # Waiting for Rome's next turn must wait for Rome's own archive.
+        # Waiting for Rome's next turn must wait for Rome's own bookkeeping.
         waited = threading.Event()
         waiter = threading.Thread(
             target=lambda: (scheduler.collect_finalizations(wait=True, civilization="Rome"), waited.set())
@@ -140,7 +136,6 @@ def test_next_player_plays_while_previous_archive_is_held(tmp_path):
         assert scheduler.state["pendingFinalizations"] == []
         assert scheduler.state["handoffs"] == 2
         assert scheduler.state["usage"]["input_tokens"] == 20
-        assert len(published) == 2
     finally:
         for agent in scheduler.agents.values():
             agent.release.set()
@@ -148,7 +143,7 @@ def test_next_player_plays_while_previous_archive_is_held(tmp_path):
 
 
 def test_restart_retries_original_proof_after_later_handoffs(tmp_path):
-    scheduler, _, _ = make_scheduler(tmp_path)
+    scheduler, _ = make_scheduler(tmp_path)
     rome = scheduler.agents["Rome"]
     rome.fail = True
     rome.release.set()
@@ -161,12 +156,11 @@ def test_restart_retries_original_proof_after_later_handoffs(tmp_path):
         scheduler.finalizer.shutdown(wait=True)
     scheduler.operator.handoff = 2
     rome.fail = False
-    resumed, _, published = make_scheduler(tmp_path, state, scheduler.operator, scheduler.agents)
+    resumed, _ = make_scheduler(tmp_path, state, scheduler.operator, scheduler.agents)
     try:
         resumed.check_status(scheduler.operator.status())
         resumed.collect_finalizations(wait=True)
         assert rome.proofs == [1]
-        assert len(published) == 1
         assert resumed.state["pendingFinalizations"] == []
         assert resumed.state["handoffs"] == 1
         assert resumed.operator.activated == ["Rome"]
@@ -176,7 +170,7 @@ def test_restart_retries_original_proof_after_later_handoffs(tmp_path):
 
 
 def test_pause_interrupts_memory_while_waiting_for_finalization(tmp_path):
-    scheduler, _, published = make_scheduler(tmp_path)
+    scheduler, _ = make_scheduler(tmp_path)
     rome = scheduler.agents["Rome"]
     call = rome.call
     interrupted = []
@@ -198,8 +192,7 @@ def test_pause_interrupts_memory_while_waiting_for_finalization(tmp_path):
         scheduler.store.requested = lambda: "pause"
         scheduler.collect_finalizations(wait=True)
         assert len(interrupted) == 1
-        assert len(published) == 1
-        assert scheduler.state["pendingFinalizations"] == []
+        assert len(scheduler.state["pendingFinalizations"]) == 0
         assert not scheduler.invoke(scheduler.operator.status())
         assert scheduler.state["status"] == "paused"
         assert scheduler.operator.activated == ["Rome"]
@@ -208,8 +201,8 @@ def test_pause_interrupts_memory_while_waiting_for_finalization(tmp_path):
         scheduler.finalizer.shutdown(wait=True)
 
 
-def test_restored_epoch_cannot_publish_a_pending_old_archive(tmp_path):
-    scheduler, _, _ = make_scheduler(tmp_path)
+def test_restored_epoch_cannot_finalize_an_old_turn(tmp_path):
+    scheduler, _ = make_scheduler(tmp_path)
     scheduler.state["pendingFinalizations"] = [{"epoch": "old", "confirmedHandoff": 1, "activationId": "abandoned"}]
     try:
         with pytest.raises(RunnerError, match="current host history"):
@@ -246,7 +239,6 @@ def test_memory_heartbeat_and_lost_async_finalization_ack(monkeypatch):
             row = {
                 **flight,
                 "phase": "RUNNING" if clock.now < 6 else "COMPLETED",
-                "memoryTimeoutSeconds": 300,
                 "committedHandoff": 107,
                 "finalizationState": "COMPLETED" if clock.now >= 10 else "RUNNING",
             }
@@ -259,28 +251,23 @@ def test_memory_heartbeat_and_lost_async_finalization_ack(monkeypatch):
         def events(self, activation, cursor):
             return {"available": True, "events": [], "nextCursor": cursor, "hasMore": False}
 
-        def archive(self, activation):
-            return {"gameTurn": 35}
-
-    published = []
     history = SimpleNamespace(
         cursor=0,
         append=lambda events: None,
         output=SimpleNamespace(finish_line=lambda: None),
-        publish_archive=published.append,
     )
-    assert turn_finalization.finish_turn(MemoryAgent(), flight, history)["committedHandoff"] == 107
-    assert "heartbeat" in calls
+    finalized = turn_finalization.finish_turn(MemoryAgent(), flight, history)
+    assert finalized is not None and finalized["committedHandoff"] == 107
+    assert "heartbeat" in calls and "notes" not in calls
     assert proofs[0] == proofs[1]
     assert "start" not in calls and "finalize" not in calls
-    assert published == [{"gameTurn": 35}]
 
 
-@pytest.mark.parametrize("error", ["HISTORY_WRITE_FAILED", "REPEATED_STALE_ASSUMPTIONS", "STOP_UNCONFIRMED"])
+@pytest.mark.parametrize("error", ["DURABLE_RECORD_FAILED", "REPEATED_STALE_ASSUMPTIONS", "STOP_UNCONFIRMED"])
 def test_resume_does_not_acknowledge_internal_memory_failures(tmp_path, error):
     from civ_agent.turn_finalization import finish_turn
 
-    scheduler, _, _ = make_scheduler(tmp_path)
+    scheduler, _ = make_scheduler(tmp_path)
     agent = scheduler.agents["Rome"]
     flight = {
         "activationId": "failed",
@@ -294,14 +281,11 @@ def test_resume_does_not_acknowledge_internal_memory_failures(tmp_path, error):
     agent.rows["failed"] = {
         **flight,
         "phase": "FAILED",
-        "memoryPhase": True,
-        "memoryPhaseComplete": False,
         "error": error,
-        "memoryTimeoutSeconds": 300,
     }
     agent.release.set()
     try:
         with pytest.raises(ValueError, match=error):
-            finish_turn(agent, flight, scheduler.history_for(flight), accept_failed_memory=True)
+            finish_turn(agent, flight, scheduler.history_for(flight))
     finally:
         scheduler.finalizer.shutdown(wait=True)

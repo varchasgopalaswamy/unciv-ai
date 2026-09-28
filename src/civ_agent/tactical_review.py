@@ -7,17 +7,6 @@ from civ_agent.protocol import JsonObject
 from civ_agent.schemas import BoundaryModel
 
 
-class MilitaryUnit(BoundaryModel):
-    handle: str
-    name: str
-    position: Position
-    health: int
-    strength: int
-    rangedStrength: int
-    order: str | None
-    availableAttacks: int
-
-
 class Threat(BoundaryModel):
     position: Position
     name: str
@@ -34,7 +23,7 @@ class UnitRisk(BoundaryModel):
     name: str
     position: Position
     health: int
-    militaryOnSameTile: bool
+    otherMilitaryOnSameTile: bool
     nearbyHostiles: list[NearbyThreat]
 
 
@@ -45,6 +34,7 @@ class Bombardment(BoundaryModel):
     maxDamage: int
     maxRetaliation: int
     command: CityAttack
+    inspection: JsonObject
 
 
 class Loss(BoundaryModel):
@@ -53,21 +43,34 @@ class Loss(BoundaryModel):
     text: str
 
 
+class CivilianRecapture(BoundaryModel):
+    originalOwner: str
+    unitAfterCapture: str
+
+
+class RecapturableCivilian(BoundaryModel):
+    position: Position
+    name: str
+    civilization: str
+    atWar: bool
+    recapture: CivilianRecapture
+    guard: Threat | None = None
+
+
 class TacticalReview(BoundaryModel):
     turn: int
     militaryCount: int
-    military: list[MilitaryUnit]
     visibleHostiles: list[Threat]
     civiliansNearHostiles: list[UnitRisk]
-    injuredMilitaryNearHostiles: list[UnitRisk]
+    militaryNearHostiles: list[UnitRisk]
     cityBombardments: list[Bombardment]
     recentLosses: list[Loss]
+    recapturableCivilians: list[RecapturableCivilian]
+    recaptureConditions: str | None = None
     cityCount: int
     citiesProducingSettlers: list[str]
     settlerUnits: list[str]
-    treasury: int | None
-    goldPerTurn: int | None
-    happiness: int | None
+    nonReconMilitaryCount: int | None = None
     limits: str = (
         "Proximity includes visible hostile military within two hexes, using the engine's map distances. "
         "It does not predict enemy reach or reveal hidden units. An empty threat list does not establish safety. "
@@ -75,19 +78,18 @@ class TacticalReview(BoundaryModel):
     )
 
 
-class PlanReview(BoundaryModel):
+class StrategyNotice(BoundaryModel):
     id: str
     needsReview: list[str]
 
 
 class StrategyReview(BoundaryModel):
-    plans: list[PlanReview] = Field(default_factory=list)
+    assessments: list[StrategyNotice] = Field(default_factory=list)
 
 
 def tactical_review(snapshot: JsonObject) -> TacticalReview:
     units = snapshot["map"]["units"]
     military = [u for u in units if u["military"]]
-    military_tiles = [u["position"] for u in military]
     threats = [
         Threat(position=tile["position"], name=u["name"], civilization=u["civilization"], health=u["health"])
         for tile in snapshot["map"]["tiles"]
@@ -95,16 +97,40 @@ def tactical_review(snapshot: JsonObject) -> TacticalReview:
         for u in tile["units"]
         if u["military"] and u["atWar"]
     ]
-    civilians, injured = [], []
+    captives = []
+    for tile in snapshot["map"]["tiles"]:
+        if not tile["visible"]:
+            continue
+        for unit in tile["units"]:
+            if unit["military"] or not unit.get("recapture"):
+                continue
+            guard = next((u for u in tile["units"] if u["military"]), None)
+            captives.append(
+                RecapturableCivilian(
+                    position=tile["position"],
+                    **{k: unit[k] for k in ("name", "civilization", "atWar", "recapture")},
+                    guard=(
+                        Threat(
+                            position=tile["position"],
+                            **{k: guard[k] for k in ("name", "civilization", "health")},
+                        )
+                        if guard
+                        else None
+                    ),
+                )
+            )
+    civilians, exposed_military = [], []
     for u in units:
-        if not u["nearbyHostiles"] or u["military"] and u["health"] >= 100:
+        if not u["nearbyHostiles"]:
             continue
         risk = UnitRisk(
             handle=u["handle"],
             name=u["name"],
             position=u["position"],
             health=u["health"],
-            militaryOnSameTile=u["position"] in military_tiles,
+            otherMilitaryOnSameTile=any(
+                m["handle"] != u["handle"] and m["position"] == u["position"] for m in military
+            ),
             nearbyHostiles=[
                 NearbyThreat(
                     position=h["position"],
@@ -114,7 +140,7 @@ def tactical_review(snapshot: JsonObject) -> TacticalReview:
                 for h in u["nearbyHostiles"]
             ],
         )
-        (injured if u["military"] else civilians).append(risk)
+        (exposed_military if u["military"] else civilians).append(risk)
     losses = []
     for r in snapshot["combatReports"]:
         lost_defender = (r.get("defender") or {}).get("isOwn") and r.get("outcome") in {"Destroyed", "Captured"}
@@ -127,26 +153,13 @@ def tactical_review(snapshot: JsonObject) -> TacticalReview:
                     text=r.get("text") or "An owned combatant was lost; read the combat report.",
                 )
             )
-    economy = snapshot.get("economy") or {}
     return TacticalReview(
+        nonReconMilitaryCount=(snapshot.get("militaryReadiness") or {}).get("unitsExcludingRecon"),
         turn=snapshot["turn"],
         militaryCount=len(military),
-        military=[
-            MilitaryUnit(
-                handle=u["handle"],
-                name=u["name"],
-                position=u["position"],
-                health=u["health"],
-                strength=u["combat"]["strength"],
-                rangedStrength=u["combat"]["rangedStrength"],
-                order=(u["combat"].get("order") or {}).get("action"),
-                availableAttacks=len(u["combat"]["attacks"]),
-            )
-            for u in military
-        ],
         visibleHostiles=threats,
         civiliansNearHostiles=civilians,
-        injuredMilitaryNearHostiles=injured,
+        militaryNearHostiles=exposed_military,
         cityBombardments=[
             Bombardment(
                 city=c["name"],
@@ -155,27 +168,33 @@ def tactical_review(snapshot: JsonObject) -> TacticalReview:
                 maxDamage=a["maxDamageToDefender"],
                 maxRetaliation=a["maxDamageToAttacker"],
                 command=a["command"],
+                inspection={"tool": "city_details", "arguments": {"target": c["handle"], "sections": ["combat"]}},
             )
             for c in snapshot["cities"]
             for a in c["attacks"]
         ],
         recentLosses=losses,
+        recapturableCivilians=captives,
+        recaptureConditions=(
+            "A successful legal capture returns these units to your control as unitAfterCapture. "
+            "Capture requires entry by a military unit after any hostile guard is cleared; ranged fire alone does not recapture. "
+            "Units at peace cannot be captured without war. Inspect current combat/movement options for availability."
+            if captives
+            else None
+        ),
         cityCount=len(snapshot["cities"]),
-        citiesProducingSettlers=[c["name"] for c in snapshot["cities"] if "Settler" in c["constructionQueue"]],
+        citiesProducingSettlers=[c["name"] for c in snapshot["cities"] if c["constructionQueue"][:1] == ["Settler"]],
         settlerUnits=[u["handle"] for u in units if u["name"] == "Settler"],
-        treasury=economy.get("treasury"),
-        goldPerTurn=economy.get("goldPerTurn"),
-        happiness=economy.get("happiness"),
     )
 
 
 def strategy_review(records: JsonObject) -> StrategyReview:
-    plans = [
-        PlanReview(
+    assessments = [
+        StrategyNotice(
             id=key,
             needsReview=r["body"].get("needsReview", []),
         )
         for key, r in records.items()
-        if r["category"] == "plan" and r["body"].get("state") == "active" and r["body"].get("needsReview")
+        if r["category"] == "strategy" and r["body"].get("state") == "active" and r["body"].get("needsReview")
     ]
-    return StrategyReview(plans=plans)
+    return StrategyReview(assessments=assessments)

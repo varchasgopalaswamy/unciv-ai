@@ -13,10 +13,25 @@ object ObservationOpportunitiesProbe {
         try {
             val root = Path.of(args[0])
             when (args[1]) {
+                "map-knowledge" -> MapKnowledgeProbe.run(root)
+                "map-knowledge-movement" -> MapKnowledgeProbe.movement(root)
+                "map-knowledge-resources" -> MapKnowledgeProbe.resources(root)
+                "map-knowledge-cities" -> MapKnowledgeProbe.cities(root)
                 "settlement" -> settlement(root)
+                "settlement-before-settler" -> settlementBeforeSettler(root)
+                "automation" -> UnitAutomationProbe.run(root)
+                "mechanics" -> MechanicsOverviewProbe.run(root)
+                "expansion" -> MechanicsOverviewProbe.expansion(root)
                 "construction" -> construction(root)
+                "building-estimates" -> BuildingEstimatesProbe.run(root)
+                "building-estimates-saved" -> BuildingEstimatesProbe.saved(root, Path.of(args[2]))
                 "development" -> development(root)
+                "development-tech" -> developmentTechnologies(root)
                 "diplomacy" -> diplomacy(root)
+                "settler-progress" -> settlerProgress(root)
+                "military" -> military(root)
+                "production-conversion" -> ConstructionOpportunitiesProbe.conversion(root)
+                "wonders" -> ConstructionOpportunitiesProbe.wonders(root)
                 else -> error("Unknown fixture")
             }
             println("OPPORTUNITIES_${args[1]}_PASS")
@@ -24,6 +39,48 @@ object ObservationOpportunitiesProbe {
             failure.printStackTrace()
             kotlin.system.exitProcess(1)
         }
+    }
+
+    private fun settlementBeforeSettler(root: Path) = SettlementPreviewProbe.fixture(root.resolve("initial")).use { runtime ->
+        val game = runtime.game
+        val player = game.getCivilization("Rome")
+        player.units.getCivUnits().toList().forEach { it.destroy() }
+        player.viewableTiles = game.tileMap.values.toSet()
+        val session = PlayerHost(runtime).bindPlayer("Rome")
+        val before = json().toJson(game)
+        val turn = session.turn()
+        val sites = checkNotNull(turn.settlement)
+        check(json().toJson(game) == before) { "Advice without settlers mutated native state" }
+        check(sites.settlers.isEmpty() && sites.knownEligibleSites > 0)
+        check(sites.knownEligibleSites == game.tileMap.values.count { it.canBeSettled(player) })
+        check(sites.candidates.all { it.nearestSettler == null && it.route == null })
+        check(sites.candidates.all { it.nearestCity == turn.cities.single().handle && it.distance != null })
+
+        // A low-scoring visible site must not be displaced by speculative sites.
+        val confirmed = sites.candidates.last().position
+        val radius = maxOf(game.ruleset.modOptions.constants.minimalCityDistance, game.ruleset.modOptions.constants.minimalCityDistanceOnDifferentContinents)
+        player.viewableTiles = (game.tileMap[confirmed.x, confirmed.y].getTilesInDistance(radius) + player.cities.single().getTiles()).toSet()
+        val mixed = session.turn().settlement!!
+        check(mixed.knownEligibleSites > 0 && mixed.uncertainSites > 0)
+        check(mixed.candidates.any { it.siteStatus == "ELIGIBLE" && it.position in mixed.recommendations })
+
+        // A hidden city cannot change recommendations before a settler exists.
+        player.viewableTiles = player.cities.single().getTiles().toSet()
+        val fogged = session.turn().settlement!!
+        game.getCivilization("France").addCity(HexCoord(6, 0))
+        player.viewableTiles = player.cities.single().getTiles().toSet()
+        check(fogged == session.turn().settlement) { "Hidden founding leaked into recommendations" }
+        player.viewableTiles = game.tileMap.values.toSet()
+        val revealed = session.turn().settlement!!
+        check(revealed.knownEligibleSites < sites.knownEligibleSites)
+
+        // The same field remains present when the explored map is exhausted.
+        val foreign = game.getCivilization("France").cities.first()
+        for (tile in game.tileMap.values.filter { it.getOwner() == null }) foreign.expansion.takeOwnership(tile)
+        player.viewableTiles = game.tileMap.values.toSet()
+        val crowded = session.turn().settlement!!
+        check(crowded.status == "NO_KNOWN_SITES" && crowded.candidates.isEmpty())
+        check(crowded.settlers.isEmpty())
     }
 
     private fun settlement(root: Path) = SettlementPreviewProbe.fixture(root.resolve("initial")).use { runtime ->
@@ -61,12 +118,12 @@ object ObservationOpportunitiesProbe {
             runtime.game.turns = 1
             player.tech.addTechnology("Pottery", false)
             turn = session.turn()
-            check("Granary" in turn.cities.single().constructionChoice!!.newOptions)
+            check("Granary" in turn.cities.single().constructionChoice!!.availableSinceChoice)
             runtime.game.turns = 2
             player.tech.addTechnology("Writing", false)
             turn = session.turn()
             expected = turn.cities.single().constructionChoice!!
-            check(expected.newOptions.containsAll(listOf("Granary", "Library")))
+            check(expected.availableSinceChoice.containsAll(listOf("Granary", "Library")))
             check(expected.chosenTurn == 0 && expected.turnsObserved == 2)
             // Unchanged reads do not reset the original comparison baseline.
             check(session.turn().cities.single().constructionChoice == expected)
@@ -82,14 +139,14 @@ object ObservationOpportunitiesProbe {
             command(TurnCommandKind.QUEUE_CONSTRUCTION, "Worker")
             runtime.game.turns = 3
             runtime.game.getCivilization("Rome").tech.addTechnology("Masonry", false)
-            check("Walls" in session.turn().cities.single().constructionChoice!!.newOptions)
+            check("Walls" in session.turn().cities.single().constructionChoice!!.availableSinceChoice)
             command(TurnCommandKind.QUEUE_CONSTRUCTION, "Worker")
             command(TurnCommandKind.MOVE_CONSTRUCTION, index = 1, toIndex = 0)
             check(session.turn().cities.single().constructionChoice!!.chosenTurn == 3)
-            check("Walls" !in session.turn().cities.single().constructionChoice!!.newOptions)
+            check("Walls" !in session.turn().cities.single().constructionChoice!!.availableSinceChoice)
             command(TurnCommandKind.REMOVE_CONSTRUCTION, index = 0)
             check(session.turn().cities.single().constructionChoice!!.chosenTurn == 2)
-            check("Walls" in session.turn().cities.single().constructionChoice!!.newOptions)
+            check("Walls" in session.turn().cities.single().constructionChoice!!.availableSinceChoice)
         }
     }
 
@@ -129,6 +186,50 @@ object ObservationOpportunitiesProbe {
         check(session.turn().economy!!.development!!.unimprovedResources.none { it.resource == "Wheat" })
     }
 
+    private fun developmentTechnologies(root: Path) = SettlementPreviewProbe.fixture(root.resolve("initial")).use { runtime ->
+        val game = runtime.game
+        val player = game.getCivilization("Rome")
+        val tiles = player.cities.single().getTiles().filter { !it.isCityCenter() }.toList()
+        val spices = tiles[0]
+        spices.setTileResource(game.ruleset.tileResources.getValue("Spices"))
+        spices.setTerrainFeatures(listOf("Forest"))
+        spices.setTerrainTransients()
+        val fish = tiles[1]
+        fish.setBaseTerrain(game.ruleset.terrains.getValue("Coast"))
+        fish.setTileResource(game.ruleset.tileResources.getValue("Fish"))
+        fish.setTerrainTransients()
+        player.viewableTiles = game.tileMap.values.toSet()
+        val session = PlayerHost(runtime).bindPlayer("Rome")
+        fun resources() = session.turn().economy!!.development!!.unimprovedResources.associateBy { it.resource }
+        fun plantation() = resources().getValue("Spices").improvements.single { it.name == "Plantation" }
+
+        val nativeBefore = json().toJson(game)
+        val initial = resources()
+        check(json().toJson(game) == nativeBefore) { "Resource prerequisites mutated native state" }
+        check(initial.getValue("Spices").builder == "Worker")
+        check(initial.getValue("Fish").builder == "Work Boats")
+        check(plantation().missingTechnologies == listOf("Calendar", "Mining"))
+        check(plantation().firstJob == "Remove Forest" && !plantation().siteAvailable)
+        val fishingBoats = initial.getValue("Fish").improvements.single { it.name == "Fishing Boats" }
+        check(fishingBoats.missingTechnologies == listOf("Sailing") && !fishingBoats.siteAvailable)
+
+        player.tech.addTechnology("Calendar", false)
+        val stillBlocked = plantation()
+        check(stillBlocked.missingTechnologies == listOf("Mining"))
+        check(stillBlocked.blockers == listOf("MissingTech") && !stillBlocked.siteAvailable)
+
+        player.tech.addTechnology("Mining", false)
+        val readyToClear = plantation()
+        check(readyToClear.missingTechnologies.isEmpty() && readyToClear.blockers.isEmpty())
+        check(readyToClear.firstJob == "Remove Forest" && !readyToClear.siteAvailable)
+        spices.removeTerrainFeature("Forest")
+        check(plantation().siteAvailable && plantation().firstJob == null)
+
+        player.tech.addTechnology("Sailing", false)
+        val unlockedBoats = resources().getValue("Fish").improvements.single { it.name == "Fishing Boats" }
+        check(unlockedBoats.siteAvailable && unlockedBoats.missingTechnologies.isEmpty())
+    }
+
     private fun diplomacy(root: Path) = SettlementPreviewProbe.fixture(root.resolve("initial")).use { runtime ->
         val game = runtime.game
         val player = game.getCivilization("Rome")
@@ -150,5 +251,89 @@ object ObservationOpportunitiesProbe {
         check(opportunity.mode == "SHARED")
         check(opportunity.spareLuxuriesToOffer.single().name == "Dyes" && opportunity.spareLuxuriesToOffer.single().amount == 1)
         check(opportunity.missingLuxuriesOffered.single().name == "Silk")
+    }
+
+    private fun settlerProgress(root: Path) {
+        val checkpoint = root.resolve("progress.json")
+        lateinit var expected: uncivai.player.SettlerReview
+        SettlementPreviewProbe.fixture(root.resolve("initial")).use { runtime ->
+            val game = runtime.game
+            val player = game.getCivilization("Rome")
+            val settler = player.units.getCivUnits().single()
+            settler.removeFromTile()
+            settler.putInTile(game.tileMap[0, 4])
+            player.viewableTiles = setOf(settler.currentTile)
+            runtime.executor.enableCheckpoints(checkpoint)
+            val session = PlayerHost(runtime).bindPlayer("Rome")
+            val before = json().toJson(game)
+            val initial = session.turn().settlement!!
+            check(json().toJson(game) == before)
+            val current = initial.settlers.single().currentSite
+            check(current.canFoundNow == true && current.siteStatus == "ELIGIBLE")
+            check(current.uncertainty != null && current.siteBlockers.isEmpty())
+            val recommendations = initial.candidates.filter { it.position in initial.recommendations }
+            check(recommendations.isNotEmpty() && recommendations.all { it.route != null })
+
+            // A target is retained even when it is blocked and outside the top candidates.
+            settler.action = "moveTo 0,1"
+            val blocked = session.turn().settlement!!.settlers.single()
+            check(blocked.destination!!.site.siteStatus == "BLOCKED")
+            check(blocked.destination.score == null && blocked.destination.route.status == "ROUTE_OFFERED")
+            check(blocked.recentDestinationChanges.size == 1)
+            check(session.turn().settlement!!.settlers.single() == blocked)
+            game.turns = 5
+            val waiting = session.turn().settlement!!.settlers.single()
+            check(waiting.firstObservedTurn == 0 && waiting.turnsObserved == 5 && waiting.turnsWithoutMovement == 5)
+            settler.action = "moveTo 0,7"
+            val replanned = session.turn().settlement!!.settlers.single()
+            check(replanned.recentDestinationChanges.size == 2)
+            check(replanned.destination!!.route.estimatedTurns != null)
+            settler.currentMovement = 0f
+            val exhausted = session.turn().settlement!!.settlers.single()
+            check(exhausted.destination!!.route.status == "NO_MOVEMENT_REMAINING")
+            check(exhausted.destination.route.estimatedTurns == null)
+            settler.currentMovement = 2f
+            settler.removeFromTile()
+            settler.putInTile(game.tileMap[0, 5])
+            player.viewableTiles = setOf(settler.currentTile)
+            expected = session.turn().settlement!!.settlers.single()
+            check(expected.turnsWithoutMovement == 0 && expected.turnsObserved == 5)
+        }
+        HeadlessRuntime.loadCheckpoint(checkpoint, root.resolve("restored")).use { runtime ->
+            val player = runtime.game.getCivilization("Rome")
+            // Restore this fixture's deliberately restricted view, normally maintained by the engine.
+            player.viewableTiles = setOf(player.units.getCivUnits().single().currentTile)
+            val session = PlayerHost(runtime).bindPlayer("Rome")
+            check(session.turn().settlement!!.settlers.single() == expected)
+        }
+    }
+
+    private fun military(root: Path) = SettlementPreviewProbe.fixture(root.resolve("initial")).use { runtime ->
+        val game = runtime.game
+        val player = game.getCivilization("Rome")
+        player.units.placeUnitNearTile(HexCoord(0, 0), "Scout")!!
+        player.units.placeUnitNearTile(HexCoord(1, 0), "Warrior")!!
+        player.units.placeUnitNearTile(HexCoord(0, 1), "Archer")!!
+        val neighbor = game.getCivilization("Greece").units.placeUnitNearTile(HexCoord(2, 1), "Warrior")!!
+        val hidden = game.getCivilization("France").units.placeUnitNearTile(HexCoord(2, 2), "Archer")!!
+        player.viewableTiles = game.tileMap.values.filter { it !== hidden.currentTile }.toSet()
+        val session = PlayerHost(runtime).bindPlayer("Rome")
+        val native = json().toJson(game)
+        val turn = session.turn()
+        check(json().toJson(game) == native)
+        val readiness = turn.militaryReadiness!!
+        check(readiness.roleCounts == mapOf("MELEE" to 1, "RANGED" to 1, "RECON" to 1))
+        check(readiness.unitsExcludingRecon == 2)
+        val scout = turn.map.units.single { it.name == "Scout" }
+        check(readiness.cities.single().garrison == scout.handle)
+        check(readiness.cities.single().nearbyDefenders.none { it.unit == scout.handle })
+        check(readiness.cities.single().nearbyDefenders.size == 2)
+        val visible = readiness.visibleBorderForces.single()
+        check(visible.civilization == neighbor.civ.civName && !visible.atWar && visible.observedTurn == game.turns)
+        check(readiness.recruitment.single().units.none { it == "Archer" })
+        hidden.health = 1
+        check(session.turn().militaryReadiness == readiness) { "Hidden unit changed readiness" }
+        player.tech.addTechnology("Archery", false)
+        check("Archer" in session.turn().militaryReadiness!!.recruitment.single().units)
     }
 }

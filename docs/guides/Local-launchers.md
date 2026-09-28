@@ -1,5 +1,11 @@
 # Local launchers
 
+`civ-agent game start` launches a complete local Vanilla game, and
+`civ-agent game resume` restarts its services and scheduler from saved state.
+See [the full-game guide](Full-vanilla-run.md). The commands below also support
+running each component individually.
+
+
 The `civ-agent` package launches the checkpointed host and interactive Codex players. It needs
 uv, Python 3.12 or newer, OpenSSL, JDK 21 or newer, the initialized engine checkout, and a Codex CLI on `PATH`
 that you have already logged into. The host builds through the repository's Gradle
@@ -166,7 +172,8 @@ see [automatic turns](Automatic-turns.md#select-models-and-reasoning-effort).
 Automatic gameplay also writes concise turn summaries and detailed receipts.
 Fresh jobs receive selected structured memory. On interruption, confirmed work
 is preserved and uncertain responses are reconciled; a new conversation observes
-the current game. Whole-match rollback is an explicit operator command.
+the current game. Scheduled resume restores an interrupted turn from its starting
+boundary; see [turn recovery](../architecture/Turn-recovery.md).
 See [turn folders and memory](Automatic-turns.md#turn-folders-and-memory).
 
 Use a conversation ID belonging to that civilization and match when resuming.

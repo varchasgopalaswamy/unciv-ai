@@ -21,7 +21,7 @@ from tests.test_structured_memory import create, setup
 
 
 @asynccontextmanager
-async def reflecting_service(tmp_path):
+async def gameplay_service(tmp_path):
     memory = CivilizationState(tmp_path / "civilization", "Rome")
     io = ServiceIO()
     gateway = ProposalGateway(memory, io, tmp_path / "workspace")
@@ -32,13 +32,11 @@ async def reflecting_service(tmp_path):
         state_dir=tmp_path,
         civilization="Rome",
         match={"epoch": "g1"},
+        records={},
         chat=SimpleNamespace(pending=asyncio.Event(), reconcile=AsyncMock()),
     )
     job = await gateway.open("game", "gameplay", "g1", Host(), {}, 0)
-    job.memory_after_handoff = True
     await gateway.call(job, "player_turn", {}, "read")
-    await gateway.call(job, "player_command", {"kind": "END_TURN"}, "end")
-    assert job.gameplay_ended.is_set()
     try:
         yield service, job
     finally:
@@ -53,7 +51,7 @@ def note(text):
 
 def test_model_memory_call_waits_for_checkpoint_without_an_error_or_retry(tmp_path):
     async def run():
-        async with reflecting_service(tmp_path) as (service, job):
+        async with gameplay_service(tmp_path) as (service, job):
             assert (await service_recovery.barrier(service, True))["ready"]
             saved = await service_recovery.capture(service, "round-1")
             writing = asyncio.create_task(service.gateway.call(job, "memory_update", note("After capture"), "note"))
@@ -71,16 +69,15 @@ def test_model_memory_call_waits_for_checkpoint_without_an_error_or_retry(tmp_pa
             assert await service.gateway.call(job, "memory_update", note("After capture"), "note") == result
             checkpoint = service.memory.verify(service_recovery.checkpoint_path(service, "round-1"), saved["sha256"])
             assert checkpoint["jobs"][0]["status"] == "RUNNING"
-            assert json.loads(checkpoint["jobs"][0]["snapshot"])["memoryOnly"]
             assert "After capture" not in json.dumps(checkpoint)
-            assert len(service.memory.requests_for_job(job.id)) == 1  # END_TURN was never replayed.
+            assert not service.memory.requests_for_job(job.id)
 
     asyncio.run(run())
 
 
 def test_checkpoint_drains_an_accepted_memory_write_before_freezing_state(tmp_path):
     async def run():
-        async with reflecting_service(tmp_path) as (service, job):
+        async with gameplay_service(tmp_path) as (service, job):
             entered, release = threading.Event(), threading.Event()
             original = service.memory.patch
 
@@ -112,7 +109,7 @@ def test_checkpoint_drains_an_accepted_memory_write_before_freezing_state(tmp_pa
 
 def test_late_job_completion_is_deferred_until_checkpoint_release(tmp_path):
     async def run():
-        async with reflecting_service(tmp_path) as (service, job):
+        async with gameplay_service(tmp_path) as (service, job):
             await service_recovery.barrier(service, True)
             await service.gateway.close(job, True)
             saved = await service_recovery.capture(service, "round-1")
@@ -128,7 +125,7 @@ def test_late_job_completion_is_deferred_until_checkpoint_release(tmp_path):
     asyncio.run(run())
 
 
-def test_service_restore_regenerates_history_and_rejects_a_waiting_old_job_write(tmp_path):
+def test_service_restore_preserves_history_and_rejects_a_waiting_old_job_write(tmp_path):
     async def run():
         service = AgentService(
             "Rome", tmp_path / "workspace", tmp_path / "service", "S" * 43, "https://localhost:8765/mcp", None
@@ -138,16 +135,16 @@ def test_service_restore_regenerates_history_and_rejects_a_waiting_old_job_write
         service.gateway.history = None
         service.gateway.accounting = None
         service.match = {"epoch": "g1"}
+        service.history.begin({"activationId": "game", "phase": "RUNNING"}, "Before capture", "P" * 43)
         try:
             job = await service.gateway.open("game", "gameplay", "g1", Host(), {}, 0)
-            job.memory_after_handoff = True
             await service.gateway.call(job, "player_turn", {}, "read")
-            await service.gateway.call(job, "player_command", {"kind": "END_TURN"}, "end")
             await service.gateway.call(job, "memory_update", note("Before capture"), "before")
             await service_recovery.barrier(service, True)
             saved = await service_recovery.capture(service, "round-1")
             await service_recovery.barrier(service, False)
             await service.gateway.call(job, "memory_update", note("ABANDONED FUTURE"), "after")
+            service.history.logs["game"].append("assistant_message", {"text": "ABANDONED FUTURE"})
             await service_recovery.barrier(service, True)
             waiting = asyncio.create_task(service.gateway.call(job, "memory_update", note("Late old write"), "late"))
             await asyncio.sleep(0)
@@ -155,14 +152,16 @@ def test_service_restore_regenerates_history_and_rejects_a_waiting_old_job_write
             result = await service_recovery.restore(
                 service, {"id": saved["id"], "sha256": saved["sha256"], "epoch": "g2"}
             )
-            assert result["interruptedMemoryUpdates"] == [{"job": "game", "gameTurn": 0}]
+            assert result["pendingReviews"] == []
+            history = (service.history.path("game") / "events.jsonl").read_text()
+            assert "Before capture" in history and "ABANDONED FUTURE" not in history
             await service_recovery.barrier(service, False)
             with pytest.raises(StateConflict, match="JOB_PAUSED_OR_EXPIRED"):
                 await asyncio.wait_for(waiting, 3)
-            summary = (service.workspace / "turn_0/summary.json").read_text()
+            assert not (service.workspace / "turn_0").exists()
+            summary = json.dumps(service.memory.summary(0))
             assert "Before capture" in summary and "ABANDONED FUTURE" not in summary and "Late old write" not in summary
-            assert "interrupted by checkpoint restoration" in summary
-            assert len(json.loads(summary)["actions"]) == 1
+            assert len(json.loads(summary)["actions"]) == 0
             fresh = await service.gateway.open("new", "gameplay", "g2", Host(), {}, 1)
             assert "ABANDONED FUTURE" not in service.memory.context(fresh.memory)
             await service.gateway.close(fresh, True)
@@ -178,7 +177,6 @@ def test_restore_keeps_captured_memory_and_receipts_and_marks_unfinished_reflect
     memory.call("game", "end", "player_command", {"kind": "END_TURN"})
     request = memory.queue("game", "player_command", {"kind": "END_TURN"}, {}, "end")
     memory.receipt(request["id"], {"kind": "END_TURN", "isYourTurn": False})
-    memory.begin_memory_phase("game")
     key = create(memory, {"type": "note", "text": "Committed before capture"})
     saved = tmp_path / "round.json"
     checksum = memory.backup(saved)
@@ -186,7 +184,7 @@ def test_restore_keeps_captured_memory_and_receipts_and_marks_unfinished_reflect
     memory.finish_job("game", complete_after_capture)
     # Restore is repeatable, including after a completion in the abandoned timeline.
     for _ in range(2):
-        assert memory.restore(saved, checksum, "restored") == [{"job": "game", "gameTurn": 4}]
+        assert memory.restore(saved, checksum, "restored") == []
         with memory.transaction() as db:
             assert (
                 db.execute(select(tables.jobs.c.status).where(tables.jobs.c.id == "game")).scalar_one() == "INTERRUPTED"
@@ -195,7 +193,6 @@ def test_restore_keeps_captured_memory_and_receipts_and_marks_unfinished_reflect
         assert len(summary["actions"]) == 1 and summary["actions"][0]["outcome"] == "confirmed"
         assert "ABANDONED FUTURE" not in json.dumps(summary)
         assert "Committed before capture" in json.dumps(summary)
-        assert any("interrupted by checkpoint restoration" in line for line in summary["unresolved"])
     memory.pause(False)
     memory.start_job("next", "gameplay", {}, game_turn=5)
     actions = memory.history(4, job="next")["actions"]

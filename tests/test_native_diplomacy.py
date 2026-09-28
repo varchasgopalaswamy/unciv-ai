@@ -8,6 +8,7 @@ from civ_agent.civilization_state import CivilizationState, StateConflict
 from civ_agent.proposal_gateway import ProposalGateway
 from civ_agent.protocol import JsonObject
 from civ_agent.service_io import ServiceIO
+from civ_agent.startup_context import prepare_startup
 from civ_agent.tool_schemas import TOOL_MODELS
 from tests.test_proposal_gateway import Host
 
@@ -17,12 +18,44 @@ class NativeHost(Host):
         super().__init__()
         self.writes = []
         self.waits = []
+        self.trade: JsonObject = {
+            "proposal": "n1",
+            "version": 1,
+            "author": "China",
+            "partner": "Rome",
+            "mode": "NATIVE_AI",
+            "status": "PENDING",
+            "acceptAvailable": True,
+            "declineAvailable": True,
+            "withdrawAvailable": True,
+            "counterofferAvailable": True,
+        }
+        self.shared = {**self.trade, "proposal": "d1", "author": "Greece", "mode": "SHARED"}
 
     async def tool(self, name, args):
+        if name == "player_capabilities":
+            return {"queries": [], "commands": []}
+        if name == "victory_progress":
+            return {"turn": 0, "victories": []}
         if name == "player_communication":
+            if args["op"] == "state":
+                result = await super().tool(name, args)
+                return {**result, "trades": copy.deepcopy([self.trade, self.shared])}
+            if args["op"] == "trade_options":
+                return {
+                    "partner": args["partner"],
+                    "mode": "NATIVE_AI" if args["partner"] == "China" else "SHARED",
+                    "available": True,
+                    "canInitiate": True,
+                    "friendship": {"available": True},
+                    "give": [],
+                    "receive": [],
+                }
+            if args["op"] == "trade_read":
+                return {"trade": copy.deepcopy(self.trade if args["proposal"] == "n1" else self.shared)}
             if args["op"] == "negotiation":
                 self.waits.append(copy.deepcopy(args))
-            if args["op"] in {"trade_offer", "friendship_offer", "send"}:
+            if args["op"] in {"trade_offer", "trade_decide", "friendship_offer", "send"}:
                 if args["requestId"] in self.seen:
                     return copy.deepcopy(self.seen[args["requestId"]])
                 self.writes.append(copy.deepcopy(args))
@@ -32,7 +65,7 @@ class NativeHost(Host):
                         result["nativeOutcome"] = {"action": args["nativeAction"]["kind"], "status": "ENACTED"}
                         self.revision = "after-native-action"
                 else:
-                    result = {"trade": {"proposal": "n1", "version": 1, "mode": "NATIVE_AI", "status": "PENDING"}}
+                    result = {"trade": copy.deepcopy(self.trade)}
                 self.seen[args["requestId"]] = result
                 return copy.deepcopy(result)
         return await super().tool(name, args)
@@ -56,6 +89,86 @@ def test_native_offer_returns_pending_without_waiting_for_the_next_ai_turn(tmp_p
             assert not any(r.get("waitSeconds") for r in host.waits)
             assert await gateway.call(job, tool, args, "offer") == result
             assert len(host.writes) == 1
+        finally:
+            await io.close()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    "tool,arguments",
+    [("trade_decide", {"proposal": "n1", "decision": decision}) for decision in ("accept", "decline", "withdraw")]
+    + [
+        (
+            "trade_offer",
+            {
+                "partner": "China",
+                "give": [{"type": "Gold", "name": "Gold", "amount": 1, "duration": -1}],
+                "receive": [],
+                **extra,
+            },
+        )
+        for extra in ({}, {"proposal": "n1"})
+    ]
+    + [("friendship_offer", {"partner": "China"})],
+)
+def test_native_trade_decisions_belong_to_gameplay(tmp_path, tool, arguments):
+    async def run():
+        io = ServiceIO()
+        memory = CivilizationState(tmp_path / "private", "Rome")
+        gateway = ProposalGateway(memory, io, tmp_path / "workspace")
+        host = NativeHost()
+        arguments_with_intent = {**arguments, "intent": {"reason": "Consider cooperation"}}
+        try:
+            chat = await gateway.open("chat", "communication", "g1", host, {})
+            game = await gateway.open("game", "gameplay", "g1", host, {})
+            # Even a communication job on the active turn, with fresh state and
+            # exact native terms, cannot act on the gameplay agent's request.
+            for job in (chat, game):
+                await gateway.call(job, "player_turn", {}, "turn")
+                read = await gateway.call(job, "trade_read", {"proposal": "n1"}, "terms")
+                for choice in ("accept", "decline", "withdraw", "counteroffer"):
+                    assert read["trade"][choice + "Available"] is (job is game)
+                options = await gateway.call(job, "trade_options", {"partner": "China"}, "options")
+                assert options["canInitiate"] is (job is game)
+                assert options["friendship"]["available"] is (job is game)
+            denied = await gateway.call(chat, tool, arguments_with_intent, "decision")
+            assert denied["error"] == "GAMEPLAY_ONLY" and denied["applied"] is False
+            assert "gameplay turn" in denied["instruction"]
+            assert not host.writes and not memory.pending() and not gateway.failed.is_set()
+            assert await gateway.call(chat, tool, arguments_with_intent, "decision") == denied
+            allowed = await gateway.call(game, tool, arguments_with_intent, "decision")
+            assert "error" not in allowed and len(host.writes) == 1
+            assert host.writes[0]["op"] == tool
+            assert not memory.pending()
+        finally:
+            await io.close()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("include_history", [False, True])
+def test_communication_inbox_excludes_native_offers_but_gameplay_keeps_them(tmp_path, include_history):
+    async def run():
+        io = ServiceIO()
+        memory = CivilizationState(tmp_path / "private", "Rome")
+        gateway = ProposalGateway(memory, io, tmp_path / "workspace")
+        host = NativeHost()
+        events = [
+            {"id": 1, "kind": "trade", "wake": False, "body": {**host.trade, "participants": ["Rome", "China"]}},
+            {"id": 2, "kind": "trade", "wake": True, "body": {**host.shared, "participants": ["Rome", "Greece"]}},
+        ]
+        try:
+            memory.bind("g1")
+            memory.ingest("g1", events, 2)
+            for purpose, expected in (("communication", ["d1"]), ("gameplay", ["n1", "d1"])):
+                job = await gateway.open(purpose, purpose, "g1", host, {})
+                prepared = await prepare_startup(gateway, job)
+                assert [t["proposal"] for t in prepared["reads"]["chat_read"]["trades"]] == expected
+                inbox = await gateway.call(job, "chat_read", {"includeHistory": include_history}, "inbox")
+                assert [t["proposal"] for t in inbox["trades"]] == expected
+                assert [e["body"]["proposal"] for e in inbox["messages"]] == expected
+            assert memory.chat_history("China")["events"][0]["body"]["proposal"] == "n1"
         finally:
             await io.close()
 

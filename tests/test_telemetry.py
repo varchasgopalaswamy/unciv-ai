@@ -178,3 +178,20 @@ def test_late_finalization_updates_timing_without_changing_gameplay_usage(tmp_pa
     assert after["telemetry"]["elapsedMs"] == before["telemetry"]["elapsedMs"]
     assert after["telemetry"]["gameplayElapsedMs"] == 300
     assert after["telemetry"]["finalizationElapsedMs"] == 75
+
+
+def test_restored_activation_cannot_downgrade_completed_usage(tmp_path):
+    store = JobAccounting(tmp_path)
+    store.start("job", "original-epoch", True)
+    store.sample(record(phase="COMPLETED", usageComplete=True, finalizationElapsedMs=50))
+    accepted = store.pending()[0]
+    store.acknowledge("job", accepted["telemetry"]["sequence"])
+    # Restore retains a pre-completion record and marks its conversation failed.
+    store.sample(record(phase="FAILED", usageReported=False, usageComplete=False, usage={}, finalizationElapsedMs=10))
+    restored = JobAccounting(tmp_path).pending()[0]
+    assert restored["usage"] == accepted["usage"]
+    assert restored["epoch"] == accepted["epoch"]
+    assert restored["telemetry"]["phase"] == "COMPLETED"
+    assert restored["telemetry"]["usageReported"] and restored["telemetry"]["usageComplete"]
+    assert restored["telemetry"]["finalizationElapsedMs"] == 50
+    assert restored["telemetry"]["sequence"] > accepted["telemetry"]["sequence"]

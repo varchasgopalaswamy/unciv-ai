@@ -5,19 +5,19 @@ import json
 import sqlite3
 from pathlib import Path
 
+from civ_agent.monitoring import path_for, read_collection, read_record
 from civ_agent.telemetry import TOKEN_KEYS
 
 
 def verify(root: Path, require_finished: bool = False) -> dict:
-    runner = json.loads((root / "runner/run.json").read_text())
+    runner = read_record(path_for(root), "state", "run") or {}
     requested_settings = {key: runner[key] for key in ("model", "reasoningEffort")}
     checkpoint = json.loads((root / "exploration.json").read_text())
     game = json.loads(checkpoint["gameJson"])
     state = checkpoint["communication"]
-    telemetry = root / "telemetry"
-    result = json.loads((telemetry / "game-result.json").read_text())
-    jobs = {row["jobId"]: row["job"] for row in map(json.loads, (telemetry / "jobs.jsonl").read_text().splitlines())}
-    turns = list(map(json.loads, (telemetry / "turns.jsonl").read_text().splitlines()))
+    result = read_record(path_for(root), "state", "result") or {}
+    jobs = {row["jobId"]: row["job"] for row in read_collection(path_for(root), "jobs")}
+    turns = read_collection(path_for(root), "turns")
     assert jobs == state["jobs"], "Exported jobs differ from the committed host records"
     assert result["matchId"] == game["gameId"]
     assert len(turns) == len({row["turnId"] for row in turns}), "Duplicate turn summaries"

@@ -2,11 +2,11 @@
 
 from typing import Annotated, Literal
 
-from pydantic import Field, ValidationError, model_validator
+from pydantic import Field, ValidationError
 
 from civ_agent.model_view import model_view
 from civ_agent.protocol import JsonObject
-from civ_agent.schemas import BoundaryModel, NonnegativeInt, argument_issues, argument_shape
+from civ_agent.schemas import BoundaryModel, NonnegativeInt, argument_feedback, argument_shape
 
 Text = Annotated[str, Field(min_length=1, max_length=2000)]
 Source = Annotated[str, Field(min_length=1, max_length=160)]
@@ -18,7 +18,8 @@ Sources = Annotated[
     ),
 ]
 Retirement = Literal["completed", "abandoned", "superseded", "retracted", "expired", "irrelevant"]
-MEMORY_TYPES = {"soul", "plan", "belief", "note"}
+BRIEF_TYPES = {"strategy", "handoff"}
+MEMORY_TYPES = BRIEF_TYPES | {"belief", "note"}
 
 
 class Assumption(BoundaryModel):
@@ -27,18 +28,37 @@ class Assumption(BoundaryModel):
 
 
 class Content(BoundaryModel):
-    subjects: Annotated[list[Source], Field(max_length=20)] = Field(default_factory=list)
+    subjects: Annotated[
+        list[Source],
+        Field(
+            max_length=20,
+            description="At most 20 relevant subject tags for this revision; lists replace existing tags.",
+        ),
+    ] = Field(default_factory=list)
     priority: Annotated[int, Field(ge=1, le=5)] = 3
     expiresTurn: NonnegativeInt | None = None
 
 
-class Plan(Content):
-    type: Literal["plan"]
-    objective: Text
-    approach: Text
-    successCriteria: Text
-    reviewAfterTurn: NonnegativeInt | None = None
+ShortThought = Annotated[str, Field(min_length=1, max_length=400)]
+Thoughts = Annotated[list[ShortThought], Field(max_length=5)]
+
+
+class Strategy(Content):
+    type: Literal["strategy"]
+    assessment: Text
+    reasons: Thoughts = Field(default_factory=list)
+    uncertainties: Thoughts = Field(default_factory=list)
+    reconsiderWhen: Thoughts = Field(default_factory=list)
     assumptions: Annotated[list[Assumption], Field(max_length=20)] = Field(default_factory=list)
+    sources: Sources = Field(default_factory=list)
+
+
+class Handoff(Content):
+    type: Literal["handoff"]
+    text: Text = Field(
+        description="Unfinished work, unresolved questions or useful context absent from current observations. "
+        "Omit routine state and instructions to preserve an existing plan; provisional strategy belongs in strategy."
+    )
     sources: Sources = Field(default_factory=list)
 
 
@@ -53,20 +73,15 @@ class Belief(Content):
 class Note(Content):
     type: Literal["note"]
     text: Text
-    plan: str = Field(
+    relatedMemory: str = Field(
         default="",
         max_length=160,
-        description="Optional historical plan ID. Unread references are explicitly unverified. Omit when unrelated; never put prose here.",
+        description="Optional historical memory ID, not prose. Unread references are explicitly unverified.",
     )
 
 
-class Soul(Content):
-    type: Literal["soul"]
-    text: Text
-
-
-RecordContent = Annotated[Plan | Belief | Note | Soul, Field(discriminator="type")]
-CONTENT_MODELS = {"plan": Plan, "belief": Belief, "note": Note, "soul": Soul}
+RecordContent = Annotated[Strategy | Handoff | Belief | Note, Field(discriminator="type")]
+CONTENT_MODELS = {"strategy": Strategy, "handoff": Handoff, "belief": Belief, "note": Note}
 
 
 class Create(BoundaryModel):
@@ -89,27 +104,27 @@ class Amend(BoundaryModel):
         Field(
             min_length=1,
             max_length=12,
-            description="Only changed content fields from a record you read. Omitted fields are retained. Lists replace the old list; they never append. Type and service metadata cannot be changed.",
+            description="Only changed content fields of a belief or note you read. Strategy and handoff require replace. Omitted fields are retained. Lists replace the old list; they never append. Record type, IDs and dates cannot be changed.",
         ),
     ]
 
 
+class Replace(BoundaryModel):
+    op: Literal["replace"]
+    id: Source
+    content: Annotated[Strategy | Handoff, Field(discriminator="type")]
+
+
 class MemoryUpdate(BoundaryModel):
-    changes: Annotated[list[Annotated[Create | Retire | Amend, Field(discriminator="op")]], Field(max_length=20)]
+    changes: Annotated[
+        list[Annotated[Create | Retire | Amend | Replace, Field(discriminator="op")]], Field(max_length=20)
+    ]
 
 
 class MemoryContributions(BoundaryModel):
     """Communication may append contributions, never revise the shared notebook."""
 
     changes: Annotated[list[Create], Field(max_length=20)]
-
-
-def source_limits(content: JsonObject, prefix: list) -> list[JsonObject]:
-    return [
-        {"fields": [*prefix, field], "maximum": 20, "received": len(content[field])}
-        for field in ("sources", "contradictingSources")
-        if isinstance(content.get(field), list) and len(content[field]) > 20
-    ]
 
 
 class MemoryContentError(ValueError):
@@ -120,6 +135,8 @@ class MemoryContentError(ValueError):
 
 def amended_content(previous: JsonObject, fields: JsonObject) -> JsonObject:
     """Validate the complete revision before any writes, including retained fields."""
+    if previous["type"] in BRIEF_TYPES:
+        raise ValueError("REPLACEMENT_REQUIRED: replace the complete strategy or handoff content")
     model = CONTENT_MODELS[previous["type"]]
     if "type" in fields:
         raise ValueError("TYPE_CHANGE_REQUIRES_NEW_RECORD")
@@ -127,39 +144,34 @@ def amended_content(previous: JsonObject, fields: JsonObject) -> JsonObject:
     try:
         return model.model_validate(content).model_dump()
     except ValidationError as error:
-        raise MemoryContentError(
-            {
-                "invalidFields": argument_issues(error, model.model_json_schema()),
-                "limits": source_limits(content, ["fields"]),
-                "instruction": "Amend only content fields. Lists replace existing lists. Keep at most 20 relevant citations per source list; historical revisions retain earlier citations. No part of this edit was applied.",
-            }
-        ) from None
+        feedback = argument_feedback(error, model.model_json_schema(), ["fields"])
+        feedback["instruction"] = (
+            feedback["instruction"] + " Amend only content fields. Lists replace existing lists. "
+            "No part of this edit was applied; other edits have their own acceptance results."
+        ).strip()
+        raise MemoryContentError(feedback) from None
 
 
 def memory_argument_error(arguments: JsonObject, error: ValidationError) -> JsonObject:
     shapes = {}
-    limits = []
     changes = arguments.get("changes")
-    for index, change in enumerate(changes if isinstance(changes, list) else []):
+    for change in changes if isinstance(changes, list) else []:
         content = change.get("content") if isinstance(change, dict) else None
         kind = content.get("type") if isinstance(content, dict) else None
-        if isinstance(content, dict):
-            limits.extend(source_limits(content, ["changes", index, "content"]))
         if isinstance(kind, str) and kind in CONTENT_MODELS:
             schema = CONTENT_MODELS[kind].model_json_schema()
             shapes[kind] = argument_shape(schema, schema.get("$defs", {}))
+    feedback = argument_feedback(error, MemoryUpdate.model_json_schema())
     return {
+        **feedback,
         "error": "INVALID_ARGUMENT",
         "applied": False,
         "recoverable": True,
-        "invalidFields": argument_issues(error, MemoryUpdate.model_json_schema()),
-        "limits": limits,
         "contentSchemas": shapes,
-        "instruction": "No memory changes were applied. Use the selected content type's fields. "
-        "Notes accept text and optional plan (an existing plan ID), not sources. "
-        "Beliefs require claim and uncertainty; citations are optional historical references. "
-        "Each source list accepts at most 20 citations: select relevant support for this revision instead of appending old citations. Earlier revisions retain their evidence. "
-        "After chat_read, observation:communication is a usable source. Game state need not be refreshed for this error.",
+        "instruction": feedback["instruction"]
+        + " No memory changes were applied. Correct the listed fields using contentSchemas. "
+        "Lists replace existing lists; earlier revisions retain their contents. "
+        "Game state need not be refreshed for this error.",
     }
 
 
@@ -169,9 +181,9 @@ class MemoryRead(BoundaryModel):
 
 
 class MemorySearch(BoundaryModel):
-    type: Literal["soul", "plan", "belief", "note", "contribution", "decision", "observation", "statement"] | None = (
-        None
-    )
+    type: (
+        Literal["strategy", "handoff", "belief", "note", "contribution", "decision", "observation", "statement"] | None
+    ) = None
     subject: str = Field(default="", max_length=160)
     state: Literal["active", "retired", "all"] = "active"
     query: str = Field(default="", max_length=200)
@@ -181,16 +193,10 @@ class MemorySearch(BoundaryModel):
 
 
 class Intent(BoundaryModel):
-    reason: str = Field(default="", max_length=1000)
-    plan: str = Field(default="", max_length=160)
+    reason: Annotated[str, Field(min_length=1, max_length=1000, pattern=r"\S")]
+    strategy: str = Field(default="", max_length=160)
     expectedOutcome: str = Field(default="", max_length=1000)
     assumptions: Annotated[list[Assumption], Field(max_length=20)] = Field(default_factory=list)
-
-    @model_validator(mode="after")
-    def has_reason_or_plan(self):
-        if not self.reason.strip() and not self.plan:
-            raise ValueError("Supply a reason or a plan reference")
-        return self
 
 
 REQUIRED_COMMANDS = {
@@ -233,7 +239,7 @@ REQUIRED_TOOLS = {"trade_offer", "trade_decide", "friendship_offer", "commitment
 
 
 def public_record(key, record):
-    body = {k: v for k, v in record["body"].items() if not k.startswith("_")}
+    body = {k: v for k, v in record["body"].items() if not k.startswith("_") and k != "basis"}
     if record["category"] not in MEMORY_TYPES:
         body = model_view(body)
     return {
@@ -249,7 +255,7 @@ def public_record(key, record):
 
 
 def record_text(body):
-    return body.get("objective") or body.get("claim") or body.get("text") or body.get("reason", "")
+    return body.get("assessment") or body.get("claim") or body.get("text") or body.get("reason", "")
 
 
 class RecordMetadata(BoundaryModel):
@@ -260,14 +266,13 @@ class RecordMetadata(BoundaryModel):
     needsReview: list[str] = Field(default_factory=list)
     reviewSources: list[str] = Field(default_factory=list)
     retirementReason: Retirement | None = None
-    assessment: str = ""
+    retirementAssessment: str = ""
     evidence: str | None = None
     historical: bool = False
-    basis: JsonObject | None = None
     unverifiedSources: list[str] = Field(default_factory=list)
 
 
-class StoredPlan(Plan, RecordMetadata):
+class StoredStrategy(Strategy, RecordMetadata):
     pass
 
 
@@ -279,7 +284,7 @@ class StoredNote(Note, RecordMetadata):
     pass
 
 
-class StoredSoul(Soul, RecordMetadata):
+class StoredHandoff(Handoff, RecordMetadata):
     pass
 
 
@@ -314,7 +319,7 @@ class DecisionRecord(BoundaryModel):
 
 
 ReadRecord = Annotated[
-    StoredPlan | StoredBelief | StoredNote | StoredSoul | EvidenceRecord | DecisionRecord | ContributionRecord,
+    StoredStrategy | StoredBelief | StoredNote | StoredHandoff | EvidenceRecord | DecisionRecord | ContributionRecord,
     Field(discriminator="type"),
 ]
 
@@ -363,7 +368,7 @@ class SummaryAction(BoundaryModel):
 
 class MemoryAssessment(BoundaryModel):
     id: str
-    type: Literal["plan", "belief", "soul", "note"]
+    type: Literal["strategy", "handoff", "belief", "note"]
     text: str
     state: Literal["active", "retired"]
     retirementReason: Retirement | None = None

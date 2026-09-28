@@ -26,6 +26,67 @@ acknowledged results. Final `player_result` reports also retain election results
 including for players whose next turn will never begin because the election won
 the game. Terminal reports are read-only; no acknowledgement is needed to finish.
 
+## Victory Status observations
+
+`victory_progress` defaults to `sections=["our_status","global_status","rankings"]`.
+It is already prepared at gameplay startup. It returns own integer score and
+the turn limit, native victory milestones, permitted rival next milestones,
+and current rankings with short historical comparisons. Current policy-branch
+and capital objectives supplement the existing spaceship-part counts.
+
+Optional selectors:
+
+- `names`: enabled victory names for own/global status.
+- `sections`: any of `our_status`, `global_status`, `rankings`, `charts`,
+  `demographics`. `availability` reports why a section is inaccessible.
+- `metrics`: native metric names, in returned canonical column order.
+- `civilizations`: disclosed names for global status, rankings and charts.
+  Filtering a ranking does not change the population against which ranks are
+  calculated. Demographics always retains its native aggregate scope.
+- `fromTurn`, `toTurn`: inclusive chart range. Both require `charts`; the
+  default is the last 20 turns including the current turn. A page contains at
+  most 50 turns and 2,000 history/live numeric cells. Continue with
+  `nextFromTurn` and retain `requestedToTurn` as `toTurn`.
+
+```json
+{"sections":["charts"],"metrics":["Production","Population","Technologies"],"civilizations":["Rome","Egypt"],"fromTurn":60,"toTurn":95}
+```
+
+`metrics` defines the columns shared by ranking `values`, `ranks`, trend
+`changes`, and each chart series. Charts return a `turns` axis and a `history`
+matrix for each civilization. Missing observations are `null`, never zero or
+interpolated. `currentValues` is a separate live point at `currentTurn`;
+recorded history is retained even if a record already exists for that turn.
+Ranking trends use the latest completed-turn record and the earliest available
+record within ten turns before it; each row reports its actual endpoints.
+Trends are absent when charts are unavailable or two suitable records do not
+exist. Default responses contain no chart history.
+
+Metric meanings follow the engine: `Technologies` counts researched technologies,
+`Culture` counts adopted policies excluding branch completion, `Gold` is treasury,
+`Growth` is net food per turn, and `Force` is the native military rating including
+its treasury adjustment. `Score`, `Population`, `Production`, `Territory`, and
+`Happiness` retain their native meanings. `TilesExplored` is available only when
+the game's additional-ranking-types setting enables it. These fields are not
+forecasts or strategic instructions.
+
+Visibility is enforced before ranking, sorting, or reading history. Unmet
+civilizations are omitted from named rankings and charts; their raw series and
+UI ordering are not exposed through anonymous handles. Native statistics/tab
+settings apply, including the postgame/spectator exceptions. Hidden opponent
+statistics also suppress comparative demographics. Defeated ranking rows have
+no current value/rank; permitted chart history remains readable. Rankings are
+among disclosed living civilizations, with native alphabetical tie ordering.
+
+When the Demographics tab is enabled, its own rank/value, best/average/worst
+statistics use the native recorded snapshots. Unmet best/worst civilizations
+have neither an identity nor an exact value; native anonymous aggregates remain
+available. Repeated mid-turn reads cannot track changes to opponents' treasuries
+through those aggregates when the corresponding recorded values exist. Before
+a metric has any recorded value, the native live fallback applies. These
+observations do not establish that a popup was read, mutate the
+game, alter victory conditions, or require any particular strategy.
+
 ## Engine behavior and desktop callers
 
 `PlayerVictoryOperations` is shared with `UnitActionsFromUniques`,

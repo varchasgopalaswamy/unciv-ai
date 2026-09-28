@@ -34,6 +34,7 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.11.0")
     implementation("com.github.ajalt.clikt:clikt:5.0.3")
     implementation("com.networknt:json-schema-validator:3.0.7")
+    implementation("org.xerial:sqlite-jdbc:3.53.4.0")
     implementation("io.modelcontextprotocol:kotlin-sdk-server:0.15.0")
     implementation(platform("io.ktor:ktor-bom:3.5.1"))
     implementation("io.ktor:ktor-server-core")
@@ -73,6 +74,7 @@ application {
 
 tasks.test {
     workingDir = uncivAssets
+    systemProperty("uncivai.testFixtures", project.file("tests/fixtures").absolutePath)
     systemProperty("java.awt.headless", "true")
     systemProperty("uncivai.assetsDir", uncivAssets.absolutePath)
     // Resolve the composite dependency only after project configuration is complete.
@@ -148,6 +150,7 @@ tasks.register<JavaExec>("prepareStrategyPositions") {
             providers.gradleProperty("strategyMode").getOrElse("prepare"),
             providers.gradleProperty("strategySource").getOrElse(project.file("tests/fixtures/strategy_positions").absolutePath),
             providers.gradleProperty("strategyOutput").get(),
+            providers.gradleProperty("strategyCivilization").getOrElse(""),
         )
     }
 }

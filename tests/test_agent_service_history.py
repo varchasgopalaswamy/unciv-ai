@@ -97,19 +97,19 @@ class ServiceHistoryTests(unittest.IsolatedAsyncioTestCase):
     async def notify(self, method, **parameters):
         await self.service._notification(method, {"threadId": "thread-one", "turnId": "turn-1", **parameters})
 
-    async def test_https_heartbeats_continue_during_a_blocked_periodic_archive_render(self):
+    async def test_https_heartbeats_continue_during_blocked_accounting(self):
         entered, release = threading.Event(), threading.Event()
-        export = self.service._export
+        sample = self.service.accounting.sample
 
-        def stalled(record):
+        def stalled(*args, **kwargs):
             entered.set()
             if not release.wait(8):
                 raise TimeoutError("Test did not release renderer")
-            return export(record)
+            return sample(*args, **kwargs)
 
-        with patch("civ_agent.agent_service.HISTORY_RENDER_INTERVAL", 0.05):
+        with patch("civ_agent.agent_service.TELEMETRY_SAMPLE_INTERVAL", 0.05):
             await self.start()
-            with patch.object(self.service, "_export", side_effect=stalled):
+            with patch.object(self.service.accounting, "sample", side_effect=stalled):
                 try:
                     self.assertTrue(await asyncio.to_thread(entered.wait, 2))
                     # Exceed the one-second lease while storage remains blocked.
@@ -124,7 +124,7 @@ class ServiceHistoryTests(unittest.IsolatedAsyncioTestCase):
             await self.service.interrupt("activation")
         self.assertEqual("INTERRUPTED", self.service.status()["phase"])
         self.assertTrue(self.factory.instances[0].closed)
-        self.assertIn("INTERRUPTED", (self.root / "workspace/turn_0/turn.json").read_text())
+        self.assertFalse((self.root / "workspace/turn_0").exists())
 
     async def test_large_result_burst_keeps_all_receipts_and_one_payload_per_observation(self):
         await self.start()
@@ -256,19 +256,19 @@ class ServiceHistoryTests(unittest.IsolatedAsyncioTestCase):
         finally:
             await restored.close()
 
-    async def test_terminal_status_and_checkpoint_wait_for_the_final_archive_flush(self):
+    async def test_terminal_status_waits_for_durable_records_without_exporting(self):
         await self.start()
         entered, release = threading.Event(), threading.Event()
-        export = self.service._export
+        persist = self.service._persist
 
         def stalled(record):
             if record["phase"] == "COMPLETED":
                 entered.set()
                 if not release.wait(8):
                     raise TimeoutError("Test did not release final flush")
-            return export(record)
+            return persist(record)
 
-        with patch.object(self.service, "_export", side_effect=stalled):
+        with patch.object(self.service, "_persist", side_effect=stalled):
             try:
                 await self.notify(
                     "item/completed",
@@ -291,8 +291,10 @@ class ServiceHistoryTests(unittest.IsolatedAsyncioTestCase):
             await self.service.active_task
         self.assertEqual("COMPLETED", self.service.status()["phase"])
         self.assertEqual("COMPLETED", json.loads(record_path.read_text())["phase"])
-        self.assertNotIn("The final report is durable.", (self.root / "workspace/turn_0/summary.md").read_text())
-        self.assertTrue((self.root / "workspace/turn_0/summary.json").exists())
+        self.assertFalse((self.root / "workspace/turn_0").exists())
+        self.assertIn(
+            "The final report is durable.", (self.service.history.path("activation") / "events.jsonl").read_text()
+        )
 
     async def test_async_finalization_keeps_http_responsive_beyond_old_timeout(self):
         await self.start()
@@ -300,13 +302,13 @@ class ServiceHistoryTests(unittest.IsolatedAsyncioTestCase):
         assert self.service.active_task is not None
         await self.service.active_task
         entered, release = threading.Event(), threading.Event()
-        export = self.service._export
+        persist = self.service._persist
 
         def stalled(record):
             entered.set()
             if not release.wait(10):
                 raise TimeoutError("Test did not release finalization")
-            return export(record)
+            return persist(record)
 
         payload = {
             "op": "begin_finalize",
@@ -315,7 +317,7 @@ class ServiceHistoryTests(unittest.IsolatedAsyncioTestCase):
             "gameTurn": 0,
             "committedHandoff": 1,
         }
-        with patch.object(self.service, "_export", side_effect=stalled) as exports:
+        with patch.object(self.service, "_persist", side_effect=stalled) as exports:
             try:
                 async with self.client.post(
                     self.url, headers={"Authorization": "Bearer " + "S" * 43}, json=payload
@@ -334,7 +336,7 @@ class ServiceHistoryTests(unittest.IsolatedAsyncioTestCase):
             finally:
                 release.set()
             await self.service.finalization_tasks["activation"]
-            self.assertEqual(exports.call_count, 1)
+            self.assertEqual(exports.call_count, 2)
         self.assertEqual(self.service.status()["finalizationState"], "COMPLETED")
         await self.service.finalize({k: v for k, v in payload.items() if k != "op"})
         self.assertEqual(len(self.factory.instances), 1)

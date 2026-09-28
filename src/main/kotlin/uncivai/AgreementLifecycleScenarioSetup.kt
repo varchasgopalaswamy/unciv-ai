@@ -74,7 +74,7 @@ internal object AgreementLifecycleScenarioSetup {
         if (game.tileMap.mapParameters.name != MAP_NAME || player.civID !in WarScenarioMap.civilizations) return null
         val common = listOf(
             "Guided agreement lifecycle exercise. Scenario instructions are objectives, never evidence that a deal or ending happened. Use only your own observations and communication records.",
-            "Read agreement_list and agreement_read for each of your agreements. Before ending your opening turn, create one concise sourced private plan for each agreement, including its ID and the income, access or resource it supports. When an agreement ending flags a plan, read that agreement again and revise the SAME plan from fresh evidence, including the changed effect. Communication jobs should do this even off turn. Do not leave review flags unresolved.",
+            "Read agreement_list and agreement_read for each of your agreements. Before ending your opening turn, create one concise sourced private plan for each agreement, including its ID and the income, access or resource it supports. When an agreement ending flags a plan, read that agreement again and revise the SAME plan from fresh evidence, including the changed effect. Review changed agreements when notified, including off turn. Do not leave review flags unresolved.",
             "Keep the existing production and research queues. Resolve mandatory choices and read alerts before acknowledging them. Do not make purchases, capture cities, sign ceasefire promises, make extra deals or renew ended agreements. Finish scheduled turns normally; continue after an ending. No free early-cancellation action exists.",
         )
         // France's objective is independent of the negotiators' private proposals and agreement state.
@@ -105,13 +105,13 @@ internal object AgreementLifecycleScenarioSetup {
             "OBSERVE_AND_REVIEW" -> "The resource negotiation is enacted. Inspect its native agreement and maintain your sourced plan. On expiry or interruption, refresh the agreement, review the affected plan and explain what your own income or Iron supply now permits. Hold units and keep Rome and Greece at peace; do not repair the prepared mine or repeat a deal after restart."
 
             else -> if (player.civID == "Rome") {
-                "Your ACTIVE opening gameplay job opens exactly one proposal with Greece: give 1 Iron and request 2 Gold per turn, using the normal durations from trade_options. Greece may accept or counter with a price from 2 to 4 GPT. Negotiate that price yourselves; a counter is optional. Read the latest trade_read before consenting. Communication jobs only continue the existing proposal. After enactment, read the agreement and save its sourced plan BEFORE ending your opening turn."
+                "On your opening turn, open exactly one proposal with Greece: give 1 Iron and request 2 Gold per turn, using the normal durations from trade_options. Greece may accept or counter with a price from 2 to 4 GPT. Negotiate that price yourselves; a counter is optional. Read the latest trade_read before consenting. Continue the existing proposal when responding to diplomatic messages. After enactment, read the agreement and save its sourced plan BEFORE ending your opening turn."
             } else {
                 "Rome opens one proposal giving you 1 Iron for 2 GPT. Choose an acceptable price from 2 to 4 GPT; you may accept or counter that same proposal. Read trade_options and the latest trade_read before consenting, using normal native durations. Handle the proposal in communication even off turn. Do not open a second deal. After enactment, read the agreement and create a sourced plan for your imported Iron BEFORE ending your opening turn."
             }
         }
         val pending = latest?.takeIf { it.status == "PENDING" }?.let { "Existing proposal ${it.proposal}, version ${it.version}: continue it rather than opening another." }
-            ?: "Check your own chat_read before initiating; never duplicate an offer opened by another job. Let the service wait for negotiation; never poll."
+            ?: "Check your own chat_read before initiating; never duplicate an existing offer."
         return GameplayScenario("AGREEMENT_LIFECYCLE_EXERCISE", phase, common + listOf(role, pending))
     }
 

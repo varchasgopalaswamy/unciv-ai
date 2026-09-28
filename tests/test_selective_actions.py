@@ -17,12 +17,55 @@ from civ_agent.proposal_gateway import ProposalGateway
 from civ_agent.protocol import JsonObject
 from civ_agent.service_io import ServiceIO
 from tests.test_proposal_gateway import Host
-from tests.test_structured_memory import create, current, plan
+from tests.test_structured_memory import create, current, strategy
 
 
 def query(tool, target, sections):
     model = UnitDetails if tool == "unit_details" else CityDetails
     return DetailQuery(tool=tool, arguments=model(target=target, sections=sections).model_dump())
+
+
+@pytest.mark.parametrize("can_accept,can_decline", [(True, True), (False, True), (False, False)])
+def test_friendship_offers_supply_exact_alert_target_and_case_sensitive_choices(can_accept, can_decline):
+    snapshot = copy.deepcopy(Host().view)
+    snapshot["phase"] = "ACTIVE"
+    snapshot["alerts"] = [
+        {
+            "handle": "alert27",
+            "kind": "DeclarationOfFriendship",
+            "canAcknowledge": False,
+            "friendship": {
+                "civilizationId": "Egypt",
+                "accept": {"available": can_accept, "unavailableReasons": []},
+                "canDecline": can_decline,
+                "duration": 30,
+            },
+        }
+    ]
+    offered = overview(snapshot)["alerts"][0]["friendship"]
+    assert ("command" in offered["accept"]) == can_accept
+    assert ("declineCommand" in offered) == can_decline
+    if can_accept:
+        assert offered["accept"]["command"] == {
+            "kind": "RESPOND_FRIENDSHIP",
+            "target": "alert27",
+            "selection": "Accept",
+        }
+    if can_decline:
+        assert offered["declineCommand"] == {"kind": "RESPOND_FRIENDSHIP", "target": "alert27", "selection": "Decline"}
+    assert "command" not in snapshot["alerts"][0]["friendship"]["accept"]
+
+
+def test_friendship_argument_recovery_explains_target_and_rejects_lowercase_choice():
+    args = {"kind": "RESPOND_FRIENDSHIP", "target": "alert27", "selection": "accept"}
+    with pytest.raises(ValidationError) as error:
+        command_arguments(args)
+    recovery = command_error(args, error.value)
+    assert recovery["applied"] is False
+    expected = recovery["expectedArguments"]["properties"]
+    assert expected["selection"]["enum"] == ["Accept", "Decline"]
+    assert "alert handle" in expected["target"]["description"]
+    assert command_arguments({**args, "selection": "Accept"})["target"] == "alert27"
 
 
 def options_snapshot():
@@ -67,7 +110,7 @@ def options_snapshot():
             "position": {"x": 0, "y": 0},
             "population": 3,
             "inResistance": False,
-            "yields": {"Gold": 4},
+            "yields": [{"stat": "Gold", "amount": "4"}],
             "avoidGrowth": False,
             "constructions": [{"index": 0, "name": "Market", "canRemove": True, "moveToIndices": [1]}],
             "tiles": [{"position": {"x": 1, "y": 0}, "canWork": True, "canUnlock": True}],
@@ -341,7 +384,9 @@ def test_only_delivered_sections_invalidate_assumptions_and_satisfy_actions(tmp_
             await gateway.call(job, "player_turn", {}, "overview")
             detail = await gateway.call(job, "unit_details", {"target": "unit1", "sections": ["movement"]}, "movement")
             key = create(
-                memory, plan(assumptions=[{"text": "This path is available", "source": detail["evidence"]}]), job=job.id
+                memory,
+                strategy(assumptions=[{"text": "This path is available", "source": detail["evidence"]}]),
+                job=job.id,
             )
             command = {"kind": "DISBAND_UNIT", "target": "unit1", "intent": {"reason": "No longer needed"}}
             rejected = await gateway.call(job, "player_command", command, "uninspected")
@@ -400,7 +445,9 @@ def test_memory_recovery_explains_note_plan_and_keeps_evidence_requirements(tmp_
             return await gateway.call(job, "memory_update", {"changes": [{"op": "create", "content": content}]}, call)
 
         try:
-            rejected = await update({"type": "note", "text": "Discuss borders", "plan": "SECRET-PROSE"}, "plan")
+            rejected = await update(
+                {"type": "note", "text": "Discuss borders", "relatedMemory": "SECRET-PROSE"}, "strategy"
+            )
             assert rejected["changes"][0]["accepted"]
             assert rejected["changes"][0]["warnings"][0]["sources"] == ["SECRET-PROSE"]
             bad_shape = await update(

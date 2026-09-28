@@ -23,6 +23,27 @@ object StrategyPositionFixtures {
         val (mode, source, destination) = args
         val root = Path.of(destination)
         require(root.isAbsolute)
+        if (mode == "observe") {
+            require(!Files.exists(root)) { "Use a fresh output directory: $root" }
+            Files.createDirectories(root)
+            val checkpoint = root.resolve("exploration.json")
+            Files.copy(Path.of(source), checkpoint)
+            HeadlessRuntime.loadCheckpoint(checkpoint, root.resolve("runtime")).use { runtime ->
+                val game = runtime.game
+                val before = com.unciv.json.json().toJson(game)
+                val owners = game.tileMap.values.associateWith { it.getCity() }
+                check(owners.values.filterNotNull().all { owner -> owner.civ.cities.any { it === owner } }) {
+                    "Loaded checkpoint contains detached tile owners"
+                }
+                val civilization = args.getOrNull(3)?.takeIf { it.isNotEmpty() } ?: game.currentPlayer
+                val turn = PlayerHost(runtime).bindPlayer(civilization).turn()
+                check(owners.all { (tile, owner) -> tile.getCity() === owner }) { "Observation changed tile ownership references" }
+                check(com.unciv.json.json().toJson(game) == before) { "Observation changed native state" }
+                Files.writeString(root.resolve("initial-turn.json"), PlayerTurnJson.json.encodeToString(turn))
+            }
+            println("STRATEGY_OBSERVATION_READY $root")
+            return
+        }
         val manifestPath = Path.of(source).resolve("manifest.json")
         val manifest = json.parseToJsonElement(Files.readString(manifestPath)).jsonObject
         for (entry in manifest.getValue("positions").jsonArray) {

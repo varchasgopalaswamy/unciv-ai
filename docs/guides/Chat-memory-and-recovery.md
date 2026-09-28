@@ -33,7 +33,9 @@ Tools include `chat_read`, `chat_history`, `chat_send`, `commitment_offer`,
 `commitment_decide`, `memory_read`, `memory_search`, `memory_update` and `history_read`, alongside
 the existing player observations and validated gameplay commands. The
 [economic trade tools](../reference/Asynchronous-trade.md) allow both job types to inspect,
-propose and decide exact binding terms. Only the current player opens a formal
+propose and decide exact binding terms with humans and other agents. Built-in AI
+trade and friendship decisions belong to the gameplay job; their events remain
+recorded without communication wake-ups. Only the current player opens a formal
 negotiation; gameplay then waits while both sides communicate and decide. Its
 counteroffer limit, deadline and pending state survive restart. Communication jobs cannot issue ordinary
 gameplay commands. General shell and browsing tools are disabled
@@ -110,29 +112,31 @@ Acceptance displays the exact terms for human confirmation. Run each command wit
 
 `agent-services/Rome/civilization/memory.sqlite3` is authoritative private memory.
 Events, immutable record revisions, pending requests, receipts and jobs are
-transactional. The service generates `agents/Rome/SOUL.md`, `STRATEGY.md`,
-`economy.md`, relationship files and a memory index from active typed records. Editing
-these projections does not change canonical memory; use `memory_update`.
+transactional. Readable notebooks are available on demand with `civ-agent history
+export Rome --notebooks --state-dir /path/to/match`. Editing an export does not
+change canonical memory; use `memory_update`.
 
 Observations retain their turn and source. Beliefs carry uncertainty and optional
-historical references; unavailable references remain explicitly unverified. Private plans and
+historical references; unavailable references remain explicitly unverified. Provisional strategies and
 authenticated player statements remain distinct. “My army is nowhere near your
 border” records a claim by its author, without erasing an earlier unit observation.
 
 Fresh jobs receive selected active records and new events, with a default 12,000-character
 private-memory allowance, rather than every prior turn summary. Older evidence is available through memory/history tools.
-`agents/Rome/turn_0/summary.json` stores typed decisions and outcomes; `summary.md`
-renders a concise account of turn 0 from those records, independently of final model prose;
-`commands.jsonl` records detailed calls and controller-confirmed receipts, and
-`receipts.jsonl` contains the exact persisted requests and responses. Communication
-history is under `agents/Rome/communication/`, with permitted incoming events in
-`chat.jsonl`. Public Codex reasoning summaries are recorded, not hidden reasoning.
-The supervisor mirrors gameplay history under `runner/history/`.
+Typed decisions, outcomes, receipts and communication events stay in the private
+database. Explicit notebook exports render per-turn summaries and receipts,
+communication history, and active notes. These summaries derive from committed
+records independently of final model prose. Public Codex reasoning summaries are
+recorded, not hidden reasoning. The supervisor stores its authenticated event feed
+in `runner/monitoring.sqlite3`; the TUI reads this database directly. See
+[monitoring and exports](../architecture/Monitoring.md).
 
-Gameplay can create, amend and retire notebook entries. Communication jobs append
+Gameplay creates and replaces complete strategies and next-turn handoffs, and
+amends notes and beliefs. Communication jobs append
 immutable contributions for the next gameplay turn. Consequential actions record
-intent with a reason or a historical plan reference; review notices are advisory. Retirement removes current context
-and Markdown while preserving revision history. See [structured memory](../architecture/Structured-memory.md)
+intent with a current reason and an optional historical strategy reference;
+review notices are advisory. Retirement removes current context
+and subsequent exports while preserving revision history. See [structured memory](../architecture/Structured-memory.md)
 for schemas and examples. This format
 requires a fresh match; all previous memory formats are rejected without migration.
 
@@ -168,49 +172,39 @@ records the implementation evidence.
 
 ## Interruption and emergency restore
 
-Normal interruption keeps confirmed actions, messages and memory. Resume starts
-fresh computation, reconciles uncertain requests and re-observes the current game.
-It does not rewind an unfinished turn.
+`civ-agent game resume` restores the interrupted active player's starting turn,
+including the game, messages, commitments and every player's private state.
+It starts a fresh conversation. A committed native handoff or terminal victory is
+retained; only unfinished reviews and accounting need recovery in that case.
 
-The scheduler automatically captures a complete checkpoint at the start of each
-numbered game round. It briefly fences approvals and state commits across services,
-settles outstanding requests, and publishes a manifest only after every component
-is durable. Long-running model computation does not hold the mailbox or prevent
-this boundary. Memory snapshots reference verified immutable records rather than
-copying all transcripts.
+The scheduler keeps one coordinated boundary in `turn-recovery/current.json`.
+It briefly stops new tool calls, drains accepted writes and receipts, and publishes
+the boundary after the host and every service have saved their components. The
+next turn replaces it. Completed jobs and observations are referenced from private
+databases instead of repeatedly copying their payloads.
 
-Post-turn memory may remain unfinished at capture. New tool calls wait internally
-while the checkpoint is written; the next player can then start while reflection
-continues. Restoring that checkpoint retains accepted edits and factual turn
-receipts, marks unfinished reflection as interrupted, and excludes later memory
-and job completion metadata. See [background turn memory](../architecture/Background-turn-memory.md).
+A restore changes the epoch, rotates player credentials, and archives the discarded
+timeline for inspection. Usage, retry counts and elapsed-time budgets survive.
+If restoration itself is interrupted, run the same resume command again; its
+journal completes the restoration before gameplay is allowed.
 
-For an explicit whole-match rewind:
+Periodic reviewers save their position before `END_TURN`, then work independently
+while gameplay continues. An interrupted reviewer restarts with the frozen input
+and the same model settings. Three attempts are allowed by default. An exhausted
+task stays pending; inspect the failure before increasing the limit, for example
+`civ-agent game resume --state-dir DIR --review-attempts 4`. Completion atomically
+saves the dated report and removes its temporary input. Gameplay does not wait
+for reviews and has no mandatory end-of-turn memory-writing phase.
 
-```sh
-uv run civ-agent match rollback --state-dir /tmp/civ-chat-1 --round 0
-uv run civ-agent match resume --state-dir /tmp/civ-chat-1
-```
-
-Use the number displayed by `player_turn`; the initial round is 0, corresponding
-to the `turn_0` directory. Stop or pause an active supervisor before rollback.
-Restore replaces all participants together, rotates player credentials in
-`players.json`, creates a new match epoch, regenerates projections and archives
-the abandoned timeline for the operator. Old requests and credentials remain
-invalid after restart. Model invocation/usage accounting and elapsed-time budgets
-are retained. Increase exhausted limits explicitly on resume if needed.
-If the original host used a custom `--players` path, restart it and any interactive
-launchers with the newly written `STATE_DIR/players.json` after restoration.
-
-A failed or interrupted restore leaves the match fenced. Repeat the same rollback
-command to finish it; normal resume and host activation cannot release a partial
-restore. The host and services must all be available. Keep their private databases
-and `round-checkpoints` directories together: manifests reference those records.
-This is coordinated recovery, not a standalone backup of every transcript.
+Keep the entire state directory: the boundary refers to private database records
+and history prefixes. It is not a standalone backup. Historical round rollback has
+been removed. Older format matches require the old code; there is no migration.
+See [turn recovery](../architecture/Turn-recovery.md) for the stop policy and
+[background reviews](../architecture/Background-turn-memory.md) for writer isolation.
 
 ## Validation and limits
 
-Tests cover three-civilization privacy, responsive overlapping jobs, idle/burst
+Historical acceptance tests covered three-civilization privacy, responsive overlapping jobs, idle/burst
 dispatch, stale peace/policy decisions, consent changes and expiration, uncertain
 requests, notebook ownership and contributions, incomplete capture/restore and credential
 revocation across restart. A live Rome/Greece run additionally verified actual

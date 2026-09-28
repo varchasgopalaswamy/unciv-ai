@@ -4,15 +4,20 @@ import json
 import re
 from pathlib import Path
 
+from sqlalchemy import select
+
+from civ_agent import memory_schema as tables
+from civ_agent.memory_history import SummaryReader, summary_markdown
 from civ_agent.memory_records import MEMORY_TYPES, record_text
-from civ_agent.memory_store import encode
+from civ_agent.memory_store import RecordStore, encode
+from civ_agent.model_view import model_view
 from civ_agent.tls import private_directory, write_private, write_private_json
 
 
 def render_record(key, record):
     body = record["body"]
     lines = [f"## {key} — {record['category']}", record_text(body)]
-    for field in ("approach", "successCriteria", "reviewAfterTurn", "uncertainty"):
+    for field in ("reasons", "uncertainties", "reconsiderWhen", "updatedTurn", "uncertainty"):
         if body.get(field):
             lines.append(f"{field}: {body[field]}")
     if body.get("sources"):
@@ -34,13 +39,13 @@ def projection_files(records, events):
         + "\n",
         "chat.jsonl": "".join(encode(event) + "\n" for event in events),
     }
-    groups = {"SOUL.md": [], "STRATEGY.md": [], "economy.md": []}
+    groups = {"HANDOFF.md": [], "STRATEGY.md": [], "economy.md": []}
     for key, record in active.items():
         rendered = render_record(key, record)
         category = record["category"]
-        if category == "soul":
-            groups["SOUL.md"].append(rendered)
-        if category == "plan":
+        if category == "handoff":
+            groups["HANDOFF.md"].append(rendered)
+        if category == "strategy":
             groups["STRATEGY.md"].append(rendered)
         if category == "note":
             files[f"notes/{key}.md"] = rendered
@@ -72,12 +77,11 @@ def projection_files(records, events):
     return files
 
 
-def export_files(root, workspace, files, *, retained_prefixes=()):
+def export_files(root, workspace, files):
     private_directory(workspace)
     manifest = root / "generated-files.json"
     previous = set(json.loads(manifest.read_text())) if manifest.exists() else set()
-    retained = {name for name in previous if any(name.startswith(prefix) for prefix in retained_prefixes)}
-    planned = set(files) | retained
+    planned = set(files)
     # Write-ahead list lets a restart clean up partially written projections.
     write_private_json(manifest, sorted(previous | planned))
     for name in previous | planned:
@@ -90,11 +94,59 @@ def export_files(root, workspace, files, *, retained_prefixes=()):
         path = workspace / name
         if name in files:
             write_private(path, files[name].encode())
-        elif name in retained:
-            if path.is_symlink():
-                raise ValueError("Unsafe projection path")
         elif path.is_symlink():
             raise ValueError("Unsafe projection path")
         elif path.exists():
             path.unlink()
     write_private_json(manifest, sorted(planned))
+
+
+def notebook_files(db):
+    """Build an explicit report using only the supplied database snapshot."""
+    events = [
+        json.loads(value)
+        for value in db.scalars(
+            select(tables.events.c.body).select_from(tables.events.join(tables.inbox)).order_by(tables.events.c.id)
+        )
+    ]
+    files = projection_files(RecordStore(db).all(), events)
+    groups = {}
+    for row in db.execute(
+        select(tables.jobs.c.id, tables.jobs.c.game_turn, tables.jobs.c.purpose).select_from(tables.active_jobs)
+    ).mappings():
+        target = (
+            (row["game_turn"], None)
+            if row["purpose"] == "gameplay" and row["game_turn"] is not None
+            else (None, row["id"])
+        )
+        groups.setdefault(target, [])
+    for request in db.execute(
+        select(tables.outbox, tables.jobs.c.game_turn, tables.jobs.c.purpose)
+        .select_from(tables.live_requests.join(tables.jobs, tables.outbox.c.job == tables.jobs.c.id))
+        .order_by(tables.request_order)
+    ).mappings():
+        target = (
+            (request["game_turn"], None)
+            if request["purpose"] == "gameplay" and request["game_turn"] is not None
+            else (None, request["job"])
+        )
+        groups.setdefault(target, []).append(request)
+    reader = SummaryReader(db, list(groups)) if groups else None
+    for (turn, job), requests in groups.items():
+        assert reader is not None
+        directory = f"turn_{turn}" if turn is not None else f"communication/{job}"
+        summary = reader.build(turn, job)
+        files[directory + "/receipts.jsonl"] = "".join(
+            encode(
+                {
+                    "request": json.loads(row["payload"]),
+                    "receipt": model_view(json.loads(row["result"])) if row["result"] else None,
+                    "decision": row["decision"],
+                }
+            )
+            + "\n"
+            for row in requests
+        )
+        files[directory + "/summary.json"] = json.dumps(model_view(summary), ensure_ascii=False, indent=2) + "\n"
+        files[directory + "/summary.md"] = summary_markdown(summary)
+    return files

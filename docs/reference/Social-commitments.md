@@ -28,9 +28,9 @@ Accepted promises remain in the ledger after a conflicting action; an engine
 receipt records what happened without automatically retracting the speaker's words.
 Optional `withdraw` and `reconsider` messages remain available.
 
-The obsolete `socialVersion`, `peaceVersions` and `warConsentVersions` fields are
-accepted only for old request/receipt and checkpoint decoding. They have no effect
-on gameplay or consent.
+Social commitments have no version counters in native commands or trade
+checkpoints. Native observation revisions and exact trade versions provide
+freshness checks independently of social intent.
 
 ## Audit boundary
 
@@ -42,7 +42,7 @@ on gameplay or consent.
 | Native peace treaties, declaration eligibility and native settlement-promise confirmations | Retained from shared engine operations |
 | Visibility, ownership, unknown-target filtering and private communication access | Retained; the host may enforce privacy beyond native UI checks |
 | Authentication, player turns, stale native observations, exact retries and atomic recovery | Retained as execution safeguards |
-| Private plan/evidence freshness | Retained when an agent elects to cite that plan; it cannot require social withdrawal or forbid an independently chosen legal action |
+| Private assessment references | Historical citations for audit, with nonblocking review notices; they cannot require social withdrawal or forbid an independently chosen legal action |
 | Negotiation holds, deadlines and counteroffer budgets | Existing operator-configured orchestration; social conversations do not acquire these holds |
 | Guided scenario prices and military objectives | Exercise instructions only; no global game rule |
 

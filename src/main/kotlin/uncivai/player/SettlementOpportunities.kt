@@ -3,11 +3,28 @@ package uncivai.player
 import com.unciv.logic.automation.Automation
 import com.unciv.logic.civilization.Civilization
 import com.unciv.logic.map.HexCoord
+import com.unciv.logic.map.TileMap
 import com.unciv.logic.map.mapunit.UnitSettlement
+import com.unciv.logic.map.tile.RoadStatus
+import com.unciv.logic.map.tile.Tile
 import com.unciv.models.ruleset.tile.ResourceType
 import kotlinx.serialization.Serializable
 import java.util.Collections
 import kotlin.math.roundToInt
+
+@Serializable
+data class KnownTileSurface(
+    val terrain: String,
+    val features: List<String>,
+    val improvement: String?,
+    val improvementPillaged: Boolean,
+    val road: String,
+    val roadPillaged: Boolean,
+    val naturalWonder: String?,
+    val riverBottom: Boolean,
+    val riverBottomLeft: Boolean,
+    val riverBottomRight: Boolean,
+)
 
 /** Last-seen facts only. Unseen founding, razing and border changes never update this record. */
 @Serializable
@@ -25,6 +42,10 @@ data class KnownSettlementTile(
     val resource: String?,
     val resourceType: String?,
     val yieldScore: Float,
+    val resourceAmount: Int? = null,
+    val resourceImprovements: List<ResourceImprovement> = emptyList(),
+    val surface: KnownTileSurface? = null,
+    val cityIsOriginalMajorCapital: Boolean? = null,
 )
 
 @Serializable
@@ -33,9 +54,14 @@ data class SettlementCandidate(
     val score: Int,
     val siteStatus: String,
     val uncertainty: String?,
-    val nearestSettler: String,
-    val distance: Int,
+    val nearestSettler: String?,
+    val distance: Int?,
     val reasons: List<String>,
+    val route: SettlementRoute? = null,
+    val nearestCity: String? = null,
+    val resources: List<ExpansionResource> = emptyList(),
+    val unseenWorkableTiles: Int = 0,
+    val happiness: SettlementHappiness? = null,
 )
 
 @Serializable
@@ -47,50 +73,127 @@ data class SettlementOpportunities(
     val blockedSites: Int,
     val status: String,
     val candidates: List<SettlementCandidate>,
-    val scoring: String = "Advisory adaptation of Unciv's settlement heuristic using current and last-seen player knowledge. Distance is in hexes, not a route estimate.",
+    val settlers: List<SettlerReview> = emptyList(),
+    val recommendations: List<TilePosition> = emptyList(),
+    val happinessBaseline: ExpansionHappinessBaseline? = null,
+    val expansionBasis: String = "Resource potential covers the native city work radius using current/last-seen observations. Unowned tiles still need acquisition; other cities may share the area. Resource benefits require the appropriate technologies and improvements. Duplicate luxuries are potential trade goods, not extra happiness. Candidate areas can compete for the same tiles and resources.",
+    val scoring: String = "Advisory adaptation of Unciv's settlement heuristic using current and last-seen player knowledge. Distance is in hexes from nearestSettler, or nearestCity when no settler exists, not a route estimate. Unknown territory may contain more sites.",
 )
 
 internal fun updateSettlementKnowledge(player: Civilization, state: TurnSessionState) {
-    // Older checkpoints can retain city locations already delivered on their map.
-    // Do not obtain an unseen city's current existence from the native game.
-    if (state.settlementKnowledge.isEmpty()) {
-        for (shown in state.fingerprint?.map?.tiles.orEmpty().filter { it.cityName != null }) {
-            val tile = player.gameInfo.tileMap.getOrNull(shown.position.x, shown.position.y) ?: continue
-            state.settlementKnowledge[shown.position] = KnownSettlementTile(
-                shown.position, state.fingerprint!!.turn, true, false, tile.getContinent(), shown.owner, shown.cityName,
-                false, false, false, shown.resource, null, 0f,
+    captureSettlementKnowledge(player, state, player.gameInfo.tileMap.values.filter { it.isVisible(player) || it.getOwner() === player })
+    val learned = player.tech.techsResearched - state.settlementTechnologies
+    state.settlementTechnologies.addAll(learned)
+    if (learned.isEmpty()) return
+    // Technology reveals resources throughout explored territory. It does not
+    // reveal changes to terrain, ownership, cities or infrastructure under fog.
+    val revealed = state.settlementKnowledge.values.mapNotNull { known ->
+        val tile = player.gameInfo.tileMap[known.position.x, known.position.y]
+        val resource = tile.tileResource?.takeIf { it.revealedBy in learned && tile.isExplored(player) && player.canSeeResource(it) }
+        if (resource == null || resource.name == known.resource || known.surface == null) {
+            null
+        } else {
+            known.copy(
+                resource = resource.name,
+                resourceType = resource.resourceType.name,
+                resourceAmount = tile.resourceAmount.takeIf { resource.resourceType == ResourceType.Strategic },
             )
         }
     }
-    for (tile in player.gameInfo.tileMap.values.filter { it.isVisible(player) || it.getOwner() === player }) {
-        val resource = tile.tileResource?.takeIf { player.canSeeResource(it) }
-        val position = TilePosition(tile.position.x, tile.position.y)
-        val yieldScore = Automation.rankStatsValue(tile.stats.getTileStats(null, player), player) + when (resource?.resourceType) {
-            ResourceType.Bonus -> 1f
-            ResourceType.Strategic -> 2f
-            ResourceType.Luxury -> 10f
-            else -> 0f
-        }
-        state.settlementKnowledge[position] = KnownSettlementTile(
-            position, player.gameInfo.turns, tile.isLand, tile.isImpassible(), tile.getContinent(), tile.getOwner()?.civName,
-            tile.getCity()?.name?.takeIf { tile.isCityCenter() }, tile.isHill(), tile.isAdjacentToRiver(),
-            tile.baseTerrain == "Mountain" || "Mountain" in tile.terrainFeatures, resource?.name, resource?.resourceType?.name, yieldScore,
+    if (revealed.isEmpty()) return
+    revealed.forEach { state.settlementKnowledge[it.position] = it }
+    val remembered = rememberedSettlementMap(player, state)
+    for (known in revealed) {
+        val tile = remembered[known.position.x, known.position.y]
+        state.settlementKnowledge[known.position] = known.copy(
+            yieldScore = settlementYieldScore(player, tile),
+            resourceImprovements = resourceImprovements(player, tile),
         )
     }
 }
 
-internal fun observeSettlementOpportunities(player: Civilization, state: TurnSessionState): SettlementOpportunities? {
+/** Called synchronously by native visibility updates, even between movement steps. */
+internal fun captureSettlementKnowledge(player: Civilization, state: TurnSessionState, tiles: Iterable<Tile>) {
+    for (tile in tiles) {
+        val resource = tile.tileResource?.takeIf { player.canSeeResource(it) }
+        val position = TilePosition(tile.position.x, tile.position.y)
+        state.settlementKnowledge[position] = KnownSettlementTile(
+            position, player.gameInfo.turns, tile.isLand, tile.isImpassible(), tile.getContinent(), tile.getOwner()?.civName,
+            tile.getCity()?.name?.takeIf { tile.isCityCenter() }, tile.isHill(), tile.isAdjacentToRiver(),
+            tile.baseTerrain == "Mountain" || "Mountain" in tile.terrainFeatures, resource?.name, resource?.resourceType?.name, settlementYieldScore(player, tile),
+            resource?.takeIf { it.resourceType == ResourceType.Strategic }?.let { tile.resourceAmount }, resource?.let { resourceImprovements(player, tile) }.orEmpty(),
+            KnownTileSurface(
+                tile.baseTerrain, tile.terrainFeatures.toList(), tile.improvement, tile.improvementIsPillaged, tile.roadStatus.name, tile.roadIsPillaged,
+                tile.naturalWonder, tile.hasBottomRiver, tile.hasBottomLeftRiver, tile.hasBottomRightRiver,
+            ),
+            tile.getCity()?.takeIf { tile.isCityCenter() }?.let { if (it.isOriginalCapital) it.foundingCivObject?.isMajorCiv() else false },
+        )
+    }
+}
+
+private fun settlementYieldScore(player: Civilization, tile: Tile): Float = Automation.rankStatsValue(tile.stats.getTileStats(null, player), player) + when (tile.tileResource?.takeIf(player::canSeeResource)?.resourceType) {
+    ResourceType.Bonus -> 1f
+    ResourceType.Strategic -> 2f
+    ResourceType.Luxury -> 10f
+    else -> 0f
+}
+
+/** A detached map for native yield and improvement calculations. No live tile facts are copied. */
+private fun rememberedSettlementMap(player: Civilization, state: TurnSessionState): TileMap {
+    val original = player.gameInfo.tileMap
+    val tiles = state.settlementKnowledge.mapNotNull { (position, known) ->
+        val surface = known.surface ?: return@mapNotNull null
+        position to Tile().apply {
+            ruleset = player.gameInfo.ruleset
+            this.position = HexCoord(position.x, position.y)
+            baseTerrain = surface.terrain
+            improvement = surface.improvement
+            improvementIsPillaged = surface.improvementPillaged
+            roadStatus = RoadStatus.valueOf(surface.road)
+            roadIsPillaged = surface.roadPillaged
+            naturalWonder = surface.naturalWonder
+            hasBottomRiver = surface.riverBottom
+            hasBottomLeftRiver = surface.riverBottomLeft
+            hasBottomRightRiver = surface.riverBottomRight
+            tileResource = known.resource?.let { ruleset.tileResources[it] }
+            resourceAmount = known.resourceAmount ?: 0
+            setTerrainTransients()
+            setTerrainFeatures(surface.features)
+        }
+    }.toMap()
+    return TileMap(tiles.size).apply {
+        gameInfo = player.gameInfo
+        mapParameters = original.mapParameters
+        // Preserve the original geometry (including wrapping), leaving unknown
+        // positions empty rather than borrowing the live map's neighbors.
+        leftX = original.leftX
+        bottomY = original.bottomY
+        width = original.width
+        tileMatrix = ArrayList(
+            original.tileMatrix.map { column ->
+                ArrayList(column.map { tile -> tile?.let { tiles[TilePosition(it.position.x, it.position.y)] } })
+            },
+        )
+        tileList = ArrayList(tiles.values)
+        setTransients(player.gameInfo.ruleset, setUnitCivTransients = false)
+        width = original.width
+    }
+}
+
+internal fun observeSettlementOpportunities(player: Civilization, state: TurnSessionState, active: Boolean): SettlementOpportunities {
     val settlers = player.units.getCivUnits().filter { UnitSettlement.hasFoundingAbility(it) }.toList()
-    if (settlers.isEmpty()) return null
+    state.settlerHistory.keys.retainAll(settlers.map { it.id }.toSet())
     val tiles = player.gameInfo.tileMap.values.filter { it.isExplored(player) }.toList()
     val knowledge = state.settlementKnowledge
     val prior = knowledge.values.filter { it.land && it.owner == null }.map { it.yieldScore }.average().takeIf { it.isFinite() }?.toFloat() ?: 0f
     var eligible = 0
     var uncertain = 0
     var blocked = 0
+    val baseScores = HashMap<TilePosition, Float>()
     val candidates = tiles.mapNotNull { tile ->
         val position = TilePosition(tile.position.x, tile.position.y)
-        val settler = settlers.minWith(compareBy({ it.currentTile.aerialDistanceTo(tile) }, { it.id }))
+        val settler = settlers.minWithOrNull(compareBy({ it.currentTile.aerialDistanceTo(tile) }, { it.id }))
+        val city = if (settler == null) player.cities.minWithOrNull(compareBy({ it.getCenterTile().aerialDistanceTo(tile) }, { it.id })) else null
         val site = observeSettlement(player, settler, position, active = false, knowledge = knowledge)!!
         if (site.siteStatus == "BLOCKED") {
             blocked++
@@ -129,7 +232,7 @@ internal fun observeSettlementOpportunities(player: Civilization, state: TurnSes
                 else -> seen.yieldScore + if (!seen.land && !coast) -1f else 0f
             }
             score += value * (3f / (distance + 1))
-            if (seen?.resourceType == "Luxury" && seen.resource != null && !player.hasResource(seen.resource) && newLuxuries.add(seen.resource)) score += 10f
+            if (seen?.resourceType == "Luxury" && seen.owner == null && seen.resource != null && !player.hasResource(seen.resource) && newLuxuries.add(seen.resource)) score += 10f
         }
         if (newLuxuries.isNotEmpty()) reasons.add("New luxuries: ${newLuxuries.sorted().joinToString()}")
         for (city in player.cities) {
@@ -144,10 +247,64 @@ internal fun observeSettlementOpportunities(player: Civilization, state: TurnSes
             }
             score += spacing * if (city.isCapital()) 2 else 1
         }
-        val distance = settler.currentTile.aerialDistanceTo(tile)
-        score *= (100 - (distance * 3).coerceAtMost(99)) / 100f
-        SettlementCandidate(position, score.roundToInt(), site.siteStatus, site.uncertainty, state.unitHandles.getValue(settler.id), distance, Collections.unmodifiableList(reasons))
+        baseScores[position] = score
+        val distance = (settler?.currentTile ?: city?.getCenterTile())?.aerialDistanceTo(tile)
+        if (distance != null) score *= (100 - (distance * 3).coerceAtMost(99)) / 100f
+        SettlementCandidate(
+            position,
+            score.roundToInt(),
+            site.siteStatus,
+            site.uncertainty,
+            settler?.let { state.unitHandles.getValue(it.id) },
+            distance,
+            Collections.unmodifiableList(reasons),
+            nearestCity = city?.let { state.cityHandle(it.id) },
+            resources = expansionResources(player, tile, state),
+            unseenWorkableTiles = tile.getTilesInDistance(player.gameInfo.ruleset.modOptions.constants.cityWorkRange).count { TilePosition(it.position.x, it.position.y) !in knowledge },
+        )
     }.sortedWith(compareByDescending<SettlementCandidate> { it.score }.thenBy { it.position.x }.thenBy { it.position.y })
+    val reviews = settlers.sortedBy { it.id }.map { unit ->
+        fun scoreAt(position: TilePosition): Int? = baseScores[position]?.let { score ->
+            val tile = player.gameInfo.tileMap[position.x, position.y]
+            (score * (100 - (unit.currentTile.aerialDistanceTo(tile) * 3).coerceAtMost(99)) / 100f).roundToInt()
+        }
+        val history = observeSettlerHistory(player, unit, state)
+        val current = observeSettlement(player, unit, history.position, active, knowledge)!!
+        val target = history.destination?.let { position ->
+            val site = observeSettlement(player, unit, position, active, knowledge)!!
+            SettlementTarget(position, scoreAt(position), SettlementSiteSummary(site.siteStatus, site.siteBlockers, site.uncertainty), settlementRoute(player, unit, position))
+        }
+        SettlerReview(
+            state.unitHandles.getValue(unit.id),
+            history.firstObservedTurn,
+            player.gameInfo.turns - history.firstObservedTurn,
+            player.gameInfo.turns - history.lastMovedTurn,
+            history.destinationChanges,
+            current,
+            scoreAt(history.position),
+            target,
+        )
+    }
+    // Keep a confirmed site in view even when speculative sites score higher.
+    // Fill remaining slots by score, with distinct possible city centers.
+    val recommendations = ArrayList<SettlementCandidate>()
+    candidates.firstOrNull { it.siteStatus == "ELIGIBLE" }?.let(recommendations::add)
+    for (candidate in candidates) {
+        val tile = player.gameInfo.tileMap[candidate.position.x, candidate.position.y]
+        if (recommendations.all { tile.aerialDistanceTo(player.gameInfo.tileMap[it.position.x, it.position.y]) > player.gameInfo.ruleset.modOptions.constants.minimalCityDistance }) recommendations.add(candidate)
+        if (recommendations.size == 3) break
+    }
+    val selected = recommendations.map { it.position }.toSet()
+    val routedCandidates = candidates.map { candidate ->
+        if (candidate.position !in selected) {
+            candidate
+        } else {
+            candidate.copy(
+                route = candidate.nearestSettler?.let { handle -> settlementRoute(player, settlers.single { state.unitHandles[it.id] == handle }, candidate.position) },
+                happiness = settlementHappiness(player, candidate.position),
+            )
+        }
+    }
     return SettlementOpportunities(
         exploredTiles = tiles.size,
         knownEligibleSites = eligible,
@@ -158,6 +315,9 @@ internal fun observeSettlementOpportunities(player: Civilization, state: TurnSes
             uncertain > 0 -> "ONLY_UNCERTAIN_SITES"
             else -> "NO_KNOWN_SITES"
         },
-        candidates = Collections.unmodifiableList(candidates),
+        candidates = Collections.unmodifiableList(routedCandidates),
+        settlers = Collections.unmodifiableList(reviews),
+        recommendations = recommendations.map { it.position },
+        happinessBaseline = if (routedCandidates.none { it.happiness != null }) expansionHappinessBaseline(player) else null,
     )
 }

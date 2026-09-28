@@ -1,11 +1,10 @@
 """Deterministic history from committed memory and receipts, independent of model prose."""
 
-import json
-
-from sqlalchemy import and_, bindparam, select
+from sqlalchemy import and_, or_, select
 
 from civ_agent import memory_schema as tables
 from civ_agent.memory_records import MEMORY_TYPES, TurnSummary, record_text
+from civ_agent.memory_snapshots import load_snapshot, record_bodies
 from civ_agent.memory_store import RecordStore
 
 
@@ -28,7 +27,7 @@ def action_text(command, receipt, settlement=None):
 
 def action_record(key, decision):
     intent = decision.get("intent") or {}
-    reason = intent.get("reason") or decision.get("_pinned", {}).get("plan", {}).get("objective", "")
+    reason = intent.get("reason", "")
     return {
         "decision": key,
         "action": action_text(decision["command"], decision["receipt"], decision.get("settlement")),
@@ -41,91 +40,136 @@ def action_record(key, decision):
 
 
 def build_summary(db, *, turn=None, job=None):
-    where = (
-        tables.jobs.c.id == job
-        if job
-        else and_(tables.jobs.c.game_turn == bindparam("summary_turn", turn), tables.jobs.c.purpose == "gameplay")
-    )
-    records = RecordStore(db).all()
-    rows = (
-        db.execute(
-            select(tables.outbox)
-            .select_from(tables.live_requests.join(tables.jobs, tables.jobs.c.id == tables.outbox.c.job))
-            .where(where)
-            .order_by(tables.request_order)
+    return SummaryReader(db, [(turn, job)]).build(turn, job)
+
+
+class SummaryReader:
+    """Read shared evidence once for a batch; fetch revision bodies only on demand."""
+
+    def __init__(self, db, targets):
+        self.db = db
+        turns = [turn for turn, job in targets if job is None]
+        jobs = [job for turn, job in targets if job is not None]
+        self.jobs = list(
+            db.execute(
+                select(tables.jobs.c.id, tables.jobs.c.game_turn, tables.jobs.c.purpose)
+                .select_from(tables.active_jobs)
+                .where(
+                    or_(
+                        tables.jobs.c.id.in_(jobs),
+                        and_(tables.jobs.c.game_turn.in_(turns), tables.jobs.c.purpose == "gameplay"),
+                    )
+                )
+                .order_by(tables.job_order)
+            ).mappings()
         )
-        .mappings()
-        .all()
-    )
-    actions, unresolved = [], []
-    for row in rows:
-        decision = records[row["decision"]]["body"]
-        entry = action_record(row["decision"], decision)
-        actions.append(entry)
-        if decision["outcome"] in {"pending", "uncertain", "rejected"}:
-            unresolved.append(entry["action"] + ": " + decision["outcome"])
-    revisions = (
-        db.execute(
-            select(tables.records)
-            .select_from(
-                tables.record_versions(tables.reachable).join(tables.jobs, tables.jobs.c.id == tables.records.c.job)
-            )
-            .where(where)
-            .order_by(tables.record_order)
+        ids = [row["id"] for row in self.jobs]
+        self.requests = list(
+            db.execute(
+                select(tables.outbox)
+                .select_from(tables.live_requests)
+                .where(tables.outbox.c.job.in_(ids))
+                .order_by(tables.request_order)
+            ).mappings()
         )
-        .mappings()
-        .all()
-    )
-    changes, observations = {}, {}
-    for row in revisions:
-        body = json.loads(row["body"])
-        if row["category"] in MEMORY_TYPES:
-            changes[row["key"]] = {
-                "id": row["key"],
-                "type": row["category"],
-                "text": record_text(body),
-                "state": body["state"],
-                "retirementReason": body.get("retirementReason"),
-                "assessment": body.get("assessment", ""),
-            }
-        elif (
-            row["category"] == "observation"
-            and row["key"].startswith("observation:")
-            and row["key"] not in {"observation:game", "observation:turn", "observation:communication"}
-        ):
-            observations[row["key"]] = {"id": row["key"], "type": "observation", "body": body}
-    jobs = db.execute(
-        select(tables.jobs.c.snapshot).select_from(tables.active_jobs).where(where).order_by(tables.job_order)
-    ).all()
-    if jobs:
-        if any(json.loads(row[0]).get("memoryPhaseInterrupted") for row in jobs):
-            unresolved.append(
-                "Post-turn memory update was interrupted by checkpoint restoration; "
-                "only memory committed at capture was restored"
+        self.decisions = RecordStore(db).all(keys=[row["decision"] for row in self.requests], project=False)
+        # Follow only keys written by the selected jobs. A single recursive walk
+        # serves the whole batch, and discarded branches remain unreachable.
+        keys = select(tables.records.c.key).where(tables.records.c.job.in_(ids))
+        reachable = select(tables.heads).where(tables.heads.c.key.in_(keys)).cte("summary_reachable", recursive=True)
+        reachable = reachable.union(
+            select(tables.records.c.key, tables.records.c.parent)
+            .select_from(tables.record_versions(reachable))
+            .where(tables.records.c.parent.is_not(None))
+        )
+        self.revisions = list(
+            db.execute(
+                select(tables.records.c.key, tables.records.c.version, tables.records.c.category, tables.records.c.job)
+                .select_from(tables.record_versions(reachable))
+                .where(tables.records.c.job.in_(ids))
+                .order_by(tables.record_order)
+            ).mappings()
+        )
+        self.bodies = {}
+        self.snapshots = {}
+
+    def selected(self, turn, job):
+        jobs = (
+            [row for row in self.jobs if row["id"] == job]
+            if job is not None
+            else [row for row in self.jobs if row["purpose"] == "gameplay" and row["game_turn"] == turn]
+        )
+        ids = {row["id"] for row in jobs}
+        return (
+            jobs,
+            [row for row in self.requests if row["job"] in ids],
+            [row for row in self.revisions if row["job"] in ids],
+        )
+
+    def snapshot(self, job):
+        if job not in self.snapshots:
+            self.snapshots[job] = self.db.execute(
+                select(tables.jobs.c.snapshot).where(tables.jobs.c.id == job)
+            ).scalar_one()
+        return self.snapshots[job]
+
+    def build(self, turn, job):
+        jobs, rows, revisions = self.selected(turn, job)
+        actions, unresolved = [], []
+        for row in rows:
+            decision = self.decisions[row["decision"]]["body"]
+            entry = action_record(row["decision"], decision)
+            actions.append(entry)
+            if decision["outcome"] in {"pending", "uncertain", "rejected"}:
+                unresolved.append(entry["action"] + ": " + decision["outcome"])
+        revisions = [
+            row
+            for row in revisions
+            if row["category"] in MEMORY_TYPES
+            or (
+                row["category"] == "observation"
+                and row["key"].startswith("observation:")
+                and row["key"] not in {"observation:game", "observation:turn", "observation:communication"}
             )
-        snapshot = json.loads(jobs[-1][0])
-        for record in snapshot.get("closingRecords", snapshot["records"]).values():
-            body = record["body"]
-            if record["category"] == "plan" and body.get("state") == "active":
-                unresolved.append(record_text(body) + (" (needs review)" if body.get("needsReview") else ""))
-        if turn is None:
-            turn = next(
+        ]
+        missing = [(row["key"], row["version"]) for row in revisions if (row["key"], row["version"]) not in self.bodies]
+        self.bodies.update(record_bodies(self.db, missing))
+        changes, observations = {}, {}
+        for row in revisions:
+            body = self.bodies[row["key"], row["version"]]["body"]
+            if row["category"] in MEMORY_TYPES:
+                changes[row["key"]] = {
+                    "id": row["key"],
+                    "type": row["category"],
+                    "text": record_text(body),
+                    "state": body["state"],
+                    "retirementReason": body.get("retirementReason"),
+                    "assessment": body.get("retirementAssessment", ""),
+                }
+            else:
+                observations[row["key"]] = {"id": row["key"], "type": "observation", "body": body}
+        # Gameplay already supplies its turn. Decoding its entire saved model
+        # snapshot used to serve no purpose here.
+        if turn is None and jobs:
+            snapshot = load_snapshot(self.db, self.snapshot(jobs[-1]["id"]))
+            turn = max(
                 (
-                    r["body"].get("context", {}).get("turn")
+                    observed_turn
                     for r in snapshot["records"].values()
-                    if r["category"] == "observation" and "context" in r["body"]
+                    if r["category"] == "observation"
+                    and (observed_turn := r["body"].get("turn", r["body"].get("context", {}).get("turn"))) is not None
                 ),
-                None,
+                default=None,
             )
-    return TurnSummary.model_validate(
-        {
-            "turn": turn,
-            "actions": actions,
-            "observations": list(observations.values()),
-            "memoryChanges": list(changes.values()),
-            "unresolved": list(dict.fromkeys(unresolved)),
-        }
-    ).model_dump(exclude_none=True) | {"turn": turn}
+        return TurnSummary.model_validate(
+            {
+                "turn": turn,
+                "actions": actions,
+                "observations": list(observations.values()),
+                "memoryChanges": list(changes.values()),
+                "unresolved": list(dict.fromkeys(unresolved)),
+            }
+        ).model_dump(exclude_none=True) | {"turn": turn}
 
 
 def summary_markdown(summary):

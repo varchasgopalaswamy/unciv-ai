@@ -12,7 +12,12 @@ from civ_agent.tool_discovery import tool_discovery_instructions
 from tests.test_agent_service import AgentService, FakeFactory
 from tests.test_proposal_gateway import Host
 
-PLAN = {"type": "plan", "objective": "Defend Rome", "approach": "Hold the hill", "successCriteria": "Rome survives"}
+PLAN = {
+    "type": "strategy",
+    "assessment": "Defend Rome",
+    "reasons": ["Hold the hill"],
+    "reconsiderWhen": ["Rome survives"],
+}
 MOVE = {"kind": "MOVE_UNIT", "target": "unit1", "destination": {"x": 1, "y": 0}}
 
 
@@ -26,7 +31,7 @@ async def session(tmp_path):
         job = await gateway.open("game", "gameplay", "g1", host, {}, 0)
         await gateway.call(job, "player_turn", {}, "start")
         await gateway.call(job, "unit_details", {"target": "unit1"}, "inspect")
-        result = await gateway.call(job, "memory_update", {"changes": [{"op": "create", "content": PLAN}]}, "plan")
+        result = await gateway.call(job, "memory_update", {"changes": [{"op": "create", "content": PLAN}]}, "strategy")
         key = result["changes"][0]["id"]
         chat = await gateway.open("chat", "communication", "g1", host, {}, 0)
         yield gateway, memory, job, chat, host, key
@@ -49,7 +54,7 @@ async def recover(gateway, job, result, prefix):
 def test_repeated_action_conflict_stops_all_jobs_and_survives_restart(tmp_path):
     async def run():
         async with session(tmp_path) as (gateway, memory, job, chat, host, key):
-            action = {**MOVE, "intent": {"plan": key}}
+            action = {**MOVE, "intent": {"strategy": key, "reason": "Defend Rome"}}
             change_dependency(memory, chat, key, "Defend the city instead")
             first = await gateway.call(job, "player_command", action, "first")
             assert first["error"] == "STALE_ASSUMPTIONS" and first["recoverable"]
@@ -91,7 +96,7 @@ def test_repeated_action_conflict_stops_all_jobs_and_survives_restart(tmp_path):
 def test_successful_retry_clears_conflict_and_different_operations_are_independent(tmp_path):
     async def run():
         async with session(tmp_path) as (gateway, memory, job, chat, host, key):
-            action = {**MOVE, "intent": {"plan": key}}
+            action = {**MOVE, "intent": {"strategy": key, "reason": "Defend Rome"}}
             change_dependency(memory, chat, key, "Updated defensive position")
             first = await gateway.call(job, "player_command", action, "first")
             other = {**action, "destination": {"x": 2, "y": 0}}
@@ -138,7 +143,6 @@ def test_recovery_refreshes_explicit_detail_assumptions_before_the_fresh_attempt
 @pytest.mark.parametrize("purpose", ["gameplay", "communication"])
 def test_prompts_require_bounded_recovery(purpose):
     instructions = tool_discovery_instructions(purpose)
-    assert "The host detects repeated stale command state" in instructions
     assert "recoverable=false is terminal: stop without further tool calls" in instructions
     assert "Follow recoverable error responses" in instructions
     assert "do not stop the gameplay turn for this" not in instructions

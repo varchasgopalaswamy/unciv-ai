@@ -12,7 +12,6 @@ data class PlayerCapabilities(
     val queries: List<String> = listOf("player_capabilities", "player_summary", "owned_cities", "free_great_person_choice", "player_turn", "player_result", "research_details", "policy_details", "victory_progress", "movement_preview", "mission_preview"),
     val commands: List<TurnCommandKind> = TurnCommandKind.entries.toList(),
     val durableRecovery: Boolean = false,
-    val legacyMutationsSupported: Boolean = true,
 )
 
 @Serializable
@@ -99,12 +98,17 @@ data class TurnCity(
     val puppet: Boolean,
     val constructionQueue: List<String>,
     val constructionOptions: List<String>,
+    val health: Int,
+    val maxHealth: Int,
+    val defensiveStrength: Int,
     val development: CityDevelopment? = null,
     val attacks: List<AttackOption> = emptyList(),
     val captureOptions: List<CaptureOption> = emptyList(),
     val purchases: CityPurchases? = null,
     val management: CityManagement? = null,
     val constructionChoice: ConstructionChoice? = null,
+    val productionConversions: Map<String, ProductionConversion> = emptyMap(),
+    val constructionEstimates: Map<String, ConstructionEstimate> = emptyMap(),
 )
 
 @Serializable
@@ -136,7 +140,11 @@ data class PlayerTurnSnapshot(
     val idleUnits: Int,
     val map: MapObservation = MapObservation(),
     val settlement: SettlementOpportunities? = null,
+    val militaryReadiness: MilitaryReadiness? = null,
+    val wonderOpportunities: List<WonderOpportunity> = emptyList(),
     val research: ResearchDevelopment? = null,
+    val culture: CultureOverview? = null,
+    val greatPeople: List<GreatPersonProgress> = emptyList(),
     val diplomacy: DiplomacyObservation = DiplomacyObservation(),
     val diplomacyOpportunities: DiplomacyOpportunities? = null,
     val economy: EconomyObservation? = null,
@@ -166,8 +174,6 @@ data class TurnCommandRequest(
     val attackFrom: TilePosition? = null,
     val confirmAction: Boolean = false,
     val enabled: Boolean? = null,
-    // Retained for old requests/receipts; social intent never fences native game commands.
-    val socialVersion: Long? = null,
     val targets: List<String> = emptyList(),
 )
 

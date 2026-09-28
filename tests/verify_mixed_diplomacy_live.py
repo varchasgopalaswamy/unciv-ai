@@ -52,9 +52,9 @@ def verify(root: Path) -> JsonObject:
         with sqlite3.connect((service / "civilization" / "memory.sqlite3").as_uri() + "?mode=ro", uri=True) as db:
             plans = [
                 (json.loads(body), job)
-                for body, job in db.execute("SELECT body,job FROM records WHERE category='plan'")
+                for body, job in db.execute("SELECT body,job FROM records WHERE category='strategy'")
             ]
-        checks[f"{name}_updated_private_diplomatic_plan"] = any(
+        checks[f"{name}_updated_private_diplomatic_strategy"] = any(
             "China" in body.get("subjects", []) and job in review_jobs for body, job in plans
         )
     checks["all_gameplay_and_chat_models_match"] = bool(settings) and all(

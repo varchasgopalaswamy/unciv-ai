@@ -13,6 +13,7 @@ from pathlib import Path
 
 from civ_agent import scheduler
 from civ_agent.commands.host import ensure_players
+from civ_agent.monitoring import path_for, read_record
 
 MODEL = "gpt-5.6-luna"
 EFFORT = "medium"
@@ -79,7 +80,7 @@ def main() -> int:
     args.model, args.reasoning_effort = MODEL, EFFORT
     args.action = "resume" if args.resume else "start"
     if not args.resume:
-        assert not (root / "runner" / "run.json").exists(), "Use --resume for an existing live run"
+        assert not read_record(path_for(root), "state", "run") is not None, "Use --resume for an existing live run"
         ensure_players(root / "players.json", False, PLAYERS)
     os.umask(0o077)
     base_prompt = scheduler.player_prompt

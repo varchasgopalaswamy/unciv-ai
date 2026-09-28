@@ -249,7 +249,7 @@ internal class NativeTradeBridge(private val runtime: GameExecutor, private val 
         )
         if (outcome != null) {
             runtime.communicationState.outcomes.add(outcome)
-            runtime.communication.emit(proposal.participants(), "engine", outcome.recordJson(), proposal.participants().toSet())
+            runtime.communication.emit(proposal.participants(), "engine", outcome.recordJson())
             for (war in outcome.wars) runtime.communication.diplomacyEnacted(war.declaringCivilization, war.targetCivilization, "DECLARE_WAR", a.gameInfo.turns)
         }
         if (counter != null) importRequest(a, b, counter, proposal)

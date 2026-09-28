@@ -11,8 +11,9 @@ from civ_agent.civilization_state import CivilizationState, StateConflict
 from civ_agent.proposal_gateway import ProposalGateway
 from civ_agent.service_io import ServiceIO
 from civ_agent.state_updates import apply_overview_update, overview_update, stamp
+from tests.memory_helpers import stored_records
 from tests.test_proposal_gateway import Host
-from tests.test_structured_memory import create, plan
+from tests.test_structured_memory import create, strategy
 
 
 def stamped(value, revision="r1", epoch="g1"):
@@ -29,7 +30,7 @@ def test_delta_round_trip_changes_only_changed_sections_and_rows():
             "economy": {"gold": 50, "income": 4},
             "pending": [],
             "rules": {"description": "Stable rules " * 100},
-            "scenario": {"mission": "Earlier objective"},
+            "scenario": {"mission": "Earlier assessment"},
         }
     )
     after = stamped(
@@ -79,6 +80,27 @@ def test_empty_reordered_and_unkeyed_sections_reconstruct_exactly():
     assert not unchanged["set"] and not unchanged["collections"] and not unchanged["removed"]
     typed = overview_update(stamped({"value": True}), stamped({"value": 1}, "r2"), [])
     assert type(typed["set"]["value"]) is int
+
+
+def test_wonder_updates_remove_completed_and_send_only_changed_or_unlocked_entries():
+    oracle = {"name": "The Oracle", "benefits": "Free Social Policy", "cities": [{"city": "city1", "turns": 8}]}
+    college = {"name": "National College", "benefits": "+50% Science", "cities": [{"city": "city1", "turns": 5}]}
+    before = stamped({"wonderOpportunities": [college, oracle]})
+    sistine = {"name": "Sistine Chapel", "benefits": "+25% Culture", "cities": [{"city": "city1", "turns": 20}]}
+    after = stamped({"wonderOpportunities": [college, sistine]}, "r2")
+    delta = overview_update(before, after, [])
+    assert "wonderOpportunities" not in delta["set"]
+    assert delta["collections"]["wonderOpportunities"] == {
+        "key": "name",
+        "upsert": [sistine],
+        "removed": ["The Oracle"],
+        "order": ["National College", "Sistine Chapel"],
+    }
+    assert apply_overview_update(before, delta) == after
+    updated = stamped({"wonderOpportunities": [college, {**sistine, "cities": [{"city": "city1", "turns": 19}]}]}, "r3")
+    changed = overview_update(after, updated, [])
+    assert [w["name"] for w in changed["collections"]["wonderOpportunities"]["upsert"]] == ["Sistine Chapel"]
+    assert apply_overview_update(after, changed) == updated
 
 
 class UpdatingHost(Host):
@@ -220,6 +242,8 @@ def test_research_result_reports_actual_active_technology_and_retained_progress_
                 researchQueue=["Mining"],
                 research={
                     "current": "Mining",
+                    "sciencePerTurn": "5",
+                    "overflowScience": 0,
                     "technologies": [{"name": "Mining", "researched": False, "scienceStored": 20}],
                 },
             )
@@ -262,7 +286,7 @@ def test_successive_actions_use_updates_and_only_changed_inspections_expire(tmp_
             assert [q.model_dump() for q in job.details_read] == [other["query"]]
             assert apply_overview_update(base, delta) == job.delivered_overview
             assert host.reads == 2  # One explicit read, one internal read.
-            create(memory, plan(sources=["observation:overview"]), job=job.id)
+            create(memory, strategy(sources=["observation:overview"]), job=job.id)
             # Earlier delivered detail remains citeable as historical evidence,
             # but cannot be pinned as a current assumption without a new read.
             stale = memory.patch(
@@ -270,15 +294,31 @@ def test_successive_actions_use_updates_and_only_changed_inspections_expire(tmp_
                 [
                     {
                         "op": "create",
-                        "content": plan(
-                            assumptions=[{"text": "The old path is still current", "source": detail["evidence"]}]
-                        ),
+                        "content": {
+                            "type": "belief",
+                            "claim": "The old path is still current",
+                            "uncertainty": "medium",
+                            "sources": [detail["evidence"]],
+                        },
                     }
                 ],
             )
             assert stale["changes"][0]["accepted"]
             for source in ("observation:game", "observation:unit/unit1"):
-                assessment = memory.patch(job.id, [{"op": "create", "content": plan(sources=[source])}])["changes"][0]
+                assessment = memory.patch(
+                    job.id,
+                    [
+                        {
+                            "op": "create",
+                            "content": {
+                                "type": "belief",
+                                "claim": "Historical assessment",
+                                "uncertainty": "medium",
+                                "sources": [source],
+                            },
+                        }
+                    ],
+                )["changes"][0]
                 assert assessment["accepted"] and assessment["warnings"]
             missing = await gateway.call(job, "player_command", MOVE, "unread-move")
             assert missing["error"] == "DETAIL_REQUIRED"
@@ -300,28 +340,31 @@ def test_actions_deliver_flagged_plans_without_delivering_unread_evidence(tmp_pa
             detail = await inspect(gateway, job)
             source = "observation:overview" if source_kind == "overview" else detail["evidence"]
             key = create(
-                memory, plan(assumptions=[{"text": "The position is unchanged", "source": source}]), job=job.id
+                memory, strategy(assumptions=[{"text": "The position is unchanged", "source": source}]), job=job.id
             )
             result = await gateway.call(job, "player_command", MOVE, "move")
             assert "memoryUpdates" not in result
-            updated = memory.snapshot("gameplay")["records"][key]
+            updated = stored_records(memory)[key]
             assert updated["version"] == 1
             assert job.delivered_overview is not None
-            assert job.delivered_overview["strategyReview"]["plans"][0]["id"] == key
-            assert job.delivered_overview["strategyReview"]["plans"][0]["needsReview"]
+            if source_kind == "detail":
+                assert job.delivered_overview["strategyReview"]["assessments"][0]["id"] == key
+                assert job.delivered_overview["strategyReview"]["assessments"][0]["needsReview"]
+            else:
+                assert job.delivered_overview["strategyReview"]["assessments"] == []
             assert apply_overview_update(base, result["stateUpdate"]) == job.delivered_overview
             assert job.delivered_overview is not None and "memoryUpdates" not in job.delivered_overview
             args = {
                 "changes": [
                     {
-                        "op": "amend",
+                        "op": "replace",
                         "id": key,
-                        "fields": {k: v for k, v in (plan(approach="Hold the new position")).items() if k != "type"},
+                        "content": strategy(reasons=["Hold the new position"]),
                     }
                 ]
             }
             revision = await gateway.call(job, "memory_update", args, "review")
-            # The revised plan explicitly drops the old positional assumption;
+            # The revised strategy explicitly drops the old positional assumption;
             # it need not inspect an abandoned dependency to do so.
             assert revision["changes"][0]["accepted"]
             assert not job.memory["records"][key]["body"]["needsReview"]
@@ -338,9 +381,9 @@ def test_communication_cannot_retire_notebook_entries_or_deliver_later_contribut
     async def run():
         async with session(tmp_path) as (gateway, job, _, memory):
             base = await gateway.call(job, "player_turn", {}, "start")
-            key = create(memory, plan(), job=job.id)
+            key = create(memory, strategy(), job=job.id)
             chat = await gateway.open("chat", "communication", "g1", job.connection, {}, 0)
-            unseen = create(memory, plan(objective="Undelivered contribution"), job=chat.id)
+            unseen = create(memory, strategy(assessment="Undelivered contribution"), job=chat.id)
             assert not memory.patch(chat.id, [{"op": "retire", "id": key, "reason": "abandoned"}])["changes"][0][
                 "accepted"
             ]
@@ -348,7 +391,20 @@ def test_communication_cannot_retire_notebook_entries_or_deliver_later_contribut
             result = await gateway.call(job, "player_command", MOVE, "move")
             assert apply_overview_update(base, result["stateUpdate"]) == job.delivered_overview
             assert "memoryUpdates" not in result
-            assessment = memory.patch(job.id, [{"op": "create", "content": plan(sources=[unseen])}])["changes"][0]
+            assessment = memory.patch(
+                job.id,
+                [
+                    {
+                        "op": "create",
+                        "content": {
+                            "type": "belief",
+                            "claim": "Communication assessment",
+                            "uncertainty": "medium",
+                            "sources": [unseen],
+                        },
+                    }
+                ],
+            )["changes"][0]
             assert assessment["accepted"] and assessment["warnings"][0]["sources"] == [unseen]
             assert not memory.refresh_memory(job.id, [unseen])
 
@@ -422,11 +478,11 @@ def test_refresh_failure_keeps_receipt_and_does_not_deliver_partial_evidence(tmp
         async with session(tmp_path) as (gateway, job, host, memory):
             await gateway.call(job, "player_turn", {}, "start")
             await inspect(gateway, job)
-            before = memory.snapshot("gameplay")["records"]["observation:overview"]
+            before = stored_records(memory)["observation:overview"]
             host.after_command = lambda: setattr(host, "fail_refresh", True)
             receipt = await gateway.call(job, "player_command", MOVE, "move")
             assert receipt["done"] and receipt["stateUpdate"]["kind"] == "unavailable"
-            assert memory.snapshot("gameplay")["records"]["observation:overview"] == before
+            assert stored_records(memory)["observation:overview"] == before
             assert job.observation is None and not memory.pending()
             assert await gateway.call(job, "player_command", MOVE, "move") == receipt
             assert len(host.executed) == 1
@@ -447,13 +503,13 @@ def test_invalid_state_update_stops_for_inspection_and_keeps_committed_receipt(t
         async with session(tmp_path) as (gateway, job, host, memory):
             await gateway.call(job, "player_turn", {}, "start")
             await inspect(gateway, job)
-            before = memory.snapshot("gameplay")["records"]["observation:overview"]
+            before = stored_records(memory)["observation:overview"]
             key = create(
                 memory,
-                plan(assumptions=[{"text": "The overview is current", "source": "observation:overview"}]),
+                strategy(assumptions=[{"text": "The overview is current", "source": "observation:overview"}]),
                 job=job.id,
             )
-            plan_before = memory.snapshot("gameplay")["records"][key]
+            plan_before = stored_records(memory)[key]
             if failure == "invalid_view":
                 host.after_command = lambda: host.view.update(turn="malformed")
             else:
@@ -464,7 +520,7 @@ def test_invalid_state_update_stops_for_inspection_and_keeps_committed_receipt(t
                     nonlocal fail_once
                     if fail_once and result and result.get("stateUpdate", {}).get("kind") == "delta":
                         assert "memoryUpdates" not in result
-                        assert result["stateUpdate"]["set"]["strategyReview"]["plans"][0]["id"] == key
+                        assert "strategyReview" not in result["stateUpdate"]["set"]
                         fail_once = False
                         raise OSError("Interrupted response write")
                     return original(db, job, id, name, arguments, result)
@@ -476,8 +532,8 @@ def test_invalid_state_update_stops_for_inspection_and_keeps_committed_receipt(t
             assert gateway.failed.is_set() and len(host.executed) == 1
             receipt = memory.call_receipt(job.id, "move")
             assert receipt is not None and receipt["done"] and not memory.pending()
-            assert memory.snapshot("gameplay")["records"]["observation:overview"] == before
-            assert memory.snapshot("gameplay")["records"][key] == plan_before
+            assert stored_records(memory)["observation:overview"] == before
+            assert stored_records(memory)[key] == plan_before
             with memory.transaction() as db:
                 snapshot = json.loads(
                     db.exec_driver_sql("SELECT snapshot FROM jobs WHERE id=?", (job.id,)).scalar_one()

@@ -12,6 +12,7 @@ import time
 
 from civ_agent import scheduler
 from civ_agent.commands.host import ensure_players
+from civ_agent.monitoring import path_for, read_record
 from civ_agent.tls import write_private_json
 
 MODEL = "gpt-5.6-luna"
@@ -43,7 +44,7 @@ def main() -> int:
     args.model, args.reasoning_effort = MODEL, EFFORT
     args.action = "resume" if args.resume else "start"
     if not args.resume:
-        if (root / "runner" / "run.json").exists():
+        if read_record(path_for(root), "state", "run") is not None:
             parser.error("Use --resume for an existing run")
         ensure_players(root / "players.json", False, ("Rome",))
     os.umask(0o077)

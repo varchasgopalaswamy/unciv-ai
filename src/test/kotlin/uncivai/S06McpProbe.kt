@@ -29,7 +29,6 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import uncivai.mcp.PlayerMcpBinding
 import uncivai.mcp.PlayerMcpServer
-import uncivai.player.ChooseFreeGreatPersonRequest
 import uncivai.player.FreeGreatPersonSnapshot
 import uncivai.player.OwnedCitiesSnapshot
 import uncivai.player.PlayerCommandJson
@@ -37,7 +36,6 @@ import uncivai.player.PlayerHost
 import uncivai.player.PlayerSession
 import uncivai.player.PlayerSummary
 import uncivai.player.PlayerSummaryJson
-import uncivai.player.RenameCityRequest
 import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.io.OutputStreamWriter
@@ -202,163 +200,50 @@ object S06McpProbe {
 
             verifyHiddenStateDoesNotCrossBinding(game, greece, rc.client, romeSummary, romeCities, romeChoice)
 
-            toolError(
-                rc.client.callTool(
-                    "rename_city",
-                    renameArguments("cross-city", romeCities.string("epoch"), greece.cities.single().id, "No Access"),
-                ),
-                "CITY_UNAVAILABLE",
-                "City is unavailable",
-            )
-            toolError(
-                rc.client.callTool(
-                    "choose_free_great_person",
-                    choiceArguments(
-                        "unknown-decision",
-                        romeChoice.string("epoch"),
-                        "decision999",
-                        "Great Scientist",
-                    ),
-                ),
-                "DECISION_UNAVAILABLE",
-                "Decision is unavailable",
-            )
-
-            val greeceOutOfTurnArguments = choiceArguments(
-                "same-id-across-bindings",
-                greeceChoice.string("epoch"),
-                greeceDecisionHandle,
-                "Great Scientist",
-            )
-            toolError(
-                gc.client.callTool("choose_free_great_person", greeceOutOfTurnArguments),
-                "NOT_YOUR_TURN",
-                "It is not your turn",
-            )
-
-            val renameA = renameArguments(
-                "same-id-across-bindings",
-                romeCities.string("epoch"),
-                romeCityHandle,
-                "Nova Roma",
-            )
-            val receiptA = success(rc.client.callTool("rename_city", renameA))
-            check(receiptA.keys == setOf("requestId", "epoch", "cityHandle", "previousName", "name"))
+            suspend fun command(client: Client, kind: String, target: String? = null, selection: String, id: String): Map<String, Any> {
+                val turn = success(client.callTool("player_turn", emptyMap()))
+                return buildMap {
+                    put("requestId", id)
+                    put("epoch", turn.string("epoch"))
+                    put("revision", turn.string("revision"))
+                    put("kind", kind)
+                    if (target != null) put("target", target)
+                    put("selection", selection)
+                }
+            }
+            toolError(rc.client.callTool("player_command", command(rc.client, "RENAME_CITY", greece.cities.single().id, "No Access", "foreign")), "CITY_UNAVAILABLE", "City is unavailable")
+            toolError(rc.client.callTool("player_command", command(rc.client, "CHOOSE_FREE_GREAT_PERSON", selection = "Worker", id = "unknown-choice")), "OPTION_UNAVAILABLE", "Option is unavailable")
+            toolError(gc.client.callTool("player_command", command(gc.client, "CHOOSE_FREE_GREAT_PERSON", selection = "Great Scientist", id = "same-id-across-bindings")), "NOT_YOUR_TURN", "It is not your turn")
+            val renameA = command(rc.client, "RENAME_CITY", romeCityHandle, "Nova Roma", "same-id-across-bindings")
+            val receiptA = success(rc.client.callTool("player_command", renameA))
             check(rome.cities.single().name == "Nova Roma")
             rc.close()
             rc = connect(url, ROME_TOKEN, "rome-reconnected")
             romeClient = rc
             check(rc.transport.sessionId == null)
-            val reconnectedCities = success(rc.client.callTool("owned_cities", emptyMap()))
-            check(reconnectedCities.array("cities").single().jsonObject.string("handle") == romeCityHandle)
-
-            val renameB = renameArguments("rename-b", romeCities.string("epoch"), romeCityHandle, "New Rome")
-            success(rc.client.callTool("rename_city", renameB))
+            val renameB = command(rc.client, "RENAME_CITY", romeCityHandle, "New Rome", "rename-b")
+            success(rc.client.callTool("player_command", renameB))
+            check(success(rc.client.callTool("player_command", renameA)) == receiptA)
             check(rome.cities.single().name == "New Rome")
-            check(success(rc.client.callTool("rename_city", renameA)) == receiptA)
-            check(rome.cities.single().name == "New Rome")
-            toolError(
-                rc.client.callTool(
-                    "choose_free_great_person",
-                    choiceArguments(
-                        "same-id-across-bindings",
-                        romeChoice.string("epoch"),
-                        romeDecisionHandle,
-                        "Great Scientist",
-                    ),
-                ),
-                "REQUEST_ID_CONFLICT",
-                "Request ID conflicts with an earlier request",
-            )
-
+            val duplicateArguments = command(rc.client, "CHOOSE_FREE_GREAT_PERSON", selection = "Great Scientist", id = "concurrent-choice")
+            toolError(rc.client.callTool("player_command", duplicateArguments + ("requestId" to "same-id-across-bindings")), "REQUEST_ID_CONFLICT", "Request ID conflicts with an earlier request")
             val romeUnitIds = rome.units.getCivUnits().map { it.id }.toSet()
-            val duplicateArguments = choiceArguments(
-                "concurrent-choice",
-                romeChoice.string("epoch"),
-                romeDecisionHandle,
-                "Great Scientist",
-            )
-            val duplicateResults = coroutineScope {
-                listOf(
-                    async { rc.client.callTool("choose_free_great_person", duplicateArguments) },
-                    async { rc.client.callTool("choose_free_great_person", duplicateArguments) },
-                ).map { it.await() }
+            val duplicateReceipts = coroutineScope {
+                listOf(async { rc.client.callTool("player_command", duplicateArguments) }, async { rc.client.callTool("player_command", duplicateArguments) }).map { success(it.await()) }
             }
-            val duplicateReceipts = duplicateResults.map(::success)
-            check(duplicateReceipts.distinct().size == 1)
-            check(
-                duplicateReceipts.first().keys ==
-                    setOf("requestId", "epoch", "decisionHandle", "unitName", "remainingChoices"),
-            )
-            check(rome.greatPeople.freeGreatPeople == 0)
+            check(duplicateReceipts.distinct().size == 1 && rome.greatPeople.freeGreatPeople == 0)
             checkAddedUnit(rome, romeUnitIds, "Great Scientist")
-
             rc.close()
             rc = connect(url, ROME_TOKEN, "rome-second-reconnect")
             romeClient = rc
-            check(success(rc.client.callTool("choose_free_great_person", duplicateArguments)) == duplicateReceipts.first())
-            check(rome.greatPeople.freeGreatPeople == 0)
-            toolError(
-                rc.client.callTool(
-                    "rename_city",
-                    renameArguments(
-                        "concurrent-choice",
-                        romeCities.string("epoch"),
-                        romeCityHandle,
-                        "Cross Kind Conflict",
-                    ),
-                ),
-                "REQUEST_ID_CONFLICT",
-                "Request ID conflicts with an earlier request",
-            )
-            toolError(
-                rc.client.callTool(
-                    "choose_free_great_person",
-                    duplicateArguments + ("unitName" to "Great Engineer"),
-                ),
-                "REQUEST_ID_CONFLICT",
-                "Request ID conflicts with an earlier request",
-            )
-
+            check(success(rc.client.callTool("player_command", duplicateArguments)) == duplicateReceipts.first())
+            toolError(rc.client.callTool("player_command", duplicateArguments + ("selection" to "Great Engineer")), "REQUEST_ID_CONFLICT", "Request ID conflicts with an earlier request")
             setCurrentPlayer(game, greece)
-            check(
-                success(
-                    rc.client.callTool("choose_free_great_person", duplicateArguments),
-                ) == duplicateReceipts.first(),
-            ) { "A historical receipt was lost after the turn changed" }
-            toolError(
-                gc.client.callTool(
-                    "rename_city",
-                    renameArguments("foreign-city", greeceCities.string("epoch"), game.getCivilization("Rome").cities.single().id, "No Access"),
-                ),
-                "CITY_UNAVAILABLE",
-                "City is unavailable",
-            )
-            toolError(
-                gc.client.callTool(
-                    "choose_free_great_person",
-                    choiceArguments(
-                        "foreign-decision",
-                        greeceChoice.string("epoch"),
-                        romeDecisionHandle,
-                        "Great Scientist",
-                    ),
-                ),
-                "DECISION_UNAVAILABLE",
-                "Decision is unavailable",
-            )
-            val refreshedGreeceChoice = success(
-                gc.client.callTool("free_great_person_choice", emptyMap()),
-            )
-            val greeceRetry = greeceOutOfTurnArguments + (
-                "decisionHandle" to refreshedGreeceChoice.decision().string("handle")
-                )
+            check(success(rc.client.callTool("player_command", duplicateArguments)) == duplicateReceipts.first())
+            toolError(gc.client.callTool("player_command", command(gc.client, "RENAME_CITY", rome.cities.single().id, "No Access", "foreign-city")), "CITY_UNAVAILABLE", "City is unavailable")
             val greeceUnitIds = greece.units.getCivUnits().map { it.id }.toSet()
-            val greeceReceipt = success(
-                gc.client.callTool("choose_free_great_person", greeceRetry),
-            )
-            check(greeceReceipt.string("requestId") == "same-id-across-bindings")
-            check(greece.greatPeople.freeGreatPeople == 1)
+            val greeceReceipt = success(gc.client.callTool("player_command", command(gc.client, "CHOOSE_FREE_GREAT_PERSON", selection = "Great Scientist", id = "same-id-across-bindings")))
+            check(greeceReceipt.string("requestId") == "same-id-across-bindings" && greece.greatPeople.freeGreatPeople == 1)
             checkAddedUnit(greece, greeceUnitIds, "Great Scientist")
 
             verifyRawHttpBoundary(url, port)
@@ -405,15 +290,13 @@ object S06McpProbe {
             "mission_preview" to setOf("target", "mission", "destination"),
             "research_details" to setOf("names"),
             "policy_details" to setOf("names"),
-            "victory_progress" to setOf("names"),
-            "player_command" to setOf("requestId", "epoch", "revision", "reviewId", "deferReason", "kind", "target", "targets", "selection", "queue", "destination", "attackFrom", "confirmBreakPromise", "confirmAction", "enabled", "confirmWar", "worked", "locked", "index", "toIndex", "socialVersion"),
-            "player_receipt" to setOf("requestId", "epoch", "revision", "reviewId", "deferReason", "kind", "target", "targets", "selection", "queue", "destination", "attackFrom", "confirmBreakPromise", "confirmAction", "enabled", "confirmWar", "worked", "locked", "index", "toIndex", "socialVersion"),
+            "victory_progress" to setOf("names", "sections", "metrics", "civilizations", "fromTurn", "toTurn"),
+            "player_command" to setOf("requestId", "epoch", "revision", "reviewId", "deferReason", "kind", "target", "targets", "selection", "queue", "destination", "attackFrom", "confirmBreakPromise", "confirmAction", "enabled", "confirmWar", "worked", "locked", "index", "toIndex"),
+            "player_receipt" to setOf("requestId", "epoch", "revision", "reviewId", "deferReason", "kind", "target", "targets", "selection", "queue", "destination", "attackFrom", "confirmBreakPromise", "confirmAction", "enabled", "confirmWar", "worked", "locked", "index", "toIndex"),
             "player_communication" to setOf("request"),
             "player_summary" to emptySet(),
             "owned_cities" to emptySet(),
-            "rename_city" to setOf("requestId", "epoch", "cityHandle", "name"),
             "free_great_person_choice" to emptySet(),
-            "choose_free_great_person" to setOf("requestId", "epoch", "decisionHandle", "unitName"),
         )
         check(tools.keys == expectedInputs.keys) { "Unexpected MCP tools: ${tools.keys}" }
         check(listed.nextCursor == null)
@@ -543,24 +426,12 @@ object S06McpProbe {
         check(!rawToolResult(nullArguments).boolean("isError"))
 
         val malformedCalls = listOf(
-            rpcToolCall("player_summary", "{\"viewer\":\"Greece\"}"),
-            rpcToolCall("rename_city", "{}"),
-            rpcToolCall(
-                "rename_city",
-                "{\"requestId\":\"raw\",\"epoch\":null,\"cityHandle\":\"h\",\"name\":\"n\"}",
-            ),
-            rpcToolCall(
-                "rename_city",
-                "{\"requestId\":\"raw\",\"epoch\":\"e\",\"cityHandle\":3,\"name\":\"n\"}",
-            ),
-            rpcToolCall(
-                "choose_free_great_person",
-                "{\"requestId\":\"raw\",\"epoch\":\"e\",\"decisionHandle\":\"h\",\"unitName\":{}}",
-            ),
-            rpcToolCall(
-                "choose_free_great_person",
-                "{\"requestId\":\"raw\",\"epoch\":\"e\",\"decisionHandle\":\"h\",\"unitName\":\"Great Scientist\",\"extra\":true}",
-            ),
+            rpcToolCall("player_summary", """{"viewer":"Greece"}"""),
+            rpcToolCall("player_command", "{}"),
+            rpcToolCall("player_command", """{"requestId":"raw","epoch":null,"revision":"r","kind":"RENAME_CITY","target":"h","selection":"n"}"""),
+            rpcToolCall("player_command", """{"requestId":"raw","epoch":"e","revision":"r","kind":"RENAME_CITY","target":3,"selection":"n"}"""),
+            rpcToolCall("player_command", """{"requestId":"raw","epoch":"e","revision":"r","kind":"CHOOSE_FREE_GREAT_PERSON","selection":{}}"""),
+            rpcToolCall("player_command", """{"requestId":"raw","epoch":"e","revision":"r","kind":"CHOOSE_FREE_GREAT_PERSON","selection":"Great Scientist","extra":true}"""),
         )
         for (body in malformedCalls) {
             val response = rawRequest("POST", url, ROME_TOKEN, body)
@@ -590,28 +461,29 @@ object S06McpProbe {
         val game = runtime.game
         val rome = game.getCivilization("Rome")
         val injected = IllegalStateException("private failure after placement")
-        val session = PlayerHost(
-            runtime,
-            { city, name -> city.name = name },
-            { civilization, unitName ->
-                checkNotNull(civilization.greatPeople.chooseFreeGreatPerson(unitName))
-                throw injected
-            },
-        ).bindPlayer("Rome")
+        var armed = false
+        runtime.executor.enableCheckpoints(
+            CheckpointStore(data.resolve("checkpoint.json"), beforeReplace = {
+                if (armed && rome.greatPeople.freeGreatPeople == 0) throw injected
+            }),
+        )
+        val session = PlayerHost(runtime).bindPlayer("Rome")
         val server = PlayerMcpServer(listOf(PlayerMcpBinding(HALT_TOKEN, session)), port = 0)
         val port = server.start()
         val connection = connect("http://127.0.0.1:$port/mcp", HALT_TOKEN, "halt-client")
         try {
-            val choice = success(connection.client.callTool("free_great_person_choice", emptyMap()))
+            val turn = success(connection.client.callTool("player_turn", emptyMap()))
             val unitIds = rome.units.getCivUnits().map { it.id }.toSet()
+            armed = true
             val failure = toolError(
                 connection.client.callTool(
-                    "choose_free_great_person",
-                    choiceArguments(
-                        "halt-after-placement",
-                        choice.string("epoch"),
-                        choice.decision().string("handle"),
-                        "Great Scientist",
+                    "player_command",
+                    mapOf(
+                        "requestId" to "halt-after-placement",
+                        "epoch" to turn.string("epoch"),
+                        "revision" to turn.string("revision"),
+                        "kind" to "CHOOSE_FREE_GREAT_PERSON",
+                        "selection" to "Great Scientist",
                     ),
                 ),
                 "GAME_HALTED",
@@ -685,30 +557,6 @@ object S06McpProbe {
         check(Json.parseToJsonElement(text) == structured)
         return structured
     }
-
-    private fun renameArguments(
-        requestId: String,
-        epoch: String,
-        cityHandle: String,
-        name: String,
-    ): Map<String, Any?> = mapOf(
-        "requestId" to requestId,
-        "epoch" to epoch,
-        "cityHandle" to cityHandle,
-        "name" to name,
-    )
-
-    private fun choiceArguments(
-        requestId: String,
-        epoch: String,
-        decisionHandle: String,
-        unitName: String,
-    ): Map<String, Any?> = mapOf(
-        "requestId" to requestId,
-        "epoch" to epoch,
-        "decisionHandle" to decisionHandle,
-        "unitName" to unitName,
-    )
 
     private fun checkAddedUnit(
         civilization: Civilization,
@@ -836,7 +684,7 @@ object S06McpProbe {
         override fun missionPreview(request: uncivai.player.MissionPreviewRequest): uncivai.player.MissionPreview = fail()
         override fun researchDetails(names: List<String>): uncivai.player.ResearchDetails = fail()
         override fun policyDetails(names: List<String>): uncivai.player.PolicyDetails = fail()
-        override fun victoryProgress(names: List<String>): uncivai.player.VictoryProgress = fail()
+        override fun victoryProgress(request: uncivai.player.VictoryProgressRequest): uncivai.player.VictoryProgress = fail()
 
         override fun completedReceipt(request: uncivai.player.TurnCommandRequest): uncivai.player.TurnCommandReceipt? = fail()
 
@@ -846,11 +694,7 @@ object S06McpProbe {
 
         override fun cities(): OwnedCitiesSnapshot = throw AssertionError("private adapter assertion")
 
-        override fun renameCity(request: RenameCityRequest) = fail()
-
         override fun freeGreatPersonChoice(): FreeGreatPersonSnapshot = fail()
-
-        override fun chooseFreeGreatPerson(request: ChooseFreeGreatPersonRequest) = fail()
     }
 
     private val rawHttpClient = java.net.http.HttpClient.newBuilder()

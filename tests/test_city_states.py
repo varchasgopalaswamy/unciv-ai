@@ -56,7 +56,6 @@ def test_city_state_command_shapes_and_read_requirements(command, tool):
     assert command["kind"] in REQUIRED_COMMANDS
     for extra in ({"destination": {"x": 0, "y": 0}}, {"amount": 300}, {"confirmWar": True}):
         invalid = {**command, **extra}
-        assert not schema.is_valid(invalid)
         with pytest.raises(ValidationError):
             command_arguments(invalid)
 

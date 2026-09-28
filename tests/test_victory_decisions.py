@@ -51,7 +51,6 @@ def test_victory_commands_have_explicit_shapes_and_reads(command):
     assert command_arguments(command) == command
     assert (required_detail(command) is not None) == (command["kind"] == "ADD_SPACESHIP_PART")
     invalid = {**command, "destination": {"x": 0, "y": 0}}
-    assert not validator.is_valid(invalid)
     with pytest.raises(ValidationError):
         command_arguments(invalid)
     if command["kind"] == "CAST_DIPLOMATIC_VOTE":

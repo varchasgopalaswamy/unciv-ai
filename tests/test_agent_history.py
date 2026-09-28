@@ -102,7 +102,12 @@ class HistoryTests(unittest.TestCase):
         self.terminal()
         log = self.store.logs["activation"]
         serialized = log.path.read_text()
-        markdown = log.markdown.read_text()
+        from civ_agent.runner_history import render_markdown
+
+        markdown = render_markdown(
+            {"civilization": "Rome", "gameTurn": 0, "activationId": "activation"},
+            [json.loads(line) for line in serialized.splitlines()],
+        )
         for secret in (
             self.player_token,
             self.service_token,
@@ -125,7 +130,7 @@ class HistoryTests(unittest.TestCase):
         self.assertIn("tool_call", kinds)
         self.assertIn("tool_result", kinds)
         self.assertEqual(0o600, os.stat(log.path).st_mode & 0o777)
-        self.assertEqual(0o600, os.stat(log.markdown).st_mode & 0o777)
+        self.assertFalse((log.directory / "history.md").exists())
 
     def test_turn_binding_drops_replayed_old_and_foreign_conversation_events(self):
         self.notify(
@@ -169,8 +174,8 @@ class HistoryTests(unittest.TestCase):
         chunks = [event for event in all_events if event["kind"] == "tool_result"]
         self.assertEqual(data, json.loads("".join(event["data"]["text"] for event in chunks)))
         self.assertEqual(list(range(len(all_events))), [event["sequence"] for event in all_events])
-        self.assertIn("2026-09-08T00:00:00Z", log.markdown.read_text())
-        self.assertIn("4999", log.markdown.read_text())
+        self.assertIn("2026-09-08T00:00:00Z", log.path.read_text())
+        self.assertIn("4999", log.path.read_text())
         restored = HistoryStore(self.root / "history", self.service_token)
         self.assertEqual(self.store.page("activation", 0, 2), restored.page("activation", 0, 2))
         for cursor, limit in [(-1, 1), (True, 1), (999999, 1), (0, 0), (0, 101)]:
@@ -228,21 +233,14 @@ class HistoryTests(unittest.TestCase):
         result = {"structuredContent": {"value": True}, "content": [{"type": "text", "text": '{ "value": true }'}]}
         self.assertEqual([], canonical_tool_result(result)["content"])
 
-    def test_deferred_render_keeps_events_durable_and_skips_unchanged_markdown(self):
-        store = HistoryStore(self.root / "deferred", self.service_token, auto_render=False)
+    def test_events_survive_restart_without_generated_markdown(self):
+        store = HistoryStore(self.root / "journal", self.service_token)
         store.begin(self.record, "Play the turn", self.player_token)
         log = store.logs["activation"]
         log.append("tool_result", {"itemId": "receipt", "result": {"gold": 5000}})
-        self.assertFalse(log.markdown.exists())
-        restored = HistoryStore(self.root / "deferred", self.service_token, auto_render=False)
+        restored = HistoryStore(self.root / "journal", self.service_token)
         self.assertEqual(store.page("activation"), restored.page("activation"))
-        log.render()
-        self.assertIn('"gold": 5000', log.markdown.read_text())
-        before = log.markdown.stat()
-        log.render()
-        self.assertEqual(
-            (before.st_ino, before.st_mtime_ns), (log.markdown.stat().st_ino, log.markdown.stat().st_mtime_ns)
-        )
+        self.assertFalse(list(log.directory.glob("*.md")))
 
 
 class HistoryHttpsTests(unittest.IsolatedAsyncioTestCase):

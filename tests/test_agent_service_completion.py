@@ -30,7 +30,7 @@ class ReplayCodex(FakeCodex):
                     "turnId": turn_id,
                     "tokenUsage": {
                         "total": {
-                            "inputTokens": 10 * self.factory.count + 25,
+                            "inputTokens": 35,
                             "cachedInputTokens": 0,
                             "outputTokens": 0,
                             "reasoningOutputTokens": 0,
@@ -144,23 +144,17 @@ class CompletionCorrelationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("RUNNING", self.service.status()["phase"])
         await self.complete("turn-1")
 
-    async def test_reset_and_cumulative_native_counters_both_count_each_resumed_activation(self):
-        expected_total = 0
-        for index, (cumulative, amount) in enumerate(((False, 10), (False, 10), (True, 10), (False, 120))):
-            self.factory.cumulative_totals = cumulative
+    async def test_fresh_conversations_count_usage_independently_across_service_restarts(self):
+        for index, amount in enumerate((10, 10, 10, 120)):
             self.factory.input_tokens = amount
-            await self.service.start(self.payload(str(index), None if index == 0 else "thread-one"))
+            await self.service.start(self.payload(str(index)))
             assert self.service.active_task is not None
             await asyncio.wait_for(asyncio.shield(self.service.active_task), 2)
-            expected_total += amount
             self.assertEqual(amount, self.service.status()["usage"]["input_tokens"])
-            self.assertEqual(expected_total, self.service.records[str(index)]["threadTotals"]["input_tokens"])
             await self.service.close()
             self.service = self.make_service()
 
     async def test_first_and_latest_early_updates_preserve_the_entire_new_turn_usage(self):
-        self.factory.count = 10
-        self.factory.cumulative_totals = True
         self.factory.complete = False
         self.factory.burst = True
         await self.service.start(self.payload())
@@ -198,4 +192,4 @@ class CompletionCorrelationTests(unittest.IsolatedAsyncioTestCase):
         await self.service._notification("thread/tokenUsage/updated", usage("turn-1", 35, 25))
         self.assertEqual(35, self.service.status()["usage"]["input_tokens"])
         await self.complete("turn-1")
-        self.assertEqual(35, self.service.records["first"]["threadTotals"]["input_tokens"])
+        self.assertEqual(35, self.service.records["first"]["usage"]["input_tokens"])

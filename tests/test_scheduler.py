@@ -1,5 +1,6 @@
 """Exercise the supervisor through verified HTTPS fake host and agent services."""
 
+import copy
 import json
 import os
 import secrets
@@ -13,7 +14,11 @@ import uuid
 from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from unittest.mock import Mock
 
+import pytest
+
+from civ_agent.monitoring import MonitorStore, path_for, read_collection, read_record
 from civ_agent.protocol import JsonObject
 from civ_agent.scheduler import (
     Operator,
@@ -27,7 +32,7 @@ from civ_agent.scheduler import (
 from tests.support import match_command
 
 
-def test_subscription_health_warnings_are_visible_and_not_repeated(capsys):
+def test_subscription_health_warnings_are_visible_and_not_repeated(capsys, tmp_path):
     class Agent:
         subscription = {"status": "HEALTHY", "failures": 0, "consecutiveFailures": 0}
 
@@ -36,7 +41,9 @@ def test_subscription_health_warnings_are_visible_and_not_repeated(capsys):
             return {"civilization": "Rome", "runFailure": None, "communicationSubscription": dict(self.subscription)}
 
     agent = Agent()
-    scheduler = Scheduler(None, None, {"Rome": agent}, {}, color="never")
+    from types import SimpleNamespace
+
+    scheduler = Scheduler(SimpleNamespace(root=tmp_path), None, {"Rome": agent}, {}, color="never")
     try:
         scheduler.check_agent_health()
         assert capsys.readouterr().out == ""
@@ -58,6 +65,65 @@ def test_subscription_health_warnings_are_visible_and_not_repeated(capsys):
         scheduler.finalizer.shutdown()
 
 
+@pytest.mark.parametrize("ending", ["pause", "wall_budget", "invocation_budget", "epoch"])
+def test_review_completion_rechecks_stops_and_budgets_before_dispatch(tmp_path, monkeypatch, ending):
+    status = {
+        "epoch": "match",
+        "serverInstance": "server",
+        "activeCivilization": "Rome",
+        "turn": 6,
+        "handoff": 18,
+        "phase": "PAUSED",
+        "modelInvocations": 2,
+    }
+    state = {
+        "epoch": "match",
+        "initialTurn": 5,
+        "invocations": 2,
+        "deadline": time.time() + 60,
+        "limits": {"maxTurns": 2, "maxInvocations": 3},
+    }
+    store = Mock(root=tmp_path)
+    store.requested.return_value = None
+    operator = Mock()
+    operator.call.side_effect = lambda *args, **kwargs: {"status": dict(status)}
+    reads = 0
+
+    def agent_call(operation, **fields):
+        nonlocal reads
+        if operation == "health":
+            return {"civilization": "Rome", "runFailure": None}
+        assert operation == "turn_readiness"
+        reads += 1
+        pending = {"job": "review-5", "turn": 5, "status": "PENDING", "attempts": 1} if reads == 1 else None
+        if reads == 2:
+            if ending == "pause":
+                store.requested.return_value = "pause"
+            elif ending == "wall_budget":
+                state["deadline"] = 0
+            elif ending == "invocation_budget":
+                status["modelInvocations"] = 3
+            else:
+                status["epoch"] = "changed"
+        return {"civilization": "Rome", **fields, "pendingReview": pending}
+
+    agent = Mock(call=agent_call)
+    scheduler = Scheduler(store, operator, {"Rome": agent}, state, color="never")
+    monkeypatch.setattr("civ_agent.scheduler.time.sleep", lambda _: None)
+    try:
+        if ending == "epoch":
+            with pytest.raises(RunnerError, match="Host epoch changed"):
+                scheduler.wait_for_review(dict(status), agent)
+        else:
+            assert not scheduler.wait_for_review(dict(status), agent)
+            assert state["status"] == ("paused" if ending == "pause" else "budget_exhausted")
+        assert state["invocations"] == 2 and "inFlight" not in state
+        assert "waitingForReview" not in state
+        assert all(call.args[0] == "heartbeat" for call in operator.call.call_args_list)
+    finally:
+        scheduler.finalizer.shutdown()
+
+
 class FakeHost:
     def __init__(self, certificate, private_key, behaviors=()):
         self.epoch, self.instance = str(uuid.uuid4()), str(uuid.uuid4())
@@ -68,7 +134,6 @@ class FakeHost:
         self.phase: str = "ACTIVE"
         self.scheduled = False
         self.handoff = 0
-        self.round_checkpoints = False
         self.barrier_active = False
         self.behaviors = list(behaviors)
         self.calls, self.plays = [], []
@@ -78,16 +143,15 @@ class FakeHost:
         self.archive_failures = 0
         self.history_unsupported = False
         self.agent_failures = {}
+        self.pending_reviews = {}
+        self.readiness_checks = []
         self.finalizations = []
         self.terminal_finalizations, self.result_deliveries = [], []
         self.result_failures = {}
-        self.rollbacks, self.abortions = [], []
-        self.effects, self.turn_start_effects = 0, 0
-        self.turn_start_handoff: int | None = None
-        self.rollback_failures, self.abort_failures = 0, 0
+        self.restores = []
+        self.effects = 0
+        self.snapshots = {}
         self.drop_start_calls = 0
-        self.rollback_bad_response = False
-        self.rollback_error: str | None = None
         self.changed = threading.Condition()
         self.mcp_override: Callable[[str | None, JsonObject, str], JsonObject | None] | None = None
         owner = self
@@ -295,7 +359,6 @@ class FakeHost:
             serverInstance=self.instance,
             turn=self.handoff // len(civilizations),
             handoff=self.handoff,
-            roundStart=self.round_checkpoints and self.handoff % len(civilizations) == 0,
             phase=self.phase,
             activeCivilization=civilizations[self.handoff % len(civilizations)],
             scheduled=self.scheduled,
@@ -309,11 +372,28 @@ class FakeHost:
         extra: JsonObject = {}
         if operation == "unbarrier":
             self.barrier_active = False
-        elif operation == "barrier" and self.round_checkpoints:
+        elif operation == "barrier":
             self.barrier_active = True
-        elif operation == "snapshot" and self.round_checkpoints:
+        elif operation == "snapshot":
             assert self.barrier_active
-            extra["checkpoint"] = {"epoch": self.epoch, "turn": self.status()["turn"], "handoff": self.handoff}
+            extra["checkpoint"] = {
+                "epoch": self.epoch,
+                "turn": self.status()["turn"],
+                "handoff": self.handoff,
+                "effects": self.effects,
+            }
+        elif operation == "restore":
+            assert self.barrier_active
+            if body["checkpoint"]["handoff"] != self.handoff:
+                return 409, {"error": "TURN_ALREADY_COMMITTED"}
+            self.epoch = body["epoch"]
+            self.effects = body["checkpoint"]["effects"]
+            self.phase, self.player_token = "PAUSED", None
+            self.restores.append(dict(body))
+        elif operation == "rotate_players":
+            extra["players"] = [{"civilizationId": name, "token": token} for name, token in self.agent_tokens.items()]
+        elif operation == "restore_complete":
+            pass
         elif operation == "job_limits":
             pass
         elif operation == "connect":
@@ -326,12 +406,8 @@ class FakeHost:
                 "FINISHED" if self.phase == "FINISHED" else "PAUSED",
                 True,
             )
-            if self.turn_start_handoff != self.handoff:
-                self.turn_start_handoff, self.turn_start_effects = self.handoff, self.effects
             extra["leaseId"] = self.lease
-        elif operation in {"activate", "rollback", "heartbeat", "release"} or (
-            operation == "pause" and "leaseId" in body
-        ):
+        elif operation in {"activate", "heartbeat", "release"} or (operation == "pause" and "leaseId" in body):
             if body["leaseId"] != self.lease or self.lease is None:
                 return 409, {"error": "LEASE_LOST"}
             if operation == "activate":
@@ -339,33 +415,12 @@ class FakeHost:
                     return 409, {"error": "STALE_STATUS"}
                 if body["civilization"] != self.status()["activeCivilization"]:
                     return 409, {"error": "WRONG_PLAYER"}
-                if self.turn_start_handoff != self.handoff:
-                    self.turn_start_handoff, self.turn_start_effects = self.handoff, self.effects
                 self.phase, self.activation, self.player_token = (
                     "ACTIVE",
                     body["activationId"],
                     secrets.token_urlsafe(32),
                 )
                 extra.update(playerToken=self.player_token, activationId=self.activation)
-            elif operation == "rollback":
-                if self.rollback_error:
-                    return 409, {"error": self.rollback_error}
-                if any(body[key] != self.status()[key] for key in ("epoch", "serverInstance", "handoff")):
-                    return 409, {"error": "STALE_STATUS"}
-                if body["civilization"] != self.status()["activeCivilization"]:
-                    return 409, {"error": "WRONG_PLAYER"}
-                if self.turn_start_handoff != self.handoff:
-                    return 409, {"error": "TURN_START_UNAVAILABLE"}
-                if body.get("activationId") != self.activation:
-                    return 409, {"error": "STALE_ACTIVATION"}
-                self.effects = self.turn_start_effects
-                self.phase, self.player_token = "PAUSED", None
-                self.rollbacks.append(dict(body))
-                if self.rollback_failures:
-                    self.rollback_failures -= 1
-                    return 503, {"error": "LOST_ROLLBACK_RESPONSE"}
-                if self.rollback_bad_response:
-                    return 200, {"status": {**self.status(), "handoff": self.handoff + 1}}
             elif operation in {"pause", "release"}:
                 self.phase, self.player_token = "FINISHED" if self.phase == "FINISHED" else "PAUSED", None
                 if operation == "release":
@@ -389,8 +444,36 @@ class FakeHost:
     def agent_request(self, civilization, body):
         if body["op"] == "health":
             return 200, {"status": {"civilization": civilization, "runFailure": self.agent_failures.get(civilization)}}
+        if body["op"] == "turn_readiness":
+            self.readiness_checks.append((civilization, body["gameTurn"]))
+            pending = self.pending_reviews.get(civilization)
+            return 200, {
+                "status": {
+                    "civilization": civilization,
+                    "epoch": body["epoch"],
+                    "gameTurn": body["gameTurn"],
+                    "pendingReview": pending if pending and pending["turn"] < body["gameTurn"] else None,
+                }
+            }
         if body["op"] in {"connect", "disconnect", "barrier", "flush_accounting"}:
             return 200, {"status": {"connected": True, "ready": True, "paused": body.get("paused", False)}}
+        if body["op"] == "snapshot":
+            self.snapshots[civilization, body["id"]] = copy.deepcopy(
+                {key[1]: value for key, value in self.activations.items() if key[0] == civilization}
+            )
+            return 200, {"status": {"id": body["id"], "sha256": "test", "civilization": civilization}}
+        if body["op"] == "verify_snapshot":
+            return 200, {"status": {"valid": (civilization, body["id"]) in self.snapshots}}
+        if body["op"] == "restore":
+            self.activations = {key: value for key, value in self.activations.items() if key[0] != civilization}
+            for key, value in copy.deepcopy(self.snapshots[civilization, body["id"]]).items():
+                value["epoch"] = body["epoch"]
+                if value["phase"] == "RUNNING":
+                    value["phase"] = "INTERRUPTED"
+                self.activations[civilization, key] = value
+            return 200, {"status": {"restored": True, "epoch": body["epoch"]}}
+        if body["op"] in {"retain_snapshot", "cancel_jobs"}:
+            return 200, {"status": {}}
         if body["op"] == "result":
             self.result_deliveries.append({key: value for key, value in body.items() if key != "op"})
             if self.result_failures.get(civilization, 0):
@@ -438,7 +521,7 @@ class FakeHost:
                     if behavior in {"hang", "after_handoff_hang", "refuse_interrupt", "victory_hang"}
                     else "COMPLETED"
                 )
-                if behavior in {"crash", "lost_response", "missing_thread", "memory_timeout"}:
+                if behavior in {"crash", "lost_response", "missing_thread"}:
                     phase = "FAILED"
                 self.activations[key] = dict(
                     activationId=body["activationId"],
@@ -448,33 +531,11 @@ class FakeHost:
                     phase=phase,
                     gameTurn=body["gameTurn"],
                     handoff=body["handoff"],
-                    memoryTimeoutSeconds=300,
                     usage={"input_tokens": 10, "cached_input_tokens": 2, "output_tokens": 3}
                     if phase == "COMPLETED"
                     else {},
                     _behavior=behavior,
                 )
-                if behavior == "memory_timeout":
-                    self.activations[key].update(
-                        memoryPhase=True,
-                        memoryPhaseComplete=False,
-                        usageComplete=False,
-                        error="MEMORY_PHASE_TIMEOUT",
-                        usage={"input_tokens": 10, "cached_input_tokens": 2, "output_tokens": 3},
-                    )
-        if key not in self.activations and body["op"] == "abort":
-            self.activations[key] = dict(
-                activationId=body["activationId"],
-                epoch=body["epoch"],
-                civilization=civilization,
-                threadId=None,
-                phase="INTERRUPTED",
-                gameTurn=body["gameTurn"],
-                handoff=body["handoff"],
-                memoryTimeoutSeconds=300,
-                usage={},
-                _behavior="missing_start",
-            )
         if key not in self.activations:
             return 404, {"error": "UNKNOWN_ACTIVATION"}
         status = self.activations[key]
@@ -507,19 +568,6 @@ class FakeHost:
                 return 409, {"error": "INVALID_BINDING"}
             self.terminal_finalizations.append(dict(body))
             status["terminalOutcome"] = True
-        if body["op"] == "abort":
-            if status["phase"] == "RUNNING":
-                return 409, {"error": "AGENT_BUSY"}
-            if (
-                any(body[field] != status[field] for field in ("epoch", "gameTurn", "handoff"))
-                or "committedHandoff" in status
-            ):
-                return 409, {"error": "INVALID_BINDING"}
-            self.abortions.append(dict(body))
-            status["aborted"] = True
-            if self.abort_failures:
-                self.abort_failures -= 1
-                return 503, {"error": "LOST_ABORT_RESPONSE"}
         if body["op"] == "archive":
             if self.archive_failures:
                 self.archive_failures -= 1
@@ -643,9 +691,9 @@ class SchedulerTest(unittest.TestCase):
         return process
 
     def saved(self):
-        return json.loads((self.state / "runner/run.json").read_text())
+        return read_record(path_for(self.state), "state", "run") or {}
 
-    def test_three_players_cycle_and_resume_without_skipping_france(self):
+    def add_france(self):
         token = secrets.token_urlsafe(32)
         self.host.agent_tokens["France"] = token
         service = self.state / "agent-services" / "France"
@@ -659,6 +707,9 @@ class SchedulerTest(unittest.TestCase):
                 caFile=str(self.certificate),
             ),
         )
+
+    def test_three_players_cycle_and_resume_without_skipping_france(self):
+        self.add_france()
         first = self.run_cli("--max-turns", "1", "--max-seconds", "60")
         self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
         self.assertEqual([play["civ"] for play in self.host.plays], ["Rome", "Greece", "France"])
@@ -666,8 +717,82 @@ class SchedulerTest(unittest.TestCase):
         self.assertEqual(resumed.returncode, 0, resumed.stdout + resumed.stderr)
         self.assertEqual([play["civ"] for play in self.host.plays], ["Rome", "Greece", "France"] * 2)
         self.assertEqual(self.saved()["handoffs"], 6)
-        for turn in (0, 1):
-            self.assertTrue((self.state / f"runner/history/France/turn_{turn}/summary.md").is_file())
+        streams = read_collection(path_for(self.state), "streams")
+        self.assertEqual({row["gameTurn"] for row in streams if row["civilization"] == "France"}, {0, 1})
+
+    def test_review_waits_only_for_its_own_next_turn_before_checkpoint_and_activation(self):
+        self.add_france()
+        self.host.handoff = 15  # Start at turn 5 with three players.
+        self.host.pending_reviews["Rome"] = {"job": "roman-review", "turn": 5, "status": "PENDING", "attempts": 1}
+        process = self.background("--max-turns", "2", "--max-seconds", "60", "--turn-timeout", "1")
+        with self.host.changed:
+            self.assertTrue(
+                self.host.changed.wait_for(
+                    lambda: self.host.readiness_checks.count(("Rome", 6)) >= 14,
+                    timeout=10,
+                )
+            )
+            # Greece and France finish while Rome's review is pending. Waiting
+            # exceeds the gameplay timeout and keeps the operator lease alive.
+            self.assertEqual([p["civ"] for p in self.host.plays], ["Rome", "Greece", "France"])
+            self.assertFalse(self.host.barrier_active)
+            self.assertEqual(len([c for c in self.host.calls if c["op"] == "snapshot"]), 3)
+            self.assertGreaterEqual(len([c for c in self.host.calls if c["op"] == "heartbeat"]), 2)
+            waiting = self.saved()
+            self.assertEqual(waiting["waitingForReview"]["gameTurn"], 6)
+            self.assertEqual(waiting["invocations"], 3)
+            self.assertIsNone(waiting["inFlight"])
+            self.host.pending_reviews.clear()
+        stdout, stderr = process.communicate(timeout=15)
+        self.assertEqual(process.returncode, 0, stdout + stderr)
+        self.assertIn("Waiting for strategic review from turn 5", stdout)
+        self.assertEqual([p["civ"] for p in self.host.plays], ["Rome", "Greece", "France"] * 2)
+        self.assertNotIn("waitingForReview", self.saved())
+
+    def test_review_wait_can_pause_and_resume_without_replaying_completed_turns(self):
+        self.host.pending_reviews["Rome"] = {"job": "roman-review", "turn": 0, "status": "PENDING", "attempts": 1}
+        process = self.background("--max-turns", "2", "--max-seconds", "60")
+        with self.host.changed:
+            self.assertTrue(
+                self.host.changed.wait_for(
+                    lambda: self.host.readiness_checks.count(("Rome", 1)) >= 2,
+                    timeout=8,
+                )
+            )
+        paused = self.run_cli("pause")
+        self.assertEqual(paused.returncode, 0, paused.stdout + paused.stderr)
+        stdout, stderr = process.communicate(timeout=8)
+        self.assertEqual(process.returncode, 0, stdout + stderr)
+        self.assertEqual(self.saved()["status"], "paused")
+        self.assertNotIn("waitingForReview", self.saved())
+        self.assertEqual(len(self.host.plays), 2)
+        self.host.pending_reviews.clear()
+        resumed = self.run_cli("resume")
+        self.assertEqual(resumed.returncode, 0, resumed.stdout + resumed.stderr)
+        self.assertFalse(self.host.restores)
+        self.assertEqual([p["request"]["gameTurn"] for p in self.host.plays], [0, 0, 1, 1])
+
+    def test_review_failure_stops_wait_before_next_model_starts(self):
+        self.host.pending_reviews["Rome"] = {"job": "roman-review", "turn": 0, "status": "PENDING", "attempts": 3}
+        process = self.background("--max-turns", "2", "--max-seconds", "30")
+        with self.host.changed:
+            self.assertTrue(
+                self.host.changed.wait_for(
+                    lambda: self.host.readiness_checks.count(("Rome", 1)) >= 2,
+                    timeout=8,
+                )
+            )
+            self.host.agent_failures["Rome"] = {
+                "error": "STRATEGIC_REVIEW_ATTEMPTS_EXHAUSTED",
+                "diagnosticId": "review-failed",
+                "job": "roman-review",
+            }
+        stdout, stderr = process.communicate(timeout=8)
+        self.assertEqual(process.returncode, 2, stdout + stderr)
+        self.assertIn("STRATEGIC_REVIEW_ATTEMPTS_EXHAUSTED", stdout)
+        self.assertEqual(self.saved()["status"], "needs_inspection")
+        self.assertNotIn("waitingForReview", self.saved())
+        self.assertEqual(len(self.host.plays), 2)
 
     def test_consecutive_rounds_use_fresh_threads_tokens_and_authoritative_handoffs(self):
         result = self.run_cli("--max-turns", "2", "--max-invocations", "8", "--max-seconds", "30")
@@ -680,11 +805,12 @@ class SchedulerTest(unittest.TestCase):
         self.assertEqual([play["request"]["gameTurn"] for play in self.host.plays], [0, 0, 1, 1])
         self.assertEqual([play["request"]["handoff"] for play in self.host.plays], [0, 1, 2, 3])
         self.assertEqual(len(self.host.finalizations), 4)
-        for civilization in ("Rome", "Greece"):
-            for turn in (0, 1):
-                directory = self.state / "runner/history" / civilization / f"turn_{turn}"
-                self.assertIn("let the opponent play", (directory / "summary.md").read_text())
-                self.assertEqual(json.loads((directory / "commands.jsonl").read_text())["turn"], turn)
+        streams = read_collection(path_for(self.state), "streams")
+        self.assertEqual(
+            {(row["civilization"], row["gameTurn"]) for row in streams},
+            {("Rome", 0), ("Rome", 1), ("Greece", 0), ("Greece", 1)},
+        )
+        self.assertFalse((self.state / "runner/history").exists())
         for play in self.host.plays:
             self.assertEqual(play["request"]["civilization"], play["civ"])
             self.assertNotIn(self.host.operator_token, json.dumps(play["request"]))
@@ -707,7 +833,7 @@ class SchedulerTest(unittest.TestCase):
         self.assertIn("Finish the turn manually", result.stdout)
         self.assertEqual(self.host.effects, effects)
         self.assertEqual(len(self.host.plays), 1)
-        self.assertEqual(self.host.rollbacks, [])
+        self.assertEqual(self.host.restores, [])
         self.assertIsNotNone(self.saved()["inFlight"])
 
     def test_incomplete_turn_pauses_instead_of_spawning_repeated_models(self):
@@ -722,10 +848,19 @@ class SchedulerTest(unittest.TestCase):
         self.assertEqual([play["civ"] for play in self.host.plays], ["Rome", "Rome", "Greece"])
         self.assertNotEqual(self.host.plays[0]["thread"], self.host.plays[1]["thread"])
         self.assertIsNone(self.host.plays[1]["request"]["threadId"])
-        self.assertEqual(0, len(self.host.rollbacks))
-        self.assertEqual(0, len(self.host.abortions))
-        self.assertEqual(1, self.host.plays[1]["effectsBefore"])
+        self.assertEqual(1, len(self.host.restores))
+        self.assertEqual(0, self.host.plays[1]["effectsBefore"])
         self.assertIn("numbered 0 in player_turn", self.host.plays[1]["request"]["prompt"])
+
+    def test_old_epoch_records_do_not_prevent_fresh_model_work(self):
+        from civ_agent.runner_history import EventHistory
+
+        old = EventHistory(path_for(self.state), "unrelated-match", "Rome", "old", game_turn=0)
+        old.append([dict(sequence=0, kind="assistant_message", data=dict(text="Old attempt"))])
+        result = self.run_cli("--max-turns", "1", "--max-seconds", "30")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(len(self.host.plays), 2)
+        self.assertEqual(old.events[0]["data"]["text"], "Old attempt")
 
     def test_lost_end_turn_response_uses_committed_handoff_without_replay(self):
         self.host.behaviors = ["lost_response", "complete"]
@@ -733,7 +868,7 @@ class SchedulerTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual([play["civ"] for play in self.host.plays], ["Rome", "Greece"])
         self.assertEqual(self.saved()["handoffs"], 2)
-        self.assertEqual([], self.host.rollbacks)
+        self.assertEqual([], self.host.restores)
 
     def test_host_restart_uses_current_instance_when_restoring_durable_turn_start(self):
         self.host.behaviors = ["incomplete"]
@@ -744,35 +879,8 @@ class SchedulerTest(unittest.TestCase):
         resumed = self.run_cli("resume")
         self.assertEqual(resumed.returncode, 0, resumed.stdout + resumed.stderr)
         self.assertNotEqual(original_instance, self.host.instance)
-        self.assertEqual([], self.host.rollbacks)
-        self.assertEqual(1, self.host.plays[1]["effectsBefore"])
-
-    def test_delayed_rollback_from_an_older_activation_cannot_erase_a_fresh_attempt(self):
-        operator = Operator(self.host.url, self.host.operator_token, self.certificate)
-        lease = str(uuid.uuid4())
-        status = operator.call("acquire", leaseId=lease)["status"]
-        binding = dict(
-            leaseId=lease,
-            epoch=status["epoch"],
-            serverInstance=status["serverInstance"],
-            handoff=status["handoff"],
-            civilization="Rome",
-        )
-        operator.call("activate", **binding, activationId="old-attempt")
-        self.host.effects = 7
-        operator.call("pause", leaseId=lease)
-        operator.call("rollback", **binding, activationId="old-attempt")
-        operator.call("rollback", **binding, activationId="old-attempt")
-        self.assertEqual(0, self.host.effects)
-        operator.call("activate", **binding, activationId="fresh-attempt")
-        self.host.effects = 11
-        operator.call("pause", leaseId=lease)
-        with self.assertRaises(OperatorError) as rejected:
-            operator.call("rollback", **binding, activationId="old-attempt")
-        self.assertEqual("STALE_ACTIVATION", rejected.exception.code)
-        self.assertEqual(11, self.host.effects)
-        operator.call("rollback", **binding, activationId="fresh-attempt")
-        self.assertEqual(0, self.host.effects)
+        self.assertEqual(1, len(self.host.restores))
+        self.assertEqual(0, self.host.plays[1]["effectsBefore"])
 
     def test_missing_agent_activation_is_fenced_before_a_fresh_start(self):
         self.host.drop_start_calls = 1
@@ -783,7 +891,6 @@ class SchedulerTest(unittest.TestCase):
         resumed = self.run_cli("resume")
         self.assertEqual(resumed.returncode, 0, resumed.stdout + resumed.stderr)
         self.assertEqual([play["civ"] for play in self.host.plays], ["Rome", "Greece"])
-        self.assertEqual([], self.host.abortions)
         self.assertNotEqual(original_activation, self.host.plays[-1]["request"]["activationId"])
         self.assertEqual(3, self.saved()["invocations"])
 
@@ -801,7 +908,7 @@ class SchedulerTest(unittest.TestCase):
         resumed = self.run_cli("resume")
         self.assertEqual(resumed.returncode, 0, resumed.stdout + resumed.stderr)
         self.assertEqual(len(self.host.plays), 3)
-        self.assertEqual(0, len(self.host.rollbacks))
+        self.assertEqual(1, len(self.host.restores))
 
     def test_hung_report_after_handoff_does_not_prevent_next_player(self):
         self.host.behaviors = ["after_handoff_hang", "complete"]
@@ -824,7 +931,7 @@ class SchedulerTest(unittest.TestCase):
         self.assertEqual(resumed.returncode, 0, resumed.stdout + resumed.stderr)
         self.assertEqual(self.saved()["deadline"], deadline)
         self.assertNotEqual(self.host.plays[0]["thread"], self.host.plays[1]["thread"])
-        self.assertEqual(1, self.host.plays[1]["effectsBefore"])
+        self.assertEqual(0, self.host.plays[1]["effectsBefore"])
         self.assertEqual(self.saved()["invocations"], 3)
 
     def test_duplicate_supervisor_does_not_pause_owner(self):
@@ -851,7 +958,7 @@ class SchedulerTest(unittest.TestCase):
         resumed = self.run_cli("resume")
         self.assertEqual(resumed.returncode, 0, resumed.stdout + resumed.stderr)
         self.assertEqual(len(self.host.plays), 3)
-        self.assertEqual(1, self.host.plays[1]["effectsBefore"])
+        self.assertEqual(0, self.host.plays[1]["effectsBefore"])
         self.assertNotEqual(self.host.plays[0]["thread"], self.host.plays[1]["thread"])
 
     def test_crash_after_committed_handoff_reconciles_without_second_end_turn(self):
@@ -879,7 +986,7 @@ class SchedulerTest(unittest.TestCase):
         state["startedAt"] = time.time() - state["limits"]["maxSeconds"] - 1
         state["deadline"] = state["startedAt"] + state["limits"]["maxSeconds"]
         state["limits"]["maxInvocations"] = 10
-        atomic_json(self.state / "runner/run.json", state)
+        MonitorStore(path_for(self.state)).put("state", "run", state)
         resumed = self.run_cli("resume")
         self.assertEqual(resumed.returncode, 0)
         self.assertIn("Wall-time", resumed.stdout)
@@ -917,68 +1024,24 @@ class SchedulerTest(unittest.TestCase):
         last = self.host.plays[-1]["request"]
         self.assertEqual(("chosen-model", "high"), (last["model"], last["reasoningEffort"]))
 
-    def test_archive_failure_retains_proof_and_resume_retries_without_model_replay(self):
-        self.host.archive_failures = 1
-        failed = self.run_cli("--max-turns", "1", "--max-seconds", "30")
-        self.assertEqual(failed.returncode, 2, failed.stdout + failed.stderr)
-        # Greece may already have played when the background archive fails.
-        # Both accepted handoffs remain committed; retry only the saved archive.
-        played = [play["civ"] for play in self.host.plays]
-        self.assertIn(played, [["Rome"], ["Rome", "Greece"]])
-        self.assertEqual(self.host.handoff, len(played))
-        self.assertEqual(self.saved()["handoffs"], len(played))
-        self.assertIsNone(self.saved()["inFlight"])
-        pending = self.saved()["pendingFinalizations"]
-        roman_pending = [flight for flight in pending if flight["civilization"] == "Rome"]
-        self.assertEqual([flight["confirmedHandoff"] for flight in roman_pending], [1])
-        resumed = self.run_cli("resume")
-        self.assertEqual(resumed.returncode, 0, resumed.stdout + resumed.stderr)
+    def test_unavailable_report_export_does_not_block_turns(self):
+        self.host.archive_failures = 100
+        result = self.run_cli("--max-turns", "1", "--max-seconds", "30")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual([play["civ"] for play in self.host.plays], ["Rome", "Greece"])
         self.assertEqual(self.saved()["handoffs"], 2)
-        roman = [item for item in self.host.finalizations if item["gameTurn"] == 0 and item["committedHandoff"] == 1]
-        self.assertEqual(len(roman), 2)
-        self.assertEqual(roman[0], roman[1])
-
-    def test_failed_memory_stops_once_and_explicit_resume_preserves_committed_turn(self):
-        self.host.behaviors = ["memory_timeout", "complete"]
-        failed = self.run_cli("--max-turns", "1", "--max-seconds", "60")
-        self.assertEqual(2, failed.returncode, failed.stdout + failed.stderr)
-        self.assertIn("MEMORY_PHASE_TIMEOUT", failed.stdout)
-        pending = next(p for p in self.saved()["pendingFinalizations"] if p["civilization"] == "Rome")
-        self.assertNotIn("acknowledgedMemoryFailures", self.saved())
-
-        resumed = self.run_cli("resume")
-        self.assertEqual(0, resumed.returncode, resumed.stdout + resumed.stderr)
-        self.assertIn("unsaved edits are unavailable", resumed.stdout)
-        self.assertIn("Reported token usage remains incomplete", resumed.stdout)
-        self.assertEqual(["Rome", "Greece"], [play["civ"] for play in self.host.plays])
-        self.assertEqual(2, self.saved()["handoffs"])
-        self.assertEqual(20, self.saved()["usage"]["input_tokens"])
-        self.assertEqual([], self.saved()["pendingFinalizations"])
-        acknowledged = self.saved()["acknowledgedMemoryFailures"]
-        self.assertEqual([pending["activationId"]], list(acknowledged))
-        self.assertEqual("MEMORY_PHASE_TIMEOUT", acknowledged[pending["activationId"]]["error"])
-        self.assertFalse(acknowledged[pending["activationId"]]["usageComplete"])
-        original = self.host.activations[("Rome", pending["activationId"])]
-        self.assertEqual("FAILED", original["phase"])
-        self.assertFalse(original["memoryPhaseComplete"])
-
-        # A fresh failure during the resumed run must still stop for inspection.
-        self.host.behaviors = ["memory_timeout", "complete"]
-        failed_again = self.run_cli("resume", "--max-turns", "2")
-        self.assertEqual(2, failed_again.returncode, failed_again.stdout + failed_again.stderr)
-        self.assertEqual(acknowledged, self.saved()["acknowledgedMemoryFailures"])
-        self.assertTrue(self.saved()["pendingFinalizations"])
+        self.assertEqual(self.saved()["pendingFinalizations"], [])
+        self.assertEqual(self.host.archive_failures, 100)
 
     def test_old_run_layout_is_rejected_without_replaying_or_moving_existing_history(self):
         result = self.run_cli("--max-invocations", "1", "--max-seconds", "30")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         state = self.saved()
         state["version"] = 1
-        atomic_json(self.state / "runner/run.json", state)
+        MonitorStore(path_for(self.state)).put("state", "run", state)
         refused = self.run_cli("resume")
         self.assertEqual(refused.returncode, 2)
-        self.assertIn("Start a new match directory", refused.stderr)
+        self.assertIn("use the old code to resume older matches", refused.stderr)
         self.assertEqual(len(self.host.plays), 1)
 
     def test_operator_credentials_are_private_and_not_accepted_as_player_tokens(self):
@@ -1049,7 +1112,7 @@ class SchedulerTest(unittest.TestCase):
         resumed = self.run_cli("resume")
         self.assertEqual(resumed.returncode, 0, resumed.stdout + resumed.stderr)
         self.assertEqual(len(self.host.plays), 3)
-        self.assertEqual(1, self.host.plays[1]["effectsBefore"])
+        self.assertEqual(0, self.host.plays[1]["effectsBefore"])
 
     def test_victory_during_activation_retains_commands_without_inventing_a_handoff(self):
         self.host.behaviors = ["victory"]
@@ -1061,7 +1124,7 @@ class SchedulerTest(unittest.TestCase):
         self.assertEqual(1, len(self.host.plays))
         self.assertEqual(1, len(self.host.terminal_finalizations))
         self.assertEqual([], self.host.finalizations)
-        self.assertEqual([], self.host.rollbacks)
+        self.assertEqual([], self.host.restores)
         self.assertIsNone(self.saved()["inFlight"])
         self.assertEqual({"Rome", "Greece"}, set(self.saved()["resultsDelivered"]))
         self.assertEqual({"Rome", "Greece"}, {delivery["civilization"] for delivery in self.host.result_deliveries})
@@ -1084,22 +1147,19 @@ class SchedulerTest(unittest.TestCase):
         self.assertEqual(["Greece", "Rome", "Rome"], [item["civilization"] for item in self.host.result_deliveries])
         self.assertEqual(1, len(self.host.plays))
         self.assertEqual(1, self.host.effects)
-        self.assertEqual([], self.host.rollbacks)
+        self.assertEqual([], self.host.restores)
         self.assertEqual(0, self.saved()["handoffs"])
 
-    def test_terminal_archive_failure_resumes_without_rolling_back_the_winning_action(self):
+    def test_unavailable_report_export_does_not_block_a_winning_action(self):
         self.host.behaviors = ["victory"]
-        self.host.archive_failures = 1
-        initial = self.run_cli("--max-turns", "2", "--max-seconds", "60")
-        self.assertEqual(2, initial.returncode, initial.stdout + initial.stderr)
-        self.assertIsNotNone(self.saved()["inFlight"])
-        self.assertEqual([], self.host.result_deliveries)
-        resumed = self.run_cli("resume")
-        self.assertEqual(0, resumed.returncode, resumed.stdout + resumed.stderr)
+        self.host.archive_failures = 100
+        result = self.run_cli("--max-turns", "2", "--max-seconds", "60")
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
         self.assertEqual("complete", self.saved()["status"])
         self.assertEqual(1, self.host.effects)
-        self.assertEqual([], self.host.rollbacks)
+        self.assertEqual([], self.host.restores)
         self.assertEqual(1, len(self.host.plays))
+        self.assertEqual(self.host.archive_failures, 100)
 
     def test_already_finished_game_delivers_results_without_acquiring_a_play_lease(self):
         self.host.phase = "FINISHED"
@@ -1107,7 +1167,7 @@ class SchedulerTest(unittest.TestCase):
         self.assertEqual(0, result.returncode, result.stdout + result.stderr)
         self.assertEqual("complete", self.saved()["status"])
         self.assertEqual([], self.host.plays)
-        self.assertFalse(any(call["op"] in {"acquire", "activate", "rollback"} for call in self.host.calls))
+        self.assertFalse(any(call["op"] in {"activate", "restore"} for call in self.host.calls))
         self.assertEqual(2, len(self.host.result_deliveries))
 
     def test_final_outcome_interrupts_live_agent_before_delivering_results(self):
@@ -1129,4 +1189,4 @@ class SchedulerTest(unittest.TestCase):
         self.assertEqual(1, len(self.host.finalizations))
         self.assertEqual([], self.host.terminal_finalizations)
         self.assertEqual(2, len(self.host.result_deliveries))
-        self.assertEqual([], self.host.rollbacks)
+        self.assertEqual([], self.host.restores)

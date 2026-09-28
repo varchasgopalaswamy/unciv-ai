@@ -3,7 +3,6 @@
 import asyncio
 import contextlib
 import hashlib
-import shutil
 import time
 
 import aiohttp
@@ -51,6 +50,7 @@ class ChatRuntime:
         service = self.service
         await service.io.call(service.memory.bind, payload["epoch"])
         self.epoch = payload["epoch"]
+        self.player_token = payload["playerToken"]
         self.connection = HostConnection(
             service.mcp_url,
             payload["playerToken"],
@@ -88,6 +88,7 @@ class ChatRuntime:
         self.listener = asyncio.create_task(self.receive())
         self.worker = asyncio.create_task(self.dispatch())
         self.subscription.update(status="CONNECTING", consecutiveFailures=0)
+        service.reviews.start()
         return {"connected": True, "epoch": self.epoch}
 
     async def social(self, op, **fields):
@@ -131,8 +132,6 @@ class ChatRuntime:
                         await self.service.io.call(
                             self.service.memory.ingest, self.epoch, page["events"], page["nextCursor"]
                         )
-                    if page["events"]:
-                        await self.service.io.call(self.service.memory.export, self.service.workspace)
                     if await self.service.io.call(self.service.memory.has_wake):
                         self.pending.set()
                 recovered_failures = self.subscription["consecutiveFailures"]
@@ -262,17 +261,6 @@ class ChatRuntime:
         self.jobs[id] = (job, process)
         prompt = f"Handle {service.civilization}'s newly received communication."
 
-        def export_history():
-            log = service.history.logs.get(id)
-            if log is not None:
-                log.render()
-                destination = private_directory(service.workspace / "communication" / id)
-                for name in ("events.jsonl", "history.md"):
-                    source = service.history.path(id) / name
-                    if source.exists():
-                        shutil.copyfile(source, destination / name)
-                        (destination / name).chmod(0o600)
-
         owner = asyncio.current_task()
         assert owner is not None
 
@@ -361,7 +349,6 @@ class ChatRuntime:
             record["usageComplete"] = completed and record.get("usageReported", False)
             await service.io.call(service.accounting.sample, record, job.waiting_seconds())
             await service.io.call(service.history.lifecycle, record)
-            await service.io.call(export_history)
             await service.io.call(
                 write_private_json,
                 service.state_dir / "chat-jobs" / (hashlib.sha256(id.encode()).hexdigest() + ".json"),
@@ -373,6 +360,7 @@ class ChatRuntime:
             self.jobs.pop(id, None)
 
     async def close(self):
+        await self.service.reviews.close()
         self.running = False
         self.subscription["status"] = "DISCONNECTED"
         for task in (self.listener, self.worker):

@@ -1,5 +1,6 @@
 package uncivai
 
+import com.unciv.json.json
 import com.unciv.logic.civilization.diplomacy.DiplomacyFlags
 import com.unciv.logic.civilization.diplomacy.DiplomaticModifiers
 import kotlinx.serialization.json.Json
@@ -89,15 +90,10 @@ object TradeCycleProbe {
         try {
             api.operator(OperatorRequest("barrier", api.lease))
             initial = checkNotNull(api.operator(OperatorRequest("snapshot", api.lease)).checkpoint)
-            val rounds = Files.createDirectories(root.resolve("round-checkpoints"))
-            Files.writeString(rounds.resolve("${initial.epoch}-round-0.json"), obj("host" to initial.recordJson()).toString())
             api.operator(OperatorRequest("unbarrier", api.lease))
             token = checkNotNull(api.activate().playerToken)
             for (step in Step.entries) {
                 println("Trade cycle: $step")
-                if (step != Step.PAID_PEACE) {
-                    Files.writeString(rounds.resolve("${runtime.epoch}-round-${runtime.game.turns}.json"), obj("host" to Json.parseToJsonElement(Files.readString(checkpoint))).toString())
-                }
                 check(api.turn(token).scenario!!.phase == step.name)
                 check(TradeCycleScenarioSetup.scenario(runtime.executor, runtime.game, "Greece").phase == step.name)
                 val before = money()
@@ -234,11 +230,10 @@ object TradeCycleProbe {
             HeadlessRuntime.loadCheckpoint(rollback, root.resolve("rollback-data")).use { restored ->
                 restored.executor.pause()
                 restored.executor.communicationPaused = true
-                restored.executor.restoreRound(initial, "trade-cycle-rollback")
-                check(PlayerHost(restored).bindPlayer("Rome").turn().scenario!!.phase == "PAID_PEACE")
-                check(restored.game.getCivilization("Rome").gold == 2000 && restored.game.getCivilization("Greece").gold == 0)
-                check(restored.game.getCivilization("Rome").cities.any { it.name == "Antium" })
-                check(restored.executor.communicationState.trades.proposals.isEmpty())
+                val before = json().toJson(restored.game)
+                val failure = runCatching { restored.executor.restoreTurn(initial, "trade-cycle-rollback") }.exceptionOrNull()
+                check(failure is OperatorFailure && failure.code == "TURN_ALREADY_COMMITTED")
+                check(json().toJson(restored.game) == before)
             }
             println("Trade cycle verified: $root")
         } finally {

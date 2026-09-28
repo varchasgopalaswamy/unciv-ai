@@ -10,6 +10,12 @@ allied city-state are included.
 - Human–agent and agent–agent trades use the existing shared negotiation flow.
 - Only agent–built-in-AI trade and friendship requests use the native bridge.
 - Native requests await the recipient's native turn without pausing gameplay.
+- The gameplay agent owns offers, responses, counteroffers, withdrawals and
+  friendship requests involving the built-in AI. These proposals, outcomes and
+  agreement endings remain recorded without waking a communication job. Turn-start
+  context includes pending native offers; communication inboxes include shared
+  human/agent offers. Communication jobs can inspect native terms, but their action
+  flags are unavailable and the gateway rejects attempts to act on them.
 - Trade-menu terms, including peace and permitted mediated peace, stay in trade
   negotiation. They are never chat native actions.
 - Chat can carry explicit denouncement, demand, and owned diplomatic-decision

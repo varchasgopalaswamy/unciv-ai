@@ -266,19 +266,6 @@
       ],
       "description": "Offered destination queue index; only MOVE_CONSTRUCTION."
     },
-    "socialVersion": {
-      "anyOf": [
-        {
-          "type": "integer",
-          "minimum": 0,
-          "maximum": 9223372036854775807
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "description": "Code-owned version of social commitments used to check planning assumptions."
-    },
     "targets": {
       "type": "array",
       "items": {

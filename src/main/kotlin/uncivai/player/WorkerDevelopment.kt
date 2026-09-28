@@ -35,7 +35,6 @@ data class WorkerDevelopment(
     val queue: List<WorkerQueuedJob>,
     val canStop: Boolean,
     val options: List<WorkerJobOption>,
-    val excludedActions: List<String> = listOf("AUTOMATE_WORKER", "ROUTE_TO_DESTINATION", "INSTANT_IMPROVEMENT"),
 )
 
 /** Detach only the bound civilization's worker and its occupied tile, using the desktop picker. */

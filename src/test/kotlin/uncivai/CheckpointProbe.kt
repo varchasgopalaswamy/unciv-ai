@@ -25,7 +25,6 @@ object CheckpointProbe {
             }
             val session = PlayerHost(runtime).bindPlayer("Rome")
             check(session.capabilities().durableRecovery)
-            check(!session.capabilities().legacyMutationsSupported)
             val snapshot = session.turn()
             request = TurnCommandRequest(
                 "durable-rename",

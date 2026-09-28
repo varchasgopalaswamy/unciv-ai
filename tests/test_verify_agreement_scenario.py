@@ -62,7 +62,7 @@ def memory(root, player, events, record):
     initial_read = {"agreement": active if resource else record}
     plan = {
         "state": "active",
-        "objective": "Use Iron trade income" if player == "Rome" else "Use imported Iron",
+        "assessment": "Use Iron trade income" if player == "Rome" else "Use imported Iron",
         "subjects": [record["partner"], record["agreement"], "economy"],
         "_evidence": [{"key": key, "version": 1, "category": "observation"}],
         "_assumptions": [],
@@ -72,7 +72,7 @@ def memory(root, player, events, record):
         store = RecordStore(db, 0)
         store.write(key, "observation", initial_read, "opening")
         if resource:
-            store.write("mem1", "plan", plan, "opening")
+            store.write("mem1", "strategy", plan, "opening")
         for name, arguments, result in (
             ("agreement_list", {}, {"agreements": [active]}),
             ("agreement_read", {"agreement": record["agreement"]}, initial_read),
@@ -108,11 +108,11 @@ def memory(root, player, events, record):
             store.write(key, "observation", {"agreement": record}, "review")
             reviewed = {
                 **plan,
-                "objective": "Replace lost trade income",
+                "assessment": "Replace lost trade income",
                 "_seenNotice": 1,
                 "_evidence": [{"key": key, "version": 2, "category": "observation"}],
             }
-            store.write("mem1", "plan", reviewed, "review")
+            store.write("mem1", "strategy", reviewed, "review")
             db.exec_driver_sql(
                 "INSERT INTO calls VALUES (?,?,?,?,?)",
                 (
@@ -467,7 +467,7 @@ def test_memory_review_handles_retirement_and_read_event_race(scenario, change):
             body = {
                 **json.loads(row[0]),
                 "state": "retired",
-                "assessment": "Imported resource is gone; abandon reliance on this deal",
+                "retirementAssessment": "Imported resource is gone; abandon reliance on this deal",
             }
             db.execute("UPDATE records SET body=? WHERE key='mem1' AND version=2", (encode(body),))
         else:

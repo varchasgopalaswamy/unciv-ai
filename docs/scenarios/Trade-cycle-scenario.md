@@ -84,8 +84,10 @@ Run this while the host is running or after stopping it:
 uv run civ-agent match verify-trade-cycle --state-dir /tmp/civ-trade-cycle-1
 ```
 
-It reads the atomic `exploration.json` checkpoint and the scheduler's round
-snapshots. It writes `verification/trade-cycle.json`, prints every step's
+It reads the atomic `exploration.json` checkpoint and two scenario evidence saves,
+`scenario-evidence/initial.json` and `scenario-evidence/funding.json`. The host records
+these for this guided scenario; they are independent of the current recovery boundary.
+It writes `verification/trade-cycle.json`, prints every step's
 `PASSED`, `PENDING` or `FAILED` status, and returns 0 only when all checks pass.
 Exit 1 means incomplete or failed objectives; exit 2 means unreadable or
 incorrect input. `--checkpoint PATH` selects another checkpoint from this match.
@@ -124,14 +126,14 @@ uv run civ-agent match verify-trade-cycle --state-dir /tmp/civ-trade-cycle-scrip
 ```
 
 Choose a fresh output directory. The probe retains `exploration.json`, a native
-checkpoint after each named step, round snapshots, `verified-final.json`, and
+checkpoint after each named step, the two evidence saves, `verified-final.json`, and
 a separate `rollback.json`. It checks balance changes, exact clauses, consent
 off turn, blocked gameplay during negotiations, directional effects, city
 ownership and loss of seller authority. It restarts during an unanswered offer
 and a resource counteroffer, confirms that deadlines and versions survive,
 replays final acceptance before and after restart without charging twice, then
-restores a copy to round zero and verifies initial ownership, balances and an
-empty ledger. The deadline is advanced by a test clock; live deadlines remain
+verifies that recovery rejects a rewind across committed turns. The deadline is
+advanced by a test clock; live deadlines remain
 ordinary wall time. The probe also runs in the Kotlin integration suite.
 
 The existing negotiation, peace and bilateral regression probes cover stale or

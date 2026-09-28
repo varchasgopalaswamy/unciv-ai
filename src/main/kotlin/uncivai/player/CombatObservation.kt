@@ -55,7 +55,7 @@ data class CombatOutcome(
 data class UnitOrderOption(val name: String, val available: Boolean, val unavailableReasons: List<String>)
 
 @Serializable
-data class UnitOrderStatus(val action: String?, val due: Boolean, val idle: Boolean, val fortificationTurns: Int, val healingPerTurn: Int)
+data class UnitOrderStatus(val action: String?, val due: Boolean, val idle: Boolean, val fortificationTurns: Int, val healingPerTurn: Int, val automated: Boolean = false)
 
 @Serializable
 data class PromotionOption(
@@ -82,6 +82,7 @@ data class UnitCombat(
     val order: UnitOrderStatus?,
     val orders: List<UnitOrderOption>,
     val promotions: UnitPromotionStatus?,
+    val role: String = "CIVILIAN",
 )
 
 @Serializable
@@ -143,13 +144,14 @@ internal fun observeUnitCombat(player: Civilization, unit: MapUnit, active: Bool
     val order = orders.status(unit)
     val promotions = orders.promotions(unit)
     return UnitCombat(
+        role = militaryRole(unit.baseUnit),
         supported = combat.supportsAttack(unit),
         strength = unit.baseUnit.strength,
         rangedStrength = unit.baseUnit.rangedStrength,
         range = unit.getRange(),
         attacksRemaining = (unit.maxAttacksPerTurn() - unit.attacksThisTurn).coerceAtLeast(0),
         attacks = frozen(if (active) combat.attacks(unit).map { it.observation(contexts) } else emptyList()),
-        order = order?.let { UnitOrderStatus(it.action, it.due, it.idle, it.fortificationTurns, it.healingPerTurn) },
+        order = order?.let { UnitOrderStatus(it.action, it.due, it.idle, it.fortificationTurns, it.healingPerTurn, it.automated) },
         orders = frozen(orders.orders(unit).map { UnitOrderOption(it.order.name, active && it.available, frozen(it.unavailableReasons)) }),
         promotions = promotions?.let { status ->
             UnitPromotionStatus(

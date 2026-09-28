@@ -6,6 +6,7 @@ import json
 import sqlite3
 from pathlib import Path
 
+from civ_agent.monitoring import path_for, read_collection
 from civ_agent.protocol import JsonObject
 from civ_agent.telemetry import TOKEN_KEYS
 from civ_agent.tls import write_private_json
@@ -111,9 +112,7 @@ def verify(root: Path, sessions: Path):
         settings == {"model": "gpt-5.6-luna", "reasoningEffort": "medium"} for settings in metrics["modelSettings"]
     ), "Provider settings differ from the comparison configuration"
     assert {key: metrics["usage"][key] for key in TOKEN_KEYS} == record["usage"]
-    jobs = {
-        row["jobId"]: row["job"] for row in map(json.loads, (root / "telemetry/jobs.jsonl").read_text().splitlines())
-    }
+    jobs = {row["jobId"]: row["job"] for row in read_collection(path_for(root), "jobs")}
     assert jobs[record["activationId"]]["usage"] == record["usage"]
     assert jobs[record["activationId"]]["telemetry"]["usageComplete"]
     with contextlib.closing(

@@ -19,6 +19,7 @@ internal data class CommunicationRequest(
     val waitSeconds: Int = 0,
     val job: String? = null,
     val purpose: String? = null,
+    val parentJob: String? = null,
     val usage: ModelUsage? = null,
     val telemetry: JobTelemetry? = null,
     val to: String? = null,

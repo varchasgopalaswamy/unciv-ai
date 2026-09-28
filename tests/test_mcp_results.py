@@ -1,4 +1,4 @@
-"""Single-payload delivery, legacy MCP compatibility, and unchanged durable receipts."""
+"""Single-payload delivery, standard MCP envelopes, and durable audit receipts."""
 
 import asyncio
 import copy
@@ -16,7 +16,7 @@ from mcp.types import TextContent
 from civ_agent.agent_service import server_ssl_context
 from civ_agent.civilization_state import CivilizationState
 from civ_agent.mcp_results import RESULT_FORMAT_HEADER, STRUCTURED_RESULT_FORMAT, canonical_tool_result
-from civ_agent.proposal_gateway import ProposalGateway, tool_result
+from civ_agent.proposal_gateway import ProposalGateway, public_result, tool_result
 from civ_agent.service_io import ServiceIO
 from civ_agent.tls import client_ssl_context, ensure_server_certificate
 from tests.test_proposal_gateway import Host
@@ -170,7 +170,10 @@ def test_opt_in_preserves_authentication_errors_receipts_and_cross_format_replay
                     saved = db.exec_driver_sql(
                         "SELECT result FROM calls WHERE job=? AND id='move'", (job.id,)
                     ).scalar_one()
-                assert json.loads(saved) == compact["structuredContent"]
+                saved_result = json.loads(saved)
+                assert saved_result["requestId"] == host.executed[0]["requestId"]
+                assert saved_result["revision"] == host.revision
+                assert public_result(saved_result) == compact["structuredContent"]
                 gateway.paused = True
                 paused = await call("paused", "player_turn", {})
                 assert paused == {

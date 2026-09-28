@@ -74,6 +74,7 @@ object AgreementLifecycleScenarioProbe {
                 for (civ in listOf("Rome", "France")) {
                     val event = runtime.executor.communicationState.streams[civ].orEmpty().single { it.kind == "agreement" }
                     check(event.body.getValue("reason").jsonPrimitive.content == "EXPIRED")
+                    check(event.wake) { "Shared agreement endings still wake their participants" }
                 }
                 Files.copy(checkpoint, root.resolve("round-001.json"))
                 firstRoundLedger = runtime.executor.communicationState.recordJson()

@@ -133,13 +133,11 @@ object PeaceTradeProbe {
             check(json().toJson(runtime.game) == before)
             runtime.executor.pause()
             runtime.executor.communicationPaused = true
-            runtime.executor.restoreRound(round, "restored-peace-epoch")
-            runtime.executor.accessGame { game ->
-                check(game.getCivilization("Rome").isAtWarWith(game.getCivilization("Greece")))
-                check(game.getCivilization("Rome").getDiplomacyManager("Greece")!!.trades.isEmpty())
-            }
-            check(runtime.executor.communicationState.outcomes.none { it.action == "ENACT_TRADE" })
-            check(runCatching { rome.communication(accepted) }.isFailure)
+            val failure = runCatching { runtime.executor.restoreTurn(round, "restored-peace-epoch") }.exceptionOrNull()
+            check(failure is OperatorFailure && failure.code == "TURN_ALREADY_COMMITTED")
+            check(json().toJson(runtime.game) == before)
+            runtime.executor.communicationPaused = false
+            check(rome.communication(accepted) == receipt)
         }
         verifyRequestCleanup(root.resolve("requests"))
         for (afterReplace in listOf(false, true)) EngineTradeProbe.verifyFailedCheckpoint(root.resolve("failure-$afterReplace"), afterReplace, peace = true)

@@ -14,18 +14,13 @@ import threading
 import time
 from pathlib import Path
 
+from civ_agent.monitoring import path_for, read_collection, read_record
 from civ_agent.tls import write_private_json
 
 
 def evaluation_status(root, expected_rounds, exit_code):
-    state_file = root / "runner/run.json"
-    state = json.loads(state_file.read_text()) if state_file.exists() else {}
-    turn_file = root / "telemetry/turns.jsonl"
-    turns = (
-        {row["turnId"]: row for row in map(json.loads, turn_file.read_text().splitlines())}
-        if turn_file.exists()
-        else {}
-    )
+    state = read_record(path_for(root), "state", "run") or {}
+    turns = {row["turnId"]: row for row in read_collection(path_for(root), "turns")}
     completed = sum(row["turn"]["status"] == "completed" and row["accountingComplete"] for row in turns.values())
     return {
         "runnerStatus": state.get("status"),
@@ -75,7 +70,7 @@ def main():
         command = [
             sys.executable,
             "-m",
-            "tests.live_vanilla",
+            "tests.live_saved_position",
             "--position",
             str(args.prepared.resolve() / case["id"]),
             "--state-dir",

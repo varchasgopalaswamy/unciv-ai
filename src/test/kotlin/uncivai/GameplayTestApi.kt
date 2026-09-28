@@ -30,8 +30,41 @@ internal fun gameplayCheckpoint(path: Path): JsonObject {
     return JsonObject(checkpoint + ("communication" to JsonObject(communication - "telemetry")))
 }
 
+/** Engine fixtures keep their fixed read credentials; end-to-end recovery tests cover rotation. */
+internal fun captureTestTurn(runtime: HeadlessRuntime, root: Path): GameCheckpoint {
+    val wasPaused = runtime.executor.isPaused()
+    runtime.executor.pause()
+    runtime.executor.communicationPaused = true
+    val saved = runtime.executor.turnSnapshot()
+    Files.writeString(root.resolve("turn-boundary.json"), PlayerTurnJson.json.encodeToString(saved))
+    runtime.executor.communicationPaused = false
+    if (!wasPaused) runtime.executor.resume()
+    return saved
+}
+
+internal fun testPlayerTokens(root: Path, defaults: Map<String, String>): Map<String, String> {
+    val path = root.resolve("test-player-tokens.json")
+    return if (Files.exists(path)) PlayerTurnJson.json.decodeFromString(Files.readString(path)) else defaults
+}
+
+internal fun restoreTestTurn(operator: (OperatorRequest) -> OperatorResponse, lease: String, root: Path): Map<String, String> {
+    val saved = PlayerTurnJson.json.decodeFromString<GameCheckpoint>(Files.readString(root.resolve("turn-boundary.json")))
+    val epoch = "restored-" + UUID.randomUUID()
+    operator(OperatorRequest("barrier", lease))
+    operator(OperatorRequest("restore", leaseId = lease, epoch = epoch, checkpoint = saved))
+    val tokens = operator(OperatorRequest("rotate_players", leaseId = lease, epoch = epoch)).players.associate { it.civilizationId to it.token }
+    Files.writeString(root.resolve("test-player-tokens.json"), PlayerTurnJson.json.encodeToString(tokens))
+    operator(OperatorRequest("restore_complete", leaseId = lease, epoch = epoch))
+    operator(OperatorRequest("unbarrier", lease))
+    return tokens
+}
+
 /** Authenticated HTTPS player and operator client for scripted gameplay fixtures. */
-internal class GameplayTestApi(runtime: HeadlessRuntime, tlsRoot: Path, private val tokens: Map<String, String> = mapOf("Rome" to "R".repeat(43), "Greece" to "G".repeat(43))) : AutoCloseable {
+internal class GameplayTestApi(runtime: HeadlessRuntime, tlsRoot: Path, initialTokens: Map<String, String> = mapOf("Rome" to "R".repeat(43), "Greece" to "G".repeat(43))) : AutoCloseable {
+    private var tokens = testPlayerTokens(tlsRoot.parent, initialTokens)
+    fun restore(root: Path) {
+        tokens = restoreTestTurn(::operator, lease, root)
+    }
     private val tls = TlsTestFixture(Files.createDirectories(tlsRoot))
     private val client = HttpClient.newBuilder().sslContext(tls.context).connectTimeout(Duration.ofSeconds(5)).build()
     private val operatorToken = "O".repeat(43)

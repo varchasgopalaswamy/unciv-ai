@@ -46,7 +46,6 @@ class TargetChoice(Command):
         "SET_UNIT_ORDER",
         "PROMOTE_UNIT",
         "RESOLVE_CAPTURED_CITY",
-        "RESPOND_FRIENDSHIP",
         "RESPOND_CITY_STATE_ALERT",
         "MANAGE_CAPTURED_CITY",
         "SET_CITY_FOCUS",
@@ -56,6 +55,14 @@ class TargetChoice(Command):
     ]
     target: Name
     selection: Name
+
+
+class RespondFriendship(Command):
+    kind: Literal["RESPOND_FRIENDSHIP"]
+    target: Annotated[
+        Name, Field(description="The friendship popup's alert handle from player_turn.alerts, not a civilization ID.")
+    ]
+    selection: Literal["Accept", "Decline"]
 
 
 class EconomicChoice(Command):
@@ -197,6 +204,7 @@ PlayerCommand = Annotated[
     ResearchQueue
     | Choice
     | TargetChoice
+    | RespondFriendship
     | EconomicChoice
     | TargetCommand
     | EconomicCommand
@@ -221,12 +229,46 @@ COMMANDS = TypeAdapter(PlayerCommand)
 
 
 def command_schema() -> JsonObject:
+    """Compact transport envelope; COMMANDS enforces the selected action's shape.
+
+    Inspected options provide complete commands. Keep the accepted field types
+    discoverable without repeating the same envelope in every action variant.
+    """
     schema = COMMANDS.json_schema()
-    # Each variant has disjoint kind values; anyOf retains the same validation
-    # while using the ordinary JSON Schema union supported by tool consumers.
-    schema["anyOf"] = schema.pop("oneOf")
-    schema.pop("discriminator")
-    return {"type": "object", **schema}
+    properties: JsonObject = {}
+    kinds = []
+    for variant in schema["oneOf"]:
+        fields = schema["$defs"][variant["$ref"].rsplit("/", 1)[1]]["properties"]
+        kind = fields["kind"]
+        kinds.extend(kind.get("enum", [kind.get("const")]))
+        for name, shape in fields.items():
+            properties.setdefault(
+                name, {k: v for k, v in shape.items() if k not in {"title", "description", "default"}}
+            )
+    properties["kind"] = {"type": "string", "enum": sorted(kinds)}
+    definitions = {}
+
+    def references(value):
+        if isinstance(value, dict):
+            if "$ref" in value:
+                key = value["$ref"].rsplit("/", 1)[1]
+                if key not in definitions:
+                    definitions[key] = schema["$defs"][key]
+                    references(definitions[key])
+            for part in value.values():
+                references(part)
+        elif isinstance(value, list):
+            for part in value:
+                references(part)
+
+    references(properties)
+    return {
+        "type": "object",
+        "properties": properties,
+        "required": ["kind"],
+        "additionalProperties": False,
+        "$defs": definitions,
+    }
 
 
 def command_arguments(arguments: JsonObject) -> JsonObject:

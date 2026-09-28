@@ -7,13 +7,12 @@ import shutil
 
 from civ_agent.agent_history import HistoryStore
 from civ_agent.tls import private_directory, write_private_json
-from civ_agent.turn_archive import TurnArchive
 
 
 def checkpoint_path(service, id):
     if not isinstance(id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", id):
         raise ValueError("INVALID_CHECKPOINT_ID")
-    return private_directory(service.state_dir / "round-checkpoints") / (id + ".json")
+    return private_directory(service.state_dir / "turn-recovery") / (id + ".json")
 
 
 async def barrier(service, paused):
@@ -47,8 +46,39 @@ async def capture(service, id):
     if path.exists():
         digest = await service.io.call(lambda: hashlib.sha256(path.read_bytes()).hexdigest())
     else:
-        digest = await service.io.call(service.memory.backup, path)
+        # Summaries are reproducible from immutable database evidence. Never
+        # duplicate every completed turn's observations in the current boundary.
+        metadata = json.loads(
+            json.dumps(
+                {
+                    "match": service.match,
+                    "records": list(service.records.values()),
+                }
+            )
+        )
+
+        def save():
+            metadata["histories"] = {}
+            for history in (service.state_dir / "history").glob("*/events.jsonl"):
+                metadata["histories"][history.parent.name] = history.stat().st_size
+            return service.memory.backup(path, metadata)
+
+        digest = await service.io.call(save)
     return {"id": id, "sha256": digest, "civilization": service.civilization}
+
+
+async def retain(service, id):
+    keep = checkpoint_path(service, id)
+    if not keep.exists():
+        raise ValueError("CHECKPOINT_MISSING")
+
+    def prune():
+        for path in keep.parent.glob("*.json"):
+            if path != keep:
+                path.unlink()
+
+    await service.io.call(prune)
+    return {"retained": id}
 
 
 async def restore(service, payload):
@@ -64,7 +94,7 @@ async def _restore(service, payload):
     if set(payload) != {"id", "sha256", "epoch"} or not service.gateway.paused:
         raise ValueError("BARRIER_REQUIRED")
     path = checkpoint_path(service, payload["id"])
-    await service.io.call(service.memory.verify, path, payload["sha256"])
+    saved = await service.io.call(service.memory.verify, path, payload["sha256"])
     if not isinstance(payload["epoch"], str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", payload["epoch"]):
         raise ValueError("INVALID_EPOCH")
     if service.active_task is not None and not service.active_task.done():
@@ -89,27 +119,39 @@ async def _restore(service, payload):
                 shutil.move(source, destination)
         private_directory(service.workspace)
         private_directory(service.records_dir)
-        interrupted = service.memory.restore(path, payload["sha256"], payload["epoch"])
-        service.memory.export(service.workspace)
-        service.match = {"epoch": payload["epoch"]}
+        # Keep only the history prefix that existed at the boundary. Completed
+        # histories remain available; messages from discarded actions do not.
+        for directory, length in saved["service"]["histories"].items():
+            source = archive / "history" / directory / "events.jsonl"
+            target = private_directory(service.state_dir / "history" / directory) / "events.jsonl"
+            with source.open("rb") as reader, target.open("wb") as writer:
+                remaining = length
+                while remaining:
+                    block = reader.read(min(remaining, 1024 * 1024))
+                    if not block:
+                        raise ValueError("CHECKPOINT_HISTORY_MISSING")
+                    writer.write(block)
+                    remaining -= len(block)
+            target.chmod(0o600)
+        pending = service.memory.restore(path, payload["sha256"], payload["epoch"])
+        service.match = {**(saved["service"]["match"] or {}), "epoch": payload["epoch"]}
         write_private_json(service.match_file, service.match)
-        service.history = HistoryStore(service.state_dir / "history", service.token, auto_render=False)
+        service.history = HistoryStore(service.state_dir / "history", service.token)
         service.gateway.history = service.history
-        service.archive = TurnArchive(
-            service.state_dir / "turn-archive",
-            service.workspace,
-            service.civilization,
-            payload["epoch"],
-            secrets=(service.token,),
-        )
         service.records.clear()
+        for record in saved["service"]["records"]:
+            record["epoch"] = payload["epoch"]
+            if record["phase"] not in {"COMPLETED", "FAILED", "INTERRUPTED"}:
+                record.update(phase="FAILED", error="SERVICE_RESTARTED")
+            service.records[record["activationId"]] = record
+            write_private_json(
+                service.records_dir / (hashlib.sha256(record["activationId"].encode()).hexdigest() + ".json"), record
+            )
         service.known_threads.clear()
-        service.thread_settings.clear()
-        service.thread_totals.clear()
-        service.archive_cache.clear()
         service.finalization_tasks.clear()
         service.finalization_errors.clear()
         service.active_id = None
+        service.reviews.failure = None
         service.gateway.jobs.clear()
         service.gateway.deferred_completions.clear()
         service.gateway.run_failure = service.memory.run_failure()
@@ -118,20 +160,13 @@ async def _restore(service, payload):
         else:
             service.gateway.failed.clear()
         write_private_json(service.state_dir / "restore.json", {**payload, "installed": True})
-        return interrupted
+        return pending
 
-    interrupted = await service.io.call(install)
-    if interrupted:
-        service.diagnostics.emit("restored_incomplete_memory", epoch=payload["epoch"], jobs=interrupted)
+    pending = await service.io.call(install)
     return {
         "restored": True,
         "epoch": payload["epoch"],
         "id": payload["id"],
         "sha256": payload["sha256"],
-        "interruptedMemoryUpdates": interrupted,
+        "pendingReviews": pending,
     }
-
-
-def pending_restore(service):
-    path = service.state_dir / "restore.json"
-    return json.loads(path.read_text()) if path.exists() else None

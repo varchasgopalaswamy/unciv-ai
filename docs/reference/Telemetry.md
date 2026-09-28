@@ -5,24 +5,25 @@ run, and the [dashboard](../guides/Match-dashboard.md) to inspect current metric
 This is the accounting contract; historical measurements are in the
 [archive](../archive/README.md).
 
-## Files and accounting
+## Storage and accounting
 
-The game server's checkpoint owns durable telemetry. It exports private,
-replaceable views beside that checkpoint under `telemetry/`:
+The game server's checkpoint owns durable telemetry. The host publishes changed
+rows in the operator's `runner/monitoring.sqlite3`:
 
-- `turns.jsonl`: one record per scheduled civilization turn, identified by the
-  native game ID, recovery epoch, and host handoff. Includes activation IDs,
-  cumulative gameplay tokens and tool counts across attempts, host API counts,
-  completion state, and timing.
-- `jobs.jsonl`: gameplay and asynchronous communication jobs, their civilization,
-  originating turn/handoff, reported token counters, model settings, API counts,
-  elapsed time, and completeness. Off-turn chat is charged to its own civilization.
-- `host-api.jsonl`: server call counts grouped by handoff window and actor,
-  including controller bookkeeping, communication subscriptions, and receipt retries.
-- `game-result.json`: native terminal winner/type/turn and frozen native scores
-  for every major player, including defeated players and built-in AI. During an
-  unfinished run it has `running` or `incomplete` status and current score snapshots;
-  these are not a victory result. Also includes match/player totals and setup provenance.
+- `turns`: one record per scheduled civilization turn, identified by native game
+  ID, recovery epoch and handoff. Includes activation IDs, tokens, API counts,
+  accounting completeness and timing.
+- `jobs`: gameplay, memory and communication jobs, with their originating player,
+  turn/handoff, model settings, counters and completeness.
+- `host-api`: server call counts grouped by handoff window and actor, including
+  controller bookkeeping, subscriptions and receipt retries.
+- `state/result`: native terminal winner/type/turn and frozen scores for every
+  major player. Unfinished runs contain current scores and running/incomplete
+  status, plus match/player totals and setup provenance.
+
+The TUI and console read these records directly. `civ-agent history export` creates
+JSONL and readable reports on demand. See [monitoring](../architecture/Monitoring.md)
+for transaction ownership, read-only access and importing an existing stopped game.
 
 Token fields are `input_tokens`, `cached_input_tokens`, `output_tokens`, and
 `reasoning_output_tokens`. Total tokens are input plus output; cached and reasoning
@@ -32,6 +33,13 @@ turn. Match totals include both gameplay and chat and retain interrupted attempt
 Input usage adds the context processed by every model request within a game turn.
 It is not the size of one prompt or a count of distinct game information. Cached
 input is included in that total; uncached input is input minus cached input.
+
+Strategic reviewers have separate `review` jobs linked to their source gameplay
+job. Every attempt's tokens, calls and duration count toward that source turn,
+even if it finishes during a later turn. Player totals expose `reviewUsage`
+separately from `gameplayUsage` and `chatUsage`. Provider usage and completeness
+remain per job; a failed attempt is still counted. Snapshot capture calls are
+service reads, recorded under the source gameplay job.
 
 Agent-facing tools are counted by the trusted service, including cached reads,
 validation failures, and repeated calls. Server tools are independently counted at
@@ -53,9 +61,9 @@ have `accountingComplete=false`. The service stores cumulative reports in a priv
 SQLite outbox outside game rollback snapshots, then sends them with increasing
 sequence numbers. Duplicate and out-of-order deliveries cannot double charge a
 job. Restart preserves the latest known spending, and reconnect retries unsent
-reports. A failed telemetry export does not undo a committed game command: the
-operator status exposes `telemetryExportError`, and later commits/restart regenerate
-the files from the checkpoint.
+reports. A failed monitoring write does not undo a committed game command: the
+operator status exposes `telemetryWriteError`, and later commits/restart republish
+the affected database rows from the checkpoint.
 
 Winner selection and scoring come from Unciv. The score leader is not substituted
 for a native winner. Budget exhaustion, interruption, and recovery create no winner.
@@ -64,27 +72,28 @@ Full telemetry and all-player scores remain operator data, outside player observ
 ## Gameplay and finalization timing
 
 `gameplayElapsedMs` ends when native handoff fences the job's game actions.
-`finalizationElapsedMs` covers subsequent memory work and service archive
-finalization, excluding the later scheduler-side mirror download. Memory work
-continues in the same conversation and its tokens belong to that activation.
-Another player may be active during finalization; do not add these overlapping
-intervals to infer match wall time. See [background turn memory](../architecture/Background-turn-memory.md).
+`finalizationElapsedMs` covers provider completion and durable service accounting,
+excluding the scheduler's later event download. There is no post-turn note writer.
+Another player may act during this interval. Periodic review jobs have their own
+elapsed time; do not sum overlapping durations to infer wall time. See
+[background reviews](../architecture/Background-turn-memory.md).
 
-A delayed report or unfinished archive can leave turn accounting incomplete
-while gameplay has already advanced. Completion, interruption and unavailable
-usage remain distinguishable. Game completion flushes pending accounting before
-publishing the native final result.
+Delayed provider reports or an unfinished strategic review can leave the source
+turn's accounting incomplete after gameplay has advanced. Completion, interruption
+and unavailable usage remain distinguishable. Game shutdown stops remaining work
+and flushes accounting, preserving the native result independently of advice.
 
 ## Partial memory rejections
 
 API counters classify the whole tool response. A successful `memory_update`
 response can contain individual `accepted: false` changes, which are not counted
 as separate API errors. Inspect per-edit results when measuring recovery work.
-Dedicated rejection counts remain an [open follow-up](../Roadmap.md#observed-follow-ups).
+The `memoryEdits` counters separately record accepted/rejected edits, rejected
+batches and rejection reasons.
 
 ## Implementation
 
 The native [telemetry store](../../src/main/kotlin/uncivai/Telemetry.kt) owns turn
-and result exports. [Service accounting](../../src/civ_agent/telemetry.py) keeps
+and result records. [Service accounting](../../src/civ_agent/telemetry.py) keeps
 job reports durable in SQLite; [database access](../architecture/Database-access.md)
 describes connection and transaction ownership.

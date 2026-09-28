@@ -12,7 +12,7 @@ from pathlib import Path
 from civ_agent.mcp_results import canonical_tool_result
 from civ_agent.model_status import REASONS, error_fields
 from civ_agent.protocol import EventPage
-from civ_agent.tls import private_directory, regular_file, write_private
+from civ_agent.tls import private_directory, regular_file
 
 MAX_EVENT_BYTES = 64 * 1024
 MAX_PAGE_BYTES = 256 * 1024
@@ -31,12 +31,6 @@ HISTORY_METHODS = frozenset(
     }
 )
 SECRET_KEYS = re.compile(r"token|authorization|password|secret|api.?key", re.I)
-ANSI = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\))")
-
-
-def plain_text(value):
-    value = ANSI.sub("", value)
-    return "".join(c for c in value if c in "\n\t" or ord(c) >= 32 and ord(c) != 127)
 
 
 def encoded(value):
@@ -117,16 +111,16 @@ def visible_item(method, params):
 
 
 class HistoryLog:
-    def __init__(self, directory: Path, secrets: Iterable[str] = (), *, auto_render: bool = True) -> None:
+    def __init__(self, directory: Path, secrets: Iterable[str] = ()) -> None:
         self.directory = private_directory(directory)
         self.path = self.directory / "events.jsonl"
-        self.markdown = self.directory / "history.md"
         self.secrets = set(secret for secret in secrets if secret)
         self.sequence = 0
-        self.auto_render = auto_render
-        self.rendered_sequence = -1
+        self.offsets = []
+        self.end_offset = 0
         self.last_lifecycle = None
         self.turn_id = None
+        self.model_role = "gameplay"
         self.pending = []
         self.pending_bytes = 0
         self.streams = {}
@@ -149,12 +143,12 @@ class HistoryLog:
                     event = json.loads(line)
                     if event["sequence"] != self.sequence:
                         raise ValueError("Non-contiguous history sequence")
+                    self.offsets.append(offset)
                     self.sequence = event["sequence"] + 1
                     if event["kind"] == "lifecycle":
                         self.last_lifecycle = event["data"]
                     offset += len(line)
-            if self.auto_render:
-                self.render()
+                self.end_offset = offset
 
     def sanitize(self, value, depth=0):
         if depth > 20:
@@ -179,7 +173,7 @@ class HistoryLog:
     def append(self, kind, data, event_time=None):
         self._append(kind, self.sanitize(data), event_time)
 
-    def _append(self, kind, data, event_time=None, render=True):
+    def _append(self, kind, data, event_time=None):
         event = {
             "sequence": self.sequence,
             "time": event_time or datetime.datetime.now(datetime.UTC).isoformat(),
@@ -201,7 +195,8 @@ class HistoryLog:
                 events.append({**event, "sequence": self.sequence + index, "data": metadata})
         # Commit all chunks from one accepted event together; each still has a
         # bounded size and its own cursor, but does not need a separate fsync.
-        raw = b"".join(encoded(item) + b"\n" for item in events)
+        lines = [encoded(item) + b"\n" for item in events]
+        raw = b"".join(lines)
         descriptor = os.open(self.path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o600)
         with os.fdopen(descriptor, "ab") as stream:
             if stat.S_IMODE(os.fstat(stream.fileno()).st_mode) & ~0o600:
@@ -209,11 +204,10 @@ class HistoryLog:
             stream.write(raw)
             stream.flush()
             os.fsync(stream.fileno())
+        for line in lines:
+            self.offsets.append(self.end_offset)
+            self.end_offset += len(line)
         self.sequence += len(events)
-        # The JSONL is authoritative. The Markdown is a readable derivative which is
-        # rebuilt at lifecycle boundaries and after completed items, never fed to agents.
-        if render and self.auto_render and kind not in {"assistant_delta", "reasoning_summary_delta", "tool_output"}:
-            self.render()
 
     def delta(self, kind, data):
         key = (kind, data.get("itemId"), data.get("summaryIndex"))
@@ -252,7 +246,9 @@ class HistoryLog:
             return
         if turn_id != self.turn_id:
             return
-        data = {**data, "turnId": turn_id}
+        data = {**data, "turnId": turn_id, "modelRole": self.model_role}
+        if self.model_role == "strategic_review" and data.get("itemId"):
+            data["itemId"] = "review:" + data["itemId"]
         if kind in {"assistant_delta", "reasoning_summary_delta", "tool_output"}:
             self.delta(kind, data)
         else:
@@ -271,42 +267,14 @@ class HistoryLog:
         for candidate, kind, data in pending:
             self.accept(candidate, kind, data)
 
-    def render(self):
-        if self.rendered_sequence == self.sequence:
-            return
-        events = []
-        if self.path.exists():
-            with self.path.open(encoding="utf-8") as stream:
-                events = [json.loads(line) for line in stream]
-        reassembled = []
-        index = 0
-        while index < len(events):
-            event = events[index]
-            data = event["data"]
-            if data.get("encoding") == "json" and data.get("chunkIndex") == 0:
-                count = data["chunkCount"]
-                chunks = events[index : index + count]
-                if len(chunks) == count and all(
-                    part["kind"] == event["kind"] and part["data"].get("chunkIndex") == offset
-                    for offset, part in enumerate(chunks)
-                ):
-                    event = {**event, "data": json.loads("".join(part["data"]["text"] for part in chunks))}
-                    index += count - 1
-            reassembled.append(event)
-            index += 1
-        finalized = {(event["kind"], event["data"].get("itemId")) for event in reassembled}
-        parts = ["# Agent history\n\nReasoning entries are the summaries exposed by Codex, not raw model reasoning.\n"]
-        for event in reassembled:
-            kind, data = event["kind"], event["data"]
-            if kind == "assistant_delta" and ("assistant_message", data.get("itemId")) in finalized:
-                continue
-            if kind == "reasoning_summary_delta" and ("reasoning_summary", data.get("itemId")) in finalized:
-                continue
-            label = kind.replace("_", " ").capitalize()
-            value = data.get("text") if "text" in data else json.dumps(data, ensure_ascii=False, indent=2)
-            parts.append(f"\n## {label} · {plain_text(event['time'])}\n\n{plain_text(str(value))}\n")
-        write_private(self.markdown, "".join(parts).encode())
-        self.rendered_sequence = self.sequence
+    def next_conversation(self, model_role):
+        """A new app-server thread in this activation has independent item/turn IDs."""
+        self.flush()
+        self.turn_id = None
+        self.model_role = model_role
+        self.pending.clear()
+        self.pending_bytes = 0
+        self.items.clear()
 
     def page(self, cursor: int, limit: int) -> EventPage:
         result = []
@@ -315,10 +283,9 @@ class HistoryLog:
         if self.path.exists():
             regular_file(self.path, private=True)
             with self.path.open("rb") as stream:
+                stream.seek(self.offsets[cursor] if cursor < self.sequence else self.end_offset)
                 for line in stream:
                     event = json.loads(line)
-                    if event["sequence"] < cursor:
-                        continue
                     if len(result) >= limit or size + len(line) > MAX_PAGE_BYTES:
                         break
                     result.append(event)
@@ -328,18 +295,15 @@ class HistoryLog:
 
 
 class HistoryStore:
-    def __init__(self, directory, service_token, *, auto_render=True):
+    def __init__(self, directory, service_token):
         self.directory, self.service_token = Path(directory), service_token
-        self.auto_render = auto_render
         self.logs = {}
 
     def path(self, activation_id):
         return self.directory / hashlib.sha256(activation_id.encode()).hexdigest()
 
     def begin(self, record, prompt, player_token):
-        log = HistoryLog(
-            self.path(record["activationId"]), (self.service_token, player_token), auto_render=self.auto_render
-        )
+        log = HistoryLog(self.path(record["activationId"]), (self.service_token, player_token))
         self.logs[record["activationId"]] = log
         if prompt is not None:
             log.append("user_message", {"text": prompt})
@@ -351,10 +315,8 @@ class HistoryStore:
             directory = self.path(record["activationId"])
             if not (directory / "events.jsonl").exists():
                 return
-            log = self.logs.setdefault(
-                record["activationId"], HistoryLog(directory, (self.service_token,), auto_render=self.auto_render)
-            )
-        data = {key: record[key] for key in ("phase", "threadId", "error", "aborted") if key in record}
+            log = self.logs.setdefault(record["activationId"], HistoryLog(directory, (self.service_token,)))
+        data = {key: record[key] for key in ("phase", "modelPhase", "threadId", "error") if key in record}
         if data != log.last_lifecycle:
             if data["phase"] in {"FAILED", "INTERRUPTED", "COMPLETED"}:
                 log.flush()
@@ -367,18 +329,6 @@ class HistoryStore:
             raise ValueError("INVALID_PROMPT_ROLE")
         self.logs[activation_id].append(role + "_message", {"text": text, "source": "service_startup"})
 
-    def handoff_response(self, activation_id, call_id, name, arguments, result):
-        """Keep a response intentionally withheld to prevent another model request."""
-        log = self.logs[activation_id]
-        item = {
-            "itemId": "handoff:" + call_id,
-            "type": "mcpToolCall",
-            "source": "service_handoff",
-            "deliveredToModel": False,
-        }
-        log.append("tool_call", {**item, "server": "civ", "tool": name, "arguments": arguments})
-        log.append("tool_result", {**item, "result": {"content": [], "structuredContent": result, "isError": False}})
-
     def action(self, activation_id, call_id, kind, description):
         """Record a native receipt's description for observers, outside model context."""
         self.logs[activation_id].append(
@@ -390,6 +340,9 @@ class HistoryStore:
         log = self.logs.get(activation_id)
         if log is not None:
             log.bind_turn(turn_id)
+
+    def next_conversation(self, activation_id, model_role):
+        self.logs[activation_id].next_conversation(model_role)
 
     def notify(self, activation_id, thread_id, method, params):
         log = self.logs.get(activation_id)
@@ -442,9 +395,7 @@ class HistoryStore:
             directory = self.path(activation_id)
             if not (directory / "events.jsonl").exists():
                 return {"events": [], "nextCursor": cursor, "hasMore": False, "available": False}
-            log = self.logs.setdefault(
-                activation_id, HistoryLog(directory, (self.service_token,), auto_render=self.auto_render)
-            )
+            log = self.logs.setdefault(activation_id, HistoryLog(directory, (self.service_token,)))
         if cursor > log.sequence:
             raise ValueError("Event cursor exceeds history")
         return log.page(cursor, limit)

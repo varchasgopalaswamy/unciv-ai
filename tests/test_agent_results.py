@@ -37,23 +37,20 @@ class FinalResultServiceTest(service_tests.AgentServiceTestCase):
         payload = result_payload()
         response = await self.service.result(payload)
         self.assertEqual({"civilization": "Rome", "epoch": "epoch-one", "received": True}, response)
-        self.assertEqual(payload, json.loads((self.root / "workspace/result.json").read_text()))
-        self.assertIn("Rome: Victory", (self.root / "workspace/result.md").read_text())
-        self.assertIn("Rome permitted report", (self.root / "workspace/result.md").read_text())
+        self.assertEqual(payload, json.loads((self.root / "service/result.json").read_text()))
+        self.assertFalse((self.root / "workspace/result.md").exists())
         self.assertEqual([], self.factory.instances)
         with self.assertRaisesRegex(ServiceError, "GAME_FINISHED"):
             await self.service.start(self.payload())
 
-    async def test_result_replay_restores_workspace_copies_from_private_state_after_restart(self):
+    async def test_result_replay_preserves_private_state_after_restart(self):
         payload = result_payload()
         first = await self.service.result(payload)
         self.assertEqual(first, await self.service.result(copy.deepcopy(payload)))
-        (self.root / "workspace/result.json").write_text('{"fake":true}')
-        (self.root / "workspace/result.md").write_text("An invented outcome")
         await self.service.close()
         self.service = self.make_service()
-        self.assertEqual(payload, json.loads((self.root / "workspace/result.json").read_text()))
-        self.assertNotIn("invented", (self.root / "workspace/result.md").read_text())
+        self.assertEqual(payload, json.loads((self.root / "service/result.json").read_text()))
+        self.assertFalse((self.root / "workspace/result.md").exists())
         self.assertEqual(first, await self.service.result(payload))
         conflicting = copy.deepcopy(payload)
         conflicting["result"]["outcome"] = "Defeat"
@@ -75,7 +72,7 @@ class FinalResultServiceTest(service_tests.AgentServiceTestCase):
         await self.service.interrupt("activation-one")
         self.assertTrue((await self.service.result(result_payload()))["received"])
 
-    async def test_terminal_activation_archives_without_handoff_and_cannot_be_aborted_or_replayed(self):
+    async def test_terminal_activation_archives_without_handoff_and_cannot_be_replayed(self):
         await self.service.start(self.payload())
         await self.terminal()
         payload = {"activationId": "activation-one", "epoch": "epoch-one", "gameTurn": 0, "handoff": 0}
@@ -83,10 +80,7 @@ class FinalResultServiceTest(service_tests.AgentServiceTestCase):
         self.assertTrue(finalized["terminalOutcome"])
         self.assertNotIn("committedHandoff", finalized)
         self.assertEqual(finalized, await self.service.finalize_terminal(payload))
-        turn = json.loads((self.root / "workspace/turn_0/turn.json").read_text())
-        self.assertTrue(turn["attempts"][0]["terminalOutcome"])
-        with self.assertRaises(ServiceError):
-            await self.service.abort(payload)
+        self.assertFalse((self.root / "workspace/turn_0/turn.json").exists())
         with self.assertRaisesRegex(ServiceError, "GAME_FINISHED"):
             await self.service.start(self.payload("activation-two"))
         with self.assertRaises(ServiceError):
@@ -130,7 +124,7 @@ class FinalResultServiceTest(service_tests.AgentServiceTestCase):
                     validate_result(payload)
                 with self.assertRaises(ServiceError):
                     await self.service.result(payload)
-        self.assertFalse((self.root / "workspace/result.json").exists())
+        self.assertFalse((self.root / "service/result.json").exists())
         self.assertIsNone(self.service.match)
 
     async def test_full_kotlin_report_schema_preserves_interception_roles_and_nullable_fields(self):
@@ -173,7 +167,7 @@ class FinalResultServiceTest(service_tests.AgentServiceTestCase):
             isAttacking=False,
         )
         await self.service.result(payload)
-        self.assertEqual(payload, json.loads((self.root / "workspace/result.json").read_text()))
+        self.assertEqual(payload, json.loads((self.root / "service/result.json").read_text()))
 
     async def test_final_messages_preserve_all_popup_content_in_json_and_readable_result(self):
         payload = result_payload()
@@ -187,8 +181,8 @@ class FinalResultServiceTest(service_tests.AgentServiceTestCase):
             }
         ]
         await self.service.result(payload)
-        self.assertEqual(payload, json.loads((self.root / "workspace/result.json").read_text()))
-        readable = (self.root / "workspace/result.md").read_text()
+        self.assertEqual(payload, json.loads((self.root / "service/result.json").read_text()))
+        readable = json.dumps(self.service.results.load())
         for value in (
             "Alexander",
             "The last words of the defeated leader.",

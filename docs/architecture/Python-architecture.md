@@ -19,7 +19,9 @@ flowchart TB
     Host --> Engine[Unciv engine]
 
     Gateway <--> Memory[SQLite memory, commitments, and receipts]
-    Service --> History[Turn archives and summaries]
+    Service --> History[Private event journal]
+    Scheduler --> Monitoring[Operator monitoring SQLite]
+    TUI --> Monitoring
     Service --> Mailbox[Continuous event receiver]
     Mailbox <-->|HTTPS through MCP client| Host
     Mailbox --> Memory
@@ -47,10 +49,11 @@ commands against the actual state. Identity, authorization, stale assumptions,
 memory provenance and durable receipts remain explicit domain checks.
 
 [memory_records.py](../../src/civ_agent/memory_records.py) provides Pydantic models for
-typed plans, beliefs, notes, SOUL, decision intent and memory responses. SQLite
+typed strategies, handoffs, beliefs, notes, decision intent and memory responses. SQLite
 revisions retain lifecycle and provenance; [memory_history.py](../../src/civ_agent/memory_history.py)
 builds validated summaries from receipts. [memory_exports.py](../../src/civ_agent/memory_exports.py)
-regenerates Markdown and removes stale managed projections. The
+generates Markdown only for explicit exports and removes stale managed projections
+when refreshing an export. The
 [structured memory guide](Structured-memory.md) documents the tool contract.
 SQLAlchemy Core owns the memory and accounting table definitions and query
 expressions. Both use explicit SQLite transactions through
@@ -72,7 +75,7 @@ Each agent service also writes operator diagnostics to
 standard-library logging queue keeps file writes off the HTTPS event loop;
 rotation retains the current 5 MiB file and three backups, all owner-only.
 Diagnostics remain outside the model workspace and are not part of memory or
-round rollback. They append across restarts, with a new service instance ID and
+turn rewind. They append across restarts, with a new service instance ID and
 the Python, MCP, HTTP and Pydantic versions recorded at startup.
 
 For `HOST_PROTOCOL_ERROR`, find `host_call_failed` and follow its `connectionId`

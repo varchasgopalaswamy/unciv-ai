@@ -3,6 +3,7 @@ import json
 import pytest
 
 from civ_agent.civilization_state import CivilizationState, StateConflict
+from tests.memory_helpers import stored_records
 
 
 def state(tmp_path):
@@ -14,18 +15,23 @@ def state(tmp_path):
 def test_communication_preserves_notes_without_overwriting_the_writer(tmp_path):
     memory = state(tmp_path)
     memory.start_job("planning", "gameplay", {})
-    content = {"type": "plan", "objective": "Attack Greece", "approach": "Advance", "successCriteria": "Capture a city"}
+    content = {
+        "type": "strategy",
+        "assessment": "Attack Greece",
+        "reasons": ["Advance"],
+        "reconsiderWhen": ["Capture a city"],
+    }
     memory.patch("planning", [{"op": "create", "content": content}])
     memory.start_job("chat", "communication", {})
     result = memory.patch(
         "chat",
         [
-            {"op": "amend", "id": "mem1", "fields": {"objective": "Peace accepted"}},
+            {"op": "amend", "id": "mem1", "fields": {"assessment": "Peace accepted"}},
             {"op": "create", "content": {"type": "note", "text": "Peace accepted; redeploy to the west"}},
         ],
     )
     assert [entry["accepted"] for entry in result["changes"]] == [False, True]
-    assert memory.snapshot("gameplay")["records"]["mem1"]["body"]["objective"] == "Attack Greece"
+    assert memory.snapshot("gameplay")["records"]["mem1"]["body"]["assessment"] == "Attack Greece"
     assert memory.snapshot("gameplay")["records"][result["changes"][1]["id"]]["category"] == "contribution"
 
 
@@ -41,10 +47,31 @@ def test_misleading_speech_cannot_replace_observation_and_cursor_is_durable(tmp_
     snapshot = restored.snapshot("communication")
     assert restored.cursor() == 1 and len(snapshot["events"]) == 1
     assert snapshot["records"]["event:1"]["category"] == "statement"
-    assert snapshot["records"]["observation:border"]["body"]["unit"] == "Greek warrior"
+    assert "observation:border" not in snapshot["records"]
+    assert stored_records(restored)["observation:border"]["body"]["unit"] == "Greek warrior"
     restored.start_job("chat", "communication", {})
     with pytest.raises(ValueError):
         restored.patch("chat", [{"key": "observation:border", "category": "observation", "body": {"text": "No army"}}])
+
+
+def test_native_offers_never_wake_or_crowd_out_player_conversations(tmp_path):
+    memory = state(tmp_path)
+    # Routing is determined by the event's kind, including restored queued events.
+    native = [
+        {"id": n, "kind": "trade", "wake": True, "body": {"proposal": f"n{n}", "mode": "NATIVE_AI"}}
+        for n in range(1, 61)
+    ]
+    memory.ingest("g1", native, 60)
+    assert not memory.has_wake() and not memory.snapshot("communication")["events"]
+    assert len(memory.snapshot("gameplay")["events"]) == 50
+    message = {"id": 61, "kind": "message", "wake": True, "body": {"author": "Greece", "text": "Negotiate?"}}
+    memory.ingest("g1", [message], 61)
+    assert memory.has_wake()
+    snapshot = memory.start_job("chat", "communication", {})
+    assert snapshot["events"] == [message] and snapshot["cursor"] == 61
+    memory.finish_job("chat", True)
+    assert not memory.has_wake()
+    assert len(memory.snapshot("gameplay")["events"]) == 50
 
 
 def test_outgoing_identity_exact_retry_and_crash_recovery(tmp_path):
@@ -72,7 +99,7 @@ def test_outgoing_identity_exact_retry_and_crash_recovery(tmp_path):
 def test_round_restore_fences_jobs_and_regenerates_projections(tmp_path):
     memory = state(tmp_path)
     memory.start_job("job", "gameplay", {})
-    memory.patch("job", [{"op": "create", "content": {"type": "soul", "text": "Develop peacefully"}}])
+    memory.patch("job", [{"op": "create", "content": {"type": "note", "text": "Develop peacefully"}}])
     path = tmp_path / "rounds" / "one.sqlite3"
     checksum = memory.backup(path)
     memory.patch("job", [{"op": "amend", "id": "mem1", "fields": {"text": "Invade"}}])
@@ -82,7 +109,7 @@ def test_round_restore_fences_jobs_and_regenerates_projections(tmp_path):
     workspace = tmp_path / "view"
     workspace.mkdir(mode=0o700)
     memory.export(workspace)
-    assert "Develop peacefully" in (workspace / "SOUL.md").read_text()
+    assert "Develop peacefully" in (workspace / "notes/mem1.md").read_text()
     assert (workspace / "chat.jsonl").read_text() == ""
     with pytest.raises(StateConflict):
         memory.queue("job", "player_command", {}, {}, "late")

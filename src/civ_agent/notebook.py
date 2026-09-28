@@ -4,7 +4,7 @@ The caller owns the transaction. Gameplay is the sole notebook writer; other
 jobs append immutable contributions for a subsequent gameplay activation.
 """
 
-from civ_agent.memory_records import MEMORY_TYPES, MemoryContentError, amended_content, public_record
+from civ_agent.memory_records import BRIEF_TYPES, MEMORY_TYPES, MemoryContentError, amended_content, public_record
 from civ_agent.memory_store import RecordStore
 
 
@@ -32,7 +32,7 @@ class Notebook:
                 "id": key,
                 "accepted": False,
                 "reason": "NOTEBOOK_READ_ONLY",
-                "instruction": "Append a contribution with create. The next gameplay job owns notebook revisions.",
+                "instruction": "Save a new contribution with create. Existing notebook entries are read-only during this exchange.",
             }
         old = self.store.all(keys=[key]).get(key) if key else None
         if change["op"] != "create":
@@ -70,8 +70,9 @@ class Notebook:
                     **old["body"],
                     "state": "retired",
                     "retirementReason": change["reason"],
-                    "assessment": change.get("assessment", ""),
-                    "updatedTurn": self.store.turn,
+                    "retirementAssessment": change.get("assessment", ""),
+                    "updatedTurn": self.basis["turn"],
+                    "basis": self.basis,
                 }
                 category = old["category"]
             else:
@@ -80,17 +81,19 @@ class Notebook:
                     proposed = amended_content(old["body"], change["fields"])
                 else:
                     proposed = change["content"]
+                    if old and proposed["type"] != old["category"]:
+                        raise ValueError("TYPE_CHANGE_REQUIRES_NEW_RECORD")
                 content = self.store.content(proposed, self.snapshot, old["body"] if old else None)
                 category = content["type"] if self.purpose == "gameplay" else "contribution"
-                if category == "soul" and any(
+                if category in BRIEF_TYPES and any(
                     k != key and r["body"].get("state") == "active"
-                    for k, r in self.store.all(categories={"soul"}).items()
+                    for k, r in self.store.all(categories={category}).items()
                 ):
-                    raise ValueError("SOUL_EXISTS: amend the existing principles")
+                    raise ValueError("BRIEF_EXISTS: read and replace the existing " + category)
                 body = {
                     **content,
-                    "createdTurn": old["body"]["createdTurn"] if old else self.store.turn,
-                    "updatedTurn": self.store.turn,
+                    "createdTurn": old["body"]["createdTurn"] if old else self.basis["turn"],
+                    "updatedTurn": self.basis["turn"],
                     "state": "active",
                     "basis": self.basis,
                     "_seenNotice": self.snapshot["records"].get(key, {}).get("body", {}).get("_noticeVersion", 0),
@@ -103,11 +106,7 @@ class Notebook:
             # A successful edit acknowledges notices actually delivered to this
             # conversation. Later notices remain pending, including during reflection.
             if category in MEMORY_TYPES:
-                notices = (
-                    self.snapshot.get("notices", {})
-                    if self.snapshot.get("memoryOnly")
-                    else self.store.all(categories={"notice"}, project=False)
-                )
+                notices = self.store.all(categories={"notice"}, project=False)
                 self.store.project_notices(key, record, notices)
             self.store.deliver(self.snapshot, {key: record})
             if category == "contribution":
@@ -126,7 +125,7 @@ class Notebook:
                     {
                         "code": "UNVERIFIED_REFERENCES",
                         "sources": body["unverifiedSources"],
-                        "instruction": "Saved as an assessment. These references were not delivered to this job and are not verified evidence.",
+                        "instruction": "Saved as an assessment. These references were not read in this conversation and are not verified evidence.",
                     }
                 ]
             return result

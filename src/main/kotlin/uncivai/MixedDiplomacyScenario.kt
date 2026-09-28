@@ -30,7 +30,7 @@ internal object MixedDiplomacyScenario {
         val own = runtime.communicationState.trades.proposals.values.map { it.last() }.filter { player.civID in it.participants() }
         val role = when (player.civID) {
             "Rome" -> "On turn zero, inspect native diplomacy, issue China the native settlement demand, and explicitly denounce Greece once through chat_send.nativeAction. Send France a greeting and negotiate an immediate gift of 5–10 Gold using the shared trade interface; France is a human-controller test participant. Queue one gift of 20–30 Gold to China using trade_offer. Do not wait for China: finish your turn. On your next turn inspect the actual native outcomes and responses, then update your private diplomatic plan."
-            "Greece" -> "On turn zero, inspect Rome's native denouncement and acknowledge it without declaring war. Discuss it in ordinary chat; your words create no native promise. Offer China one native friendship request using friendship_offer, then continue your turn without waiting. On your next turn inspect China's actual decision and update your private plan."
+            "Greece" -> "On turn zero, inspect Rome's native denouncement and acknowledge it without declaring war. Discuss it in ordinary chat; your words create no native promise. Offer China one native friendship request using friendship_offer, then continue your turn. On your next turn inspect China's actual decision and update your private plan."
             else -> "Use the shared chat/trade interface with the agents. France may negotiate and accept Rome's 5–10 Gold goodwill gift. Both human participants then finish ordinary turns so the native AI can respond. Do not use the native offer bridge."
         }
         return GameplayScenario(
@@ -40,7 +40,7 @@ internal object MixedDiplomacyScenario {
                 "Guided diplomacy exercise: Rome and Greece are agents, France and Egypt are human controllers, China is the built-in AI. A city-state is present; direct city-state actions are outside this exercise.",
                 role,
                 "Read player_turn before every explicit native chat action, inspect its options and consequences, and use an owned alert handle for a response. Trade and peace always use the trade tools. Social language stays nonbinding.",
-                "Check chat_read and trade_read before opening anything. Continue existing proposals across jobs and restarts; never duplicate a milestone. Native AI requests have no wall-clock deadline and do not pause gameplay. The native AI is free to decline or counter.",
+                "Check chat_read and trade_read before opening anything. Continue existing proposals; never duplicate a milestone. The other player is free to decline or counter.",
                 "Your current proposal references: ${own.joinToString { "${it.proposal} (${it.status})" }.ifEmpty { "none" }}.",
                 "Keep city production and research running, hold military units, and finish the turn after the diplomacy milestones. Use current sourced observations for your private plan.",
             ),
