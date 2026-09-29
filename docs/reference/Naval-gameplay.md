@@ -60,18 +60,22 @@ and `b89aea260` (naval operations) are merged and published on
 
 1. Read `player_turn` and choose an owned unit and destination.
 2. Call `movement_preview` with `target` and `destination: {x, y}`. It returns
-   adjacent paths grouped by estimated turn, costs and speculative flags. The
+   adjacent paths grouped by estimated turn, costs, `unexploredTiles` and `tilesOutsideCurrentSight`. The
    native planner treats unexplored terrain speculatively and ignores unseen units.
    Founding units also receive [settlement diagnostics](Exploration-and-settlement.md#settlement-diagnostics)
    for that destination. These distinguish route availability from city-site
    eligibility, including the native distance rule for different continents.
    Each stop's `afterMove` estimates remaining movement and action availability,
    with visible nearby enemies, owned military and visibility gaps. These
-   [tactical consequences](Tactical-review.md#action-consequences) are advice;
-   changing terrain knowledge or occupancy can interrupt the planned route.
+   [tactical consequences](Tactical-review.md#action-consequences) include
+   `captureRisk` when a visible hostile could reach an unguarded civilian's stop.
+   Changing terrain knowledge or occupancy can interrupt the planned route.
 3. Issue `SET_UNIT_DESTINATION` with the same unit and destination. Both the host
    and agent gateway require the preview to match the current revision. The engine
-   executes the first segment and stores its normal `moveTo` action.
+   executes the first segment and stores its normal `moveTo` action. If that
+   segment has `captureRisk`, explicitly accept it with `confirmAction: true` or
+   choose a protected move. An unconfirmed request moves nothing and returns
+   `CIVILIAN_CAPTURE_RISK`. Same-tile escort formations require no override.
 4. Inspect `unit.movementOrder` and `receipt.movement`. Future movement executes
    through native turn automation. `CANCEL_UNIT_MOVEMENT` clears the order without
    spending movement; another destination replaces it. `MOVE_UNIT` remains the
@@ -81,6 +85,9 @@ Routes are estimates, not guaranteed arrivals. The engine replans each turn and
 can stop for visible enemies, newly discovered obstacles, unavailable routes or
 arrival. No hidden-unit route or stop query is exposed. A restart preserves the
 native order and completed receipts; uncommitted previews must be read again.
+Civilian routes check each future stopping tile for capture exposure and clear
+the order with a notification before a risky segment. An earlier confirmation
+does not authorize later risky segments.
 Native order continuation is part of the checkpointed turn handoff, including
 recovery before/after checkpoint replacement.
 
@@ -104,6 +111,30 @@ The service supplies request IDs and revisions. Cancellation uses
 The headless runtime selects Unciv's existing **automated units move on turn
 start** setting. Imported native automated orders use that same timing; this does
 not add a new movement rule.
+
+### Escort formations
+
+One owned civilian and one owned military unit on the same tile can form an
+escort using native `ESCORT` / `STOP_ESCORT` choices in
+`unit_details(sections=["orders"])`. Air units cannot join a formation. The unit
+roster and movement/order details show `escort: {partner, active}`, including a
+co-located candidate before pairing. Each available choice has a copyable
+`SET_UNIT_ORDER` command. Pairing and separating cost no movement.
+
+After pairing, read a fresh `movement_preview` and issue `SET_UNIT_DESTINATION`
+for either member. The engine plans and moves both together, including on later
+turns. A direct movement instruction replaces both members' independent travel
+and automation orders. Each preview stop includes the selected unit's
+`afterMove` and the partner's `afterMove.escort`: both share the stop, but pay
+their own terrain costs. Future stops use each unit's full movement allowance.
+Discoveries can stop the pair early if either member exhausts its movement.
+
+Both members show the shared `movementOrder`. Either can cancel it through
+`CANCEL_UNIT_MOVEMENT` without separating the formation. `STOP_ESCORT` separates
+them; any destination retained by a member then applies only to that unit.
+Formation and destination state survive native saves. Normal visibility and
+obstacle handling still apply. An escort can be defeated; pairing is not a
+safety assessment, and a nearby military unit does not prevent civilian capture.
 
 Work Boats advertise `unit.waterImprovement`. `CREATE_WATER_IMPROVEMENT` takes
 `target` and `selection=waterImprovement.name`; it consumes the builder through

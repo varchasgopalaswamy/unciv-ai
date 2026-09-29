@@ -173,24 +173,28 @@ def test_movement_reports_zero_or_actual_discovery_and_replays_without_recountin
     asyncio.run(run())
 
 
-def test_scout_reveals_settler_destination_in_action_update_without_repeated_reads(tmp_path):
+def test_scout_identifies_settler_destination_blocker_in_action_update_without_repeated_reads(tmp_path):
     async def run():
         async with session(tmp_path) as (gateway, job, host, _):
             settler = host.view["map"]["units"][1]
-            unknown = {"siteStatus": "UNKNOWN", "siteBlockers": [], "uncertainty": "Nearby tiles are not all visible."}
+            unidentified = {
+                "siteStatus": "BLOCKED",
+                "siteBlockers": [{"code": "CITY_TOO_CLOSE", "city": None}],
+                "uncertainty": None,
+            }
             settler.update(
                 name="Settler",
                 settlement={"siteStatus": "BLOCKED", "siteBlockers": [{"code": "CITY_TOO_CLOSE", "city": "Rome"}]},
-                movementOrder={"destination": {"x": 4, "y": 0}, "canCancel": True, "settlement": unknown},
+                movementOrder={"destination": {"x": 4, "y": 0}, "canCancel": True, "settlement": unidentified},
             )
             base = await gateway.call(job, "player_turn", {}, "start")
             shown = base["units"][1]
             assert shown["settlementStatus"] == "BLOCKED"  # Current tile, not the destination.
-            assert shown["movementOrder"]["settlement"] == unknown
+            assert shown["movementOrder"]["settlement"] == unidentified
             detail = await gateway.call(job, "unit_details", shown["inspections"]["FOUND_CITY"]["arguments"], "site")
             assert detail["data"]["entity"]["movementOrder"] == {
                 "destination": settler["movementOrder"]["destination"],
-                "settlement": unknown,
+                "settlement": unidentified,
             }
             await inspect(gateway, job)
             blocked = {

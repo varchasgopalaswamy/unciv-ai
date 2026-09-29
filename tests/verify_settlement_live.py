@@ -86,14 +86,10 @@ def verify(root: Path) -> JsonObject:
             travel_turns.add(row["receipt"]["turn"])
     activations = [json.loads(path.read_text()) for path in (service / "activations").glob("*.json")]
     checks = {
-        "initial_destination_unknown": settler["movementOrder"]["settlement"]["siteStatus"] == "UNKNOWN",
-        "blocker_delivered_in_action_update_while_settler_stationary": any(
-            row["source"] == "command_update"
-            and row["settlerStayedStill"]
-            and row["before"].get("settlement", {}).get("siteStatus") == "UNKNOWN"
-            and row["after"].get("settlement", {}).get("siteStatus") == "BLOCKED"
-            for row in transitions
-        ),
+        "initial_destination_blocked_without_city_identity": settler["movementOrder"]["settlement"]["siteStatus"]
+        == "BLOCKED"
+        and all(blocker.get("city") is None for blocker in settler["movementOrder"]["settlement"]["siteBlockers"]),
+        "replacement_destination_chosen": redirects > 0,
         "additional_roman_city_founded": founded is not None
         and len(next(civ for civ in game["civilizations"] if civ["civID"] == "Rome")["cities"]) == 2,
         "no_tile_by_tile_settler_moves": all(row["request"]["kind"] != "MOVE_UNIT" for row in actions),

@@ -43,17 +43,17 @@ class Loss(BoundaryModel):
     text: str
 
 
-class CivilianRecapture(BoundaryModel):
-    originalOwner: str
-    unitAfterCapture: str
+class CivilianCapture(BoundaryModel):
+    isOurCapturedUnit: bool
+    unitIfKept: str | None
 
 
-class RecapturableCivilian(BoundaryModel):
+class CapturableCivilian(BoundaryModel):
     position: Position
     name: str
     civilization: str
     atWar: bool
-    recapture: CivilianRecapture
+    capture: CivilianCapture
     guard: Threat | None = None
 
 
@@ -65,8 +65,8 @@ class TacticalReview(BoundaryModel):
     militaryNearHostiles: list[UnitRisk]
     cityBombardments: list[Bombardment]
     recentLosses: list[Loss]
-    recapturableCivilians: list[RecapturableCivilian]
-    recaptureConditions: str | None = None
+    capturableCivilians: list[CapturableCivilian]
+    captureConditions: str | None = None
     cityCount: int
     citiesProducingSettlers: list[str]
     settlerUnits: list[str]
@@ -102,13 +102,13 @@ def tactical_review(snapshot: JsonObject) -> TacticalReview:
         if not tile["visible"]:
             continue
         for unit in tile["units"]:
-            if unit["military"] or not unit.get("recapture"):
+            if unit["military"] or not unit.get("capture"):
                 continue
             guard = next((u for u in tile["units"] if u["military"]), None)
             captives.append(
-                RecapturableCivilian(
+                CapturableCivilian(
                     position=tile["position"],
-                    **{k: unit[k] for k in ("name", "civilization", "atWar", "recapture")},
+                    **{k: unit[k] for k in ("name", "civilization", "atWar", "capture")},
                     guard=(
                         Threat(
                             position=tile["position"],
@@ -174,10 +174,11 @@ def tactical_review(snapshot: JsonObject) -> TacticalReview:
             for a in c["attacks"]
         ],
         recentLosses=losses,
-        recapturableCivilians=captives,
-        recaptureConditions=(
-            "A successful legal capture returns these units to your control as unitAfterCapture. "
-            "Capture requires entry by a military unit after any hostile guard is cleared; ranged fire alone does not recapture. "
+        capturableCivilians=captives,
+        captureConditions=(
+            "unitIfKept is the resulting unit type, including any conversion; recovering our own Settler preserves it. "
+            "A rescued foreign civilian may offer a return/keep choice. "
+            "Capture requires entry by a military unit after any hostile guard is cleared; ranged fire alone does not capture. "
             "Units at peace cannot be captured without war. Inspect current combat/movement options for availability."
             if captives
             else None

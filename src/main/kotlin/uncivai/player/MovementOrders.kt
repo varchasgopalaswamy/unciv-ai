@@ -2,6 +2,7 @@ package uncivai.player
 
 import com.unciv.logic.civilization.Civilization
 import com.unciv.logic.civilization.PlayerUnitOperations
+import com.unciv.logic.civilization.PlayerUnitOrders
 import com.unciv.logic.map.mapunit.MapUnit
 import kotlinx.serialization.Serializable
 import java.text.DecimalFormat
@@ -11,6 +12,14 @@ import java.util.Locale
 
 @Serializable
 data class MovementPreviewRequest(val target: String, val destination: TilePosition)
+
+@Serializable
+data class EscortFormation(val partner: String, val active: Boolean)
+
+internal fun observeEscort(player: Civilization, unit: MapUnit, state: TurnSessionState): EscortFormation? =
+    PlayerUnitOrders(player).escortPartner(unit)?.let {
+        EscortFormation(state.unitHandles.getOrPut(it.id) { state.identifiers.next(PlayerIdentifier.UNIT) }, unit.isEscorting())
+    }
 
 /** Turn stops are estimates; the engine replans as terrain and other units become visible. */
 @Serializable
@@ -25,6 +34,7 @@ data class MovementPreview(
     val estimatedTurns: Int?,
     val turns: List<UnitMoveOption>,
     val settlement: SettlementPreview? = null,
+    val escort: String? = null,
 )
 
 @Serializable
@@ -51,8 +61,7 @@ internal fun MovementOrder.detached(): MovementOrder = copy(
 )
 
 internal fun observeMovementOrder(player: Civilization, unit: MapUnit, active: Boolean, knowledge: Map<TilePosition, KnownSettlementTile> = emptyMap()): MovementOrder? {
-    if (!unit.isMoving()) return null
-    val position = unit.getMovementDestination().position
+    val position = PlayerUnitOperations(player).movementDestination(unit)?.position ?: return null
     val destination = TilePosition(position.x, position.y)
     val settlement = observeSettlement(player, unit, destination, active, knowledge)?.let {
         SettlementSiteSummary(it.siteStatus, it.siteBlockers, it.uncertainty)
@@ -66,14 +75,18 @@ internal fun observeMovementPreview(player: Civilization, unit: MapUnit, turn: P
     val route = if (active && destination != null) PlayerUnitOperations(player).route(unit, destination) else null
     val format = DecimalFormat("0.#", DecimalFormatSymbols(Locale.ROOT))
     val contexts = PositionContexts(player)
-    val attacks = turn.map.units.single { it.handle == request.target }.combat?.attacks.orEmpty()
+    val observed = turn.map.units.single { it.handle == request.target }
+    val attacks = observed.combat?.attacks.orEmpty()
+    val escort = observed.escort?.takeIf { it.active }?.partner
     val turns = route?.turns?.mapIndexed { index, segment ->
         UnitMoveOption(
             TilePosition(segment.destination.position.x, segment.destination.position.y),
             Collections.unmodifiableList(segment.path.map { TilePosition(it.position.x, it.position.y) }),
             format.format(segment.movementCost.toDouble()),
-            segment.path.any { !it.isVisible(player) },
-            movementConsequences(player, unit, segment.destination, segment.movementCost, contexts, attacks, knowledge, laterTurn = index > 0),
+            segment.path.count { !it.isExplored(player) },
+            segment.path.count { !it.isVisible(player) },
+            movementConsequences(player, unit, segment.destination, segment.movementCost, contexts, attacks, knowledge,
+                laterTurn = index > 0, escortHandle = escort, escortCost = segment.escortMovementCost),
         )
     } ?: emptyList()
     return MovementPreview(
@@ -81,6 +94,7 @@ internal fun observeMovementPreview(player: Civilization, unit: MapUnit, turn: P
         route != null, if (route == null) listOf("No movement route is currently offered") else emptyList(),
         turns.size.takeIf { route != null }, Collections.unmodifiableList(turns),
         observeSettlement(player, unit, request.destination, active, knowledge),
+        escort,
     )
 }
 

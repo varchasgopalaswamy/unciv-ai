@@ -52,7 +52,7 @@ full tile tooltip breakdowns remain outstanding.
 `map.frontier` contains unexplored neighbor coordinates, with no terrain attached.
 Coordinates are Unciv axial x/y coordinates. Each owned unit has an opaque `handle`,
 its location and displayed movement, plus `moves` containing destination, path,
-displayed movement cost and a `speculative` flag. Paths exclude the starting tile.
+displayed movement cost, `unexploredTiles`, and `tilesOutsideCurrentSight` counts. Paths exclude the starting tile.
 They can include unknown coordinates because the UI permits movement into the unknown.
 
 Preview pathfinding assumes unexplored tiles cost one movement point and ignores
@@ -82,9 +82,9 @@ The agent overview includes a compact `settlementStatus` and a link to
 `unit_details(target, sections=["settlement"])`, even when `canFoundCity` is false.
 `settlementStatus` describes the unit's **current tile**. For a standing destination
 order, `movementOrder.settlement` describes the **destination** using `siteStatus`,
-`siteBlockers`, and `uncertainty`. It is refreshed from permitted observations on
-every snapshot, without computing a new route. A scout revealing a blocking city
-therefore updates the settler's row in the scout action's `stateUpdate`, even if
+`siteBlockers`, and `uncertainty`. It is refreshed from the native site rules on
+every snapshot, without computing a new route. A scout identifying a blocking city
+updates the settler's row in the scout action's `stateUpdate`, even if
 the settler has not moved. Unchanged rows are omitted by the ordinary delta logic.
 
 The focused settlement section includes both the active destination summary and
@@ -92,12 +92,12 @@ the full diagnostics for the unit's current tile:
 
 | Field | Meaning |
 | --- | --- |
-| `siteStatus` | `BLOCKED` when a player-visible native site restriction applies; `ELIGIBLE` when the surroundings are fully visible and no site restriction applies; otherwise `UNKNOWN`. |
-| `siteBlockers` | Native water, impassable terrain, foreign ownership, or city-spacing restrictions. Visible blocking cities include their name, position, distance, and required minimum distance. |
+| `siteStatus` | On explored tiles, `BLOCKED` or `ELIGIBLE` according to the current native site rules. `UNKNOWN` is reserved for unexplored or nonexistent destinations. |
+| `siteBlockers` | Native water, impassable terrain, foreign ownership, or city-spacing restrictions, including restrictions caused by undiscovered cities. Blocking city names and locations require current sight or remembered knowledge; undiscovered cities receive a generic reason without identity, location or distance. |
 | `unitBlockers` | Separate current requirements such as movement, a usable founding ability, or One City Challenge. |
 | `canFoundNow` | Native action availability at the occupied destination; `null` for other destinations. |
 | `minimumCityDistance`, `minimumCityDistanceOnDifferentContinents` | Required center-to-center distances from the selected engine's rules. Vanilla normally requires four hexes on the same continent and three across continents. |
-| `uncertainty` | Explains incomplete visibility. An unknown site can still permit the native founding action once occupied. |
+| `uncertainty` | Explains that the destination itself is unexplored; null for explored sites, even with fog nearby. |
 
 Waiting can restore movement; it does not remove city-spacing or foreign-ownership
 restrictions. Own territory and adjacent foreign settlers do not themselves forbid
@@ -106,35 +106,41 @@ scouting or selecting another destination. It adds no movement or founding gate;
 Unciv revalidates the actual action normally. The existing settlement inspection
 and native promise-confirmation flow remain in place.
 
-Prospective previews include owned, visible and previously observed blocking cities.
-Incomplete surrounding visibility produces uncertainty regardless of whether an
-unseen city actually exists, preventing eligibility queries from becoming a hidden
-city detector. Unexplored and nonexistent destinations return unknown site details.
-The same filters apply to standing-order summaries. A city's remembered spacing
-restriction includes `observedTurn` and `remembered:true`; it does not assert that
-the city still exists. Unseen founding, razing and border changes do not update
-these facts. Destination summaries omit
+The settlement lens deliberately exposes current eligibility on explored tiles,
+including effects of unseen founding, razing and border changes. This is an explicit
+exception to ordinary map privacy. It does not reveal undiscovered city names,
+locations, owners or distances, and it does not refresh remembered map facts.
+Known blocking city details retain `observedTurn` and `remembered:true` under fog;
+eligibility itself always follows current native rules. Unexplored and nonexistent
+destinations return unknown site details. The same policy applies to standing-order
+summaries. Destination summaries omit
 current unit requirements such as remaining movement. They disappear when the
 native order clears on arrival or cancellation, and units without a founding
 ability have no destination settlement summary. Site advice never cancels or
 redirects an order.
-The current-tile `canFoundNow` mirrors the existing native action availability;
-it does not identify an unseen cause. These filters apply to this diagnostic
-surface; the broader map-UI visibility limitations described above still apply.
+The current-tile `canFoundNow` mirrors native action availability, including separate
+unit requirements. Movement, combat and other map observations retain their existing
+visibility policy.
 
-The turn-start `settlement` overview searches explored tiles, reports eligible,
-uncertain and blocked counts, and provides three scored suggestions. Its advisory
+The turn-start `settlement` overview searches explored tiles, reports `eligibleSites`
+and `blockedSites`, and provides up to three scored eligible suggestions. Its advisory
 heuristic uses Unciv's yield weights and settlement preferences with permitted
 current/remembered inputs. It does not apply native AI diplomatic preferences as
-legality restrictions. `NO_KNOWN_SITES` is scoped to the player's knowledge, not
-an omniscient assertion. `player_details(section="settlement")` exposes the full
+legality restrictions. Status is `SITES_AVAILABLE` or `NO_SITES_IN_EXPLORED_TERRITORY`;
+unexplored land may contain more sites. `player_details(section="settlement")` exposes the full
 ranked list. Hex distance is not a path estimate; inspect the native route before
 issuing a destination order. See [compact observations](Compact-observations.md).
+
+The former uncertain-site counters and candidate uncertainty fields were removed
+without compatibility aliases. Checkpoint version 7 stores durable knowledge and
+receipts and rebuilds turn observations after loading. Earlier checkpoint formats
+cannot be resumed with this build; start a new game/checkpoint.
 
 `UnitSettlementTest` covers native blockers, distances across continents, movement
 recovery, ownership, adjacent settlers, and retained UI actions.
 `SettlementPreviewIntegrationTest` checks authenticated previews and commands,
-read-only behavior, founding/retry effects, and hidden-city non-disclosure.
+read-only behavior, founding/retry effects, eligibility under fog without city identity
+disclosure, and a coastal settler choosing an eligible neighboring site.
 Python selective-read and movement-order tests cover discovery and advisory-only
 behavior through the model-facing gateway. State-update tests cover new blockers
 revealed by another unit, selective inspection invalidation, unchanged-row
@@ -142,10 +148,10 @@ suppression, and clearing an order from the delivered overview.
 
 ### Focused live exercise
 
-Generate an isolated fixture with a Roman settler already heading toward an
-uncertain site, a scout, and two built-in AI rivals. One `gpt-5.6-luna`/medium
-agent scouts the area and chooses whether to retain or replace the destination,
-then founds a city. The driver issues no gameplay commands. The default limits
+Generate an isolated fixture with a Roman settler already heading toward a site
+blocked by an undiscovered city, a scout, and two built-in AI rivals. One
+`gpt-5.6-luna`/medium agent chooses an eligible replacement destination and founds
+a city; scouting is optional. The driver issues no gameplay commands. The default limits
 are three rounds, twelve model activations, thirty minutes overall, and ten
 minutes per activation; the ordinary scheduler limit flags can override these.
 
@@ -165,7 +171,8 @@ is supplied at turn zero; the exercise does not measure production time or provi
 a controlled before/after speed comparison. A turn-limit stop is expected after
 the three completed turns; check the verifier for the settlement result.
 
-September 22, 2026: all three Luna/medium turns completed in
+Historical exercise, before the settlement lens change: on September 22, 2026,
+all three Luna/medium turns completed in
 `/tmp/unciv-settlement-live-20260922`; all six verifier checks passed. The scout
 revealed Orleans blocking `(4,0)`, and its action update delivered that fact while
 the settler remained at `(0,2)`. Rome issued one replacement order to `(2,4)` on
@@ -173,11 +180,10 @@ turn 0 and founded Antium on turn 1. There were no stationary turns before the
 founding turn and no tile-by-tile settler commands. The native city action remained
 available even though surrounding visibility left the site's status `UNKNOWN`.
 
-The agent also verbally confused `UNKNOWN` with exhausted movement and repeated
-the survey milestone. Inspection guidance now explicitly defines `UNKNOWN` as
-incomplete visibility, and the exercise prompt says to skip completed milestones.
-Those wording refinements have not had a second live run. The retained
-`settlement-live.json` and per-turn histories record the prompts used in this run.
+That run used the former surrounding-visibility policy and is not acceptance evidence
+for the current lens. The current fixture expects an immediate blocked-site result
+and a replacement destination. The retained `settlement-live.json` and per-turn
+histories record the prompts used in the historical run.
 
 ## Slice inventory and evidence
 

@@ -2,7 +2,7 @@
 
 from typing import Annotated, Literal
 
-from pydantic import Field, TypeAdapter, ValidationError, field_validator
+from pydantic import Field, StrictBool, TypeAdapter, ValidationError, field_validator
 
 from civ_agent.memory_records import Intent
 from civ_agent.protocol import JsonObject
@@ -91,7 +91,14 @@ class EconomicCommand(Command):
 
 
 class MoveCommand(Command):
-    kind: Literal["MOVE_UNIT", "SET_UNIT_DESTINATION", "REASSIGN_CITY_TILE", "REBASE_UNIT", "PARADROP", "AIR_SWEEP"]
+    kind: Literal["MOVE_UNIT", "SET_UNIT_DESTINATION"]
+    target: Name
+    destination: Position
+    confirmAction: StrictBool = False
+
+
+class PositionCommand(Command):
+    kind: Literal["REASSIGN_CITY_TILE", "REBASE_UNIT", "PARADROP", "AIR_SWEEP"]
     target: Name
     destination: Position
 
@@ -209,6 +216,7 @@ PlayerCommand = Annotated[
     | TargetCommand
     | EconomicCommand
     | MoveCommand
+    | PositionCommand
     | NuclearStrike
     | CityAttack
     | UnitAttack

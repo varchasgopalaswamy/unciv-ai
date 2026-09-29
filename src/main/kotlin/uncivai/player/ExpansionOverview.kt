@@ -2,8 +2,10 @@ package uncivai.player
 
 import com.unciv.logic.city.SettlementBudget
 import com.unciv.logic.civilization.Civilization
+import com.unciv.logic.map.TileMap
 import com.unciv.logic.map.tile.Tile
 import com.unciv.models.ruleset.tile.ResourceType
+import com.unciv.models.ruleset.unique.UniqueType
 import com.unciv.models.translations.tr
 import kotlinx.serialization.Serializable
 
@@ -62,13 +64,14 @@ internal fun expansionResources(player: Civilization, center: Tile, state: TurnS
 data class SettlementPopulationCost(val population: Int, val cityUnhappiness: Float, val populationUnhappiness: Float)
 
 @Serializable
-data class SettlementHappinessBuilding(val name: String, val happiness: Float, val productionCost: Int, val baseMaintenance: Int, val missingTechnologies: List<String>, val requirements: List<String>)
+data class SettlementHappinessBuilding(val name: String, val happiness: Float, val productionCost: Int, val baseMaintenance: Int, val missingTechnologies: List<String>, val requirements: List<String>, val unresolvedConditions: List<String>)
 
 @Serializable
 data class SettlementHappiness(
     val populationCosts: List<SettlementPopulationCost>,
     val buildings: List<SettlementHappinessBuilding>,
-    val basis: String = "Native city/population unhappiness under current civilization modifiers, at starting population and after growth. These are cost components, not net founding outcomes: starting/free buildings, connected luxuries, specialists and other happiness effects are excluded. Building amounts are independent passive contributions for an empty city; requirements and technology still apply. Existing-city production cannot estimate a new city's completion time.",
+    val unexploredWorkableTiles: Int,
+    val basis: String = "Native costs and building contributions for an empty city using known terrain and current civilization modifiers. Starting/free buildings, connected luxuries and specialists are excluded. Unresolved site conditions can change estimates; missing terrain is not treated as proof that a requirement is impossible. Building requirements, tile acquisition, improvement and technology still apply. Existing-city production cannot estimate a new city's completion time.",
 )
 
 @Serializable
@@ -117,14 +120,32 @@ internal fun expansionHappinessBaseline(player: Civilization): ExpansionHappines
     )
 }
 
-internal fun settlementHappiness(player: Civilization, position: TilePosition): SettlementHappiness? {
-    val tile = player.gameInfo.tileMap[position.x, position.y]
-    // Site-dependent uniques and building prerequisites must not inspect hidden surroundings.
-    if (tile.getTilesInDistance(player.gameInfo.ruleset.modOptions.constants.cityWorkRange).any { !it.isVisible(player) && it.getOwner() !== player }) return null
+internal fun settlementHappiness(player: Civilization, position: TilePosition, planningMap: TileMap): SettlementHappiness? {
+    val tile = planningMap.getOrNull(position.x, position.y) ?: return null
+    val range = player.gameInfo.ruleset.modOptions.constants.cityWorkRange
+    val unknownTiles = player.gameInfo.tileMap[position.x, position.y].getTilesInDistance(range)
+        .filter { planningMap.getOrNull(it.position.x, it.position.y) == null }.toList()
+    val unknownNeighbors = unknownTiles.any { it.aerialDistanceTo(tile) == 1 }
     val initial = player.gameInfo.ruleset.eras.getValue(player.gameInfo.gameParameters.startingEra).settlerPopulation
-    val budget = SettlementBudget(player)
+    // Native calculations see remembered terrain, never the live hidden map.
+    val budget = SettlementBudget(player, planningMap)
     return SettlementHappiness(
         budget.costs(tile.position, listOf(initial, initial + 1, initial + 4)).map { SettlementPopulationCost(it.population, it.cityUnhappiness, it.populationUnhappiness) },
-        budget.buildings(tile.position, initial).map { SettlementHappinessBuilding(it.building.name, it.happiness, it.productionCost, it.building.maintenance, it.missingTechnologies, it.requirements.map(String::tr)) },
+        budget.buildings(tile.position, initial).map { option ->
+            val unresolved = buildList {
+                option.building.requiredNearbyImprovedResources?.takeIf { resources ->
+                    unknownTiles.isNotEmpty() && resources.isNotEmpty() &&
+                        tile.getTilesInDistance(range).none { it.tileResource?.name in resources }
+                }?.let { resources ->
+                    add("Unexplored tiles may contain required resources: ${resources.joinToString()}.")
+                }
+                option.building.uniqueObjects.filter { it.type in setOf(UniqueType.MustBeNextTo, UniqueType.MustNotBeNextTo) }
+                    .filter { unknownNeighbors && !tile.matchesFilter(it.params[0], player) && !tile.isAdjacentTo(it.params[0], player) }
+                    .forEach { add(it.getDisplayText().tr()) }
+            }
+            SettlementHappinessBuilding(option.building.name, option.happiness, option.productionCost, option.building.maintenance,
+                option.missingTechnologies, option.requirements.map(String::tr), unresolved)
+        },
+        unknownTiles.size,
     )
 }

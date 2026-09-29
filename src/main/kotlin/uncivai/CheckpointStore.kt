@@ -12,7 +12,6 @@ import uncivai.player.CombatReport
 import uncivai.player.CompletedTurnReview
 import uncivai.player.ConfirmedTurnAction
 import uncivai.player.PlayerIdentifier
-import uncivai.player.PlayerTurnSnapshot
 import uncivai.player.SharedFreeGreatPersonDecision
 import uncivai.player.TurnCommandReceipt
 import uncivai.player.TurnCommandRequest
@@ -28,7 +27,7 @@ import java.nio.file.StandardOpenOption
 /** Trusted full-state artifact. Never serve this file through a player endpoint. */
 @Serializable
 internal data class GameCheckpoint(
-    val formatVersion: Int = 6,
+    val formatVersion: Int = 7,
     val epoch: String,
     val paused: Boolean,
     val gameJson: String,
@@ -49,8 +48,6 @@ internal data class SavedPlayerState(
     val alertHandles: List<String?>,
     val notificationHandles: List<String?>,
     val dismissedNotifications: Set<String>,
-    val revision: String,
-    val fingerprint: PlayerTurnSnapshot?,
     val receipts: List<SavedReceipt>,
     val unitHandles: Map<Int, String> = emptyMap(),
     val reviewTurn: Int? = null,
@@ -107,7 +104,7 @@ internal class CheckpointStore(
     fun read(): GameCheckpoint {
         acquire()
         val document = checkpointJson.parseToJsonElement(Files.readString(path))
-        require(document.jsonObject["formatVersion"]?.jsonPrimitive?.intOrNull == 6) { "Unsupported checkpoint version; start a new game" }
+        require(document.jsonObject["formatVersion"]?.jsonPrimitive?.intOrNull == 7) { "Unsupported checkpoint version; start a new game" }
         val saved = checkpointJson.decodeFromJsonElement<GameCheckpoint>(document)
         require(saved.epoch.isNotEmpty()) { "Invalid checkpoint epoch" }
         return saved
@@ -156,8 +153,6 @@ internal class CheckpointStore(
                     alertHandles = player.popupAlerts.map { state.alertHandles[it] },
                     notificationHandles = player.notifications.map { state.notificationHandles[it] },
                     dismissedNotifications = state.dismissedNotifications.toSet(),
-                    revision = state.revision,
-                    fingerprint = state.fingerprint,
                     receipts = state.receipts.values.map { SavedReceipt(it.first, it.second) },
                     reviewTurn = state.reviewTurn,
                     reviewActions = state.reviewActions.toList(),

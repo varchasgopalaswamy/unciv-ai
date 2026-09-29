@@ -77,6 +77,8 @@ object MixedDiplomacyProbe {
                 sent = obj("epoch" to runtime.epoch, "op" to "trade_offer", "requestId" to "native-gift", "partner" to "China", "give" to listOf(gold(25)), "receive" to emptyList<JsonObject>())
                 receipt = api.communicate(tokens.getValue("Rome"), sent)
                 pending = receipt["trade"]!!.jsonObject
+                check(pending["proposal"]!!.jsonPrimitive.content.matches(Regex("d[0-9a-z]{5}")))
+                check(pending["proposal"] != shared["proposal"])
                 check(pending["status"]!!.jsonPrimitive.content == "PENDING") { receipt.toString() }
                 check(pending["pausesGameplay"]!!.jsonPrimitive.boolean.not())
                 check(runtime.executor.communicationState.trades.activeProposal == null)
@@ -84,6 +86,13 @@ object MixedDiplomacyProbe {
                 check(china.tradeRequests.single { it.requestingCiv == "Rome" }.requestId.isNotEmpty())
                 val franceLedger = api.communicate(tokens.getValue("France"), obj("op" to "state", "epoch" to runtime.epoch))
                 check(pending["proposal"].toString() !in franceLedger.toString())
+                // Unknown and private references give the same diagnostics, containing
+                // only this reader's pending proposals and no private existence signal.
+                val privateRead = api.communicate(tokens.getValue("France"), obj("op" to "trade_read", "epoch" to runtime.epoch, "proposal" to pending["proposal"]))
+                val absentRead = api.communicate(tokens.getValue("France"), obj("op" to "trade_read", "epoch" to runtime.epoch, "proposal" to "dabsent"))
+                check(privateRead["error"]!!.jsonPrimitive.content == "UNKNOWN_TRADE")
+                check(privateRead - "proposal" == absentRead - "proposal")
+                check(privateRead["pendingTrades"]!!.jsonArray.isEmpty())
                 check(api.communicate(tokens.getValue("Rome"), sent) == receipt)
                 friendship = command("friendship_offer", "partner" to "China")["trade"]!!.jsonObject
                 check(friendship["status"]!!.jsonPrimitive.content == "PENDING")
@@ -124,6 +133,17 @@ object MixedDiplomacyProbe {
                 val snapshot = api.turn(tokens.getValue("Rome"))
                 check(snapshot.pending.single { it.kind == "TradeRequests" }.supported)
                 val incoming = command("state")["trades"]!!.jsonArray.map { it.jsonObject }.single { it["author"]!!.jsonPrimitive.content == "China" && it["status"]!!.jsonPrimitive.content == "PENDING" }
+                val reference = incoming["proposal"]!!.jsonPrimitive.content
+                check(reference.matches(Regex("d[0-9a-z]{5}")))
+                val beforeTypo = rome.gold
+                val typo = command("trade_read", "proposal" to reference + "2")
+                check(typo["error"]!!.jsonPrimitive.content == "UNKNOWN_TRADE")
+                check(typo["pendingTrades"]!!.jsonArray.any { it.jsonObject["proposal"] == incoming["proposal"] })
+                val rejectedDecision = command("trade_decide", "proposal" to reference + "2", "version" to 1, "decision" to "accept")
+                check(rejectedDecision == typo)
+                val rejectedCounter = command("trade_offer", "proposal" to reference + "2", "version" to 1, "partner" to "China", "give" to listOf(gold(1)), "receive" to emptyList<JsonObject>())
+                check(rejectedCounter == typo)
+                check(rome.gold == beforeTypo && rome.tradeRequests.any { it.requestingCiv == china.civID })
                 val read = command("trade_read", "proposal" to incoming["proposal"])["trade"]!!.jsonObject
                 check(read["acceptAvailable"]!!.jsonPrimitive.boolean) { read.toString() }
                 verifyNativeDelivery(runtime)

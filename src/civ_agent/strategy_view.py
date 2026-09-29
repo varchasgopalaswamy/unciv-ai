@@ -138,7 +138,7 @@ def report_text(view: StrategyView) -> Text:
     section("Long-term plan", review["longTerm"])
     for title, field in (
         ("Victory race", "race"),
-        ("Strongest alternative", "alternative"),
+        ("Other approaches", "alternative"),
         ("Disrupting rivals", "disruption"),
         ("Diplomacy and agreements", "agreements"),
     ):
@@ -146,7 +146,7 @@ def report_text(view: StrategyView) -> Text:
     for path in review["victoryPaths"]:
         text.append(visible_text(path["victory"]) + " victory\n", style="bold cyan")
         # Display every saved report field without reinterpreting the advice.
-        order = ("remaining", "objective", "investment", "payoff", "projection", "rivals")
+        order = ("objective", "investment", "payoff", "remaining", "projection", "rivals")
         for field in sorted(path, key=lambda field: (order.index(field) if field in order else len(order), field)):
             if field == "victory":
                 continue

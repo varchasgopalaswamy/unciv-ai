@@ -162,7 +162,12 @@ internal fun observeCityStates(player: Civilization, active: Boolean): List<City
 private fun quest(player: Civilization, assigned: AssignedQuest): CityStateQuest {
     val manager = assigned.assignerCiv.questManager
     val namesCivilization = assigned.questNameInstance in setOf(QuestName.ConquerCityState, QuestName.BullyCityState, QuestName.FindPlayer, QuestName.DenounceCiv, QuestName.GiveGold, QuestName.PledgeToProtect)
-    val target = if (namesCivilization) player.gameInfo.civilizations.firstOrNull { it.civID == assigned.data1 }?.let { civilization(player, it) } else null
+    // The request explicitly supplies this name. Hearing it is not diplomatic
+    // contact: keep an unmet target's actionable ID and location concealed.
+    val target = if (namesCivilization) player.gameInfo.civilizations.firstOrNull { it.civID == assigned.data1 }?.let {
+        if (player === it || player.knows(it)) civilization(player, it)
+        else CityStateCivilization(null, it.civName, true)
+    } else null
     val description = if (namesCivilization) assigned.quest.description.fillPlaceholders(target?.name ?: "Unknown civilization") else assigned.getDescription()
     val location = when (assigned.questNameInstance) {
         QuestName.ClearBarbarianCamp -> assigned.data1.toIntOrNull()?.let { x -> assigned.data2.toIntOrNull()?.let { y -> TilePosition(x, y) } }

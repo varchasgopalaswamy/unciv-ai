@@ -88,6 +88,11 @@ internal class EngineTrades(private val runtime: GameExecutor) {
     internal val nativeBridge = NativeTradeBridge(runtime, this)
     private fun active() = state.activeProposal?.let { state.proposals.getValue(it).last() }
 
+    // Random references are easy to copy without revealing other players' trade counts.
+    internal fun newProposalId(): String = generateSequence {
+        "d" + random.nextInt(60_466_176).toString(36).padStart(5, '0')
+    }.first { it !in state.proposals }
+
     /** Called under the executor, including by its deadline task. No model or mailbox waits here. */
     fun expireIfNeeded() {
         val proposal = active() ?: return
@@ -204,7 +209,8 @@ internal class EngineTrades(private val runtime: GameExecutor) {
             }
 
             "trade_read" -> {
-                val versions = visible(civilization, checkNotNull(request.proposal))
+                val id = checkNotNull(request.proposal)
+                val versions = visible(civilization, id) ?: return unknownProposal(civilization, id)
                 obj("trade" to view(versions.last(), civilization), "history" to versions.dropLast(1).map { view(it, civilization) })
             }
 
@@ -215,11 +221,19 @@ internal class EngineTrades(private val runtime: GameExecutor) {
         return result
     }
 
-    fun summaries(civilization: String): List<JsonObject> = state.proposals.values.map { it.last() }.filter { civilization in it.participants() }.map {
+    fun summaries(civilization: String, pendingOnly: Boolean = false): List<JsonObject> = state.proposals.values.map { it.last() }.filter { civilization in it.participants() && (!pendingOnly || it.status == "PENDING") }.map {
         obj("proposal" to it.proposal, "author" to it.author, "partner" to it.partner, "kind" to if (it.friendship != null) "FRIENDSHIP" else "TRADE", "status" to status(it), "deadlineMillis" to if (it.mode == "NATIVE_AI") null else it.deadlineMillis, "mode" to it.mode)
     }
 
-    internal fun visible(civilization: String, id: String): MutableList<EngineTradeProposal> = state.proposals[id]?.takeIf { civilization in it.last().participants() } ?: invalid()
+    internal fun visible(civilization: String, id: String): MutableList<EngineTradeProposal>? = state.proposals[id]?.takeIf { civilization in it.last().participants() }
+    internal fun unknownProposal(civilization: String, id: String): JsonObject = obj(
+        "error" to "UNKNOWN_TRADE",
+        "reason" to "No trade with this reference is available to you. Copy a proposal reference from your pending trades.",
+        "proposal" to id,
+        "applied" to false,
+        "recoverable" to true,
+        "pendingTrades" to summaries(civilization, pendingOnly = true),
+    )
     private fun status(proposal: EngineTradeProposal) = proposal.status
     internal fun view(proposal: EngineTradeProposal, civilization: String): JsonObject {
         if (proposal.mode == "NATIVE_AI") return nativeBridge.view(proposal, civilization)
@@ -233,6 +247,8 @@ internal class EngineTrades(private val runtime: GameExecutor) {
             json.encodeToJsonElement(proposal).jsonObject + obj(
                 "status" to state,
                 "acceptAvailable" to (reason == null),
+                "declineAvailable" to (state == "PENDING" && civilization != proposal.author),
+                "withdrawAvailable" to (state == "PENDING" && civilization == proposal.author),
                 "unavailableReason" to reason,
                 "counteroffersRemaining" to (proposal.counterofferLimit - proposal.version + 1),
                 "counterofferAvailable" to (state == "PENDING" && proposal.friendship == null && proposal.version <= proposal.counterofferLimit),
@@ -270,7 +286,7 @@ internal class EngineTrades(private val runtime: GameExecutor) {
         val b = player(checkNotNull(request.partner))
         if (b.isAI()) return nativeBridge.propose(civilization, request, friendship)
         if (!known(a, b)) invalid()
-        val previous = if (request.proposal != null) visible(civilization, checkNotNull(request.proposal)).last() else null
+        val previous = request.proposal?.let { visible(civilization, it)?.last() ?: return unknownProposal(civilization, it) }
         if (previous != null) {
             requireVersion(previous, request)
             if (previous.friendship != null || previous.participants().toSet() != setOf(civilization, b.civID) || status(previous) != "PENDING") return unavailable("Only a pending trade proposal between these players can be replaced.")
@@ -291,7 +307,7 @@ internal class EngineTrades(private val runtime: GameExecutor) {
         val give = if (friendship) emptyList() else terms(request.give)
         val receive = if (friendship) emptyList() else terms(request.receive)
         if (!friendship && give.isEmpty() && receive.isEmpty()) invalid()
-        val id = previous?.proposal ?: generateSequence { "d" + java.lang.Long.toUnsignedString(random.nextLong(), 36).take(8) }.first { it !in state.proposals }
+        val id = previous?.proposal ?: newProposalId()
         val proposal = EngineTradeProposal(id, (previous?.version ?: 0) + 1, civilization, b.civID, clauses(civilization, b.civID, give, receive), previous?.deadlineMillis ?: (runtime.clockMillis() + state.timeoutSeconds * 1000L), previous?.counterofferLimit ?: state.counterofferLimit, now, listOf(TradeConsent(civilization, "accept", now)), friendship = if (friendship) FriendshipTerms() else null)
         legality(proposal)?.let { return unavailable(it) }
         if (previous != null) replace(previous.copy(status = "SUPERSEDED"), civilization)
@@ -306,7 +322,8 @@ internal class EngineTrades(private val runtime: GameExecutor) {
     }
 
     private fun decide(civilization: String, request: CommunicationRequest): JsonObject {
-        val proposal = visible(civilization, checkNotNull(request.proposal)).last()
+        val id = checkNotNull(request.proposal)
+        val proposal = visible(civilization, id)?.last() ?: return unknownProposal(civilization, id)
         requireVersion(proposal, request)
         if (proposal.mode == "NATIVE_AI") return nativeBridge.decide(civilization, request, proposal)
         val decision = checkNotNull(request.decision)

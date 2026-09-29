@@ -321,12 +321,19 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
         } else if (request.kind == TurnCommandKind.SET_UNIT_DESTINATION) {
             val query = MovementPreviewRequest(request.target!!, request.destination!!)
             if (state.observedRevision != before.revision || state.movementPreviewRevision != before.revision || query !in state.movementPreviews) fail(PlayerSessionFailure.OBSERVATION_REQUIRED)
-            if (!observeMovementPreview(player, unit!!, before, query).available) fail(PlayerSessionFailure.OPTION_UNAVAILABLE)
+            val preview = observeMovementPreview(player, unit!!, before, query)
+            if (!preview.available) fail(PlayerSessionFailure.OPTION_UNAVAILABLE)
+            preview.turns.firstOrNull()?.afterMove?.captureRisk?.let { risk ->
+                if (!request.confirmAction) throw PlayerSessionException(PlayerSessionFailure.CIVILIAN_CAPTURE_RISK, risk, request)
+            }
             game.tileMap[com.unciv.logic.map.HexCoord(request.destination.x, request.destination.y)]
         } else if (request.kind == TurnCommandKind.MOVE_UNIT) {
             // Resolve only an advertised option, so arbitrary coordinates never probe hidden tiles.
             val option = before.map.units.single { it.handle == request.target }.moves
                 .firstOrNull { it.destination == request.destination } ?: fail(PlayerSessionFailure.OPTION_UNAVAILABLE)
+            option.afterMove?.captureRisk?.let { risk ->
+                if (!request.confirmAction) throw PlayerSessionException(PlayerSessionFailure.CIVILIAN_CAPTURE_RISK, risk, request)
+            }
             game.tileMap[com.unciv.logic.map.HexCoord(option.destination.x, option.destination.y)]
         } else if (request.kind == TurnCommandKind.REASSIGN_CITY_TILE) {
             val option = before.cities.single { it.handle == request.target }.management!!.sharedTiles
@@ -862,7 +869,7 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
             (request.kind == TurnCommandKind.MOVE_CONSTRUCTION) != (request.toIndex != null) ||
             (request.index != null && request.index < 0) || (request.toIndex != null && request.toIndex < 0) ||
             (request.confirmBreakPromise && request.kind != TurnCommandKind.FOUND_CITY) ||
-            (request.confirmAction && request.kind !in economicCommands && request.kind !in setOf(TurnCommandKind.CITY_STATE_ACTION, TurnCommandKind.NUCLEAR_STRIKE)) ||
+            (request.confirmAction && request.kind !in economicCommands && request.kind !in setOf(TurnCommandKind.CITY_STATE_ACTION, TurnCommandKind.NUCLEAR_STRIKE, TurnCommandKind.MOVE_UNIT, TurnCommandKind.SET_UNIT_DESTINATION)) ||
             (request.kind == TurnCommandKind.DECLARE_WAR) != request.confirmWar ||
             (request.kind != TurnCommandKind.END_TURN && (request.reviewId != null || request.deferReason != null)) ||
             (request.reviewId != null && request.reviewId.length !in 1..128) ||

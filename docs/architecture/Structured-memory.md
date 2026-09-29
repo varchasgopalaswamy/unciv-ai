@@ -42,12 +42,19 @@ review as provisional decisions.
 
 A separate read-only adviser works asynchronously every K turns, starting at turn
 K (`--review-interval`, default 5). It compares every enabled victory type,
-remaining requirements, timing assumptions and observed rivals. Every path names
-a next concrete objective, required investment and expected payoff for the player
-and rivals, so future development is considered for every victory type.
-It considers the strongest alternative, ways to disrupt rivals and the relative
-value of agreements, then suggests short-, mid- and long-term plans. The prompt
-defines the review's goals and leaves analytical methods to the reviewer.
+remaining requirements, timing assumptions and observed rivals. Every path leads
+with a useful intermediate objective, required investment and expected payoff
+relative to rivals, including their likely responses. Development, expansion,
+diplomacy and military action can contribute to any victory path. Consequential
+uncertainties are tied to the next decision and how to resolve them.
+
+The assessment can identify a preferred victory or leave the choice open. It
+still recommends concrete next steps, options to develop, commitments to make or
+defer, and evidence that would change the plan. It considers other promising
+approaches, ways to disrupt rivals and conditions for pursuing or ending them,
+and the relative value of agreements, then suggests short-, mid- and long-term
+plans. The prompt defines the review's goals and leaves analytical methods to the
+reviewer.
 Projections can describe development milestones and conditions, with detail
 suited to the game stage and evidence.
 

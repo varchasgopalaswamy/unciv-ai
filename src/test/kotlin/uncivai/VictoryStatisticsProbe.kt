@@ -198,7 +198,7 @@ object VictoryStatisticsProbe {
         check(demo.rankings == null)
         val production = demo.demographics!!.rows.single { it.metric == "Production" }
         check(production.ownValue == 258 && production.ownRank == 3 && production.average == 358)
-        check(production.best!!.civilization == null && production.best.value == null)
+        check(production.best!!.civilization == null && production.best.value == 458)
         check(production.worst!!.civilization == "Rome" && production.worst.value == 258)
         runtime.executor.accessGame { it.getCivilization("France").addGold(1000000) }
         check(session.victoryProgress(demographics) == demo) { "Demographics exposed a mid-turn treasury change" }

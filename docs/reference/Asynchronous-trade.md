@@ -86,17 +86,26 @@ promise does not sign it. An incoming native friendship popup is also readable:
 the full decision. Accepting either path records a `DECLARE_FRIENDSHIP` engine
 outcome and adds advisory notices to relevant private assessments.
 
-The model supplies only the proposal ID and decision when accepting:
+Shared and native AI proposals use six-character random references such as
+`d9bc1p`, stable across counteroffers and restart. Pending summaries and chat
+events include an `inspection` command for `trade_read`; inspected terms include
+copyable `responses` for the available accept, decline and withdraw choices.
+Templates never supply the agent's intent. Unknown references return
+`UNKNOWN_TRADE` with only that player's pending proposals and their inspection
+commands; guessing a private reference yields the same error as a nonexistent one.
+
+The model supplies the proposal reference, decision and its own intent:
 
 ```json
-{"proposal":"d9bc1p2", "decision":"accept"}
+{"proposal":"d9bc1p", "decision":"accept", "intent":{"reason":"Secure our border with a mutual pact"}}
 ```
 
 Python attaches the exact version inspected by that job with `trade_read`, along
 with credentials, epoch and a durable request ID. A different job reading a
 counteroffer does not update the first job's inspected version. Reading chat does
-not implicitly approve new terms. A stale response requires another inspection
-and decision.
+not implicitly approve new terms. An uninspected decision returns a copyable
+read command without acting; a diagnostic lookup never registers terms as read.
+A stale response requires another inspection and decision.
 
 A counteroffer or revision creates a new immutable version, superseding the
 pending version and recording only its new author's consent. Accepted versions

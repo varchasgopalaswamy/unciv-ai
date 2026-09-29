@@ -169,6 +169,17 @@ object AirProbe {
         }
         check(before == session.missionPreview(query))
         check(before.visibleVictims.isEmpty())
+        check(before.visibleInterceptionThreats.isEmpty() && !before.destinationVisible)
+        rome.getDiplomacyManager("Greece")!!.declareWar()
+        rome.viewableTiles = runtime.game.tileMap.values.toSet()
+        val visible = session.missionPreview(query)
+        check(visible.visibleInterceptionThreats.any { it.name == "Fighter" })
+        for (interceptor in runtime.game.getCivilization("Greece").units.getCivUnits().filter { it.name == "Fighter" }) {
+            interceptor.attacksThisTurn = 10
+        }
+        check(session.missionPreview(query).visibleInterceptionThreats == visible.visibleInterceptionThreats) {
+            "Threat previews disclosed private interceptor readiness"
+        }
         val france = runtime.game.getCivilization("France")
         runtime.game.currentPlayer = france.civID
         runtime.game.currentPlayerCiv = france
@@ -183,6 +194,7 @@ object AirProbe {
         hidden.instanceName = "Private target name"
         check(prior == french.missionPreview(nuclear))
         check(prior.visibleVictims.isEmpty())
+        check(prior.affectedTilesOutsideCurrentSight > 0)
         val foreign = nuclear.copy(target = "unowned")
         val rejected = runCatching { french.missionPreview(foreign) }.exceptionOrNull() as PlayerSessionException
         check(rejected.reason == PlayerSessionFailure.UNIT_UNAVAILABLE)

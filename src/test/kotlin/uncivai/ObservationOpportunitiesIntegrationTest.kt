@@ -21,7 +21,7 @@ class ObservationOpportunitiesIntegrationTest {
 
     @Test fun `settlement recommendations distinguish a crowded explored map`() = run("settlement")
 
-    @Test fun `settlement advice exists before settlers and respects hidden changes`() = run("settlement-before-settler")
+    @Test fun `settlement advice exists before settlers and follows native restrictions under fog`() = run("settlement-before-settler")
 
     @Test fun `native exploration and worker automation support commands replay and restart`() = run("automation")
 

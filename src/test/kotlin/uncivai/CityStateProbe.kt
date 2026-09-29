@@ -239,6 +239,9 @@ object CityStateProbe {
         val session = PlayerHost(runtime).bindPlayer("Rome")
         val before = session.turn()
         val detail = before.diplomacy.cityStates.single()
+        val capital = geneva.getCapital()!!.getCenterTile()
+        val revealed = before.map.tiles.single { it.position.x == capital.position.x && it.position.y == capital.position.y }
+        check(!revealed.visible && revealed.cityName == geneva.getCapital()!!.name && revealed.terrain == capital.baseTerrain)
         check(detail.ally!!.unmet && detail.protectors.single().unmet)
         check(detail.quests.none { it.name == "Construct Wonder" })
         check(detail.quests.single { it.name == "Find Player" }.targetCivilization!!.unmet)
@@ -249,10 +252,14 @@ object CityStateProbe {
         check(detail.quests.single { it.name == "Invest" }.objective!!.goldGiftInfluenceBonusPercent == 50)
         check(detail.quests.single { it.name == "Find Player" }.objective!!.targetName == null)
         check(detail.quests.single { it.name == "Give Gold" }.objective!!.targetName == null)
+        val namedBully = detail.quests.single { it.name == "Give Gold" }.targetCivilization!!
+        check(namedBully.name == "France" && namedBully.unmet && namedBully.civilizationId == null)
+        check(!rome.knows(france) && detail.ally!!.name == "Unknown civilization")
         check(detail.quests.single { it.name == "Contest Culture" }.objective!!.targetName == null)
         check(detail.actions.none { it.position != null })
         val view = PlayerTurnJson.encode(before)
-        check(!view.contains("France") && !view.contains("Sidon"))
+        check(!view.contains("Sidon"))
+        check(before.diplomacy.knownCivilizations.none { it.civilizationId == "France" })
         val native = json().toJson(game)
         session.turn()
         check(json().toJson(game) == native) { "Observation mutated the game" }

@@ -183,6 +183,9 @@ def test_strategy_tab_selection_refresh_freeze_and_reading_position(tmp_path, me
             assert "[bold]Roman advice[/bold]" in text and "\x1b" not in text
             assert "Short-term plan" in text and "Scientific victory" in text
             assert "Objective:" in text and "Investment:" in text and "Payoff:" in text
+            assert (
+                text.index("Objective:") < text.index("Investment:") < text.index("Payoff:") < text.index("Remaining:")
+            )
             assert "Recommendations remain advisory" in str(app.query_one("#strategy-status", Static).render())
             log.scroll_to(y=5, animate=False)
             await pilot.pause()

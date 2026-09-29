@@ -17,7 +17,7 @@ data class KnownTileSurface(
     val terrain: String,
     val features: List<String>,
     val improvement: String?,
-    val improvementPillaged: Boolean,
+    val improvementPillaged: Boolean?,
     val road: String,
     val roadPillaged: Boolean,
     val naturalWonder: String?,
@@ -52,8 +52,6 @@ data class KnownSettlementTile(
 data class SettlementCandidate(
     val position: TilePosition,
     val score: Int,
-    val siteStatus: String,
-    val uncertainty: String?,
     val nearestSettler: String?,
     val distance: Int?,
     val reasons: List<String>,
@@ -68,8 +66,7 @@ data class SettlementCandidate(
 data class SettlementOpportunities(
     val scope: String = "EXPLORED_TILES",
     val exploredTiles: Int,
-    val knownEligibleSites: Int,
-    val uncertainSites: Int,
+    val eligibleSites: Int,
     val blockedSites: Int,
     val status: String,
     val candidates: List<SettlementCandidate>,
@@ -113,17 +110,27 @@ internal fun updateSettlementKnowledge(player: Civilization, state: TurnSessionS
 }
 
 /** Called synchronously by native visibility updates, even between movement steps. */
-internal fun captureSettlementKnowledge(player: Civilization, state: TurnSessionState, tiles: Iterable<Tile>) {
+internal fun captureSettlementKnowledge(player: Civilization, state: TurnSessionState, tiles: Iterable<Tile>, remoteReveal: Boolean = false) {
     for (tile in tiles) {
         val resource = tile.tileResource?.takeIf { player.canSeeResource(it) }
         val position = TilePosition(tile.position.x, tile.position.y)
+        // A distant map reveal does not reveal an improvement's private state.
+        // Only improvements explicitly supplied by native map memory are known.
+        val improvement = if (remoteReveal) tile.getShownImprovement(player) else tile.improvement
+        val pillaged = if (remoteReveal) state.settlementKnowledge[position]?.surface
+            ?.takeIf { it.improvement == improvement }?.improvementPillaged else tile.improvementIsPillaged
+        val observed = if (remoteReveal) tile.clone(addUnits = false).apply {
+            this.improvement = improvement
+            improvementIsPillaged = pillaged == true
+            setTerrainTransients()
+        } else tile
         state.settlementKnowledge[position] = KnownSettlementTile(
             position, player.gameInfo.turns, tile.isLand, tile.isImpassible(), tile.getContinent(), tile.getOwner()?.civName,
             tile.getCity()?.name?.takeIf { tile.isCityCenter() }, tile.isHill(), tile.isAdjacentToRiver(),
-            tile.baseTerrain == "Mountain" || "Mountain" in tile.terrainFeatures, resource?.name, resource?.resourceType?.name, settlementYieldScore(player, tile),
-            resource?.takeIf { it.resourceType == ResourceType.Strategic }?.let { tile.resourceAmount }, resource?.let { resourceImprovements(player, tile) }.orEmpty(),
+            tile.baseTerrain == "Mountain" || "Mountain" in tile.terrainFeatures, resource?.name, resource?.resourceType?.name, settlementYieldScore(player, observed),
+            resource?.takeIf { it.resourceType == ResourceType.Strategic }?.let { tile.resourceAmount }, resource?.let { resourceImprovements(player, observed) }.orEmpty(),
             KnownTileSurface(
-                tile.baseTerrain, tile.terrainFeatures.toList(), tile.improvement, tile.improvementIsPillaged, tile.roadStatus.name, tile.roadIsPillaged,
+                tile.baseTerrain, tile.terrainFeatures.toList(), improvement, pillaged, tile.roadStatus.name, tile.roadIsPillaged,
                 tile.naturalWonder, tile.hasBottomRiver, tile.hasBottomLeftRiver, tile.hasBottomRightRiver,
             ),
             tile.getCity()?.takeIf { tile.isCityCenter() }?.let { if (it.isOriginalCapital) it.foundingCivObject?.isMajorCiv() else false },
@@ -139,7 +146,7 @@ private fun settlementYieldScore(player: Civilization, tile: Tile): Float = Auto
 }
 
 /** A detached map for native yield and improvement calculations. No live tile facts are copied. */
-private fun rememberedSettlementMap(player: Civilization, state: TurnSessionState): TileMap {
+internal fun rememberedSettlementMap(player: Civilization, state: TurnSessionState): TileMap {
     val original = player.gameInfo.tileMap
     val tiles = state.settlementKnowledge.mapNotNull { (position, known) ->
         val surface = known.surface ?: return@mapNotNull null
@@ -148,7 +155,7 @@ private fun rememberedSettlementMap(player: Civilization, state: TurnSessionStat
             this.position = HexCoord(position.x, position.y)
             baseTerrain = surface.terrain
             improvement = surface.improvement
-            improvementIsPillaged = surface.improvementPillaged
+            improvementIsPillaged = surface.improvementPillaged == true
             roadStatus = RoadStatus.valueOf(surface.road)
             roadIsPillaged = surface.roadPillaged
             naturalWonder = surface.naturalWonder
@@ -187,7 +194,6 @@ internal fun observeSettlementOpportunities(player: Civilization, state: TurnSes
     val knowledge = state.settlementKnowledge
     val prior = knowledge.values.filter { it.land && it.owner == null }.map { it.yieldScore }.average().takeIf { it.isFinite() }?.toFloat() ?: 0f
     var eligible = 0
-    var uncertain = 0
     var blocked = 0
     val baseScores = HashMap<TilePosition, Float>()
     val candidates = tiles.mapNotNull { tile ->
@@ -199,7 +205,7 @@ internal fun observeSettlementOpportunities(player: Civilization, state: TurnSes
             blocked++
             return@mapNotNull null
         }
-        if (site.siteStatus == "ELIGIBLE") eligible++ else uncertain++
+        eligible++
         val known = knowledge[position]
         val reasons = ArrayList<String>()
         var score = 0f
@@ -253,8 +259,6 @@ internal fun observeSettlementOpportunities(player: Civilization, state: TurnSes
         SettlementCandidate(
             position,
             score.roundToInt(),
-            site.siteStatus,
-            site.uncertainty,
             settler?.let { state.unitHandles.getValue(it.id) },
             distance,
             Collections.unmodifiableList(reasons),
@@ -285,36 +289,30 @@ internal fun observeSettlementOpportunities(player: Civilization, state: TurnSes
             target,
         )
     }
-    // Keep a confirmed site in view even when speculative sites score higher.
-    // Fill remaining slots by score, with distinct possible city centers.
+    // All candidates are native-legal sites. Suggest distinct possible city centers by score.
     val recommendations = ArrayList<SettlementCandidate>()
-    candidates.firstOrNull { it.siteStatus == "ELIGIBLE" }?.let(recommendations::add)
     for (candidate in candidates) {
         val tile = player.gameInfo.tileMap[candidate.position.x, candidate.position.y]
         if (recommendations.all { tile.aerialDistanceTo(player.gameInfo.tileMap[it.position.x, it.position.y]) > player.gameInfo.ruleset.modOptions.constants.minimalCityDistance }) recommendations.add(candidate)
         if (recommendations.size == 3) break
     }
     val selected = recommendations.map { it.position }.toSet()
+    val planningMap = if (selected.isNotEmpty() && knowledge.values.any { it.surface != null }) rememberedSettlementMap(player, state) else null
     val routedCandidates = candidates.map { candidate ->
         if (candidate.position !in selected) {
             candidate
         } else {
             candidate.copy(
                 route = candidate.nearestSettler?.let { handle -> settlementRoute(player, settlers.single { state.unitHandles[it.id] == handle }, candidate.position) },
-                happiness = settlementHappiness(player, candidate.position),
+                happiness = planningMap?.let { settlementHappiness(player, candidate.position, it) },
             )
         }
     }
     return SettlementOpportunities(
         exploredTiles = tiles.size,
-        knownEligibleSites = eligible,
-        uncertainSites = uncertain,
+        eligibleSites = eligible,
         blockedSites = blocked,
-        status = when {
-            eligible > 0 -> "KNOWN_SITES_AVAILABLE"
-            uncertain > 0 -> "ONLY_UNCERTAIN_SITES"
-            else -> "NO_KNOWN_SITES"
-        },
+        status = if (eligible > 0) "SITES_AVAILABLE" else "NO_SITES_IN_EXPLORED_TERRITORY",
         candidates = Collections.unmodifiableList(routedCandidates),
         settlers = Collections.unmodifiableList(reviews),
         recommendations = recommendations.map { it.position },

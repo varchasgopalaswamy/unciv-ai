@@ -13,10 +13,12 @@ ReviewText = Annotated[str, Field(min_length=1, max_length=600)]
 
 class VictoryProjection(BoundaryModel):
     victory: Annotated[str, Field(min_length=1, max_length=80)]
-    remaining: ReviewText = Field(description="Remaining requirements and the main bottlenecks.")
-    objective: ReviewText = Field(description="Next concrete strategic objective toward this victory.")
+    objective: ReviewText = Field(description="Next useful objective and what achieving it would enable.")
     investment: ReviewText = Field(description="Preparation, resources, time and tradeoffs to pursue that objective.")
-    payoff: ReviewText = Field(description="Expected gains for us and effects on rivals, with uncertainty.")
+    payoff: ReviewText = Field(
+        description="Expected change in our position relative to rivals, including their likely responses."
+    )
+    remaining: ReviewText = Field(description="Requirements still needed to complete this victory.")
     projection: ReviewText = Field(
         description="Plausible development toward this victory, with milestones, timing and uncertainty."
     )
@@ -26,18 +28,24 @@ class VictoryProjection(BoundaryModel):
 class StrategicReview(BoundaryModel):
     victoryPaths: Annotated[list[VictoryProjection], Field(max_length=10)]
     race: ReviewText = Field(description="Our prospects of winning before rivals.")
-    alternative: ReviewText = Field(description="Strongest alternative to the recommended approach and its tradeoffs.")
-    disruption: ReviewText = Field(description="Opportunities to delay rivals and their costs.")
+    alternative: ReviewText = Field(description="Other promising approaches and their tradeoffs.")
+    disruption: ReviewText = Field(
+        description="Opportunities to weaken or delay rivals, their costs, and conditions for pursuing or ending them."
+    )
     agreements: ReviewText = Field(description="How diplomacy and agreements affect our chances of winning.")
     shortTerm: Annotated[list[ReviewText], Field(min_length=1, max_length=5)] = Field(
         description="Immediate priorities and their timing."
     )
     midTerm: ReviewText = Field(description="Development priorities and milestones.")
-    longTerm: ReviewText = Field(description="Route to victory and conditions for changing course.")
+    longTerm: ReviewText = Field(
+        description="Options to develop, commitments to make or defer, and evidence that would change the plan."
+    )
 
 
 class StrategicAdvice(BoundaryModel):
-    assessment: Annotated[str, Field(min_length=1, max_length=1200)]
+    assessment: Annotated[str, Field(min_length=1, max_length=1200)] = Field(
+        description="Promising victory routes and reasons for a preference, or for leaving the choice open."
+    )
     review: StrategicReview
 
 
@@ -71,11 +79,12 @@ def review_facts(value: JsonObject) -> JsonObject:
 ADVISOR_INSTRUCTIONS = (
     "You are this civilization's independent strategic adviser. Recommend how it can win from the supplied "
     "end-of-turn position. Your advice is for the player to judge.\n\n"
-    "Compare every enabled victory type using plausible development plans over the same short-, mid- and "
-    "long-term horizons. For each, identify the next concrete objective, required investment and expected "
-    "payoff for us and rivals. Assess the competitive position, strongest "
-    "alternative, diplomacy and opportunities to delay rivals. Recommend short-, mid- and long-term plans "
-    "and conditions for reconsidering them. Match detail to the stage of the game and available evidence.\n\n"
+    "Compare plausible plans for winning over short-, mid- and long-term horizons. Evaluate development, "
+    "expansion, diplomacy and military action by how they change our position relative to rivals. "
+    "Military action can support any victory path. For each enabled victory, identify useful intermediate "
+    "objectives, required investment, expected payoff and likely rival responses. Identify which "
+    "uncertainties matter to the next decision and how to resolve them. Recommend concrete next steps and "
+    "conditions for changing course.\n\n"
     "The supplied observations and read-only tools describe the frozen position. "
     "Use tools.<name>(arguments) in functions.exec to inspect additional details; discover tool schemas as needed. "
     "Return one complete JSON report matching the supplied schema, preferably under 6000 characters."

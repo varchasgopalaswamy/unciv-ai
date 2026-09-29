@@ -94,11 +94,11 @@ object TurnReviewProbe {
             val host = PlayerHost(runtime)
             val rome = host.bindPlayer("Rome")
             val greece = host.bindPlayer("Greece")
-            expect(PlayerSessionFailure.OBSERVATION_REQUIRED) { rome.execute(saved.request) }
+            expect(PlayerSessionFailure.STALE_REVISION) { rome.execute(saved.request) }
             val beforeEnd = rome.turn()
-            check(beforeEnd.turnReview == saved.snapshot.turnReview) { "Restart lost the current review" }
+            assertRebuiltObservation(saved.snapshot, beforeEnd)
             // Native-legal idling needs no explanation, even with mobile units.
-            val end = saved.request.copy(deferReason = null)
+            val end = saved.request.copy(revision = beforeEnd.revision, reviewId = beforeEnd.turnReview!!.id, deferReason = null)
             val receipt = rome.execute(end)
             val afterEnd = json().toJson(runtime.game)
             check(rome.execute(end) == receipt)
@@ -117,7 +117,7 @@ object TurnReviewProbe {
             repeat(16) {
                 val turn = greece.turn()
                 val unit = turn.map.units.firstOrNull { it.idle && it.moves.isNotEmpty() } ?: return@repeat
-                val move = unit.moves.filterNot { it.speculative }.maxByOrNull { it.path.size } ?: unit.moves.first()
+                val move = unit.moves.filter { it.tilesOutsideCurrentSight == 0 }.maxByOrNull { it.path.size } ?: unit.moves.first()
                 greece.execute(command(turn, TurnCommandKind.MOVE_UNIT, unit.handle).copy(destination = move.destination))
                 val after = greece.turn()
                 val moved = after.map.units.single { it.handle == unit.handle }

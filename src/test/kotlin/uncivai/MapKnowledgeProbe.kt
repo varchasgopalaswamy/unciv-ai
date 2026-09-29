@@ -27,8 +27,27 @@ object MapKnowledgeProbe {
             check(session.turn().map.tiles.none { it.position == position })
             center.setExplored(player, true)
             fun observed() = session.turn().map.tiles.single { it.position == position }
-            val unknown = observed()
-            check(!unknown.visible && unknown.cityName == null && unknown.cityIsOriginalMajorCapital == null)
+            val distantReveal = observed()
+            check(!distantReveal.visible && distantReveal.cityName == capital.name && distantReveal.cityIsOriginalMajorCapital == true)
+            check(distantReveal.terrain == center.baseTerrain && distantReveal.cityHealth == null && distantReveal.units.isEmpty())
+
+            val remote = game.tileMap[0, 5]
+            val remotePosition = TilePosition(0, 5)
+            val knowledge = runtime.executor.turnSessions.getValue(player.civID).settlementKnowledge
+            knowledge.remove(remotePosition)
+            player.setLastSeenImprovement(remote.position, null)
+            remote.setImprovement("Farm")
+            remote.setExplored(player, true)
+            val revealedTerrain = knowledge.getValue(remotePosition)
+            check(revealedTerrain.surface!!.improvement == null && revealedTerrain.surface.improvementPillaged == null)
+            remote.setImprovement("Mine")
+            remote.improvementIsPillaged = true
+            remote.setExplored(player, true)
+            check(knowledge.getValue(remotePosition) == revealedTerrain) { "A map reveal exposed an undisclosed improvement" }
+            player.setLastSeenImprovement(remote.position, "Farm")
+            remote.setExplored(player, true)
+            val revealedImprovement = knowledge.getValue(remotePosition).surface!!
+            check(revealedImprovement.improvement == "Farm" && revealedImprovement.improvementPillaged == null)
 
             player.viewableTiles = player.viewableTiles + center
             val visible = observed()
@@ -186,6 +205,8 @@ object MapKnowledgeProbe {
             tile.setImprovement("Farm")
             tile.roadStatus = RoadStatus.Road
             player.viewableTiles = player.cities.flatMap { it.getTiles() }.toSet()
+            // Simulate an imported save with explored terrain but no retained observation.
+            runtime.executor.turnSessions.getValue(player.civID).settlementKnowledge.remove(position)
             runtime.executor.enableCheckpoints(checkpoint)
             val session = PlayerHost(runtime).bindPlayer("Rome")
             fun observed() = session.turn().map.tiles.single { it.position == position }

@@ -17,6 +17,7 @@ object TacticalConsequencesProbe {
                 "lethal" -> lethal(Path.of(args[0]))
                 "movement" -> movement(Path.of(args[0]))
                 "privacy" -> privacy(Path.of(args[0]))
+                "civilian" -> CivilianMovementProbe.run(Path.of(args[0]))
                 else -> error("Unknown case")
             }
         } catch (failure: Throwable) {

@@ -26,7 +26,7 @@ internal class NativeTradeBridge(private val runtime: GameExecutor, private val 
         player.civID !in runtime.communicationState.humanPlayers && other.isAI() && other.isMajorCiv() &&
         player.knows(other) && other.knows(player)
 
-    private fun id() = "n" + UUID.randomUUID().toString().replace("-", "")
+    private fun newRequestId() = "n" + UUID.randomUUID().toString().replace("-", "")
     private fun fail(reason: PlayerSessionFailure = PlayerSessionFailure.OPTION_UNAVAILABLE): Nothing = throw PlayerSessionException(reason)
     private fun active(player: Civilization) {
         runtime.requireRunning()
@@ -39,7 +39,7 @@ internal class NativeTradeBridge(private val runtime: GameExecutor, private val 
         val other = trades.player(checkNotNull(request.partner))
         if (!permitted(player, other)) fail()
         active(player)
-        val previous = request.proposal?.let { trades.visible(actor, it).last() }
+        val previous = request.proposal?.let { trades.visible(actor, it)?.last() ?: return trades.unknownProposal(actor, it) }
         if (previous != null) {
             trades.requireVersion(previous, request)
             if (previous.mode != "NATIVE_AI" || previous.status != "PENDING" || previous.friendship != null ||
@@ -57,9 +57,9 @@ internal class NativeTradeBridge(private val runtime: GameExecutor, private val 
         for (items in listOf(request.give, request.receive)) {
             if (items.any { !supportedTradeTerm(it.type, it.name) } || items.map { it.type to it.name }.distinct().size != items.size) fail(PlayerSessionFailure.INVALID_ARGUMENT)
         }
-        val requestId = id()
+        val requestId = newRequestId()
         val proposal = EngineTradeProposal(
-            previous?.proposal ?: id(), (previous?.version ?: 0) + 1, actor, other.civID,
+            previous?.proposal ?: trades.newProposalId(), (previous?.version ?: 0) + 1, actor, other.civID,
             if (friendship) emptyList() else trades.clauses(actor, other.civID, request.give, request.receive),
             0, Int.MAX_VALUE, player.gameInfo.turns, listOf(TradeConsent(actor, "accept", player.gameInfo.turns)),
             friendship = if (friendship) FriendshipTerms() else null, mode = "NATIVE_AI", nativeRequestId = requestId,
@@ -205,7 +205,7 @@ internal class NativeTradeBridge(private val runtime: GameExecutor, private val 
     }
 
     private fun importRequest(player: Civilization, sender: Civilization, request: TradeRequest, previous: EngineTradeProposal? = null) {
-        if (request.requestId.isEmpty()) request.requestId = id()
+        if (request.requestId.isEmpty()) request.requestId = newRequestId()
         val safe = (request.trade.ourOffers + request.trade.theirOffers).all { item ->
             supportedTradeTerm(item.type, item.name) && when (item.type) {
                 TradeOfferType.WarDeclaration, TradeOfferType.PeaceProposal -> player.getKnownCivs().any { it.isMajorCiv() && it.civID == item.name }
@@ -214,7 +214,7 @@ internal class NativeTradeBridge(private val runtime: GameExecutor, private val 
             }
         }
         val proposal = EngineTradeProposal(
-            previous?.proposal ?: id(), (previous?.version ?: 0) + 1, sender.civID, player.civID,
+            previous?.proposal ?: trades.newProposalId(), (previous?.version ?: 0) + 1, sender.civID, player.civID,
             if (safe) trades.clauses(sender.civID, player.civID, request.trade.theirOffers.map(trades::selection), request.trade.ourOffers.map(trades::selection)) else emptyList(),
             0, Int.MAX_VALUE, player.gameInfo.turns, listOf(TradeConsent(sender.civID, "accept", player.gameInfo.turns)),
             failure = if (safe) null else "This native offer contains terms outside your permitted information or supported trade categories; it can be declined.",

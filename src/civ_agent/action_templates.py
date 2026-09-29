@@ -22,6 +22,9 @@ def add_overview_commands(value: JsonObject) -> None:
     for alert in value.get("alerts", []):
         if alert.get("canAcknowledge") is True and alert.get("content") is not None:
             attach(alert, "ACKNOWLEDGE_ALERT", target=alert["handle"])
+        for option in (alert.get("capture") or {}).get("options", []):
+            if available(option):
+                attach(option, "RESOLVE_CAPTURED_CITY", target=alert["handle"], selection=option["name"])
         friendship = alert.get("friendship")
         if friendship:
             if available(friendship.get("accept")):
@@ -56,6 +59,11 @@ def add_overview_commands(value: JsonObject) -> None:
             "instruction": "Review the current unit roster and pending decisions. Idle units and tactical warnings are advisory; deferReason is optional. After END_TURN succeeds, finish.",
         }
     for unit in value.get("units", []):
+        if unit.get("escort"):
+            unit.setdefault("inspections", {})["SET_UNIT_ORDER"] = {
+                "tool": "unit_details",
+                "arguments": {"target": unit["handle"], "sections": ["orders"]},
+            }
         if unit.get("upgrades"):
             unit.setdefault("inspections", {})["UPGRADE_UNIT"] = {
                 "tool": "unit_details",
@@ -70,9 +78,23 @@ def add_overview_commands(value: JsonObject) -> None:
 
 def add_unit_commands(unit: JsonObject) -> None:
     target = unit["handle"]
+    if unit.get("escort"):
+        unit["escortInstruction"] = (
+            "ESCORT links the civilian and military unit on this tile; STOP_ESCORT separates them. "
+            "While active, moving either member moves the pair using native pathfinding. "
+            "A new movement command replaces both members' independent travel/automation orders. "
+            "Preview the destination after pairing; afterMove.escort shows the partner's remaining movement "
+            "at the shared turn stop. A formation keeps units together but can still be defeated."
+        )
     add_combat_commands({"map": {"units": [unit]}})
     for move in unit.get("moves", []):
-        attach(move, "MOVE_UNIT", target=target, destination=move["destination"])
+        attach(
+            move,
+            "MOVE_UNIT",
+            target=target,
+            destination=move["destination"],
+            confirmation="confirmAction" if (move.get("afterMove") or {}).get("captureRisk") else None,
+        )
         move["destinationInspection"] = {
             "tool": "movement_preview",
             "arguments": {"target": target, "destination": move["destination"]},
@@ -87,12 +109,12 @@ def add_unit_commands(unit: JsonObject) -> None:
     if unit.get("settlement") is not None:
         unit["settlementInstruction"] = (
             "settlement describes the current tile; movementOrder.settlement describes the active destination "
-            "and updates with visible information. "
+            "and refreshes with each observation. "
             "For another site, read movement_preview(target, destination) and inspect its settlement field. "
             "Movement availability does not imply founding eligibility. Waiting restores movement, not site eligibility. "
-            "The turn overview's settlement summary lists known/uncertain site counts and ranked suggestions. "
-            "Remembered blockers include their observation turn; UNKNOWN means incomplete visibility. "
-            "Recheck canFoundCity on arrival even if the site remains UNKNOWN. "
+            "Explored tiles report current native site eligibility, including restrictions from undiscovered cities. "
+            "UNKNOWN means the destination itself is unexplored. Recommendations include only eligible sites. "
+            "Recheck canFoundCity on arrival; movement and unit requirements are separate from site eligibility. "
             "Own territory and adjacent foreign settlers "
             "do not by themselves prohibit founding."
         )
@@ -258,6 +280,8 @@ def add_decision_commands(name: str, value: JsonObject, arguments: JsonObject) -
             if available(option.get("adoption")):
                 attach(option, "ADOPT_POLICY", selection=option["name"])
     elif name in {"movement_preview", "mission_preview"} and available(value):
+        stops = value.get("turns", [])
+        capture_risk = bool(stops and (stops[0].get("afterMove") or {}).get("captureRisk"))
         kind = (
             "SET_UNIT_DESTINATION"
             if name == "movement_preview"
@@ -273,7 +297,7 @@ def add_decision_commands(name: str, value: JsonObject, arguments: JsonObject) -
             kind,
             target=arguments["target"],
             destination=arguments["destination"],
-            confirmation="confirmAction" if kind == "NUCLEAR_STRIKE" else None,
+            confirmation="confirmAction" if kind == "NUCLEAR_STRIKE" or capture_risk else None,
         )
 
 

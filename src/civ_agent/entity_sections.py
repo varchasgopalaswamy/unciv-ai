@@ -38,7 +38,7 @@ class CityDetails(EntityDetails):
 
 
 UNIT_FIELDS = {
-    "movement": ("moves", "movementOrder", "nearbyHostiles"),
+    "movement": ("moves", "movementOrder", "nearbyHostiles", "escort"),
     "combat": (
         "combat.supported",
         "combat.strength",
@@ -48,7 +48,7 @@ UNIT_FIELDS = {
         "combat.attacks",
         "nearbyHostiles",
     ),
-    "orders": ("combat.order", "combat.orders"),
+    "orders": ("combat.order", "combat.orders", "escort"),
     "promotions": ("combat.promotions",),
     "work": ("worker", "waterImprovement"),
     "settlement": (

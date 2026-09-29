@@ -42,6 +42,10 @@ class GameExecutor internal constructor(
 
     private fun observeVisibility() {
         for (player in game.civilizations.filter { it.isHuman() && it.isMajorCiv() }) {
+            player.cache.onTileRevealed = { tile ->
+                val state = turnSessions.getOrPut(player.civID) { TurnSessionState() }
+                captureSettlementKnowledge(player, state, listOf(tile), remoteReveal = true)
+            }
             player.cache.onViewableTilesUpdated = { tiles ->
                 val state = turnSessions.getOrPut(player.civID) { TurnSessionState() }
                 captureSettlementKnowledge(player, state, tiles)
@@ -50,7 +54,10 @@ class GameExecutor internal constructor(
     }
 
     private fun stopObservingVisibility() {
-        game.civilizations.forEach { it.cache.onViewableTilesUpdated = null }
+        game.civilizations.forEach {
+            it.cache.onViewableTilesUpdated = null
+            it.cache.onTileRevealed = null
+        }
     }
     internal var communicationState = CommunicationState()
     internal val communication = Communication(this)
@@ -275,9 +282,8 @@ class GameExecutor internal constructor(
                     saved.notificationHandles.getOrNull(index)?.let { notificationHandles[notification] = it }
                 }
                 dismissedNotifications.addAll(saved.dismissedNotifications)
-                revision = saved.revision
-                checkpointRevision = saved.revision
-                fingerprint = saved.fingerprint
+                // Observations are derived, never checkpoint data. The first read
+                // rebuilds them and allocates a fresh revision from saved counters.
                 reviewTurn = saved.reviewTurn
                 reviewActions.addAll(saved.reviewActions)
                 previousTurnReview = saved.previousTurnReview?.detached()

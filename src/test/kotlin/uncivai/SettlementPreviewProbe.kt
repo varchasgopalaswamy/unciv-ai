@@ -24,6 +24,7 @@ object SettlementPreviewProbe {
                 "rules" -> rules(root)
                 "privacy" -> privacy(root)
                 "orders" -> orders(root)
+                "coast" -> coast(root)
                 else -> error("Unknown scenario")
             }
             println("SETTLEMENT_PREVIEW_${args[1]}_PASS")
@@ -155,21 +156,33 @@ object SettlementPreviewProbe {
         settler.action = "moveTo 4,0"
         val beforeOrder = checkNotNull(session.turn().map.units.single().movementOrder)
         check(beforeOrder.destination == request.destination)
-        check(beforeOrder.settlement!!.siteStatus == "UNKNOWN" && beforeOrder.settlement.siteBlockers.isEmpty())
+        check(beforeOrder.settlement!!.siteStatus == "ELIGIBLE" && beforeOrder.settlement.siteBlockers.isEmpty())
         val before = session.movementPreview(request).settlement!!
-        check(before.siteStatus == "UNKNOWN" && before.canFoundNow == null && before.siteBlockers.isEmpty())
+        check(before.siteStatus == "ELIGIBLE" && before.canFoundNow == null && before.siteBlockers.isEmpty())
+        check(before.uncertainty == null)
         check(UnitSettlement.canFoundCity(settler, game.tileMap[4, 0]))
         val secretCity = game.getCivilization("France").addCity(hidden.position)
         rome.viewableTiles = visible
         hidden.setExplored(rome, false)
         check(!UnitSettlement.canFoundCity(settler, game.tileMap[4, 0]))
-        check(before == session.movementPreview(request).settlement) { "Unseen city changed prospective settlement response" }
-        check(beforeOrder == session.turn().map.units.single().movementOrder) { "Unseen city changed standing-order advice" }
+        val blocked = session.movementPreview(request).settlement!!
+        check(blocked.siteStatus == "BLOCKED" && blocked.uncertainty == null)
+        val undisclosed = blocked.siteBlockers.single()
+        check(undisclosed.code == "CITY_TOO_CLOSE")
+        check(undisclosed.city == null && undisclosed.position == null && undisclosed.distance == null && undisclosed.minimumDistance == null)
+        check(undisclosed.observedTurn == null && !undisclosed.remembered)
+        val blockedOrder = session.turn().map.units.single().movementOrder!!
+        check(blockedOrder.destination == beforeOrder.destination && blockedOrder.settlement!!.siteBlockers == blocked.siteBlockers)
+        check(blockedOrder.settlement.siteStatus == "BLOCKED" && settler.isMoving())
+        check(session.turn().settlement!!.candidates.none { it.position == request.destination })
+        secretCity.name = "Private city name"
+        check(blocked == session.movementPreview(request).settlement) { "Hidden identity changed the lens" }
 
-        // Exploring a center does not expose its current existence under fog.
+        // An explicit distant reveal grants city identity without current sight.
         hidden.setExplored(rome, true)
-        check(before == session.movementPreview(request).settlement)
-        check(beforeOrder == session.turn().map.units.single().movementOrder)
+        val remotelyRevealed = session.movementPreview(request).settlement!!
+        check(remotelyRevealed.siteStatus == "BLOCKED" && remotelyRevealed.siteBlockers.single().city == secretCity.name)
+        check(remotelyRevealed.siteBlockers.single().remembered)
         rome.viewableTiles = game.tileMap.values.toSet()
         val nativeBefore = json().toJson(game)
         val revealedOrder = session.turn().map.units.single().movementOrder!!
@@ -187,9 +200,25 @@ object SettlementPreviewProbe {
         settler.currentMovement = 2f
         rome.viewableTiles = visible
         val remembered = session.turn().map.units.single().movementOrder!!.settlement!!
-        check(remembered.siteStatus == "BLOCKED" && remembered.uncertainty != null)
+        check(remembered.siteStatus == "BLOCKED" && remembered.uncertainty == null)
         check(remembered.siteBlockers.single().city == secretCity.name && remembered.siteBlockers.single().remembered)
         check(remembered.siteBlockers.single().observedTurn == game.turns)
+        secretCity.name = "Another private name"
+        check(session.turn().map.units.single().movementOrder!!.settlement == remembered)
+
+        // Native eligibility refreshes under fog; remembered city facts remain historical.
+        secretCity.destroyCity(overrideSafeties = true)
+        rome.viewableTiles = visible
+        val cleared = session.turn()
+        check(cleared.map.units.single().movementOrder!!.settlement!!.siteStatus == "ELIGIBLE")
+        check(cleared.settlement!!.candidates.any { it.position == request.destination })
+        check(cleared.map.tiles.single { it.position == TilePosition(6, 0) }.cityName == "Private city name")
+        val foreign = game.getCivilization("France").cities.first()
+        foreign.expansion.takeOwnership(game.tileMap[4, 0])
+        rome.viewableTiles = setOf(settler.currentTile)
+        val occupied = session.movementPreview(request).settlement!!
+        check(occupied.siteStatus == "BLOCKED" && occupied.siteBlockers.single().code == "FOREIGN_TERRITORY")
+        check(occupied.siteBlockers.single().city == null && occupied.siteBlockers.single().position == null)
 
         // Unexplored terrain and out-of-map coordinates share an unknown response.
         hidden.setExplored(rome, false)
@@ -205,6 +234,46 @@ object SettlementPreviewProbe {
             error("Another player's unit was accepted")
         } catch (failure: PlayerSessionException) {
             check(failure.reason == PlayerSessionFailure.UNIT_UNAVAILABLE)
+        }
+    }
+
+    private fun coast(root: Path) = fixture(root.resolve("initial")).use { runtime ->
+        val game = runtime.game
+        val rome = game.getCivilization("Rome")
+        rome.addCity(HexCoord(-3, -7))
+        val hiddenCity = game.getCivilization("France").addCity(HexCoord(1, -10))
+        val blocked = game.tileMap[-2, -11]
+        val alternative = game.tileMap[-3, -11]
+        game.tileMap[-3, -12].apply {
+            setBaseTerrain(game.ruleset.terrains.getValue("Coast"))
+            setTileResource(game.ruleset.tileResources.getValue("Whales"))
+        }
+        alternative.setTerrainFeatures(arrayListOf("Forest"))
+        val settler = rome.units.getCivUnits().single()
+        settler.removeFromTile()
+        settler.putInTile(blocked)
+        settler.currentMovement = 2f
+        rome.viewableTiles = blocked.getTilesInDistance(2).toSet()
+        hiddenCity.getCenterTile().setExplored(rome, false)
+        GameplayTestApi(runtime, root.resolve("tls")).use { api ->
+            val token = api.playerToken("Rome")
+            var turn = api.turn(token)
+            val unit = turn.map.units.single()
+            check(unit.settlement!!.siteStatus == "BLOCKED" && !unit.canFoundCity)
+            check(unit.settlement.siteBlockers.single().code == "CITY_TOO_CLOSE")
+            check(unit.settlement.siteBlockers.single().city == null)
+            check(turn.settlement!!.candidates.none { it.position == unit.position })
+            check(turn.settlement.candidates.any { it.position == TilePosition(-3, -11) })
+            val next = preview(api, token, unit.handle, TilePosition(-3, -11))
+            check(next.settlement!!.siteStatus == "ELIGIBLE" && next.available)
+            api.execute(token, command(turn, TurnCommandKind.SET_UNIT_DESTINATION, unit.handle).copy(destination = next.destination))
+            check(settler.currentTile === alternative)
+            game.turns++
+            settler.currentMovement = 2f
+            turn = api.turn(token)
+            check(turn.map.units.single().canFoundCity)
+            api.execute(token, command(turn, TurnCommandKind.FOUND_CITY, unit.handle))
+            check(rome.cities.any { it.getCenterTile() === alternative } && settler.isDestroyed)
         }
     }
 

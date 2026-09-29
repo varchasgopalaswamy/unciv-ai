@@ -27,14 +27,19 @@ object SettlementCrashProbe {
             }
 
             "crash-before", "crash-after" -> {
+                var armed = false
                 val store = CheckpointStore(
                     checkpoint,
-                    beforeReplace = { if (mode == "crash-before") Runtime.getRuntime().halt(73) },
-                    afterReplace = { if (mode == "crash-after") Runtime.getRuntime().halt(73) },
+                    beforeReplace = { if (armed && mode == "crash-before") Runtime.getRuntime().halt(73) },
+                    afterReplace = { if (armed && mode == "crash-after") Runtime.getRuntime().halt(73) },
                 )
                 HeadlessRuntime.loadCheckpoint(store, root.resolve("crashing")).use { runtime ->
+                    val player = PlayerHost(runtime).bindPlayer("Rome")
                     val request = PlayerTurnJson.json.decodeFromString<TurnCommandRequest>(Files.readString(requestFile))
-                    PlayerHost(runtime).bindPlayer("Rome").execute(request)
+                        .copy(revision = player.turn().revision)
+                    Files.writeString(requestFile, PlayerTurnJson.encode(request))
+                    armed = true
+                    player.execute(request)
                     error("Crash hook was not reached")
                 }
             }
@@ -46,7 +51,8 @@ object SettlementCrashProbe {
                     check(civilization.cities.size == if (committed) 1 else 0)
                     check(civilization.units.getCivUnits().count { it.name == "Settler" } == if (committed) 0 else 1)
                     val player = PlayerHost(runtime).bindPlayer("Rome")
-                    val request = PlayerTurnJson.json.decodeFromString<TurnCommandRequest>(Files.readString(requestFile))
+                    val original = PlayerTurnJson.json.decodeFromString<TurnCommandRequest>(Files.readString(requestFile))
+                    val request = if (committed) original else original.copy(revision = player.turn().revision)
                     val receipt = player.execute(request)
                     check(civilization.cities.size == 1 && civilization.units.getCivUnits().none { it.name == "Settler" })
                     val raw = json().toJson(runtime.game)

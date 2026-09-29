@@ -71,6 +71,10 @@ def player_alert(alert: JsonObject) -> JsonObject:
     return value
 
 
+def trade_inspection(proposal: str) -> JsonObject:
+    return {"tool": "trade_read", "arguments": {"proposal": proposal}}
+
+
 def model_view(value: Any) -> Any:
     """Idempotent projection used for fresh, historical and replayed model data."""
     if isinstance(value, list):
@@ -84,6 +88,19 @@ def model_view(value: Any) -> Any:
         for key in ("mode", "initiationRule", "negotiation"):
             value.pop(key, None)
     if {"proposal", "author", "partner", "status"} <= value.keys():
+        # Summaries and chat events provide an exact read command. Only explicit
+        # availability from an inspected trade can produce decision templates.
+        value.pop("inspection", None)
+        value.pop("responses", None)
+        if value["status"] == "PENDING":
+            value["inspection"] = trade_inspection(value["proposal"])
+            responses = [
+                {"tool": "trade_decide", "arguments": {"proposal": value["proposal"], "decision": decision}}
+                for decision in ("accept", "decline", "withdraw")
+                if value.get(decision + "Available") is True
+            ]
+            if responses:
+                value["responses"] = responses
         for key in (
             "mode",
             "deadlineMillis",

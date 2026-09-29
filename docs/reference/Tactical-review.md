@@ -12,16 +12,23 @@ They inform decisions without imposing strategic priorities.
   diplomatic status and map distances, including wrapping maps. Enemy civilians
   are not classified as attacking threats.
   `militaryNearHostiles` includes healthy units as well as injured ones.
-- `recapturableCivilians`: currently visible foreign-owned civilians whose native
-  original owner is this player, with their position, current owner, war status,
-  visible military guard (if any), and `recapture.unitAfterCapture`. A captured
-  Settler that is still a Settler returns as a Settler; a Worker returns as a
-  Worker. This describes the result of a successful legal capture, not whether
-  any owned unit can capture it this turn. Clearing a guard with ranged fire
-  alone does not recover the civilian. Native uncapturable units are excluded.
-  Original ownership of other players' units is not disclosed. Entries also
-  appear in `map_region` unit observations as `recapture`, and disappear when the
-  civilian leaves visibility, is destroyed, or returns to the player's roster.
+- `capturableCivilians`: currently visible foreign-owned capturable civilians,
+  with position, current owner, war status, visible military guard (if any), and
+  `capture.unitIfKept`. `capture.isOurCapturedUnit` identifies recovery of this
+  player's own unit. Recovering your own Settler preserves it; keeping another
+  player's Settler converts it to the native Worker replacement. A Worker stays
+  a Worker. This describes the result of a successful legal capture and keeping
+  the unit, not whether an owned unit can capture it this turn. Clearing a guard
+  with ranged fire alone does not capture the civilian. Native uncapturable
+  units are excluded. Other players' original ownership is not disclosed.
+  Entries also appear in `map_region` unit observations as `capture`, and
+  disappear when the civilian leaves visibility, is destroyed, or joins the
+  player's roster.
+- The return/keep popup in `alerts` includes each choice's `civilianOutcome`
+  (recipient and resulting unit type), an explanation of any conversion, and a
+  copyable `RESOLVE_CAPTURED_CITY` command. For a rescued foreign Settler, return
+  gives its original owner a Settler; keep gives this player a Worker. The
+  temporarily owned Settler in the roster is still awaiting that choice.
 - Every currently offered city bombardment, damage ranges, copyable arguments and
   its required `city_details(sections=["combat"])` inspection.
 - Confirmed losses from the delivered combat reports, city count, Settlers and
@@ -33,6 +40,10 @@ and does not establish that a destination is safe. A military unit on the same
 tile is reported as `otherMilitaryOnSameTile`, excluding the subject unit itself,
 without promising that it can protect a civilian. Damage ranges
 are engine previews; receipts and later observations establish actual results.
+The unit roster also shows co-located escort partners and active formations.
+[Escort orders](Naval-gameplay.md#escort-formations) let a civilian and military
+unit use one native destination order, with shared stops and separate movement
+estimates, instead of requiring the player to coordinate two moves.
 
 ## Action consequences
 
@@ -62,8 +73,42 @@ Discoveries or changing occupancy can interrupt the path. Friendly proximity is
 not a guarantee of protection, and unseen tiles do not imply hidden enemies exist.
 
 These details live in action inspections; the compact unit summary still contains
-counts of movement and attack options. Risks remain advisory and never remove a
-native-legal action.
+counts of movement and attack options. Combat risks remain advisory. Civilian
+movement uses the explicit confirmation described below; native-legal movement
+remains possible with an override.
+
+### Civilian capture confirmation
+
+Single-turn move offers and every `movement_preview` stop can include
+`afterMove.captureRisk`. It lists currently visible hostile units that could reach
+an unguarded civilian's stopping tile with a fresh movement budget. The engine
+uses movement costs, terrain, roads and zone of control rather than a fixed
+proximity radius. Unseen terrain is speculative; enemy exploration, hidden units
+and private open-border agreements do not determine the visible route estimate.
+This is potential capture exposure, not a prediction of the enemy's chosen action
+or a guarantee of safety when omitted.
+
+`MOVE_UNIT` and the current segment of `SET_UNIT_DESTINATION` require
+`confirmAction: true` if that stop has capture risk. Otherwise the command returns
+`CIVILIAN_CAPTURE_RISK`, `applied: false`, the risk details and a copyable command
+with `confirmationField: "confirmAction"`. No movement or order change occurs.
+Templates never prefill consent. The player may choose another destination,
+arrange an escort, or deliberately accept the risk with their own intent.
+
+A move that keeps a linked civilian/military formation together succeeds without
+confirmation, whether issued through the civilian or the military unit. Moving
+onto a friendly military unit or friendly city is also protected against immediate
+unopposed capture. Nearby military units do not qualify. Protection does not mean
+the escort or city will survive combat.
+
+Confirmation covers the current move only. Each subsequent automatic route
+segment rechecks danger. If its stopping tile exposes the civilian, the engine
+clears the destination order before moving or spending movement and records a
+notification. The next decision can arrange protection, choose a different route,
+or inspect and explicitly confirm another risky move. No persistent override is
+stored in the save.
+
+## Strategy and turn review
 
 `strategyReview.assessments` lists active strategy assessments with advisory
 notices, by ID and reason. There are no scheduled review dates or required topics.

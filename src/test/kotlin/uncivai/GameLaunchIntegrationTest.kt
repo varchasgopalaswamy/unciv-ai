@@ -91,7 +91,7 @@ class GameLaunchIntegrationTest {
             launch(root, "create", listOf("--new-game", "--checkpoint", checkpoint.toString(), "--scenario", "trade-cycle"), 0)
             val original = Files.readString(checkpoint)
             val saved = Json.parseToJsonElement(original).jsonObject
-            assertEquals("6", saved.getValue("formatVersion").jsonPrimitive.content)
+            assertEquals("7", saved.getValue("formatVersion").jsonPrimitive.content)
             val game = Json.parseToJsonElement(saved.getValue("gameJson").jsonPrimitive.content).jsonObject
             val map = game.getValue("tileMap").jsonObject
             val parameters = map.getValue("mapParameters").jsonObject

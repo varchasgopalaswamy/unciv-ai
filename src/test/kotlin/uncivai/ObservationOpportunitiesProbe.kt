@@ -51,35 +51,36 @@ object ObservationOpportunitiesProbe {
         val turn = session.turn()
         val sites = checkNotNull(turn.settlement)
         check(json().toJson(game) == before) { "Advice without settlers mutated native state" }
-        check(sites.settlers.isEmpty() && sites.knownEligibleSites > 0)
-        check(sites.knownEligibleSites == game.tileMap.values.count { it.canBeSettled(player) })
+        check(sites.settlers.isEmpty() && sites.eligibleSites > 0)
+        check(sites.eligibleSites == game.tileMap.values.count { it.canBeSettled(player) })
         check(sites.candidates.all { it.nearestSettler == null && it.route == null })
         check(sites.candidates.all { it.nearestCity == turn.cities.single().handle && it.distance != null })
 
-        // A low-scoring visible site must not be displaced by speculative sites.
+        // Fog changes neither native eligibility nor remembered site scores.
         val confirmed = sites.candidates.last().position
         val radius = maxOf(game.ruleset.modOptions.constants.minimalCityDistance, game.ruleset.modOptions.constants.minimalCityDistanceOnDifferentContinents)
         player.viewableTiles = (game.tileMap[confirmed.x, confirmed.y].getTilesInDistance(radius) + player.cities.single().getTiles()).toSet()
         val mixed = session.turn().settlement!!
-        check(mixed.knownEligibleSites > 0 && mixed.uncertainSites > 0)
-        check(mixed.candidates.any { it.siteStatus == "ELIGIBLE" && it.position in mixed.recommendations })
+        check(mixed.eligibleSites == sites.eligibleSites && mixed.recommendations == sites.recommendations)
 
-        // A hidden city cannot change recommendations before a settler exists.
+        // Native restrictions affect the shortlist even before a settler exists.
         player.viewableTiles = player.cities.single().getTiles().toSet()
         val fogged = session.turn().settlement!!
         game.getCivilization("France").addCity(HexCoord(6, 0))
         player.viewableTiles = player.cities.single().getTiles().toSet()
-        check(fogged == session.turn().settlement) { "Hidden founding leaked into recommendations" }
+        val hidden = session.turn().settlement!!
+        check(hidden.eligibleSites < fogged.eligibleSites)
+        check(hidden.candidates.all { game.tileMap[it.position.x, it.position.y].canBeSettled(player) })
         player.viewableTiles = game.tileMap.values.toSet()
         val revealed = session.turn().settlement!!
-        check(revealed.knownEligibleSites < sites.knownEligibleSites)
+        check(revealed.eligibleSites == hidden.eligibleSites)
 
         // The same field remains present when the explored map is exhausted.
         val foreign = game.getCivilization("France").cities.first()
         for (tile in game.tileMap.values.filter { it.getOwner() == null }) foreign.expansion.takeOwnership(tile)
         player.viewableTiles = game.tileMap.values.toSet()
         val crowded = session.turn().settlement!!
-        check(crowded.status == "NO_KNOWN_SITES" && crowded.candidates.isEmpty())
+        check(crowded.status == "NO_SITES_IN_EXPLORED_TERRITORY" && crowded.candidates.isEmpty())
         check(crowded.settlers.isEmpty())
     }
 
@@ -88,8 +89,8 @@ object ObservationOpportunitiesProbe {
         val session = PlayerHost(runtime).bindPlayer("Rome")
         val before = json().toJson(runtime.game)
         val sites = session.turn().settlement!!
-        check(sites.knownEligibleSites == runtime.game.tileMap.values.count { it.canBeSettled(player) })
-        check(sites.knownEligibleSites > 0 && sites.uncertainSites == 0)
+        check(sites.eligibleSites == runtime.game.tileMap.values.count { it.canBeSettled(player) })
+        check(sites.eligibleSites > 0)
         check(sites.candidates.zipWithNext().all { (a, b) -> a.score >= b.score })
         check(before == json().toJson(runtime.game)) { "Recommendations mutated native state" }
         // A crowded map has no remaining sites, even when settlers can still move.
@@ -98,7 +99,7 @@ object ObservationOpportunitiesProbe {
         player.viewableTiles = runtime.game.tileMap.values.toSet()
         val crowded = session.turn().settlement!!
         check(runtime.game.tileMap.values.none { it.canBeSettled(player) })
-        check(crowded.status == "NO_KNOWN_SITES" && crowded.candidates.isEmpty())
+        check(crowded.status == "NO_SITES_IN_EXPLORED_TERRITORY" && crowded.candidates.isEmpty())
         check(crowded.blockedSites == crowded.exploredTiles)
     }
 
@@ -270,7 +271,7 @@ object ObservationOpportunitiesProbe {
             check(json().toJson(game) == before)
             val current = initial.settlers.single().currentSite
             check(current.canFoundNow == true && current.siteStatus == "ELIGIBLE")
-            check(current.uncertainty != null && current.siteBlockers.isEmpty())
+            check(current.uncertainty == null && current.siteBlockers.isEmpty())
             val recommendations = initial.candidates.filter { it.position in initial.recommendations }
             check(recommendations.isNotEmpty() && recommendations.all { it.route != null })
 

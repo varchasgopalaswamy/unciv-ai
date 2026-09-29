@@ -165,6 +165,9 @@ def test_communication_inbox_excludes_native_offers_but_gameplay_keeps_them(tmp_
                 job = await gateway.open(purpose, purpose, "g1", host, {})
                 prepared = await prepare_startup(gateway, job)
                 assert [t["proposal"] for t in prepared["reads"]["chat_read"]["trades"]] == expected
+                assert [t["inspection"] for t in prepared["reads"]["chat_read"]["trades"]] == [
+                    {"tool": "trade_read", "arguments": {"proposal": proposal}} for proposal in expected
+                ]
                 inbox = await gateway.call(job, "chat_read", {"includeHistory": include_history}, "inbox")
                 assert [t["proposal"] for t in inbox["trades"]] == expected
                 assert [e["body"]["proposal"] for e in inbox["messages"]] == expected

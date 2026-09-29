@@ -53,7 +53,7 @@ code supplies request IDs, credentials and revisions for their commands.
   known major: `from` declares war on `item.name`. Own warnings accompany trade
   options and `trade_read`; the target receives a separate war event without the
   private proposal or payment. See [third-party war trades](Third-party-war-trades.md).
-- `movement_preview`: inspect a native route for an owned `target` and `destination: {x, y}`. Returns adjacent paths grouped by estimated turns, movement costs and speculative flags. Read at the current revision before setting a multi-turn destination.
+- `movement_preview`: inspect a native route for an owned `target` and `destination: {x, y}`. Returns adjacent paths grouped by estimated turns, movement costs and counts of unexplored tiles and tiles outside current sight. Read at the current revision before setting a multi-turn destination.
 - `player_command`: submit exactly one command using the latest turn snapshot.
 - `player_result`: your victory/defeat result and pending combat reports, also available
   after scheduling stops. Combat fields, orders and capture choices are documented in
@@ -244,12 +244,17 @@ Checkpointing writes engine state and receipts into one temporary file, flushes 
 atomically replaces the checkpoint, and flushes the directory before acknowledging
 a command. Newly issued player references are also persisted before a query returns.
 Unit handles are also preserved in checkpoints; raw unit IDs never enter player responses.
+Version 7 stores durable player knowledge, identifiers and receipts, but no derived
+turn overview or observation revision. Loading rebuilds observations with fresh
+revisions. Earlier checkpoint formats require a new game; there is no migration.
 The checkpoint and adjacent `.lock` file are operator artifacts; an exclusive lock
 prevents another host from opening the same checkpoint. Atomic replacement is
 required. Existing checkpoints require explicit resume rather than overwrite.
 
 Persistence or mutation failure halts player operations. Restore the checkpoint and
-retry the original request: it either has a receipt or was not committed. Ordinary
+retry the original request: a committed command replays its saved receipt unchanged.
+An uncommitted command needs a fresh observation and revision before resubmission.
+Ordinary
 operator pause/resume is available through `/operator` and `GameExecutor`; resume cannot clear a
 mutation failure. Paused matches still support observations and successful retries.
 
@@ -317,7 +322,7 @@ unfinished technology was displaced, `researchChange.paused` with its name and
 actual retained science. This uses the usual internal state refresh and requires
 no extra model call.
 
-See [naval gameplay and destination orders](Naval-gameplay.md) for continuation timing, speculative-route limits, progress/cancellation and actual movement/improvement receipts.
+See [naval gameplay and destination orders](Naval-gameplay.md) for continuation timing, route estimate limits, progress/cancellation and actual movement/improvement receipts.
 
 ## Air missions and special military actions
 
@@ -335,8 +340,11 @@ and destination after reading the current overview and preview. Do not send
 revision or restart requires a fresh preview; completed requests replay unchanged.
 
 Nuclear previews list explored blast tiles, visible victims and known war
-warnings; unseen victims can change native legality or effects. Sweeps never
-predict unseen interceptors. `receipt.mission.resolution` distinguishes a completed
+warnings from current or remembered ownership. Destination and blast visibility
+fields distinguish unexplored terrain from areas outside current sight. Sweep and
+interceptable nuclear previews list visible interception capabilities, without
+private readiness or a predicted responding unit. Unseen victims can change
+native legality or effects. `receipt.mission.resolution` distinguishes a completed
 combat mission from an intercepted nuclear launch. Relocations have no combat
 resolution. The receipt includes own unit movement/health/removal, new wars and
 new player-filtered combat reports. It never enumerates hidden casualties.

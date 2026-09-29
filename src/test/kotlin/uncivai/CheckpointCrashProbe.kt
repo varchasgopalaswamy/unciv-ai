@@ -34,14 +34,19 @@ object CheckpointCrashProbe {
         }
         val request = PlayerTurnJson.json.decodeFromString<TurnCommandRequest>(Files.readString(requestFile))
         if (mode.startsWith("crash-")) {
-            val crash = { Runtime.getRuntime().halt(73) }
+            var armed = false
+            val crash = { if (armed) Runtime.getRuntime().halt(73) }
             val store = if (mode == "crash-before") {
                 CheckpointStore(checkpoint, beforeReplace = crash)
             } else {
                 CheckpointStore(checkpoint, afterReplace = crash)
             }
             HeadlessRuntime.loadCheckpoint(store, root.resolve(mode)).use { runtime ->
-                PlayerHost(runtime).bindPlayer("Rome").execute(request)
+                val session = PlayerHost(runtime).bindPlayer("Rome")
+                val fresh = request.copy(revision = session.turn().revision)
+                Files.writeString(requestFile, PlayerTurnJson.encode(fresh))
+                armed = true
+                session.execute(fresh)
                 error("Crash hook did not run")
             }
         } else {
@@ -53,11 +58,12 @@ object CheckpointCrashProbe {
                 } else {
                     check(player.tech.freeTechs == 0)
                 }
-                val receipt = session.execute(request)
+                val retry = if (mode == "verify-before") request.copy(revision = session.turn().revision) else request
+                val receipt = session.execute(retry)
                 check(player.tech.freeTechs == 0)
                 check(player.tech.isResearched(request.selection!!))
                 val after = json().toJson(runtime.game)
-                check(session.execute(request) == receipt)
+                check(session.execute(retry) == receipt)
                 check(json().toJson(runtime.game) == after)
             }
         }

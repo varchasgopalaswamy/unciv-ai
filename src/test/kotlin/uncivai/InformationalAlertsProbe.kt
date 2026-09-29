@@ -234,11 +234,12 @@ object InformationalAlertsProbe {
 
     private fun acknowledgeAfterRestart(root: Path, runtime: HeadlessRuntime, api: AlertClient) {
         val saved = loadRecovery(root)
-        val request = command(saved.snapshot, saved.snapshot.alerts.first().handle)
-        // The persisted observation and handle remain valid, but were not delivered by this process.
-        api.reject("Rome", request, "OBSERVATION_REQUIRED")
+        val stale = command(saved.snapshot, saved.snapshot.alerts.first().handle)
+        // Rebuild the observation; durable handles survive, old revisions do not.
+        api.reject("Rome", stale, "STALE_REVISION")
         val observed = api.turn("Rome")
-        check(observed == saved.snapshot) { "Pending popup content, handle, or revision changed during restore" }
+        assertRebuiltObservation(saved.snapshot, observed)
+        val request = stale.copy(revision = observed.revision)
         val receipt = acknowledgeOnly(runtime, api, observed, observed.alerts.first(), request)
         val after = api.turn("Rome")
         check(after.alerts == observed.alerts.drop(1))
@@ -250,8 +251,8 @@ object InformationalAlertsProbe {
         val raw = json().toJson(runtime.game)
         check(api.execute("Rome", checkNotNull(saved.acknowledgement)) == saved.receipt)
         check(json().toJson(runtime.game) == raw) { "Committed acknowledgement replay changed game state" }
-        api.reject("Rome", command(saved.snapshot, saved.snapshot.alerts.first().handle), "OBSERVATION_REQUIRED")
-        check(api.turn("Rome") == saved.snapshot)
+        api.reject("Rome", command(saved.snapshot, saved.snapshot.alerts.first().handle), "STALE_REVISION")
+        assertRebuiltObservation(saved.snapshot, api.turn("Rome"))
         val initialTurn = saved.snapshot.turn
         for (civilization in listOf("Rome", "Greece", "Rome", "Greece")) {
             finishTurn(runtime, api, civilization)
