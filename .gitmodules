@@ -1,4 +1,4 @@
 [submodule "Unciv"]
 	path = vendor/Unciv
-	url = https://github.com/varchasgopalaswamy/Unciv.git
+	url = https://github.com/varchasgopalaswamy/unciv-ai-fork.git
 	branch = experimental-changes
