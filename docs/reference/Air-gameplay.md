@@ -86,11 +86,17 @@ precedes interception. Ordinary air damage estimates exclude interception; actua
 receipts include it. Unciv does not give the firing player the victim's nuclear
 notification, so the explicit launch resolution confirms the firing outcome.
 
-Nuclear previews expose only explored blast tiles, visible victims and known
-affected parties. They are speculative: unseen victims can change native legality
-or effects. A generic unavailable result does not identify a hidden victim.
-Sweep previews likewise never select or reveal a hidden interceptor. These
-privacy restrictions also apply to player revisions and persisted reports.
+Nuclear previews expose explored blast tiles, visible victims and warnings about
+affected parties based on current or remembered ownership. Hidden ownership changes
+do not refresh those warnings. Destination exploration/visibility and counts of
+unexplored blast tiles and blast tiles outside current sight describe what is known.
+Unseen victims can still change native legality or effects; an unavailable result
+does not identify a hidden victim.
+
+Sweep and interceptable nuclear previews list visible units with interception
+capability in range. They do not inspect private movement or attacks spent, select
+the eventual interceptor, or predict its damage. Hidden interceptors remain hidden.
+These restrictions also apply to player revisions and persisted reports.
 
 ## Automated and desktop evidence
 

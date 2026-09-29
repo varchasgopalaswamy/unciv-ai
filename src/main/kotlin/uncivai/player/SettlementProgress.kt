@@ -19,7 +19,7 @@ data class SettlerHistory(
 )
 
 @Serializable
-data class SettlementRoute(val status: String, val estimatedTurns: Int? = null, val speculative: Boolean? = null)
+data class SettlementRoute(val status: String, val estimatedTurns: Int? = null, val unexploredTiles: Int? = null, val tilesOutsideCurrentSight: Int? = null)
 
 @Serializable
 data class SettlementTarget(
@@ -59,8 +59,9 @@ internal fun observeSettlerHistory(player: Civilization, unit: MapUnit, state: T
 
 internal fun settlementRoute(player: Civilization, unit: MapUnit, position: TilePosition): SettlementRoute {
     val destination = player.gameInfo.tileMap.getOrNull(position.x, position.y) ?: return SettlementRoute("NO_ROUTE_OFFERED")
-    if (destination === unit.currentTile) return SettlementRoute("AT_DESTINATION", 0, false)
+    if (destination === unit.currentTile) return SettlementRoute("AT_DESTINATION", 0, 0, 0)
     if (!unit.hasMovement()) return SettlementRoute("NO_MOVEMENT_REMAINING")
     val route = PlayerUnitOperations(player).route(unit, destination) ?: return SettlementRoute("NO_ROUTE_OFFERED")
-    return SettlementRoute("ROUTE_OFFERED", route.turns.size, route.turns.any { segment -> segment.path.any { !it.isVisible(player) } })
+    val path = route.turns.flatMap { it.path }.distinct()
+    return SettlementRoute("ROUTE_OFFERED", route.turns.size, path.count { !it.isExplored(player) }, path.count { !it.isVisible(player) })
 }

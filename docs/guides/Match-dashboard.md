@@ -45,8 +45,10 @@ terminal. `NO_COLOR` enables a monochrome display.
 - A Strategy tab showing each agent's latest completed adviser report, its source
   turn and the first turn whose gameplay preload included it. Select a civilization
   to read the assessment, short-, mid- and long-term plans, each victory path's next
-  objective, investment, expected payoff and projection,
-  rival disruption and diplomacy. Advice is not a record of adopted decisions.
+  objective, investment and expected payoff before its remaining requirements and
+  projection. The assessment can leave the victory choice open while recommending
+  concrete next steps. The report also covers other promising approaches, rival
+  disruption and diplomacy. Advice is not a record of adopted decisions.
   The last completed report stays visible while another review runs. Pending work,
   attempt counts, failures, duration and token usage appear alongside it.
   If that civilization's next turn arrives before the report is saved, the main

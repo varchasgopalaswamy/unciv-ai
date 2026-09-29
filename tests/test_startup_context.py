@@ -307,9 +307,8 @@ def test_prepared_reads_establish_evidence_and_update_base_without_model_calls(t
             "recruitment": [{"city": "city1", "units": ["Warrior"]}],
         }
         host.view["settlement"] = {
-            "status": "ONLY_UNCERTAIN_SITES",
-            "knownEligibleSites": 0,
-            "uncertainSites": 4,
+            "status": "SITES_AVAILABLE",
+            "eligibleSites": 4,
             "candidates": [{"position": {"x": i, "y": 4}, "score": 100 - i} for i in range(4)],
             "settlers": [
                 {
@@ -318,11 +317,16 @@ def test_prepared_reads_establish_evidence_and_update_base_without_model_calls(t
                     "turnsObserved": 5,
                     "turnsWithoutMovement": 3,
                     "recentDestinationChanges": [],
-                    "currentSite": {"canFoundNow": True, "siteStatus": "ELIGIBLE", "uncertainty": "Partly unseen"},
+                    "currentSite": {"canFoundNow": True, "siteStatus": "ELIGIBLE", "uncertainty": None},
                     "destination": {
                         "position": {"x": 3, "y": 4},
                         "score": 97,
-                        "route": {"status": "ROUTE_OFFERED", "estimatedTurns": 2, "speculative": True},
+                        "route": {
+                            "status": "ROUTE_OFFERED",
+                            "estimatedTurns": 2,
+                            "unexploredTiles": 0,
+                            "tilesOutsideCurrentSight": 4,
+                        },
                     },
                 }
             ],
@@ -346,7 +350,7 @@ def test_prepared_reads_establish_evidence_and_update_base_without_model_calls(t
             assert view["cities"][0]["constructionChoice"]["availableSinceChoice"] == ["Workshop", "Market"]
             assert view["economy"]["development"]["unconnectedCities"] == ["Antium"]
             assert view["diplomacyOpportunities"] == host.view["diplomacyOpportunities"]
-            assert view["settlement"]["uncertainSites"] == 4 and len(view["settlement"]["candidates"]) == 3
+            assert view["settlement"]["eligibleSites"] == 4 and len(view["settlement"]["candidates"]) == 3
             assert view["settlement"]["settlers"] == host.view["settlement"]["settlers"]
             assert view["units"][0]["settlementStatus"] == "CAN_FOUND_NOW"
             assert view["militaryReadiness"] == host.view["militaryReadiness"]

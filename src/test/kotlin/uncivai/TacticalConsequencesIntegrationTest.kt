@@ -15,6 +15,8 @@ class TacticalConsequencesIntegrationTest {
 
     @Test fun `endpoint context cannot reveal hidden enemies`() = run("privacy")
 
+    @Test fun `civilian capture risk requires confirmation while escorts allow movement`() = run("civilian")
+
     private fun run(case: String) {
         val root = Files.createTempDirectory("tactical-consequences-$case-")
         try {

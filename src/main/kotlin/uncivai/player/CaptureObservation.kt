@@ -5,11 +5,24 @@ import com.unciv.logic.civilization.AlertType
 import com.unciv.logic.civilization.Civilization
 import com.unciv.logic.civilization.PlayerOperations
 import com.unciv.models.translations.tr
+import kotlinx.serialization.EncodeDefault
+import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.Serializable
 import java.util.Collections
 
 @Serializable
-data class CaptureOption(val name: String, val label: String, val paragraphs: List<String>, val available: Boolean, val unavailableReasons: List<String>)
+data class CivilianCaptureOutcome(val recipient: String, val unitType: String?)
+
+@OptIn(ExperimentalSerializationApi::class)
+@Serializable
+data class CaptureOption(
+    val name: String,
+    val label: String,
+    val paragraphs: List<String>,
+    val available: Boolean,
+    val unavailableReasons: List<String>,
+    @EncodeDefault(EncodeDefault.Mode.NEVER) val civilianOutcome: CivilianCaptureOutcome? = null,
+)
 
 @Serializable
 data class CaptureDecision(val title: String, val paragraphs: List<String>, val options: List<CaptureOption>)
@@ -36,6 +49,7 @@ internal fun com.unciv.logic.civilization.CaptureOption.observation(active: Bool
     frozen(paragraphs.map { it.tr() }),
     active && unavailableReasons.isEmpty(),
     frozen(unavailableReasons.map { it.tr() }),
+    civilianOutcome?.let { CivilianCaptureOutcome(it.recipient, it.unitType) },
 )
 
 internal fun com.unciv.logic.civilization.CaptureDecision.observation(active: Boolean) = CaptureDecision(

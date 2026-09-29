@@ -75,7 +75,7 @@ def test_only_visible_hostile_military_is_summarized_and_preview_fields_are_not_
             assert ("command" in order) == order["available"]
 
 
-def captive_tile(snapshot):
+def captive_tile(snapshot, *, ours=True):
     tile = copy.deepcopy(snapshot["map"]["tiles"][0])
     tile.update(
         position={"x": 7, "y": -1},
@@ -88,7 +88,7 @@ def captive_tile(snapshot):
                 "health": 100,
                 "military": False,
                 "atWar": True,
-                "recapture": {"originalOwner": "France", "unitAfterCapture": "Settler"},
+                "capture": {"isOurCapturedUnit": ours, "unitIfKept": "Settler" if ours else "Worker"},
             },
         ],
     )
@@ -96,34 +96,38 @@ def captive_tile(snapshot):
     return tile
 
 
-def test_recapturable_civilians_are_visible_opportunities_separate_from_threats():
+@pytest.mark.parametrize("ours", [True, False])
+def test_capturable_civilians_are_visible_opportunities_separate_from_threats(ours):
     snapshot = france()
     add_combat_commands(snapshot)
-    tile = captive_tile(snapshot)
+    tile = captive_tile(snapshot, ours=ours)
     hidden = copy.deepcopy(tile)
     hidden["visible"] = False
     hidden["position"] = {"x": 12, "y": 12}
     snapshot["map"]["tiles"].append(hidden)
     view = tactical_review(snapshot)
-    assert len(view.recapturableCivilians) == 1
-    captive = view.recapturableCivilians[0]
-    assert captive.name == captive.recapture.unitAfterCapture == "Settler"
-    assert captive.recapture.originalOwner == "France"
+    assert len(view.capturableCivilians) == 1
+    captive = view.capturableCivilians[0]
+    assert captive.name == "Settler"
+    assert captive.capture.unitIfKept == ("Settler" if ours else "Worker")
+    assert captive.capture.isOurCapturedUnit is ours
+    assert "originalOwner" not in captive.model_dump_json()
     assert captive.civilization == "Barbarians" and captive.atWar
     assert captive.guard is not None and (captive.guard.name, captive.guard.health) == ("Brute", 57)
     assert all(threat.name != "Settler" for threat in view.visibleHostiles)
     # A civilian with no visible guard can also belong to a player currently at peace.
     tile["units"] = [tile["units"][1]]
     tile["units"][0].update(civilization="Rome", atWar=False)
-    unguarded = tactical_review(snapshot).recapturableCivilians[0]
+    unguarded = tactical_review(snapshot).capturableCivilians[0]
     assert not unguarded.atWar and unguarded.guard is None
     # Do not infer original ownership or a recovery result from a unit name/loss report.
-    tile["units"][0].pop("recapture")
+    tile["units"][0].pop("capture")
     absent = tactical_review(snapshot).model_dump(exclude_none=True)
-    assert absent["recapturableCivilians"] == [] and "recaptureConditions" not in absent
+    assert absent["capturableCivilians"] == [] and "captureConditions" not in absent
 
 
-def test_recapture_is_preloaded_and_command_updates_clear_it_without_an_extra_overview(tmp_path):
+@pytest.mark.parametrize("ours", [True, False])
+def test_capture_is_preloaded_and_command_updates_clear_it_without_an_extra_overview(tmp_path, ours):
     async def run():
         io = ServiceIO()
         memory = CivilizationState(tmp_path / "private", "France")
@@ -131,7 +135,7 @@ def test_recapture_is_preloaded_and_command_updates_clear_it_without_an_extra_ov
         host = Host()
         host.civilization = "France"
         host.view = france()
-        tile = captive_tile(host.view)
+        tile = captive_tile(host.view, ours=ours)
         original = host.tool
 
         async def tool(name, args):
@@ -146,9 +150,9 @@ def test_recapture_is_preloaded_and_command_updates_clear_it_without_an_extra_ov
             prompt = startup_prompt(prepared, "gameplay", "Play this turn")
             reads = json.JSONDecoder().raw_decode(prompt.user.split("Prepared player-visible reads:\n", 1)[1])[0]
             initial = reads["player_turn"]
-            assert initial["tacticalReview"]["recapturableCivilians"][0]["recapture"]["unitAfterCapture"] == "Settler"
+            assert initial["tacticalReview"]["capturableCivilians"][0]["capture"] == tile["units"][1]["capture"]
             region = await gateway.call(job, "map_region", {"center": tile["position"], "radius": 0}, "inspect-map")
-            assert region["data"]["tiles"][0]["units"][1]["recapture"] == tile["units"][1]["recapture"]
+            assert region["data"]["tiles"][0]["units"][1]["capture"] == tile["units"][1]["capture"]
             # A permitted action refresh no longer contains the captive (captured, dead or out of sight).
             city = await gateway.call(job, "city_details", {"target": "city2", "sections": ["combat"]}, "inspect")
             shot = city["data"]["entity"]["attacks"][0]["command"]
@@ -158,8 +162,8 @@ def test_recapture_is_preloaded_and_command_updates_clear_it_without_an_extra_ov
             )
             assert "stateUpdate" in result, result
             current = apply_overview_update(initial, result["stateUpdate"])
-            assert current["tacticalReview"]["recapturableCivilians"] == []
-            assert "recaptureConditions" not in current["tacticalReview"]
+            assert current["tacticalReview"]["capturableCivilians"] == []
+            assert "captureConditions" not in current["tacticalReview"]
             assert any(q["tool"] == "map_region" for q in result["stateUpdate"]["invalidatedDetails"])
         finally:
             await io.close()

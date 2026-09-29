@@ -21,10 +21,13 @@ enum class PlayerSessionFailure {
     TURN_BLOCKED,
     TURN_REVIEW_REQUIRED,
     COMMAND_UNAVAILABLE,
+    CIVILIAN_CAPTURE_RISK,
 }
 
 class PlayerSessionException(
     val reason: PlayerSessionFailure,
+    val movementRisk: CivilianMovementRisk? = null,
+    val rejectedMove: TurnCommandRequest? = null,
 ) : RuntimeException(messageFor(reason)) {
     companion object {
         private fun messageFor(reason: PlayerSessionFailure): String = when (reason) {
@@ -48,6 +51,7 @@ class PlayerSessionException(
             PlayerSessionFailure.TURN_BLOCKED -> "Resolve pending choices before ending the turn"
             PlayerSessionFailure.TURN_REVIEW_REQUIRED -> "Read the current turnReview in player_turn and use its reviewId for END_TURN. Idle units do not require action or a deferReason."
             PlayerSessionFailure.COMMAND_UNAVAILABLE -> "Command is unavailable"
+            PlayerSessionFailure.CIVILIAN_CAPTURE_RISK -> "The move would expose a civilian to possible capture. Read captureRisk, choose another move or explicitly accept it with confirmAction=true. Nothing moved."
         }
     }
 }

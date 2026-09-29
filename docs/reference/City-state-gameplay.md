@@ -105,6 +105,11 @@ quest competitors are unnamed. Improvement offers additionally require explored
 tiles and a resource visible to the viewer. Observations must not refresh native
 alliances or otherwise mutate the game.
 
+A quest that explicitly names another civilization, such as a recent bully in a
+gift/protection request, retains that supplied name even if the player has not met
+it. This does not establish contact or expose an actionable civilization ID or
+location. Other concealed relationship identities remain concealed.
+
 Native notifications also redact unmet civilization identities and icons,
 including nested quest-winner names. Explicit native quest locations, such as a
 requested barbarian camp, remain available; unrelated hidden improvement tiles

@@ -32,7 +32,7 @@ from civ_agent.memory_records import (
     memory_argument_error,
     public_record,
 )
-from civ_agent.model_view import model_view
+from civ_agent.model_view import model_view, trade_inspection
 from civ_agent.observations import (
     DETAIL_MODELS,
     EXTERNAL_DETAIL_TOOLS,
@@ -360,7 +360,8 @@ class ProposalGateway:
                 entry["inputSchema"] = command_schema()
                 entry["description"] = (
                     "Execute one game action: kind (e.g. FOUND_CITY) is an argument, not a tool name. Copy only an "
-                    "inspected option's command, add intent, and follow its required inspections. Add a "
+                    "inspected option's command, add intent, and follow its required inspections. Civilian movement with "
+                    "captureRisk requires explicit confirmAction=true; it accepts only the current move, not later route turns. Add a "
                     "confirmationField only after reading and accepting its consequences; templates never supply "
                     "consent. The compact schema lists possible fields; the server strictly validates required and "
                     "permitted fields for the selected kind. Invalid arguments return expectedArguments without acting. "
@@ -414,7 +415,7 @@ class ProposalGateway:
                 tools[-1]["outputSchema"] = TOOL_OUTPUT_MODELS[name].model_json_schema()
 
         for name, description in {
-            "unit_details": "Inspect one owned unit by its player_turn handle. Prefer explicit sections: movement (paths/orders; use movement_preview for distant destinations), combat (attacks), orders (EXPLORE/STOP_EXPLORATION, AUTOMATE/STOP_AUTOMATION, fortify/sleep/skip/wake), promotions, work (worker/water improvements; Work Boats are consumed), settlement (current-site native blockers, movement requirements and native promises; movement_preview also inspects prospective city sites), economy (upgrade/pillage/disband), abilities (great people/spaceship/gifts), or air (missions, bases/capacity, carried units and interception readiness; use mission_preview for special missions). Multiple sections are allowed; omitted sections or [all] returns full details. Only returned sections count as inspected. EXPLORE explores automatically; AUTOMATE uses native unit automation, including choosing and building improvements for Workers. These orders persist across turns; inspect orders to stop them. Read availability, warnings and confirmations; copy an offered command and add intent. Receipts report actual effects.",
+            "unit_details": "Inspect one owned unit by its player_turn handle. Prefer explicit sections: movement (paths/orders; use movement_preview for distant destinations), combat (attacks), orders (ESCORT/STOP_ESCORT, EXPLORE/STOP_EXPLORATION, AUTOMATE/STOP_AUTOMATION, fortify/sleep/skip/wake), promotions, work (worker/water improvements; Work Boats are consumed), settlement (current-site native blockers, movement requirements and native promises; movement_preview also inspects prospective city sites), economy (upgrade/pillage/disband), abilities (great people/spaceship/gifts), or air (missions, bases/capacity, carried units and interception readiness; use mission_preview for special missions). Multiple sections are allowed; omitted sections or [all] returns full details. Only returned sections count as inspected. EXPLORE explores automatically; AUTOMATE uses native unit automation, including choosing and building improvements for Workers. These orders persist across turns; inspect orders to stop them. Movement captureRisk requires confirmAction=true to accept exposure for this move; a same-tile escort permits movement normally. Read availability, warnings and confirmations; copy an offered command and add intent. Receipts report actual effects.",
             "city_details": "Inspect one owned city by its player_turn handle. Prefer explicit sections: status (capture choices), production (queue/progress/options), citizens (growth/work tiles/specialists/focus), economy (yields/buildings/sales), purchases, or combat (bombardment). Multiple sections are allowed. Omitted sections or [all] returns full details. Each section retains native consequences; unrelated sections do not count as inspected. Prefer construction_details(names=[candidates]) for queueing/buying specific buildings or units. Copy offered commands and add your intent.",
             "construction_details": "Compare construction in an owned city. Omit names for a compact catalogue with native completion times, city-specific ongoing yield gains and maintenance. Supply up to 16 names for before/after yields, source changes, conditional effect descriptions, specialist slots, costs, eligibility, queue progress, purchase confirmations and copyable commands. Named victory projects and spaceship parts include native costs and required technologies/resources while still locked; their hypothetical build times exclude prerequisite research. Completion estimates hold population and citizen assignments fixed and exclude one-time grants; whileBuilding shows the immediate change from the current construction. Food is net surplus; Gold includes maintenance. Turns assume starting now, excluding earlier queue entries. Production conversions show their yield after modifiers. Read the named option before queueing or buying; copy command and add intent. Confirm purchases explicitly after reading consequences.",
             "map_region": "Read explored tiles and frontier within radius 0–4 of an observed coordinate, respecting world wrap. Hidden tiles have no data. Default format=compact: each tile inherits tileDefaults, with its explicit fields overriding those defaults, including null/false/empty values. All visible facts are retained; position, terrain, visibility, units and yields remain on each tile. Use format=full for expanded tile objects. Read player_details(map_index) to locate distant regions.",
@@ -436,7 +437,7 @@ class ProposalGateway:
         )
         add(
             "trade_read",
-            "Read a binding trade before accepting, declining, withdrawing or counteroffering. Every clause has an explicit from/to direction, identical for both players. Pending deal IDs appear in chat_read. Interpret socialAdvisories yourself; they never restrict legal actions. Re-read changed terms and use the available responses.",
+            "Read a binding trade before accepting, declining, withdrawing or counteroffering. Copy its inspection command from chat_read. Every clause has an explicit from/to direction, identical for both players. Interpret socialAdvisories yourself; they never restrict legal actions. Re-read changed terms; copy an available response and add your own intent.",
         )
         add(
             "agreement_list",
@@ -456,7 +457,7 @@ class ProposalGateway:
         )
         add(
             "trade_decide",
-            "Accept or decline the exact trade or friendship proposal you inspected with trade_read; an author can withdraw it. Supply proposal, decision and intent. Acceptance applies all agreed terms together if still legal. Only ENACTED with an outcome confirms execution. Changed, expired or unavailable terms require a new decision.",
+            "Accept or decline the exact trade or friendship proposal you inspected with trade_read; an author can withdraw it. Copy a returned response and add your own intent. Acceptance applies all agreed terms together if still legal. Only ENACTED with an outcome confirms execution. Changed, expired or unavailable terms require a new decision.",
         )
         add(
             "history_read",
@@ -883,6 +884,28 @@ class ProposalGateway:
             },
         }
 
+    async def read_trade(self, job: JobAccess, proposal: str) -> JsonObject:
+        value: JsonObject = await job.connection.tool(
+            "player_communication", {"op": "trade_read", "epoch": job.epoch, "proposal": proposal}
+        )
+        self.check(job)
+        if job.purpose == "communication":
+            if "pendingTrades" in value:
+                value = {**value, "pendingTrades": [t for t in value["pendingTrades"] if t["mode"] == "SHARED"]}
+            if "error" not in value and value["trade"]["mode"] == "NATIVE_AI":
+                value = {
+                    **value,
+                    "trade": {
+                        **value["trade"],
+                        "acceptAvailable": False,
+                        "declineAvailable": False,
+                        "withdrawAvailable": False,
+                        "counterofferAvailable": False,
+                        "unavailableReason": NATIVE_TRADE_GAMEPLAY_ONLY,
+                    },
+                }
+        return value
+
     async def _call(
         self, job: JobAccess, name: str, arguments: JsonObject, call_id: str, *, startup: bool = False
     ) -> JsonObject:
@@ -944,7 +967,11 @@ class ProposalGateway:
                 job.details_read.append(query)
             return public_result(delivered)
         if name in {"trade_options", "trade_read", "agreement_list", "agreement_read"}:
-            value = await job.connection.tool("player_communication", {**arguments, "op": name, "epoch": job.epoch})
+            value = (
+                await self.read_trade(job, arguments["proposal"])
+                if name == "trade_read"
+                else await job.connection.tool("player_communication", {**arguments, "op": name, "epoch": job.epoch})
+            )
             self.check(job)
             if "error" not in value:
                 if job.purpose == "communication":
@@ -953,15 +980,6 @@ class ProposalGateway:
                         value["friendship"] = {
                             **value.get("friendship", {}),
                             "available": False,
-                            "unavailableReason": NATIVE_TRADE_GAMEPLAY_ONLY,
-                        }
-                    elif name == "trade_read" and value["trade"]["mode"] == "NATIVE_AI":
-                        value["trade"] = {
-                            **value["trade"],
-                            "acceptAvailable": False,
-                            "declineAvailable": False,
-                            "withdrawAvailable": False,
-                            "counterofferAvailable": False,
                             "unavailableReason": NATIVE_TRADE_GAMEPLAY_ONLY,
                         }
                 if name == "agreement_list":
@@ -1114,7 +1132,20 @@ class ProposalGateway:
             if "proposal" in arguments:
                 selected = job.trades.get(arguments["proposal"])
                 if selected is None:
-                    raise StateConflict("Read this proposal's exact terms with trade_read before deciding.")
+                    # Diagnose a typo without treating an internal read as the
+                    # agent having inspected or consented to the terms.
+                    checked = await self.read_trade(job, arguments["proposal"])
+                    if "error" in checked:
+                        return checked
+                    return {
+                        "error": "PROPOSAL_NOT_OBSERVED",
+                        "applied": False,
+                        "recoverable": True,
+                        "recovery": {
+                            "reads": [trade_inspection(arguments["proposal"])],
+                            "instruction": "Read this proposal's exact terms, then make a new decision.",
+                        },
+                    }
                 payload["version"] = selected["version"]
             if job.purpose == "communication":
                 routing = selected

@@ -1,5 +1,6 @@
 package uncivai.player
 
+import com.unciv.logic.battle.BattleUnitCapture
 import com.unciv.logic.battle.CityCombatant
 import com.unciv.logic.civilization.Civilization
 import com.unciv.logic.civilization.PlayerOperations
@@ -22,7 +23,7 @@ import java.util.Locale
 data class TilePosition(val x: Int, val y: Int)
 
 @Serializable
-data class CivilianRecapture(val originalOwner: String, val unitAfterCapture: String)
+data class CivilianCapture(val isOurCapturedUnit: Boolean, val unitIfKept: String?)
 
 @OptIn(ExperimentalSerializationApi::class)
 @Serializable
@@ -32,12 +33,12 @@ data class VisibleUnit(
     val health: Int,
     val military: Boolean,
     val atWar: Boolean,
-    @EncodeDefault(EncodeDefault.Mode.NEVER) val recapture: CivilianRecapture? = null,
+    @EncodeDefault(EncodeDefault.Mode.NEVER) val capture: CivilianCapture? = null,
 )
 
-/** Only disclose our own original ownership, after checking current unit visibility. */
-private fun observeCivilianRecapture(player: Civilization, unit: MapUnit): CivilianRecapture? {
-    if (unit.civ === player || !unit.isCivilian() || !unit.isVisibleTo(player) || unit.originalOwningCiv !== player) return null
+/** Preview the kept unit type without disclosing another player's original ownership. */
+private fun observeCivilianCapture(player: Civilization, unit: MapUnit): CivilianCapture? {
+    if (unit.civ === player || !unit.isCivilian() || !unit.isVisibleTo(player)) return null
     // BattleUnitCapture.captureCivilianUnit checks destruction before original-owner recovery.
     if (unit.hasUnique(UniqueType.Uncapturable)) return null
     if (player.isCityState && (
@@ -47,8 +48,10 @@ private fun observeCivilianRecapture(player: Civilization, unit: MapUnit): Civil
     ) {
         return null
     }
+    val ours = unit.originalOwningCiv === player
     // Native original-owner recapture preserves the current unit type, including Settlers.
-    return CivilianRecapture(player.civName, unit.name)
+    val keptType = if (ours) unit.baseUnit else BattleUnitCapture.keptCivilianUnitType(unit, player)
+    return CivilianCapture(ours, keptType?.name)
 }
 
 /** Proximity is a warning, not a prediction of enemy movement or an exhaustive danger map. */
@@ -90,7 +93,8 @@ data class UnitMoveOption(
     val destination: TilePosition,
     val path: List<TilePosition>,
     val movementCost: String,
-    val speculative: Boolean,
+    val unexploredTiles: Int,
+    val tilesOutsideCurrentSight: Int,
     val afterMove: MovementConsequences? = null,
 )
 
@@ -119,6 +123,7 @@ data class OwnedUnit(
     val waterImprovement: WaterImprovement? = null,
     val air: UnitAirStatus? = null,
     val settlement: SettlementPreview? = null,
+    val escort: EscortFormation? = null,
 )
 
 /** Coordinates use Unciv's axial x/y grid. No tile data is returned for unexplored coordinates. */
@@ -182,7 +187,7 @@ internal fun observeMap(player: Civilization, state: TurnSessionState, canAct: B
                     observedTurn = known?.observedTurn,
                     units = detached(
                         tile.getUnits().filter { it.civ === player || it.isVisibleTo(player) }
-                            .map { VisibleUnit(it.name, it.civ.civName, it.health, it.baseUnit.isMilitary, player.isAtWarWith(it.civ), observeCivilianRecapture(player, it)) }
+                            .map { VisibleUnit(it.name, it.civ.civName, it.health, it.baseUnit.isMilitary, player.isAtWarWith(it.civ), observeCivilianCapture(player, it)) }
                             .sortedWith(compareBy({ it.civilization }, { it.name }, { it.health })).toList(),
                     ),
                 )
@@ -196,6 +201,7 @@ internal fun observeMap(player: Civilization, state: TurnSessionState, canAct: B
             player.units.getCivUnits().filter { operations.owns(it) }.sortedBy { it.id }.map { unit ->
                 val canFound = active && operations.canFoundCity(unit)
                 val combat = observeUnitCombat(player, unit, active, contexts)
+                val escort = observeEscort(player, unit, state)
                 OwnedUnit(
                     handle = state.unitHandles.getOrPut(unit.id) { state.identifiers.next(PlayerIdentifier.UNIT) },
                     name = unit.name,
@@ -218,8 +224,10 @@ internal fun observeMap(player: Civilization, state: TurnSessionState, canAct: B
                                 destination = move.destination.position.dto(),
                                 path = detached(move.path.map { it.position.dto() }),
                                 movementCost = format.format(move.movementCost.toDouble()),
-                                speculative = move.path.any { !it.isVisible(player) },
-                                afterMove = movementConsequences(player, unit, move.destination, move.movementCost, contexts, combat.attacks, state.settlementKnowledge),
+                                unexploredTiles = move.path.count { !it.isExplored(player) },
+                                tilesOutsideCurrentSight = move.path.count { !it.isVisible(player) },
+                                afterMove = movementConsequences(player, unit, move.destination, move.movementCost, contexts, combat.attacks, state.settlementKnowledge,
+                                    escortHandle = escort?.takeIf { it.active }?.partner, escortCost = move.escortMovementCost),
                             )
                         }.sortedWith(compareBy({ it.destination.x }, { it.destination.y })),
                     ),
@@ -235,6 +243,7 @@ internal fun observeMap(player: Civilization, state: TurnSessionState, canAct: B
                     waterImprovement = observeWaterImprovement(player, unit, active),
                     air = observeUnitAir(player, unit, state, active),
                     settlement = observeSettlement(player, unit, unit.currentTile.position.dto(), active, state.settlementKnowledge),
+                    escort = escort,
                 )
             }.toList(),
         ),

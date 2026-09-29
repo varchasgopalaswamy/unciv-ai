@@ -8,7 +8,6 @@ import com.unciv.logic.map.HexCoord
 import com.unciv.logic.map.mapunit.UnitSettlement
 import com.unciv.models.translations.tr
 import kotlinx.serialization.Serializable
-import kotlinx.serialization.json.jsonObject
 import uncivai.player.PlayerHost
 import uncivai.player.PlayerTurnJson
 import uncivai.player.PlayerTurnSnapshot
@@ -134,22 +133,24 @@ object NotificationsProbe {
     private fun dismiss(root: Path, runtime: HeadlessRuntime, api: GameplayTestApi) {
         val saved = read(root)
         val token = api.playerToken("Rome")
-        // Restart does not preserve read authorization. A receipt or an unrelated query is insufficient.
-        api.reject(token, saved.request, "OBSERVATION_REQUIRED")
+        // Restart rebuilds observations. An unrelated query does not refresh the command.
+        api.reject(token, saved.request, "STALE_REVISION")
         api.tool(token, "player_summary")
-        api.reject(token, saved.request, "OBSERVATION_REQUIRED")
-        check(api.turn(token) == saved.before)
+        api.reject(token, saved.request, "STALE_REVISION")
+        val turn = api.turn(token)
+        assertRebuiltObservation(saved.before, turn)
         val native = json().toJson(runtime.game)
-        val receipt = api.execute(token, saved.request)
+        val request = saved.request.copy(revision = turn.revision)
+        val receipt = api.execute(token, request)
         check(receipt.dismissedNotifications == saved.before.notifications.take(2))
         check(json().toJson(runtime.game) == native) { "Dismissal erased native notifications or altered gameplay" }
-        check(api.execute(token, saved.request) == receipt)
+        check(api.execute(token, request) == receipt)
         val pending = saved.before.notifications.last()
         api.reject(token, command(saved.before, listOf(pending.handle)).copy(revision = receipt.revision), "OBSERVATION_REQUIRED")
         val after = api.turn(token)
         check(after.notifications == listOf(pending)) { "Identical messages were collapsed or dismissed together" }
         check(after.combatReports == saved.before.combatReports)
-        val cached = PlayerHost(runtime).bindPlayer("Rome").execute(saved.request)
+        val cached = PlayerHost(runtime).bindPlayer("Rome").execute(request)
         check(runCatching { (cached.dismissedNotifications as MutableList).clear() }.exceptionOrNull() is UnsupportedOperationException)
 
         runtime.executor.accessGame { it.getCivilization("Rome").addNotification(CAMP, HexCoord.Zero, NotificationCategory.War) }
@@ -159,7 +160,7 @@ object NotificationsProbe {
         check(fresh.notifications.last().text == saved.before.notifications.first().text)
         api.reject(token, command(fresh, listOf("notice1")), "OPTION_UNAVAILABLE")
         check(runtime.game.getCivilization("Rome").notifications.size == 4)
-        write(root, saved.copy(receipt = receipt, after = fresh))
+        write(root, saved.copy(request = request, receipt = receipt, after = fresh))
     }
 
     private fun restore(root: Path, runtime: HeadlessRuntime, api: GameplayTestApi) {
@@ -168,11 +169,7 @@ object NotificationsProbe {
         check(api.execute(token, saved.request) == saved.receipt) { "Committed dismissal did not replay after restart" }
         val restored = api.turn(token)
         check(restored.notifications == saved.after!!.notifications) { "Notifications changed after restart: ${restored.notifications}, expected ${saved.after.notifications}" }
-        check(restored == saved.after) {
-            val expected = PlayerTurnJson.json.encodeToJsonElement(PlayerTurnSnapshot.serializer(), saved.after).jsonObject
-            val actual = PlayerTurnJson.json.encodeToJsonElement(PlayerTurnSnapshot.serializer(), restored).jsonObject
-            "Restart changed: " + expected.keys.filter { expected[it] != actual[it] }.joinToString { "$it: expected=${expected[it]} actual=${actual[it]}" }
-        }
+        assertRebuiltObservation(saved.after, restored)
 
         api.acquire()
         val activation = api.activate()

@@ -51,6 +51,8 @@ class Agent:
     def call(self, operation, **fields):
         if operation == "health":
             return {"civilization": self.civilization, "runFailure": None}
+        if operation == "turn_readiness":
+            return {"civilization": self.civilization, **fields, "pendingReview": None}
         key = fields["activationId"]
         if operation == "start":
             self.rows[key] = {

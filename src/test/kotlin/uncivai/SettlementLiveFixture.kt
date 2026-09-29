@@ -8,7 +8,7 @@ import uncivai.player.PlayerTurnJson
 import java.nio.file.Files
 import java.nio.file.Path
 
-/** A standing uncertain destination, a scout, and an available settler; no prescribed replacement site. */
+/** A destination blocked by an undiscovered city, a scout, and an available settler. */
 object SettlementLiveFixture {
     @JvmStatic fun main(args: Array<String>) {
         val root = Path.of(args.single())
@@ -36,14 +36,15 @@ object SettlementLiveFixture {
             check(!game.tileMap[6, 0].isVisible(rome))
             game.tileMap.mapParameters.name = "Settlement destination acceptance"
             val turn = PlayerHost(runtime).bindPlayer("Rome").turn()
-            check(turn.map.units.single { it.name == "Settler" }.movementOrder!!.settlement!!.siteStatus == "UNKNOWN")
+            val site = turn.map.units.single { it.name == "Settler" }.movementOrder!!.settlement!!
+            check(site.siteStatus == "BLOCKED" && site.siteBlockers.single().city == null)
             runtime.executor.enableCheckpoints(root.resolve("exploration.json"))
             Files.writeString(root.resolve("initial-game.json"), UncivFiles.gameInfoToString(game, forceZip = false))
             Files.writeString(root.resolve("initial-turn.json"), PlayerTurnJson.json.encodeToString(turn))
         }
         HeadlessRuntime.loadCheckpoint(root.resolve("exploration.json"), root.resolve("preflight")).use { runtime ->
             val turn = PlayerHost(runtime).bindPlayer("Rome").turn()
-            check(turn.map.units.single { it.name == "Settler" }.movementOrder!!.settlement!!.siteStatus == "UNKNOWN")
+            check(turn.map.units.single { it.name == "Settler" }.movementOrder!!.settlement!!.siteStatus == "BLOCKED")
         }
         println("SETTLEMENT_FIXTURE_READY")
     }

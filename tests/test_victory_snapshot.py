@@ -62,7 +62,7 @@ def position(turn=5, names=("Scientific", "Domination")) -> JsonObject:
                     "metric": "Score",
                     "ownValue": 33,
                     "ownRank": 2,
-                    "best": {"civilization": None, "value": None},
+                    "best": {"civilization": None, "value": 43},
                     "average": 38,
                 },
                 {
@@ -116,7 +116,7 @@ def test_metric_columns_and_demographics_remain_aligned_and_concealed():
     assert result["charts"]["series"][0]["history"][-1] == [None]
     assert [r["metric"] for r in result["demographics"]["rows"]] == ["Production"]
     hidden = victory_read(position(), {"sections": ["demographics"], "civilizations": ["Rome"]})
-    assert hidden["demographics"]["rows"][0]["best"] == {"civilization": None, "value": None}
+    assert hidden["demographics"]["rows"][0]["best"] == {"civilization": None, "value": 43}
 
 
 @pytest.mark.parametrize(

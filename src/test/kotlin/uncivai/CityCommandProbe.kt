@@ -27,7 +27,7 @@ object CityCommandProbe {
             val expected = PlayerTurnJson.json.decodeFromString<CityCommandRecovery>(Files.readString(root.resolve("expected.json")))
             HeadlessRuntime.loadCheckpoint(root.resolve("game.json"), root.resolve("recovered")).use { runtime ->
                 val player = PlayerHost(runtime).bindPlayer("Rome")
-                check(player.turn() == expected.snapshot) { "Restart changed city observations or handles" }
+                assertRebuiltObservation(expected.snapshot, player.turn())
                 val before = json().toJson(runtime.game)
                 check(player.execute(expected.request) == expected.receipt)
                 check(json().toJson(runtime.game) == before) { "Restart repeated queue removal" }

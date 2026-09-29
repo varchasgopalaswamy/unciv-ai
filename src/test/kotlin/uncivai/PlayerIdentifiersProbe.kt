@@ -102,7 +102,7 @@ object PlayerIdentifiersProbe {
         val expected = PlayerTurnJson.json.decodeFromString<IdentifierRecovery>(Files.readString(root.resolve("expected.json")))
         HeadlessRuntime.loadCheckpoint(root.resolve("checkpoint.json"), root.resolve("restored")).use { runtime ->
             val rome = PlayerHost(runtime).bindPlayer("Rome")
-            check(rome.turn() == expected.snapshot) { "Restart changed a player reference" }
+            assertRebuiltObservation(expected.snapshot, rome.turn())
             check(rome.freeGreatPersonChoice() == expected.decision) { "Restart replaced a pending decision handle" }
             check(rome.cities().cities.single().handle == "city1")
             val before = json().toJson(runtime.game)

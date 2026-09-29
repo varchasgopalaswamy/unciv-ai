@@ -178,7 +178,7 @@ def settlement_summary(settlement: JsonObject) -> JsonObject:
             group["sites"].append(candidate["position"])
         else:
             candidate["happinessPreviewUnavailable"] = (
-                "Site-specific costs and building requirements need currently visible surroundings."
+                "The city center has no recorded terrain observation for site-specific happiness estimates."
             )
         luxuries = {}
         for resource in candidate.get("resources", []):

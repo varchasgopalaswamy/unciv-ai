@@ -75,7 +75,7 @@ data class VictoryDemographicRow(
 
 @Serializable
 data class VictoryDemographics(
-    val scope: String = "Native demographics aggregates include living major civilizations, including unmet players. Unmet best/worst identities and values are concealed. Values use the latest recorded snapshot, falling back to live values when the metric has no recorded value.",
+    val scope: String = "Demographics include living major civilizations, including unmet players. Best/worst values are public; unmet identities are concealed. Values use the latest recorded snapshot, falling back to live values when the metric has no recorded value.",
     val rows: List<VictoryDemographicRow>,
 )
 
@@ -201,7 +201,7 @@ internal fun observeVictoryDemographics(player: Civilization, metrics: List<Rank
             ?: civ.getStatForRanking(metric)
     fun extreme(civ: Civilization, value: Int) = if (canIdentifyVictoryCivilization(player, civ)) {
         VictoryDemographicExtreme(civ.civName, value)
-    } else VictoryDemographicExtreme(null, null)
+    } else VictoryDemographicExtreme(null, value)
     return VictoryDemographics(rows = immutableVictory(metrics.map { metric ->
         val ranked = participants.map { it to recorded(it, metric) }.sortedByDescending { it.second }
         VictoryDemographicRow(metric.name,

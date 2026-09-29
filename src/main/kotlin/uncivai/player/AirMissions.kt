@@ -4,6 +4,7 @@ import com.unciv.logic.battle.CityCombatant
 import com.unciv.logic.civilization.Civilization
 import com.unciv.logic.civilization.PlayerAirOperations
 import com.unciv.logic.map.mapunit.MapUnit
+import com.unciv.logic.map.HexCoord
 import com.unciv.models.ruleset.unique.UniqueType
 import kotlinx.serialization.Serializable
 import java.util.Collections
@@ -16,6 +17,9 @@ data class MissionPreviewRequest(val target: String, val mission: UnitMission, v
 
 @Serializable
 data class MissionVictim(val position: TilePosition, val name: String, val civilization: String, val isCity: Boolean, val isOwn: Boolean)
+
+@Serializable
+data class MissionInterceptionThreat(val name: String, val civilization: String, val position: TilePosition, val range: Int)
 
 @Serializable
 data class MissionPreview(
@@ -32,7 +36,11 @@ data class MissionPreview(
     val affectedExploredTiles: List<TilePosition>,
     val visibleVictims: List<MissionVictim>,
     val knownWarDeclarations: List<String>,
-    val speculative: Boolean,
+    val destinationExplored: Boolean,
+    val destinationVisible: Boolean,
+    val unexploredAffectedTiles: Int,
+    val affectedTilesOutsideCurrentSight: Int,
+    val visibleInterceptionThreats: List<MissionInterceptionThreat>,
     val consequences: List<String>,
     val confirmation: String?,
 )
@@ -85,12 +93,16 @@ internal fun TurnCommandKind.mission(): UnitMission? = when (this) {
 internal fun observeMissionPreview(player: Civilization, unit: MapUnit, turn: PlayerTurnSnapshot, request: MissionPreviewRequest): MissionPreview {
     val active = turn.phase == "ACTIVE" && turn.result == null && turn.alerts.none { it.capture != null }
     val tile = player.gameInfo.tileMap.getOrNull(request.destination.x, request.destination.y)
-    val preview = tile?.let { PlayerAirOperations(player).preview(unit, PlayerAirOperations.Mission.valueOf(request.mission.name), it) }
+    val knownCivs = player.gameInfo.civilizations.filter { it === player || player.knows(it) }.associateBy { it.civName }
+    val knownOwners = turn.map.tiles.mapNotNull { known ->
+        knownCivs[known.owner]?.let { HexCoord(known.position.x, known.position.y) to it.civID }
+    }.toMap()
+    val preview = tile?.let { PlayerAirOperations(player).preview(unit, PlayerAirOperations.Mission.valueOf(request.mission.name), it, knownOwners) }
     val consequences = when (request.mission) {
         UnitMission.REBASE -> listOf("Uses remaining movement; aircraft in transport move with the carrier and can be lost with it.")
         UnitMission.PARADROP -> listOf("Uses native paradrop movement and attack allowance.")
-        UnitMission.AIR_SWEEP -> listOf("Uses an attack even if no interceptor responds. Enemy interception and damage are unknown before execution.")
-        UnitMission.NUCLEAR_STRIKE -> listOf("May start wars with affected civilizations, damage friendly units and cities, destroy improvements and create fallout.", "Unseen victims and interception may change legality or outcomes. A successful launch uses the weapon according to its native rules.")
+        UnitMission.AIR_SWEEP -> listOf("Uses an attack even if no interceptor responds. Visible interception threats show capability and range; readiness, the responding unit and damage are unresolved. Unseen interceptors may also respond.")
+        UnitMission.NUCLEAR_STRIKE -> listOf("War warnings use visible victims and current or remembered ownership. Affected civilizations may enter war; friendly units and cities can be damaged, improvements destroyed and fallout created.", "Unseen victims and changed ownership can alter legality or collateral consequences. Listed interception threats show visible capability, not readiness or the eventual outcome. A successful launch uses the weapon according to its native rules.")
     }
     return MissionPreview(
         turn.epoch, turn.revision, turn.turn, request.target, request.mission, request.destination,
@@ -100,7 +112,10 @@ internal fun observeMissionPreview(player: Civilization, unit: MapUnit, turn: Pl
         frozen(preview?.affectedTiles?.map { TilePosition(it.position.x, it.position.y) } ?: emptyList()),
         frozen(preview?.visibleVictims?.map { MissionVictim(TilePosition(it.getTile().position.x, it.getTile().position.y), it.getName(), it.getCivInfo().civName, it is CityCombatant, it.getCivInfo() === player) } ?: emptyList()),
         frozen(preview?.knownDeclarations?.map { it.civID } ?: emptyList()),
-        preview?.speculative ?: true, frozen(consequences),
+        tile?.isExplored(player) == true, tile?.isVisible(player) == true,
+        preview?.unexploredAffectedTiles ?: 0, preview?.affectedTilesOutsideCurrentSight ?: 0,
+        frozen(preview?.visibleInterceptionThreats?.map { MissionInterceptionThreat(it.name, it.civilization, TilePosition(it.position.x, it.position.y), it.range) }.orEmpty()),
+        frozen(consequences),
         if (request.mission == UnitMission.NUCLEAR_STRIKE) "Launch this nuclear weapon at the specified tile, accepting the listed and native consequences?" else null,
     )
 }

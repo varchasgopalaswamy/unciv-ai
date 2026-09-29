@@ -79,9 +79,10 @@ no current value/rank; permitted chart history remains readable. Rankings are
 among disclosed living civilizations, with native alphabetical tie ordering.
 
 When the Demographics tab is enabled, its own rank/value, best/average/worst
-statistics use the native recorded snapshots. Unmet best/worst civilizations
-have neither an identity nor an exact value; native anonymous aggregates remain
-available. Repeated mid-turn reads cannot track changes to opponents' treasuries
+statistics use the native recorded snapshots. Best/worst numeric values remain
+available when their civilization is unmet; the identity is concealed. Named
+rankings and chart histories retain their contact restrictions. Repeated mid-turn
+reads cannot track changes to opponents' treasuries
 through those aggregates when the corresponding recorded values exist. Before
 a metric has any recorded value, the native live fallback applies. These
 observations do not establish that a popup was read, mutate the

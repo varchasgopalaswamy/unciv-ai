@@ -102,10 +102,17 @@ object EngineTradeProbe {
                 val handoff = runtime.executor.handoff
                 val initial = command("Rome", "trade_offer", "partner" to "Greece", "give" to listOf(silk), "receive" to listOf(JsonObject(gpt + obj("amount" to 4))))["trade"]!!.jsonObject
                 val id = initial["proposal"]!!.jsonPrimitive.content
+                check(id.matches(Regex("d[0-9a-z]{5}")))
+                check(initial["withdrawAvailable"]!!.jsonPrimitive.boolean)
+                check(!initial["declineAvailable"]!!.jsonPrimitive.boolean)
+                val recipientView = read("Greece", id)
+                check(recipientView["declineAvailable"]!!.jsonPrimitive.boolean)
+                check(!recipientView["withdrawAvailable"]!!.jsonPrimitive.boolean)
                 check(negotiation(root).jsonObject["partner"]!!.jsonPrimitive.content == "Greece")
                 check(rome.getDiplomacyManager(greece)!!.trades.isEmpty())
                 val counter = command("Greece", "trade_offer", "proposal" to id, "version" to 1, "partner" to "Rome", "give" to listOf(gpt, gold), "receive" to listOf(silk))["trade"]!!.jsonObject
                 check(counter["version"]!!.jsonPrimitive.int == 2)
+                check(counter["proposal"] == initial["proposal"])
                 check(negotiation(root).jsonObject["partner"]!!.jsonPrimitive.content == "Rome")
                 val reported = diplomacy(root).filter { it["kind"]?.jsonPrimitive?.content == "trade" }.map { it.getValue("body").jsonObject }
                 check(reported.map { it["version"]!!.jsonPrimitive.int to it["status"]!!.jsonPrimitive.content } == listOf(1 to "PENDING", 1 to "SUPERSEDED", 2 to "PENDING"))

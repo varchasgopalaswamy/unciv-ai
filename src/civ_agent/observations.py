@@ -161,6 +161,7 @@ class UnitSummary(BoundaryModel):
     canAssembleSpaceshipPart: bool = False
     canGiftToCityState: bool = False
     movementOrder: JsonObject | None = None
+    escort: JsonObject | None = None
     canCreateWaterImprovement: bool = False
     missions: list[str] = Field(default_factory=list)
     transported: bool = False
@@ -332,6 +333,7 @@ def overview(snapshot: JsonObject) -> JsonObject:
                     )
                 },
                 "movementOrder": unit.get("movementOrder"),
+                "escort": unit.get("escort"),
                 **{key: combat.get(key) for key in ("strength", "rangedStrength", "role") if unit["military"]},
                 "settlementStatus": "CAN_FOUND_NOW"
                 if unit["canFoundCity"]

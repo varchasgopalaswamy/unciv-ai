@@ -217,7 +217,7 @@ object ExplorationRecoveryProbe {
         HeadlessRuntime.loadCheckpoint(root.resolve("game.json"), root.resolve("recovered")).use { runtime ->
             val player = PlayerHost(runtime).bindPlayer("Rome")
             val raw = json().toJson(runtime.game)
-            check(player.turn() == saved.snapshot) { "Recovery changed observed state or unit handles" }
+            assertRebuiltObservation(saved.snapshot, player.turn())
             check(player.execute(saved.request) == saved.receipt) { "Settlement receipt was not preserved" }
             check(json().toJson(runtime.game) == raw) { "Recovery replay repeated settlement" }
             check(runtime.game.getCivilization("Rome").cities.size == 1)

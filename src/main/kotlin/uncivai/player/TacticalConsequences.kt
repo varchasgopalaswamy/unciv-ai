@@ -5,6 +5,7 @@ import com.unciv.logic.battle.CityCombatant
 import com.unciv.logic.battle.ICombatant
 import com.unciv.logic.battle.MapUnitCombatant
 import com.unciv.logic.civilization.Civilization
+import com.unciv.logic.civilization.CivilianCaptureThreats
 import com.unciv.logic.civilization.PlayerCombatOperations
 import com.unciv.logic.map.mapunit.MapUnit
 import com.unciv.logic.map.mapunit.UnitSettlement
@@ -47,9 +48,39 @@ data class MovementConsequences(
     val attack: String,
     val foundCity: String?,
     val context: PositionContext,
+    val escort: EscortMovement? = null,
+    val captureRisk: CivilianMovementRisk? = null,
 )
 
+@Serializable
+data class CivilianMovementRisk(
+    val destination: TilePosition,
+    val threats: List<CivilianCaptureThreat>,
+    val explanation: String = "An unguarded civilian could be captured at this stop during the enemy's next movement turn. Estimates use visible enemies with a full movement budget; unseen terrain and future actions remain uncertain. A nearby military unit does not protect this tile. Set confirmAction=true to accept this risk for the current move only.",
+)
+
+@Serializable
+data class CivilianCaptureThreat(val name: String, val civilization: String, val position: TilePosition, val health: Int, val movement: Int, val speculative: Boolean)
+
+/** The escort shares this route's destination and pays its own movement cost. */
+@Serializable
+data class EscortMovement(val unit: String, val movementRemaining: Float, val attack: String, val foundCity: String?)
+
 internal class PositionContexts(private val player: Civilization) {
+    private val captureThreats = CivilianCaptureThreats(player)
+
+    fun captureRisk(unit: MapUnit, destination: Tile): CivilianMovementRisk? {
+        val threats = captureThreats.at(unit, destination)
+        if (threats.isEmpty()) return null
+        return CivilianMovementRisk(
+            TilePosition(destination.position.x, destination.position.y),
+            frozen(threats.map { (enemy, _, speculative, movement) ->
+                CivilianCaptureThreat(enemy.name, enemy.civ.civName,
+                    TilePosition(enemy.currentTile.position.x, enemy.currentTile.position.y), enemy.health,
+                    movement, speculative)
+            }.sortedWith(compareBy({ it.position.x }, { it.position.y }, { it.name }))),
+        )
+    }
     private val hostiles = player.viewableTiles.flatMap { tile ->
         tile.getUnits().filter { it.isVisibleTo(player) && it.baseUnit.isMilitary && player.isAtWarWith(it.civ) }
             .map { tile to VisibleUnit(it.name, it.civ.civName, it.health, military = true, atWar = true) }.toList()
@@ -107,6 +138,8 @@ internal fun movementConsequences(
     attacks: List<AttackOption>,
     knowledge: Map<TilePosition, KnownSettlementTile>,
     laterTurn: Boolean = false,
+    escortHandle: String? = null,
+    escortCost: Float? = null,
 ): MovementConsequences {
     val remaining = ((if (laterTurn) unit.getMaxMovement().toFloat() else unit.currentMovement) - cost)
         .coerceAtLeast(0f).let { if (it <= Constants.minimumMovementEpsilon) 0f else it }
@@ -139,7 +172,14 @@ internal fun movementConsequences(
             else -> "AVAILABLE"
         }
     }
-    return MovementConsequences(remaining, attack, founding, contexts.at(destination, unit))
+    val escort = if (escortHandle != null && escortCost != null) {
+        val partner = checkNotNull(unit.getOtherEscortUnit())
+        val result = movementConsequences(player, partner, destination, escortCost, contexts, emptyList(), knowledge, laterTurn)
+        val partnerAttack = if (partner.isMilitary() && result.movementRemaining > 0f &&
+            (laterTurn || partner.attacksThisTurn < partner.maxAttacksPerTurn())) "RECHECK_ON_ARRIVAL" else result.attack
+        EscortMovement(escortHandle, result.movementRemaining, partnerAttack, result.foundCity)
+    } else null
+    return MovementConsequences(remaining, attack, founding, contexts.at(destination, unit), escort, contexts.captureRisk(unit, destination))
 }
 
 private fun <T> frozen(values: List<T>): List<T> = Collections.unmodifiableList(values)

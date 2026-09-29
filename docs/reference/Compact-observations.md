@@ -85,19 +85,19 @@ tool calls are needed.
   including shortages and city demands. Detailed sources stay in the economy
   inspection. `cityStates` includes known friendship/alliance benefits, resources,
   ally influence, unique units and the existing quest/action summaries.
-- `settlement`: counts of eligible, uncertain and blocked explored sites, plus the
+- `settlement`: `eligibleSites` and `blockedSites` counts for explored tiles, plus the
   up to three candidate centers selected with native minimum-city spacing between
   them, so adjacent alternatives do not fill the summary. This is not a guarantee
   that all three cities can coexist or share their resources.
-  The best confirmed eligible site has a reserved place when one is known;
-  remaining slots follow score order and can include uncertain scouting options.
-  `NO_KNOWN_SITES` describes the explored search
-  scope, not the hidden world. This summary is included even without a Settler,
+  Candidates must pass current native site restrictions, even when an undiscovered
+  city causes a restriction. Selection follows score order. `NO_SITES_IN_EXPLORED_TERRITORY`
+  describes the explored search scope; unexplored land may contain more sites.
+  This summary is included even without a Settler,
   so it can inform whether to produce one. Scores adapt Unciv's advisory settlement heuristic
   to current and last-seen information. Full candidates are available through
   `player_details(section="settlement")`; native `movement_preview` supplies routes.
   With a Settler, the selected candidates also carry bounded native route estimates, including
-  whether the route is speculative or no movement remains. `settlers` retains each
+  `unexploredTiles`, `tilesOutsideCurrentSight`, or that no movement remains. `settlers` retains each
   unit's current tile and destination even when the destination falls outside the
   top three or becomes blocked. Current-tile `canFoundNow` and the roster's
   `CAN_FOUND_NOW` status take precedence over surrounding fog uncertainty; an
@@ -106,8 +106,9 @@ tool calls are needed.
   observed destination changes expose delay without declaring it a mistake.
   Without a Settler, candidates name `nearestCity` and their hex distance from it;
   `nearestSettler` and unit route estimates are absent. With neither a city nor a
-  Settler, scoring has no distance adjustment. All advice uses permitted current
-  and remembered observations; hidden city or border changes cannot update it.
+  Settler, scoring has no distance adjustment. Scores use permitted current
+  and remembered observations. Site eligibility is the deliberate exception:
+  hidden city or border changes can alter the settlement lens.
   These counters survive checkpoint recovery. They start at first observation,
   not an invented production date. Route turns are estimates using remaining
   movement, not a guarantee of safety, arrival, or future founding legality.
@@ -128,8 +129,12 @@ tool calls are needed.
   population and after growth, plus ordinary happiness-building possibilities,
   costs, technology requirements and blockers. These are cost components and
   conditional benefits, not a promised net founding result; free buildings,
-  specialists and other founding effects are excluded. Site checks require visible
-  surroundings. If none can be checked, `happinessBaseline` uses a known home tile
+  specialists and other founding effects are excluded. Site estimates use a detached
+  map of remembered terrain, so fog does not suppress known costs. Missing terrain
+  is counted in `unexploredWorkableTiles`; building `unresolvedConditions` identify
+  requirements that unexplored surroundings might satisfy. Native prerequisites
+  remain listed, including technologies and improved resources. If no city center
+  has recorded terrain, `happinessBaseline` uses a known home tile
   for illustrative empty-city costs and supplies public base building rules,
   explicitly excluding policy/religion bonuses and site-specific availability.
   Buildings and luxuries take time to obtain. No estimate invents a production

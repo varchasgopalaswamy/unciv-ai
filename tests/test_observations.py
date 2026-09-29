@@ -53,9 +53,8 @@ def test_settlement_advice_is_compact_even_without_a_settler():
         {"position": {"x": n, "y": 4}, "score": 100 - n, "nearestCity": "city1", "distance": 4 + n} for n in range(5)
     ]
     snapshot["settlement"] = {
-        "status": "KNOWN_SITES_AVAILABLE",
-        "knownEligibleSites": 5,
-        "uncertainSites": 0,
+        "status": "SITES_AVAILABLE",
+        "eligibleSites": 5,
         "blockedSites": 30,
         "candidates": candidates,
         "settlers": [],
@@ -63,7 +62,7 @@ def test_settlement_advice_is_compact_even_without_a_settler():
     compact = overview(snapshot)
     assert compact["units"] == [] and compact["settlement"]["settlers"] == []
     assert [c["position"] for c in compact["settlement"]["candidates"]] == [c["position"] for c in candidates[:3]]
-    assert compact["settlement"]["knownEligibleSites"] == 5
+    assert compact["settlement"]["eligibleSites"] == 5
     assert len(snapshot["settlement"]["candidates"]) == 5
 
 

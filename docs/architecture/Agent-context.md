@@ -81,13 +81,20 @@ native remembered information, including permitted remote discoveries; pillage
 state remains unknown when the host has not observed that improvement.
 Native visibility callbacks capture intermediate movement and automation steps,
 so discoveries remain known even if they are fogged before the next host read.
+Explicit distant reveals have a separate callback: a city-state's revealed
+capital becomes remembered terrain/city information without exposing units or
+granting ongoing sight.
 New resource-revealing technologies update explored settlement resources and
 scores using remembered terrain and infrastructure, without refreshing hidden
 ownership or development. The processed technology set survives checkpoints.
 
-The settlement shortlist reserves a place for the best confirmed eligible site
-when one exists, then fills remaining spaced sites by score. Resource groups
+The settlement shortlist includes only sites that pass the native rules on explored
+tiles, even when an undiscovered city causes the restriction. Hidden city identities
+remain concealed. It selects spaced sites by score. Resource groups
 separate unclaimed potential, overlap with existing cities, and foreign ownership.
+Candidate happiness budgets use native calculations on a detached map of known
+terrain. Missing surrounding tiles qualify site-dependent building requirements
+without suppressing city/population costs or the whole building list.
 Wonder estimates appear only under `wonderOpportunities` in the overview.
 Compact completion estimates omit zero yield changes (including formatted zeros);
 omitted changes mean zero at displayed precision. Named construction reads retain

@@ -61,6 +61,8 @@ object NavalProbe {
                 val offered = preview(api, token, handle)
                 check(json().toJson(runtime.game) == native && offered.available && offered.estimatedTurns!! > 1)
                 check(offered.turns.last().destination == destination)
+                check(offered.turns.all { it.unexploredTiles == 0 })
+                check(offered.turns.any { it.tilesOutsideCurrentSight > 0 }) { "Known fogged routes must be distinguished from unexplored routes" }
                 check(!preview(api, token, handle, TilePosition(Int.MAX_VALUE, Int.MIN_VALUE)).available)
                 check(!preview(api, token, handle, TilePosition(6, 0)).available)
                 receipt = api.execute(token, order)

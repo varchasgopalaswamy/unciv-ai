@@ -12,6 +12,7 @@ from civ_agent.action_templates import add_decision_commands
 from civ_agent.civilization_state import CivilizationState
 from civ_agent.entity_sections import CityDetails, UnitDetails
 from civ_agent.game_commands import command_arguments, command_error
+from civ_agent.model_view import model_view
 from civ_agent.observations import DetailQuery, detail_satisfies, overview, project_detail, required_detail
 from civ_agent.proposal_gateway import ProposalGateway
 from civ_agent.protocol import JsonObject
@@ -23,6 +24,80 @@ from tests.test_structured_memory import create, current, strategy
 def query(tool, target, sections):
     model = UnitDetails if tool == "unit_details" else CityDetails
     return DetailQuery(tool=tool, arguments=model(target=target, sections=sections).model_dump())
+
+
+@pytest.mark.parametrize("active", [True, False])
+def test_escort_orders_have_copyable_choices_and_pair_is_in_roster_and_selective_reads(active):
+    snapshot = options_snapshot()
+    unit = snapshot["map"]["units"][0]
+    unit["escort"] = {"partner": "unit2", "active": active}
+    unit["combat"]["orders"] = [
+        {"name": name, "available": available, "unavailableReasons": []}
+        for name, available in (("ESCORT", not active), ("STOP_ESCORT", active))
+    ]
+    shown = overview(snapshot)["units"][0]
+    assert shown["escort"] == unit["escort"]
+    assert shown["inspections"]["SET_UNIT_ORDER"]["arguments"]["sections"] == ["orders"]
+    for section in ("orders", "movement"):
+        detail = project_detail(snapshot, query("unit_details", unit["handle"], [section]))["data"]["entity"]
+        assert detail["escort"] == unit["escort"]
+        assert "native pathfinding" in detail["escortInstruction"]
+        if section == "orders":
+            offered = detail["combat"]["orders"]
+            choice = next(o for o in offered if o["available"])
+            assert choice["command"] == {
+                "kind": "SET_UNIT_ORDER",
+                "target": unit["handle"],
+                "selection": "STOP_ESCORT" if active else "ESCORT",
+            }
+            assert all("command" not in o for o in offered if not o["available"])
+
+
+@pytest.mark.parametrize("available", [True, False])
+def test_capture_choices_keep_outcomes_and_supply_copyable_commands_in_the_overview(available):
+    snapshot = copy.deepcopy(Host().view)
+    snapshot["phase"] = "ACTIVE"
+    snapshot["alerts"] = [
+        {
+            "handle": "alert13",
+            "kind": "RecapturedCivilian",
+            "canAcknowledge": False,
+            "capture": {
+                "title": "Return Settler to France?",
+                "paragraphs": [],
+                "options": [
+                    {
+                        "name": name,
+                        "label": label,
+                        "available": available,
+                        "unavailableReasons": [],
+                        "paragraphs": [text],
+                        "civilianOutcome": {"recipient": recipient, "unitType": unit_type},
+                    }
+                    for name, label, recipient, unit_type, text in (
+                        ("ReturnCivilian", "Yes", "France", "Settler", "France receives a Settler."),
+                        ("KeepCivilian", "No", "Rome", "Worker", "The captured Settler becomes a Worker."),
+                    )
+                ],
+            },
+        }
+    ]
+    offered = model_view(overview(snapshot))["alerts"][0]
+    assert "command" not in offered  # This decision cannot be acknowledged away.
+    for expected, option in zip(
+        snapshot["alerts"][0]["capture"]["options"], offered["capture"]["options"], strict=True
+    ):
+        assert option["civilianOutcome"] == expected["civilianOutcome"]
+        assert option["paragraphs"] == expected["paragraphs"]
+        assert ("command" in option) is available
+        if available:
+            assert option["command"] == {
+                "kind": "RESOLVE_CAPTURED_CITY",
+                "target": "alert13",
+                "selection": option["name"],
+            }
+            assert command_arguments(option["command"]) == option["command"]
+        assert "command" not in expected  # The raw snapshot stays unchanged.
 
 
 @pytest.mark.parametrize("can_accept,can_decline", [(True, True), (False, True), (False, False)])

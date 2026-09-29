@@ -8,8 +8,36 @@ from civ_agent.civilization_state import CivilizationState
 from civ_agent.game_commands import command_arguments, command_schema
 from civ_agent.observations import DetailQuery, detail_scope, overview, required_detail
 from civ_agent.proposal_gateway import ProposalGateway
+from civ_agent.protocol import JsonObject
 from civ_agent.service_io import ServiceIO
 from tests.test_proposal_gateway import Host
+
+
+@pytest.mark.parametrize("kind", ["MOVE_UNIT", "SET_UNIT_DESTINATION"])
+def test_capture_risk_confirmation_is_explicit_and_scoped_to_movement(kind):
+    command = {"kind": kind, "target": "unit1", "destination": {"x": 2, "y": 0}, "confirmAction": True}
+    assert command_arguments(command) == command
+    for value in ("true", 1, None):
+        with pytest.raises(ValidationError):
+            command_arguments({**command, "confirmAction": value})
+    with pytest.raises(ValidationError):
+        command_arguments({**command, "kind": "REBASE_UNIT"})
+
+
+@pytest.mark.parametrize("first_stop_risky", [True, False])
+def test_route_confirmation_only_applies_to_current_stop_and_never_prefills_consent(first_stop_risky):
+    from civ_agent.action_templates import add_decision_commands, add_unit_commands
+
+    risk = {"destination": {"x": 2, "y": 0}, "threats": [{"name": "Brute"}]}
+    move = {"destination": {"x": 2, "y": 0}, "afterMove": {"captureRisk": risk if first_stop_risky else None}}
+    unit = {"handle": "unit1", "moves": [move]}
+    add_unit_commands(unit)
+    assert (move.get("confirmationField") == "confirmAction") is first_stop_risky
+    assert "confirmAction" not in move["command"]
+    preview: JsonObject = {"available": True, "turns": [move, {"afterMove": {"captureRisk": risk}}]}
+    add_decision_commands("movement_preview", preview, {"target": "unit1", "destination": {"x": 7, "y": 0}})
+    assert (preview.get("confirmationField") == "confirmAction") is first_stop_risky
+    assert "confirmAction" not in preview["command"]
 
 
 @pytest.mark.parametrize(
@@ -41,10 +69,76 @@ class MovementHost(Host):
                 **args,
                 "available": args["destination"]["x"] >= 0,
                 "estimatedTurns": 4,
-                "turns": [{"destination": args["destination"], "path": [args["destination"]], "speculative": True}],
+                "turns": [
+                    {
+                        "destination": args["destination"],
+                        "path": [args["destination"]],
+                        "unexploredTiles": 1,
+                        "tilesOutsideCurrentSight": 1,
+                    }
+                ],
                 "settlement": self.settlement,
             }
         return await super().tool(name, args)
+
+
+@pytest.mark.parametrize("kind", ["MOVE_UNIT", "SET_UNIT_DESTINATION"])
+def test_capture_refusal_preserves_inspection_and_requires_agent_confirmation(tmp_path, kind):
+    risk = {"destination": {"x": 2, "y": 0}, "threats": [{"name": "Brute", "movement": 2}]}
+
+    class RiskHost(MovementHost):
+        async def tool(self, name, args):
+            if name == "player_command" and not args.get("confirmAction"):
+                return {
+                    "error": {"code": "CIVILIAN_CAPTURE_RISK", "message": "Possible capture"},
+                    "applied": False,
+                    "recoverable": True,
+                    "captureRisk": risk,
+                    "recovery": {"confirmationField": "confirmAction"},
+                }
+            result = await super().tool(name, args)
+            if name == "movement_preview":
+                result["turns"][0]["afterMove"] = {"captureRisk": risk}
+            return result
+
+    async def run():
+        io = ServiceIO()
+        state = CivilizationState(tmp_path / "state", "Rome")
+        gateway = ProposalGateway(state, io, tmp_path / "workspace")
+        host = RiskHost()
+        host.view["map"]["units"][0].update(
+            name="Settler",
+            military=False,
+            moves=[{"destination": risk["destination"], "afterMove": {"captureRisk": risk}}],
+        )
+        job = await gateway.open("game", "gameplay", "g1", host, {})
+        try:
+            await gateway.call(job, "player_turn", {}, "start")
+            query = {"target": "unit1", "destination": risk["destination"]}
+            if kind == "MOVE_UNIT":
+                detail = await gateway.call(
+                    job, "unit_details", {"target": "unit1", "sections": ["movement"]}, "inspect"
+                )
+                offer = detail["data"]["entity"]["moves"][0]
+            else:
+                offer = await gateway.call(job, "movement_preview", query, "inspect")
+            assert offer["confirmationField"] == "confirmAction"
+            action = {**offer["command"], "intent": {"reason": "Reach the site"}}
+            rejected = await gateway.call(job, "player_command", action, "refused")
+            assert rejected["error"]["code"] == "CIVILIAN_CAPTURE_RISK"
+            assert rejected["applied"] is False and rejected["captureRisk"] == risk
+            assert not host.executed and host.revision == "rev1"
+            # Refusal did not move anything or invalidate the preview; accepting is a new decision.
+            accepted = {**action, "confirmAction": True, "intent": {"reason": "Accept the exposed stop"}}
+            receipt = await gateway.call(job, "player_command", accepted, "confirmed")
+            assert "error" not in receipt and host.executed[-1]["confirmAction"] is True
+            assert await gateway.call(job, "player_command", accepted, "confirmed") == receipt
+            assert len(host.executed) == 1
+        finally:
+            await gateway.close(job, True)
+            await io.close()
+
+    asyncio.run(run())
 
 
 def test_distant_order_requires_exact_current_preview_and_invalidates_memory_on_change(tmp_path):

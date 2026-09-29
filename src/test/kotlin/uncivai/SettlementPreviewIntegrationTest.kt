@@ -9,7 +9,9 @@ import java.util.concurrent.TimeUnit
 class SettlementPreviewIntegrationTest {
     @Test fun `settlement previews explain sites separately from movement without prohibiting travel`() = run("rules")
 
-    @Test fun `prospective sites cannot disclose hidden cities or certify unseen surroundings`() = run("privacy")
+    @Test fun `settlement lens follows native restrictions under fog without disclosing city identities`() = run("privacy")
+
+    @Test fun `coastal settler can choose an eligible neighbor of a site blocked by an undiscovered city`() = run("coast")
 
     @Test fun `standing orders report destination sites independently and clear on cancellation or arrival`() = run("orders")
 

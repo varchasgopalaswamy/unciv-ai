@@ -3,6 +3,10 @@ package uncivai
 import com.unciv.json.json
 import uncivai.player.PlayerHost
 import uncivai.player.PlayerTurnJson
+import uncivai.player.TilePosition
+import uncivai.player.TurnSessionState
+import uncivai.player.rememberedSettlementMap
+import uncivai.player.settlementHappiness
 import java.nio.file.Path
 import kotlin.math.ceil
 import kotlin.math.roundToInt
@@ -88,18 +92,46 @@ object MechanicsOverviewProbe {
         check(sites.candidates.flatMap { it.resources }.any { it.name == "Iron" && it.amount == 4 && it.type == "Strategic" })
         player.viewableTiles = player.cities.single().getTiles().toSet()
         val remembered = session.turn().settlement!!
-        check(remembered.happinessBaseline!!.populationCosts.first().cityUnhappiness > 0)
-        check(remembered.happinessBaseline!!.buildingCatalogue.single { it.name == "Colosseum" }.missingTechnologies.contains("Construction"))
+        check(remembered.happinessBaseline == null)
+        check(remembered.candidates.filter { it.position in remembered.recommendations }.all { candidate ->
+            candidate.happiness!!.populationCosts.first().cityUnhappiness > 0 &&
+                candidate.happiness.buildings.single { it.name == "Colosseum" }.missingTechnologies.contains("Construction")
+        })
         spices.setTileResource(game.ruleset.tileResources.getValue("Gold Ore"))
+        check(session.turn().settlement == remembered) { "Hidden resource changed settlement advice" }
         game.getCivilization("France").cities.single().expansion.takeOwnership(iron)
         player.viewableTiles = player.cities.single().getTiles().toSet()
-        check(session.turn().settlement == remembered) { "Hidden resources or ownership leaked into advice" }
-        check(remembered.candidates.filter { it.position in remembered.recommendations }.any { it.happiness == null })
+        val restricted = session.turn().settlement!!
+        check(restricted.eligibleSites == remembered.eligibleSites - 1)
+        check(restricted.candidates.none { it.position == TilePosition(0, 5) })
+        for (candidate in restricted.candidates) {
+            val previous = remembered.candidates.single { it.position == candidate.position }
+            check(candidate.copy(route = null, happiness = null) == previous.copy(route = null, happiness = null)) {
+                "The settlement lens refreshed hidden resource or ownership details"
+            }
+        }
+        check(remembered.candidates.filter { it.position in remembered.recommendations }.all { it.happiness != null })
 
         // Resource work prerequisites follow our new research without rereading hidden tiles.
         player.tech.addTechnology("Calendar", false)
         val learned = session.turn().settlement!!.candidates.flatMap { it.resources }.first { it.name == "Spices" && it.distance > 0 }
         check(learned.improvements.single { it.name == "Plantation" }.missingTechnologies == listOf("Mining"))
         check(learned.observedTurn == plantation.observedTurn)
+
+        // A revealed center is enough for the general budget. Missing surrounding
+        // resources remain unresolved rather than suppressing every building.
+        val position = remembered.recommendations.first()
+        val known = runtime.executor.turnSessions.getValue(player.civID).settlementKnowledge.getValue(position)
+        val partialState = TurnSessionState().apply { settlementKnowledge[position] = known }
+        val planningMap = rememberedSettlementMap(player, partialState)
+        val partial = checkNotNull(settlementHappiness(player, position, planningMap))
+        check(partial.unexploredWorkableTiles > 0 && partial.populationCosts.first().cityUnhappiness > 0)
+        check(partial.buildings.single { it.name == "Colosseum" }.unresolvedConditions.isEmpty())
+        val circus = partial.buildings.single { it.name == "Circus" }
+        check(circus.unresolvedConditions.any { it.contains("Horses") && it.contains("Ivory") })
+        check(partial.buildings.single { it.name == "Stone Works" }.requirements.any { it.contains("Stone") })
+        val outside = game.tileMap[position.x, position.y].neighbors.first()
+        outside.setTileResource(game.ruleset.tileResources.getValue("Ivory"))
+        check(settlementHappiness(player, position, planningMap) == partial) { "A hidden resource changed a partial budget" }
     }
 }

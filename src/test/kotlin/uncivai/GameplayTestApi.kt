@@ -82,9 +82,10 @@ internal class GameplayTestApi(runtime: HeadlessRuntime, tlsRoot: Path, initialT
     fun turn(token: String): PlayerTurnSnapshot = PlayerTurnJson.json.decodeFromString(tool(token, "player_turn").toString())
     fun communicate(token: String, request: JsonObject): JsonObject = call(token, "player_communication", obj("request" to request)).getValue("structuredContent").jsonObject
     fun execute(token: String, request: TurnCommandRequest): TurnCommandReceipt = PlayerTurnJson.json.decodeFromString(tool(token, "player_command", PlayerTurnJson.json.encodeToJsonElement(TurnCommandRequest.serializer(), request).jsonObject).toString())
-    fun reject(token: String, request: TurnCommandRequest, code: String) {
+    fun reject(token: String, request: TurnCommandRequest, code: String): JsonObject {
         val response = call(token, "player_command", PlayerTurnJson.json.encodeToJsonElement(TurnCommandRequest.serializer(), request).jsonObject)
         check(response["isError"]!!.jsonPrimitive.boolean && response["structuredContent"]!!.jsonObject["error"]!!.jsonObject["code"]!!.jsonPrimitive.content == code) { "Expected $code, got $response" }
+        return response.getValue("structuredContent").jsonObject
     }
     fun readAlerts(token: String): PlayerTurnSnapshot {
         repeat(30) {

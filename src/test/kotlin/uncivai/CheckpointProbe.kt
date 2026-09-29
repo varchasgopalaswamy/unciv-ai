@@ -8,7 +8,10 @@ import uncivai.player.TurnCommandKind
 import uncivai.player.TurnCommandReceipt
 import uncivai.player.TurnCommandRequest
 import java.io.IOException
+import java.nio.file.Files
 import java.nio.file.Path
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonObject
 
 object CheckpointProbe {
     @JvmStatic
@@ -36,10 +39,13 @@ object CheckpointProbe {
             )
             receipt = session.execute(request)
         }
+        val savedPlayers = Json.parseToJsonElement(Files.readString(checkpoint)).jsonObject.getValue("players").jsonObject
+        check(savedPlayers.isNotEmpty())
+        check(savedPlayers.values.all { "fingerprint" !in it.jsonObject && "revision" !in it.jsonObject })
         HeadlessRuntime.loadCheckpoint(checkpoint, root.resolve("restored")).use { runtime ->
             val session = PlayerHost(runtime).bindPlayer("Rome")
             check(session.turn().cities.single().handle == request.target)
-            check(session.turn().revision == receipt.revision)
+            check(session.turn().revision != receipt.revision) { "Restored observations need a fresh revision" }
             val before = json().toJson(runtime.game)
             check(session.execute(request) == receipt)
             check(json().toJson(runtime.game) == before)
@@ -92,9 +98,10 @@ object CheckpointProbe {
             val session = PlayerHost(runtime).bindPlayer("Rome")
             val name = session.turn().cities.single().name
             check(name == if (afterReplace) request.selection else originalName)
-            val receipt = session.execute(request)
+            val retried = if (afterReplace) request else request.copy(revision = session.turn().revision)
+            val receipt = session.execute(retried)
             check(session.turn().cities.single().name == request.selection)
-            check(session.execute(request) == receipt)
+            check(session.execute(retried) == receipt)
         }
     }
 }

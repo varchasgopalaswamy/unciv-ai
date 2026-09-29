@@ -133,13 +133,16 @@ may be better than scattered gifts that establish none. Policies supporting
 city-state relations make more sense when those relationships are central to
 the plan.
 
-A war is easier to evaluate with a concrete objective: defend a city, seize a
-resource, remove an immediate threat, or take a capital. Compare available forces
-and technology with terrain, reinforcements, happiness, treasury, and the risk
-of another front. A stronger army on paper can still be spread too thin. Native
-diplomatic consequences of aggression can affect players beyond the target.
-Peace may be valuable once the attainable objective is secured or the costs
-outgrow it.
+Limited wars can support any victory plan. Capturing workers or settlers,
+pillaging improvements, taking a useful city, or forcing military spending may
+weaken an opponent's development. Compare those gains with our losses, delayed
+investments, likely retaliation and benefits to uninvolved rivals. Choose an
+attainable objective and conditions for seeking peace.
+
+Compare available forces and technology with terrain, reinforcements, happiness,
+treasury, and the risk of another front. A stronger army on paper can still be
+spread too thin. Native diplomatic consequences of aggression can affect players
+beyond the target.
 
 Combat strength, terrain, fortification, health, and promotions can change a
 fight substantially. A favorable attack preview does not show every enemy's
@@ -164,11 +167,11 @@ available; names and assumptions from another ruleset can mislead.
 
 ## 4. Turn a good position into a win
 
-A growing empire still needs a route to victory. Periodically compare the
-remaining requirements, expected time, and visible rival progress. Keeping a
-second option can help, but pursuing every wonder and victory path can delay
-all of them. The leading player may need protection and efficient completion;
-a trailing player may need a calculated risk or coalition.
+Periodically compare victory requirements, expected time, and visible rival
+progress. A preferred route can remain open while useful investments develop
+several options. Pursuing every wonder and victory path can delay all of them.
+The leading player may need protection and efficient completion; a trailing
+player may need a calculated risk or coalition.
 
 For the Vanilla rules used here, science victory involves Apollo and the
 required spaceship parts, including delivering and adding the parts in the
