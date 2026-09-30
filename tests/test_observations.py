@@ -474,6 +474,8 @@ def test_detail_input_schemas_and_every_command_have_a_deliberate_read_path():
         {"center": {"x": 0, "y": 0}, "radius": 5}
     )
     no_target_detail = {
+        "AUTOPLAY",
+        "MOVE_AUTOMATED_UNITS",
         "END_TURN",
         "SET_RESEARCH_QUEUE",
         "CHOOSE_FREE_TECHNOLOGY",

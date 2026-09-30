@@ -70,7 +70,8 @@ object ThirdPartyTradeProbe {
                 check(!runtime.game.getCivilization("Greece").isAtWarWith(runtime.game.getCivilization("France")))
                 check(calls.query("France", "state")["trades"]!!.jsonArray.isEmpty())
                 val hidden = calls.query("France", "trade_read", "proposal" to proposal["proposal"])
-                check(hidden == calls.query("France", "trade_read", "proposal" to "nonexistent"))
+                check(hidden["error"]!!.jsonPrimitive.content == "UNKNOWN_TRADE")
+                check(hidden - "proposal" == calls.query("France", "trade_read", "proposal" to "nonexistent") - "proposal")
             }
         }
         HeadlessRuntime.loadCheckpoint(checkpoint, root.resolve("pending-restart")).use { runtime ->

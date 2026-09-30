@@ -175,7 +175,7 @@ def options_snapshot():
             "options": [{"name": "Farm", "available": True}, {"name": "Mine", "available": False}],
         },
         waterImprovement={"name": "Fishing Boats", "available": True, "consumesUnit": True},
-        cityStateGift={"civilizationId": "Geneva", "action": {"available": True}, "consumesUnit": True},
+        gift={"civilizationId": "Geneva", "action": {"available": True}, "consumesUnit": True},
         greatPerson={"abilities": [{"name": "Discover technology", "available": True, "consumesUnit": True}]},
         spaceshipAssembly={"available": True, "consumesUnit": True},
         futureInformation={"visible": True},
@@ -219,7 +219,7 @@ def test_selective_reads_preserve_consequences_without_delivering_unrelated_fiel
     assert move["moves"][0]["path"] and move["nearbyHostiles"]
     assert move["moves"][0]["command"] == {"kind": "MOVE_UNIT", "target": "unit1", "destination": {"x": 1, "y": 0}}
     assert (
-        not {"economy", "worker", "combat", "cityStateGift", "settlementPromises", "settlement", "futureInformation"}
+        not {"economy", "worker", "combat", "gift", "settlementPromises", "settlement", "futureInformation"}
         & move.keys()
     )
     settlement = project_detail(snapshot, query("unit_details", "unit1", ["settlement"]))["data"]["entity"]

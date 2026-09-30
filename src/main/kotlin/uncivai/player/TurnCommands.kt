@@ -9,7 +9,7 @@ import java.util.Collections
 data class PlayerCapabilities(
     val protocolVersion: Int = 1,
     val completeGameplay: Boolean = false,
-    val queries: List<String> = listOf("player_capabilities", "player_summary", "owned_cities", "free_great_person_choice", "player_turn", "player_result", "research_details", "policy_details", "victory_progress", "movement_preview", "mission_preview"),
+    val queries: List<String> = listOf("player_capabilities", "player_summary", "owned_cities", "free_great_person_choice", "player_turn", "player_result", "research_details", "policy_details", "victory_progress", "movement_preview", "mission_preview", "player_inspect"),
     val commands: List<TurnCommandKind> = TurnCommandKind.entries.toList(),
     val durableRecovery: Boolean = false,
 )
@@ -41,6 +41,13 @@ enum class TurnCommandKind {
     ATTACK,
     CITY_ATTACK,
     SET_UNIT_ORDER,
+    SWAP_UNITS,
+    CONNECT_ROAD,
+    RENAME_UNIT,
+    SAVE_UNIT_PROMOTIONS,
+    SET_DEFAULT_PROMOTIONS,
+    MOVE_AUTOMATED_UNITS,
+    AUTOPLAY,
     PROMOTE_UNIT,
     RESOLVE_CAPTURED_CITY,
     MANAGE_CAPTURED_CITY,
@@ -122,6 +129,7 @@ data class PlayerTurnSnapshot(
     val rules: GameRules,
     val civilizationProfile: CivilizationProfile,
     val constructionCatalogue: List<String>,
+    val turnControls: TurnControls = TurnControls(),
     val negotiation: kotlinx.serialization.json.JsonObject = uncivai.obj("active" to false),
     val turnReview: TurnReview? = null,
     val previousTurnReview: CompletedTurnReview? = null,
@@ -178,7 +186,11 @@ data class TurnCommandRequest(
     val confirmAction: Boolean = false,
     val enabled: Boolean? = null,
     val targets: List<String> = emptyList(),
+    val deferChoices: Boolean = false,
 )
+
+@Serializable
+data class TurnControls(val canDeferChoices: Boolean = false, val canMoveAutomatedUnits: Boolean = false, val autoplayScopes: List<String> = emptyList())
 
 @Serializable
 data class TurnCommandReceipt(

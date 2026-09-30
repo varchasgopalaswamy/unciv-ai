@@ -2,7 +2,8 @@
 
 from typing import Annotated, Literal
 
-from pydantic import Field
+from pydantic import Field, field_validator
+from pydantic.json_schema import SkipJsonSchema
 
 from civ_agent.game_commands import Position
 from civ_agent.memory_records import (
@@ -25,6 +26,27 @@ class MovementPreview(EntityDetails):
 
 class MissionPreview(MovementPreview):
     mission: Literal["REBASE", "PARADROP", "AIR_SWEEP", "NUCLEAR_STRIKE"]
+
+
+class PlayerInspection(BoundaryModel):
+    subject: Literal["POLITICS", "WONDERS", "NOTIFICATIONS", "REPLAY", "CIVILOPEDIA", "TILE", "UNIT", "ROAD"]
+    target: Annotated[str, Field(min_length=1, max_length=128)] = ""
+    destination: Position | SkipJsonSchema[None] = None
+    category: Annotated[str, Field(min_length=1, max_length=128)] = ""
+    names: Annotated[list[Annotated[str, Field(min_length=1, max_length=128)]], Field(max_length=16)] = Field(
+        default_factory=list
+    )
+    search: Annotated[str, Field(max_length=128)] = ""
+    turn: NonnegativeInt | SkipJsonSchema[None] = None
+    offset: NonnegativeInt = 0
+    limit: Annotated[int, Field(ge=1, le=100)] = 50
+
+    @field_validator("destination", "turn")
+    @classmethod
+    def supplied_values_are_not_null(cls, value):
+        if value is None:
+            raise ValueError("Omit unused arguments instead of passing null")
+        return value
 
 
 class WithIntent(BoundaryModel):
@@ -137,6 +159,7 @@ class FriendshipOffer(Partner, WithIntent):
 TOOL_MODELS: dict[str, type[BoundaryModel]] = {
     **DETAIL_MODELS,
     "movement_preview": MovementPreview,
+    "player_inspect": PlayerInspection,
     "mission_preview": MissionPreview,
     "trade_options": Partner,
     "trade_read": Proposal,

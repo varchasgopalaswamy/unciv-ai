@@ -1,6 +1,7 @@
 package uncivai.player
 
 import com.unciv.json.json
+import com.unciv.logic.city.BuildingCompletionPreview
 import com.unciv.logic.city.BuildingYieldPreview
 import com.unciv.logic.city.City
 import com.unciv.logic.city.CityStats
@@ -41,7 +42,11 @@ data class BuildingCompletionEffect(
     val specialistSlots: Map<String, Int>,
     val greatPersonPoints: Map<String, Int>,
     val growth: ConstructionGrowthChange,
+    val oneTime: ConstructionGrants? = null,
 )
+
+@Serializable
+data class ConstructionGrants(val amounts: Map<String, Int>, val units: Map<String, Int>, val populationByCity: Map<String, Int>, val freeBuildingsByCity: Map<String, List<String>>)
 
 @Serializable
 data class ConstructionGrowthChange(
@@ -180,6 +185,15 @@ internal class ConstructionEstimator(private val player: Civilization) {
                                 compared.before.turnsToStarvation,
                                 compared.after.turnsToStarvation,
                             ),
+                            BuildingCompletionPreview.estimate(city, building)?.let { grants ->
+                                fun cityName(id: String) = player.cities.single { it.id == id }.name
+                                ConstructionGrants(
+                                    freeze(grants.amounts),
+                                    freeze(grants.units),
+                                    freeze(grants.population.mapKeys { cityName(it.key) }),
+                                    freeze(grants.buildings.mapKeys { cityName(it.key) }.mapValues { Collections.unmodifiableList(it.value.toList()) }),
+                                )
+                            },
                         )
                     },
                 )

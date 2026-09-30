@@ -38,7 +38,7 @@ class CityDetails(EntityDetails):
 
 
 UNIT_FIELDS = {
-    "movement": ("moves", "movementOrder", "nearbyHostiles", "escort", "protection"),
+    "movement": ("moves", "movementOrder", "nearbyHostiles", "escort", "protection", "controls.swaps"),
     "combat": (
         "combat.supported",
         "combat.strength",
@@ -48,9 +48,9 @@ UNIT_FIELDS = {
         "combat.attacks",
         "nearbyHostiles",
     ),
-    "orders": ("combat.order", "combat.orders", "escort", "protection"),
-    "promotions": ("combat.promotions",),
-    "work": ("worker", "waterImprovement"),
+    "orders": ("combat.order", "combat.orders", "escort", "protection", "controls"),
+    "promotions": ("combat.promotions", "controls.savePromotions", "controls.promotionCity", "statuses"),
+    "work": ("worker", "waterImprovement", "controls.canConnectRoad", "controls.roadDestination"),
     "settlement": (
         "canFoundCity",
         "settlementPromises",
@@ -61,11 +61,18 @@ UNIT_FIELDS = {
         "protection",
     ),
     "economy": ("economy",),
-    "abilities": ("greatPerson", "spaceshipAssembly", "cityStateGift"),
+    "abilities": ("greatPerson", "spaceshipAssembly", "gift"),
     "air": ("air",),
 }
 CITY_FIELDS = {
-    "status": ("captureOptions",),
+    "status": (
+        "captureOptions",
+        "development.borderExpansion",
+        "development.resistanceTurns",
+        "development.beingRazed",
+        "development.demandedResource",
+        "development.weLoveTheKingTurns",
+    ),
     "production": (
         "constructionQueue",
         "constructionOptions",
@@ -73,6 +80,7 @@ CITY_FIELDS = {
         "productionConversions",
         "constructionEstimates",
         "development.constructions",
+        "management.defaultPromotions",
     ),
     "citizens": (
         "development.unassignedPopulation",
@@ -163,6 +171,9 @@ def project_entity(entity: JsonObject, tool: str, sections: list[str]) -> JsonOb
 
 
 UNIT_COMMAND_SECTIONS = {
+    "SWAP_UNITS": "movement",
+    "RENAME_UNIT": "orders",
+    "SAVE_UNIT_PROMOTIONS": "promotions",
     "MOVE_UNIT": "movement",
     "CANCEL_UNIT_MOVEMENT": "movement",
     "ATTACK": "combat",
@@ -180,6 +191,7 @@ UNIT_COMMAND_SECTIONS = {
     "GIFT_UNIT": "abilities",
 }
 CITY_COMMAND_SECTIONS = {
+    "SET_DEFAULT_PROMOTIONS": "production",
     "REMOVE_CONSTRUCTION": "production",
     "MOVE_CONSTRUCTION": "production",
     "BUY_TILE": "purchases",

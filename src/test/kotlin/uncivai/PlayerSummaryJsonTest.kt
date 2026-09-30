@@ -82,6 +82,7 @@ class PlayerSummaryJsonTest {
                 "result",
                 "movementPreview",
                 "missionPreview",
+                "inspect",
                 "researchDetails",
                 "policyDetails",
                 "victoryProgress",
@@ -102,6 +103,8 @@ class PlayerSummaryJsonTest {
         assertEquals(listOf(uncivai.player.MovementPreviewRequest::class.java), sessionMethods.getValue("movementPreview").parameterTypes.toList())
         assertEquals(uncivai.player.MissionPreview::class.java, sessionMethods.getValue("missionPreview").returnType)
         assertEquals(listOf(uncivai.player.MissionPreviewRequest::class.java), sessionMethods.getValue("missionPreview").parameterTypes.toList())
+        assertEquals(uncivai.player.PlayerInspection::class.java, sessionMethods.getValue("inspect").returnType)
+        assertEquals(listOf(uncivai.player.PlayerInspectionRequest::class.java), sessionMethods.getValue("inspect").parameterTypes.toList())
         assertEquals(uncivai.player.VictoryProgress::class.java, sessionMethods.getValue("victoryProgress").returnType)
         assertEquals(listOf(uncivai.player.VictoryProgressRequest::class.java), sessionMethods.getValue("victoryProgress").parameterTypes.toList())
         assertEquals(PlayerSummary::class.java, sessionMethods.getValue("summary").returnType)

@@ -65,6 +65,19 @@ class RespondFriendship(Command):
     selection: Literal["Accept", "Decline"]
 
 
+class RenameUnit(Command):
+    kind: Literal["RENAME_UNIT"]
+    target: Name
+    selection: str
+
+
+class DefaultPromotions(Command):
+    kind: Literal["SET_DEFAULT_PROMOTIONS"]
+    target: Name
+    selection: Name
+    enabled: bool
+
+
 class EconomicChoice(Command):
     kind: Literal["BUY_CONSTRUCTION", "UPGRADE_UNIT", "SELL_BUILDING", "CITY_STATE_ACTION"]
     target: Name
@@ -80,6 +93,7 @@ class TargetCommand(Command):
         "RESET_CITIZENS",
         "ADD_SPACESHIP_PART",
         "GIFT_UNIT",
+        "SAVE_UNIT_PROMOTIONS",
     ]
     target: Name
 
@@ -91,14 +105,14 @@ class EconomicCommand(Command):
 
 
 class MoveCommand(Command):
-    kind: Literal["MOVE_UNIT", "SET_UNIT_DESTINATION"]
+    kind: Literal["MOVE_UNIT", "SET_UNIT_DESTINATION", "SWAP_UNITS"]
     target: Name
     destination: Position
     confirmAction: StrictBool = False
 
 
 class PositionCommand(Command):
-    kind: Literal["REASSIGN_CITY_TILE", "REBASE_UNIT", "PARADROP", "AIR_SWEEP"]
+    kind: Literal["REASSIGN_CITY_TILE", "REBASE_UNIT", "PARADROP", "AIR_SWEEP", "CONNECT_ROAD"]
     target: Name
     destination: Position
 
@@ -186,10 +200,18 @@ class DeclareWar(Command):
 class EndTurn(Command):
     kind: Literal["END_TURN"]
     deferReason: Annotated[str, Field(min_length=1, max_length=500)] = ""
+    deferChoices: StrictBool = False
+
+
+class Autoplay(Command):
+    kind: Literal["AUTOPLAY"]
+    selection: Literal["ALL", "MILITARY", "CIVILIANS", "ECONOMY"]
 
 
 class DismissPolicy(Command):
-    kind: Literal["DISMISS_POLICY_PICKER", "ABSTAIN_DIPLOMATIC_VOTE", "ACKNOWLEDGE_DIPLOMATIC_RESULTS"]
+    kind: Literal[
+        "DISMISS_POLICY_PICKER", "ABSTAIN_DIPLOMATIC_VOTE", "ACKNOWLEDGE_DIPLOMATIC_RESULTS", "MOVE_AUTOMATED_UNITS"
+    ]
 
 
 class DismissNotifications(Command):
@@ -212,6 +234,8 @@ PlayerCommand = Annotated[
     | Choice
     | TargetChoice
     | RespondFriendship
+    | RenameUnit
+    | DefaultPromotions
     | EconomicChoice
     | TargetCommand
     | EconomicCommand
@@ -229,6 +253,7 @@ PlayerCommand = Annotated[
     | FoundCity
     | DeclareWar
     | EndTurn
+    | Autoplay
     | DismissPolicy
     | DismissNotifications,
     Field(discriminator="kind"),

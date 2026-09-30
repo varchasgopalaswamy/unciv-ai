@@ -41,12 +41,23 @@
         "CITY_STATE_ACTION",
         "GIFT_UNIT",
         "MOVE_UNIT",
-        "CREATE_WATER_IMPROVEMENT",
-        "CANCEL_UNIT_MOVEMENT",
         "SET_UNIT_DESTINATION",
+        "CANCEL_UNIT_MOVEMENT",
+        "CREATE_WATER_IMPROVEMENT",
+        "REBASE_UNIT",
+        "PARADROP",
+        "AIR_SWEEP",
+        "NUCLEAR_STRIKE",
         "ATTACK",
         "CITY_ATTACK",
         "SET_UNIT_ORDER",
+        "SWAP_UNITS",
+        "CONNECT_ROAD",
+        "RENAME_UNIT",
+        "SAVE_UNIT_PROMOTIONS",
+        "SET_DEFAULT_PROMOTIONS",
+        "MOVE_AUTOMATED_UNITS",
+        "AUTOPLAY",
         "PROMOTE_UNIT",
         "RESOLVE_CAPTURED_CITY",
         "MANAGE_CAPTURED_CITY",
@@ -75,11 +86,7 @@
         "REASSIGN_CITY_TILE",
         "REMOVE_CONSTRUCTION",
         "MOVE_CONSTRUCTION",
-        "END_TURN",
-        "REBASE_UNIT",
-        "PARADROP",
-        "AIR_SWEEP",
-        "NUCLEAR_STRIKE"
+        "END_TURN"
       ],
       "description": "Gameplay operation to execute."
     },
@@ -101,15 +108,13 @@
       "anyOf": [
         {
           "type": "string",
-          "minLength": 1,
-          "maxLength": 256,
-          "pattern": "\\S"
+          "maxLength": 256
         },
         {
           "type": "null"
         }
       ],
-      "description": "Chosen option or new city name; omit for commands without a named choice."
+      "description": "Chosen option or new city/unit name; RENAME_UNIT accepts an empty string to clear the custom name."
     },
     "reviewId": {
       "anyOf": [
@@ -216,7 +221,7 @@
           "type": "null"
         }
       ],
-      "description": "Required only for SET_AVOID_GROWTH and SET_MANUAL_SPECIALISTS: the desired setting."
+      "description": "Desired setting for SET_AVOID_GROWTH, SET_MANUAL_SPECIALISTS or SET_DEFAULT_PROMOTIONS."
     },
     "worked": {
       "anyOf": [
@@ -288,6 +293,10 @@
       },
       "maxItems": 1024,
       "description": "Replace the entire research queue, including current research, in prerequisite order. Only for SET_RESEARCH_QUEUE. The first technology becomes active; stored science is retained. Include current research first to finish it before later technologies."
+    },
+    "deferChoices": {
+      "type": "boolean",
+      "description": "END_TURN only: use the native Next Turn menu to defer ordinary picker choices. Modal alerts and trade requests must be resolved first."
     }
   },
   "required": [

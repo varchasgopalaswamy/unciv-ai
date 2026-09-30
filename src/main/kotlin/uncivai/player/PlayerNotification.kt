@@ -47,7 +47,7 @@ internal fun visibleNotificationText(player: Civilization, text: String): String
     return visible
 }
 
-private fun Notification.locations(): List<TilePosition> {
+internal fun Notification.locations(): List<TilePosition> {
     // Use the engine's notification serialization contract: action fields are private.
     // Project only event locations; never expose engine unit IDs, arbitrary action payloads,
     // or look up hidden tiles/units behind these UI links.

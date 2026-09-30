@@ -44,6 +44,20 @@ internal fun confirmedAction(request: TurnCommandRequest, before: PlayerTurnSnap
     val city = before.cities.singleOrNull { it.handle == request.target }
     fun TilePosition.text() = "($x, $y)"
     val description = when (request.kind) {
+        TurnCommandKind.SWAP_UNITS -> "${unit!!.name}: swapped positions with units at ${request.destination!!.text()}."
+
+        TurnCommandKind.CONNECT_ROAD -> "${unit!!.name}: started connecting road to ${request.destination!!.text()}."
+
+        TurnCommandKind.RENAME_UNIT -> "${unit!!.name}: renamed to ${request.selection?.ifEmpty { unit.name }}."
+
+        TurnCommandKind.SAVE_UNIT_PROMOTIONS -> "${unit!!.name}: saved promotions as this city's defaults for its unit type."
+
+        TurnCommandKind.SET_DEFAULT_PROMOTIONS -> "${city!!.name}: default promotions for ${request.selection} ${if (request.enabled == true) "enabled" else "disabled"}."
+
+        TurnCommandKind.MOVE_AUTOMATED_UNITS -> "Moved automated units using their native orders."
+
+        TurnCommandKind.AUTOPLAY -> "Applied native ${request.selection} automation for this turn; inspect resulting state."
+
         TurnCommandKind.MOVE_UNIT, TurnCommandKind.SET_UNIT_DESTINATION, TurnCommandKind.REBASE_UNIT, TurnCommandKind.PARADROP -> {
             val moved = after.map.units.singleOrNull { it.handle == request.target }
             if (moved == null) {
@@ -155,7 +169,7 @@ internal fun confirmedAction(request: TurnCommandRequest, before: PlayerTurnSnap
 
         TurnCommandKind.CITY_STATE_ACTION -> "${request.selection} with ${request.target}."
 
-        TurnCommandKind.GIFT_UNIT -> "Gifted ${unit!!.name} to ${unit.cityStateGift!!.civilizationId}."
+        TurnCommandKind.GIFT_UNIT -> "Gifted ${unit!!.name} to ${unit.gift!!.civilizationId}."
 
         TurnCommandKind.DECLARE_WAR -> "Declared war on ${request.target}."
 

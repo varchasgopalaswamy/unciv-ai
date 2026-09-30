@@ -55,9 +55,9 @@ relationships and quests; detailed observations supply action names and reasons.
 | City-state peace | Same command with `makePeace`; native immediate bilateral treaty, declared-war cooldown and allied-war restrictions |
 | City-state popup response | `RESPOND_CITY_STATE_ALERT`, owned alert handle as `target`, and offered `nativeDiplomacy.options.name` as `selection`; the overview supplies copyable commands |
 | War | Existing `DECLARE_WAR`, city-state ID as `target`, native confirmation |
-| Unit gift | `GIFT_UNIT` with the owned unit handle as `target`; inspect `unit_details.cityStateGift` first; recipient comes from its current territory |
+| Unit gift | `GIFT_UNIT` with the owned unit handle as `target`; inspect `unit_details.gift` first; recipient comes from its current territory. The same field covers eligible major recipients. |
 | Great Merchant mission | Existing `ACTIVATE_GREAT_PERSON` with the owned unit handle and the offered mission name |
-| Diplomatic marriage | Conditional native `diplomaticMarriage` action when the civilization has the required unique; native annex/puppet decision follows |
+| Diplomatic marriage | Conditional native `diplomaticMarriage` action when the civilization has the required unique; native annex/puppet decision follows, or destroy under one-city challenge |
 
 All commands use the ordinary epoch, revision and request ID contract. Actions
 recheck native eligibility when executed. `receipt.cityState` reports actual Gold
@@ -66,6 +66,11 @@ quests, gained unit handles, consumed or transferred unit handles, and any funde
 improvement. Great Merchant receipts also retain `greatPerson` effects. Retries
 return the saved receipt; interrupted checkpoint replacement recovers the complete
 old or new state without spending twice.
+
+Marriage receipts also report `gainedCities` and `eliminated`. `influenceAfter` is
+null when the minor no longer exists. The transferred city's decision remains
+available through `RESOLVE_CAPTURED_CITY` after checkpoint recovery; resolving it
+does not reconquer the city or repeat population losses.
 
 ### Funding and achievable objectives
 
@@ -117,7 +122,7 @@ and resource names do not become action offers.
 
 ## Evidence
 
-The [live results](../archive/reports/City-state-live-results.md) record three rounds, nine gameplay
+The earlier live acceptance recorded three rounds, nine gameplay
 activations, three chat jobs, a planned restart, all 24 artifact checks, and the
 13-screen desktop comparison. All model jobs used `gpt-5.6-luna` with medium
 reasoning. All services stopped after acceptance.

@@ -1,6 +1,7 @@
 package uncivai.player
 
 import com.unciv.logic.city.City
+import com.unciv.logic.city.CityFlags
 import com.unciv.logic.city.StatTreeNode
 import com.unciv.logic.civilization.Civilization
 import com.unciv.logic.civilization.PlayerCityOperations
@@ -52,6 +53,9 @@ data class ConstructionProgress(
 )
 
 @Serializable
+data class BorderExpansion(val cultureStored: Int, val cultureCost: Int, val culturePerTurn: Float, val turns: Int?, val nextTile: TilePosition?)
+
+@Serializable
 data class CityDevelopment(
     val position: TilePosition,
     val population: Int,
@@ -66,6 +70,11 @@ data class CityDevelopment(
     val avoidGrowth: Boolean,
     val focus: String,
     val inResistance: Boolean,
+    val resistanceTurns: Int,
+    val beingRazed: Boolean,
+    val demandedResource: String?,
+    val weLoveTheKingTurns: Int,
+    val borderExpansion: BorderExpansion,
     val yields: List<DisplayedYield>,
     val baseYieldBreakdown: List<YieldBreakdown>,
     val percentYieldBreakdown: List<YieldBreakdown>,
@@ -113,6 +122,21 @@ internal fun observeCityDevelopment(city: City, active: Boolean = true): CityDev
         avoidGrowth = city.avoidGrowth,
         focus = city.getCityFocus().name,
         inResistance = city.isInResistance(),
+        resistanceTurns = if (city.isInResistance()) city.getFlag(CityFlags.Resistance) else 0,
+        beingRazed = city.isBeingRazed,
+        demandedResource = city.demandedResource.takeIf { it.isNotEmpty() },
+        weLoveTheKingTurns = if (city.isWeLoveTheKingDayActive()) city.getFlag(CityFlags.WeLoveTheKing) else 0,
+        borderExpansion = city.expansion.let { expansion ->
+            val next = expansion.chooseNewTileToOwn()?.takeIf { it.isExplored(player) }
+            val rate = stats.currentCityStats.culture
+            BorderExpansion(
+                expansion.cultureStored,
+                expansion.getCultureToNextTile(),
+                rate,
+                if (rate > 0 && next != null && !city.isInResistance()) kotlin.math.ceil((expansion.getCultureToNextTile() - expansion.cultureStored) / rate).toInt().coerceAtLeast(1) else null,
+                next?.let { TilePosition(it.position.x, it.position.y) },
+            )
+        },
         yields = frozen(shownStats.map { stat -> DisplayedYield(stat.name, (if (stat == Stat.Happiness) stats.happinessList.values.sum() else stats.currentCityStats[stat]).roundToInt().toString()) }),
         baseYieldBreakdown = observeTree(base, shownStats),
         percentYieldBreakdown = observeTree(stats.statPercentBonusTree, shownStats),

@@ -109,7 +109,7 @@ data class OwnedUnit(
     val combat: UnitCombat? = null,
     val economy: UnitEconomy? = null,
     val greatPerson: GreatPersonUnit? = null,
-    val cityStateGift: CityStateUnitGift? = null,
+    val gift: UnitGift? = null,
     val spaceshipAssembly: SpaceshipAssembly? = null,
     val movementOrder: MovementOrder? = null,
     val waterImprovement: WaterImprovement? = null,
@@ -117,6 +117,8 @@ data class OwnedUnit(
     val settlement: SettlementPreview? = null,
     val escort: EscortFormation? = null,
     val protection: SettlerProtection? = null,
+    val controls: UnitControls? = null,
+    val statuses: List<UnitStatus> = emptyList(),
 )
 
 /** Coordinates use Unciv's axial x/y grid. No tile data is returned for unexplored coordinates. */
@@ -234,7 +236,9 @@ internal fun observeMap(player: Civilization, state: TurnSessionState, canAct: B
                     combat = combat,
                     economy = observeUnitEconomy(player, unit, active),
                     greatPerson = observeGreatPerson(player, unit, active),
-                    cityStateGift = observeCityStateGift(player, unit, active),
+                    gift = observeUnitGift(player, unit, active),
+                    controls = observeUnitControls(player, unit, active, state),
+                    statuses = observeUnitStatuses(unit),
                     spaceshipAssembly = observeSpaceshipAssembly(player, unit, active),
                     movementOrder = observeMovementOrder(player, unit, active, state.settlementKnowledge),
                     waterImprovement = observeWaterImprovement(player, unit, active),

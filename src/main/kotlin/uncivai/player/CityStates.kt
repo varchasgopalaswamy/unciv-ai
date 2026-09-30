@@ -75,7 +75,7 @@ data class CityStateDetails(
 )
 
 @Serializable
-data class CityStateUnitGift(val civilizationId: String, val action: CityStateAction, val consumesUnit: Boolean)
+data class UnitGift(val civilizationId: String, val action: CityControl, val consumesUnit: Boolean, val influenceChange: Float, val nativeOpinionChange: Float)
 
 @Serializable
 data class CityStateOutcome(
@@ -83,7 +83,7 @@ data class CityStateOutcome(
     val action: String,
     val goldChange: Int,
     val influenceBefore: Float,
-    val influenceAfter: Float,
+    val influenceAfter: Float?,
     val allyBefore: CityStateCivilization?,
     val allyAfter: CityStateCivilization?,
     val protectingBefore: Boolean,
@@ -95,6 +95,8 @@ data class CityStateOutcome(
     val unitRemoved: String?,
     val position: TilePosition? = null,
     val improvement: String? = null,
+    val eliminated: Boolean = false,
+    val gainedCities: List<String> = emptyList(),
 )
 
 private fun civilization(player: Civilization, other: Civilization): CityStateCivilization = if (player === other || player.knows(other)) {
@@ -109,8 +111,8 @@ private fun PlayerCityStateOperations.Option.observation(active: Boolean) = City
     gold, influence, frozen(confirmation.map(String::tr)), position?.let { TilePosition(it.x, it.y) }, improvement,
 )
 
-internal fun observeCityStateGift(player: Civilization, unit: MapUnit, active: Boolean): CityStateUnitGift? = PlayerCityStateOperations(player).giftOption(unit)?.let {
-    CityStateUnitGift(unit.currentTile.getOwner()!!.civID, it.observation(active), unit.isGreatPerson())
+internal fun observeUnitGift(player: Civilization, unit: MapUnit, active: Boolean): UnitGift? = com.unciv.logic.civilization.PlayerUnitManagementOperations(player).gift(unit)?.let {
+    UnitGift(it.civilizationId, CityControl(active && it.available, frozen(it.reasons)), it.consumesUnit, it.influenceChange, it.opinionChange)
 }
 
 internal fun observeCityStates(player: Civilization, active: Boolean): List<CityStateDetails> {
@@ -234,18 +236,23 @@ internal fun questRequirement(kind: QuestName): String = when (kind) {
 
 internal fun cityStateOutcome(request: TurnCommandRequest, before: PlayerTurnSnapshot, after: PlayerTurnSnapshot, cityState: String): CityStateOutcome {
     val old = before.diplomacy.cityStates.single { it.civilizationId == cityState }
-    val new = after.diplomacy.cityStates.single { it.civilizationId == cityState }
+    val new = after.diplomacy.cityStates.singleOrNull { it.civilizationId == cityState }
     val option = old.actions.firstOrNull { it.name == request.selection }.takeIf { request.kind == TurnCommandKind.CITY_STATE_ACTION }
+    check(new != null || option?.kind == PlayerCityStateOperations.Kind.DiplomaticMarriage.name) {
+        "City-state disappeared after ${request.kind}: $cityState"
+    }
     return CityStateOutcome(
         cityState, request.selection ?: request.kind.name, after.economy!!.treasury - before.economy!!.treasury,
-        old.influence, new.influence, old.ally, new.ally, old.protecting, new.protecting, old.atWar, new.atWar,
-        frozen(old.quests.filter { q -> new.quests.none { it.name == q.name } }.map { it.name }),
+        old.influence, new?.influence, old.ally, new?.ally, old.protecting, new?.protecting == true, old.atWar, new?.atWar == true,
+        frozen(old.quests.filter { q -> new?.quests.orEmpty().none { it.name == q.name } }.map { it.name }),
         frozen(after.map.units.filter { unit -> before.map.units.none { it.handle == unit.handle } }.map { it.handle }),
         request.target?.takeIf { target -> before.map.units.any { it.handle == target } && after.map.units.none { it.handle == target } },
         option?.position, option?.improvement,
+        eliminated = new == null,
+        gainedCities = frozen(after.cities.filter { city -> before.cities.none { it.handle == city.handle } }.map { it.handle }),
     )
 }
 
-internal fun CityStateOutcome.detached() = copy(completedOrRemovedQuests = frozen(completedOrRemovedQuests), gainedUnits = frozen(gainedUnits))
+internal fun CityStateOutcome.detached() = copy(completedOrRemovedQuests = frozen(completedOrRemovedQuests), gainedUnits = frozen(gainedUnits), gainedCities = frozen(gainedCities))
 
 private fun <T> frozen(values: List<T>): List<T> = Collections.unmodifiableList(values.toList())

@@ -23,6 +23,7 @@ data class UnitUpgradeOption(
     val available: Boolean,
     val reasons: List<String>,
     val confirmation: String? = null,
+    val destination: TilePosition? = null,
 )
 
 @Serializable
@@ -64,6 +65,7 @@ internal fun observeUnitEconomy(player: Civilization, unit: MapUnit, active: Boo
                     it.targetName, it.title.tr(), it.description, it.strength, it.rangedStrength, it.movement, it.range,
                     frozen(it.requiredTechnologies), it.goldCost, Collections.unmodifiableMap(LinkedHashMap(it.resourceRequirements)),
                     active && it.available, reasons(it.reasons), it.confirmation?.tr(),
+                    it.destination?.takeIf { position -> player.gameInfo.tileMap[position].isExplored(player) }?.let { position -> TilePosition(position.x, position.y) },
                 )
             },
         ),

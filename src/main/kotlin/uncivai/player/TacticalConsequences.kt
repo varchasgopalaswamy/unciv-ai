@@ -107,8 +107,8 @@ internal class PositionContexts(private val player: Civilization, private val st
         )
     }
 
-    fun captureRisk(unit: MapUnit, destination: Tile): CivilianMovementRisk? {
-        val threats = captureThreats.at(unit, destination)
+    fun captureRisk(unit: MapUnit, destination: Tile, preserveEscort: Boolean = true): CivilianMovementRisk? {
+        val threats = captureThreats.at(unit, destination, preserveEscort)
         if (threats.isEmpty()) return null
         return CivilianMovementRisk(
             TilePosition(destination.position.x, destination.position.y),

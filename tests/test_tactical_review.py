@@ -325,6 +325,8 @@ def test_command_schemas_cover_every_host_action_and_reject_cross_action_fields(
         arguments = {"kind": kind, **{k: values[k] for k in required if k != "kind"}}
         if kind == "RESPOND_FRIENDSHIP":
             arguments["selection"] = "Accept"
+        if kind == "AUTOPLAY":
+            arguments["selection"] = "ECONOMY"
         assert Draft202012Validator(schema).is_valid(arguments), kind
         assert command_arguments(arguments) == arguments
         request = {"requestId": "r1", "epoch": "g1", "revision": "rev1", **arguments}

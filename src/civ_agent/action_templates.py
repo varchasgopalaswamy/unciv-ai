@@ -19,6 +19,14 @@ def available(option: JsonObject | None) -> TypeGuard[JsonObject]:
 
 def add_overview_commands(value: JsonObject) -> None:
     """Use complete visible decisions; never prefill intent, consent or deferral."""
+    controls = value.get("turnControls") or {}
+    if controls.get("canDeferChoices"):
+        controls["deferChoicesCommand"] = command_arguments({"kind": "END_TURN", "deferChoices": True})
+    if controls.get("canMoveAutomatedUnits"):
+        controls["moveAutomatedCommand"] = command_arguments({"kind": "MOVE_AUTOMATED_UNITS"})
+    controls["autoplayCommands"] = [
+        command_arguments({"kind": "AUTOPLAY", "selection": scope}) for scope in controls.get("autoplayScopes", [])
+    ]
     for alert in value.get("alerts", []):
         if alert.get("canAcknowledge") is True and alert.get("content") is not None:
             attach(alert, "ACKNOWLEDGE_ALERT", target=alert["handle"])
@@ -105,6 +113,29 @@ def add_protection_inspections(unit: JsonObject) -> None:
 def add_unit_commands(unit: JsonObject) -> None:
     add_protection_inspections(unit)
     target = unit["handle"]
+    controls = unit.get("controls") or {}
+    if available(controls.get("rename")):
+        controls["rename"]["commandTemplate"] = {
+            "kind": "RENAME_UNIT",
+            "target": target,
+            "selection": "<new name; empty clears custom name>",
+        }
+    if available(controls.get("savePromotions")):
+        attach(controls["savePromotions"], "SAVE_UNIT_PROMOTIONS", target=target)
+    for swap in controls.get("swaps", []):
+        attach(
+            swap,
+            "SWAP_UNITS",
+            target=target,
+            destination=swap["destination"],
+            confirmation="confirmAction" if swap.get("captureRisks") else None,
+        )
+    if controls.get("canConnectRoad"):
+        controls["roadInspection"] = {
+            "tool": "player_inspect",
+            "arguments": {"subject": "ROAD", "target": target},
+            "requiredArgument": "destination",
+        }
     if unit.get("escort"):
         unit["escortInstruction"] = (
             "ESCORT links the civilian and military unit on this tile; STOP_ESCORT separates them. "
@@ -174,7 +205,7 @@ def add_unit_commands(unit: JsonObject) -> None:
     assembly = unit.get("spaceshipAssembly")
     if available(assembly):
         attach(assembly, "ADD_SPACESHIP_PART", target=target)
-    gift = unit.get("cityStateGift")
+    gift = unit.get("gift")
     if gift and available(gift.get("action")):
         attach(gift, "GIFT_UNIT", target=target)
     for base in (unit.get("air") or {}).get("bases", []):
@@ -203,6 +234,15 @@ def add_purchase_command(option: JsonObject, target: str, *, tile: bool = False)
 
 def add_city_commands(city: JsonObject) -> None:
     target = city["handle"]
+    for option in (city.get("management") or {}).get("defaultPromotions", []):
+        if available(option.get("action")):
+            attach(
+                option,
+                "SET_DEFAULT_PROMOTIONS",
+                target=target,
+                selection=option["unitType"],
+                enabled=not option["enabled"],
+            )
     add_combat_commands({"cities": [city]})
     purchases = city.get("purchases") or {}
     for option in purchases.get("constructions", []):
@@ -280,6 +320,10 @@ def add_construction_commands(data: JsonObject) -> None:
 
 
 def add_decision_commands(name: str, value: JsonObject, arguments: JsonObject) -> None:
+    if name == "player_inspect":
+        value["available"] = value.get("data", {}).get("available", True)
+    if name == "player_inspect" and arguments.get("subject") == "ROAD" and available(value.get("data")):
+        attach(value["data"], "CONNECT_ROAD", target=arguments["target"], destination=arguments["destination"])
     if name == "research_details" and arguments.get("names"):
         value["queueInstruction"] = (
             "SET_RESEARCH_QUEUE replaces the entire queue, including current research. "

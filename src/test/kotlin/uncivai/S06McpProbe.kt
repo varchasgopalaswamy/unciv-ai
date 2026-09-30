@@ -288,11 +288,12 @@ object S06McpProbe {
             "player_result" to emptySet(),
             "movement_preview" to setOf("target", "destination"),
             "mission_preview" to setOf("target", "mission", "destination"),
+            "player_inspect" to setOf("subject", "target", "destination", "category", "names", "search", "turn", "offset", "limit"),
             "research_details" to setOf("names"),
             "policy_details" to setOf("names"),
             "victory_progress" to setOf("names", "sections", "metrics", "civilizations", "fromTurn", "toTurn"),
-            "player_command" to setOf("requestId", "epoch", "revision", "reviewId", "deferReason", "kind", "target", "targets", "selection", "queue", "destination", "attackFrom", "confirmBreakPromise", "confirmAction", "enabled", "confirmWar", "worked", "locked", "index", "toIndex"),
-            "player_receipt" to setOf("requestId", "epoch", "revision", "reviewId", "deferReason", "kind", "target", "targets", "selection", "queue", "destination", "attackFrom", "confirmBreakPromise", "confirmAction", "enabled", "confirmWar", "worked", "locked", "index", "toIndex"),
+            "player_command" to setOf("requestId", "epoch", "revision", "reviewId", "deferReason", "deferChoices", "kind", "target", "targets", "selection", "queue", "destination", "attackFrom", "confirmBreakPromise", "confirmAction", "enabled", "confirmWar", "worked", "locked", "index", "toIndex"),
+            "player_receipt" to setOf("requestId", "epoch", "revision", "reviewId", "deferReason", "deferChoices", "kind", "target", "targets", "selection", "queue", "destination", "attackFrom", "confirmBreakPromise", "confirmAction", "enabled", "confirmWar", "worked", "locked", "index", "toIndex"),
             "player_communication" to setOf("request"),
             "player_summary" to emptySet(),
             "owned_cities" to emptySet(),
@@ -326,6 +327,8 @@ object S06McpProbe {
                     check(mission.string("type") == "string")
                     check(mission.strings("enum").toSet() == setOf("REBASE", "PARADROP", "AIR_SWEEP", "NUCLEAR_STRIKE"))
                 }
+            } else if (name == "player_inspect") {
+                check(tool.inputSchema.required == listOf("subject"))
             } else if (name == "player_communication") {
                 check(tool.inputSchema.required == listOf("request"))
                 val branches = properties.getValue("request").jsonObject.getValue("oneOf").jsonArray.map { it.jsonObject }
@@ -681,6 +684,7 @@ object S06McpProbe {
         override fun turn(): uncivai.player.PlayerTurnSnapshot = fail()
         override fun result(): uncivai.player.PlayerFinalState = fail()
         override fun movementPreview(request: uncivai.player.MovementPreviewRequest): uncivai.player.MovementPreview = fail()
+        override fun inspect(request: uncivai.player.PlayerInspectionRequest): uncivai.player.PlayerInspection = fail()
         override fun missionPreview(request: uncivai.player.MissionPreviewRequest): uncivai.player.MissionPreview = fail()
         override fun researchDetails(names: List<String>): uncivai.player.ResearchDetails = fail()
         override fun policyDetails(names: List<String>): uncivai.player.PolicyDetails = fail()

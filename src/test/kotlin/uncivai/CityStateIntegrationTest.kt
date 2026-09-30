@@ -23,6 +23,8 @@ class CityStateIntegrationTest {
 
     @Test fun `city state commands recover before and after checkpoint replacement`() = run("recovery")
 
+    @Test fun `marriage reports elimination and resolves transferred cities across recovery`() = run("marriage")
+
     private fun run(scenario: String) {
         val root = Files.createTempDirectory("city-state-$scenario-")
         try {

@@ -608,9 +608,11 @@ class CivilizationState:
                 if detail_cache.get(key) == cached:
                     continue
                 detail_cache[key] = cached
-                if query.tool in {"movement_preview", "mission_preview"} and not previous["body"].get("available"):
+                if query.tool in {"movement_preview", "mission_preview", "player_inspect"} and not previous["body"].get(
+                    "available"
+                ):
                     continue  # An expired native preview stays expired until explicitly inspected.
-                if query.tool in {"movement_preview", "mission_preview"} and previous["body"].get(
+                if query.tool in {"movement_preview", "mission_preview", "player_inspect"} and previous["body"].get(
                     "revision"
                 ) == body.get("revision"):
                     scopes[scope] = previous["body"]

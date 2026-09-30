@@ -63,12 +63,12 @@ def test_city_state_command_shapes_and_read_requirements(command, tool):
 def test_city_states_and_gifts_are_discoverable_in_compact_observations():
     view = reviewed()
     view.setdefault("diplomacy", {})["cityStates"] = [city_state()]
-    view["map"]["units"][0]["cityStateGift"] = {"civilizationId": "Geneva", "action": {"available": True}}
+    view["map"]["units"][0]["gift"] = {"civilizationId": "Geneva", "action": {"available": True}}
     compact = overview(view)
     assert compact["cityStates"][0]["influence"] == 40
     assert compact["cityStates"][0]["quests"] == view["diplomacy"]["cityStates"][0]["quests"]
     assert "actions" not in compact["cityStates"][0]
-    assert compact["units"][0]["canGiftToCityState"]
+    assert compact["units"][0]["canGiftUnit"]
 
 
 def test_gateway_reads_native_choices_and_keeps_city_state_evidence(tmp_path):

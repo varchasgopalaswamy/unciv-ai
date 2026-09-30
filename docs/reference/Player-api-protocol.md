@@ -22,7 +22,7 @@ code supplies request IDs, credentials and revisions for their commands.
   `maxTurns` (null when no enabled victory uses a turn limit). The same public
   settings appear in the communication context.
   `civilizationProfile` contains the bound civilization's ruleset ability and
-  unique units/buildings, including unreached technology unlocks, inherent
+  unique units/buildings/improvements, including unreached technology unlocks, inherent
   promotion effects, base-stat/replacement comparisons and obsolescence. It uses
   public rules and own research, without querying foreign state or treating
   technology readiness as city-specific buildability. See the
@@ -31,6 +31,12 @@ code supplies request IDs, credentials and revisions for their commands.
   tiles and indexed construction progress); worker units include `worker` (jobs,
   prerequisites and progress). `research` exposes displayed science and technology
   progress. Yield amounts are strings retaining the relevant UI display precision.
+  City development includes border culture/cost/ETA and the next explored expansion
+  tile, resistance and celebration timers, demanded luxury and razing status.
+  Owned units include temporary `statuses` and `controls` for naming, promotion
+  templates, swaps and road orders. City management includes saved default promotions.
+  `turnControls` advertises native choice deferral, manual automated-unit movement
+  and the available autoplay scopes.
   `economy` adds own finances, maintenance, happiness, supply, resource balances
   and city connections. `cities[].purchases` and `map.units[].economy` expose gold
   purchases, upgrades, pillage and disband options, costs, benefits, requirements,
@@ -66,6 +72,9 @@ code supplies request IDs, credentials and revisions for their commands.
   options and `trade_read`; the target receives a separate war event without the
   private proposal or payment. See [third-party war trades](Third-party-war-trades.md).
 - `movement_preview`: inspect a native route for an owned `target` and `destination: {x, y}`. Returns adjacent paths grouped by estimated turns, movement costs and counts of unexplored tiles and tiles outside current sight. Read at the current revision before setting a multi-turn destination.
+- `player_inspect`: bounded, on-demand native reference and overview information;
+  see [inspection subjects](#inspection-subjects). A road inspection must precede
+  `CONNECT_ROAD` at the same revision, for the same unit and destination.
 - `player_command`: submit exactly one command using the latest turn snapshot.
 - `player_result`: your victory/defeat result and pending combat reports, also available
   after scheduling stops. Combat fields, orders and capture choices are documented in
@@ -112,20 +121,26 @@ objects or authorize stale commands. Older checkpoint formats require a new game
 | `QUEUE_CONSTRUCTION` | `target`: city handle; `selection`: offered construction |
 | `CHOOSE_FREE_GREAT_PERSON` | `selection`: offered unit name; placement may still fail |
 | `RENAME_CITY` | `target`: city handle; `selection`: valid new name |
+| `RENAME_UNIT` | `target`: owned unit; `selection`: new name, or an empty string to clear the custom name |
+| `SAVE_UNIT_PROMOTIONS` | `target`: owned unit in an owned non-puppet city's territory; saves its current promotions as that city's template for the unit type |
+| `SET_DEFAULT_PROMOTIONS` | `target`: city handle; `selection`: saved unit type; `enabled`: desired setting |
 | `ACKNOWLEDGE_ALERT` | `target`: handle of an informational alert with `canAcknowledge=true`; fetch and read its full `content` in `player_turn` at the submitted revision first |
 | `MOVE_UNIT` | `target`: owned unit handle; `destination`: `{ "x": ..., "y": ... }` copied from that unit's `moves` |
 | `SET_UNIT_DESTINATION` | `target`: owned unit; `destination`: exact coordinate from a current available `movement_preview`; moves now and persists the native order |
 | `CANCEL_UNIT_MOVEMENT` | `target`: owned unit with `movementOrder.canCancel=true`; no movement is spent |
+| `SWAP_UNITS` | `target`: owned unit; `destination`: advertised `controls.swaps` position; `captureRisks` identifies each affected unit and its risk, including civilians swapped out of a formation's protection. Use `confirmAction: true` only after accepting those risks. |
+| `CONNECT_ROAD` | `target`: owned worker; `destination`: exact coordinate from an available current `player_inspect(ROAD)`; starts the native persistent road/rail order |
 | `CREATE_WATER_IMPROVEMENT` | `target`: owned Work Boat; `selection`: available `waterImprovement.name`; consumes the unit |
 | `ATTACK` | `target`: owned unit; `destination` and `attackFrom`: exact pair from `combat.attacks` |
 | `CITY_ATTACK` | `target`: owned city; `destination`: offered city attack |
-| `SET_UNIT_ORDER` | `target`: owned unit; `selection`: available `combat.orders` name |
+| `SET_UNIT_ORDER` | `target`: owned unit; `selection`: available `combat.orders` name, including independent `SET_UP`, `GUARD` and `STOP_AUTOMATION` for road orders |
 | `PROMOTE_UNIT` | `target`: owned unit; `selection`: available `combat.promotions.choices` name |
 | `RESOLVE_CAPTURED_CITY` | `target`: capture alert; `selection`: available capture option after reading the current decision (also handles civilian return) |
 | `MANAGE_CAPTURED_CITY` | `target`: owned city; `selection`: available `captureOptions` name after reading current options |
 | `BUY_CONSTRUCTION` | `target`: owned city; `selection`: available name from `purchases.constructions` |
 | `BUY_TILE` | `target`: owned city; `destination`: available position from `purchases.tiles` |
 | `UPGRADE_UNIT` | `target`: owned land/naval/air unit; `selection`: available `targetName` from `economy.upgrades` |
+| `GIFT_UNIT` | `target`: owned unit with an available `gift.action`; recipient and native influence/opinion effects appear in `gift` |
 | `PILLAGE`, `DISBAND_UNIT` | `target`: owned land/naval/air unit with the corresponding available `economy` option |
 | `FOUND_CITY` | `target`: settler handle; `confirmBreakPromise: true` only when accepting its listed settlement promises |
 | `START_WORKER_JOB` | `target`: worker handle; `selection`: available name from `worker.options` |
@@ -141,7 +156,9 @@ objects or authorize stale commands. Older checkpoint formats require a new game
 | `REMOVE_CONSTRUCTION` | `target`: city handle; `index`: removable construction entry |
 | `MOVE_CONSTRUCTION` | `target`: city handle; `index`: construction entry; `toIndex`: one of its `moveToIndices` |
 | `DECLARE_WAR` | `target`: known civilizationId; `confirmWar: true` after reading current confirmation |
-| `END_TURN` | `reviewId`: current `turnReview.id`; `canEndTurn` must be true. `deferReason` is optional audit context. |
+| `MOVE_AUTOMATED_UNITS` | None; requires `turnControls.canMoveAutomatedUnits` |
+| `AUTOPLAY` | `selection`: `ALL`, `MILITARY`, `CIVILIANS` or `ECONOMY`; performs native automation within the current turn |
+| `END_TURN` | `reviewId`: current `turnReview.id`; requires `canEndTurn`, or explicit `deferChoices: true` with `turnControls.canDeferChoices`. Modal decisions cannot be deferred. `deferReason` is optional audit context. |
 
 Peace proposals and decisions use the same asynchronous `trade_*` tools as economic
 trades, described in [Asynchronous-trade.md](Asynchronous-trade.md). They are not
@@ -149,7 +166,7 @@ turn commands.
 
 Unused fields must be absent or have their default value (`null` for target and
 selection, destination, attackFrom, worked, locked, enabled, index and toIndex; `[]` for queue,
-`false` for confirmBreakPromise, confirmWar and confirmAction). Unknown fields and command names are rejected. Requests
+`false` for confirmBreakPromise, confirmWar, confirmAction and deferChoices). Unknown fields and command names are rejected. Requests
 must use a unique printable ASCII `requestId` of 1–128 characters per player. Retries
 use the same ID **and the original payload**, including the original revision.
 
@@ -165,6 +182,16 @@ at the submitted revision. Read costs and full confirmation text, and include
 `confirmAction: true` when the option's `confirmation` is non-null. Read
 `receipt.economy` for actual gold and unit changes, then re-observe for current
 resource balances, maintenance and city state.
+
+Upgrades may relocate a unit, including to another terrain domain. The option
+reports the destination when explored and requires its native relocation
+confirmation. Unit gifts use the single `gift` field for both eligible majors and
+city-states; `canGiftUnit` is the compact overview flag.
+
+Autoplay does not advance the turn. Its receipt supplies the resulting state and
+decisions. Repeated `AUTOPLAY` and `END_TURN` calls compose continuous autoplay.
+`MOVE_AUTOMATED_UNITS` respects the native move-at-turn-start setting and
+once-per-turn flag.
 
 City management commands also require a fresh `player_turn`. Building sales require
 the full confirmation and return both economy and city management outcomes.
@@ -218,6 +245,47 @@ the prior revision. After process restart, pending acknowledgements require a
 fresh read; exact retries of committed acknowledgements retain their usual replay
 semantics. See [informational popups](Informational-popups.md) for content and
 agent reading requirements.
+
+## Inspection subjects
+
+`player_inspect` returns `epoch`, `revision`, `turn`, `subject` and a detached
+`data` object. Copy references from the current observation. Lists use `offset`
+and `limit` (default 50, maximum 100), with `total` and `nextOffset` in the result.
+
+| `subject` | Arguments and content |
+| --- | --- |
+| `CIVILOPEDIA` | Optional `category` and `search` list public ruleset entries. `names` (at most 16 exact names or reference links) includes their generated mechanical descriptions. Ruleset flavor text and quotations are omitted. |
+| `POLITICS` | Met civilizations' eras, adopted policy-branch counts and disclosed third-party relationships. Unknown endpoints are omitted. |
+| `WONDERS` | Native built/known/unlocated wonder status. Owners, city names and coordinates are included only when permitted. |
+| `NOTIFICATIONS` | Retained native notification history, optionally filtered by `turn`. These are historical records, without dismissal commands or arbitrary UI actions. |
+| `REPLAY` | Territorial state at `turn` (default current), paged over the currently explored map. Available from turn 5 or game end; undisclosed owners are unnamed. |
+| `TILE` | `destination` in the explored map; current yields and their sources, defense and fresh water require current sight. Optional `target` is an own city that can work the tile. |
+| `UNIT` | Either an owned `target` or a currently visible `destination`; mechanical unit reference, health, strengths, promotions and temporary effects. No foreign orders or private XP. |
+| `ROAD` | Owned worker `target` and explored `destination`; native road/rail path and visible per-tile jobs. Full-route worker-turns and maintenance/connection effects require current sight of the whole route. |
+
+For example, a Civilopedia index search followed by a selected entry:
+
+```json
+{"subject":"CIVILOPEDIA","search":"Worker","limit":10}
+{"subject":"CIVILOPEDIA","category":"Unit","names":["Worker"]}
+```
+
+These are public ruleset references, not evidence that a civilization, unit or
+resource exists in this match. The model service provides copyable action
+arguments for offered controls, including road construction after inspection.
+
+Road worker-turns exclude travel and interruptions. The completion comparison
+assumes the full route is built now, with current cities and policies; native
+automation may stop or change its route. Building `completion.oneTime` similarly
+reports native completion grants separately from passive yield changes: stored
+yields, free choices/units/buildings, population and Golden Age turns. Estimates
+run in a detached game. In the compact overview, wonder estimates stay under
+`wonderOpportunities`.
+
+Diplomatic marriage receipts report whether the city-state was eliminated and
+which city handles were gained; post-action influence is null if it no longer
+exists. Each transferred city receives its native annex/puppet/destroy choice
+through the capture interface, including after recovery.
 
 ## Launch and recovery
 
@@ -299,8 +367,8 @@ to that executor. Selected desktop pickers now share engine validation; the rest
 the UI still has direct access paths. Turn snapshots intentionally cover only this
 slice, including only a subset of alert details and construction controls. `MOVE_UNIT` attempts a current-turn path; `SET_UNIT_DESTINATION` retains a native
 order for later turns. Aircraft relocation, paradrops and special combat use the
-mission operations below. Worker automation, road-connection orders and remaining
-instant improvements are outstanding. Citizen specialists, focus changes, tile
+mission operations below. Worker automation, road-connection orders and supported
+Great Person improvements use native operations. Citizen specialists, focus changes, tile
 purchases and Gold construction purchases are supported; other currencies and
 full city controls remain incomplete.
 Explored terrain, ownership and infrastructure use current or last-seen facts,

@@ -45,6 +45,7 @@ internal object InputSchemas {
     val details = InputSchema("details")
     val victoryProgress = InputSchema("victory-progress")
     val movementPreview = InputSchema("movement-preview")
+    val playerInspect = InputSchema("player-inspect")
     val missionPreview = InputSchema("mission-preview")
     val empty = InputSchema("empty")
 }

@@ -71,6 +71,7 @@ class DetailQuery(BoundaryModel):
         "player_details",
         "movement_preview",
         "mission_preview",
+        "player_inspect",
         "research_details",
         "policy_details",
         "victory_progress",
@@ -116,6 +117,11 @@ EXTERNAL_DETAIL_TOOLS = {
 
 
 class CitySummary(BoundaryModel):
+    borderExpansion: JsonObject = Field(default_factory=dict)
+    resistanceTurns: int = 0
+    beingRazed: bool = False
+    demandedResource: str | None = None
+    weLoveTheKingTurns: int = 0
     handle: str
     name: str
     position: Position | None = None
@@ -139,6 +145,7 @@ class CitySummary(BoundaryModel):
 
 
 class UnitSummary(BoundaryModel):
+    statuses: list[JsonObject] = Field(default_factory=list)
     handle: str
     name: str
     position: Position
@@ -162,7 +169,7 @@ class UnitSummary(BoundaryModel):
     promotions: JsonObject | None = None
     availableGreatPersonAbilityCount: int = 0
     canAssembleSpaceshipPart: bool = False
-    canGiftToCityState: bool = False
+    canGiftUnit: bool = False
     movementOrder: JsonObject | None = None
     escort: JsonObject | None = None
     protection: JsonObject | None = None
@@ -185,6 +192,7 @@ class PlayerNotification(BoundaryModel):
 
 
 class TurnOverview(BoundaryModel):
+    turnControls: JsonObject = Field(default_factory=dict)
     stateId: str | None = None
     memoryUpdates: list[JsonObject] | None = None
     invalidatedDetails: list[DetailQuery] | None = None
@@ -315,6 +323,17 @@ def overview(snapshot: JsonObject) -> JsonObject:
                     city["constructionQueue"][0] if city["constructionQueue"] else ""
                 ),
                 "inResistance": development.get("inResistance", False),
+                **{
+                    key: copy.deepcopy(development[key])
+                    for key in (
+                        "borderExpansion",
+                        "resistanceTurns",
+                        "beingRazed",
+                        "demandedResource",
+                        "weLoveTheKingTurns",
+                    )
+                    if key in development
+                },
                 "attackOptionCount": len(city.get("attacks", [])),
                 "attacksRemaining": city["attacksRemaining"],
                 "yields": {y["stat"]: y["amount"] for y in development.get("yields", [])},
@@ -343,6 +362,7 @@ def overview(snapshot: JsonObject) -> JsonObject:
                 "movementOrder": unit.get("movementOrder"),
                 "escort": unit.get("escort"),
                 "protection": copy.deepcopy(unit.get("protection")),
+                "statuses": copy.deepcopy(unit.get("statuses", [])),
                 **{key: combat.get(key) for key in ("strength", "rangedStrength", "role") if unit["military"]},
                 "settlementStatus": "CAN_FOUND_NOW"
                 if unit["canFoundCity"]
@@ -370,7 +390,7 @@ def overview(snapshot: JsonObject) -> JsonObject:
                 "availableGreatPersonAbilityCount": sum(
                     bool(a.get("available")) for a in (unit.get("greatPerson") or {}).get("abilities", [])
                 ),
-                "canGiftToCityState": ((unit.get("cityStateGift") or {}).get("action") or {}).get("available", False),
+                "canGiftUnit": ((unit.get("gift") or {}).get("action") or {}).get("available", False),
                 "canAssembleSpaceshipPart": (unit.get("spaceshipAssembly") or {}).get("available", False),
             }
         )
@@ -438,13 +458,14 @@ def overview(snapshot: JsonObject) -> JsonObject:
         "automated",
         "availableGreatPersonAbilityCount",
         "canAssembleSpaceshipPart",
-        "canGiftToCityState",
+        "canGiftUnit",
         "canCreateWaterImprovement",
         "missions",
         "transported",
         "carriedUnits",
         "interceptionReady",
         "upgrades",
+        "statuses",
     }
     for unit in result["units"]:
         for key in optional:
@@ -548,7 +569,7 @@ def detail_inputs(snapshot: JsonObject, query: DetailQuery):
         return project_entity(entity, name, args.get("sections", ["all"])) if entity is not None else None
     if name == "construction_details":
         return project_detail(snapshot, query)["data"]
-    if name in {"movement_preview", "mission_preview"}:
+    if name in {"movement_preview", "mission_preview", "player_inspect"}:
         return snapshot.get("revision")
     if name == "map_region":
         return map_region_inputs(snapshot, args)
@@ -670,7 +691,7 @@ def project_detail(snapshot: JsonObject, query: DetailQuery) -> JsonObject:
                     data["estimateBasis"] = ESTIMATE_BASIS
                 data = copy.deepcopy(data)
                 add_construction_commands(data)
-    elif name in {"movement_preview", "mission_preview"}:
+    elif name in {"movement_preview", "mission_preview", "player_inspect"}:
         # Native pathfinding cannot be reconstructed from a cached turn projection.
         available = False
         data = {"requiresRefresh": True}
@@ -724,6 +745,11 @@ def required_detail(command: JsonObject) -> DetailQuery | None:
         )
     if kind == "SET_UNIT_DESTINATION":
         return DetailQuery(tool="movement_preview", arguments={"target": target, "destination": command["destination"]})
+    if kind == "CONNECT_ROAD":
+        return DetailQuery(
+            tool="player_inspect",
+            arguments={"subject": "ROAD", "target": target, "destination": command["destination"]},
+        )
     if kind in {"DECLARE_WAR", "CITY_STATE_ACTION"}:
         return DetailQuery(tool="player_details", arguments={"section": "diplomacy"})
     if (

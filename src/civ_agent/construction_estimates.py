@@ -8,9 +8,9 @@ ESTIMATE_BASIS = (
     "Completion compares ongoing city yields at current population and citizen assignments, with no "
     "production conversion or construction-specific bonus on either side. Food is net surplus; Gold "
     "includes maintenance. Growth shows native rounded food accumulation and growth/starvation times "
-    "if completed now. Specialist slots are unstaffed opportunities. Completion triggers such as "
-    "free buildings, units, technologies and population, future growth, and yields in other cities are "
-    "excluded; read the building's effects too. While-building changes compare starting this item with "
+    "if completed now. Specialist slots are unstaffed opportunities. oneTime separately reports native completion grants if finished now, including free "
+    "buildings, units, choices, population and stored yields. They are not included in the passive yield "
+    "comparison. Future growth and yields in other cities are excluded; read the building's effects too. While-building changes compare starting this item with "
     "the current construction. Turns assume starting now, using stored production and overflow, and "
     "exclude time behind earlier queue entries. Blocked choices remain unavailable. Null construction time means "
     "no current completion estimate. Omitted yield changes are zero at displayed precision."
@@ -52,7 +52,7 @@ def completion_summary(completion: JsonObject) -> JsonObject:
         "maintenanceChange": completion["maintenanceChange"],
         **{
             key: copy.deepcopy(completion[key])
-            for key in ("specialistSlots", "greatPersonPoints")
+            for key in ("specialistSlots", "greatPersonPoints", "oneTime")
             if completion.get(key)
         },
     }

@@ -151,6 +151,7 @@ def record_conflicts(db, job, call_id, name, arguments, result):
                 "map_region",
                 "movement_preview",
                 "mission_preview",
+                "player_inspect",
                 "memory_read",
                 "memory_search",
                 "history_read",

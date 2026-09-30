@@ -65,8 +65,11 @@ object CommunicationProbe {
                 val economic = command("Rome", "trade_offer", "partner" to "Greece", "give" to emptyList<String>(), "receive" to listOf(obj("type" to "Gold", "name" to "Gold", "amount" to 10, "duration" to -1)))["trade"]!!.jsonObject
                 val economicId = economic["proposal"]!!.jsonPrimitive.content
                 check(state("Egypt")["trades"]!!.jsonArray.isEmpty())
-                fun hidden(id: String) = runCatching { players.getValue("Egypt").communication(obj("op" to "trade_read", "epoch" to executor.epoch, "proposal" to id)) }.exceptionOrNull() as PlayerSessionException
-                check(hidden(economicId).reason == hidden("nonexistent").reason)
+                fun hidden(id: String) = players.getValue("Egypt").communication(obj("op" to "trade_read", "epoch" to executor.epoch, "proposal" to id))
+                val privateTrade = hidden(economicId)
+                check(privateTrade["error"]!!.jsonPrimitive.content == "UNKNOWN_TRADE")
+                // The only difference is the caller's own reference, echoed for recovery.
+                check(privateTrade - "proposal" == hidden("nonexistent") - "proposal")
                 command("Greece", "trade_decide", "proposal" to economicId, "version" to 1, "decision" to "accept")
                 check(read("Egypt") == egyptInbox)
                 check(players.getValue("Egypt").turn().revision == egyptBefore)

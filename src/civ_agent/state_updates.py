@@ -131,11 +131,11 @@ def changed_details(previous: JsonObject | None, current: JsonObject, reads: lis
         if (
             previous is None
             or (
-                query.tool in {"movement_preview", "mission_preview"}
+                query.tool in {"movement_preview", "mission_preview", "player_inspect"}
                 and previous.get("revision") != current.get("revision")
             )
             or (
-                query.tool not in {"movement_preview", "mission_preview"}
+                query.tool not in {"movement_preview", "mission_preview", "player_inspect"}
                 and not same_json(project_detail(previous, query), project_detail(current, query))
             )
         ):

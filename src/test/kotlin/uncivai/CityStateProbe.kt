@@ -1,11 +1,20 @@
 package uncivai
 
 import com.unciv.json.json
+import com.unciv.logic.GameStarter
 import com.unciv.logic.civilization.AlertType
 import com.unciv.logic.civilization.CivFlags
 import com.unciv.logic.civilization.NotificationCategory
+import com.unciv.logic.civilization.PlayerType
 import com.unciv.logic.civilization.PopupAlert
 import com.unciv.logic.civilization.diplomacy.DiplomacyFlags
+import com.unciv.logic.map.MapParameters
+import com.unciv.logic.map.MapSize
+import com.unciv.logic.map.mapunit.UnitSettlement
+import com.unciv.models.metadata.BaseRuleset
+import com.unciv.models.metadata.GameParameters
+import com.unciv.models.metadata.GameSetupInfo
+import com.unciv.models.metadata.Player
 import com.unciv.models.ruleset.QuestName
 import uncivai.player.PlayerHost
 import uncivai.player.PlayerTurnJson
@@ -28,7 +37,65 @@ object CityStateProbe {
             "privacy" -> privacy(root)
             "requirements" -> requirements(root)
             "recovery" -> recovery(root)
+            "marriage" -> marriage(root)
             else -> error(args[1])
+        }
+    }
+
+    private fun marriage(root: Path) {
+        val checkpoint = root.resolve("marriage.json")
+        lateinit var married: TurnCommandRequest
+        lateinit var receiptJson: String
+        HeadlessRuntime.create(root.resolve("initial")) {
+            val parameters = GameParameters().apply {
+                baseRuleset = BaseRuleset.Civ_V_GnK.fullName
+                numberOfCityStates = 1
+                shufflePlayerOrder = false
+                players = arrayListOf("Austria", "Rome").mapTo(arrayListOf()) {
+                    Player(it, PlayerType.Human)
+                }
+            }
+            val map = MapParameters().apply {
+                baseRuleset = parameters.baseRuleset
+                mapSize = MapSize.Small
+                seed = 412L
+            }
+            GameStarter.startNewGame(GameSetupInfo(parameters, map))
+        }.use { runtime ->
+            val game = runtime.game
+            for (civ in game.civilizations.filter { !it.isBarbarian }) {
+                if (civ.cities.isEmpty()) checkNotNull(UnitSettlement.tryFoundCity(civ.units.getCivUnits().single { it.name == "Settler" }))
+            }
+            val austria = game.getCivilization("Austria")
+            val minor = game.civilizations.single { it.isCityState }
+            austria.diplomacyFunctions.makeCivilizationsMeet(minor)
+            minor.getDiplomacyManager(austria)!!.setInfluence(100f)
+            austria.getDiplomacyManager(minor)!!.removeFlag(DiplomacyFlags.MarriageCooldown)
+            austria.addGold(10000)
+            austria.popupAlerts.clear()
+            runtime.executor.enableCheckpoints(checkpoint)
+            val session = PlayerHost(runtime).bindPlayer("Austria")
+            val before = session.turn()
+            married = command(before, target = minor.civID, selection = "diplomaticMarriage")
+            val receipt = session.execute(married)
+            check(receipt.cityState!!.eliminated && receipt.cityState.influenceAfter == null)
+            check(receipt.cityState.gainedCities.size == 1 && receipt.cityState.goldChange < 0)
+            check(session.execute(married) == receipt)
+            check(session.turn().diplomacy.cityStates.none { it.civilizationId == minor.civID })
+            check(session.turn().alerts.single { it.kind == "DiplomaticMarriage" }.capture!!.options.any { it.name == "Annex" && it.available })
+            receiptJson = PlayerTurnJson.encode(receipt)
+        }
+        HeadlessRuntime.loadCheckpoint(checkpoint, root.resolve("restored")).use { runtime ->
+            val session = PlayerHost(runtime).bindPlayer("Austria")
+            check(PlayerTurnJson.encode(session.execute(married)) == receiptJson)
+            val before = session.turn()
+            val alert = before.alerts.single { it.kind == "DiplomaticMarriage" }
+            val request = command(before, TurnCommandKind.RESOLVE_CAPTURED_CITY, alert.handle, "Annex")
+            val receipt = session.execute(request)
+            check(session.execute(request) == receipt)
+            val after = session.turn()
+            check(after.alerts.none { it.kind == "DiplomaticMarriage" })
+            check(after.cities.size == 2 && after.cities.none { it.puppet })
         }
     }
 
@@ -132,7 +199,7 @@ object CityStateProbe {
                 check(built.cityState!!.goldChange == -200 && built.cityState.improvement == "Mine")
                 turn = api.turn(token)
                 check(turn.diplomacy.cityStates.first().resources.any { it.name == "Gems" && it.amount > 0 })
-                val gift = turn.map.units.firstOrNull { it.cityStateGift?.action?.available == true } ?: error("No gift: ${turn.map.units.map { it.name to it.cityStateGift }}")
+                val gift = turn.map.units.firstOrNull { it.gift?.action?.available == true } ?: error("No gift: ${turn.map.units.map { it.name to it.gift }}")
                 val gifted = api.execute(token, command(turn, TurnCommandKind.GIFT_UNIT, gift.handle))
                 check(gifted.cityState!!.unitRemoved == gift.handle && gifted.cityState.influenceAfter == gifted.cityState.influenceBefore + 5)
                 turn = api.turn(token)
@@ -140,7 +207,7 @@ object CityStateProbe {
                 val mission = merchant.greatPerson!!.abilities.single { it.kind == "ConductTradeMission" }
                 check(mission.supported && mission.available)
                 val completed = api.execute(token, command(turn, TurnCommandKind.ACTIVATE_GREAT_PERSON, merchant.handle, mission.name))
-                check(completed.cityState!!.influenceAfter > completed.cityState.influenceBefore && completed.greatPerson!!.goldChange > 0 && completed.greatPerson.consumed)
+                check(completed.cityState!!.influenceAfter!! > completed.cityState.influenceBefore && completed.greatPerson!!.goldChange > 0 && completed.greatPerson.consumed)
                 turn = api.turn(token)
                 api.reject(token, command(turn, selection = "pledgeProtection").copy(confirmAction = false), "INVALID_ARGUMENT")
                 last = command(turn, selection = "pledgeProtection")
@@ -351,7 +418,7 @@ object CityStateProbe {
                     val session = PlayerHost(runtime).bindPlayer("Rome")
                     val turn = session.turn()
                     request = when (action) {
-                        "giftUnit" -> command(turn, TurnCommandKind.GIFT_UNIT, turn.map.units.first { it.cityStateGift?.action?.available == true }.handle)
+                        "giftUnit" -> command(turn, TurnCommandKind.GIFT_UNIT, turn.map.units.first { it.gift?.action?.available == true }.handle)
                         "mission1" -> command(turn, TurnCommandKind.ACTIVATE_GREAT_PERSON, turn.map.units.single { it.name == "Great Merchant" }.handle, action)
                         else -> command(turn, selection = action)
                     }

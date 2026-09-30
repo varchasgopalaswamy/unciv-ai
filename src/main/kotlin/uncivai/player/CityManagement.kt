@@ -59,6 +59,7 @@ data class CityManagement(
     val greatPeople: List<CityGreatPersonProgress>,
     val buildingSales: List<BuildingSale>,
     val sharedTiles: List<SharedCityTile>,
+    val defaultPromotions: List<DefaultUnitPromotions> = emptyList(),
 )
 
 /** Only owned-city data. Querying progress must not initialize engine counters or reassign population. */
@@ -73,6 +74,7 @@ internal fun observeCityManagement(city: City, active: Boolean, handle: (City) -
     val breakdown = GreatPersonPointsBreakdown(city)
     val points = breakdown.sum()
     return CityManagement(
+        defaultPromotions = defaultUnitPromotions(city, active),
         focusOptions = frozen(operations.focuses(city).map { CityFocusOption(it.name, it.label.tr(), common) }),
         avoidGrowth = common,
         manualSpecialists = city.manualSpecialists,

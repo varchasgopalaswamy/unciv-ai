@@ -18,8 +18,12 @@ data class CivilizationProfile(
     val ability: CivilizationAbility,
     val uniqueUnits: List<CivilizationConstruction>,
     val uniqueBuildings: List<CivilizationConstruction>,
+    val uniqueImprovements: List<CivilizationImprovement>,
     val comparisonBasis: String = "Base ruleset stats and inherent effects. Promotions and other bonuses can change unit stats; city construction details give current costs, yields and availability.",
 )
+
+@Serializable
+data class CivilizationImprovement(val name: String, val yields: Map<String, Float>, val effects: List<String>, val requiredTechnology: String?, val unlocked: Boolean, val terrains: List<String>)
 
 @Serializable
 data class CivilizationAbility(val name: String, val effects: List<CivilizationEffect>)
@@ -163,6 +167,18 @@ internal fun observeCivilizationProfile(player: Civilization): CivilizationProfi
         ),
         uniqueUnits = frozen(player.cache.uniqueUnits.sortedBy { it.name }.map(::construction)),
         uniqueBuildings = frozen(player.cache.uniqueBuildings.sortedBy { it.name }.map(::construction)),
+        uniqueImprovements = frozen(
+            rules.tileImprovements.values.filter { it.uniqueTo == player.civName }.sortedBy { it.name }.map { improvement ->
+                CivilizationImprovement(
+                    improvement.name,
+                    frozen(improvement.map { it.key.name to it.value }.toMap()),
+                    frozen(profileEffects(improvement)),
+                    improvement.techRequired,
+                    improvement.techRequired == null || player.tech.isResearched(improvement.techRequired!!),
+                    frozen(improvement.terrainsCanBeBuiltOn),
+                )
+            },
+        ),
     )
 }
 

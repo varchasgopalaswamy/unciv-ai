@@ -92,7 +92,7 @@ object CivilizationProfileProbe {
             baseRuleset = BaseRuleset.Civ_V_GnK.fullName
             numberOfCityStates = 0
             shufflePlayerOrder = false
-            players = ArrayList(listOf("Rome", "The Maya", "Arabia", "Egypt").map { Player(it, PlayerType.Human) })
+            players = ArrayList(listOf("Rome", "The Maya", "Arabia", "Egypt", "The Netherlands").map { Player(it, PlayerType.Human) })
         }
         val map = MapParameters().apply {
             baseRuleset = parameters.baseRuleset
@@ -116,6 +116,14 @@ object CivilizationProfileProbe {
         check(camel.unitType == "Archery" && camel.comparison!!.unitType!!.ordinary == "Mounted")
         val tomb = observeCivilizationProfile(game.getCivilization("Egypt")).uniqueBuildings.single { it.name == "Burial Tomb" }
         check(tomb.baseStats.getValue("yields.Faith") == 2f && "yields.Culture" !in tomb.baseStats)
+        val dutch = game.getCivilization("The Netherlands")
+        val polder = observeCivilizationProfile(dutch).uniqueImprovements.single { it.name == "Polder" }
+        check(polder.requiredTechnology == "Guilds" && !polder.unlocked)
+        check(polder.yields["Food"] == 3f && "Marsh" in polder.terrains)
+        check(polder.effects.any { "Economics" in it })
         check(json().toJson(game) == before) { "Profile reads mutated native game state" }
+        dutch.tech.addTechnology("Guilds")
+        check(observeCivilizationProfile(dutch).uniqueImprovements.single().unlocked)
+        check(!polder.unlocked) { "Research changed an earlier profile" }
     }
 }
