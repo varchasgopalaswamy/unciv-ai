@@ -27,7 +27,7 @@ import java.nio.file.StandardOpenOption
 /** Trusted full-state artifact. Never serve this file through a player endpoint. */
 @Serializable
 internal data class GameCheckpoint(
-    val formatVersion: Int = 7,
+    val formatVersion: Int = 8,
     val epoch: String,
     val paused: Boolean,
     val gameJson: String,
@@ -60,6 +60,7 @@ internal data class SavedPlayerState(
     val settlementKnowledge: List<uncivai.player.KnownSettlementTile> = emptyList(),
     val settlementTechnologies: Set<String>,
     val settlerHistory: Map<Int, uncivai.player.SettlerHistory> = emptyMap(),
+    val barbarianSightings: Map<Int, uncivai.player.BarbarianSighting>,
 )
 
 internal class CheckpointStore(
@@ -104,7 +105,7 @@ internal class CheckpointStore(
     fun read(): GameCheckpoint {
         acquire()
         val document = checkpointJson.parseToJsonElement(Files.readString(path))
-        require(document.jsonObject["formatVersion"]?.jsonPrimitive?.intOrNull == 7) { "Unsupported checkpoint version; start a new game" }
+        require(document.jsonObject["formatVersion"]?.jsonPrimitive?.intOrNull == 8) { "Unsupported checkpoint version; start a new game" }
         val saved = checkpointJson.decodeFromJsonElement<GameCheckpoint>(document)
         require(saved.epoch.isNotEmpty()) { "Invalid checkpoint epoch" }
         return saved
@@ -164,6 +165,7 @@ internal class CheckpointStore(
                     settlementKnowledge = state.settlementKnowledge.values.toList(),
                     settlementTechnologies = state.settlementTechnologies.toSet(),
                     settlerHistory = state.settlerHistory.toMap(),
+                    barbarianSightings = state.barbarianSightings.toMap(),
                 )
             },
         )

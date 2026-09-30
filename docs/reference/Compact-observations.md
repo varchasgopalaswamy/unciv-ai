@@ -42,6 +42,40 @@ and its `SET_UNIT_DESTINATION` command. After a successful command, apply its
 the next action. Unchanged prior inspections remain valid. Queries for
 missing entities return `available:false` without inventing their current state.
 
+Named construction reads validate against the selected ruleset's construction
+catalogue. Unknown names return `available:false`, `unknownNames` with spelling
+suggestions, and a discovery read; they produce no construction row. A catalogue
+read includes `knownNames`, including locked constructions. Known choices retain
+`canQueue:false` and `queueUnavailableReasons`, including puppet control. Public
+construction names are kept in the cached snapshot, outside the turn preload.
+`detailLevel` distinguishes named reads from catalogue reads; it does not claim
+that descriptions or completion estimates exist for every locked choice.
+
+Unit and city rosters separate `attackOptionCount` (alternative attack commands)
+from `attacksRemaining` (unused native allowance). Multiple origins or targets
+can spend the same allowance. An unused attack still requires a legal target and
+readiness. `availableGreatPersonAbilityCount` counts only usable abilities.
+
+Worker choices expose `steps` with remaining work and `totalTurns` for the actual
+native queue, preserving partial progress and any retained jobs. `yieldChanges`
+compares the occupied tile after all steps; signed `maintenanceChanges` are
+separate upkeep effects. `completionGrants` records one-time clearing yields and
+their receiving city. These estimates assume the current worker and conditions.
+Receipts name the work actually underway, including preparatory clearing.
+
+Recognized city-state quests retain `objective.requirement`: neutral completion
+conditions, public targets and expiry rules. Return-civilian options include
+`diplomaticEffect` with the native operation, value and before/after values:
+city-state influence is added; a major's `ReturnedCapturedUnits` opinion modifier
+is set, so repeated returns do not stack it. This describes native diplomacy,
+without predicting a human or agent player's intentions. Prior opinion values
+are shown only for built-in AI owners, matching native diplomatic visibility.
+
+Upgrade `additionalResourceRequirements` means the additional resources needed
+after releasing the old unit's consumption. Economy details distinguish
+`unimprovedOwnedTiles` from `unimprovedAlliedCityStateTiles`; allied locations
+remain undisclosed.
+
 ## Opportunities at turn start
 
 The separately prepared `victory_progress` includes a compact rankings table and
@@ -59,6 +93,23 @@ The prepared `player_turn` includes these summaries before the model's first
 response. They also participate in ordinary command deltas; no additional opening
 tool calls are needed.
 
+- `civilizationProfile`: the selected ruleset's own civilization ability, all
+  unique units/buildings (including future unlocks), and their differences from
+  ordinary replacements. Effects retain native conditions; technology conditions
+  also report `met`, so France's culture bonus visibly expires at Steam Power.
+  Inherent promotions include their mechanical effects. Entries show required and
+  missing technologies, resources, prerequisite buildings/improved resources,
+  obsolescence and upgrade paths. Comparisons include lost benefits as well as
+  gains, such as the Burial Tomb's reduced maintenance and missing specialist slot.
+  `baseStats` uses unmodified ruleset values; city construction details supply
+  current costs, yields and availability. Dotted stat keys distinguish flat
+  `yields`, `yieldPercent`, `specialistSlots` and `greatPersonPoints`.
+  Empty optional fields are omitted, while `ordinary`/`unique` comparisons retain
+  zero or empty values that indicate a removed cost, benefit or requirement.
+  An empty `missingTechnologies` remains explicit; meeting those requirements
+  alone does not establish city-specific buildability.
+  The profile is present before founding a city and in frozen strategic-review
+  facts. It updates with own research and is omitted from unchanged command deltas.
 - `research`: science rate, overflow, stored progress, native costs and current-rate
   completion estimates for up to eight technologies: the current choice, the next
   queued choices, then researchable alternatives. Upcoming units, buildings,
@@ -153,6 +204,28 @@ tool calls are needed.
   native engine. Site availability is not a promise that a unit can act or travel.
 - `units[].upgrades`: native upgrade target, gold/resource costs, availability and
   blockers, with the focused economy inspection needed to issue the command.
+- `units[].promotions`: acquired promotion names, unspent and total XP, the next
+  promotion cost, and whether the unit can still earn XP from barbarians. When
+  choices are legal now, the summary includes their mechanical descriptions,
+  whether they are retained after selection, newly satisfied promotion
+  prerequisites, copyable commands, and the XP balance/cost after selection.
+  `inspections.PROMOTE_UNIT` supplies the focused read required before acting.
+  The complete promotion tree and unavailable reasons stay in
+  `unit_details(sections=["promotions"])`. Units with no XP or promotions and no
+  legal choices omit this summary.
+  `recovery` compares resting without taking a promotion: healing at this turn's
+  end, healing per subsequent rest turn, and estimated turn ends to full health.
+  Movement or attacks may prevent this turn's healing without preventing healing
+  on later rest turns. Estimates assume the same tile and bonuses with no further
+  damage; they do not establish that waiting is safe. No healing on the current
+  tile produces a null recovery time, while full health produces zero.
+  Healing amounts include native final bonuses and the current missing-health
+  cap; the orders inspection reports the same current-turn amount.
+  Instant healing spends the native promotion cost without retaining a promotion
+  or satisfying its prerequisites. Barbarian XP eligibility uses the engine's
+  lifetime XP accounting, including XP already spent; a combat award can cross
+  the limit before further awards stop. Prerequisite unlocks describe paths,
+  not an immediately available next promotion.
 - `cities[].constructionChoice`: the selection turn, observed duration and **all
   currently available construction names absent when that option was selected**.
   New options remain listed while the choice persists; this is not merely a
@@ -197,9 +270,12 @@ tool calls are needed.
   recommendation to replace an existing construction.
 - `diplomacyOpportunities`: surplus luxuries that can be offered, missing luxuries
   in known partners' permitted trade menus, and agreement terms expiring within
-  five turns. `SHARED` partners use the chat/trade interface; `NATIVE_AI` uses the
-  existing built-in-AI bridge. Inventories describe possible negotiation, not
-  willingness to accept a deal. Inspect `trade_options` before proposing terms.
+  five turns. `missingLuxuriesAvailableForTrade` is the partner's inventory;
+  `spareLuxuriesToOffer` is this player's surplus. `luxuryTradeBasis` explains that
+  terms require negotiation and consent. Agents and humans use the chat/trade
+  interface; built-in AI players use its native offer bridge. Inventories describe
+  possible negotiation, not willingness to accept a deal. Inspect `trade_options`
+  before proposing terms.
 
 These are information and suggestions. They do not enforce a strategic policy,
 require a production change, or prohibit actions because of social promises.

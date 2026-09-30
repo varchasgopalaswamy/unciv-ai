@@ -374,8 +374,12 @@ class AgentService:
         self.io.slow_callback = self.diagnostics.emit
 
     def _persist(self, record):
-        self.accounting.sample(record, record.get("negotiationWaitSeconds", 0))
         self.history.lifecycle(record)
+        trace = self.history.review_trace(record["activationId"]) if record.get("purpose") == "review" else None
+        self.accounting.sample(
+            {**record, "reviewTrace": trace} if trace is not None else record,
+            record.get("negotiationWaitSeconds", 0),
+        )
         # Commit lifecycle events and accounting before terminal metadata.
         write_private_json(
             self.records_dir / (hashlib.sha256(record["activationId"].encode()).hexdigest() + ".json"), record

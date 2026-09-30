@@ -265,7 +265,7 @@ def test_prepared_reads_establish_evidence_and_update_base_without_model_calls(t
                 {
                     "targetName": "Legion",
                     "goldCost": 50,
-                    "resourceRequirements": {"Iron": 1},
+                    "additionalResourceRequirements": {"Iron": 1},
                     "available": True,
                     "reasons": [],
                 }

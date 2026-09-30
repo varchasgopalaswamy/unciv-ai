@@ -1,8 +1,11 @@
 """A compact review of permitted observations, not a combat planner or hidden-state oracle."""
 
+from typing import Literal
+
 from pydantic import Field
 
-from civ_agent.game_commands import CityAttack, Position
+from civ_agent.game_commands import CityAttack, MoveCommand, Position, UnitAttack
+from civ_agent.mechanics_overview import region_distance
 from civ_agent.protocol import JsonObject
 from civ_agent.schemas import BoundaryModel
 
@@ -16,6 +19,19 @@ class Threat(BoundaryModel):
 
 class NearbyThreat(Threat):
     distance: int
+
+
+class KnownCamp(BoundaryModel):
+    position: Position
+    visible: bool
+    lastObservedTurn: int | None = None
+
+
+class BarbarianSighting(BoundaryModel):
+    position: Position
+    name: str
+    lastSeenTurn: int
+    turnsAgo: int
 
 
 class UnitRisk(BoundaryModel):
@@ -48,24 +64,42 @@ class CivilianCapture(BoundaryModel):
     unitIfKept: str | None
 
 
-class CapturableCivilian(BoundaryModel):
+class CaptureOrder(BoundaryModel):
+    command: MoveCommand | UnitAttack
+    inspection: JsonObject
+
+
+class NearbyCaptureUnit(BoundaryModel):
+    unit: str
+    distanceInHexes: int
+    movement: str
+
+
+class PotentialCaptureTarget(BoundaryModel):
     position: Position
     name: str
     civilization: str
-    atWar: bool
     capture: CivilianCapture
+    requiresWarDeclaration: bool
+    postDeclarationReachability: Literal["NOT_EVALUATED"] | None = None
     guard: Threat | None = None
+    city: str | None = None
+    directCaptureOrders: list[CaptureOrder]
+    nearestMilitary: list[NearbyCaptureUnit]
 
 
 class TacticalReview(BoundaryModel):
     turn: int
     militaryCount: int
     visibleHostiles: list[Threat]
+    knownBarbarianCamps: list[KnownCamp]
+    recentBarbarianSightings: list[BarbarianSighting]
+    civilianProtectionBasis: str | None = None
     civiliansNearHostiles: list[UnitRisk]
     militaryNearHostiles: list[UnitRisk]
     cityBombardments: list[Bombardment]
     recentLosses: list[Loss]
-    capturableCivilians: list[CapturableCivilian]
+    potentialCaptureTargets: list[PotentialCaptureTarget]
     captureConditions: str | None = None
     cityCount: int
     citiesProducingSettlers: list[str]
@@ -87,6 +121,40 @@ class StrategyReview(BoundaryModel):
     assessments: list[StrategyNotice] = Field(default_factory=list)
 
 
+def direct_capture_orders(military: list[JsonObject], position: JsonObject) -> list[CaptureOrder]:
+    """Project current native offers for an unguarded enemy civilian; never infer a route from distance."""
+    result = []
+    destination = Position.model_validate(position)
+    for unit in military:
+        # A ranged unit can enter a civilian's tile, but shooting it is not capture.
+        move = next((m for m in unit.get("moves", []) if m["destination"] == position), None)
+        attack = next(
+            (
+                a
+                for a in (unit.get("combat") or {}).get("attacks", [])
+                if a["destination"] == position and (a.get("consequences") or {}).get("civilianOrCityCapturePossible")
+            ),
+            None,
+        )
+        if move is not None:
+            command = MoveCommand(kind="MOVE_UNIT", target=unit["handle"], destination=destination)
+            section = "movement"
+        elif attack is not None:
+            command = UnitAttack(
+                kind="ATTACK", target=unit["handle"], destination=destination, attackFrom=attack["attackFrom"]
+            )
+            section = "combat"
+        else:
+            continue
+        result.append(
+            CaptureOrder(
+                command=command,
+                inspection={"tool": "unit_details", "arguments": {"target": unit["handle"], "sections": [section]}},
+            )
+        )
+    return result
+
+
 def tactical_review(snapshot: JsonObject) -> TacticalReview:
     units = snapshot["map"]["units"]
     military = [u for u in units if u["military"]]
@@ -105,10 +173,27 @@ def tactical_review(snapshot: JsonObject) -> TacticalReview:
             if unit["military"] or not unit.get("capture"):
                 continue
             guard = next((u for u in tile["units"] if u["military"]), None)
+            city = tile.get("cityName")
+            nearest = sorted(
+                (
+                    NearbyCaptureUnit(
+                        unit=u["handle"],
+                        distanceInHexes=region_distance(
+                            u["position"], tile["position"], snapshot["map"].get("wrapOffset")
+                        ),
+                        movement=u["movement"],
+                    )
+                    for u in military
+                    if (u.get("combat") or {}).get("role") != "AIR"
+                ),
+                key=lambda u: (u.distanceInHexes, u.unit),
+            )[:2]
             captives.append(
-                CapturableCivilian(
+                PotentialCaptureTarget(
                     position=tile["position"],
-                    **{k: unit[k] for k in ("name", "civilization", "atWar", "capture")},
+                    **{k: unit[k] for k in ("name", "civilization", "capture")},
+                    requiresWarDeclaration=not unit["atWar"],
+                    postDeclarationReachability="NOT_EVALUATED" if not unit["atWar"] else None,
                     guard=(
                         Threat(
                             position=tile["position"],
@@ -117,6 +202,13 @@ def tactical_review(snapshot: JsonObject) -> TacticalReview:
                         if guard
                         else None
                     ),
+                    city=city,
+                    directCaptureOrders=(
+                        direct_capture_orders(military, tile["position"])
+                        if unit["atWar"] and guard is None and city is None
+                        else []
+                    ),
+                    nearestMilitary=nearest,
                 )
             )
     civilians, exposed_military = [], []
@@ -158,6 +250,25 @@ def tactical_review(snapshot: JsonObject) -> TacticalReview:
         turn=snapshot["turn"],
         militaryCount=len(military),
         visibleHostiles=threats,
+        knownBarbarianCamps=[
+            KnownCamp(position=t["position"], visible=t["visible"], lastObservedTurn=t.get("observedTurn"))
+            for t in snapshot["map"]["tiles"]
+            if t.get("improvement") == "Barbarian encampment"
+        ],
+        recentBarbarianSightings=[
+            BarbarianSighting(**sighting, turnsAgo=snapshot["turn"] - sighting["lastSeenTurn"])
+            for sighting in snapshot["map"].get("recentBarbarianSightings", [])
+        ],
+        civilianProtectionBasis=(
+            "Settler protection is in units[].protection. Candidates refer to the roster's health, position and orders. "
+            "Estimated travel uses native pathfinding; the Settler must stay at its current tile for rendezvous. "
+            "Same-tile military stays behind unless paired with ESCORT; a formation or city can still be defeated. "
+            "NO_VISIBLE_CAPTURE_THREAT does not establish safety. Unseen-tile counts cover two hexes; camp/sighting "
+            "references cover five hexes. Sightings retain last-seen positions for up to five turns, not current "
+            "locations or an army count. Visible hostiles are listed separately."
+            if any(u.get("protection") for u in units) or snapshot["map"].get("recentBarbarianSightings")
+            else None
+        ),
         civiliansNearHostiles=civilians,
         militaryNearHostiles=exposed_military,
         cityBombardments=[
@@ -174,12 +285,16 @@ def tactical_review(snapshot: JsonObject) -> TacticalReview:
             for a in c["attacks"]
         ],
         recentLosses=losses,
-        capturableCivilians=captives,
+        potentialCaptureTargets=captives,
         captureConditions=(
             "unitIfKept is the resulting unit type, including any conversion; recovering our own Settler preserves it. "
             "A rescued foreign civilian may offer a return/keep choice. "
-            "Capture requires entry by a military unit after any hostile guard is cleared; ranged fire alone does not capture. "
-            "Units at peace cannot be captured without war. Inspect current combat/movement options for availability."
+            "directCaptureOrders lists current native move/melee offers against an unguarded civilian outside a city. "
+            "Inspect the listed unit section before issuing its command; discoveries can interrupt a planned route. "
+            "A guard or city requires combat; ranged fire alone does not capture. "
+            "nearestMilitary gives up to two units by hex distance, not path length or reachability. "
+            "For peaceful targets, post-declaration routes are not evaluated: declaring war does not establish "
+            "a capture this turn. Reinspect movement/combat after any declaration."
             if captives
             else None
         ),

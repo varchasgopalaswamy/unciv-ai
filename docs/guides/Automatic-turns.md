@@ -84,7 +84,18 @@ to 20 rounds, 48 activations, one hour, and 180 seconds per activation.
 
 ## Select models and reasoning effort
 
-Set both options on each service to choose different settings for each civilization:
+The combined launcher supports per-civ settings directly, for example:
+
+```sh
+uv run civ-agent game start --model gpt-6-luna --reasoning-effort max \
+  --agent-model Greece=gpt-5.6-luna --agent-reasoning-effort France=high
+```
+
+Both per-civ options are repeatable and retained by `game resume`; unspecified
+settings use the global defaults. See the [full-game guide](Full-vanilla-run.md).
+
+When starting services manually, set both options on each service to choose
+different settings for each civilization:
 
 ```sh
 uv run civ-agent agent-server start Rome --model YOUR_ROME_MODEL --reasoning-effort high
@@ -118,9 +129,10 @@ players. Interactive `civ-agent agent start` accepts the same two options; see
 
 Each activation identifies the game turn it must play. After native handoff, the
 next player can start while provider completion and accounting drain. There is
-no model-driven post-turn memory phase. Independent strategy reviews run every K
+no model-driven post-turn memory phase. Independent strategy reviews run
+concurrently before each civilization's first move on turn 0, then after every K
 turns starting at K (default 5). Other civilizations can play while a review runs,
-but its civilization's next turn waits for the report before starting its model.
+but its civilization's first or next turn waits for the report before starting its model.
 This wait does not consume that turn's timeout.
 See [background reviews](../architecture/Background-turn-memory.md).
 

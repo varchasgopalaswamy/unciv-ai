@@ -66,10 +66,36 @@ data class PromotionOption(
     val experienceCost: Int,
     val available: Boolean,
     val unavailableReasons: List<String>,
+    val retainedAfterSelection: Boolean,
+    val prerequisiteUnlocks: List<PromotionUnlock>,
+    val afterSelection: PromotionExperience? = null,
 )
 
 @Serializable
-data class UnitPromotionStatus(val experience: Int, val experienceForNextPromotion: Int, val earnedPromotions: Int, val choices: List<PromotionOption>)
+data class PromotionUnlock(val name: String, val description: String)
+
+@Serializable
+data class PromotionExperience(val experienceRemaining: Int, val nextPromotionCost: Int, val experienceNeededForNextPromotion: Int)
+
+@Serializable
+data class UnitRecovery(
+    val healingThisTurn: Int,
+    val healingPerRestTurn: Int,
+    val turnEndsToFullHealth: Int?,
+    val basis: String = "Rest without a promotion on the current tile with unchanged healing bonuses and no further damage; count turn ends starting with this turn.",
+)
+
+@Serializable
+data class UnitPromotionStatus(
+    val experience: Int,
+    val experienceForNextPromotion: Int,
+    val earnedPromotions: Int,
+    val totalExperience: Int,
+    val barbarianExperienceLimit: Int,
+    val canEarnExperienceFromBarbarians: Boolean,
+    val recovery: UnitRecovery,
+    val choices: List<PromotionOption>,
+)
 
 @Serializable
 data class UnitCombat(
@@ -142,7 +168,7 @@ internal fun observeUnitCombat(player: Civilization, unit: MapUnit, active: Bool
     val combat = PlayerCombatOperations(player)
     val orders = PlayerUnitOrders(player)
     val order = orders.status(unit)
-    val promotions = orders.promotions(unit)
+    val recovery = order?.let { observeRecovery(unit, it.healingPerTurn) }
     return UnitCombat(
         role = militaryRole(unit.baseUnit),
         supported = combat.supportsAttack(unit),
@@ -151,20 +177,9 @@ internal fun observeUnitCombat(player: Civilization, unit: MapUnit, active: Bool
         range = unit.getRange(),
         attacksRemaining = (unit.maxAttacksPerTurn() - unit.attacksThisTurn).coerceAtLeast(0),
         attacks = frozen(if (active) combat.attacks(unit).map { it.observation(contexts) } else emptyList()),
-        order = order?.let { UnitOrderStatus(it.action, it.due, it.idle, it.fortificationTurns, it.healingPerTurn, it.automated) },
+        order = order?.let { UnitOrderStatus(it.action, it.due, it.idle, it.fortificationTurns, recovery!!.healingThisTurn, it.automated) },
         orders = frozen(orders.orders(unit).map { UnitOrderOption(it.order.name, active && it.available, frozen(it.unavailableReasons)) }),
-        promotions = promotions?.let { status ->
-            UnitPromotionStatus(
-                status.experience,
-                status.experienceForNextPromotion,
-                status.earnedPromotions,
-                frozen(
-                    status.choices.map {
-                        PromotionOption(it.name, it.description, frozen(it.prerequisites), it.acquired, it.experienceCost, active && it.available, frozen(it.unavailableReasons))
-                    },
-                ),
-            )
-        },
+        promotions = orders.promotions(unit)?.let { observePromotions(unit, it, active, recovery!!) },
     )
 }
 

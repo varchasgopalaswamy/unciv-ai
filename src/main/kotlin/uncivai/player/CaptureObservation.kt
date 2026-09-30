@@ -13,6 +13,9 @@ import java.util.Collections
 @Serializable
 data class CivilianCaptureOutcome(val recipient: String, val unitType: String?)
 
+@Serializable
+data class CaptureDiplomaticEffect(val civilizationId: String, val stat: String, val operation: String, val value: Float, val before: Float?, val after: Float)
+
 @OptIn(ExperimentalSerializationApi::class)
 @Serializable
 data class CaptureOption(
@@ -22,6 +25,7 @@ data class CaptureOption(
     val available: Boolean,
     val unavailableReasons: List<String>,
     @EncodeDefault(EncodeDefault.Mode.NEVER) val civilianOutcome: CivilianCaptureOutcome? = null,
+    @EncodeDefault(EncodeDefault.Mode.NEVER) val diplomaticEffect: CaptureDiplomaticEffect? = null,
 )
 
 @Serializable
@@ -50,6 +54,7 @@ internal fun com.unciv.logic.civilization.CaptureOption.observation(active: Bool
     active && unavailableReasons.isEmpty(),
     frozen(unavailableReasons.map { it.tr() }),
     civilianOutcome?.let { CivilianCaptureOutcome(it.recipient, it.unitType) },
+    diplomaticEffect?.let { CaptureDiplomaticEffect(it.civilizationId, it.stat, it.operation, it.value, it.before, it.after) },
 )
 
 internal fun com.unciv.logic.civilization.CaptureDecision.observation(active: Boolean) = CaptureDecision(

@@ -122,6 +122,164 @@ def test_direct_launch_and_shutdown_order(tmp_path, fake_services, flags, enable
     assert all((a.review_interval, a.review_attempts) == (5, 3) for a in agents)
 
 
+@pytest.mark.parametrize(
+    "flags, expected, scheduler_settings",
+    [
+        (
+            ["--agent-model", "Rome=rome-model"],
+            [("rome-model", "high"), ("default-model", "high"), ("default-model", "high")],
+            (None, "high"),
+        ),
+        (
+            ["--agent-reasoning-effort", "Greece=max"],
+            [("default-model", "high"), ("default-model", "max"), ("default-model", "high")],
+            ("default-model", None),
+        ),
+        (
+            [
+                "--agent-model",
+                "Rome=rome-model",
+                "--agent-model",
+                "Greece=greek-model",
+                "--agent-reasoning-effort",
+                "Greece=max",
+                "--agent-reasoning-effort",
+                "France=medium",
+            ],
+            [("rome-model", "high"), ("greek-model", "max"), ("default-model", "medium")],
+            (None, None),
+        ),
+    ],
+)
+def test_per_civ_settings_reach_services_output_and_metadata(
+    tmp_path, fake_services, capsys, flags, expected, scheduler_settings
+):
+    assert (
+        cli.main(
+            [
+                "game",
+                "start",
+                "--state-dir",
+                str(tmp_path),
+                "--color",
+                "never",
+                "--model",
+                "default-model",
+                "--reasoning-effort",
+                "high",
+                *flags,
+            ]
+        )
+        == 3
+    )
+    processes, scheduled, _ = fake_services
+    agents = [agent_server.parser().parse_args(p.command[2:]) for p in processes[1:]]
+    assert [(a.model, a.reasoning_effort) for a in agents] == expected
+    # Non-null scheduler settings override services, including opening reviews.
+    assert (scheduled[0].model, scheduled[0].reasoning_effort) == scheduler_settings
+    metadata = json.loads(next((tmp_path / "launches").glob("*/launch.json")).read_text())
+    assert metadata["agentSettings"] == {
+        civ: {"model": model, "reasoningEffort": effort}
+        for civ, (model, effort) in zip(("Rome", "Greece", "France"), expected, strict=True)
+    }
+    output = capsys.readouterr().out
+    for civ, (model, effort) in zip(("Rome", "Greece", "France"), expected, strict=True):
+        assert f"[{civ}] Player: {model} · {effort} reasoning" in output
+
+
+@pytest.mark.parametrize("scheduler_started", [True, False])
+@pytest.mark.parametrize("repeat_flags", [[], ["--agent-model", "Rome=rome-model"]])
+def test_resume_restores_all_per_civ_settings(tmp_path, fake_services, scheduler_started, repeat_flags):
+    assert (
+        game.run(
+            options(
+                tmp_path,
+                "--model",
+                "default-model",
+                "--reasoning-effort",
+                "high",
+                "--agent-model",
+                "Rome=rome-model",
+                "--agent-model",
+                "Greece=greek-model",
+                "--agent-reasoning-effort",
+                "Greece=max",
+            )
+        )
+        == 3
+    )
+    saved = json.loads((tmp_path / "launch-settings.json").read_text())
+    assert saved["agent_models"] == {"Rome": "rome-model", "Greece": "greek-model"}
+    assert saved["agent_reasoning_efforts"] == {"Greece": "max"}
+    if not scheduler_started:
+        # A saved board and launcher settings suffice after initial startup fails.
+        path_for(tmp_path).unlink()
+    resumed = options(tmp_path, *repeat_flags, action="resume")
+    game.resolve_options(resumed)
+    assert (resumed.model, resumed.reasoning_effort) == ("default-model", "high")
+    assert resumed.scheduler_action == ("resume" if scheduler_started else "start")
+    assert game.run_services(resumed, game.TerminalOutput(color="never")) == 0
+    processes, scheduled, _ = fake_services
+    first = [agent_server.parser().parse_args(p.command[2:]) for p in processes[1:4]]
+    later = [agent_server.parser().parse_args(p.command[2:]) for p in processes[5:8]]
+    assert [(a.model, a.reasoning_effort) for a in later] == [(a.model, a.reasoning_effort) for a in first]
+    assert (scheduled[1].model, scheduled[1].reasoning_effort) == (None, None)
+
+
+@pytest.mark.parametrize(
+    "flags",
+    [
+        ["--model", "changed-model"],
+        ["--reasoning-effort", "low"],
+        ["--agent-model", "Rome=changed-model"],
+        ["--agent-model", "France=changed-model"],
+        ["--agent-reasoning-effort", "Greece=low"],
+        ["--agent-reasoning-effort", "France=low"],
+    ],
+)
+def test_resume_rejects_changed_per_civ_settings_before_starting(tmp_path, fake_services, capsys, flags):
+    assert (
+        game.run(options(tmp_path, "--agent-model", "Rome=rome-model", "--agent-reasoning-effort", "Greece=max")) == 3
+    )
+    settings = (tmp_path / "launch-settings.json").read_bytes()
+    state = read_record(path_for(tmp_path), "state", "run")
+    assert game.run(options(tmp_path, *flags, action="resume")) == 2
+    assert "Resume retains" in capsys.readouterr().err
+    assert len(fake_services[0]) == 4 and len(fake_services[1]) == 1
+    assert (tmp_path / "launch-settings.json").read_bytes() == settings
+    assert read_record(path_for(tmp_path), "state", "run") == state
+
+
+@pytest.mark.parametrize("flag", ["--agent-model", "--agent-reasoning-effort"])
+@pytest.mark.parametrize("value", ["Rome", "=value", " =value", "Rome=", "Rome=two words"])
+def test_per_civ_settings_require_civ_and_valid_value(tmp_path, flag, value):
+    with pytest.raises(SystemExit):
+        options(tmp_path, flag, value)
+
+
+@pytest.mark.parametrize("flag", ["--agent-model", "--agent-reasoning-effort"])
+def test_duplicate_per_civ_settings_are_rejected(tmp_path, flag):
+    with pytest.raises(SystemExit):
+        options(tmp_path, flag, "Rome=first", flag, "Rome=second")
+
+
+@pytest.mark.parametrize("civilization", ["Egypt", "Atlantis", "rome"])
+@pytest.mark.parametrize("flag", ["--agent-model", "--agent-reasoning-effort"])
+def test_overrides_require_an_agent_in_the_roster(tmp_path, fake_services, capsys, civilization, flag):
+    assert game.run(options(tmp_path, flag, f"{civilization}=value")) == 2
+    assert "requires an agent civilization" in capsys.readouterr().err
+    assert fake_services == ([], [], [])
+
+
+def test_overrides_support_custom_agent_rosters(tmp_path, fake_services):
+    assert game.run(options(tmp_path, "--agents", "Rome", "Germany", "--agent-model", "Germany=german-model")) == 3
+    agents = [agent_server.parser().parse_args(p.command[2:]) for p in fake_services[0][1:]]
+    assert [(a.civilization, a.model, a.reasoning_effort) for a in agents] == [
+        ("Rome", "gpt-6-luna", "medium"),
+        ("Germany", "german-model", "medium"),
+    ]
+
+
 def test_review_cadence_and_attempt_limit_are_forwarded_and_retained(tmp_path, fake_services):
     assert game.run(options(tmp_path, "--review-interval", "7", "--review-attempts", "2")) == 3
     agents = [agent_server.parser().parse_args(p.command[2:]) for p in fake_services[0][1:]]

@@ -19,6 +19,8 @@ class CityStateIntegrationTest {
 
     @Test fun `city state observations protect unknown identities and hidden resources`() = run("privacy")
 
+    @Test fun `every native quest retains its mechanical requirement in serialized observations`() = run("requirements")
+
     @Test fun `city state commands recover before and after checkpoint replacement`() = run("recovery")
 
     private fun run(scenario: String) {

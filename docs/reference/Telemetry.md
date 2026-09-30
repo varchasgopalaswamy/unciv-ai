@@ -34,12 +34,14 @@ Input usage adds the context processed by every model request within a game turn
 It is not the size of one prompt or a count of distinct game information. Cached
 input is included in that total; uncached input is input minus cached input.
 
-Strategic reviewers have separate `review` jobs linked to their source gameplay
-job. Every attempt's tokens, calls and duration count toward that source turn,
+Strategic reviewers have separate `review` jobs. Periodic reviews link to their
+source gameplay job; opening reviews have no parent and count toward their owner's
+turn 0. Every attempt's tokens, calls and duration count toward that source turn,
 even if it finishes during a later turn. Player totals expose `reviewUsage`
 separately from `gameplayUsage` and `chatUsage`. Provider usage and completeness
 remain per job; a failed attempt is still counted. Snapshot capture calls are
-service reads, recorded under the source gameplay job.
+service reads, recorded under the source gameplay job for periodic reviews.
+Opening capture happens before gameplay and appears in host API accounting.
 
 Agent-facing tools are counted by the trusted service, including cached reads,
 validation failures, and repeated calls. Server tools are independently counted at

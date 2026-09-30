@@ -46,6 +46,19 @@ def native_options(native: JsonObject, recipient: str) -> JsonObject:
         ]
     if "promises" in value:
         value["promises"] = [{k: v for k, v in promise.items() if k != "text"} for promise in value["promises"]]
+    if "opinionModifiers" in value:
+        value["opinionModifiers"] = [
+            {k: v for k, v in modifier.items() if k != "text"} for modifier in value["opinionModifiers"]
+        ]
+    return value
+
+
+def capture_option(option: JsonObject) -> JsonObject:
+    value = dict(option)
+    if value.get("name") == "Liberate":
+        value["paragraphs"] = [
+            "Returns the city to its founding civilization. Increases city-state influence or native diplomatic opinion."
+        ]
     return value
 
 
@@ -68,6 +81,14 @@ def player_alert(alert: JsonObject) -> JsonObject:
         friendship["sender"] = friendship["civilizationId"]
         friendship.pop("content", None)
         value["friendship"] = friendship
+    if kind in {"RecapturedCivilian", "CityConquered", "CityTraded"} and isinstance(value.get("capture"), dict):
+        capture = dict(value["capture"])
+        if kind == "RecapturedCivilian":
+            # Recipient and unit conversion are in the choices; the introductory
+            # promise of gratitude is not a player-authored commitment.
+            capture["paragraphs"] = []
+        capture["options"] = [capture_option(option) for option in capture["options"]]
+        value["capture"] = capture
     return value
 
 
@@ -117,7 +138,7 @@ def model_view(value: Any) -> Any:
             value["unavailableReason"] = "This proposal expired."
         if value.get("unavailableReason") == "Awaiting the built-in AI's native turn.":
             value["unavailableReason"] = "Awaiting a response."
-    if {"civilizationId", "missingLuxuriesOffered", "spareLuxuriesToOffer"} <= value.keys():
+    if {"civilizationId", "missingLuxuriesAvailableForTrade", "spareLuxuriesToOffer"} <= value.keys():
         value.pop("mode", None)
     if {"id", "kind", "body", "wake"} <= value.keys():
         value.pop("wake")
@@ -150,6 +171,8 @@ def model_view(value: Any) -> Any:
         )
     if {"handle", "kind", "canAcknowledge"} <= value.keys():
         value = player_alert(value)
+    if {"handle", "captureOptions"} <= value.keys():
+        value["captureOptions"] = [capture_option(option) for option in value["captureOptions"]]
     if {"civilizationId", "native"} <= value.keys() and isinstance(value["native"], dict):
         value["native"] = native_options(value["native"], value["civilizationId"])
     if {"title", "paragraphs", "acknowledgement"} <= value.keys():
@@ -158,8 +181,9 @@ def model_view(value: Any) -> Any:
         gameplay = value.pop("gameplayDescription")
         if gameplay is not None:
             value["description"] = gameplay
-    if {"outcome", "winningCivilizationId", "victoryType", "paragraphs"} <= value.keys():
-        value.pop("paragraphs")
+    if {"outcome", "winningCivilizationId", "victoryType"} <= value.keys():
+        value.pop("paragraphs", None)
+        value.pop("title", None)  # Generic defeat uses a narrative speech as its title.
     if {"name", "influenceReward", "objective"} <= value.keys() and value["objective"] is not None:
         value.pop("description", None)
         # In these two quests the named civilization is the recent bully, not

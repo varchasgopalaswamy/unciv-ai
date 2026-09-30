@@ -5,9 +5,9 @@ import com.unciv.logic.map.mapunit.FoundingUnitRejection
 import com.unciv.logic.map.mapunit.MapUnit
 import com.unciv.logic.map.mapunit.UnitSettlement
 import com.unciv.logic.map.tile.SettlementRejection
-import com.unciv.logic.map.tile.SettlementBlocker as NativeSettlementBlocker
 import kotlinx.serialization.Serializable
 import java.util.Collections
+import com.unciv.logic.map.tile.SettlementBlocker as NativeSettlementBlocker
 
 @Serializable
 data class SettlementBlocker(
@@ -65,10 +65,13 @@ internal fun observeSettlement(player: Civilization, unit: MapUnit?, destination
     // The settlement lens deliberately exposes native eligibility on explored tiles,
     // including restrictions caused by undiscovered cities. City identities remain private.
     val observed = tile != null && tile.isExplored(player)
-    val blockers = if (observed) tile!!.settlementBlockers(player)
-        .map { observeSiteBlocker(player, it, knowledge) }
-        .distinct().sortedWith(compareBy({ it.code }, { it.position?.x }, { it.position?.y })).toList()
-    else emptyList()
+    val blockers = if (observed) {
+        tile!!.settlementBlockers(player)
+            .map { observeSiteBlocker(player, it, knowledge) }
+            .distinct().sortedWith(compareBy({ it.code }, { it.position?.x }, { it.position?.y })).toList()
+    } else {
+        emptyList()
+    }
     return SettlementPreview(
         destination, atDestination,
         if (atDestination) active && UnitSettlement.canFoundCity(unit!!) else null,
@@ -98,8 +101,13 @@ private fun observeSiteBlocker(player: Civilization, blocker: NativeSettlementBl
     val known = knowledge[position]?.takeIf { it.cityName != null }
     if (!visible && known == null) return SettlementBlocker(code, "City-spacing rules prevent founding here.")
     return SettlementBlocker(
-        code, "City centers must be at least ${blocker.minimumDistance} hexes apart here.",
-        if (visible) city.name else known!!.cityName, position, blocker.distance, blocker.minimumDistance,
-        if (visible) player.gameInfo.turns else known!!.observedTurn, remembered = !visible,
+        code,
+        "City centers must be at least ${blocker.minimumDistance} hexes apart here.",
+        if (visible) city.name else known!!.cityName,
+        position,
+        blocker.distance,
+        blocker.minimumDistance,
+        if (visible) player.gameInfo.turns else known!!.observedTurn,
+        remembered = !visible,
     )
 }

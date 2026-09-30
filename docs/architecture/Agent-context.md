@@ -65,6 +65,12 @@ are not called completions.
 The overview also prepares research/culture progress, city yields and specialist
 use, city-generated Great Person progress, compact resource balances, city-state
 benefits, exploration frontiers and expansion resources/happiness estimates.
+`civilizationProfile` supplies the selected ruleset's own unique ability and
+unique units/buildings from the opening turn, including future unlocks, mechanical
+conditions, inherent promotion effects and comparisons with ordinary replacements.
+The same profile enters frozen strategic reviews. Current research updates its
+technology conditions and obsolescence; unchanged profiles are omitted from action
+deltas. Native personality settings and preferred victory types are not included.
 Research is limited to eight candidate technologies, exploration to four frontier
 groups, and settlement to three separated candidate centers. Full catalogues and
 maps remain available through focused reads. Identical settlement budgets are
@@ -110,7 +116,10 @@ they describe the earlier prompt layout. Memory writing is now optional during
 play; there is no post-turn writing schema or mandatory strategy write.
 
 A [background strategic review](Structured-memory.md#routine-strategic-review)
-runs at the end of every K turns, starting at K (`--review-interval`, default 5).
+runs before the first move on turn 0, then at the end of every K turns, starting
+at K (`--review-interval`, default 5). Opening reviews run concurrently from each
+civilization's own starting view and ability profile. Each civilization waits for
+its own report before its first gameplay turn.
 It uses the player's model and effort, a captured permitted position and planning
 catalogues, and read-only frozen detail tools. Known foreign cities are summarized
 with observed capital status and visibility; current defenses require visibility.
@@ -207,7 +216,14 @@ describes actions the reader may issue; it is not evidence of a received demand.
 
 Player chat, negotiated promises, private plans and their ambiguity are preserved.
 Unknown content is retained when its mechanical meaning lacks a structured
-replacement. Notifications and combat prose remain when they carry event facts.
+replacement. Capture choices retain unit recipients/conversions, city-control
+effects, availability and commands, without promises of gratitude. Native AI
+opinion modifiers retain their names and numerical amounts without stock speeches.
+Notifications and combat prose remain when they carry event facts. Known native
+notification templates with narrative wording are rendered as factual events
+before translation and visibility filtering; native saves retain the original
+notification text. This includes city-state rewards and requests, ancient-ruin
+effects, religious-unit attrition and the Long Count free-person choice.
 The host does not decide what a social promise means or impose penalties.
 
 Native diplomacy uses the current host's structured identities, duration and

@@ -2,8 +2,10 @@ package uncivai
 
 import com.unciv.json.json
 import com.unciv.logic.map.HexCoord
+import uncivai.player.CombatConsequences
 import uncivai.player.MovementPreviewRequest
 import uncivai.player.PlayerHost
+import uncivai.player.PlayerTurnJson
 import uncivai.player.TilePosition
 import uncivai.player.TurnCommandKind
 import uncivai.player.TurnCommandRequest
@@ -14,10 +16,14 @@ object TacticalConsequencesProbe {
         try {
             when (args[1]) {
                 "combat" -> combat(Path.of(args[0]))
+                "capture" -> capture(Path.of(args[0]))
                 "lethal" -> lethal(Path.of(args[0]))
                 "movement" -> movement(Path.of(args[0]))
                 "privacy" -> privacy(Path.of(args[0]))
                 "civilian" -> CivilianMovementProbe.run(Path.of(args[0]))
+                "protection" -> SettlerProtectionProbe.protection(Path.of(args[0]))
+                "sightings" -> SettlerProtectionProbe.sightings(Path.of(args[0]))
+                "promotions" -> PromotionObservationProbe.run(Path.of(args[0]))
                 else -> error("Unknown case")
             }
         } catch (failure: Throwable) {
@@ -49,7 +55,9 @@ object TacticalConsequencesProbe {
         check(consequences.defender.remainingMin > 0 && !consequences.defender.destructionPossible)
         check(consequences.attackFrom.ownMilitary.isEmpty()) { "The attacker was counted as its own cover" }
         check(consequences.attackFrom.visibleHostiles.single().position == attack.destination)
-        check(consequences.mayAdvanceTo!!.position == attack.destination)
+        check(consequences.targetTileContext!!.position == attack.destination)
+        val encoded = PlayerTurnJson.json.encodeToString(CombatConsequences.serializer(), consequences)
+        check("targetTileContext" in encoded && "mayAdvanceTo" !in encoded && "\"capturePossible\"" !in encoded)
         check(before == json().toJson(game)) { "A consequence query changed native state" }
         // Risk remains advisory: a native-legal attack can still be ordered.
         val result = session.execute(TurnCommandRequest("risk", turn.epoch, turn.revision, TurnCommandKind.ATTACK, unit.handle, destination = attack.destination, attackFrom = attack.attackFrom))
@@ -58,12 +66,56 @@ object TacticalConsequencesProbe {
         enemy.cities.single().health = 5
         player.units.placeUnitNearTile(HexCoord(-5, 0), "Archer")!!
         player.units.placeUnitNearTile(HexCoord(-6, 0), "Warrior")!!
+        player.units.placeUnitNearTile(HexCoord(-7, 1), "Helicopter Gunship")!!
         player.viewableTiles = game.tileMap.values.toSet()
-        val cityOffers = session.turn().map.units.filter { it.name in setOf("Archer", "Warrior") }
+        val cityOffers = session.turn().map.units.filter { it.name in setOf("Archer", "Warrior", "Helicopter Gunship") }
         for (owned in cityOffers) {
             val offer = owned.combat!!.attacks.first { it.defenderIsCity }.consequences!!
             check(offer.defender.remainingMin == 1 && !offer.defender.destructionPossible)
-            check(offer.capturePossible == (owned.name == "Warrior"))
+            check(offer.civilianOrCityCapturePossible == (owned.name == "Warrior"))
+            check(!offer.civilianDestroyedOnCapture)
+        }
+    }
+
+    private fun capture(root: Path) {
+        for (name in listOf("Worker", "Settler", "Great Scientist")) {
+            SettlementPreviewProbe.fixture(root.resolve(name.replace(" ", ""))).use { runtime ->
+                val game = runtime.game
+                val player = game.getCivilization("Rome")
+                val enemy = game.getCivilization("Greece")
+                player.units.getCivUnits().toList().forEach { it.destroy() }
+                player.units.placeUnitNearTile(HexCoord(1, 0), "Warrior")!!
+                enemy.units.placeUnitNearTile(HexCoord(2, 0), name)!!
+                player.diplomacyFunctions.makeCivilizationsMeet(enemy)
+                player.getDiplomacyManager(enemy)!!.declareWar()
+                player.popupAlerts.clear()
+                player.viewableTiles = game.tileMap.values.toSet()
+                val session = PlayerHost(runtime).bindPlayer("Rome")
+                val before = json().toJson(game)
+                val turn = session.turn()
+                val unit = turn.map.units.single()
+                val target = TilePosition(2, 0)
+                val attack = unit.combat!!.attacks.first { it.destination == target && it.attackFrom == unit.position }
+                val consequence = attack.consequences!!
+                val destroyed = name == "Great Scientist"
+                check(consequence.civilianOrCityCapturePossible == !destroyed)
+                check(consequence.civilianDestroyedOnCapture == destroyed)
+                check((turn.map.tiles.single { it.position == target }.units.single().capture == null) == destroyed)
+                check(before == json().toJson(game))
+                val receipt = session.execute(
+                    TurnCommandRequest(
+                        "capture-$name",
+                        turn.epoch,
+                        turn.revision,
+                        TurnCommandKind.ATTACK,
+                        unit.handle,
+                        destination = target,
+                        attackFrom = attack.attackFrom,
+                    ),
+                )
+                check(receipt.combat!!.defenderCaptured == !destroyed)
+                check(receipt.combat.defenderDestroyed == destroyed)
+            }
         }
     }
 

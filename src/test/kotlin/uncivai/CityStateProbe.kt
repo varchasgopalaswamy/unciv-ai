@@ -6,6 +6,7 @@ import com.unciv.logic.civilization.CivFlags
 import com.unciv.logic.civilization.NotificationCategory
 import com.unciv.logic.civilization.PopupAlert
 import com.unciv.logic.civilization.diplomacy.DiplomacyFlags
+import com.unciv.models.ruleset.QuestName
 import uncivai.player.PlayerHost
 import uncivai.player.PlayerTurnJson
 import uncivai.player.PlayerTurnSnapshot
@@ -25,9 +26,59 @@ object CityStateProbe {
             "conflict" -> conflict(root)
             "popups" -> popups(root)
             "privacy" -> privacy(root)
+            "requirements" -> requirements(root)
             "recovery" -> recovery(root)
             else -> error(args[1])
         }
+    }
+
+    private fun requirements(root: Path) = CityStateFixtures.create(root.resolve("initial")).use { runtime ->
+        val game = runtime.game
+        val player = game.getCivilization("Rome")
+        val minor = game.getCivilization("Geneva")
+        val keywords = mapOf(
+            QuestName.Route to "capital",
+            QuestName.ClearBarbarianCamp to "encampment",
+            QuestName.ConnectResource to "supply",
+            QuestName.ConstructWonder to "built",
+            QuestName.GreatPerson to "Great Person",
+            QuestName.ConquerCityState to "eliminate",
+            QuestName.FindPlayer to "territory",
+            QuestName.FindNaturalWonder to "Discover",
+            QuestName.GiveGold to "gift",
+            QuestName.PledgeToProtect to "protection",
+            QuestName.ContestCulture to "positive scores",
+            QuestName.ContestFaith to "positive scores",
+            QuestName.ContestTech to "positive scores",
+            QuestName.Invest to "no completion action",
+            QuestName.BullyCityState to "tribute",
+            QuestName.DenounceCiv to "denunciation",
+            QuestName.SpreadReligion to "majority religion",
+        )
+        check(keywords.keys == QuestName.entries.toSet() - QuestName.None)
+        for (kind in keywords.keys) {
+            val data = when (kind) {
+                QuestName.Route -> ""
+                QuestName.ClearBarbarianCamp, QuestName.ContestCulture, QuestName.ContestFaith, QuestName.ContestTech -> "0"
+                QuestName.ConnectResource -> "Gems"
+                QuestName.ConstructWonder -> "Stonehenge"
+                QuestName.GreatPerson -> "Great Scientist"
+                QuestName.FindNaturalWonder -> "Old Faithful"
+                QuestName.Invest -> "50"
+                QuestName.SpreadReligion -> "Buddhism"
+                else -> "Greece"
+            }
+            CityStateFixtures.addQuest(minor, player, kind.value, data, "0")
+        }
+        val before = json().toJson(game)
+        val snapshot = PlayerHost(runtime).bindPlayer("Rome").turn()
+        val detached = PlayerTurnJson.json.decodeFromString<PlayerTurnSnapshot>(PlayerTurnJson.encode(snapshot))
+        val quests = detached.diplomacy.cityStates.single { it.civilizationId == minor.civID }.quests
+        for ((kind, keyword) in keywords) {
+            val objective = quests.first { it.name == kind.value }.objective!!
+            check(objective.issuer == minor.civID && keyword in objective.requirement) { "$kind: $objective" }
+        }
+        check(before == json().toJson(game)) { "Reading quest requirements mutated the game" }
     }
 
     private fun ordinary(root: Path) {

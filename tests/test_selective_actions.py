@@ -164,9 +164,10 @@ def options_snapshot():
         },
         settlementPromises=[{"civilization": "Greece", "consequences": "Break native promise"}],
         combat={
+            "attacksRemaining": 1,
             "promotions": {
                 "choices": [{"name": "Drill I", "available": True}, {"name": "Drill II", "available": False}]
-            }
+            },
         },
         economy={"disband": {"available": True, "gold": 10, "confirmation": "Lose unit"}},
         worker={
@@ -235,7 +236,7 @@ def test_selective_reads_preserve_consequences_without_delivering_unrelated_fiel
     assert full["futureInformation"] == {"visible": True}
     assert len(json.dumps(move)) < len(json.dumps(full)) / 2
     assert snapshot == before
-    assert overview(snapshot)["units"][0]["availablePromotions"] == 1
+    assert [c["name"] for c in overview(snapshot)["units"][0]["promotions"]["choices"]] == ["Drill I"]
 
 
 @pytest.mark.parametrize("status", ["BLOCKED", "UNKNOWN", "ELIGIBLE"])

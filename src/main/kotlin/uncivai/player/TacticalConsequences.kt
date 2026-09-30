@@ -1,11 +1,12 @@
 package uncivai.player
 
 import com.unciv.Constants
+import com.unciv.logic.battle.AttackParticipantOutcome
 import com.unciv.logic.battle.CityCombatant
 import com.unciv.logic.battle.ICombatant
 import com.unciv.logic.battle.MapUnitCombatant
-import com.unciv.logic.civilization.Civilization
 import com.unciv.logic.civilization.CivilianCaptureThreats
+import com.unciv.logic.civilization.Civilization
 import com.unciv.logic.civilization.PlayerCombatOperations
 import com.unciv.logic.map.mapunit.MapUnit
 import com.unciv.logic.map.mapunit.UnitSettlement
@@ -35,9 +36,11 @@ data class HealthProjection(val current: Int, val remainingMin: Int, val remaini
 data class CombatConsequences(
     val attacker: HealthProjection,
     val defender: HealthProjection,
-    val capturePossible: Boolean,
+    val civilianOrCityCapturePossible: Boolean,
+    val civilianDestroyedOnCapture: Boolean,
     val attackFrom: PositionContext,
-    val mayAdvanceTo: PositionContext?,
+    /** Target surroundings for melee planning; no prediction of entry after combat. */
+    val targetTileContext: PositionContext?,
     val attackerConsumedOnAttack: Boolean,
 )
 
@@ -50,6 +53,7 @@ data class MovementConsequences(
     val context: PositionContext,
     val escort: EscortMovement? = null,
     val captureRisk: CivilianMovementRisk? = null,
+    val civilianExposure: CivilianExposure? = null,
 )
 
 @Serializable
@@ -66,19 +70,60 @@ data class CivilianCaptureThreat(val name: String, val civilization: String, val
 @Serializable
 data class EscortMovement(val unit: String, val movementRemaining: Float, val attack: String, val foundCity: String?)
 
-internal class PositionContexts(private val player: Civilization) {
+internal class PositionContexts(private val player: Civilization, private val state: TurnSessionState? = null) {
     private val captureThreats = CivilianCaptureThreats(player)
+    private val camps by lazy { knownBarbarianCamps(player) }
+    private val sightings by lazy { state?.let { recentBarbarianSightings(player, it) }.orEmpty() }
+
+    fun civilianExposure(unit: MapUnit, destination: Tile): CivilianExposure? {
+        if (!unit.isCivilian()) return null
+        val paired = unit.getOtherEscortUnit()?.takeIf { unit.isEscorting() && it.isMilitary() }
+        val guard = paired ?: destination.militaryUnit?.takeIf { it.civ === player }
+        val protection = when {
+            paired != null -> "ESCORT_FORMATION"
+            guard != null -> "SAME_TILE_MILITARY"
+            destination.isCityCenter() && destination.getOwner() === player -> "FRIENDLY_CITY"
+            else -> "UNESCORTED"
+        }
+        val threats = captureThreats.at(unit, destination)
+        return CivilianExposure(
+            protection,
+            guard?.let { state?.unitHandle(it) },
+            when {
+                protection != "UNESCORTED" -> "GUARDED"
+                threats.isNotEmpty() -> "VISIBLE_CAPTURE_THREAT"
+                else -> "NO_VISIBLE_CAPTURE_THREAT"
+            },
+            frozen(threats.map { TilePosition(it.unit.currentTile.position.x, it.unit.currentTile.position.y) }),
+            unseenTiles(destination),
+            frozen(
+                camps.filter { it.aerialDistanceTo(destination) <= CIVILIAN_KNOWLEDGE_RADIUS }
+                    .map { TilePosition(it.position.x, it.position.y) }.sortedWith(compareBy({ it.x }, { it.y })),
+            ),
+            frozen(
+                sightings.filter { player.gameInfo.tileMap[it.position.x, it.position.y].aerialDistanceTo(destination) <= CIVILIAN_KNOWLEDGE_RADIUS }
+                    .map { it.position }.distinct().sortedWith(compareBy({ it.x }, { it.y })),
+            ),
+        )
+    }
 
     fun captureRisk(unit: MapUnit, destination: Tile): CivilianMovementRisk? {
         val threats = captureThreats.at(unit, destination)
         if (threats.isEmpty()) return null
         return CivilianMovementRisk(
             TilePosition(destination.position.x, destination.position.y),
-            frozen(threats.map { (enemy, _, speculative, movement) ->
-                CivilianCaptureThreat(enemy.name, enemy.civ.civName,
-                    TilePosition(enemy.currentTile.position.x, enemy.currentTile.position.y), enemy.health,
-                    movement, speculative)
-            }.sortedWith(compareBy({ it.position.x }, { it.position.y }, { it.name }))),
+            frozen(
+                threats.map { (enemy, _, speculative, movement) ->
+                    CivilianCaptureThreat(
+                        enemy.name,
+                        enemy.civ.civName,
+                        TilePosition(enemy.currentTile.position.x, enemy.currentTile.position.y),
+                        enemy.health,
+                        movement,
+                        speculative,
+                    )
+                }.sortedWith(compareBy({ it.position.x }, { it.position.y }, { it.name })),
+            ),
         )
     }
     private val hostiles = player.viewableTiles.flatMap { tile ->
@@ -122,7 +167,8 @@ internal fun PlayerCombatOperations.AttackPreview.consequences(contexts: Positio
     return CombatConsequences(
         health(attacker, minDamageToAttacker, maxDamageToAttacker),
         defenderHealth,
-        attacker.isMelee() && (defender.isCivilian() || (defender is CityCombatant && defenderHealth.remainingMin == 1)),
+        civilianOrCityCapturePossible(),
+        civilianCaptureOutcome() == AttackParticipantOutcome.Destroyed,
         contexts.at(attackFrom, unit),
         if (attacker.isMelee()) contexts.at(target, unit) else null,
         unit?.hasUnique(UniqueType.SelfDestructs) == true,
@@ -176,10 +222,17 @@ internal fun movementConsequences(
         val partner = checkNotNull(unit.getOtherEscortUnit())
         val result = movementConsequences(player, partner, destination, escortCost, contexts, emptyList(), knowledge, laterTurn)
         val partnerAttack = if (partner.isMilitary() && result.movementRemaining > 0f &&
-            (laterTurn || partner.attacksThisTurn < partner.maxAttacksPerTurn())) "RECHECK_ON_ARRIVAL" else result.attack
+            (laterTurn || partner.attacksThisTurn < partner.maxAttacksPerTurn())
+        ) {
+            "RECHECK_ON_ARRIVAL"
+        } else {
+            result.attack
+        }
         EscortMovement(escortHandle, result.movementRemaining, partnerAttack, result.foundCity)
-    } else null
-    return MovementConsequences(remaining, attack, founding, contexts.at(destination, unit), escort, contexts.captureRisk(unit, destination))
+    } else {
+        null
+    }
+    return MovementConsequences(remaining, attack, founding, contexts.at(destination, unit), escort, contexts.captureRisk(unit, destination), contexts.civilianExposure(unit, destination))
 }
 
 private fun <T> frozen(values: List<T>): List<T> = Collections.unmodifiableList(values)

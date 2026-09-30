@@ -77,7 +77,7 @@ refresh, including fingerprint initialization, fell from about 9.0 seconds to
 
 ## Store format and rollback
 
-The notebook uses format 7. Older memory files and checkpoints are rejected;
+The notebook uses format 8. Older memory files and checkpoints are rejected;
 there is no migration or compatibility path. Use a fresh match after this change.
 
 Within the current format, checkpoint hashes cover the referenced immutable record

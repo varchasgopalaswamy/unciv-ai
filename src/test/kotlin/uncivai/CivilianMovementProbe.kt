@@ -48,8 +48,13 @@ internal object CivilianMovementProbe {
             val risk = if (kind == TurnCommandKind.MOVE_UNIT) {
                 unit.moves.single { it.destination == destination }.afterMove!!.captureRisk
             } else {
-                val preview = PlayerTurnJson.json.decodeFromString<MovementPreview>(api.tool(token, "movement_preview",
-                    obj("target" to unit.handle, "destination" to obj("x" to destination.x, "y" to destination.y))).toString())
+                val preview = PlayerTurnJson.json.decodeFromString<MovementPreview>(
+                    api.tool(
+                        token,
+                        "movement_preview",
+                        obj("target" to unit.handle, "destination" to obj("x" to destination.x, "y" to destination.y)),
+                    ).toString(),
+                )
                 check(preview.available)
                 preview.turns.first().afterMove!!.captureRisk
             }
@@ -59,8 +64,10 @@ internal object CivilianMovementProbe {
             val before = json().toJson(game)
             val error = api.reject(token, command, "CIVILIAN_CAPTURE_RISK")
             check(!error.getValue("applied").jsonPrimitive.boolean && error.getValue("recoverable").jsonPrimitive.boolean)
-            check(error.getValue("captureRisk").jsonObject.getValue("destination") ==
-                PlayerTurnJson.json.encodeToJsonElement(TilePosition.serializer(), risk.destination))
+            check(
+                error.getValue("captureRisk").jsonObject.getValue("destination") ==
+                    PlayerTurnJson.json.encodeToJsonElement(TilePosition.serializer(), risk.destination),
+            )
             val recovery = error.getValue("recovery").jsonObject
             check(recovery.getValue("confirmationField").jsonPrimitive.content == "confirmAction")
             check("confirmAction" !in recovery.getValue("command").jsonObject)
@@ -91,13 +98,27 @@ internal object CivilianMovementProbe {
             val token = api.playerToken("Rome")
             var turn = api.turn(token)
             val handle = turn.map.units.single { it.name == leader }.handle
-            api.execute(token, TurnCommandRequest("escort", turn.epoch, turn.revision,
-                TurnCommandKind.SET_UNIT_ORDER, handle, selection = "ESCORT"))
+            api.execute(
+                token,
+                TurnCommandRequest(
+                    "escort",
+                    turn.epoch,
+                    turn.revision,
+                    TurnCommandKind.SET_UNIT_ORDER,
+                    handle,
+                    selection = "ESCORT",
+                ),
+            )
             turn = api.turn(token)
             val destination = TilePosition(2, 2)
             if (kind == TurnCommandKind.SET_UNIT_DESTINATION) {
-                val preview = PlayerTurnJson.json.decodeFromString<MovementPreview>(api.tool(token, "movement_preview",
-                    obj("target" to handle, "destination" to obj("x" to destination.x, "y" to destination.y))).toString())
+                val preview = PlayerTurnJson.json.decodeFromString<MovementPreview>(
+                    api.tool(
+                        token,
+                        "movement_preview",
+                        obj("target" to handle, "destination" to obj("x" to destination.x, "y" to destination.y)),
+                    ).toString(),
+                )
                 check(preview.escort != null && preview.turns.first().afterMove!!.captureRisk == null)
             } else {
                 check(turn.map.units.single { it.handle == handle }.moves.single { it.destination == destination }.afterMove!!.captureRisk == null)

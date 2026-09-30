@@ -287,9 +287,15 @@ class ProposalGateway:
         if job.catalogue is not None:
             return copy.deepcopy(job.catalogue)
         upstream = await job.connection.list_tools()
+        job.catalogue = self.tool_catalogue(upstream, job.purpose)
+        return copy.deepcopy(job.catalogue)
+
+    @staticmethod
+    def tool_catalogue(upstream, purpose):
+        """Project native tools without starting a gameplay or notebook job."""
         tools = []
         for tool in upstream:
-            if tool["name"] in READ_TOOLS and (job.purpose == "gameplay" or tool["name"] in COMMUNICATION_READ_TOOLS):
+            if tool["name"] in READ_TOOLS and (purpose == "gameplay" or tool["name"] in COMMUNICATION_READ_TOOLS):
                 entry = copy.deepcopy(tool)
                 if tool["name"] == "player_turn":
                     entry["description"] = (
@@ -299,7 +305,8 @@ class ProposalGateway:
                         "After successful gameplay actions, apply stateUpdate instead of reading player_turn again:\n"
                         "- delta: baseStateId must match your stateId; adopt the new stateId. set replaces whole "
                         "sections; top-level removed deletes fields. collections upsert replaces whole rows by key, "
-                        "removed drops IDs, and optional order sets row order. Omitted values stay unchanged. "
+                        "removed drops IDs, and optional order sets row order. Sections and rows absent from the update stay unchanged. "
+                        "Each included row replaces the entire old row: fields absent from that replacement are removed. "
                         "Removals mean absent from this view, not necessarily destroyed. Ignore an update already "
                         "at your stateId; read player_turn for a missing/mismatched base.\n"
                         "- full: replace the overview. unavailable: keep the successful receipt and read player_turn; "
@@ -351,11 +358,15 @@ class ProposalGateway:
                         "Each turn stop's afterMove estimates remaining movement, attack/founding availability and "
                         "visible endpoint threats/own military. Context is current proximity within its radius, "
                         "not enemy reachability or guaranteed protection; unseenTiles marks incomplete visibility. "
+                        "Civilian stops include civilianExposure: protection, visible capture assessment, surrounding "
+                        "visibility gaps and references to known camps/recent sightings in tacticalReview. "
+                        "NO_VISIBLE_CAPTURE_THREAT does not mean safe. Same-tile military travels with a civilian "
+                        "only after ESCORT pairing. "
                         "For settlers, inspect settlement separately from route availability: waiting for movement "
                         "does not fix city spacing or foreign ownership. Reconsider repeatedly blocked sites."
                     )
                 tools.append(entry)
-            elif tool["name"] == "player_command" and job.purpose == "gameplay":
+            elif tool["name"] == "player_command" and purpose == "gameplay":
                 entry = copy.deepcopy(tool)
                 entry["inputSchema"] = command_schema()
                 entry["description"] = (
@@ -405,9 +416,7 @@ class ProposalGateway:
                         "openWorldHint": False,
                     },
                     "inputSchema": (
-                        MemoryContributions
-                        if name == "memory_update" and job.purpose != "gameplay"
-                        else TOOL_MODELS[name]
+                        MemoryContributions if name == "memory_update" and purpose != "gameplay" else TOOL_MODELS[name]
                     ).model_json_schema(),
                 }
             )
@@ -417,8 +426,8 @@ class ProposalGateway:
         for name, description in {
             "unit_details": "Inspect one owned unit by its player_turn handle. Prefer explicit sections: movement (paths/orders; use movement_preview for distant destinations), combat (attacks), orders (ESCORT/STOP_ESCORT, EXPLORE/STOP_EXPLORATION, AUTOMATE/STOP_AUTOMATION, fortify/sleep/skip/wake), promotions, work (worker/water improvements; Work Boats are consumed), settlement (current-site native blockers, movement requirements and native promises; movement_preview also inspects prospective city sites), economy (upgrade/pillage/disband), abilities (great people/spaceship/gifts), or air (missions, bases/capacity, carried units and interception readiness; use mission_preview for special missions). Multiple sections are allowed; omitted sections or [all] returns full details. Only returned sections count as inspected. EXPLORE explores automatically; AUTOMATE uses native unit automation, including choosing and building improvements for Workers. These orders persist across turns; inspect orders to stop them. Movement captureRisk requires confirmAction=true to accept exposure for this move; a same-tile escort permits movement normally. Read availability, warnings and confirmations; copy an offered command and add intent. Receipts report actual effects.",
             "city_details": "Inspect one owned city by its player_turn handle. Prefer explicit sections: status (capture choices), production (queue/progress/options), citizens (growth/work tiles/specialists/focus), economy (yields/buildings/sales), purchases, or combat (bombardment). Multiple sections are allowed. Omitted sections or [all] returns full details. Each section retains native consequences; unrelated sections do not count as inspected. Prefer construction_details(names=[candidates]) for queueing/buying specific buildings or units. Copy offered commands and add your intent.",
-            "construction_details": "Compare construction in an owned city. Omit names for a compact catalogue with native completion times, city-specific ongoing yield gains and maintenance. Supply up to 16 names for before/after yields, source changes, conditional effect descriptions, specialist slots, costs, eligibility, queue progress, purchase confirmations and copyable commands. Named victory projects and spaceship parts include native costs and required technologies/resources while still locked; their hypothetical build times exclude prerequisite research. Completion estimates hold population and citizen assignments fixed and exclude one-time grants; whileBuilding shows the immediate change from the current construction. Food is net surplus; Gold includes maintenance. Turns assume starting now, excluding earlier queue entries. Production conversions show their yield after modifiers. Read the named option before queueing or buying; copy command and add intent. Confirm purchases explicitly after reading consequences.",
-            "map_region": "Read explored tiles and frontier within radius 0–4 of an observed coordinate, respecting world wrap. Hidden tiles have no data. Default format=compact: each tile inherits tileDefaults, with its explicit fields overriding those defaults, including null/false/empty values. All visible facts are retained; position, terrain, visibility, units and yields remain on each tile. Use format=full for expanded tile objects. Read player_details(map_index) to locate distant regions.",
+            "construction_details": "Compare construction in an owned city. Omit names for a compact catalogue with native completion times, city-specific ongoing yield gains, maintenance and knownNames for the full ruleset. Unrecognized names return unknownNames with suggestions, separately from known but blocked choices. Supply up to 16 names for before/after yields, source changes, conditional effect descriptions, specialist slots, costs, eligibility, queue progress, purchase confirmations and copyable commands. Named victory projects and spaceship parts include native costs and required technologies/resources while still locked; their hypothetical build times exclude prerequisite research. Completion estimates hold population and citizen assignments fixed and exclude one-time grants; whileBuilding shows the immediate change from the current construction. Food is net surplus; Gold includes maintenance. Turns assume starting now, excluding earlier queue entries. Production conversions show their yield after modifiers. Read the named option before queueing or buying; copy command and add intent. Confirm purchases explicitly after reading consequences.",
+            "map_region": "Read explored tiles and frontier within radius 0–4 of an observed coordinate, respecting world wrap. Unexplored tiles have no data. Explored tiles outside current sight retain permitted known or remembered information; check visibility and observation timestamps. Default format=compact: each tile inherits tileDefaults, with its explicit fields overriding those defaults, including null/false/empty values. All visible facts are retained; position, terrain, visibility, units and yields remain on each tile. Use format=full for expanded tile objects. Read player_details(map_index) to locate distant regions.",
             "player_details": "Read full economy and development opportunities, diplomacy (including war consequences), settlement candidates and scores, research progress, policy choices, current/previous turn receipts, or map coordinate index. Settlement scores are advice based on current/remembered knowledge; preview a route before travel. Uses the latest permitted snapshot; returned evidence identifies what was read. For CITY_STATE_ACTION inspect section=diplomacy: target=civilizationId, selection=available actions.name, and confirmAction=true only after accepting any confirmation. DECLARE_WAR also accepts city-states. Inspect receipt.cityState for actual influence and alliance changes.",
         }.items():
             if name in {"unit_details", "city_details"}:
@@ -495,7 +504,7 @@ class ProposalGateway:
             "memory_update",
             (
                 "Save private contributions with create for your next turn. Existing notebook entries are read-only during this exchange. "
-                if job.purpose != "gameplay"
+                if purpose != "gameplay"
                 else "Create, replace or retire a provisional strategy or next-turn handoff; at most one active record of each. "
                 "Read before replacing; supply complete content, with no inherited fields. Handoffs are preloaded only "
                 "on the following game turn; strategy ages from its own authoring turn. Notes and beliefs use amend "
@@ -508,7 +517,6 @@ class ProposalGateway:
             "needsReview/reviewSources are advisory. Assessments do not authorize or prohibit actions. "
             "Retirement preserves history and does not cancel a promise.",
         )
-        job.catalogue = copy.deepcopy(tools)
         return tools
 
     async def read_social(

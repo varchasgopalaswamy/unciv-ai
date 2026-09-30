@@ -142,6 +142,11 @@ class JobAccounting:
             report["negotiationWaitMs"] = max(report["negotiationWaitMs"], int(wait_seconds * 1000))
             settings = record.get("effectiveSettings", record.get("settings", {}))
             report.update(model=settings.get("model"), reasoningEffort=settings.get("reasoningEffort"))
+            if "reviewProgress" in record:
+                # Local operator metadata, outside the native accounting protocol.
+                row["reviewProgress"] = record["reviewProgress"]
+            if "reviewTrace" in record:
+                row["reviewTrace"] = record["reviewTrace"]
             report["usageReported"] = report["usageReported"] or bool(record.get("usageReported", False))
             report["usageComplete"] = report["usageComplete"] or (
                 bool(record.get("usageReported", False)) and bool(record.get("usageComplete", False))

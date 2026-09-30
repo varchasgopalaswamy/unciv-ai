@@ -452,7 +452,9 @@ class FakeHost:
                     "civilization": civilization,
                     "epoch": body["epoch"],
                     "gameTurn": body["gameTurn"],
-                    "pendingReview": pending if pending and pending["turn"] < body["gameTurn"] else None,
+                    "pendingReview": pending
+                    if pending and (pending["turn"] < body["gameTurn"] or pending["turn"] == body["gameTurn"] == 0)
+                    else None,
                 }
             }
         if body["op"] in {"connect", "disconnect", "barrier", "flush_accounting"}:
@@ -749,13 +751,13 @@ class SchedulerTest(unittest.TestCase):
         self.assertEqual([p["civ"] for p in self.host.plays], ["Rome", "Greece", "France"] * 2)
         self.assertNotIn("waitingForReview", self.saved())
 
-    def test_review_wait_can_pause_and_resume_without_replaying_completed_turns(self):
+    def test_opening_review_wait_can_pause_and_resume_before_any_moves(self):
         self.host.pending_reviews["Rome"] = {"job": "roman-review", "turn": 0, "status": "PENDING", "attempts": 1}
         process = self.background("--max-turns", "2", "--max-seconds", "60")
         with self.host.changed:
             self.assertTrue(
                 self.host.changed.wait_for(
-                    lambda: self.host.readiness_checks.count(("Rome", 1)) >= 2,
+                    lambda: self.host.readiness_checks.count(("Rome", 0)) >= 2,
                     timeout=8,
                 )
             )
@@ -765,7 +767,7 @@ class SchedulerTest(unittest.TestCase):
         self.assertEqual(process.returncode, 0, stdout + stderr)
         self.assertEqual(self.saved()["status"], "paused")
         self.assertNotIn("waitingForReview", self.saved())
-        self.assertEqual(len(self.host.plays), 2)
+        self.assertEqual(len(self.host.plays), 0)
         self.host.pending_reviews.clear()
         resumed = self.run_cli("resume")
         self.assertEqual(resumed.returncode, 0, resumed.stdout + resumed.stderr)
@@ -778,7 +780,7 @@ class SchedulerTest(unittest.TestCase):
         with self.host.changed:
             self.assertTrue(
                 self.host.changed.wait_for(
-                    lambda: self.host.readiness_checks.count(("Rome", 1)) >= 2,
+                    lambda: self.host.readiness_checks.count(("Rome", 0)) >= 2,
                     timeout=8,
                 )
             )
@@ -792,7 +794,7 @@ class SchedulerTest(unittest.TestCase):
         self.assertIn("STRATEGIC_REVIEW_ATTEMPTS_EXHAUSTED", stdout)
         self.assertEqual(self.saved()["status"], "needs_inspection")
         self.assertNotIn("waitingForReview", self.saved())
-        self.assertEqual(len(self.host.plays), 2)
+        self.assertEqual(len(self.host.plays), 0)
 
     def test_consecutive_rounds_use_fresh_threads_tokens_and_authoritative_handoffs(self):
         result = self.run_cli("--max-turns", "2", "--max-invocations", "8", "--max-seconds", "30")

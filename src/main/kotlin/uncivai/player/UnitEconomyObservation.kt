@@ -19,7 +19,7 @@ data class UnitUpgradeOption(
     val requiredTechnologies: List<String>,
     val goldCost: Int,
     /** Additional resource usage after releasing the original unit's requirements. */
-    val resourceRequirements: Map<String, Int>,
+    val additionalResourceRequirements: Map<String, Int>,
     val available: Boolean,
     val reasons: List<String>,
     val confirmation: String? = null,

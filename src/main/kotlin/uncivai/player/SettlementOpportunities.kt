@@ -117,13 +117,21 @@ internal fun captureSettlementKnowledge(player: Civilization, state: TurnSession
         // A distant map reveal does not reveal an improvement's private state.
         // Only improvements explicitly supplied by native map memory are known.
         val improvement = if (remoteReveal) tile.getShownImprovement(player) else tile.improvement
-        val pillaged = if (remoteReveal) state.settlementKnowledge[position]?.surface
-            ?.takeIf { it.improvement == improvement }?.improvementPillaged else tile.improvementIsPillaged
-        val observed = if (remoteReveal) tile.clone(addUnits = false).apply {
-            this.improvement = improvement
-            improvementIsPillaged = pillaged == true
-            setTerrainTransients()
-        } else tile
+        val pillaged = if (remoteReveal) {
+            state.settlementKnowledge[position]?.surface
+                ?.takeIf { it.improvement == improvement }?.improvementPillaged
+        } else {
+            tile.improvementIsPillaged
+        }
+        val observed = if (remoteReveal) {
+            tile.clone(addUnits = false).apply {
+                this.improvement = improvement
+                improvementIsPillaged = pillaged == true
+                setTerrainTransients()
+            }
+        } else {
+            tile
+        }
         state.settlementKnowledge[position] = KnownSettlementTile(
             position, player.gameInfo.turns, tile.isLand, tile.isImpassible(), tile.getContinent(), tile.getOwner()?.civName,
             tile.getCity()?.name?.takeIf { tile.isCityCenter() }, tile.isHill(), tile.isAdjacentToRiver(),

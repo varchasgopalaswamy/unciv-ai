@@ -168,7 +168,13 @@ class ServiceHistoryTests(unittest.IsolatedAsyncioTestCase):
                     "revision": f"before-{index}",
                     "kind": "ACKNOWLEDGE_ALERT",
                 }
-                receipt = {**command, "revision": f"after-{index}", "turn": 0, "isYourTurn": True}
+                receipt = {
+                    **command,
+                    "revision": f"after-{index}",
+                    "turn": 0,
+                    "isYourTurn": True,
+                    "actionSummary": "Scout moved to (1, 0).",
+                }
                 await self.notify(
                     "item/started",
                     item={

@@ -2,6 +2,7 @@ package uncivai
 
 import com.unciv.json.json
 import kotlinx.serialization.Serializable
+import uncivai.player.CombatOutcome
 import uncivai.player.CompletedTurnReview
 import uncivai.player.PlayerHost
 import uncivai.player.PlayerSession
@@ -193,7 +194,13 @@ object TurnReviewProbe {
         // A speculative move may stop before its requested destination: report the observed tile.
         val partial = confirmedAction(request, before, before)
         check(partial.description.contains("(${warrior.position.x}, ${warrior.position.y})"))
-        check(!partial.description.contains("(${requested.x}, ${requested.y})"))
+        check(partial.description.contains("Requested destination (${requested.x}, ${requested.y}) not reached"))
+        val attack = request.copy(kind = TurnCommandKind.ATTACK)
+        val stopped = confirmedAction(attack, before, before, CombatOutcome(false, 0, 0, 100, 100, false, false, false))
+        check(stopped.description.contains("no attack") && stopped.description.contains("occurred"))
+        val fought = confirmedAction(attack, before, disappeared, CombatOutcome(true, 100, 35, 0, 65, true, false, false))
+        check(fought.description.contains("dealt 35, received 100") && fought.description.contains("${warrior.name} destroyed"))
+        check(fought.description != stopped.description)
     }
 
     private fun command(turn: PlayerTurnSnapshot, kind: TurnCommandKind, target: String? = null, selection: String? = null) = TurnCommandRequest(UUID.randomUUID().toString(), turn.epoch, turn.revision, kind, target, selection)

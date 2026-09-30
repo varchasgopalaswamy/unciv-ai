@@ -22,12 +22,14 @@ class Host:
         self.view: JsonObject = {
             "turn": 0,
             "canEndTurn": True,
+            "constructionCatalogue": ["Granary", "Market", "Warrior"],
             "cities": [
                 {
                     "handle": "city1",
                     "name": "Rome",
                     "constructionQueue": [],
                     "puppet": False,
+                    "attacksRemaining": 1,
                     "constructionOptions": ["Market", "Granary"],
                 }
             ],
@@ -44,6 +46,7 @@ class Host:
                         "movementSupported": True,
                         "canFoundCity": False,
                         "moves": [],
+                        "combat": {"attacksRemaining": 1, "attacks": []},
                     }
                 ]
             },
@@ -92,7 +95,17 @@ class Host:
             return self.seen[args["requestId"]]
         self.executed.append(copy.deepcopy(args))
         self.revision = "rev" + str(len(self.executed) + 1)
-        result = {"requestId": args["requestId"], "revision": self.revision, "kind": args["kind"], "done": True}
+        summary = {
+            "END_TURN": "Ended turn.",
+            "DISMISS_NOTIFICATIONS": f"Dismissed {len(args.get('targets', []))} ordinary notifications.",
+        }.get(args["kind"], f"Executed {args['kind']} in test host.")
+        result = {
+            "requestId": args["requestId"],
+            "revision": self.revision,
+            "kind": args["kind"],
+            "done": True,
+            "actionSummary": summary,
+        }
         self.seen[args["requestId"]] = result
         return result
 

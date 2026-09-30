@@ -219,10 +219,18 @@ class WatchReader:
                 self.strategy_reader = StrategyReader(self.root)
             with read_database(self.path) as db:
                 snapshot = self._read(db, selected)
+            # Opening reviews precede gameplay sessions. Include the native
+            # agent roster so a civ waiting for its first review stays visible.
+            agents = dict.fromkeys(snapshot.run.get("sessions", {}))
+            agents.update(
+                (row["civilization"], None)
+                for row in snapshot.result.get("scores", [])
+                if row.get("controller") == "AGENT"
+            )
             strategies = self.strategy_reader.read(
-                snapshot.run.get("sessions", {}),
+                agents,
                 snapshot.epoch,
-                [value["job"] for value in self.review_jobs.values()],
+                [{"id": value["jobId"], **value["job"]} for value in self.review_jobs.values()],
             )
             self.previous = replace(snapshot, strategies=strategies)
             return self.previous

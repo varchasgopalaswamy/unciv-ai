@@ -306,7 +306,10 @@ def test_summaries_survive_interruptions_preserve_reason_and_receipt_truth(tmp_p
         "build",
         {"strategy": campaign, "reason": "Grow Rome"},
     )
-    memory.receipt(queued["id"], {"kind": "QUEUE_CONSTRUCTION", "queue": ["Granary"]})
+    memory.receipt(
+        queued["id"],
+        {"kind": "QUEUE_CONSTRUCTION", "queue": ["Granary"], "actionSummary": "Rome construction queue: Granary."},
+    )
     move = memory.queue(
         "game",
         "player_command",
@@ -320,12 +323,22 @@ def test_summaries_survive_interruptions_preserve_reason_and_receipt_truth(tmp_p
     first = memory.summary(4)
     assert first["actions"][0]["reason"] == "Grow Rome"
     assert first["actions"][1]["outcome"] == "uncertain"
-    memory.receipt(move["id"], {"kind": "MOVE_UNIT", "position": "near", "remainingMovement": 0})
+    memory.receipt(
+        move["id"],
+        {
+            "kind": "MOVE_UNIT",
+            "position": "near",
+            "remainingMovement": 0,
+            "actionSummary": "Scout moved to near; no movement remaining.",
+        },
+    )
     summary = memory.summary(4)
     TurnSummary.model_validate(summary)
     assert summary["actions"][1]["receipt"]["position"] == "near"
     markdown = summary_markdown(summary)
-    assert "Queued Granary" in markdown and "Grow Rome" in markdown and "Explore the coast" in markdown
+    assert (
+        "Rome construction queue: Granary" in markdown and "Grow Rome" in markdown and "Explore the coast" in markdown
+    )
     assert "built" not in markdown.lower() and "far" not in markdown and "attempt" not in markdown
     assert len(markdown.split()) <= 200
     memory.export(tmp_path / "workspace")
@@ -345,7 +358,7 @@ def test_archive_can_render_during_dispatch_before_receipt_arrives(tmp_path, unc
     archive = TurnArchive(tmp_path / "archive", tmp_path / "workspace", "Rome", "g1")
     artifacts = archive.update(4, "game", [], structured_summary=summary)
     assert artifacts["summaryData"]["actions"][0]["outcome"] == ("uncertain" if uncertain else "pending")
-    memory.receipt(request["id"], {"kind": "FOUND_CITY", "city": "Rome"})
+    memory.receipt(request["id"], {"kind": "FOUND_CITY", "city": "Rome", "actionSummary": "Founded Rome at (0, 0)."})
     artifacts = archive.update(4, "game", [], structured_summary=memory.summary(4))
     assert artifacts["summaryData"]["actions"][0]["outcome"] == "confirmed"
     assert "Found the capital" in artifacts["summary"]
@@ -461,7 +474,9 @@ def test_retirement_after_approval_cannot_undo_an_inflight_command(tmp_path):
         {"strategy": key, "reason": "Defend Rome"},
     )
     memory.patch("game", [{"op": "retire", "id": key, "reason": "abandoned"}])
-    memory.receipt(request["id"], {"kind": "ATTACK", "damage": 10})
+    memory.receipt(
+        request["id"], {"kind": "ATTACK", "damage": 10, "actionSummary": "Warrior attacked Brute; dealt 10 damage."}
+    )
     assert memory.summary(4)["actions"][0]["outcome"] == "confirmed"
     assert memory.queue(
         "game",

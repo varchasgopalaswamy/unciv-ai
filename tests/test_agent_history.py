@@ -16,6 +16,7 @@ from civ_agent.agent_history import (
     encoded,
 )
 from civ_agent.agent_service import AgentService, server_ssl_context
+from civ_agent.review_trace import MAX_TRACE_CHARACTERS, MAX_TRACE_ITEMS
 from civ_agent.tls import client_ssl_context, ensure_server_certificate
 
 
@@ -148,6 +149,85 @@ class HistoryTests(unittest.TestCase):
         self.assertIn("ACTUAL-COMPLETION", text)
         self.assertNotIn("OLD-COMPLETION", text)
         self.assertNotIn("FOREIGN-COMPLETION", text)
+
+    def test_review_preview_coalesces_filtered_streams_and_keeps_credentials_private(self):
+        self.store.next_conversation("activation", "strategic_review")
+        self.store.startup_context("activation", "PRIVATE_PRELOAD_NOT_FOR_TRACE")
+        self.store.bind_turn("activation", "turn")
+        self.notify("item/reasoning/textDelta", itemId="r", delta="RAW_REASONING")
+        self.notify("item/reasoning/summaryTextDelta", itemId="r", summaryIndex=0, delta="First summary")
+        self.notify("item/reasoning/summaryTextDelta", itemId="r", summaryIndex=1, delta="Second summary")
+        self.notify(
+            "item/completed",
+            item={
+                "id": "r",
+                "type": "reasoning",
+                "summary": ["First summary", "Second summary"],
+                "content": ["RAW_REASONING"],
+            },
+        )
+        self.notify("item/agentMessage/delta", itemId="draft", delta="Visible draft " + self.player_token[:20])
+        self.notify("item/agentMessage/delta", itemId="draft", delta=self.player_token[20:] + " ending")
+        self.notify(
+            "item/completed",
+            item={
+                "id": "draft",
+                "type": "agentMessage",
+                "phase": "final_answer",
+                "text": "Final report " + self.player_token,
+            },
+        )
+        self.notify(
+            "item/started",
+            item={
+                "id": "t",
+                "type": "mcpToolCall",
+                "tool": "research_details",
+                "arguments": {"names": ["PRIVATE_ARGUMENT"]},
+            },
+        )
+        self.notify(
+            "item/completed",
+            item={"id": "t", "type": "mcpToolCall", "status": "completed", "result": {"private": "LARGE_TOOL_RESULT"}},
+        )
+        self.notify(
+            "item/completed", threadId="other", item={"id": "foreign", "type": "agentMessage", "text": "FOREIGN_TRACE"}
+        )
+        trace = self.store.review_trace("activation")
+        self.assertIsNotNone(trace)
+        entries = trace["entries"]
+        self.assertEqual([e["label"] for e in entries], ["Reasoning summary", "Assistant", "Tool"])
+        self.assertEqual(entries[0]["text"], "First summary\n\nSecond summary")
+        self.assertEqual(entries[1]["text"], "Final report [REDACTED]")
+        self.assertEqual(entries[2]["text"], "research_details · completed")
+        for forbidden in (
+            "RAW_REASONING",
+            "PRIVATE_PRELOAD",
+            "PRIVATE_ARGUMENT",
+            "LARGE_TOOL_RESULT",
+            "Visible draft",
+            "FOREIGN_TRACE",
+            self.player_token,
+        ):
+            self.assertNotIn(forbidden, json.dumps(trace))
+
+    def test_review_preview_stays_bounded_across_long_streams_and_many_items(self):
+        self.store.next_conversation("activation", "strategic_review")
+        self.store.bind_turn("activation", "turn")
+        for n in range(MAX_TRACE_ITEMS + 10):
+            self.notify("item/completed", item={"id": str(n), "type": "agentMessage", "text": "Message " + str(n)})
+        trace = self.store.review_trace("activation")
+        assert trace is not None
+        self.assertTrue(trace["truncated"])
+        self.assertLessEqual(len(trace["entries"]), MAX_TRACE_ITEMS)
+        self.notify(
+            "item/completed", item={"id": "long", "type": "agentMessage", "text": "short " * MAX_TRACE_CHARACTERS}
+        )
+        trace = self.store.review_trace("activation")
+        assert trace is not None
+        self.assertLessEqual(sum(len(entry["text"]) for entry in trace["entries"]), MAX_TRACE_CHARACTERS)
+        self.store.next_conversation("activation", "gameplay")
+        self.assertIsNone(self.store.review_trace("activation"))
 
     def test_large_results_are_lossless_chunked_and_pages_bounded_and_recoverable(self):
         log = self.store.logs["activation"]

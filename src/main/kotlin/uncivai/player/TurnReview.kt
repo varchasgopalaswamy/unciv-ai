@@ -50,7 +50,9 @@ internal fun confirmedAction(request: TurnCommandRequest, before: PlayerTurnSnap
                 // Entering a tile can trigger effects that remove or replace the original unit.
                 "${unit!!.name} moved from ${unit.position.text()}; the original unit is no longer present. Inspect current units."
             } else {
-                "${unit!!.name}: ${unit.position.text()} to ${moved.position.text()}; ${moved.movement} movement remaining."
+                "${unit!!.name}: ${unit.position.text()} to ${moved.position.text()}; ${moved.movement} movement remaining." +
+                    (if (moved.position != request.destination) " Requested destination ${request.destination!!.text()} not reached." else "") +
+                    (if (moved.movementOrder != null) " Destination order remains active." else "")
             }
         }
 
@@ -69,24 +71,32 @@ internal fun confirmedAction(request: TurnCommandRequest, before: PlayerTurnSnap
         TurnCommandKind.ATTACK, TurnCommandKind.CITY_ATTACK -> {
             val name = unit?.name ?: city!!.name
             val outcome = checkNotNull(combat)
+            val target = (unit?.combat?.attacks ?: city?.attacks.orEmpty()).firstOrNull { it.destination == request.destination }?.defender ?: "target"
             if (!outcome.attacked) {
                 val moved = after.map.units.singleOrNull { it.handle == request.target }
-                "$name stopped ${moved?.position?.text() ?: "before completing the route"}; no attack occurred."
+                "$name stopped ${moved?.position?.text() ?: "before completing the route"}; no attack on $target at ${request.destination!!.text()} occurred."
             } else {
-                "$name attacked ${request.destination!!.text()}: dealt ${outcome.damageToDefender}, received ${outcome.damageToAttacker} damage." +
-                    if (outcome.defenderCaptured) {
-                        " Target captured."
-                    } else if (outcome.defenderDestroyed) {
-                        " Target destroyed."
-                    } else {
-                        ""
-                    }
+                "$name attacked $target at ${request.destination!!.text()}: dealt ${outcome.damageToDefender}, received ${outcome.damageToAttacker} damage." +
+                    (
+                        if (outcome.defenderCaptured) {
+                            " Target captured."
+                        } else if (outcome.defenderDestroyed) {
+                            " Target destroyed."
+                        } else {
+                            ""
+                        }
+                        ) + (if (outcome.attackerDestroyed) " $name destroyed." else " $name health ${outcome.attackerHealth}.")
             }
         }
 
         TurnCommandKind.SET_UNIT_ORDER -> "${unit!!.name}: ${request.selection}."
 
-        TurnCommandKind.PROMOTE_UNIT -> "${unit!!.name} gained ${request.selection}."
+        TurnCommandKind.PROMOTE_UNIT -> {
+            val choice = unit!!.combat!!.promotions!!.choices.single { it.name == request.selection }
+            val promoted = after.map.units.single { it.handle == unit.handle }
+            "${unit.name} selected ${request.selection}; health ${unit.health} to ${promoted.health}." +
+                if (choice.retainedAfterSelection) " Promotion retained." else " One-time effect; promotion not retained."
+        }
 
         TurnCommandKind.ADD_SPACESHIP_PART -> "Assembled ${unit!!.name} in the capital; consumed the unit."
 
@@ -149,7 +159,11 @@ internal fun confirmedAction(request: TurnCommandRequest, before: PlayerTurnSnap
 
         TurnCommandKind.DECLARE_WAR -> "Declared war on ${request.target}."
 
-        TurnCommandKind.START_WORKER_JOB -> "${unit!!.name} started ${request.selection} at ${unit.position.text()}."
+        TurnCommandKind.START_WORKER_JOB -> {
+            val work = after.map.units.single { it.handle == request.target }.worker!!
+            "${unit!!.name} at ${unit.position.text()}: working on ${work.currentJob}; queue " +
+                work.queue.joinToString(" then ") { "${it.name} (${it.remainingTurns} turns)" } + "."
+        }
 
         TurnCommandKind.STOP_WORKER_JOB -> "${unit!!.name} stopped work at ${unit.position.text()}."
 

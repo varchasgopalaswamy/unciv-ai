@@ -8,6 +8,7 @@ import uncivai.player.PlayerIdentifier
 import uncivai.player.PlayerSessionException
 import uncivai.player.PlayerSessionFailure
 import uncivai.player.TurnSessionState
+import uncivai.player.captureBarbarianSightings
 import uncivai.player.captureSettlementKnowledge
 import uncivai.player.detached
 import uncivai.player.gameFinished
@@ -49,6 +50,7 @@ class GameExecutor internal constructor(
             player.cache.onViewableTilesUpdated = { tiles ->
                 val state = turnSessions.getOrPut(player.civID) { TurnSessionState() }
                 captureSettlementKnowledge(player, state, tiles)
+                captureBarbarianSightings(player, state, tiles)
             }
         }
     }
@@ -275,6 +277,7 @@ class GameExecutor internal constructor(
                 settlementKnowledge.putAll(saved.settlementKnowledge.associateBy { it.position })
                 settlementTechnologies.addAll(saved.settlementTechnologies)
                 settlerHistory.putAll(saved.settlerHistory)
+                barbarianSightings.putAll(saved.barbarianSightings)
                 player.popupAlerts.forEachIndexed { index, alert ->
                     saved.alertHandles[index]?.let { alertHandles[alert] = it }
                 }

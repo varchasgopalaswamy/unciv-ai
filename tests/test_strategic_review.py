@@ -13,7 +13,7 @@ from civ_agent.protocol import JsonObject
 from civ_agent.review_store import ReviewStore
 from civ_agent.service_io import ServiceIO
 from civ_agent.startup_context import prepare_startup, startup_prompt
-from civ_agent.strategic_review import frozen_read, parse_advice, review_cities, review_due, review_facts
+from civ_agent.strategic_review import advice_schema, frozen_read, parse_advice, review_cities, review_due, review_facts
 from tests.test_agent_service import StartupHost
 from tests.test_structured_memory import setup
 
@@ -108,6 +108,18 @@ def test_advice_requires_every_enabled_victory():
         parse_advice(json.dumps(value), {"turn": 5, "rules": {"victoryTypes": VICTORIES}})
 
 
+def test_report_schema_uses_exact_enabled_victory_names():
+    for enabled in (VICTORIES, ["Domination", "Time"]):
+        schema = advice_schema({"rules": {"victoryTypes": enabled}})
+        assert schema["$defs"]["VictoryProjection"]["properties"]["victory"]["enum"] == enabled
+        paths = schema["$defs"]["StrategicReview"]["properties"]["victoryPaths"]
+        assert paths["minItems"] == paths["maxItems"] == len(enabled)
+    advice = assessment()
+    advice["review"]["victoryPaths"][0]["victory"] = "Scientific — hedge"
+    with pytest.raises(ValueError, match="STRATEGIC_REVIEW_COVERAGE"):
+        parse_advice(json.dumps(advice), {"turn": 0, "rules": {"victoryTypes": VICTORIES}})
+
+
 def test_review_filter_preserves_player_authored_terms():
     terms = {"strategyReview": "Talk before invading", "memoryUpdates": "Keep this promise"}
     assert review_facts({"strategyReview": {"private": "old plan"}, "promises": [terms]}) == {"promises": [terms]}
@@ -115,7 +127,7 @@ def test_review_filter_preserves_player_authored_terms():
 
 def test_city_summary_uses_observed_identity_and_visibility_with_wrapped_distances():
     snapshot: JsonObject = {
-        "cities": [{"name": "Rome", "position": {"x": 0, "y": 0}}],
+        "cities": [{"name": "Rome", "development": {"position": {"x": 0, "y": 0}}}],
         "map": {
             "wrapOffset": {"x": 10, "y": 0},
             "tiles": [
@@ -255,3 +267,33 @@ def test_review_recovery_preserves_inputs_attempt_budget_and_boundary_publicatio
     store.attempt("game", 3)
     with pytest.raises(ValueError, match="ATTEMPTS_EXHAUSTED"):
         store.attempt("game", 3)
+
+
+def test_opening_review_precedes_first_move_and_survives_rewind(tmp_path):
+    memory = CivilizationState(tmp_path / "private", "Rome")
+    memory.bind("g1")
+    store = ReviewStore(memory)
+    inputs = {"turn": 0, "facts": "STARTING_LOCATION_AND_ABILITIES"}
+    settings = {"model": "m", "reasoningEffort": "max"}
+    store.prepare_opening("opening", inputs, settings, 60)
+    store.prepare_opening("duplicate", {"turn": 0, "facts": "CHANGED"}, settings, 1)
+    assert store.has_opening()
+    assert store.blocking("g1", 0) == {"job": "opening", "turn": 0, "status": "PENDING", "attempts": 0}
+    pending = store.pending()
+    assert pending is not None and pending["timeout"] == 60
+    checkpoint = tmp_path / "boundary.json"
+    digest = memory.backup(checkpoint)
+    store.attempt("opening", 3)
+    store.complete("opening", assessment())
+    assert store.blocking("g1", 0) is None
+    assert memory.snapshot("gameplay", 0)["strategicAdvice"]["asOfTurn"] == 0
+    assert memory.restore(checkpoint, digest, "restored") == ["opening"]
+    blocking, pending = store.blocking("restored", 0), store.pending()
+    assert blocking is not None and blocking["attempts"] == 1
+    assert pending is not None and json.loads(pending["inputs"]) == inputs
+    assert memory.snapshot("gameplay", 0)["strategicAdvice"] is None
+    store.attempt("opening", 3)
+    store.complete("opening", assessment())
+    store.prepare_opening("duplicate", inputs, settings, 60)
+    assert store.pending() is None
+    assert memory.snapshot("gameplay", 0)["strategicAdvice"]["asOfTurn"] == 0

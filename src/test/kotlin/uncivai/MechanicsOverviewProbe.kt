@@ -93,10 +93,12 @@ object MechanicsOverviewProbe {
         player.viewableTiles = player.cities.single().getTiles().toSet()
         val remembered = session.turn().settlement!!
         check(remembered.happinessBaseline == null)
-        check(remembered.candidates.filter { it.position in remembered.recommendations }.all { candidate ->
-            candidate.happiness!!.populationCosts.first().cityUnhappiness > 0 &&
-                candidate.happiness.buildings.single { it.name == "Colosseum" }.missingTechnologies.contains("Construction")
-        })
+        check(
+            remembered.candidates.filter { it.position in remembered.recommendations }.all { candidate ->
+                candidate.happiness!!.populationCosts.first().cityUnhappiness > 0 &&
+                    candidate.happiness.buildings.single { it.name == "Colosseum" }.missingTechnologies.contains("Construction")
+            },
+        )
         spices.setTileResource(game.ruleset.tileResources.getValue("Gold Ore"))
         check(session.turn().settlement == remembered) { "Hidden resource changed settlement advice" }
         game.getCivilization("France").cities.single().expansion.takeOwnership(iron)

@@ -60,6 +60,35 @@ def relation() -> JsonObject:
     }
 
 
+def captured_settler() -> JsonObject:
+    return {
+        "handle": "alert9",
+        "kind": "RecapturedCivilian",
+        "canAcknowledge": False,
+        "capture": {
+            "title": "Return Settler to France?",
+            "paragraphs": [
+                "The Settler we liberated originally belonged to France. They will be grateful if we return it to them."
+            ],
+            "options": [
+                {
+                    "name": choice,
+                    "label": label,
+                    "paragraphs": [effect],
+                    "available": True,
+                    "unavailableReasons": [],
+                    "civilianOutcome": {"recipient": recipient, "unitType": unit_type},
+                    "command": {"kind": "RESOLVE_CAPTURED_CITY", "target": "alert9", "selection": choice},
+                }
+                for choice, label, recipient, unit_type, effect in [
+                    ("ReturnCivilian", "Yes", "France", "Settler", "France receives a Settler."),
+                    ("KeepCivilian", "No", "Greece", "Worker", "The captured Settler becomes a Worker."),
+                ]
+            ],
+        },
+    }
+
+
 def test_controller_metadata_is_omitted_but_trade_terms_and_player_words_survive():
     terms = [
         {
@@ -99,7 +128,7 @@ def test_controller_metadata_is_omitted_but_trade_terms_and_player_words_survive
         },
         "opportunity": {
             "civilizationId": "Greece",
-            "missingLuxuriesOffered": [],
+            "missingLuxuriesAvailableForTrade": [{"name": "Silk", "amount": 1}],
             "spareLuxuriesToOffer": [],
             "mode": "SHARED",
         },
@@ -146,6 +175,8 @@ def test_controller_metadata_is_omitted_but_trade_terms_and_player_words_survive
     assert "mode" not in view["opportunity"]
     assert view["capabilities"] == {"queries": ["player_turn"], "commands": ["END_TURN"]}
     assert view["options"]["canInitiate"] and view["options"]["give"][0]["duration"] == 25
+    assert view["opportunity"]["missingLuxuriesAvailableForTrade"] == [{"name": "Silk", "amount": 1}]
+    assert "responses" not in view["opportunity"] and "missingLuxuriesOffered" not in view["opportunity"]
     for key in ("message", "promise", "unknown"):
         assert view[key] == raw[key]
 
@@ -230,7 +261,74 @@ def test_projection_preserves_gameplay_and_player_wording_without_mutating_audit
     assert "demands" not in native and native["promises"] == []
     for key in raw.keys() - {"alerts", "diplomacy"}:
         assert view[key] == raw[key]
-    assert native["opinionModifiers"] == raw["diplomacy"]["knownCivilizations"][0]["native"]["opinionModifiers"]
+    assert native["opinionModifiers"] == [{"name": "YearsOfPeace", "amount": 3}]
+
+
+def test_capture_choice_keeps_consequences_without_promising_another_players_gratitude():
+    raw = captured_settler()
+    before = copy.deepcopy(raw)
+    view = model_view(raw)
+    assert raw == before and model_view(view) == view
+    assert "grateful" not in json.dumps(view)
+    assert view["capture"]["title"] == "Return Settler to France?"
+    assert view["capture"]["options"] == raw["capture"]["options"]
+    player_words = {
+        "author": "France",
+        "text": "We will be grateful if you return it. I offer 50 gold.",
+        "terms": "Return the Settler for 50 gold",
+    }
+    assert model_view(player_words) == player_words
+
+
+@pytest.mark.parametrize("kind", ["CityConquered", "CityTraded"])
+def test_city_liberation_drops_evaluative_wording_without_losing_control_costs(kind):
+    options = [
+        {
+            "name": "Liberate",
+            "label": "Liberate (city returns to France)",
+            "paragraphs": [
+                "Liberating a city returns it to its original owner, giving you a massive relationship boost with them!"
+            ],
+            "available": False,
+            "unavailableReasons": ["At war with the original owner"],
+        },
+        {
+            "name": "Puppet",
+            "paragraphs": ["You cannot control production. -25% Science and Culture."],
+            "available": True,
+        },
+        {"name": "Raze", "paragraphs": ["Population decreases until the city is destroyed."], "available": True},
+    ]
+    raw = {
+        "handle": "alert2",
+        "kind": kind,
+        "canAcknowledge": False,
+        "capture": {"title": "Choose a disposition for Paris", "paragraphs": [], "options": options},
+    }
+    shown = model_view(raw)["capture"]["options"]
+    assert "massive" not in json.dumps(shown)
+    assert "native diplomatic opinion" in shown[0]["paragraphs"][0]
+    for key in ("label", "available", "unavailableReasons"):
+        assert shown[0][key] == options[0][key]
+    assert shown[1:] == options[1:]
+    assert model_view({"handle": "city1", "captureOptions": options})["captureOptions"] == shown
+
+
+def test_ai_opinion_keeps_the_modifier_and_amount_without_roleplay():
+    raw = relation()
+    raw["native"]["opinionModifiers"] = [
+        {"name": "ReturnedCapturedUnits", "text": "You returned captured units to us", "amount": 20},
+        {
+            "name": "BetrayedDeclarationOfFriendship",
+            "text": "Your so-called 'friendship' is worth nothing.",
+            "amount": -40,
+        },
+    ]
+    view = model_view(raw)
+    assert view["native"]["opinionModifiers"] == [
+        {"name": "ReturnedCapturedUnits", "amount": 20},
+        {"name": "BetrayedDeclarationOfFriendship", "amount": -40},
+    ]
 
 
 @pytest.mark.parametrize(
@@ -336,6 +434,7 @@ def test_all_audited_dialogs_and_research_details_omit_flavor_but_keep_facts():
             "winningCivilizationId": "Rome",
             "victoryType": "Science",
             "victoryTurn": 300,
+            "title": "FLAVOR_RESULT_TITLE",
             "paragraphs": ["FLAVOR_VICTORY"],
         },
         "messages": [
@@ -385,6 +484,51 @@ def test_quest_narrative_is_replaced_only_when_structured_objectives_are_present
     assert model_view(shown) == shown
 
 
+@pytest.mark.parametrize(
+    "name,requirement",
+    [
+        ("Route", "Connect your capital to the issuer's capital with a city connection (normally a road)."),
+        ("Clear Barbarian Camp", "Clear the camp at location yourself."),
+        ("Connect Resource", "Acquire targetName in your resource supply, by improvement or trade."),
+        ("Construct Wonder", "Have targetName built in your cities before a rival builds it."),
+        ("Acquire Great Person", "Acquire targetName or its civilization-specific replacement."),
+        ("Conquer City State", "Conquer and eliminate targetCivilization."),
+        ("Find Player", "Discover targetCivilization's territory; contact alone is insufficient."),
+        ("Find Natural Wonder", "Discover targetName."),
+        ("Give Gold", "Give a gold gift to issuer."),
+        ("Pledge to Protect", "Pledge protection to issuer."),
+        ("Contest Culture", "Earn most culture before expiry; tied positive scores qualify."),
+        ("Contest Faith", "Earn most faith before expiry; tied positive scores qualify."),
+        ("Contest Technologies", "Research most technologies before expiry; tied positive scores qualify."),
+        ("Invest", "Gifts earn extra influence until expiry; no completion action."),
+        ("Bully City State", "Demand tribute successfully from targetCivilization."),
+        ("Denounce Civilization", "Have a native denunciation of targetCivilization active."),
+        ("Spread Religion", "Make targetName the majority religion in issuer's capital."),
+    ],
+)
+def test_quest_mechanics_survive_redaction_for_every_kind(name, requirement):
+    objective = {"kind": name, "issuer": "Geneva", "requirement": requirement}
+    raw = {"name": name, "influenceReward": 20, "description": "FLAVOR_APPEAL", "objective": objective}
+    shown = model_view(raw)
+    assert shown["objective"] == objective and "description" not in shown
+
+
+def test_return_civilian_keeps_native_diplomatic_effect_without_gratitude_narrative():
+    raw = captured_settler()
+    effect = {
+        "civilizationId": "France",
+        "stat": "NativeOpinion.ReturnedCapturedUnits",
+        "operation": "SET",
+        "value": 20,
+        "before": 20,
+        "after": 20,
+    }
+    raw["capture"]["options"][0]["diplomaticEffect"] = effect
+    shown = model_view(raw)
+    assert shown["capture"]["options"][0]["diplomaticEffect"] == effect
+    assert "grateful" not in json.dumps(shown)
+
+
 def test_startup_deltas_details_receipts_replays_and_historical_evidence_share_projection(tmp_path):
     async def run():
         io = ServiceIO()
@@ -393,7 +537,7 @@ def test_startup_deltas_details_receipts_replays_and_historical_evidence_share_p
         host = StartupHost(
             SimpleNamespace(service=SimpleNamespace(active_id="job", records={"job": {"epoch": "g1", "gameTurn": 0}}))
         )
-        host.view["alerts"] = [alert()]
+        host.view["alerts"] = [alert(), captured_settler()]
         host.view["diplomacy"] = {"knownCivilizations": [relation()]}
         original = host.tool
 
@@ -414,12 +558,14 @@ def test_startup_deltas_details_receipts_replays_and_historical_evidence_share_p
             prepared = await prepare_startup(gateway, job)
             view = prepared["reads"]["player_turn"]
             assert "FLAVOR_" not in startup_prompt(prepared, "gameplay", memory.context(job.memory)).user
+            assert "grateful" not in json.dumps(view)
             detail = await gateway.call(job, "player_details", {"section": "diplomacy"}, "details")
             assert "demands" not in detail["data"]["diplomacy"]["knownCivilizations"][0]["native"]
             # Raw evidence is retained, while explicit reads and future preload project it.
             source = "observation:turn"
             evidence = await gateway.call(job, "memory_read", {"ids": [source]}, "evidence")
             assert "FLAVOR_" not in json.dumps(evidence)
+            assert "grateful" not in json.dumps(evidence)
             record = job.memory["records"][source]
             assert "FLAVOR_QUOTATION" in json.dumps(record)
             context: JsonObject = {"records": {source: record}, "contextIds": [source], "omitted": 0, "events": []}
@@ -439,6 +585,7 @@ def test_startup_deltas_details_receipts_replays_and_historical_evidence_share_p
             assert await gateway.call(job, "player_command", command, "ack") == receipt
             history = await gateway.call(job, "history_read", {"turn": 0}, "history")
             assert "FLAVOR_" not in json.dumps(history)
+            assert "grateful" not in json.dumps(history)
             assert "FLAVOR_QUOTATION" in json.dumps(memory.history(0))
             memory.export(tmp_path / "workspace")
             assert "FLAVOR_" not in (tmp_path / "workspace/turn_0/summary.json").read_text()
@@ -454,7 +601,7 @@ def test_startup_deltas_details_receipts_replays_and_historical_evidence_share_p
 
 
 def test_workspace_archives_project_native_data_and_keep_the_original_audit(tmp_path):
-    raw = {"alerts": [alert()], "diplomacy": [relation()]}
+    raw = {"alerts": [alert(), captured_settler()], "diplomacy": [relation()]}
     reply = {"structuredContent": raw, "content": [{"type": "text", "text": json.dumps(raw)}]}
     before = copy.deepcopy(reply)
     event = {
@@ -469,6 +616,7 @@ def test_workspace_archives_project_native_data_and_keep_the_original_audit(tmp_
     for name in ("commands.jsonl", "attempts/attempt_1/events.jsonl"):
         assert "FLAVOR_" in (tmp_path / "archive/turn_0" / name).read_text()
         assert "FLAVOR_" not in (tmp_path / "workspace/turn_0" / name).read_text()
+        assert "grateful" not in (tmp_path / "workspace/turn_0" / name).read_text()
     projected = model_view(reply)
     assert json.loads(projected["content"][0]["text"]) == projected["structuredContent"]
     assert model_view(projected) == projected

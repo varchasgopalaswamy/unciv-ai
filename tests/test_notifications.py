@@ -88,7 +88,7 @@ def test_notifications_are_delivered_in_full_and_remain_evidence_after_dismissal
             await gateway.close(job, True)
             restarted = CivilizationState(tmp_path / "private", "Rome")
             action = restarted.summary(0)["actions"][0]
-            assert action["action"] == "Dismissed 1 ordinary notifications"
+            assert action["action"] == "Dismissed 1 ordinary notifications."
             assert action["receipt"]["dismissedNotifications"] == notifications[:1]
         finally:
             await io.close()

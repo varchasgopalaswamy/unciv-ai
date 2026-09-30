@@ -21,6 +21,8 @@ object ObservationOpportunitiesProbe {
                 "settlement-before-settler" -> settlementBeforeSettler(root)
                 "automation" -> UnitAutomationProbe.run(root)
                 "mechanics" -> MechanicsOverviewProbe.run(root)
+                "civilization-profile" -> CivilizationProfileProbe.vanilla(root)
+                "civilization-profile-gnk" -> CivilizationProfileProbe.godsAndKings(root)
                 "expansion" -> MechanicsOverviewProbe.expansion(root)
                 "construction" -> construction(root)
                 "building-estimates" -> BuildingEstimatesProbe.run(root)
@@ -251,7 +253,8 @@ object ObservationOpportunitiesProbe {
         val opportunity = session.turn().diplomacyOpportunities!!.luxuryTrades.single { it.civilizationId == other.civID }
         check(opportunity.mode == "SHARED")
         check(opportunity.spareLuxuriesToOffer.single().name == "Dyes" && opportunity.spareLuxuriesToOffer.single().amount == 1)
-        check(opportunity.missingLuxuriesOffered.single().name == "Silk")
+        check(opportunity.missingLuxuriesAvailableForTrade.single().name == "Silk")
+        check(session.turn().diplomacyOpportunities!!.luxuryTradeBasis!!.contains("consent"))
     }
 
     private fun settlerProgress(root: Path) {

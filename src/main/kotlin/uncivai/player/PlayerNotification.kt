@@ -30,7 +30,7 @@ internal fun observeNotifications(player: Civilization, state: TurnSessionState,
         player.notifications.mapNotNull { notification ->
             val handle = state.notificationHandles.getOrPut(notification) { state.identifiers.next(PlayerIdentifier.NOTIFICATION) }
             if (handle in state.dismissedNotifications) return@mapNotNull null
-            PlayerNotification(handle, visibleNotificationText(player, notification.text).tr(), notification.category.name, frozen(notification.icons.filter { icon -> player.gameInfo.civilizations.none { it !== player && !player.knows(it) && (it.civName == icon || it.civID == icon) } }), notification.locations(), canDismiss)
+            PlayerNotification(handle, visibleNotificationText(player, notificationGameplayText(notification.text)).tr(), notification.category.name, frozen(notification.icons.filter { icon -> player.gameInfo.civilizations.none { it !== player && !player.knows(it) && (it.civName == icon || it.civID == icon) } }), notification.locations(), canDismiss)
         },
     )
 }

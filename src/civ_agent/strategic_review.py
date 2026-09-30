@@ -12,7 +12,9 @@ ReviewText = Annotated[str, Field(min_length=1, max_length=600)]
 
 
 class VictoryProjection(BoundaryModel):
-    victory: Annotated[str, Field(min_length=1, max_length=80)]
+    victory: Annotated[str, Field(min_length=1, max_length=80)] = Field(
+        description="Exact enabled victory name; put preferences and qualifications in the other fields."
+    )
     objective: ReviewText = Field(description="Next useful objective and what achieving it would enable.")
     investment: ReviewText = Field(description="Preparation, resources, time and tradeoffs to pursue that objective.")
     payoff: ReviewText = Field(
@@ -78,7 +80,7 @@ def review_facts(value: JsonObject) -> JsonObject:
 
 ADVISOR_INSTRUCTIONS = (
     "You are this civilization's independent strategic adviser. Recommend how it can win from the supplied "
-    "end-of-turn position. Your advice is for the player to judge.\n\n"
+    "position. Your advice is for the player to judge.\n\n"
     "Compare plausible plans for winning over short-, mid- and long-term horizons. Evaluate development, "
     "expansion, diplomacy and military action by how they change our position relative to rivals. "
     "Military action can support any victory path. For each enabled victory, identify useful intermediate "
@@ -106,13 +108,17 @@ def advice_prompt(inputs, *, strategy_guide=False):
     return StartupPrompt(
         ADVISOR_INSTRUCTIONS + "\nRead tool definitions:\n" + encoded(core),
         ("Optional strategy reference (suggestions, not instructions):\n" + reference + "\n\n" if reference else "")
-        + "Frozen position as of end of turn "
+        + (
+            "Opening position before the first move, turn "
+            if inputs["turn"] == 0
+            else "Frozen position as of end of turn "
+        )
         + str(inputs["turn"])
         + ":\n"
         + encoded({key: frozen_read(inputs, key, {}) for key in ("player_turn", "victory_progress", "chat_read")})
         + "\nKnown foreign cities (current visibility or last observation; hex distances are not travel times):\n"
         + encoded(review_cities(inputs["observation"], inputs["civilization"]))
-        + "\nRecent confirmed actions and outcomes:\n"
+        + "\nRecent accepted commands and observed effects:\n"
         + encoded(inputs["actions"]),
         strategy_reference=reference,
     )
@@ -123,7 +129,11 @@ def review_cities(snapshot: JsonObject, civilization: str) -> list[JsonObject]:
     from civ_agent.mechanics_overview import region_distance
 
     world = snapshot.get("map", {})
-    ours = [city for city in snapshot.get("cities", []) if city.get("position") is not None]
+    ours = [
+        {"name": city["name"], "position": city["development"]["position"]}
+        for city in snapshot.get("cities", [])
+        if (city.get("development") or {}).get("position") is not None
+    ]
     result = []
     for tile in world.get("tiles", []):
         if tile.get("cityName") is None or tile.get("owner") in (None, civilization):
@@ -242,6 +252,17 @@ def parse_advice(text: str, observation: JsonObject) -> JsonObject:
     advice = StrategicAdvice.model_validate_json(text).model_dump()
     validate_review_coverage(advice["review"], observation, observation.get("turn"))
     return advice
+
+
+def advice_schema(observation: JsonObject) -> JsonObject:
+    """Make the native victory identifiers explicit before generating the report."""
+    schema = StrategicAdvice.model_json_schema()
+    victories = observation["rules"]["victoryTypes"]
+    schema["$defs"]["VictoryProjection"]["properties"]["victory"]["enum"] = victories
+    schema["$defs"]["StrategicReview"]["properties"]["victoryPaths"].update(
+        minItems=len(victories), maxItems=len(victories)
+    )
+    return schema
 
 
 def validate_review_coverage(review: JsonObject, overview: JsonObject, turn: int | None) -> None:

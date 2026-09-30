@@ -28,10 +28,13 @@ See [monitoring](Monitoring.md) for storage and explicit export commands.
 
 ## Background reviews
 
-Every K turns, starting at K (default 5), the service saves a frozen review input
-before `END_TURN`. A successful handoff makes it eligible for independent background
-execution. The next gameplay turn does not wait for it. Reviewers can read only
-the captured position and planning catalogues, and cannot write notebook entries.
+Opening reviews capture each civilization's own starting view before any player
+moves, then run concurrently. Every K turns, starting at K (default 5), the service
+saves a frozen review input before `END_TURN`. A successful handoff makes that
+periodic review eligible for independent background execution. Other civilizations
+can play, while the reviewer's civilization waits for its report before its first
+or next gameplay turn. Reviewers can read only the captured position and planning
+catalogues, and cannot write notebook entries.
 
 Pending review inputs and completed reports are captured in the turn checkpoint.
 Publication after that checkpoint is discarded by rewind, restoring its pending
@@ -44,14 +47,14 @@ restart from the saved input; completion atomically saves advice and removes it.
 - An active-player crash, deadline or incomplete turn stops gameplay. Explicit
   resume restores the turn checkpoint and starts a fresh attempt.
 - A lost action response is reconciled against its durable receipt first.
-- A failed strategic reviewer can retry while any player acts, including its own
-  civilization. Gameplay uses the latest completed report without waiting.
+- A failed strategic reviewer can retry while other civilizations act. Its own
+  civilization waits for the report before starting gameplay.
 - Repeated state conflicts, broken invariants, persistence failures and exhausted
   review retries stop for inspection; they are not automatic gameplay retry loops.
 - Operator pauses and budget limits stop work until explicit resume.
 
 This replaces historical round checkpoints and the manual round-rollback command.
-The memory store uses format 7 and scheduler state uses format 4. Older matches
+The memory store uses format 8 and scheduler state uses format 4. Older matches
 require their original code; there is no migration. Start a fresh match with this
 version. Native checkpoint behavior is unchanged.
 Replaying work spends additional tokens and time and may produce different choices.

@@ -8,7 +8,12 @@ import java.util.concurrent.TimeUnit
 
 class TelemetryIntegrationTest {
     @Test
-    fun `turn metrics native AI scores and recovery share durable accounting`() {
+    fun `turn metrics native AI scores and recovery share durable accounting`() = run("periodic")
+
+    @Test
+    fun `opening reviews use private starting views and charge each owners first turn`() = run("opening")
+
+    private fun run(scenario: String) {
         val root = Files.createTempDirectory("telemetry-")
         val log = root.resolve("probe.log")
         val process = ProcessBuilder(
@@ -20,6 +25,7 @@ class TelemetryIntegrationTest {
             System.getProperty("uncivai.testClasspath"),
             "uncivai.TelemetryProbe",
             root.toString(),
+            scenario,
         ).redirectErrorStream(true).redirectOutput(log.toFile()).start()
         try {
             check(process.waitFor(120, TimeUnit.SECONDS)) { "Telemetry probe timed out: ${Files.readString(log)}" }

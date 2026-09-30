@@ -12,6 +12,7 @@ from pathlib import Path
 from civ_agent.mcp_results import canonical_tool_result
 from civ_agent.model_status import REASONS, error_fields
 from civ_agent.protocol import EventPage
+from civ_agent.review_trace import ReviewTrace
 from civ_agent.tls import private_directory, regular_file
 
 MAX_EVENT_BYTES = 64 * 1024
@@ -125,6 +126,7 @@ class HistoryLog:
         self.pending_bytes = 0
         self.streams = {}
         self.items = set()
+        self.trace: ReviewTrace | None = None
         if self.path.exists():
             regular_file(self.path, private=True)
             with self.path.open("rb") as stream:
@@ -208,6 +210,8 @@ class HistoryLog:
             self.offsets.append(self.end_offset)
             self.end_offset += len(line)
         self.sequence += len(events)
+        if self.trace is not None:
+            self.trace.append(event)
 
     def delta(self, kind, data):
         key = (kind, data.get("itemId"), data.get("summaryIndex"))
@@ -272,6 +276,7 @@ class HistoryLog:
         self.flush()
         self.turn_id = None
         self.model_role = model_role
+        self.trace = ReviewTrace() if model_role == "strategic_review" else None
         self.pending.clear()
         self.pending_bytes = 0
         self.items.clear()
@@ -343,6 +348,10 @@ class HistoryStore:
 
     def next_conversation(self, activation_id, model_role):
         self.logs[activation_id].next_conversation(model_role)
+
+    def review_trace(self, activation_id):
+        log = self.logs.get(activation_id)
+        return log.trace.snapshot() if log is not None and log.trace is not None else None
 
     def notify(self, activation_id, thread_id, method, params):
         log = self.logs.get(activation_id)

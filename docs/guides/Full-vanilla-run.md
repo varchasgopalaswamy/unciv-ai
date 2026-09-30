@@ -12,16 +12,33 @@ with two city-states. Setup remains Vanilla, Ancient, Quick/Prince, Small Pangae
 and all five native victory types. Agents choose their actions without guided
 milestones. The host builds through its normal source-checkout launcher.
 
-Use `--model` and `--reasoning-effort` to select settings for all three agents,
+Use `--model` and `--reasoning-effort` to select defaults for the agents,
 including gameplay, chat and background strategic reviews:
 
 ```sh
 .venv/bin/civ-agent game start --model gpt-6-luna --reasoning-effort high
 ```
 
-The launcher forwards these settings to the scheduler and every agent service.
-Launch metadata records the requested settings; job telemetry records the effective
-settings reported by Codex. Editing the launcher does not change running services.
+Override either setting for individual civilizations with repeatable
+`--agent-model CIV=MODEL` and `--agent-reasoning-effort CIV=LEVEL` options:
+
+```sh
+.venv/bin/civ-agent game start --state-dir ~/.local/state/unciv-host/mixed-models \
+  --model gpt-6-luna --reasoning-effort max \
+  --agent-model Greece=gpt-5.6-luna \
+  --agent-reasoning-effort France=high
+```
+
+This gives Rome gpt-6-luna/max, Greece gpt-5.6-luna/max, and France
+gpt-6-luna/high. Each setting falls back independently to its global default.
+Use the civilization names from `--agents`; overrides for built-in opponents,
+unknown civilizations, or duplicate overrides for the same setting are rejected.
+
+The launcher passes the resolved settings to each agent service and shows them
+at startup. It omits a scheduler-wide override for a setting with per-civ choices,
+so the scheduler preserves those choices. Launch metadata records the resolved
+settings under `agentSettings`; job telemetry records the effective settings
+reported by Codex. Editing the launcher does not change running services.
 
 ## Choose the game
 
@@ -109,16 +126,21 @@ startup timeout and checkout choices are saved in `launch-settings.json`.
 `game start` refuses to overwrite a saved board. Resume retains accounting and
 rewinds to the start of the interrupted turn, including communication and private state.
 Completed native handoffs are retained.
-It also inherits the saved model and reasoning effort, including for games started
-with older defaults. Explicitly conflicting settings are rejected before services
-start; choose a new match directory to use a different model or reasoning effort.
+It also inherits the saved global defaults and per-civilization model and reasoning
+choices. There is no need to repeat these flags on resume. Repeating one override
+retains the other saved overrides. Explicitly conflicting settings are rejected
+before services start; choose a new match directory to use a different model or
+reasoning effort.
 It requires `exploration.json` and the original player credentials. If startup
 saved the board before saving scheduler state in `runner/monitoring.sqlite3`, resume starts scheduling that
 saved board. If no board was created, fix the startup error and repeat `game start`.
 
-Reviews run asynchronously at the end of turns 5, 10, 15, etc. Set
-`--review-interval K` to change that cadence and starting turn; it is retained on
-resume. A review uses the player's model, effort, priority and optional strategy
+Opening reviews run concurrently before the first move on turn 0, from each
+civilization's own starting view and abilities. Each civilization waits for its
+own report before playing. Later reviews run asynchronously at the end of turns
+5, 10, 15, etc. Set `--review-interval K` to change the later cadence; the opening
+review stays on turn 0. The interval is retained on resume.
+A review uses the player's model, effort, priority and optional strategy
 guide. Other civilizations can play while it runs; the reviewed civilization's
 next turn waits for the report and preloads it as dated advice. Waiting does not
 consume its gameplay timeout. There are no mandatory post-turn memory writes.

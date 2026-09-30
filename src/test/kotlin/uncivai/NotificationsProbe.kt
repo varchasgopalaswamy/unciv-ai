@@ -15,6 +15,9 @@ import uncivai.player.TilePosition
 import uncivai.player.TurnCommandKind
 import uncivai.player.TurnCommandReceipt
 import uncivai.player.TurnCommandRequest
+import uncivai.player.TurnSessionState
+import uncivai.player.notificationGameplayText
+import uncivai.player.observeNotifications
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.UUID
@@ -95,6 +98,47 @@ object NotificationsProbe {
         runtime.executor.accessGame { runtime.executor.commitCheckpoint() }
         write(root, NotificationRecovery(before, request))
         verifyLoadNotices(root, runtime, before)
+        verifyGameplayText()
+    }
+
+    private fun verifyGameplayText() {
+        val game = VanillaGameSetup.create(412L, cityStates = 2, builtInAI = listOf("Egypt"))
+        val player = game.getCivilization("Rome")
+        val minor = game.civilizations.first { it.isCityState }
+        val enemy = game.getCivilization("Egypt")
+        if (!player.knows(minor)) player.diplomacyFunctions.makeCivilizationsMeet(minor)
+        player.diplomacy.remove(enemy.civID)
+        player.notifications.clear()
+        val before = minor.getDiplomacyManager(player)!!.getInfluence()
+
+        // Use actual native events: a template or reward change must not silently
+        // reintroduce dialogue or make the factual replacement incorrect.
+        minor.cityStateFunctions.threateningBarbarianKilledBy(player)
+        check(minor.getDiplomacyManager(player)!!.getInfluence() == before + 12f)
+        minor.questManager.wasAttackedBy(enemy)
+        val requiredKills = minor.questManager.unitsToKill(enemy)
+        repeat(requiredKills) { minor.questManager.militaryUnitKilledBy(player, enemy) }
+        check(minor.getDiplomacyManager(player)!!.getInfluence() == before + 112f)
+        player.addNotification(ECONOMY, LocationAction(HexCoord(0, 7)), NotificationCategory.Trade, NotificationIcon.Gold)
+        val native = json().toJson(game)
+        val notices = observeNotifications(player, TurnSessionState(), canDismiss = true)
+        val text = notices.joinToString("\n") { it.text }
+        check("grateful" !in text && "Egypt" !in text)
+        check("+12 Influence" in text && "5 additional turns" in text)
+        check("kill $requiredKills military units for 100 Influence" in text && "+100 Influence" in text)
+        check("Unknown civilization" in text)
+        check(notices.last().text == ECONOMY.tr() && notices.last().locations == listOf(TilePosition(0, 7)))
+        check(json().toJson(game) == native) { "Projecting notifications mutated native audit data" }
+        check(player.notifications.any { "grateful" in it.text })
+
+        val ruins = game.ruleset.ruinRewards
+        val training = notificationGameplayText(ruins.getValue("your exploring unit receives training").notification)
+        check(training == "Unit gained 10 XP from ancient ruins.")
+        check("[This Unit] gains [10] XP" in ruins.getValue("your exploring unit receives training").uniques)
+        val map = notificationGameplayText(ruins.getValue("find a crudely-drawn map").notification)
+        check(map == "Ancient ruins revealed map tiles.")
+        check(notificationGameplayText("Unknown mechanic: gain [7] Food") == "Unknown mechanic: gain [7] Food")
+        check(notificationGameplayText("Player quotation: they will be grateful") == "Player quotation: they will be grateful")
     }
 
     private fun verifyLoadNotices(root: Path, runtime: HeadlessRuntime, before: PlayerTurnSnapshot) {

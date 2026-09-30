@@ -5,6 +5,7 @@ reading any information outside the returned projection.
 """
 
 import copy
+import difflib
 import hashlib
 import json
 from typing import Annotated, Any, Literal
@@ -131,7 +132,8 @@ class CitySummary(BoundaryModel):
     constructionEstimates: JsonObject = Field(default_factory=dict)
     puppet: bool
     inResistance: bool
-    availableAttacks: int
+    attackOptionCount: int
+    attacksRemaining: int
     yields: JsonObject = Field(default_factory=dict)
     citizens: JsonObject = Field(default_factory=dict)
 
@@ -149,19 +151,21 @@ class UnitSummary(BoundaryModel):
     idle: bool
     movementSupported: bool
     legalDestinations: int
-    availableAttacks: int
+    attackOptionCount: int
+    attacksRemaining: int
     canFoundCity: bool = False
     settlementStatus: str | None = None
     order: str | None = None
     automated: bool = False
     workerJob: str | None = None
     workerJobTurnsRemaining: int | None = None
-    availablePromotions: int = 0
-    greatPersonAbilities: int = 0
+    promotions: JsonObject | None = None
+    availableGreatPersonAbilityCount: int = 0
     canAssembleSpaceshipPart: bool = False
     canGiftToCityState: bool = False
     movementOrder: JsonObject | None = None
     escort: JsonObject | None = None
+    protection: JsonObject | None = None
     canCreateWaterImprovement: bool = False
     missions: list[str] = Field(default_factory=list)
     transported: bool = False
@@ -195,6 +199,7 @@ class TurnOverview(BoundaryModel):
     notifications: list[PlayerNotification] = Field(default_factory=list)
     combatReports: list[JsonObject] = Field(default_factory=list)
     rules: JsonObject = Field(default_factory=dict)
+    civilizationProfile: JsonObject | None = None
     scenario: JsonObject | None = None
     result: JsonObject | None = None
     victory: JsonObject = Field(default_factory=dict)
@@ -285,6 +290,8 @@ def overview(snapshot: JsonObject) -> JsonObject:
         for key in TurnOverview.model_fields
         if key in snapshot and key not in {"cities", "settlement", "research"}
     }
+    if snapshot.get("civilizationProfile") is not None:
+        value["civilizationProfile"] = civilization_profile_summary(snapshot["civilizationProfile"])
     value["wonderOpportunities"] = [
         wonder_summary(wonder, snapshot.get("cities", [])) for wonder in snapshot.get("wonderOpportunities", [])
     ]
@@ -308,7 +315,8 @@ def overview(snapshot: JsonObject) -> JsonObject:
                     city["constructionQueue"][0] if city["constructionQueue"] else ""
                 ),
                 "inResistance": development.get("inResistance", False),
-                "availableAttacks": len(city.get("attacks", [])),
+                "attackOptionCount": len(city.get("attacks", [])),
+                "attacksRemaining": city["attacksRemaining"],
                 "yields": {y["stat"]: y["amount"] for y in development.get("yields", [])},
                 "citizens": citizens_summary(city),
             }
@@ -334,6 +342,7 @@ def overview(snapshot: JsonObject) -> JsonObject:
                 },
                 "movementOrder": unit.get("movementOrder"),
                 "escort": unit.get("escort"),
+                "protection": copy.deepcopy(unit.get("protection")),
                 **{key: combat.get(key) for key in ("strength", "rangedStrength", "role") if unit["military"]},
                 "settlementStatus": "CAN_FOUND_NOW"
                 if unit["canFoundCity"]
@@ -344,22 +353,23 @@ def overview(snapshot: JsonObject) -> JsonObject:
                 "interceptionReady": ((unit.get("air") or {}).get("interception") or {}).get("ready", False),
                 "canCreateWaterImprovement": (unit.get("waterImprovement") or {}).get("available", False),
                 "legalDestinations": len(unit.get("moves", [])),
-                "availableAttacks": len(combat.get("attacks", [])),
+                "attackOptionCount": len(combat.get("attacks", [])),
+                "attacksRemaining": combat["attacksRemaining"],
                 "order": (combat.get("order") or {}).get("action"),
                 "automated": (combat.get("order") or {}).get("automated", False),
                 "workerJob": (unit.get("worker") or {}).get("currentJob"),
                 "workerJobTurnsRemaining": (unit.get("worker") or {}).get("remainingTurns"),
-                "availablePromotions": sum(
-                    p.get("available", False) for p in (combat.get("promotions") or {}).get("choices", [])
-                ),
+                "promotions": promotion_summary(combat.get("promotions")),
                 "upgrades": [
                     {
                         key: option[key]
-                        for key in ("targetName", "goldCost", "resourceRequirements", "available", "reasons")
+                        for key in ("targetName", "goldCost", "additionalResourceRequirements", "available", "reasons")
                     }
                     for option in (unit.get("economy") or {}).get("upgrades", [])
                 ],
-                "greatPersonAbilities": len((unit.get("greatPerson") or {}).get("abilities", [])),
+                "availableGreatPersonAbilityCount": sum(
+                    bool(a.get("available")) for a in (unit.get("greatPerson") or {}).get("abilities", [])
+                ),
                 "canGiftToCityState": ((unit.get("cityStateGift") or {}).get("action") or {}).get("available", False),
                 "canAssembleSpaceshipPart": (unit.get("spaceshipAssembly") or {}).get("available", False),
             }
@@ -426,8 +436,7 @@ def overview(snapshot: JsonObject) -> JsonObject:
     optional = {
         "canFoundCity",
         "automated",
-        "availablePromotions",
-        "greatPersonAbilities",
+        "availableGreatPersonAbilityCount",
         "canAssembleSpaceshipPart",
         "canGiftToCityState",
         "canCreateWaterImprovement",
@@ -443,6 +452,58 @@ def overview(snapshot: JsonObject) -> JsonObject:
                 continue
             if not unit.get(key):
                 unit.pop(key, None)
+    return result
+
+
+def civilization_profile_summary(profile: JsonObject) -> JsonObject:
+    """Keep mechanical facts; omit empty optional fields without dropping false conditions or zero comparisons."""
+
+    def compact(value):
+        if isinstance(value, dict):
+            if value.keys() == {"ordinary", "unique"}:
+                return copy.deepcopy(value)
+            return {
+                key: compact(item)
+                for key, item in value.items()
+                if key == "missingTechnologies" or item is not None and item != [] and item != {}
+            }
+        if isinstance(value, list):
+            return [compact(item) for item in value]
+        return value
+
+    return compact(profile)
+
+
+def promotion_summary(status: JsonObject | None) -> JsonObject | None:
+    if not status:
+        return None
+    acquired = [choice["name"] for choice in status.get("choices", []) if choice.get("acquired")]
+    choices = [choice for choice in status.get("choices", []) if choice.get("available")]
+    if not (acquired or choices or status.get("experience") or status.get("earnedPromotions")):
+        return None
+    result = {
+        key: status[key]
+        for key in (
+            "experience",
+            "experienceForNextPromotion",
+            "earnedPromotions",
+            "totalExperience",
+            "barbarianExperienceLimit",
+            "canEarnExperienceFromBarbarians",
+        )
+        if key in status
+    }
+    result["acquired"] = acquired
+    if choices:
+        result["choices"] = [
+            {
+                key: copy.deepcopy(value)
+                for key, value in choice.items()
+                if key not in {"acquired", "unavailableReasons"}
+            }
+            for choice in choices
+        ]
+        result["recovery"] = copy.deepcopy(status.get("recovery"))
     return result
 
 
@@ -539,6 +600,18 @@ def project_detail(snapshot: JsonObject, query: DetailQuery) -> JsonObject:
                 names = args.get("names", [])
                 estimates = entity.get("constructionEstimates", {})
                 catalogue = sorted(set(options) | purchases.keys() | {p["name"] for p in progress})
+                known_names = snapshot["constructionCatalogue"]
+                unknown = [n for n in names if n not in known_names]
+                available = not unknown
+
+                def queue_reasons(n):
+                    if n in options:
+                        return []
+                    reasons = list(estimates.get(n, {}).get("queueUnavailableReasons", []))
+                    if entity["puppet"] and "Puppet cities control their own production" not in reasons:
+                        reasons.append("Puppet cities control their own production")
+                    return reasons or ["Not in this city's current production menu; native requirements may be unmet."]
+
                 data = {
                     "city": entity["handle"],
                     "name": entity["name"],
@@ -569,6 +642,7 @@ def project_detail(snapshot: JsonObject, query: DetailQuery) -> JsonObject:
                                 if p["name"] == n
                             ],
                             **(construction_estimate(estimates[n], detailed=bool(names)) if n in estimates else {}),
+                            "queueUnavailableReasons": queue_reasons(n),
                             **(
                                 {"conversion": entity["productionConversions"][n]}
                                 if n in entity.get("productionConversions", {})
@@ -576,9 +650,22 @@ def project_detail(snapshot: JsonObject, query: DetailQuery) -> JsonObject:
                             ),
                         }
                         for n in (names or catalogue)
+                        if n in known_names
                     ],
-                    "descriptionsIncluded": bool(names),
+                    "detailLevel": "named" if names else "catalogue",
                 }
+                if unknown:
+                    data["unknownNames"] = [
+                        {
+                            "name": n,
+                            "code": "UNKNOWN_CONSTRUCTION",
+                            "suggestions": difflib.get_close_matches(n, known_names, n=3),
+                        }
+                        for n in unknown
+                    ]
+                    data["discovery"] = {"tool": "construction_details", "arguments": {"target": args["target"]}}
+                if not names:
+                    data["knownNames"] = known_names
                 if estimates:
                     data["estimateBasis"] = ESTIMATE_BASIS
                 data = copy.deepcopy(data)

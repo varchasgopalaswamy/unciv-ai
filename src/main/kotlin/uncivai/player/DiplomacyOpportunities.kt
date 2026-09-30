@@ -14,7 +14,7 @@ data class LuxuryQuantity(val name: String, val amount: Int)
 data class TradePartnerOpportunity(
     val civilizationId: String,
     val mode: String,
-    val missingLuxuriesOffered: List<LuxuryQuantity>,
+    val missingLuxuriesAvailableForTrade: List<LuxuryQuantity>,
     val spareLuxuriesToOffer: List<LuxuryQuantity>,
     val requiresPeaceTreaty: Boolean,
 )
@@ -23,7 +23,11 @@ data class TradePartnerOpportunity(
 data class ExpiringTradeTerm(val civilizationId: String, val agreement: String?, val direction: String, val type: String, val name: String?, val amount: Int, val turnsRemaining: Int)
 
 @Serializable
-data class DiplomacyOpportunities(val luxuryTrades: List<TradePartnerOpportunity>, val expiringTerms: List<ExpiringTradeTerm>)
+data class DiplomacyOpportunities(
+    val luxuryTrades: List<TradePartnerOpportunity>,
+    val expiringTerms: List<ExpiringTradeTerm>,
+    val luxuryTradeBasis: String? = null,
+)
 
 /** Uses precisely the permitted trade-menu inventories, without accepting or proposing terms. */
 internal fun observeDiplomacyOpportunities(player: Civilization, runtime: GameExecutor, relations: List<KnownCivilization>): DiplomacyOpportunities {
@@ -50,5 +54,9 @@ internal fun observeDiplomacyOpportunities(player: Civilization, runtime: GameEx
             }
         }
     }
-    return DiplomacyOpportunities(Collections.unmodifiableList(partners), Collections.unmodifiableList(expiring))
+    return DiplomacyOpportunities(
+        Collections.unmodifiableList(partners),
+        Collections.unmodifiableList(expiring),
+        if (partners.isEmpty()) null else "These inventories identify possible trades. Terms require negotiation and consent from both players.",
+    )
 }

@@ -96,7 +96,7 @@ object EconomyRunProbe {
         val worker = turn.map.units.single { it.name == "Worker" }
         check(turn.economy!!.resources.single { it.name == "Iron" }.available == 0)
         val warrior = turn.map.units.single { it.position == TilePosition(-4, -1) }
-        check(warrior.economy!!.upgrades.any { !it.available && (it.resourceRequirements["Iron"] ?: 0) > 0 })
+        check(warrior.economy!!.upgrades.any { !it.available && (it.additionalResourceRequirements["Iron"] ?: 0) > 0 })
         check(worker.worker!!.options.any { it.name == "Mine" && it.available })
         api.execute(token, command(turn, TurnCommandKind.START_WORKER_JOB, worker.handle, "Mine"))
         var worked = false
@@ -167,7 +167,7 @@ object EconomyRunProbe {
 
         turn = api.turn(token)
         val unit = turn.map.units.single { it.position == TilePosition(-4, -1) }
-        val upgrade = unit.economy!!.upgrades.first { it.available && (it.resourceRequirements["Iron"] ?: 0) > 0 }
+        val upgrade = unit.economy!!.upgrades.first { it.available && (it.additionalResourceRequirements["Iron"] ?: 0) > 0 }
         val upgraded = act(command(turn, TurnCommandKind.UPGRADE_UNIT, unit.handle, upgrade.targetName))
         check(upgraded.economy!!.goldChange == -upgrade.goldCost)
         turn = api.turn(token)

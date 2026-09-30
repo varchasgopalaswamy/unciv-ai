@@ -188,13 +188,15 @@ timeline for inspection. Usage, retry counts and elapsed-time budgets survive.
 If restoration itself is interrupted, run the same resume command again; its
 journal completes the restoration before gameplay is allowed.
 
+Opening reviewers save their starting view before gameplay and run concurrently.
 Periodic reviewers save their position before `END_TURN`, then work independently
-while gameplay continues. An interrupted reviewer restarts with the frozen input
+while other civilizations continue. An interrupted reviewer restarts with the frozen input
 and the same model settings. Three attempts are allowed by default. An exhausted
 task stays pending; inspect the failure before increasing the limit, for example
 `civ-agent game resume --state-dir DIR --review-attempts 4`. Completion atomically
-saves the dated report and removes its temporary input. Gameplay does not wait
-for reviews and has no mandatory end-of-turn memory-writing phase.
+saves the dated report and removes its temporary input. Each civilization waits
+for its own report before its first or next turn. Gameplay has no mandatory
+end-of-turn memory-writing phase.
 
 Keep the entire state directory: the boundary refers to private database records
 and history prefixes. It is not a standalone backup. Historical round rollback has

@@ -152,8 +152,13 @@ internal class ConstructionEstimator(private val player: Civilization) {
                     requiredTechnologies = Collections.unmodifiableList(construction.requiredTechs().sorted().toList()),
                     resourceRequirements = freeze(construction.getResourceRequirementsPerTurn(city.state)),
                     queueUnavailableReasons = Collections.unmodifiableList(
-                        construction.getRejectionReasons(queue)
-                            .map { if (it.shouldShow) it.errorMessage.tr() else "Construction requirements are not met" }.distinct().sorted().toList(),
+                        (
+                            construction.getRejectionReasons(queue)
+                                .map { if (it.shouldShow) it.errorMessage.tr() else "Construction requirements are not met" } +
+                                (if (city.isPuppet) listOf("Puppet cities control their own production") else emptyList()) +
+                                (if (!queue.canAddToQueue(construction) && construction.isBuildable(queue)) listOf("Cannot add this item to the current construction queue") else emptyList())
+                            )
+                            .distinct().sorted().toList(),
                     ),
                     whileBuilding = difference(before, totals(during)),
                     completion = (construction as? Building)?.takeUnless { queue.isBuilt(it.name) }?.let { building ->

@@ -4,17 +4,20 @@ import asyncio
 import contextlib
 import copy
 import json
+import time
 
 from civ_agent.agent_history import HISTORY_METHODS
 from civ_agent.agent_settings import codex_thread_settings, valid_setting
 from civ_agent.civilization_state import job_id
+from civ_agent.model_status import PROGRESS_METHODS, TOOL_ITEMS
 from civ_agent.observations import overview
 from civ_agent.proposal_gateway import JobAccess, public_result
+from civ_agent.protocol import JsonObject
 from civ_agent.review_store import ReviewStore
 from civ_agent.strategic_review import (
     REVIEW_READ_TOOLS,
-    StrategicAdvice,
     advice_prompt,
+    advice_schema,
     parse_advice,
     review_due,
     review_facts,
@@ -38,6 +41,50 @@ class OfflineConnection:
         pass
 
 
+class ReviewProgress:
+    """Bounded activity metadata; never retain draft text or model reasoning."""
+
+    def __init__(self):
+        self.value: JsonObject = {"stage": "Starting", "lastActivityAtMs": None, "toolCalls": 0, "draftCharacters": 0}
+        self.messages = {}
+        self.tools = set()
+
+    def observe(self, method, params):
+        if method == "service/modelStatus":
+            self.value["modelStatus"] = {
+                key: value for key, value in params.items() if key not in {"threadId", "turnId"}
+            }
+            return
+        item = params.get("item", {})
+        if method not in PROGRESS_METHODS and method not in {"item/started", "item/completed"}:
+            return
+        self.value["lastActivityAtMs"] = int(time.time() * 1000)
+        self.value.pop("modelStatus", None)
+        if item.get("type") in TOOL_ITEMS:
+            if method == "item/started":
+                self.tools.add(item["id"])
+                self.value["toolCalls"] += 1
+                self.value["lastTool"] = item.get("tool", item["type"])
+            else:
+                self.tools.discard(item["id"])
+            self.value["stage"] = "Reading" if self.tools else "Thinking"
+        elif item.get("type") == "agentMessage":
+            if method == "item/started":
+                self.messages[item["id"]] = item.get("phase")
+            else:
+                self.messages.pop(item["id"], None)
+            self.value["stage"] = "Drafting" if item.get("phase") == "final_answer" else "Writing update"
+            if item.get("phase") == "final_answer":
+                self.value["draftCharacters"] = len(item.get("text", ""))
+        elif method == "item/agentMessage/delta":
+            drafting = self.messages.get(params.get("itemId")) == "final_answer"
+            self.value["stage"] = "Drafting" if drafting else "Writing update"
+            if drafting:
+                self.value["draftCharacters"] += len(params.get("delta", ""))
+        else:
+            self.value["stage"] = "Thinking"
+
+
 class ReviewRuntime:
     def __init__(self, service, interval=5, attempts=3):
         review_due(0, interval)
@@ -49,6 +96,29 @@ class ReviewRuntime:
         self.pending = asyncio.Event()
         self.failure = None
         self.unconfirmed_process = None
+
+    async def prepare_opening(self, connection, epoch, settings, timeout):
+        """Freeze each civ's initial view during operator connect, before any player moves."""
+        service = self.service
+        if await service.io.call(self.store.has_opening):
+            return
+
+        async def read(name, arguments):
+            value = await connection.tool(name, arguments)
+            if "error" in value:
+                raise ValueError("STRATEGIC_REVIEW_CAPTURE_FAILED: " + name)
+            return value
+
+        try:
+            snapshot = await read("player_turn", {})
+            if snapshot["turn"] != 0 or snapshot["epoch"] != epoch:
+                raise ValueError("STRATEGIC_REVIEW_POSITION_CHANGED")
+            tools = service.gateway.tool_catalogue(await connection.list_tools(), "gameplay")
+            inputs = await self.capture(snapshot, read, tools, 0, epoch)
+            await service.io.call(self.store.prepare_opening, job_id(), inputs, settings, timeout)
+        except Exception as error:
+            service.diagnostics.emit("strategic_review_capture_failed", error=error, gameTurn=0)
+            raise
 
     async def prepare(self, job, call_id):
         """Persist the position before END_TURN; a failed command cannot start work."""
@@ -84,7 +154,6 @@ class ReviewRuntime:
         if not await service.io.call(self.store.available, job.id):
             return
         snapshot = copy.deepcopy(job.observation)
-        reads = {"player_turn": public_result(review_facts(overview(snapshot)))}
 
         async def read(name, args):
             counted = await service.io.call(service.accounting.begin_call, job.id, name, args, source="startup")
@@ -98,6 +167,18 @@ class ReviewRuntime:
             finally:
                 await service.io.call(service.accounting.end_call, counted, outcome, False)
 
+        inputs = await self.capture(snapshot, read, await service.gateway.tools(job), turn, job.epoch)
+        await service.io.call(
+            self.store.prepare,
+            job.id,
+            inputs,
+            record.get("effectiveSettings", record["settings"]),
+            record["timeoutSeconds"],
+        )
+
+    async def capture(self, snapshot, read, tools, turn, epoch):
+        service = self.service
+        reads = {"player_turn": public_result(review_facts(overview(snapshot)))}
         reads["victory_progress"] = await capture_victory(read, turn)
         for name, field in (("research_details", "technologies"), ("policy_details", "policies")):
             catalogue = await read(name, {})
@@ -106,22 +187,22 @@ class ReviewRuntime:
             for offset in range(0, len(names), 16):
                 details.extend((await read(name, {"names": names[offset : offset + 16]}))[field])
             reads[name] = {**catalogue, field: details}
-        social = await read("player_communication", {"op": "state", "epoch": job.epoch})
+        social = await read("player_communication", {"op": "state", "epoch": epoch})
         messages = (await service.io.call(service.memory.snapshot, "gameplay"))["events"]
         reads["chat_read"] = {**social, "messages": messages}
-        catalogue = [tool for tool in await service.gateway.tools(job) if tool["name"] in REVIEW_READ_TOOLS]
+        catalogue = [tool for tool in tools if tool["name"] in REVIEW_READ_TOOLS]
         for tool in catalogue:
             if tool["name"] == "player_turn":
-                tool["description"] = "Read the frozen end-of-turn overview being reviewed."
+                tool["description"] = "Read the frozen overview being reviewed."
             else:
                 tool["description"] = "Read only the frozen review position. " + tool.get("description", "")
         actions = []
-        for recent_turn in range(max(0, turn - self.interval + 1), turn + 1):
+        for recent_turn in range(max(1, turn - self.interval + 1), turn + 1):
             offset = 0
             while True:
                 page = await service.io.call(service.memory.history, recent_turn, offset)
                 actions.extend(
-                    {"turn": recent_turn, **{key: action[key] for key in ("action", "outcome")}}
+                    {"turn": recent_turn, "action": action["action"], "commandStatus": action["outcome"]}
                     for action in page["actions"]
                     if action["outcome"] == "confirmed"
                 )
@@ -133,7 +214,7 @@ class ReviewRuntime:
         # into an independent assessment. Full reasons remain in the audit history.
         while actions and len(json.dumps(actions, ensure_ascii=False)) > 10000:
             actions.pop(0)
-        inputs = {
+        return {
             "turn": turn,
             "civilization": service.civilization,
             "observation": review_facts(snapshot),
@@ -141,13 +222,6 @@ class ReviewRuntime:
             "catalogue": catalogue,
             "actions": {"entries": actions, "omittedEarlierActions": total - len(actions)},
         }
-        await service.io.call(
-            self.store.prepare,
-            job.id,
-            inputs,
-            record.get("effectiveSettings", record["settings"]),
-            record["timeoutSeconds"],
-        )
 
     async def confirm(self, parent):
         await self.service.io.call(self.store.confirm, parent)
@@ -186,7 +260,8 @@ class ReviewRuntime:
                     raise ValueError("STRATEGIC_REVIEW_ATTEMPTS_EXHAUSTED")
                 attempt_id = job_id()
                 # Paid jobs are subject to the same invocation budget and host accounting.
-                grant = await service.chat.social("job_claim", job=attempt_id, purpose="review", parentJob=task["job"])
+                parent = {"parentJob": task["job"]} if task["turn"] > 0 else {}
+                grant = await service.chat.social("job_claim", job=attempt_id, purpose="review", **parent)
                 if not grant["granted"]:
                     await asyncio.sleep(1)
                     self.pending.set()
@@ -247,6 +322,8 @@ class ReviewRuntime:
             "settings": settings,
             "requestedServiceTier": "fast" if service.fast else None,
         }
+        progress = ReviewProgress()
+        record["reviewProgress"] = progress.value
         done = asyncio.Event()
         expected = None
         completed = None
@@ -294,6 +371,8 @@ class ReviewRuntime:
                 done.set()
             if params.get("threadId") != record["threadId"]:
                 return
+            if not closing and (expected is None or params.get("turnId") == expected):
+                progress.observe(method, params)
             if method == "thread/tokenUsage/updated":
                 if expected is None:
                     early_usage[params.get("turnId")] = params.get("tokenUsage", {})
@@ -364,7 +443,7 @@ class ReviewRuntime:
                         "model": record["effectiveSettings"]["model"],
                         **({"effort": settings["reasoningEffort"]} if settings.get("reasoningEffort") else {}),
                         **({"serviceTier": "fast"} if service.fast else {}),
-                        "outputSchema": StrategicAdvice.model_json_schema(),
+                        "outputSchema": advice_schema(inputs["reads"]["player_turn"]),
                     },
                 )
                 expected = response["turn"]["id"]
@@ -376,6 +455,8 @@ class ReviewRuntime:
                     completed = early_completions[expected]
                     done.set()
                 record["phase"] = "RUNNING"
+                if progress.value["stage"] == "Starting":
+                    progress.value["stage"] = "Thinking"
                 await save()
                 while not done.is_set():
                     try:
@@ -389,8 +470,12 @@ class ReviewRuntime:
                         await service.flush_telemetry()
                 if completed != "completed" or record.get("error"):
                     raise ValueError(record.get("error", "STRATEGIC_REVIEW_FAILED"))
+                progress.value["stage"] = "Validating"
+                await save()
                 advice = parse_advice(final_messages.get(expected, ""), inputs["reads"]["player_turn"])
             await stop()
+            progress.value["stage"] = "Publishing"
+            await save()
             # A checkpoint may capture pending work while a model is computing.
             # Publish only after the hold, so rewind restores exactly that boundary.
             async with service.gateway.admit():
@@ -419,5 +504,6 @@ class ReviewRuntime:
                     record["phase"] = (
                         "COMPLETED" if success else "INTERRUPTED" if record.get("error") == "INTERRUPTED" else "FAILED"
                     )
+                progress.value["stage"] = record["phase"].capitalize()
                 record["usageComplete"] = stopped and completed == "completed" and record.get("usageReported", False)
                 await save()

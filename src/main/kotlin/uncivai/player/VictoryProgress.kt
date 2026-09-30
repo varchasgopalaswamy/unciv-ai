@@ -11,7 +11,10 @@ import java.util.Collections
 data class VictoryPartProgress(val name: String, val completed: Int, val required: Int)
 
 @Serializable
-data class VictoryMilestoneProgress(val description: String, val display: String, val status: String, val parts: List<VictoryPartProgress>, val objectives: List<VictoryObjectiveProgress>)
+data class VictoryMilestoneProgress(val description: String, val display: String, val status: String, val parts: List<VictoryPartProgress>, val objectives: List<VictoryObjectiveProgress>, val objectiveRequirement: VictoryObjectiveRequirement? = null)
+
+@Serializable
+data class VictoryObjectiveRequirement(val rule: String, val requiredCount: Int, val completedCount: Int)
 
 @Serializable
 data class VictoryObjectiveProgress(val kind: String, val name: String?, val completed: Boolean)
@@ -85,6 +88,11 @@ internal fun observeVictoryProgress(player: Civilization, turn: PlayerTurnSnapsh
                                     },
                                 ),
                                 if (current && !completed) observeVictoryObjectives(player, milestone) else emptyList(),
+                                if (milestone.type == MilestoneType.CompletePolicyBranches) {
+                                    VictoryObjectiveRequirement("AT_LEAST", milestone.params[0].toInt(), player.policies.completedBranches.size)
+                                } else {
+                                    null
+                                },
                             )
                         },
                     ),

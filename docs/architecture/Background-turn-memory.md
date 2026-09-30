@@ -8,9 +8,14 @@ and action records cannot reconstruct.
 
 ## Review schedule
 
-`--review-interval K` defaults to **5**. Reviews are prepared at the end of turns
-K, 2K, 3K, and so on; there is no turn-100 threshold. The launcher retains the
-interval on resume. Independent agent servers accept the same option.
+Each civilization receives an opening review before its first move on turn **0**.
+These reviews run concurrently, subject to the shared job limits. Each uses only
+that civilization's revealed starting area, units and ability profile, plus
+permitted planning information. Its first gameplay turn waits for its own report.
+
+`--review-interval K` defaults to **5**. Subsequent reviews are prepared at the end
+of turns K, 2K, 3K, and so on. The launcher retains the interval on resume.
+Independent agent servers accept the same option.
 
 A civilization has at most one pending review. Other civilizations continue while
 it runs, but that civilization's next gameplay turn waits for the report. For
@@ -22,11 +27,12 @@ gameplay activation. The wait uses no gameplay model time or activation budget;
 the match wall-time budget still applies. It keeps the operator lease alive,
 checks service health, and responds to pause, stop and budget limits. The console
 and dashboard identify the waiting civilization and review turn. The service
-also rejects a direct gameplay start while an earlier review is unfinished.
+also rejects a direct gameplay start while a required review is unfinished.
 
 ## Frozen input and publication
 
-Before a due `END_TURN` is dispatched, the service saves:
+During initial player connection, before gameplay starts, and before each due
+`END_TURN`, the service saves:
 
 - The player's permitted position, with its detailed city, unit and explored-map data.
 - All permitted victory sections and chart-history pages, plus research/policy
@@ -36,9 +42,12 @@ Before a due `END_TURN` is dispatched, the service saves:
   audit history and are excluded from the review inputs.
 - The original model, reasoning effort and timeout settings.
 
-Capturing data is service work, not another model request. A rejected handoff
-cannot launch a review. A successful native handoff, or its reconciled receipt,
-marks the saved task pending. The next player may then act while the reviewer runs.
+Capturing data is service work, not another model request. Opening inputs become
+pending immediately, with no preceding gameplay job or action history. Reconnecting
+reuses pending inputs or a completed report. For periodic reviews, a rejected
+handoff cannot launch a review. A successful native handoff, or its reconciled
+receipt, marks the saved task pending. The next player may then act while the
+reviewer runs.
 
 The reviewer receives its own conversation and credential, using the player's
 model, reasoning effort, fast-priority setting and optional strategy guide. Its
@@ -75,8 +84,8 @@ service validates the report's structure and coverage.
 The latest completed report is selected when a subsequent gameplay activation
 starts, with `asOfTurn`. It cannot change midway through that conversation or
 overwrite the player's notebook. The player weighs it against current facts and
-need not agree with it or copy it into another memory entry. Before the first
-scheduled review, gameplay uses its ordinary observations and optional memory.
+need not agree with it or copy it into another memory entry. Opening advice is
+available at turn 0; periodic advice is available on later turns.
 
 ## Recovery and failures
 
@@ -112,9 +121,10 @@ can start the next player while that completion drains.
 idempotent retries for lost acknowledgements. A civilization's next activation
 waits for this mechanical completion and any pending strategic review.
 
-Reviews are separate `review` jobs linked to the original gameplay job. All
-attempts' tokens, calls and durations appear in host telemetry and the original
-turn's totals; player totals also separate `reviewUsage`. Final provider counters
+Reviews are separate `review` jobs. Periodic reviews link to the original gameplay
+job; opening reviews have no parent and count toward their owner's turn 0.
+All attempts' tokens, calls and durations appear in host telemetry and the
+source turn's totals; player totals also separate `reviewUsage`. Final provider counters
 can arrive after handoff, so accounting may initially be incomplete. Concurrent
 job durations must not be added to estimate game wall time.
 
@@ -129,7 +139,8 @@ and [turn recovery](Turn-recovery.md).
 
 ## Validation
 
-Tests cover cadence, read-only frozen tools, other-player overlap, the next own
+Tests cover concurrent opening reviews, private starting views, turn-zero usage,
+cadence, read-only frozen tools, other-player overlap, the next own
 turn waiting and receiving the report, model/effort/priority settings, failed and
 cancelled reviews, bounded attempts, checkpoint restoration, lost handoff
 responses and delayed usage. Waiting is tested beyond the gameplay timeout,

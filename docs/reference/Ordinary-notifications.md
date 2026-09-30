@@ -37,7 +37,7 @@ replay that archive into subsequent turns; the agent's observations and receipts
 remain available through its existing history tools. There are no special rules
 for encampments, economic events, or other notification categories.
 
-Pending handles, dismissals, and receipts are part of checkpoint format **4**.
+Pending handles, dismissals, and receipts are part of the current checkpoint format.
 Restart requires a fresh read before an uncommitted dismissal, while committed
 requests replay their original receipts. Interrupted-turn recovery restores the
 pending list, and discarded handles are not reissued. Older host checkpoint

@@ -59,6 +59,14 @@ def add_overview_commands(value: JsonObject) -> None:
             "instruction": "Review the current unit roster and pending decisions. Idle units and tactical warnings are advisory; deferReason is optional. After END_TURN succeeds, finish.",
         }
     for unit in value.get("units", []):
+        add_protection_inspections(unit)
+        if unit.get("promotions"):
+            unit.setdefault("inspections", {})["PROMOTE_UNIT"] = {
+                "tool": "unit_details",
+                "arguments": {"target": unit["handle"], "sections": ["promotions"]},
+            }
+            for choice in unit["promotions"].get("choices", []):
+                attach(choice, "PROMOTE_UNIT", target=unit["handle"], selection=choice["name"])
         if unit.get("escort"):
             unit.setdefault("inspections", {})["SET_UNIT_ORDER"] = {
                 "tool": "unit_details",
@@ -76,7 +84,26 @@ def add_overview_commands(value: JsonObject) -> None:
             }
 
 
+def add_protection_inspections(unit: JsonObject) -> None:
+    for candidate in (unit.get("protection") or {}).get("escortCandidates", []):
+        candidate["ordersInspection"] = {
+            "tool": "unit_details",
+            "arguments": {"target": candidate["unit"], "sections": ["orders"]},
+        }
+        if candidate["atSettler"]:
+            candidate["pairingInspection"] = {
+                "tool": "unit_details",
+                "arguments": {"target": unit["handle"], "sections": ["orders"]},
+            }
+        else:
+            candidate["rendezvousPreview"] = {
+                "tool": "movement_preview",
+                "arguments": {"target": candidate["unit"], "destination": unit["position"]},
+            }
+
+
 def add_unit_commands(unit: JsonObject) -> None:
+    add_protection_inspections(unit)
     target = unit["handle"]
     if unit.get("escort"):
         unit["escortInstruction"] = (
@@ -237,7 +264,10 @@ def add_city_commands(city: JsonObject) -> None:
 
 
 def add_construction_commands(data: JsonObject) -> None:
-    if not data["descriptionsIncluded"]:
+    if data.get("unknownNames"):
+        data["instruction"] = "Correct unknownNames using the suggestions or discovery read before choosing a command."
+        return
+    if data["detailLevel"] != "named":
         data["instruction"] = (
             "Read construction_details with names=[chosen names] for descriptions, commands and purchase confirmations."
         )

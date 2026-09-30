@@ -5,10 +5,10 @@ observations come first in the changing part of the turn preload; historical
 strategy follows as data. Stable instructions and capabilities remain at the
 front for prompt caching.
 
-**Memory format 7 requires fresh private stores in a new match directory.** Older
+**Memory format 8 requires fresh private stores in a new match directory.** Older
 databases and checkpoints are rejected without modification. There is no legacy
 runtime or automatic migration. Preserve old match directories for auditing.
-Restart and turn rewind work within format 7.
+Restart and turn rewind work within format 8.
 
 SQLite remains authoritative, with SQLAlchemy Core owning access. Immutable
 observations, decisions, receipts, notebook revisions and communication
@@ -40,8 +40,11 @@ review as provisional decisions.
 
 ### Routine strategic review
 
-A separate read-only adviser works asynchronously every K turns, starting at turn
-K (`--review-interval`, default 5). It compares every enabled victory type,
+A separate read-only adviser prepares an opening plan before the first move on
+turn 0, then works asynchronously after turns K, 2K, and so on (`--review-interval`,
+default 5). Opening reviews run concurrently using each civilization's own
+starting view and ability profile; its first gameplay turn waits for its report.
+The adviser compares every enabled victory type,
 remaining requirements, timing assumptions and observed rivals. Every path leads
 with a useful intermediate objective, required investment and expected payoff
 relative to rivals, including their likely responses. Development, expansion,
@@ -58,13 +61,23 @@ reviewer.
 Projections can describe development milestones and conditions, with detail
 suited to the game stage and evidence.
 
-The service captures permitted position and planning data before the native
-handoff. The reviewer uses the player's model, effort and priority, with frozen
+The service captures opening inputs while connecting all players, before gameplay
+starts; periodic inputs are captured before the native handoff. Opening reviews
+have no preceding gameplay job. The reviewer uses the player's model, effort and priority, with frozen
 read tools, known foreign cities and recent factual actions. Private strategy,
 handoffs and the player's action rationales are excluded. It cannot act, communicate
 or edit memory. Other civilizations can play during the review; this civilization's
 next turn waits until the report is saved and includes it as dated advice at
 dispatch. Following the advice is optional, and it need not be copied into the notebook.
+
+Command history uses the receipt's `actionSummary`, generated from native results
+and permitted before/after observations. An acknowledged attack that stopped en
+route is recorded as no attack, with its actual endpoint. Damage, captures, losses,
+worker steps and one-time promotion effects survive into the review. Review entries
+label acceptance as `commandStatus`; their action text records the effects.
+The 10,000-character history budget drops whole older entries. Known foreign-city
+distances use owned cities' native `development.position` and wrapped hex geometry;
+they measure proximity, not travel time.
 
 Reports and pending inputs are durable and rewind with private state. Retry
 counts and spending survive rewind. The default attempt limit is 3; exhaustion

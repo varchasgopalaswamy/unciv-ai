@@ -16,10 +16,9 @@ data class MovementPreviewRequest(val target: String, val destination: TilePosit
 @Serializable
 data class EscortFormation(val partner: String, val active: Boolean)
 
-internal fun observeEscort(player: Civilization, unit: MapUnit, state: TurnSessionState): EscortFormation? =
-    PlayerUnitOrders(player).escortPartner(unit)?.let {
-        EscortFormation(state.unitHandles.getOrPut(it.id) { state.identifiers.next(PlayerIdentifier.UNIT) }, unit.isEscorting())
-    }
+internal fun observeEscort(player: Civilization, unit: MapUnit, state: TurnSessionState): EscortFormation? = PlayerUnitOrders(player).escortPartner(unit)?.let {
+    EscortFormation(state.unitHandle(it), unit.isEscorting())
+}
 
 /** Turn stops are estimates; the engine replans as terrain and other units become visible. */
 @Serializable
@@ -69,12 +68,13 @@ internal fun observeMovementOrder(player: Civilization, unit: MapUnit, active: B
     return MovementOrder(destination, active && PlayerUnitOperations(player).canCancelMovement(unit), settlement)
 }
 
-internal fun observeMovementPreview(player: Civilization, unit: MapUnit, turn: PlayerTurnSnapshot, request: MovementPreviewRequest, knowledge: Map<TilePosition, KnownSettlementTile> = emptyMap()): MovementPreview {
+internal fun observeMovementPreview(player: Civilization, unit: MapUnit, turn: PlayerTurnSnapshot, request: MovementPreviewRequest, state: TurnSessionState): MovementPreview {
     val active = turn.phase == "ACTIVE" && turn.result == null && turn.alerts.none { it.capture != null }
     val destination = player.gameInfo.tileMap.getOrNull(request.destination.x, request.destination.y)
     val route = if (active && destination != null) PlayerUnitOperations(player).route(unit, destination) else null
     val format = DecimalFormat("0.#", DecimalFormatSymbols(Locale.ROOT))
-    val contexts = PositionContexts(player)
+    val contexts = PositionContexts(player, state)
+    val knowledge = state.settlementKnowledge
     val observed = turn.map.units.single { it.handle == request.target }
     val attacks = observed.combat?.attacks.orEmpty()
     val escort = observed.escort?.takeIf { it.active }?.partner
@@ -85,8 +85,10 @@ internal fun observeMovementPreview(player: Civilization, unit: MapUnit, turn: P
             format.format(segment.movementCost.toDouble()),
             segment.path.count { !it.isExplored(player) },
             segment.path.count { !it.isVisible(player) },
-            movementConsequences(player, unit, segment.destination, segment.movementCost, contexts, attacks, knowledge,
-                laterTurn = index > 0, escortHandle = escort, escortCost = segment.escortMovementCost),
+            movementConsequences(
+                player, unit, segment.destination, segment.movementCost, contexts, attacks, knowledge,
+                laterTurn = index > 0, escortHandle = escort, escortCost = segment.escortMovementCost,
+            ),
         )
     } ?: emptyList()
     return MovementPreview(

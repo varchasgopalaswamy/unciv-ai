@@ -38,7 +38,7 @@ class CityDetails(EntityDetails):
 
 
 UNIT_FIELDS = {
-    "movement": ("moves", "movementOrder", "nearbyHostiles", "escort"),
+    "movement": ("moves", "movementOrder", "nearbyHostiles", "escort", "protection"),
     "combat": (
         "combat.supported",
         "combat.strength",
@@ -48,7 +48,7 @@ UNIT_FIELDS = {
         "combat.attacks",
         "nearbyHostiles",
     ),
-    "orders": ("combat.order", "combat.orders", "escort"),
+    "orders": ("combat.order", "combat.orders", "escort", "protection"),
     "promotions": ("combat.promotions",),
     "work": ("worker", "waterImprovement"),
     "settlement": (
@@ -58,6 +58,7 @@ UNIT_FIELDS = {
         "movementOrder.destination",
         "movementOrder.settlement",
         "nearbyHostiles",
+        "protection",
     ),
     "economy": ("economy",),
     "abilities": ("greatPerson", "spaceshipAssembly", "cityStateGift"),
@@ -103,7 +104,7 @@ CITY_FIELDS = {
         "management.buildingSales",
     ),
     "purchases": ("purchases",),
-    "combat": ("attacks", "health", "maxHealth", "defensiveStrength"),
+    "combat": ("attacks", "attacksRemaining", "health", "maxHealth", "defensiveStrength"),
 }
 UNIT_IDENTITY = (
     "handle",

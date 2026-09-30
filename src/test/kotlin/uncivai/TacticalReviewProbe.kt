@@ -14,8 +14,8 @@ import com.unciv.models.metadata.GameSetupInfo
 import com.unciv.models.metadata.Player
 import com.unciv.models.ruleset.unique.UniqueType
 import kotlinx.serialization.json.jsonObject
-import uncivai.player.PlayerHost
 import uncivai.player.MovementPreview
+import uncivai.player.PlayerHost
 import uncivai.player.PlayerTurnJson
 import uncivai.player.TilePosition
 import uncivai.player.TurnCommandKind
@@ -41,6 +41,10 @@ object TacticalReviewProbe {
         }
         if (args[1] == "escort") {
             escort(root)
+            return
+        }
+        if (args[1] == "reachability") {
+            captureReachability(root)
             return
         }
         val checkpoint = root.resolve("checkpoint.json")
@@ -120,6 +124,44 @@ object TacticalReviewProbe {
             check(worker.currentTile === france.cities.single().getCenterTile())
             check(PlayerHost(runtime).bindPlayer("France").completedReceipt(shotRequest) == shotReceipt)
         }
+    }
+
+    /** Two diagonal coordinate changes are two hexes, and declaring war does not restore movement. */
+    private fun captureReachability(root: Path) = SettlementPreviewProbe.fixture(root.resolve("reachability")).use { runtime ->
+        val game = runtime.game
+        val player = game.getCivilization("Rome")
+        val other = game.getCivilization("France")
+        player.units.getCivUnits().toList().forEach { it.destroy() }
+        val scout = checkNotNull(player.units.placeUnitNearTile(HexCoord(2, 2), "Scout"))
+        val settler = checkNotNull(other.units.placeUnitNearTile(HexCoord(3, 1), "Settler"))
+        check(scout.currentTile.aerialDistanceTo(settler.currentTile) == 2)
+        scout.currentMovement = 1f
+        player.diplomacyFunctions.makeCivilizationsMeet(other)
+        player.popupAlerts.clear()
+        player.viewableTiles = game.tileMap.values.toSet()
+        val session = PlayerHost(runtime).bindPlayer("Rome")
+        val destination = TilePosition(3, 1)
+        val peaceful = session.turn()
+        val potential = peaceful.map.tiles.single { it.position == destination }.units.single()
+        check(!potential.atWar && potential.capture?.unitIfKept == "Worker")
+        check(peaceful.map.units.single().moves.none { it.destination == destination })
+        player.getDiplomacyManager(other)!!.declareWar()
+        player.popupAlerts.clear()
+        player.viewableTiles = game.tileMap.values.toSet()
+        val afterWar = session.turn().map.units.single()
+        check(scout.currentMovement == 1f)
+        check(afterWar.moves.none { it.destination == destination })
+        check(afterWar.combat!!.attacks.none { it.destination == destination })
+        // A fresh movement budget permits the native capture; execute that exact offered order.
+        scout.currentMovement = 2f
+        val before = json().toJson(game)
+        val refreshed = session.turn()
+        check(before == json().toJson(game))
+        val unit = refreshed.map.units.single()
+        check(unit.moves.any { it.destination == destination })
+        session.execute(TurnCommandRequest("capture-in-range", refreshed.epoch, refreshed.revision, TurnCommandKind.MOVE_UNIT, unit.handle, destination = destination))
+        check(player.units.getUnitById(settler.id)?.name == "Worker")
+        check(scout.currentTile.position == HexCoord(3, 1))
     }
 
     private fun captives(root: Path) = SettlementPreviewProbe.fixture(root.resolve("captives")).use { runtime ->
@@ -202,21 +244,35 @@ object TacticalReviewProbe {
         // A foreign rescued Settler is temporarily owned until its mandatory return/keep choice.
         warrior.currentMovement = 2f
         val moveTurn = session.turn()
-        session.execute(TurnCommandRequest(
-            "rescue-foreign-settler", moveTurn.epoch, moveTurn.revision, TurnCommandKind.MOVE_UNIT,
-            unit.handle, destination = TilePosition(2, 1),
-        ))
+        session.execute(
+            TurnCommandRequest(
+                "rescue-foreign-settler",
+                moveTurn.epoch,
+                moveTurn.revision,
+                TurnCommandKind.MOVE_UNIT,
+                unit.handle,
+                destination = TilePosition(2, 1),
+            ),
+        )
         val rescued = session.turn()
         val popup = rescued.alerts.single { it.kind == "RecapturedCivilian" }
         val choices = checkNotNull(popup.capture).options.associateBy { it.name }
         check(choices.values.all { it.available })
         check(choices.getValue("ReturnCivilian").civilianOutcome == uncivai.player.CivilianCaptureOutcome("Greece", "Settler"))
+        check(choices.getValue("ReturnCivilian").diplomaticEffect!!.run { operation == "SET" && this.after == 20f && stat == "NativeOpinion.ReturnedCapturedUnits" })
+        check(choices.getValue("ReturnCivilian").diplomaticEffect!!.before == null)
         check(choices.getValue("KeepCivilian").civilianOutcome == uncivai.player.CivilianCaptureOutcome("Rome", "Worker"))
         check(choices.getValue("KeepCivilian").paragraphs.single().contains("Worker"))
-        session.execute(TurnCommandRequest(
-            "keep-foreign-settler", rescued.epoch, rescued.revision, TurnCommandKind.RESOLVE_CAPTURED_CITY,
-            popup.handle, selection = "KeepCivilian",
-        ))
+        session.execute(
+            TurnCommandRequest(
+                "keep-foreign-settler",
+                rescued.epoch,
+                rescued.revision,
+                TurnCommandKind.RESOLVE_CAPTURED_CITY,
+                popup.handle,
+                selection = "KeepCivilian",
+            ),
+        )
         check(foreignSettler.isDestroyed)
         check(player.units.getCivUnits().single { it.id == foreignSettler.id }.name == "Worker")
         check(session.turn().alerts.none { it.kind == "RecapturedCivilian" })
@@ -240,14 +296,34 @@ object TacticalReviewProbe {
                 civilianHandle = turn.map.units.single { it.name == "Settler" }.handle
                 militaryHandle = turn.map.units.single { it.name == "Scout" }.handle
                 check(turn.map.units.single { it.handle == civilianHandle }.escort == uncivai.player.EscortFormation(militaryHandle, false))
-                fun preview(): MovementPreview = PlayerTurnJson.json.decodeFromString(api.tool(token, "movement_preview",
-                    obj("target" to civilianHandle, "destination" to obj("x" to destination.x, "y" to destination.y))).toString())
+                fun preview(): MovementPreview = PlayerTurnJson.json.decodeFromString(
+                    api.tool(
+                        token,
+                        "movement_preview",
+                        obj("target" to civilianHandle, "destination" to obj("x" to destination.x, "y" to destination.y)),
+                    ).toString(),
+                )
                 preview() // Linking must invalidate this solo route inspection.
-                api.execute(token, TurnCommandRequest("link-escort", turn.epoch, turn.revision, TurnCommandKind.SET_UNIT_ORDER,
-                    civilianHandle, selection = "ESCORT"))
+                api.execute(
+                    token,
+                    TurnCommandRequest(
+                        "link-escort",
+                        turn.epoch,
+                        turn.revision,
+                        TurnCommandKind.SET_UNIT_ORDER,
+                        civilianHandle,
+                        selection = "ESCORT",
+                    ),
+                )
                 turn = api.turn(token)
-                val order = TurnCommandRequest("paired-destination", turn.epoch, turn.revision, TurnCommandKind.SET_UNIT_DESTINATION,
-                    civilianHandle, destination = destination)
+                val order = TurnCommandRequest(
+                    "paired-destination",
+                    turn.epoch,
+                    turn.revision,
+                    TurnCommandKind.SET_UNIT_DESTINATION,
+                    civilianHandle,
+                    destination = destination,
+                )
                 api.reject(token, order.copy(requestId = "uninspected-pair"), "OBSERVATION_REQUIRED")
                 val nativeBefore = json().toJson(runtime.game)
                 val offered = preview()
@@ -283,8 +359,17 @@ object TacticalReviewProbe {
                 api.execute(token, TurnCommandRequest("cancel-from-escort", turn.epoch, turn.revision, TurnCommandKind.CANCEL_UNIT_MOVEMENT, militaryHandle))
                 turn = api.turn(token)
                 check(turn.map.units.all { it.movementOrder == null && it.escort?.active == true })
-                api.execute(token, TurnCommandRequest("unlink-escort", turn.epoch, turn.revision, TurnCommandKind.SET_UNIT_ORDER,
-                    civilianHandle, selection = "STOP_ESCORT"))
+                api.execute(
+                    token,
+                    TurnCommandRequest(
+                        "unlink-escort",
+                        turn.epoch,
+                        turn.revision,
+                        TurnCommandKind.SET_UNIT_ORDER,
+                        civilianHandle,
+                        selection = "STOP_ESCORT",
+                    ),
+                )
                 check(api.turn(token).map.units.all { it.escort?.active == false })
             }
         }

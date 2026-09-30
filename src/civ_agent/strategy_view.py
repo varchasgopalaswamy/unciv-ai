@@ -1,6 +1,7 @@
 """Read-only operator view of dated strategic advice and background review work."""
 
 import json
+import time
 from dataclasses import dataclass, replace
 
 from rich.text import Text
@@ -10,8 +11,10 @@ from sqlalchemy.exc import SQLAlchemyError
 from civ_agent import memory_schema as tables
 from civ_agent.monitoring import read_database
 from civ_agent.protocol import JsonObject
+from civ_agent.telemetry import jobs as accounting_jobs
 from civ_agent.terminal_output import visible_text
 from civ_agent.turn_archive import civilization_directory_name
+from civ_agent.turn_display import seconds
 
 
 @dataclass(frozen=True)
@@ -22,6 +25,8 @@ class StrategyView:
     delivered_turn: int | None = None
     job: JsonObject | None = None
     error: str | None = None
+    progress: JsonObject | None = None
+    trace: JsonObject | None = None
 
     @property
     def status(self):
@@ -30,6 +35,11 @@ class StrategyView:
         if self.pending:
             phase = ((self.job or {}).get("telemetry") or {}).get("phase")
             label = "Reviewing" if phase in {"STARTING", "RUNNING"} else "Pending"
+            if self.progress and phase in {"STARTING", "RUNNING"}:
+                label = self.progress["stage"]
+                state = (self.progress.get("modelStatus") or {}).get("state")
+                if state in {"waiting", "retrying"}:
+                    label = state.capitalize()
             if self.pending["status"] == "PREPARED":
                 label = "Preparing"
             return f"{label} T{self.pending['turn']}"
@@ -80,9 +90,9 @@ class StrategyReader:
                     tables.reviews.c.attempts,
                     tables.reviews.c.error,
                     tables.reviews.c.advice,
-                    tables.jobs.c.epoch.label("sourceEpoch"),
+                    func.coalesce(tables.jobs.c.epoch, epoch).label("sourceEpoch"),
                 )
-                .select_from(tables.reviews.join(tables.jobs))
+                .select_from(tables.reviews.outerjoin(tables.jobs, tables.reviews.c.job == tables.jobs.c.id))
                 .order_by(tables.reviews.c.turn.desc())
             )
             completed = db.execute(query.where(tables.reviews.c.status == "COMPLETED").limit(1)).mappings().first()
@@ -111,7 +121,68 @@ class StrategyReader:
             # Completed attempts from a discarded timeline cannot complete a restored task.
             if pending and latest and (latest.get("telemetry") or {}).get("phase") == "COMPLETED":
                 latest = None
-            return StrategyView(civilization, report, dict(pending) if pending else None, delivered, latest)
+            progress = None
+            trace = None
+            accounting = path.parent.parent / "telemetry/accounting.sqlite3"
+            if latest and latest.get("id") and accounting.is_file():
+                with read_database(accounting) as ledger:
+                    payload = ledger.scalar(
+                        select(accounting_jobs.c.payload).where(accounting_jobs.c.id == latest["id"])
+                    )
+                if payload:
+                    record = json.loads(payload)
+                    if record["epoch"] == epoch:
+                        progress = record.get("reviewProgress")
+                        trace = record.get("reviewTrace")
+            return StrategyView(
+                civilization,
+                report,
+                dict(pending) if pending else None,
+                delivered,
+                latest,
+                progress=progress,
+                trace=trace,
+            )
+
+
+def trace_text(view: StrategyView) -> Text:
+    text = Text()
+    text.append("Latest review attempt · exposed summaries and streamed output\n", style="bold")
+    if view.trace is None:
+        text.append("Live trace is unavailable from this review service.", style="dim")
+        return text
+    if view.trace.get("truncated"):
+        text.append("Showing the most recent trace; earlier text is omitted.\n", style="dim")
+    entries = view.trace.get("entries", [])
+    if not entries:
+        text.append("Waiting for review output…", style="dim")
+    for entry in entries:
+        text.append("\n" + visible_text(entry["label"]) + "\n", style="bold cyan")
+        text.append(visible_text(entry["text"]) + "\n")
+    return text
+
+
+def progress_text(view: StrategyView) -> Text:
+    text = Text()
+    if not view.pending:
+        return text
+    telemetry = (view.job or {}).get("telemetry") or {}
+    if telemetry.get("model"):
+        text.append(f"\n{telemetry['model']} · {telemetry.get('reasoningEffort') or 'default'} reasoning", style="dim")
+    progress = view.progress
+    if progress:
+        details = [f"{progress['toolCalls']} tool calls", f"{progress['draftCharacters']:,} report characters"]
+        if progress.get("lastActivityAtMs") is not None:
+            details.append(f"last activity {seconds(max(0, time.time() * 1000 - progress['lastActivityAtMs']))} ago")
+        else:
+            details.append("no model activity received yet")
+        text.append("\n" + " · ".join(details), style="dim")
+        notice = progress.get("modelStatus") or {}
+        if notice.get("message"):
+            text.append("\n" + visible_text(notice["message"]), style="yellow")
+    elif view.job:
+        text.append("\nDetailed progress unavailable from this service.", style="dim")
+    return text
 
 
 def report_text(view: StrategyView) -> Text:

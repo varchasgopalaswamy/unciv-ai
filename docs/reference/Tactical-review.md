@@ -7,23 +7,48 @@ They inform decisions without imposing strategic priorities.
 
 - Military counts; the full owned roster, health, strength, roles, orders and
   attack counts are provided once in `player_turn.units`.
+- `knownBarbarianCamps`: discovered camp positions, current visibility, and the
+  last observation/report turn when known. This includes permitted remote camp
+  discoveries. Camps under fog retain remembered information until observed again.
+- `recentBarbarianSightings`: last observed positions and unit types, with
+  `lastSeenTurn` and `turnsAgo`, for up to five turns. Currently visible enemies
+  appear only under `visibleHostiles`. Seeing an old position empty retires that
+  sighting; hidden movement, destruction or spawning does not update it. These
+  records are observations, not a current enemy count. The host captures them
+  during native visibility updates, including between movement steps, and restores
+  them with player state during restart or interrupted-turn rewind.
 - Visible hostile military units and owned civilians or military units within
   two hexes of them. The Kotlin host uses engine visibility, unit classification,
   diplomatic status and map distances, including wrapping maps. Enemy civilians
   are not classified as attacking threats.
   `militaryNearHostiles` includes healthy units as well as injured ones.
-- `capturableCivilians`: currently visible foreign-owned capturable civilians,
-  with position, current owner, war status, visible military guard (if any), and
+- `potentialCaptureTargets`: currently visible foreign-owned civilians with
+  native capture outcomes, position, current owner, `requiresWarDeclaration`,
+  visible military guard or city (if any), and
   `capture.unitIfKept`. `capture.isOurCapturedUnit` identifies recovery of this
   player's own unit. Recovering your own Settler preserves it; keeping another
   player's Settler converts it to the native Worker replacement. A Worker stays
-  a Worker. This describes the result of a successful legal capture and keeping
-  the unit, not whether an owned unit can capture it this turn. Clearing a guard
-  with ranged fire alone does not capture the civilian. Native uncapturable
+  a Worker. The capture outcome is conditional on a successful legal capture and
+  keeping the unit. `directCaptureOrders` contains current native move or melee
+  attack offers against an unguarded civilian outside a city, with copyable
+  commands and required movement/combat inspections. Ranged units can capture by
+  moving onto the tile; ranged fire alone does not capture. A guard or city needs
+  combat and does not receive a direct capture order in this summary. Native uncapturable
   units are excluded. Other players' original ownership is not disclosed.
   Entries also appear in `map_region` unit observations as `capture`, and
   disappear when the civilian leaves visibility, is destroyed, or joins the
   player's roster.
+  `nearestMilitary` shows up to two owned non-air military units, their wrapped
+  hex distances and remaining movement. These are geographic neighbors, not
+  verified routes or recommendations to attack. The summary provides one direct
+  capture order per eligible unit, preferring movement over an attack. A unit's
+  order is retained even if it is not one of the two nearest units.
+  Peaceful targets have `postDeclarationReachability: NOT_EVALUATED` and no
+  capture command. Declaring war does not establish reachability; fresh native
+  offers after the declaration determine current options. A planned route may
+  still be interrupted by discoveries. No hypothetical declaration is simulated
+  and no gameplay restriction is added. The summary refreshes with command-response
+  deltas, including disappearing targets and changes to available orders.
 - The return/keep popup in `alerts` includes each choice's `civilianOutcome`
   (recipient and resulting unit type), an explanation of any conversion, and a
   copyable `RESOLVE_CAPTURED_CITY` command. For a rescued foreign Settler, return
@@ -45,12 +70,54 @@ The unit roster also shows co-located escort partners and active formations.
 unit use one native destination order, with shared stops and separate movement
 estimates, instead of requiring the player to coordinate two moves.
 
+### Settler protection
+
+Every owned city-founding civilian has `units[].protection`, even with no visible
+enemy. `current` describes the position as `UNESCORTED`, `SAME_TILE_MILITARY`,
+`ESCORT_FORMATION`, or `FRIENDLY_CITY`, with an owned military handle when present.
+`captureAssessment` is `VISIBLE_CAPTURE_THREAT`, `NO_VISIBLE_CAPTURE_THREAT`, or
+`GUARDED`. None guarantees survival: a guard or city can be defeated, and fog can
+conceal enemies. `visibleCaptureThreats` refers to currently visible enemy
+positions; `unseenTilesWithinTwoHexes` counts surrounding tiles outside current
+sight. `nearbyKnownCamps` and `nearbyBarbarianSightings` reference the tactical
+lists by position within five hexes, respecting map wrap.
+
+`escortCandidates` lists up to two nearest compatible owned military units by
+hex distance. Health, positions and existing orders remain in the roster.
+`canReachThisTurn` and `estimatedTurns` use native routes to the Settler's current
+tile, assuming it stays there. Exhausted units remain candidates with
+`NO_MOVEMENT_REMAINING` and no invented travel estimate. `NO_ROUTE_OFFERED` and
+`CANNOT_ACT_NOW` distinguish other unavailable routes. A candidate already on the
+tile has `AT_SETTLER`; pairing is a separate native order. Units escorting other
+civilians and air units are excluded.
+
+Candidates provide `ordersInspection`, plus `rendezvousPreview` when apart or
+`pairingInspection` when together. Inspecting those options supplies the ordinary
+copyable movement and ESCORT commands. No formation is created automatically.
+If an active destination order has a currently offered route, `nextStop` gives
+its first stopping position, remaining movement and exposure. Without movement or
+an offered route, no next stop is asserted. The same protection section is included
+in movement, orders and settlement unit details.
+
+Command-response deltas refresh protection, candidates and sightings, including
+newly granted Settlers and a military unit leaving a civilian's tile. These are
+ordinary player-visible observations, not agent-written memory notes or mandates.
+
 ## Action consequences
 
 Detailed unit/city combat offers include `consequences`: current HP alongside
-damage-based remaining HP ranges, `destructionPossible`, and capture possibility.
+damage-based remaining HP ranges and `destructionPossible`.
+`civilianOrCityCapturePossible` applies to the directly targeted civilian or city
+and uses the native capture restrictions and projected damage. Helicopters cannot
+capture cities; uncapturable civilians are destroyed on melee capture.
+`civilianDestroyedOnCapture` reports that destruction separately from damage,
+which can be zero. Map capture metadata uses the same native restrictions.
+Guarded civilians and military prize captures are separate outcomes and are not
+predicted by this flag.
 They show visible hostile units, other owned military units and unseen-tile counts
-within two hexes of the attack origin and possible melee advance destination.
+within two hexes of the attack origin. Melee offers also include
+`targetTileContext`: surroundings of the target tile at inspection time. It does
+not predict whether the attacker will defeat the defender or enter that tile.
 The attacker itself is excluded from the friendly-presence list. Enemy positions
 are the positions visible at inspection time, including the target; this is not a
 simulated board after combat. Native damage bounds include the lethal-exchange
@@ -65,6 +132,9 @@ such as a Guided Missile, even when the damage-based HP range stays positive.
 Movement options and each turn stop in `movement_preview` include `afterMove`:
 remaining movement, attack availability, founding availability for settlers, and
 the same endpoint context. These derive from the native planned path and costs.
+Civilian stops also include `civilianExposure`, using the same protection and
+visibility fields as the Settler roster. A military unit on the origin tile stays
+behind during independent civilian movement; an active escort travels with it.
 `NO_MOVEMENT` makes a move-then-attack/found mistake visible before committing.
 `VISIBLE_TARGET_OFFERED` means a current native attack offer uses this origin;
 `NO_VISIBLE_ATTACK_OFFERED` does not prohibit attacks against newly revealed targets.

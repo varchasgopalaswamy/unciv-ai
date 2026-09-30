@@ -25,6 +25,7 @@ import com.unciv.logic.civilization.PlayerVictoryOperations
 import com.unciv.logic.civilization.PlayerWaterImprovementOperations
 import com.unciv.logic.civilization.PlayerWorkerOperations
 import com.unciv.logic.civilization.PopupAlert
+import com.unciv.models.ruleset.PerpetualConstruction
 import com.unciv.models.translations.tr
 import uncivai.GameExecutor
 import java.util.Collections
@@ -39,6 +40,7 @@ internal class TurnSessionState(savedIdentifiers: Map<PlayerIdentifier, Long> = 
     val settlementKnowledge = HashMap<TilePosition, KnownSettlementTile>()
     val settlementTechnologies = HashSet<String>()
     val settlerHistory = HashMap<Int, SettlerHistory>()
+    val barbarianSightings = HashMap<Int, BarbarianSighting>()
     val alertHandles = java.util.IdentityHashMap<PopupAlert, String>()
     val notificationHandles = java.util.IdentityHashMap<Notification, String>()
     val dismissedNotifications = HashSet<String>()
@@ -69,6 +71,7 @@ internal class TurnSessionState(savedIdentifiers: Map<PlayerIdentifier, Long> = 
     }
 
     fun cityHandle(cityId: String): String = cityHandles.getOrPut(cityId) { identifiers.next(PlayerIdentifier.CITY) }
+    fun unitHandle(unit: com.unciv.logic.map.mapunit.MapUnit): String = unitHandles.getOrPut(unit.id) { identifiers.next(PlayerIdentifier.UNIT) }
 }
 
 internal class TurnSession(private val runtime: GameExecutor, private val civilizationId: String) {
@@ -164,7 +167,7 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
         val unitId = state.unitHandles.entries.singleOrNull { it.value == request.target }?.key
         val unit = player.units.getCivUnits().singleOrNull { it.id == unitId && !it.isDestroyed }
             ?: fail(PlayerSessionFailure.UNIT_UNAVAILABLE)
-        val preview = observeMovementPreview(player, unit, turn, request, state.settlementKnowledge)
+        val preview = observeMovementPreview(player, unit, turn, request, state)
         if (state.checkpointRevision != state.revision) runtime.commitCheckpoint()
         if (state.movementPreviewRevision != turn.revision) state.movementPreviews.clear()
         state.movementPreviewRevision = turn.revision
@@ -321,7 +324,7 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
         } else if (request.kind == TurnCommandKind.SET_UNIT_DESTINATION) {
             val query = MovementPreviewRequest(request.target!!, request.destination!!)
             if (state.observedRevision != before.revision || state.movementPreviewRevision != before.revision || query !in state.movementPreviews) fail(PlayerSessionFailure.OBSERVATION_REQUIRED)
-            val preview = observeMovementPreview(player, unit!!, before, query)
+            val preview = observeMovementPreview(player, unit!!, before, query, state)
             if (!preview.available) fail(PlayerSessionFailure.OPTION_UNAVAILABLE)
             preview.turns.firstOrNull()?.afterMove?.captureRisk?.let { risk ->
                 if (!request.confirmAction) throw PlayerSessionException(PlayerSessionFailure.CIVILIAN_CAPTURE_RISK, risk, request)
@@ -617,8 +620,9 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
             state.freeGreatPersonDecision = null
             val after = snapshot(game, player, state)
             val economyResult = if (request.kind in economicCommands) economicOutcome(request, before, after) else null
+            val action = confirmedAction(request, before, after, combatResult, economyResult)
             if (request.kind != TurnCommandKind.END_TURN) {
-                state.reviewActions.add(confirmedAction(request, before, after, combatResult, economyResult))
+                state.reviewActions.add(action)
                 // This is part of the same mutation/revision. Reuse the just-built map observation.
                 state.fingerprint = state.fingerprint!!.let { fingerprint ->
                     fingerprint.copy(turnReview = fingerprint.turnReview?.copy(actions = immutable(state.reviewActions)))
@@ -631,6 +635,7 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
                 revision = after.revision,
                 turn = game.turns,
                 isYourTurn = game.currentPlayer == player.civID,
+                actionSummary = action.description,
                 feedback = when (request.kind) {
                     TurnCommandKind.DECLARE_WAR -> PlayerDiplomacyOperations(player).declarationResponse(partner!!)?.toPlayerContent()
                     else -> null
@@ -738,6 +743,7 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
         }
         if (player.shouldShowDiplomaticVotingResults()) pending.add(PendingTurnDecision("DiplomaticVotingResults", true))
         updateSettlementKnowledge(player, state)
+        captureBarbarianSightings(player, state, player.viewableTiles)
         state.constructionSelections.keys.retainAll(player.cities.map { it.id }.toSet())
         val map = observeMap(player, state, canAct = ordinaryActions)
         val constructions = player.cities.associate { it.id to immutable(operations.queueableConstructions(it).sorted()) }
@@ -747,6 +753,7 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
             revision = "",
             turn = game.turns,
             phase = phase,
+            constructionCatalogue = immutable((game.ruleset.buildings.keys + game.ruleset.units.keys + PerpetualConstruction.perpetualConstructionsMap.keys).sorted()),
             canEndTurn = ordinaryActions && pending.isEmpty(),
             negotiation = runtime.communication.trades.negotiation(civilizationId),
             pending = immutable(pending),
@@ -764,6 +771,7 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
                         health = city.health,
                         maxHealth = com.unciv.logic.battle.CityCombatant(city).getMaxHealth(),
                         defensiveStrength = com.unciv.logic.battle.CityCombatant(city).getDefendingStrength(null),
+                        attacksRemaining = if (city.attackedThisTurn || city.getBombardRange() <= 0) 0 else 1,
                         constructionChoice = observeConstructionChoice(city, constructionOptions, state),
                         productionConversions = observeProductionConversions(city, constructionOptions),
                         constructionEstimates = constructionEstimates.getValue(city.id),
@@ -806,6 +814,7 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
             },
             previousTurnReview = state.previousTurnReview,
             rules = observeGameRules(game),
+            civilizationProfile = observeCivilizationProfile(player),
             scenario = communicationScenario(runtime, game, player),
             combatReports = immutable(state.combatReports.values.drop(state.deliveredCombatReports)),
             result = observeResult(player),

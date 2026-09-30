@@ -51,6 +51,22 @@ terminal. `NO_COLOR` enables a monochrome display.
   disruption and diplomacy. Advice is not a record of adopted decisions.
   The last completed report stays visible while another review runs. Pending work,
   attempt counts, failures, duration and token usage appear alongside it.
+  Active reviews show whether the adviser is thinking, reading tools, drafting,
+  validating or publishing. The selected civilization also shows its model and
+  reasoning effort, tool-call count, report character count, time since the last
+  model activity, and connection waits/retries. Counts describe observed activity;
+  they do not estimate a completion percentage. Heartbeats and token-usage updates
+  do not count as model progress. Progress is saved with the normal heartbeat,
+  without extra model requests.
+  Strategy has **Report** and **Live trace** views. Selecting a civilization with
+  a pending review opens Live trace, which streams the model's exposed reasoning
+  summaries, assistant messages/draft JSON, tool activity and connection notices.
+  The draft is unvalidated; the Report view continues to show completed advice.
+  The trace follows new text when scrolled to the bottom and keeps your reading
+  position when you scroll up; `f` toggles following and Space freezes the viewer.
+  Only already-filtered, credential-redacted history enters the trace. Raw model
+  reasoning, startup context and full tool results are excluded. The preview is
+  limited to 64 entries and 32,768 text characters, with truncation shown explicitly.
   If that civilization's next turn arrives before the report is saved, the main
   banner shows the review being awaited and its player row shows `Review wait`.
 - Model connection warnings remain visible without verbose mode. A quiet model
@@ -118,6 +134,11 @@ This is a local operator view of `runner/monitoring.sqlite3`. Strategy also read
 the local agents' `agent-services/<civilization>/civilization/memory.sqlite3`
 databases for committed reports and pending tasks. It uses read-only
 connections and short transactions; it makes no game API or model requests.
+Review progress and the bounded live trace come from each service's
+`telemetry/accounting.sqlite3` database, updated with the normal review heartbeat.
+Services must load the tracking code before they can publish these fields;
+otherwise the viewer says progress or the trace is unavailable. Restart the viewer
+and load the updated services on the next game launch/resume to enable them.
 Viewing, filtering, freezing and exiting do not change scheduler or native state.
 See [monitoring storage](../architecture/Monitoring.md) for ownership. Review
 databases on another machine are unavailable to this local viewer until accessible

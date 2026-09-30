@@ -3,6 +3,7 @@ package uncivai
 import com.unciv.logic.map.HexCoord
 import uncivai.player.PlayerHost
 import uncivai.player.PlayerSession
+import uncivai.player.PlayerTurnJson
 import uncivai.player.PlayerTurnSnapshot
 import uncivai.player.TurnCommandKind
 import uncivai.player.TurnCommandRequest
@@ -39,15 +40,20 @@ object CombatScenarioProbe {
                     .copy(destination = ranged.destination, attackFrom = ranged.attackFrom),
             )
             check(receipt.combat!!.attacked && receipt.combat.damageToDefender > 0)
+            check(receipt.actionSummary.contains("${archer.name} attacked ${ranged.defender}"))
+            check(receipt.actionSummary.contains("dealt ${receipt.combat.damageToDefender}"))
+            check(PlayerTurnJson.json.parseToJsonElement(PlayerTurnJson.encode(receipt)).toString().contains("actionSummary"))
 
             turn = rome.turn()
             val city = turn.cities.single { it.name == "Antium" }
+            check(city.attacksRemaining == 1)
             val bombard = city.attacks.first()
             val bombardReceipt = rome.execute(
                 command(turn, TurnCommandKind.CITY_ATTACK, city.handle).copy(destination = bombard.destination),
             )
             check(bombardReceipt.combat!!.attacked && bombardReceipt.combat.damageToDefender > 0)
             turn = rome.turn()
+            check(turn.cities.single { it.name == "Antium" }.attacksRemaining == 0)
             check(turn.canEndTurn) { "Unexpected scenario blocker: ${turn.pending}" }
             rome.execute(command(turn, TurnCommandKind.END_TURN))
             val greece = host.bindPlayer("Greece")

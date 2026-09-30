@@ -7,6 +7,10 @@ import java.nio.file.Path
 import java.util.concurrent.TimeUnit
 
 class ObservationOpportunitiesIntegrationTest {
+    @Test fun `civilization profiles expose future uniques conditions and replacement tradeoffs before founding`() = run("civilization-profile")
+
+    @Test fun `civilization profiles use the selected bundled ruleset`() = run("civilization-profile-gnk")
+
     @Test fun `intermediate movement discoveries retain terrain through fog and restart`() = run("map-knowledge-movement")
 
     @Test fun `technology reveals fogged resources without revealing hidden development`() = run("map-knowledge-resources")

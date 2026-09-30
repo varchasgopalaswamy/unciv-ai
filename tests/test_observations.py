@@ -30,6 +30,28 @@ def query(tool, **arguments):
     return DetailQuery.model_validate({"tool": tool, "arguments": arguments})
 
 
+def test_attack_choices_do_not_change_attack_allowance_and_abilities_count_only_available():
+    snapshot = reviewed()
+    units = snapshot["map"]["units"]
+    unit = next(u for u in units if u["combat"]["attacks"])
+    units.remove(unit)
+    units.insert(0, unit)
+    attack = unit["combat"]["attacks"][0]
+    unit["combat"].update(attacks=[attack, copy.deepcopy(attack)], attacksRemaining=1)
+    unit["greatPerson"] = {"abilities": [{"available": True}, {"available": False}]}
+    city = snapshot["cities"][0]
+    city.update(attacks=[attack, copy.deepcopy(attack)], attacksRemaining=1)
+    result = overview(snapshot)
+    assert result["units"][0]["attackOptionCount"] == 2
+    assert result["units"][0]["attacksRemaining"] == 1
+    assert result["units"][0]["availableGreatPersonAbilityCount"] == 1
+    assert result["cities"][0]["attackOptionCount"] == 2
+    assert result["cities"][0]["attacksRemaining"] == 1
+    unit["combat"].update(attacks=[], attacksRemaining=0)
+    assert overview(snapshot)["units"][0]["attacksRemaining"] == 0
+    assert "availableAttacks" not in json.dumps(result)
+
+
 def test_automation_status_is_preloaded_and_inspected_orders_have_commands():
     snapshot = reviewed()
     unit = snapshot["map"]["units"][0]
@@ -108,6 +130,7 @@ def test_compact_snapshot_keeps_decisions_and_all_details_remain_reachable():
 
 def test_named_constructions_preserve_confirmations_and_unavailable_catalogue_entries():
     snapshot = reviewed()
+    snapshot["constructionCatalogue"].append("Future Wonder")
     city = snapshot["cities"][0]
     purchase = {
         "name": "Future Wonder",
@@ -132,6 +155,7 @@ def test_named_constructions_preserve_confirmations_and_unavailable_catalogue_en
 
 def test_conversion_can_be_compared_before_queueing_and_only_current_output_is_preloaded():
     snapshot = reviewed()
+    snapshot["constructionCatalogue"].extend(["Science", "Gold"])
     city = snapshot["cities"][0]
     city["constructionOptions"] = ["Science", "Gold"]
     city["constructionQueue"] = ["Worker"]
@@ -161,6 +185,7 @@ def test_conversion_can_be_compared_before_queueing_and_only_current_output_is_p
 
 def test_wonder_benefits_and_blockers_are_shared_while_named_reads_retain_production_accounting():
     snapshot = reviewed()
+    snapshot["constructionCatalogue"].append("Oxford University")
     city = snapshot["cities"][0]
     city["constructionOptions"] = []
     option = {

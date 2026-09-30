@@ -118,8 +118,17 @@ internal class Telemetry(private val runtime: GameExecutor) {
     fun changed(jobId: String) {
         monitoringDirty = true
         dirtyJobs.add(jobId)
-        runtime.communicationState.jobs[jobId]?.let { dirtyTurns.add("${it.epoch}/${it.handoff}") }
+        runtime.communicationState.jobs[jobId]?.let { job ->
+            if (job.handoff != null) {
+                dirtyTurns.add("${job.epoch}/${job.handoff}")
+            } else {
+                state.turns.filterValues { belongsToTurn(job, it) }.keys.forEach(dirtyTurns::add)
+            }
+        }
     }
+
+    private fun belongsToTurn(job: CommunicationJob, turn: TurnMetrics): Boolean = job.purpose in setOf("gameplay", "review") && job.epoch == turn.epoch && job.civilization == turn.civilization &&
+        (job.handoff == turn.handoff || (job.purpose == "review" && job.handoff == null && job.gameTurn == 0 && turn.gameTurn == 0))
 
     fun beginTurn(game: GameInfo, activationId: String) {
         monitoringDirty = true
@@ -295,7 +304,7 @@ internal class Telemetry(private val runtime: GameExecutor) {
             updates.addAll(diplomaticChanges.records)
             val jobs = runtime.communicationState.jobs
             val turns = state.turns.filterKeys { rebuild || it in dirtyTurns }.map { (id, turn) ->
-                val attempts = jobs.filter { (_, job) -> job.purpose in setOf("gameplay", "review") && job.epoch == turn.epoch && job.handoff == turn.handoff && job.civilization == turn.civilization }
+                val attempts = jobs.filter { (_, job) -> belongsToTurn(job, turn) }
                 val elapsed = turn.endedAtMs?.let { (it - turn.startedAtMs).coerceAtLeast(0) }
                 obj(
                     "schemaVersion" to 1, "matchId" to game.gameId, "turnId" to id, "turn" to turn.recordJson(),

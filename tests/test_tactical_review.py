@@ -41,7 +41,7 @@ def test_france_losses_and_missed_bombardment_are_prominent():
     assert view["militaryCount"] == 1
     roster = [u for u in overview(reviewed())["units"] if u["military"]]
     assert roster[0]["health"] == 75
-    assert roster[0]["availableAttacks"] > 0
+    assert roster[0]["attackOptionCount"] > 0
     assert "military" not in view
     worker = next(u for u in view["civiliansNearHostiles"] if u["handle"] == "unit10")
     assert not worker["otherMilitaryOnSameTile"]
@@ -80,6 +80,7 @@ def captive_tile(snapshot, *, ours=True):
     tile.update(
         position={"x": 7, "y": -1},
         visible=True,
+        cityName=None,
         units=[
             {"name": "Brute", "civilization": "Barbarians", "health": 57, "military": True, "atWar": True},
             {
@@ -97,7 +98,7 @@ def captive_tile(snapshot, *, ours=True):
 
 
 @pytest.mark.parametrize("ours", [True, False])
-def test_capturable_civilians_are_visible_opportunities_separate_from_threats(ours):
+def test_potential_captures_are_visible_opportunities_separate_from_threats(ours):
     snapshot = france()
     add_combat_commands(snapshot)
     tile = captive_tile(snapshot, ours=ours)
@@ -106,24 +107,133 @@ def test_capturable_civilians_are_visible_opportunities_separate_from_threats(ou
     hidden["position"] = {"x": 12, "y": 12}
     snapshot["map"]["tiles"].append(hidden)
     view = tactical_review(snapshot)
-    assert len(view.capturableCivilians) == 1
-    captive = view.capturableCivilians[0]
+    assert len(view.potentialCaptureTargets) == 1
+    captive = view.potentialCaptureTargets[0]
     assert captive.name == "Settler"
     assert captive.capture.unitIfKept == ("Settler" if ours else "Worker")
     assert captive.capture.isOurCapturedUnit is ours
     assert "originalOwner" not in captive.model_dump_json()
-    assert captive.civilization == "Barbarians" and captive.atWar
+    assert captive.civilization == "Barbarians" and not captive.requiresWarDeclaration
     assert captive.guard is not None and (captive.guard.name, captive.guard.health) == ("Brute", 57)
+    assert captive.directCaptureOrders == []
     assert all(threat.name != "Settler" for threat in view.visibleHostiles)
     # A civilian with no visible guard can also belong to a player currently at peace.
     tile["units"] = [tile["units"][1]]
     tile["units"][0].update(civilization="Rome", atWar=False)
-    unguarded = tactical_review(snapshot).capturableCivilians[0]
-    assert not unguarded.atWar and unguarded.guard is None
+    unguarded = tactical_review(snapshot).potentialCaptureTargets[0]
+    assert unguarded.requiresWarDeclaration and unguarded.guard is None
+    assert unguarded.postDeclarationReachability == "NOT_EVALUATED"
+    assert unguarded.directCaptureOrders == []
     # Do not infer original ownership or a recovery result from a unit name/loss report.
     tile["units"][0].pop("capture")
     absent = tactical_review(snapshot).model_dump(exclude_none=True)
-    assert absent["capturableCivilians"] == [] and "captureConditions" not in absent
+    assert absent["potentialCaptureTargets"] == [] and "captureConditions" not in absent
+
+
+def capture_scenario():
+    snapshot = france()
+    add_combat_commands(snapshot)
+    unit = next(u for u in snapshot["map"]["units"] if u["military"])
+    unit.update(handle="unit4", name="Scout", position={"x": -7, "y": 1}, movement="1/2", moves=[])
+    unit["combat"].update(attacks=[], role="RECON")
+    snapshot["map"]["units"] = [unit]
+    tile = captive_tile(snapshot, ours=False)
+    tile.update(position={"x": -6, "y": 0}, units=[tile["units"][1]])
+    tile["units"][0].update(civilization="France", atWar=False)
+    return snapshot, unit, tile
+
+
+def test_greece_scout_is_two_hexes_away_and_war_does_not_establish_reachability():
+    snapshot, unit, tile = capture_scenario()
+    target = tactical_review(snapshot).potentialCaptureTargets[0]
+    assert target.requiresWarDeclaration and target.postDeclarationReachability == "NOT_EVALUATED"
+    assert target.nearestMilitary[0].model_dump() == {"unit": "unit4", "distanceInHexes": 2, "movement": "1/2"}
+    assert target.directCaptureOrders == []
+    # Native offers after declaring war still only reach the intervening tile.
+    tile["units"][0]["atWar"] = True
+    unit["moves"] = [{"destination": {"x": -6, "y": 1}}]
+    target = tactical_review(snapshot).potentialCaptureTargets[0]
+    assert not target.requiresWarDeclaration and target.postDeclarationReachability is None
+    assert target.directCaptureOrders == []
+
+
+@pytest.mark.parametrize("kind", ["MOVE_UNIT", "ATTACK"])
+def test_direct_capture_commands_require_native_offers_and_detail_inspection(kind):
+    snapshot, unit, tile = capture_scenario()
+    tile["units"][0]["atWar"] = True
+    if kind == "MOVE_UNIT":
+        unit["moves"] = [{"destination": tile["position"]}]
+    else:
+        unit["combat"]["attacks"] = [
+            {
+                "destination": tile["position"],
+                "attackFrom": unit["position"],
+                "consequences": {"civilianOrCityCapturePossible": True},
+            }
+        ]
+    target = tactical_review(snapshot).potentialCaptureTargets[0]
+    order = target.directCaptureOrders[0]
+    command = order.command.model_dump(exclude_none=True, exclude_defaults=True)
+    assert command_arguments(command) == command
+    assert command == {
+        "kind": kind,
+        "target": "unit4",
+        "destination": tile["position"],
+        **({"attackFrom": unit["position"]} if kind == "ATTACK" else {}),
+    }
+    assert order.inspection == {
+        "tool": "unit_details",
+        "arguments": {"target": "unit4", "sections": ["movement" if kind == "MOVE_UNIT" else "combat"]},
+    }
+    # No peaceful capture is manufactured even if an inconsistent offer were present.
+    tile["units"][0]["atWar"] = False
+    assert tactical_review(snapshot).potentialCaptureTargets[0].directCaptureOrders == []
+
+
+def test_ranged_fire_is_not_capture_but_a_ranged_unit_can_capture_by_moving():
+    snapshot, unit, tile = capture_scenario()
+    tile["units"][0]["atWar"] = True
+    unit["combat"].update(
+        role="RANGED",
+        rangedStrength=6,
+        attacks=[
+            {
+                "destination": tile["position"],
+                "attackFrom": unit["position"],
+                "consequences": {"civilianOrCityCapturePossible": False},
+            }
+        ],
+    )
+    assert tactical_review(snapshot).potentialCaptureTargets[0].directCaptureOrders == []
+    unit["moves"] = [{"destination": tile["position"]}]
+    assert tactical_review(snapshot).potentialCaptureTargets[0].directCaptureOrders[0].command.kind == "MOVE_UNIT"
+    # A city or military guard requires separate combat, not a direct capture order.
+    tile["cityName"] = "Paris"
+    target = tactical_review(snapshot).potentialCaptureTargets[0]
+    assert target.city == "Paris" and target.directCaptureOrders == []
+    tile["cityName"] = None
+    tile["units"].append({"name": "Warrior", "civilization": "France", "health": 100, "military": True, "atWar": True})
+    assert tactical_review(snapshot).potentialCaptureTargets[0].directCaptureOrders == []
+
+
+def test_capture_distances_wrap_and_do_not_filter_native_routes_by_distance():
+    snapshot, unit, tile = capture_scenario()
+    tile["position"] = {"x": -4, "y": 0}
+    tile["units"][0]["atWar"] = True
+    unit.update(position={"x": 4, "y": 0}, movement="0/2")
+    snapshot["map"]["wrapOffset"] = {"x": 10, "y": 0}
+    target = tactical_review(snapshot).potentialCaptureTargets[0]
+    assert target.nearestMilitary[0].distanceInHexes == 2
+    assert target.directCaptureOrders == []
+    # A farther unit with a native route (e.g. along roads) is not omitted by a distance budget or top-two limit.
+    for handle, position in [("near", {"x": -3, "y": 0}), ("far", {"x": 0, "y": 0})]:
+        other = copy.deepcopy(unit)
+        other.update(handle=handle, position=position)
+        snapshot["map"]["units"].append(other)
+    other.update(movement="1/2", moves=[{"destination": tile["position"]}])
+    target = tactical_review(snapshot).potentialCaptureTargets[0]
+    assert [u.unit for u in target.nearestMilitary] == ["near", "unit4"]
+    assert [o.command.target for o in target.directCaptureOrders] == ["far"]
 
 
 @pytest.mark.parametrize("ours", [True, False])
@@ -150,7 +260,7 @@ def test_capture_is_preloaded_and_command_updates_clear_it_without_an_extra_over
             prompt = startup_prompt(prepared, "gameplay", "Play this turn")
             reads = json.JSONDecoder().raw_decode(prompt.user.split("Prepared player-visible reads:\n", 1)[1])[0]
             initial = reads["player_turn"]
-            assert initial["tacticalReview"]["capturableCivilians"][0]["capture"] == tile["units"][1]["capture"]
+            assert initial["tacticalReview"]["potentialCaptureTargets"][0]["capture"] == tile["units"][1]["capture"]
             region = await gateway.call(job, "map_region", {"center": tile["position"], "radius": 0}, "inspect-map")
             assert region["data"]["tiles"][0]["units"][1]["capture"] == tile["units"][1]["capture"]
             # A permitted action refresh no longer contains the captive (captured, dead or out of sight).
@@ -162,7 +272,7 @@ def test_capture_is_preloaded_and_command_updates_clear_it_without_an_extra_over
             )
             assert "stateUpdate" in result, result
             current = apply_overview_update(initial, result["stateUpdate"])
-            assert current["tacticalReview"]["capturableCivilians"] == []
+            assert current["tacticalReview"]["potentialCaptureTargets"] == []
             assert "captureConditions" not in current["tacticalReview"]
             assert any(q["tool"] == "map_region" for q in result["stateUpdate"]["invalidatedDetails"])
         finally:

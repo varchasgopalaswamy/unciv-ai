@@ -79,6 +79,8 @@ class ChatRuntime:
                 # subscription reconnect or an automatic model retry.
                 await service.gateway.resume_run()
             await service.flush_telemetry()
+            if identity.get("context", {}).get("turn") == 0:
+                await service.reviews.prepare_opening(self.connection, self.epoch, self.settings, self.timeout)
             await service.io.call(service.memory.allow_communication_retry)
             if await service.io.call(service.memory.has_wake):
                 self.pending.set()

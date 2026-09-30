@@ -3,8 +3,8 @@ package uncivai.player
 import com.unciv.logic.battle.CityCombatant
 import com.unciv.logic.civilization.Civilization
 import com.unciv.logic.civilization.PlayerAirOperations
-import com.unciv.logic.map.mapunit.MapUnit
 import com.unciv.logic.map.HexCoord
+import com.unciv.logic.map.mapunit.MapUnit
 import com.unciv.models.ruleset.unique.UniqueType
 import kotlinx.serialization.Serializable
 import java.util.Collections

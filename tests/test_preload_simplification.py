@@ -20,7 +20,7 @@ def test_roster_omits_inapplicable_fields_and_delta_clears_old_capabilities():
     snapshot = reviewed()
     worker = snapshot["map"]["units"][0]
     worker.update(worker={"currentJob": "Farm", "remainingTurns": 2}, canFoundCity=False, settlement=None)
-    worker["combat"] = {"order": {"automated": True}}
+    worker["combat"] = {"attacksRemaining": 1, "order": {"automated": True}}
     city = snapshot["cities"][0]
     city.update(health=150, maxHealth=200, defensiveStrength=23)
     initial = overview(snapshot)
@@ -34,7 +34,7 @@ def test_roster_omits_inapplicable_fields_and_delta_clears_old_capabilities():
     before, after = stamp(initial, "job", "g1", "1"), stamp(overview(snapshot), "job", "g1", "2")
     assert apply_overview_update(before, overview_update(before, after, [])) == after
     assert not {"workerJob", "workerJobTurnsRemaining", "automated"} & after["units"][0].keys()
-    assert "availableAttacks" in after["units"][0] and "movement" in after["units"][0]
+    assert "attackOptionCount" in after["units"][0] and "movement" in after["units"][0]
 
 
 def test_healthy_military_near_visible_hostiles_is_still_in_tactical_review():

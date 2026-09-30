@@ -2,7 +2,7 @@
 
 from sqlalchemy import Column, ForeignKey, Index, Integer, MetaData, Table, Text, and_, literal_column, select
 
-FORMAT_VERSION = 7
+FORMAT_VERSION = 8
 
 metadata = MetaData()
 meta = Table(
@@ -68,7 +68,7 @@ live_jobs = Table("live_jobs", metadata, Column("id", Text, ForeignKey(jobs.c.id
 reviews = Table(
     "reviews",
     metadata,
-    Column("job", Text, ForeignKey(jobs.c.id), primary_key=True),
+    Column("job", Text, primary_key=True),
     Column("turn", Integer, nullable=False),
     Column("status", Text, nullable=False),
     Column("inputs", Text),

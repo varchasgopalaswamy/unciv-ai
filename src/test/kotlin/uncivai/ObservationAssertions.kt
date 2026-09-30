@@ -1,8 +1,8 @@
 package uncivai
 
-import uncivai.player.PlayerTurnSnapshot
-import uncivai.player.PlayerTurnJson
 import kotlinx.serialization.json.jsonObject
+import uncivai.player.PlayerTurnJson
+import uncivai.player.PlayerTurnSnapshot
 
 /** Loading rebuilds observations and invalidates old uncommitted commands. */
 internal fun assertRebuiltObservation(previous: PlayerTurnSnapshot, current: PlayerTurnSnapshot) {

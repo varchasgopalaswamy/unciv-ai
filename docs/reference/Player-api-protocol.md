@@ -21,6 +21,12 @@ code supplies request IDs, credentials and revisions for their commands.
   `rules` contains public ruleset, difficulty, speed, enabled `victoryTypes`, and
   `maxTurns` (null when no enabled victory uses a turn limit). The same public
   settings appear in the communication context.
+  `civilizationProfile` contains the bound civilization's ruleset ability and
+  unique units/buildings, including unreached technology unlocks, inherent
+  promotion effects, base-stat/replacement comparisons and obsolescence. It uses
+  public rules and own research, without querying foreign state or treating
+  technology readiness as city-specific buildability. See the
+  [compact projection](Compact-observations.md#opportunities-at-turn-start).
   Owned cities include `development` (displayed yields/breakdowns, growth, worked
   tiles and indexed construction progress); worker units include `worker` (jobs,
   prerequisites and progress). `research` exposes displayed science and technology
@@ -32,6 +38,12 @@ code supplies request IDs, credentials and revisions for their commands.
   `cities[].management` adds focus/growth controls, specialist yields and slots,
   great-person progress, building sales and shared-tile transfers; see
   [city management](City-management.md).
+  `map.units[].combat.promotions` contains the native promotion tree plus
+  `retainedAfterSelection`, `prerequisiteUnlocks`, and `afterSelection` XP
+  accounting for currently legal choices. It also reports total XP, the native
+  barbarian XP limit/eligibility, and `recovery` for resting without a promotion.
+  See [promotion comparisons](Compact-observations.md#opportunities-at-turn-start)
+  for estimate assumptions and the compact model-facing projection.
   First-contact alerts include `firstContact`: `civilizationId`, `civilizationName`,
   `leaderName` (the displayed leader caption), `message`, and `acknowledgement`.
   Every supported informational alert also includes `content`: `title`, ordered
@@ -166,6 +178,9 @@ position, idle flag and legal destination count. Movement notes report actual
 endpoints, including when discovery shortened a move. Failed commands and receipt
 replays add no actions. `previousTurnReview` carries the previous completed turn's
 confirmed actions and deliberately deferred units with the player's reason.
+Every successful command receipt also contains `actionSummary`, the same factual
+description used by the review. Command acceptance does not guarantee the
+requested attack or destination was reached: the summary uses observed results.
 
 `END_TURN` checks shared engine picker requirements and additional unimplemented
 alerts/trades, then requires a current review acknowledgment. Fetch and read
@@ -244,7 +259,7 @@ Checkpointing writes engine state and receipts into one temporary file, flushes 
 atomically replaces the checkpoint, and flushes the directory before acknowledging
 a command. Newly issued player references are also persisted before a query returns.
 Unit handles are also preserved in checkpoints; raw unit IDs never enter player responses.
-Version 7 stores durable player knowledge, identifiers and receipts, but no derived
+Version 8 stores durable player knowledge (including recent barbarian sightings), identifiers and receipts, but no derived
 turn overview or observation revision. Loading rebuilds observations with fresh
 revisions. Earlier checkpoint formats require a new game; there is no migration.
 The checkpoint and adjacent `.lock` file are operator artifacts; an exclusive lock

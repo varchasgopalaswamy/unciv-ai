@@ -39,15 +39,7 @@ data class VisibleUnit(
 /** Preview the kept unit type without disclosing another player's original ownership. */
 private fun observeCivilianCapture(player: Civilization, unit: MapUnit): CivilianCapture? {
     if (unit.civ === player || !unit.isCivilian() || !unit.isVisibleTo(player)) return null
-    // BattleUnitCapture.captureCivilianUnit checks destruction before original-owner recovery.
-    if (unit.hasUnique(UniqueType.Uncapturable)) return null
-    if (player.isCityState && (
-            unit.hasUnique(UniqueType.FoundCity, GameContext.IgnoreConditionals) ||
-                unit.hasUnique(UniqueType.FoundPuppetCity, GameContext.IgnoreConditionals)
-            )
-    ) {
-        return null
-    }
+    if (BattleUnitCapture.destroysCivilianOnCapture(unit, player)) return null
     val ours = unit.originalOwningCiv === player
     // Native original-owner recapture preserves the current unit type, including Settlers.
     val keptType = if (ours) unit.baseUnit else BattleUnitCapture.keptCivilianUnitType(unit, player)
@@ -124,6 +116,7 @@ data class OwnedUnit(
     val air: UnitAirStatus? = null,
     val settlement: SettlementPreview? = null,
     val escort: EscortFormation? = null,
+    val protection: SettlerProtection? = null,
 )
 
 /** Coordinates use Unciv's axial x/y grid. No tile data is returned for unexplored coordinates. */
@@ -133,6 +126,7 @@ data class MapObservation(
     val frontier: List<TilePosition> = emptyList(),
     val units: List<OwnedUnit> = emptyList(),
     val wrapOffset: TilePosition? = null,
+    val recentBarbarianSightings: List<BarbarianSighting> = emptyList(),
 )
 
 internal fun observeMap(player: Civilization, state: TurnSessionState, canAct: Boolean = true): MapObservation {
@@ -141,12 +135,13 @@ internal fun observeMap(player: Civilization, state: TurnSessionState, canAct: B
     val operations = PlayerUnitOperations(player)
     val active = canAct && PlayerOperations(player).canAct()
     val format = DecimalFormat("0.#", DecimalFormatSymbols(Locale.ROOT))
-    val contexts = PositionContexts(player)
+    val contexts = PositionContexts(player, state)
     val visibleHostiles = tiles.flatMap { tile ->
         tile.getUnits().filter { it.isVisibleTo(player) && it.baseUnit.isMilitary && player.isAtWarWith(it.civ) }
             .map { tile to VisibleUnit(it.name, it.civ.civName, it.health, military = true, atWar = true) }.toList()
     }
     return MapObservation(
+        recentBarbarianSightings = detached(recentBarbarianSightings(player, state)),
         wrapOffset = player.gameInfo.tileMap.takeIf { it.mapParameters.worldWrap }?.getUnwrappedPosition(HexCoord.Zero)?.dto(),
         tiles = detached(
             tiles.map { tile ->
@@ -203,7 +198,7 @@ internal fun observeMap(player: Civilization, state: TurnSessionState, canAct: B
                 val combat = observeUnitCombat(player, unit, active, contexts)
                 val escort = observeEscort(player, unit, state)
                 OwnedUnit(
-                    handle = state.unitHandles.getOrPut(unit.id) { state.identifiers.next(PlayerIdentifier.UNIT) },
+                    handle = state.unitHandle(unit),
                     name = unit.name,
                     displayName = unit.displayName(),
                     position = unit.currentTile.position.dto(),
@@ -226,8 +221,10 @@ internal fun observeMap(player: Civilization, state: TurnSessionState, canAct: B
                                 movementCost = format.format(move.movementCost.toDouble()),
                                 unexploredTiles = move.path.count { !it.isExplored(player) },
                                 tilesOutsideCurrentSight = move.path.count { !it.isVisible(player) },
-                                afterMove = movementConsequences(player, unit, move.destination, move.movementCost, contexts, combat.attacks, state.settlementKnowledge,
-                                    escortHandle = escort?.takeIf { it.active }?.partner, escortCost = move.escortMovementCost),
+                                afterMove = movementConsequences(
+                                    player, unit, move.destination, move.movementCost, contexts, combat.attacks, state.settlementKnowledge,
+                                    escortHandle = escort?.takeIf { it.active }?.partner, escortCost = move.escortMovementCost,
+                                ),
                             )
                         }.sortedWith(compareBy({ it.destination.x }, { it.destination.y })),
                     ),
@@ -244,6 +241,11 @@ internal fun observeMap(player: Civilization, state: TurnSessionState, canAct: B
                     air = observeUnitAir(player, unit, state, active),
                     settlement = observeSettlement(player, unit, unit.currentTile.position.dto(), active, state.settlementKnowledge),
                     escort = escort,
+                    protection = if (unit.isCivilian() && (unit.hasUnique(UniqueType.FoundCity, GameContext.IgnoreConditionals) || unit.hasUnique(UniqueType.FoundPuppetCity, GameContext.IgnoreConditionals))) {
+                        observeSettlerProtection(player, unit, state, contexts, active)
+                    } else {
+                        null
+                    },
                 )
             }.toList(),
         ),

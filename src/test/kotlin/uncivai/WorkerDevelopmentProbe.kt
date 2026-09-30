@@ -66,11 +66,10 @@ object WorkerDevelopmentProbe {
             check(observeWorkerDevelopment(player, worker, false)!!.options.none { it.available })
             check(!observeWorkerDevelopment(player, worker, false)!!.canStop)
             val farm = observed.options.single { it.name == "Farm" }
-            check(farm.available && farm.turns > 0 && farm.yieldChanges["Food"] == "1")
+            check(farm.available && farm.totalTurns > 0 && farm.yieldChanges["Food"] == "1")
             val uiPicker = WorkerImprovementPicker(worker)
             for (option in uiPicker.options().filter { it.improvement.name != "Cancel improvement order" }) {
                 val stats = worker.currentTile.stats.getStatDiffForImprovement(option.improvement, player, worker.currentTile.getCity())
-                stats.add(uiPicker.getMaintenance(option.improvement))
                 val decimal = DecimalFormat("0.#", DecimalFormatSymbols(Locale.ROOT))
                 val expected = stats.associate { it.key.name to (it.value * 10).roundToInt() }.filterValues { it != 0 }
                     .mapValues { decimal.format(it.value / 10.0) }
@@ -101,8 +100,8 @@ object WorkerDevelopmentProbe {
             expect(PlayerSessionFailure.STALE_REVISION) { rome.execute(request.copy(requestId = "stale-worker")) }
             worker.currentTile.doWorkerTurn(worker)
             val progressing = observeWorkerDevelopment(player, worker, true)!!
-            check(progressing.remainingTurns == farm.turns - 1)
-            check(progressing.options.single { it.name == "Farm" }.turns == farm.turns - 1)
+            check(progressing.remainingTurns == farm.totalTurns - 1)
+            check(progressing.options.single { it.name == "Farm" }.totalTurns == farm.totalTurns - 1)
             rome.execute(command(rome, stop, handle))
             check(worker.currentTile.improvementInProgress == null)
             expect(PlayerSessionFailure.OPTION_UNAVAILABLE) { rome.execute(command(rome, stop, handle)) }
@@ -119,6 +118,36 @@ object WorkerDevelopmentProbe {
             check(session.execute(lastRequest) == lastReceipt)
             check(before == json().toJson(runtime.game)) { "Retry restarted the persisted worker job" }
             check(PlayerWorkerOperations(player).canStopJob(worker))
+            val operations = PlayerWorkerOperations(player)
+            check(operations.tryStopJob(worker))
+            val tile = worker.currentTile
+            tile.setTerrainFeatures(listOf("Forest"))
+            tile.tileResource = runtime.game.ruleset.tileResources.getValue("Spices")
+            tile.setTerrainTransients()
+            player.tech.addTechnology("Mining")
+            player.tech.addTechnology("Calendar")
+            val initial = json().toJson(runtime.game)
+            val planned = observeWorkerDevelopment(player, worker, true)!!.options.single { it.name == "Plantation" }
+            check(initial == json().toJson(runtime.game)) { "Composite work preview mutated the game" }
+            check(planned.steps.map { it.name } == listOf("Remove Forest", "Plantation"))
+            check(planned.totalTurns == planned.steps.sumOf { it.remainingTurns })
+            check(planned.yieldChanges == mapOf("Food" to "1", "Production" to "-1", "Gold" to "2")) { planned.toString() }
+            check(planned.completionGrants.single().stats.getValue("Production") > 0)
+            val yields = tile.stats.getTileStats(tile.getCity(), player)
+            val order = session.execute(command(session, TurnCommandKind.START_WORKER_JOB, session.turn().map.units.single { it.name == "Worker" }.handle, "Plantation"))
+            check(order.actionSummary.contains("working on Remove Forest"))
+            check(order.actionSummary.contains("then Plantation"))
+            tile.doWorkerTurn(worker)
+            val partial = observeWorkerDevelopment(player, worker, true)!!.options.single { it.name == "Plantation" }
+            check(partial.totalTurns == planned.totalTurns - 1)
+            var elapsed = 1
+            while (tile.improvementInProgress != null) {
+                tile.doWorkerTurn(worker)
+                elapsed++
+            }
+            check(elapsed == planned.totalTurns && tile.improvement == "Plantation" && tile.terrainFeatures.isEmpty())
+            val change = tile.stats.getTileStats(tile.getCity(), player) - yields
+            check(change.filter { it.value != 0f }.associate { it.key.name to it.value.toInt().toString() } == planned.yieldChanges)
         }
     }
 

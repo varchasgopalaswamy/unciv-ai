@@ -43,6 +43,9 @@ object VictoryProgressProbe {
             check(initial.victories.map { it.name }.toSet() == game.getEnabledVictories().keys)
             check(initial.score == rome.calculateTotalScore().toInt())
             check(initial.maxTurns == game.gameParameters.maxTurns)
+            val culture = initial.victories.single { it.name == "Cultural" }.milestones.first()
+            check(culture.objectiveRequirement!!.run { rule == "AT_LEAST" && requiredCount == 5 && completedCount == 0 })
+            check(culture.objectives.size > culture.objectiveRequirement.requiredCount)
             check(initial.victories.single { it.name == "Scientific" }.milestones.map { it.status } == listOf("Current", "Incomplete"))
             val plannedParts = initial.victories.single { it.name == "Scientific" }.milestones.last().parts
             check(plannedParts.sumOf { it.required } == 6 && plannedParts.all { it.completed == 0 })

@@ -143,8 +143,15 @@ internal fun settlementHappiness(player: Civilization, position: TilePosition, p
                     .filter { unknownNeighbors && !tile.matchesFilter(it.params[0], player) && !tile.isAdjacentTo(it.params[0], player) }
                     .forEach { add(it.getDisplayText().tr()) }
             }
-            SettlementHappinessBuilding(option.building.name, option.happiness, option.productionCost, option.building.maintenance,
-                option.missingTechnologies, option.requirements.map(String::tr), unresolved)
+            SettlementHappinessBuilding(
+                option.building.name,
+                option.happiness,
+                option.productionCost,
+                option.building.maintenance,
+                option.missingTechnologies,
+                option.requirements.map(String::tr),
+                unresolved,
+            )
         },
         unknownTiles.size,
     )

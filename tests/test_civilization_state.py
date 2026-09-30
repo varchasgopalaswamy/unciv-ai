@@ -86,13 +86,13 @@ def test_outgoing_identity_exact_retry_and_crash_recovery(tmp_path):
     assert restarted.pending()[0]["id"] == request["id"]
     with pytest.raises(StateConflict):
         restarted.patch("job", [])
-    restarted.receipt(request["id"], {"kind": "MOVE_UNIT", "moved": True})
+    restarted.receipt(request["id"], {"kind": "MOVE_UNIT", "moved": True, "actionSummary": "Warrior moved to (1, 0)."})
     assert not restarted.pending()
     workspace = tmp_path / "view"
     workspace.mkdir(mode=0o700)
     restarted.export(workspace)
     exported = json.loads((workspace / "turn_0" / "receipts.jsonl").read_text())
-    assert exported["receipt"] == {"kind": "MOVE_UNIT", "moved": True}
+    assert exported["receipt"] == {"kind": "MOVE_UNIT", "moved": True, "actionSummary": "Warrior moved to (1, 0)."}
     assert not (workspace / "turn_1").exists()
 
 

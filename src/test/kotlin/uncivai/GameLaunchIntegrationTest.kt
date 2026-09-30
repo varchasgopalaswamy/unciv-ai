@@ -91,7 +91,7 @@ class GameLaunchIntegrationTest {
             launch(root, "create", listOf("--new-game", "--checkpoint", checkpoint.toString(), "--scenario", "trade-cycle"), 0)
             val original = Files.readString(checkpoint)
             val saved = Json.parseToJsonElement(original).jsonObject
-            assertEquals("7", saved.getValue("formatVersion").jsonPrimitive.content)
+            assertEquals("8", saved.getValue("formatVersion").jsonPrimitive.content)
             val game = Json.parseToJsonElement(saved.getValue("gameJson").jsonPrimitive.content).jsonObject
             val map = game.getValue("tileMap").jsonObject
             val parameters = map.getValue("mapParameters").jsonObject
@@ -113,7 +113,7 @@ class GameLaunchIntegrationTest {
             assertTrue(Files.readString(root.resolve("mismatch.log")).contains("Checkpoint scenario does not match"))
             assertEquals(otherSaved.toString(), Files.readString(other))
             val legacy = root.resolve("legacy.json")
-            val legacySaved = JsonObject(saved + ("formatVersion" to JsonPrimitive(2))).toString()
+            val legacySaved = JsonObject(saved + ("formatVersion" to JsonPrimitive(7))).toString()
             Files.writeString(legacy, legacySaved)
             launch(root, "legacy", listOf("--resume-checkpoint", legacy.toString()), 1)
             assertTrue(Files.readString(root.resolve("legacy.log")).contains("Unsupported checkpoint version; start a new game"))

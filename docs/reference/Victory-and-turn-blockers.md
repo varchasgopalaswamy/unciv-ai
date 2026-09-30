@@ -33,6 +33,9 @@ It is already prepared at gameplay startup. It returns own integer score and
 the turn limit, native victory milestones, permitted rival next milestones,
 and current rankings with short historical comparisons. Current policy-branch
 and capital objectives supplement the existing spaceship-part counts.
+Policy-branch milestones include `objectiveRequirement` with `rule: "AT_LEAST"`,
+`requiredCount` and `completedCount`. Listed branches are alternatives for meeting
+that count, not a requirement to finish every branch.
 
 Optional selectors:
 

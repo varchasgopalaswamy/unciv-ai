@@ -6,6 +6,8 @@ use delivered events and never wait for another player's reply.
 
 import copy
 
+from tests.test_victory_snapshot import position
+
 
 class ConcurrentTradeHost:
     def __init__(self, host, *, peace=False, settlement_delay=0):
@@ -36,6 +38,10 @@ class ConcurrentTradeHost:
         )
         gameplay = token == host.player_token
         self.reads.append((civ, gameplay, name, args.get("op")))
+        if name == "victory_progress":
+            return position(host.handoff // 2, names=[])
+        if name in {"research_details", "policy_details"}:
+            return {"technologies" if name == "research_details" else "policies": []}
         if name == "player_turn":
             if civ == "Greece" and gameplay:
                 assert self.enacted is not None
@@ -46,6 +52,7 @@ class ConcurrentTradeHost:
                 "turn": host.handoff // 2,
                 "phase": host.phase,
                 "canEndTurn": True,
+                "rules": {"victoryTypes": []},
                 "revision": "rev1",
                 "turnReview": {"id": "review1"},
             }

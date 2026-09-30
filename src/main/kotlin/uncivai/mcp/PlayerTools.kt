@@ -21,8 +21,8 @@ import uncivai.InputSchema
 import uncivai.InputSchemas
 import uncivai.PlayerApiAccounting
 import uncivai.awaitCommunication
-import uncivai.player.MovementPreview
 import uncivai.player.CivilianMovementRisk
+import uncivai.player.MovementPreview
 import uncivai.player.MovementPreviewRequest
 import uncivai.player.PlayerCommandJson
 import uncivai.player.PlayerFinalState

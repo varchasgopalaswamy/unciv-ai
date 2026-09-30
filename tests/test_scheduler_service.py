@@ -482,7 +482,10 @@ class SchedulerServiceTest(unittest.TestCase):
     def exercise_concurrent_trade(self, *, peace, settlement_delay=0, turn_timeout=30):
         trade = ConcurrentTradeHost(self.host, peace=peace, settlement_delay=settlement_delay)
         result = self.run_cli("--max-turns", "2", "--max-seconds", "60", "--turn-timeout", str(turn_timeout))
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        diagnostics = ""
+        if result.returncode:
+            diagnostics = "\n".join(path.read_text() for path in self.state_dir.rglob("diagnostics.jsonl"))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr + diagnostics)
         self.assertEqual(self.host.handoff, 4, result.stdout + result.stderr)
         self.assertEqual(self.saved()["status"], "budget_exhausted")
         self.assertEqual(trade.enacted, {"civilization": "Rome", "activeCivilization": "Rome", "handoff": 0})
@@ -491,7 +494,8 @@ class SchedulerServiceTest(unittest.TestCase):
             trade.writes,
             [("Rome", True, "trade_offer"), ("Greece", False, "trade_offer"), ("Rome", False, "trade_decide")],
         )
-        self.assertFalse(any(name == "player_turn" and not gameplay for _, gameplay, name, _ in trade.reads))
+        # Each opening review captures its player's position before gameplay.
+        self.assertEqual(2, sum(name == "player_turn" and not gameplay for _, gameplay, name, _ in trade.reads))
         records = self.records()
         failures = [
             r["params"]["result"] for r in records if r["method"] == "test/tool" and r["params"]["result"].get("error")
@@ -499,4 +503,6 @@ class SchedulerServiceTest(unittest.TestCase):
         self.assertEqual(failures, [])
         for path in (self.state_dir / "agent-services").glob("*/activations/*.json"):
             self.assertEqual(json.loads(path.read_text())["phase"], "COMPLETED")
-        self.assertEqual(len([r for r in records if r["method"] == "turn/start"]), 6)  # Four turns and two chat jobs.
+        starts = [r for r in records if r["method"] == "turn/start"]
+        self.assertEqual(len(starts), 8)  # Two opening reviews, four turns and two chat jobs.
+        self.assertEqual(2, sum("outputSchema" in r["params"] for r in starts))

@@ -9,20 +9,19 @@ from civ_agent.memory_store import RecordStore
 
 
 def action_text(command, receipt, settlement=None):
+    if "kind" in command and receipt and "error" not in receipt:
+        return receipt["actionSummary"]
     kind = command.get("kind") or command.get("op", "action")
     target = command.get("target") or command.get("partner") or command.get("to") or ""
     selection = command.get("selection") or ""
-    if kind == "QUEUE_CONSTRUCTION":
-        return f"Queued {selection} in {target}".strip()
-    if kind == "DISMISS_NOTIFICATIONS":
-        return f"Dismissed {len(command['targets'])} ordinary notifications"
     if kind in {"trade_offer", "trade_decide", "friendship_offer"}:
         result = settlement or receipt or {}
         trade = result.get("trade") or {}
         if trade.get("status") == "ENACTED" and (trade.get("outcome") or result.get("outcome")):
             return "Engine agreement enacted"
         return f"Diplomatic proposal {trade.get('status', 'recorded').lower()}"
-    return " ".join(part for part in (kind.replace("_", " ").capitalize(), str(target), str(selection)) if part)
+    label = " ".join(part for part in (kind.replace("_", " ").capitalize(), str(target), str(selection)) if part)
+    return f"Requested {label}" if "kind" in command else label
 
 
 def action_record(key, decision):

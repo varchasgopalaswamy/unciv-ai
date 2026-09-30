@@ -176,7 +176,7 @@ def test_restore_keeps_captured_memory_and_receipts_and_marks_unfinished_reflect
     memory = setup(tmp_path)
     memory.call("game", "end", "player_command", {"kind": "END_TURN"})
     request = memory.queue("game", "player_command", {"kind": "END_TURN"}, {}, "end")
-    memory.receipt(request["id"], {"kind": "END_TURN", "isYourTurn": False})
+    memory.receipt(request["id"], {"kind": "END_TURN", "isYourTurn": False, "actionSummary": "Ended turn."})
     key = create(memory, {"type": "note", "text": "Committed before capture"})
     saved = tmp_path / "round.json"
     checksum = memory.backup(saved)

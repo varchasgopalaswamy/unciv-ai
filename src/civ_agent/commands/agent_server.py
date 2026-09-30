@@ -73,7 +73,7 @@ def parser(*, add_help: bool = True) -> argparse.ArgumentParser:
         "--review-interval",
         type=positive,
         default=5,
-        help="Asynchronous strategy review every k turns, starting at turn k (default: 5)",
+        help="Concurrent opening strategy before the first move, then every k turns (default: 5)",
     )
     result.add_argument(
         "--review-attempts", type=positive, default=3, help="Maximum attempts per background review (default: 3)"

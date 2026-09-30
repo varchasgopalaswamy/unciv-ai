@@ -37,6 +37,11 @@ class TurnArchiveTests(unittest.TestCase):
             "kind": kind,
             "turn": game_turn,
             "isYourTurn": kind != "END_TURN",
+            "actionSummary": (
+                {"END_TURN": "Ended turn.", "RESOLVE_CAPTURED_CITY": "Resolved captured city: Annex."}.get(
+                    kind, "Scout moved to (1, 0)."
+                )
+            ),
         }
         return [
             self.event(
@@ -99,7 +104,7 @@ class TurnArchiveTests(unittest.TestCase):
         artifacts = self.archive.update(0, "private-activation-id", events, phase="COMPLETED", handoff=1)
         self.assertEqual(0, artifacts["turn"])
         self.assertEqual(artifacts["gameTurn"], artifacts["turn"])
-        self.assertEqual("# Turn 0\n\n- End turn.\n", artifacts["summary"])
+        self.assertEqual("# Turn 0\n\n- Ended turn.\n", artifacts["summary"])
         debug = self.debug_summary()
         self.assertIn("Host handoff: confirmed.", debug)
         self.assertIn("host confirmed success: END_TURN ×1", debug)
@@ -136,7 +141,7 @@ class TurnArchiveTests(unittest.TestCase):
         )
         artifacts = self.archive.update(0, "final", events, phase="INTERRUPTED", terminal=True)
         self.assertEqual(2, len(artifacts["commands"].splitlines()))
-        self.assertIn("Resolve captured city city-alert Annex.", artifacts["summary"])
+        self.assertIn("Resolved captured city: Annex.", artifacts["summary"])
         self.assertTrue(artifacts["attempts"][0]["terminalOutcome"])
         metadata = json.loads((self.workspace / "turn_0/turn.json").read_text())
         self.assertTrue(metadata["attempts"][0]["committed"])
@@ -189,7 +194,7 @@ class TurnArchiveTests(unittest.TestCase):
         artifacts = self.archive.update(0, "recovery", events, phase="COMPLETED", handoff=1)
         self.assertEqual(4, len(artifacts["commands"].splitlines()))
         self.assertEqual(2, len(artifacts["attempts"]))
-        self.assertEqual("# Turn 0\n\n- End turn.\n", artifacts["summary"])
+        self.assertEqual("# Turn 0\n\n- Ended turn.\n", artifacts["summary"])
         later = self.archive.update(1, "later", events, phase="FAILED")
         self.assertEqual("# Turn 1\n", later["summary"])
         self.assertNotIn("host confirmed success: END_TURN", self.debug_summary(1))

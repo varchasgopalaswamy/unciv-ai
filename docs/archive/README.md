@@ -6,6 +6,8 @@ for current behavior.
 
 ## Reports
 
+- [Agent communication audit — September 29, 2026](reports/Agent-communication-audit-2026-09-29.md)
+- [Action availability audit — September 29, 2026](reports/Action-availability-audit-2026-09-29.md)
 - [Routine strategic review — France, September 28, 2026](reports/Strategic-review-France-2026-09-28.md)
 - [Agent API consistency audit — September 26, 2026](reports/Agent-api-consistency-audit-2026-09-26.md)
 - [Strategy and handoff evaluation — September 25, 2026](reports/Strategy-handoff-evaluation-2026-09-25.md)

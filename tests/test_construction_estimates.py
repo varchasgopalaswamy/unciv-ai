@@ -42,6 +42,7 @@ def snapshot():
         SimpleNamespace(service=SimpleNamespace(active_id="job", records={"job": {"epoch": "g1", "gameTurn": 0}}))
     )
     city = host.view["cities"][0]
+    host.view["constructionCatalogue"] = ["Library", "University", "The Great Library", "Apollo Program", "SS Booster"]
     host.view["phase"] = "ACTIVE"
     city.update(
         constructionQueue=["Library"],
@@ -127,8 +128,34 @@ def test_catalogue_is_compact_and_named_reads_retain_accounting_and_commands():
     assert university["completion"]["specialistSlots"] == {"Scientist": 2}
     assert library["command"] == {"kind": "QUEUE_CONSTRUCTION", "target": "city1", "selection": "Library"}
     assert "estimateBasis" in selected
-    unknown = project_detail(view, query(["Hidden future building"]))["data"]["constructions"][0]
-    assert "completion" not in unknown and not unknown["canQueue"]
+    unknown = project_detail(view, query(["Librarry"]))
+    assert not unknown["available"] and not unknown["data"]["constructions"]
+    assert unknown["data"]["unknownNames"][0] == {
+        "name": "Librarry",
+        "code": "UNKNOWN_CONSTRUCTION",
+        "suggestions": ["Library"],
+    }
+    assert unknown["data"]["discovery"] == {"tool": "construction_details", "arguments": {"target": "city1"}}
+    mixed = project_detail(view, query(["Library", "Librarry"]))
+    assert not mixed["available"] and "command" not in mixed["data"]["constructions"][0]
+
+
+def test_known_locked_construction_and_puppet_are_explained_separately_from_unknown_names():
+    view = snapshot().view
+    view["constructionCatalogue"] = ["Library", "University", "Apollo Program", "Laboratory"]
+    locked = project_detail(view, query(["Laboratory"]))
+    assert locked["available"] and "unknownNames" not in locked["data"]
+    assert locked["data"]["detailLevel"] == "named" and "descriptionsIncluded" not in locked["data"]
+    row = locked["data"]["constructions"][0]
+    assert not row["canQueue"] and row["queueUnavailableReasons"]
+    city = view["cities"][0]
+    city["puppet"] = True
+    city["constructionOptions"] = []
+    row = project_detail(view, query(["Library"]))["data"]["constructions"][0]
+    assert not row["canQueue"] and "command" not in row
+    assert "Puppet cities control their own production" in row["queueUnavailableReasons"]
+    assert "Laboratory" in project_detail(view, query())["data"]["knownNames"]
+    assert "constructionCatalogue" not in overview(view)
 
 
 def test_queued_wonder_keeps_blockers_and_overflow_in_its_single_overview_entry():

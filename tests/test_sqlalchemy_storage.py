@@ -29,7 +29,7 @@ def seed_memory(directory):
     initial.engine.dispose()
     path = initial.path
     command = {"kind": "END_TURN", "requestId": "request-old"}
-    receipt = {"kind": "END_TURN", "done": True}
+    receipt = {"kind": "END_TURN", "done": True, "actionSummary": "Ended turn."}
     decision = {"command": command, "receipt": receipt, "outcome": "confirmed", "intent": {"reason": "Hold position"}}
     with closing(sqlite3.connect(path)) as db, db:
         db.execute("DELETE FROM meta")
@@ -147,7 +147,7 @@ def test_memory_checkpoint_restart_and_revision_branch(tmp_path):
     new_checkpoint = tmp_path / "new-checkpoint.json"
     memory.backup(new_checkpoint)
     assert json.loads(new_checkpoint.read_text()) == saved
-    assert memory.summary(4)["actions"][0]["action"] == "End turn"
+    assert memory.summary(4)["actions"][0]["action"] == "Ended turn."
     memory.export(tmp_path / "views")
     assert json.loads((tmp_path / "views/turn_4/summary.json").read_text())["actions"] == memory.summary(4)["actions"]
 

@@ -27,7 +27,11 @@ object TelemetryProbe {
 
     @JvmStatic
     fun main(args: Array<String>) {
-        val root = Path.of(args.single())
+        val root = Path.of(args[0])
+        if (args.getOrNull(1) == "opening") {
+            OpeningReviewProbe.run(root)
+            return
+        }
         val checkpoint = root.resolve("game.json")
         val civilizations = listOf("Rome", "Greece", "France")
         val tokens = civilizations.associateWith { it.first().toString().repeat(43) }

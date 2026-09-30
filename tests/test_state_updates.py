@@ -20,6 +20,20 @@ def stamped(value, revision="r1", epoch="g1"):
     return stamp(value, "job", epoch, revision)
 
 
+def test_delta_instructions_and_reducer_remove_fields_inside_replaced_rows():
+    tools = ProposalGateway.tool_catalogue([{"name": "player_turn", "inputSchema": {}}], "gameplay")
+    description = next(tool["description"] for tool in tools if tool["name"] == "player_turn")
+    assert "Omitted values stay unchanged" not in description
+    assert "fields absent from that replacement are removed" in description
+    before = stamped({"units": [{"handle": "a", "canGiftToCityState": True}, {"handle": "b", "health": 70}]})
+    after = stamped({"units": [{"handle": "a"}, {"handle": "b", "health": 70}]}, "r2")
+    update = overview_update(before, after, [])
+    assert update["collections"]["units"]["upsert"] == [{"handle": "a"}]
+    restored = apply_overview_update(before, update)
+    assert "canGiftToCityState" not in restored["units"][0]
+    assert restored["units"][1] == before["units"][1]
+
+
 def test_delta_round_trip_changes_only_changed_sections_and_rows():
     before = stamped(
         {

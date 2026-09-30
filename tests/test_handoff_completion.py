@@ -173,7 +173,7 @@ class HandoffFailureTests(AgentServiceTestCase):
         }
         await self.service.finish_handoff(proof)
         assert (await self.service.finalize(proof))["committedHandoff"] == 1
-        assert any(action["action"] == "End turn" for action in self.service.memory.summary(0)["actions"])
+        assert any(action["action"] == "Ended turn." for action in self.service.memory.summary(0)["actions"])
 
 
 def test_handoff_drains_final_usage_without_additional_model_work(tmp_path, monkeypatch):
@@ -279,7 +279,7 @@ def test_handoff_drains_final_usage_without_additional_model_work(tmp_path, monk
             assert [name for name, _ in factory.calls].count("turn/interrupt") == 0
             assert "frozenTurnSummary" not in status
             frozen = service.memory.summary(0)
-            assert any(action["action"] == "End turn" for action in frozen["actions"])
+            assert any(action["action"] == "Ended turn." for action in frozen["actions"])
             proof = {"activationId": "job", "epoch": "epoch", "gameTurn": 0, "committedHandoff": 1}
             with pytest.raises(ServiceError, match="INVALID_BINDING"):
                 await service.finish_handoff({**proof, "epoch": "other"})

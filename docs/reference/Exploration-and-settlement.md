@@ -132,8 +132,9 @@ ranked list. Hex distance is not a path estimate; inspect the native route befor
 issuing a destination order. See [compact observations](Compact-observations.md).
 
 The former uncertain-site counters and candidate uncertainty fields were removed
-without compatibility aliases. Checkpoint version 7 stores durable knowledge and
-receipts and rebuilds turn observations after loading. Earlier checkpoint formats
+without compatibility aliases. Checkpoint version 8 stores durable knowledge,
+including recent barbarian sightings, and receipts, and rebuilds turn observations
+after loading. Earlier checkpoint formats
 cannot be resumed with this build; start a new game/checkpoint.
 
 `UnitSettlementTest` covers native blockers, distances across continents, movement

@@ -207,6 +207,31 @@ async def main():
             )
 
         async def play(params):
+            if params.get("outputSchema", {}).get("title") == "StrategicAdvice":
+                report = {
+                    "assessment": "Develop the starting position before choosing a victory path.",
+                    "review": {
+                        "victoryPaths": [],
+                        "shortTerm": ["Explore the starting area."],
+                        **{
+                            field: "Reassess after scouting."
+                            for field in ("race", "alternative", "disruption", "agreements", "midTerm", "longTerm")
+                        },
+                    },
+                }
+                await websocket.send_json(
+                    dict(
+                        method="item/completed",
+                        params=dict(
+                            threadId=current["thread"],
+                            turnId=current["turn"],
+                            item=dict(id="advice", type="agentMessage", phase="final_answer", text=json.dumps(report)),
+                        ),
+                    )
+                )
+                await report_usage()
+                await complete("completed")
+                return
             text = " ".join(item.get("text", "") for item in params["input"])
             match = re.search(r"Play (.*?)'s current game turn", text)
             communication = match is None

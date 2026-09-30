@@ -32,7 +32,7 @@ data class CityStateQuest(val name: String, val description: String, val influen
 
 /** Public parameters already displayed by the quest, separated from its narrative. */
 @Serializable
-data class CityStateQuestObjective(val kind: String, val issuer: String, val targetName: String? = null, val goldGiftInfluenceBonusPercent: Int? = null)
+data class CityStateQuestObjective(val kind: String, val issuer: String, val requirement: String, val targetName: String? = null, val goldGiftInfluenceBonusPercent: Int? = null)
 
 @Serializable
 data class CityStateDefense(val enemy: CityStateCivilization, val unitsToKill: Int, val unitsKilled: Int)
@@ -164,10 +164,17 @@ private fun quest(player: Civilization, assigned: AssignedQuest): CityStateQuest
     val namesCivilization = assigned.questNameInstance in setOf(QuestName.ConquerCityState, QuestName.BullyCityState, QuestName.FindPlayer, QuestName.DenounceCiv, QuestName.GiveGold, QuestName.PledgeToProtect)
     // The request explicitly supplies this name. Hearing it is not diplomatic
     // contact: keep an unmet target's actionable ID and location concealed.
-    val target = if (namesCivilization) player.gameInfo.civilizations.firstOrNull { it.civID == assigned.data1 }?.let {
-        if (player === it || player.knows(it)) civilization(player, it)
-        else CityStateCivilization(null, it.civName, true)
-    } else null
+    val target = if (namesCivilization) {
+        player.gameInfo.civilizations.firstOrNull { it.civID == assigned.data1 }?.let {
+            if (player === it || player.knows(it)) {
+                civilization(player, it)
+            } else {
+                CityStateCivilization(null, it.civName, true)
+            }
+        }
+    } else {
+        null
+    }
     val description = if (namesCivilization) assigned.quest.description.fillPlaceholders(target?.name ?: "Unknown civilization") else assigned.getDescription()
     val location = when (assigned.questNameInstance) {
         QuestName.ClearBarbarianCamp -> assigned.data1.toIntOrNull()?.let { x -> assigned.data2.toIntOrNull()?.let { y -> TilePosition(x, y) } }
@@ -191,6 +198,7 @@ private fun quest(player: Civilization, assigned: AssignedQuest): CityStateQuest
             CityStateQuestObjective(
                 assigned.questName,
                 assigned.assignerCiv.civID,
+                questRequirement(assigned.questNameInstance),
                 // Never copy arbitrary data1: it can be a hidden civilization ID,
                 // location or private contest baseline. These names are UI targets.
                 targetName = assigned.data1.takeIf {
@@ -200,6 +208,28 @@ private fun quest(player: Civilization, assigned: AssignedQuest): CityStateQuest
             )
         },
     )
+}
+
+/** Mechanical conditions from QuestImplementation and QuestManager, without the quest's appeal. */
+internal fun questRequirement(kind: QuestName): String = when (kind) {
+    QuestName.Route -> "Connect your capital to the issuer's capital with a city connection (normally a road)."
+    QuestName.ClearBarbarianCamp -> "Clear the barbarian encampment at location yourself."
+    QuestName.ConnectResource -> "Acquire targetName in your civilization's resource supply, by improvement or trade."
+    QuestName.ConstructWonder -> "Have targetName built in one of your cities before another civilization builds it."
+    QuestName.GreatPerson -> "Acquire a Great Person of targetName's type (including its civilization-specific replacement)."
+    QuestName.ConquerCityState -> "Conquer targetCivilization and eliminate that city-state."
+    QuestName.FindPlayer -> "Discover territory belonging to targetCivilization; diplomatic contact alone is insufficient."
+    QuestName.FindNaturalWonder -> "Discover the natural wonder named in targetName."
+    QuestName.GiveGold -> "Give a gold gift to issuer; The named recent bully is not the gift recipient."
+    QuestName.PledgeToProtect -> "Pledge protection to issuer; The named recent bully is not the issuer."
+    QuestName.ContestCulture -> "Earn the most culture during the contest by its expiry; tied leaders with positive scores qualify."
+    QuestName.ContestFaith -> "Earn the most faith during the contest by its expiry; tied leaders with positive scores qualify."
+    QuestName.ContestTech -> "Research the most technologies during the contest by its expiry; tied leaders with positive scores qualify."
+    QuestName.Invest -> "Gold gifts to issuer earn the listed percentage of extra influence until expiry; this offer has no completion action."
+    QuestName.BullyCityState -> "Successfully demand tribute from targetCivilization."
+    QuestName.DenounceCiv -> "Have a native denunciation of targetCivilization active."
+    QuestName.SpreadReligion -> "Make targetName the majority religion in issuer's capital."
+    QuestName.None -> error("An unrecognized quest retains its original description")
 }
 
 internal fun cityStateOutcome(request: TurnCommandRequest, before: PlayerTurnSnapshot, after: PlayerTurnSnapshot, cityState: String): CityStateOutcome {

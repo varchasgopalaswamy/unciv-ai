@@ -19,7 +19,7 @@ from urllib.parse import urlsplit
 from sqlalchemy.exc import SQLAlchemyError
 
 from civ_agent import scheduler
-from civ_agent.agent_settings import add_settings_arguments, resolve_run_settings
+from civ_agent.agent_settings import add_settings_arguments, resolve_run_settings, setting_argument
 from civ_agent.checkout import repository_root
 from civ_agent.commands.host import port_number, seed_number
 from civ_agent.monitoring import path_for, read_record
@@ -43,6 +43,8 @@ SAVED_OPTIONS = (
     "review_attempts",
     "model",
     "reasoning_effort",
+    "agent_models",
+    "agent_reasoning_efforts",
     "repo_dir",
     "unciv_dir",
 )
@@ -50,6 +52,25 @@ SAVED_OPTIONS = (
 
 def read_json(path):
     return json.loads(path.read_text()) if path.exists() else None
+
+
+class AgentSetting(argparse.Action):
+    """Collect repeatable CIV=VALUE options without silently overwriting a civ."""
+
+    def __call__(self, parser, namespace, values, option_string=None):
+        civilization, separator, value = values.partition("=")
+        civilization = civilization.strip()
+        if not separator or not civilization:
+            raise argparse.ArgumentError(self, "expected CIV=VALUE, for example Rome=gpt-6-luna")
+        try:
+            value = setting_argument(value)
+        except argparse.ArgumentTypeError as error:
+            raise argparse.ArgumentError(self, str(error)) from error
+        choices = dict(getattr(namespace, self.dest) or {})
+        if civilization in choices:
+            raise argparse.ArgumentError(self, f"{civilization} was specified more than once")
+        choices[civilization] = value
+        setattr(namespace, self.dest, choices)
 
 
 def parser(*, add_help=True, action="start"):
@@ -62,8 +83,22 @@ def parser(*, add_help=True, action="start"):
     result.add_argument("--color", choices=("auto", "always", "never"), default="auto")
     add_settings_arguments(
         result,
-        model_help="Model for all agents (new-game default: gpt-6-luna)",
-        reasoning_help="Reasoning effort (new-game default: medium)",
+        model_help="Default model for agents without a per-civ override (new-game default: gpt-6-luna)",
+        reasoning_help="Default reasoning effort without a per-civ override (new-game default: medium)",
+    )
+    result.add_argument(
+        "--agent-model",
+        dest="agent_models",
+        action=AgentSetting,
+        metavar="CIV=MODEL",
+        help="Override one agent's model; repeat for other civilizations; retained on resume",
+    )
+    result.add_argument(
+        "--agent-reasoning-effort",
+        dest="agent_reasoning_efforts",
+        action=AgentSetting,
+        metavar="CIV=LEVEL",
+        help="Override one agent's reasoning effort; repeat for other civilizations; retained on resume",
     )
     result.add_argument("--port", type=port_number, help="Host port; consecutive ports serve agents (default: 8971)")
     result.add_argument("--startup-timeout", type=scheduler.positive, help="Seconds per service startup (default: 900)")
@@ -79,7 +114,7 @@ def parser(*, add_help=True, action="start"):
     result.add_argument(
         "--review-interval",
         type=scheduler.positive,
-        help="Review every k turns, starting at turn k (default: 5; retained on resume)",
+        help="Review before the first move, then every k turns (default: 5; retained on resume)",
     )
     result.add_argument(
         "--review-attempts",
@@ -159,15 +194,43 @@ def resolve_options(args):
         "review_attempts": 3,
         "model": None,
         "reasoning_effort": None,
+        "agent_models": {},
+        "agent_reasoning_efforts": {},
         "repo_dir": None,
         "unciv_dir": None,
     }
     for key in SAVED_OPTIONS:
         if getattr(args, key) is None:
             setattr(args, key, saved.get(key, defaults[key]))
+    pinned = None
+    if args.action == "resume":
+        pinned = dict(previous or {})
+        for key, field in (("model", "model"), ("reasoning_effort", "reasoningEffort")):
+            if key in saved:
+                pinned[field] = saved[key]
     args.model, args.reasoning_effort = resolve_run_settings(
-        args.model, args.reasoning_effort, defaults=("gpt-6-luna", "medium"), saved=previous
+        args.model, args.reasoning_effort, defaults=("gpt-6-luna", "medium"), saved=pinned or None
     )
+    for key, flag in (("agent_models", "--agent-model"), ("agent_reasoning_efforts", "--agent-reasoning-effort")):
+        unknown = set(getattr(args, key)) - set(args.agents)
+        if unknown:
+            raise ValueError(f"{flag} requires an agent civilization; unknown: {', '.join(sorted(unknown))}.")
+        if args.action == "resume":
+            # Repeating one saved override must retain overrides for other civs.
+            setattr(args, key, {**saved.get(key, {}), **getattr(args, key)})
+    if pinned:
+        for civilization in args.agents:
+            prior = {
+                "model": saved.get("agent_models", {}).get(civilization, pinned["model"]),
+                "reasoningEffort": saved.get("agent_reasoning_efforts", {}).get(
+                    civilization, pinned["reasoningEffort"]
+                ),
+            }
+            if civilization_settings(args, civilization) != prior:
+                raise ValueError(
+                    f"Resume retains {civilization}'s model {prior['model']} with {prior['reasoningEffort']} reasoning. "
+                    "Choose a new --state-dir to use different settings."
+                )
     if args.port + len(args.agents) > 65535:
         raise ValueError("--port must leave one consecutive port per agent.")
     for option, (saved_key, default) in LIMITS.items():
@@ -185,6 +248,13 @@ def resolve_options(args):
     args.repo_dir = repository_root(Path(args.repo_dir) if args.repo_dir else None)
     # A failed initial service startup may have saved the board before scheduling began.
     args.scheduler_action = "resume" if previous else "start"
+
+
+def civilization_settings(args, civilization):
+    return {
+        "model": args.agent_models.get(civilization, args.model),
+        "reasoningEffort": args.agent_reasoning_efforts.get(civilization, args.reasoning_effort),
+    }
 
 
 @contextlib.contextmanager
@@ -243,6 +313,7 @@ def run_services(args, output):
     with services(args.state_dir, args.startup_timeout, output.line) as start:
         start(host, "host", "MCP-READY:")
         for offset, civilization in enumerate(args.agents, 1):
+            selected = civilization_settings(args, civilization)
             start(
                 [
                     "agent-server",
@@ -251,9 +322,9 @@ def run_services(args, output):
                     "--port",
                     str(args.port + offset),
                     "--model",
-                    args.model,
+                    selected["model"],
                     "--reasoning-effort",
-                    args.reasoning_effort,
+                    selected["reasoningEffort"],
                     "--review-interval",
                     str(args.review_interval),
                     "--review-attempts",
@@ -266,6 +337,12 @@ def run_services(args, output):
             )
         options = scheduler.parser().parse_args([])
         vars(options).update(vars(args), action=args.scheduler_action)
+        # Scheduler overrides take precedence over service settings. Leave each
+        # setting to the services when civilizations have individual overrides.
+        if args.agent_models:
+            options.model = None
+        if args.agent_reasoning_efforts:
+            options.reasoning_effort = None
         return scheduler.run(options)
 
 
@@ -358,8 +435,7 @@ def launch(args):
             },
             "source": provenance(args.repo_dir),
             "engine": provenance(engine),
-            "model": args.model,
-            "reasoningEffort": args.reasoning_effort,
+            "agentSettings": {civilization: civilization_settings(args, civilization) for civilization in args.agents},
             "strategyGuide": args.strategy_guide,
             "requestedServiceTier": "fast" if args.fast else None,
         },
@@ -385,8 +461,11 @@ def launch(args):
                 output.line("Log", launch_dir / "console.log")
                 output.line("Dashboard", shlex.join(["civ-agent", "match", "watch", "--state-dir", str(root)]))
                 for civilization in args.agents:
+                    selected = civilization_settings(args, civilization)
                     output.line(
-                        "Player", f"{args.model} · {args.reasoning_effort} reasoning", civilization=civilization
+                        "Player",
+                        f"{selected['model']} · {selected['reasoningEffort']} reasoning",
+                        civilization=civilization,
                     )
                 if args.action == "start":
                     for civilization in args.built_in_ai:
@@ -401,7 +480,7 @@ def launch(args):
                 output.line("Strategy", "Optional guide enabled." if args.strategy_guide else "Guide disabled.")
                 output.line(
                     "Reviews",
-                    f"Every {args.review_interval} turns, starting at turn {args.review_interval}; background advice.",
+                    f"Concurrent opening plans on turn 0, then every {args.review_interval} turns; background advice.",
                 )
                 output.line("Priority", "Fast requested." if args.fast else "Codex default.")
                 output.line("Status", "Ctrl-C pauses and flushes the run. A blocked turn stops for inspection.")

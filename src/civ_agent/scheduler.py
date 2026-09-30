@@ -162,6 +162,7 @@ class JsonEndpoint:
                 max(self.timeout, 60)
                 if operation
                 in {
+                    "connect",
                     "finalize_terminal",
                     "interrupt",
                     "archive",
@@ -796,7 +797,8 @@ class Scheduler:
             connection = self.operator.call(
                 "connect", leaseId=self.lease, epoch=self.state["epoch"], civilization=civilization
             )
-            agent.call(
+            self.turns.call_agent(
+                agent,
                 "connect",
                 epoch=self.state["epoch"],
                 playerToken=connection["playerToken"],
@@ -1124,7 +1126,7 @@ class Scheduler:
                 or not pending["job"]
                 or pending.get("status") not in {"PREPARED", "PENDING"}
                 or type(pending.get("turn")) is not int
-                or not 0 <= pending["turn"] < status["turn"]
+                or not (0 <= pending["turn"] < status["turn"] or pending["turn"] == status["turn"] == 0)
                 or type(pending.get("attempts")) is not int
                 or pending["attempts"] < 0
             ):

@@ -120,7 +120,7 @@ object EconomyObservationProbe {
             check(iron.available == 6 && iron.used == 1 && iron.imported == 3 && iron.exported == 2 && iron.offered == 1) { "Wrong iron accounting: $iron" }
             check(iron.breakdown.single { it.source == "Trade" }.amount == 1)
             check(initial.resources.single { it.name == "Gold Ore" }.run { available == 0 && exported == 1 && citiesCelebrating == 1 })
-            check(initial.resources.single { it.name == "Horses" }.run { available == 0 && offered == 0 && unimprovedTiles == 1 })
+            check(initial.resources.single { it.name == "Horses" }.run { available == 0 && offered == 0 && unimprovedOwnedTiles == 1 && unimprovedAlliedCityStateTiles == 0 })
             check(initial.resources.single { it.name == "Marble" }.run { available == 0 && citiesDemanding == 1 })
             check(initial.resources.none { it.name == "Uranium" || it.type == "Bonus" })
             check(initial.cityConnections.size == 2 && initial.cityConnections.none { it.name in setOf("Athens", "Sparta") })

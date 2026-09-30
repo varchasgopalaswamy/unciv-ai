@@ -5,14 +5,40 @@ import json
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from sqlalchemy import select
 
 from civ_agent import service_recovery
 from civ_agent.civilization_state import StateConflict
+from civ_agent.monitoring import read_database
 from civ_agent.protocol import JsonObject
+from civ_agent.review_runtime import ReviewProgress
 from civ_agent.strategic_review import advice_prompt
+from civ_agent.telemetry import jobs as accounting_jobs
 from tests.test_agent_service import AgentServiceTestCase, FakeCodex, FakeFactory, ServiceError, StartupHost
 from tests.test_strategic_review import VICTORIES, assessment
 from tests.test_victory_snapshot import position
+
+
+def test_review_progress_tracks_parallel_tools_retries_and_activity_without_text():
+    progress = ReviewProgress()
+    progress.observe("item/reasoning/textDelta", {"delta": "RAW_PRIVATE_REASONING"})
+    last = progress.value["lastActivityAtMs"]
+    for id in ("map", "tech"):
+        progress.observe("item/started", {"item": {"id": id, "type": "mcpToolCall", "tool": "research_details"}})
+    assert progress.value["stage"] == "Reading" and progress.value["toolCalls"] == 2
+    progress.observe("item/completed", {"item": {"id": "map", "type": "mcpToolCall"}})
+    assert progress.value["stage"] == "Reading"
+    progress.observe("item/completed", {"item": {"id": "tech", "type": "mcpToolCall"}})
+    assert progress.value["stage"] == "Thinking"
+    last = progress.value["lastActivityAtMs"]
+    progress.observe("thread/tokenUsage/updated", {"total": {"inputTokens": 500}})
+    progress.observe("service/modelStatus", {"state": "retrying", "message": "Model connection timed out; retrying."})
+    assert progress.value["lastActivityAtMs"] == last
+    assert progress.value["modelStatus"]["state"] == "retrying"
+    progress.observe("item/reasoning/summaryTextDelta", {"delta": "PUBLIC_SUMMARY"})
+    assert "modelStatus" not in progress.value
+    assert "RAW_PRIVATE_REASONING" not in json.dumps(progress.value)
+    assert "PUBLIC_SUMMARY" not in json.dumps(progress.value)
 
 
 class ReviewHost(StartupHost):
@@ -153,6 +179,15 @@ class StrategicAdviserServiceTests(AgentServiceTestCase):
     async def test_review_retains_factual_actions_and_city_context_without_past_rationales(self):
         job = await self.begin_turn()
         assert job.observation is not None
+        job.observation["civilizationProfile"] = {
+            "name": "Rome",
+            "ability": {
+                "name": "The Glory of Rome",
+                "effects": [{"text": "+25% Production towards any buildings that already exist in the Capital"}],
+            },
+            "uniqueUnits": [{"name": "Legion", "missingTechnologies": ["Iron Working"]}],
+            "uniqueBuildings": [],
+        }
         job.observation["map"]["tiles"] = [
             {
                 "position": {"x": 3, "y": 2},
@@ -163,6 +198,7 @@ class StrategicAdviserServiceTests(AgentServiceTestCase):
                 "cityIsOriginalMajorCapital": True,
             }
         ]
+        job.observation["cities"][0]["development"] = {"position": {"x": 0, "y": 0}}
         history = {
             "actions": [
                 {"action": "Queued Library in Rome", "reason": "OLD_SCIENCE_FIRST_PLAN", "outcome": "confirmed"},
@@ -177,16 +213,60 @@ class StrategicAdviserServiceTests(AgentServiceTestCase):
         assert task is not None
         inputs = json.loads(task["inputs"])
         assert inputs["actions"]["entries"] == [
-            {"turn": turn, "action": "Queued Library in Rome", "outcome": "confirmed"} for turn in range(1, 6)
+            {"turn": turn, "action": "Queued Library in Rome", "commandStatus": "confirmed"} for turn in range(1, 6)
         ]
         prompt = advice_prompt(inputs)
+        assert '"name":"The Glory of Rome"' in prompt.user
+        facts = json.JSONDecoder().raw_decode(prompt.user.split("Frozen position as of end of turn 5:\n", 1)[1])[0]
+        assert facts["player_turn"]["civilizationProfile"]["uniqueUnits"] == [
+            {"name": "Legion", "missingTechnologies": ["Iron Working"]}
+        ]
         assert "OLD_SCIENCE_FIRST_PLAN" not in prompt.user and "Uncertain conquest" not in prompt.user
         assert "Queued Library in Rome" in prompt.user
         assert '"name":"Thebes"' in prompt.user and '"originalMajorCapital":true' in prompt.user
         assert '"observedTurn":4' in prompt.user and '"visible":false' in prompt.user
+        assert '"nearestOwnCity":"Rome"' in prompt.user and '"distanceInHexes":3' in prompt.user
         assert history["actions"][0]["reason"] == "OLD_SCIENCE_FIRST_PLAN"
         job.observation["map"]["tiles"].clear()
+        job.observation["civilizationProfile"].clear()
         assert "Thebes" in advice_prompt(inputs).user  # Review remains frozen.
+        assert "The Glory of Rome" in advice_prompt(inputs).user
+
+    async def test_actual_receipt_effects_survive_history_and_bounded_review_capture(self):
+        job = await self.begin_turn()
+        stopped = "Warrior stopped (1, 0); no attack on Brute at (3, 0) occurred."
+        attacked = (
+            "Warrior attacked Brute at (3, 0): dealt 35, received 20 damage. Target destroyed. Warrior health 60."
+        )
+        # Fill the interval beyond the review budget; trim complete old entries, not effects.
+        summaries = [f"Scout: ({i}, 0) to ({i + 1}, 0); 0 movement remaining." for i in range(100)] + [
+            stopped,
+            attacked,
+        ]
+        for i, summary in enumerate(summaries):
+            command = {
+                "kind": "ATTACK" if i >= 100 else "MOVE_UNIT",
+                "target": "unit1",
+                "destination": {"x": 3, "y": 0},
+            }
+            request = self.service.memory.queue(
+                job.id, "player_command", command, {}, f"receipt-{i}", {"reason": "OLD_PLAN"}
+            )
+            self.service.memory.receipt(request["id"], {"kind": command["kind"], "actionSummary": summary})
+        await self.service.reviews.prepare(job, "prepare-review")
+        await self.service.reviews.confirm(job.id)
+        task = self.service.reviews.store.pending()
+        assert task is not None
+        inputs = json.loads(task["inputs"])
+        history = inputs["actions"]
+        entries = history["entries"]
+        assert history["omittedEarlierActions"] > 0 and len(json.dumps(entries, ensure_ascii=False)) <= 10000
+        assert entries[-2:] == [
+            {"turn": 5, "action": summary, "commandStatus": "confirmed"} for summary in (stopped, attacked)
+        ]
+        assert all(entry["action"] in summaries for entry in entries)
+        prompt = advice_prompt(inputs).user
+        assert stopped in prompt and attacked in prompt and "OLD_PLAN" not in prompt
 
     async def test_next_own_turn_waits_for_review_and_preloads_its_report(self):
         assert isinstance(self.factory, ReviewFactory)
@@ -274,6 +354,48 @@ class StrategicAdviserServiceTests(AgentServiceTestCase):
         assert self.service.reviews.store.pending() is None
         assert (await self.service.turn_readiness({"epoch": "epoch-one", "gameTurn": 5}))["pendingReview"] is None
         assert self.factory.native_reads == 1 and len(self.factory.instances) == 1  # Ordinary victory preload only.
+
+    async def test_review_activity_is_published_to_operator_database(self):
+        assert isinstance(self.factory, ReviewFactory)
+        await self.handoff()
+        await self.start_review()
+        process = self.factory.review_process
+        assert process is not None
+        common = {"threadId": process.thread_id, "turnId": process.turn_id}
+        await process.notification("item/reasoning/textDelta", {**common, "delta": "RAW_REASONING_MUST_NOT_BE_SAVED"})
+        await process.notification(
+            "item/reasoning/summaryTextDelta",
+            {**common, "itemId": "reasoning", "summaryIndex": 0, "delta": "Exposed summary. " * 8},
+        )
+        await process.notification(
+            "item/started", {**common, "item": {"id": "draft", "type": "agentMessage", "phase": "final_answer"}}
+        )
+        await process.notification(
+            "item/agentMessage/delta", {**common, "itemId": "draft", "delta": "Report fragment. " * 8}
+        )
+        record = next(r for r in self.service.records.values() if r.get("purpose") == "review")
+        # The existing heartbeat publishes progress without saving every token.
+        await self.service._save(record)
+        with read_database(self.service.accounting.path) as db:
+            saved = json.loads(
+                db.scalar(select(accounting_jobs.c.payload).where(accounting_jobs.c.id == record["activationId"]))
+            )
+        assert saved["reviewProgress"]["stage"] == "Drafting"
+        assert saved["reviewProgress"]["draftCharacters"] == len("Report fragment. " * 8)
+        assert saved["reviewProgress"]["lastActivityAtMs"] > 0
+        assert "RAW_REASONING" not in json.dumps(saved)
+        assert "Exposed summary" in json.dumps(saved["reviewTrace"])
+        assert "Report fragment" in json.dumps(saved["reviewTrace"])
+        assert "Report fragment" not in json.dumps(saved["reviewProgress"])
+        # A different turn cannot alter the review's progress.
+        before = dict(record["reviewProgress"])
+        await process.notification(
+            "item/agentMessage/delta", {**common, "turnId": "other", "itemId": "draft", "delta": "ignored"}
+        )
+        assert record["reviewProgress"] == before
+        await process.finish_review()
+        await self.finished_review()
+        assert record["reviewProgress"]["stage"] == "Completed"
 
     async def test_capture_failure_stops_before_native_handoff(self):
         job = await self.begin_turn()
