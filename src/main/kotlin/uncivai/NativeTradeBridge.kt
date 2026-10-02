@@ -6,8 +6,8 @@ import com.unciv.logic.civilization.Civilization
 import com.unciv.logic.civilization.NotificationCategory
 import com.unciv.logic.civilization.NotificationIcon
 import com.unciv.logic.civilization.PopupAlert
-import com.unciv.logic.trade.TradeOperations
 import com.unciv.logic.trade.TradeOfferType
+import com.unciv.logic.trade.TradeOperations
 import com.unciv.logic.trade.TradeRequest
 import kotlinx.serialization.json.JsonObject
 import uncivai.player.PlayerSessionException

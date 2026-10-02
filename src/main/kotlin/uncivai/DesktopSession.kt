@@ -15,9 +15,9 @@ import com.unciv.ui.screens.basescreen.BaseScreen
 import com.unciv.ui.screens.diplomacyscreen.DiplomacyScreen
 import com.unciv.ui.screens.diplomacyscreen.TradeTable
 import com.unciv.ui.screens.worldscreen.WorldScreen
+import com.unciv.utils.Concurrency
 import com.unciv.view.CivView
 import com.unciv.view.ForeignCivView
-import com.unciv.utils.Concurrency
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.cancel
 import kotlinx.serialization.json.JsonObject
@@ -256,7 +256,11 @@ internal class DesktopSession(
         // as Chat. Their off-turn consent must not acquire native gameplay authority.
         val depth = uiDepth
         uiDepth = 0
-        try { return host.bindPlayer(viewingCivilization).communication(request) } finally { uiDepth = depth }
+        try {
+            return host.bindPlayer(viewingCivilization).communication(request)
+        } finally {
+            uiDepth = depth
+        }
     }
     internal val epoch get() = executor.epoch
 
@@ -275,13 +279,18 @@ internal class DesktopSession(
         tradeDraftToRestore = draft
         try {
             app.pushScreen { DiplomacyScreen(view.civView, view.getForeignCivView(game.getCivilization(civilization)), showTrade = true) }
-        } finally { tradeDraftToRestore = null }
+        } finally {
+            tradeDraftToRestore = null
+        }
     }
 
     override fun createTradeTable(viewer: CivView, partner: ForeignCivView, screen: DiplomacyScreen): TradeTable? {
         if (viewer.getCiv().civID != viewingCivilization || !usesSharedDiplomacy(partner.getCiv().civID)) return null
         val controller = DesktopTradeController(this, viewer, partner, screen, tradeDraftToRestore)
-        return TradeTable(viewer, partner, screen, controller).also { controller.table = it; tradePanel = controller }
+        return TradeTable(viewer, partner, screen, controller).also {
+            controller.table = it
+            tradePanel = controller
+        }
     }
 
     override fun worldScreenCreated(worldScreen: WorldScreen) {
@@ -353,8 +362,11 @@ internal class DesktopSession(
                 try {
                     app.loadGame(game)
                     loading = false
-                    if (reopen != null) app.pushScreen { reopen.refreshed().also { panel = it } }
-                    else if (trade != null) openTrade(trade.partner, draft)
+                    if (reopen != null) {
+                        app.pushScreen { reopen.refreshed().also { panel = it } }
+                    } else if (trade != null) {
+                        openTrade(trade.partner, draft)
+                    }
                 } finally {
                     loading = false
                 }

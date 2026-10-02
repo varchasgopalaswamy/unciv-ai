@@ -6,10 +6,10 @@ import com.unciv.logic.civilization.PlayerDiplomacyOperations
 import com.unciv.logic.civilization.PlayerFriendshipOperations
 import com.unciv.logic.civilization.PlayerPeaceOperations
 import com.unciv.logic.trade.Trade
-import com.unciv.logic.trade.TradeOperations
 import com.unciv.logic.trade.TradeLogic
 import com.unciv.logic.trade.TradeOffer
 import com.unciv.logic.trade.TradeOfferType
+import com.unciv.logic.trade.TradeOperations
 import com.unciv.models.translations.tr
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -168,18 +168,25 @@ internal class EngineTrades(private val runtime: GameExecutor) {
                 val available = operations.available()
                 // A draft cannot inspect someone else's city by guessing a reference.
                 for ((offers, choices) in listOf(draft.ourOffers to available.ourOffers, draft.theirOffers to available.theirOffers)) {
-                    if (offers.any { offer -> !visibleTerm(a, offer) || !visibleTerm(b, offer) ||
-                            choices.none { it.type == offer.type && it.name == offer.name } })
+                    if (offers.any { offer ->
+                            !visibleTerm(a, offer) || !visibleTerm(b, offer) ||
+                                choices.none { it.type == offer.type && it.name == offer.name }
+                        }
+                    ) {
                         return unavailable("An item is no longer available to these players.")
+                    }
                 }
                 val prepared = operations.prepare(draft, request.fundResearch)
                 val give = prepared.ourOffers.map(::selection)
                 val receive = prepared.theirOffers.map(::selection)
                 val reason = operations.invalidReason(prepared)
                 obj(
-                    "partner" to b.civID, "give" to json.encodeToJsonElement(give), "receive" to json.encodeToJsonElement(receive),
+                    "partner" to b.civID,
+                    "give" to json.encodeToJsonElement(give),
+                    "receive" to json.encodeToJsonElement(receive),
                     "clauses" to json.encodeToJsonElement(clauses(a.civID, b.civID, give, receive)),
-                    "valid" to (reason == null), "unavailableReason" to reason,
+                    "valid" to (reason == null),
+                    "unavailableReason" to reason,
                 )
             }
 
@@ -410,8 +417,9 @@ internal class EngineTrades(private val runtime: GameExecutor) {
         TradeOperations(a, b).stateReason()?.let { return it }
         if (proposal.friendship != null) return PlayerFriendshipOperations(a).stateReason(b)
         val trade = engineTrade(proposal)
-        if ((trade.ourOffers + trade.theirOffers).any { !visibleTerm(a, it) || !visibleTerm(b, it) })
+        if ((trade.ourOffers + trade.theirOffers).any { !visibleTerm(a, it) || !visibleTerm(b, it) }) {
             return "These terms are outside the players' permitted information."
+        }
         return TradeOperations(a, b).invalidReason(trade)
     }
 

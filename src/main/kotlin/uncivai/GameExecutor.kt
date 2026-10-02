@@ -110,36 +110,40 @@ class GameExecutor internal constructor(
     internal var mutationFailure: Throwable? = null
         private set
 
-    internal fun <T> accessGame(block: (GameInfo) -> T): T = dispatch.call { synchronized(lifecycleLock) {
-        checkAvailable()
-        val outermost = !Thread.holdsLock(game)
-        synchronized(game) {
-            if (outermost) {
-                scheduler?.expireIfNeeded()
-                communication.trades.expireIfNeeded()
-                val nativeChanged = communication.trades.nativeBridge.synchronize(game)
-                if (communication.agreements.synchronize(game) || nativeChanged) commitCheckpoint()
-            }
-            block(game)
-        }
-    } }
-
-    /** Operator diagnostics remain available after an uncertain mutation; player queries do not. */
-    internal fun <T> accessOperatorGame(block: (GameInfo) -> T): T = dispatch.call { synchronized(lifecycleLock) {
-        if (closed || !isAvailable()) throw RuntimeClosedException()
-        val outermost = !Thread.holdsLock(game)
-        synchronized(game) {
-            if (outermost) {
-                scheduler?.expireIfNeeded()
-                if (mutationFailure == null) {
+    internal fun <T> accessGame(block: (GameInfo) -> T): T = dispatch.call {
+        synchronized(lifecycleLock) {
+            checkAvailable()
+            val outermost = !Thread.holdsLock(game)
+            synchronized(game) {
+                if (outermost) {
+                    scheduler?.expireIfNeeded()
                     communication.trades.expireIfNeeded()
                     val nativeChanged = communication.trades.nativeBridge.synchronize(game)
                     if (communication.agreements.synchronize(game) || nativeChanged) commitCheckpoint()
                 }
+                block(game)
             }
-            block(game)
         }
-    } }
+    }
+
+    /** Operator diagnostics remain available after an uncertain mutation; player queries do not. */
+    internal fun <T> accessOperatorGame(block: (GameInfo) -> T): T = dispatch.call {
+        synchronized(lifecycleLock) {
+            if (closed || !isAvailable()) throw RuntimeClosedException()
+            val outermost = !Thread.holdsLock(game)
+            synchronized(game) {
+                if (outermost) {
+                    scheduler?.expireIfNeeded()
+                    if (mutationFailure == null) {
+                        communication.trades.expireIfNeeded()
+                        val nativeChanged = communication.trades.nativeBridge.synchronize(game)
+                        if (communication.agreements.synchronize(game) || nativeChanged) commitCheckpoint()
+                    }
+                }
+                block(game)
+            }
+        }
+    }
 
     internal fun requireRunning() {
         if (paused) throw RuntimePausedException()
