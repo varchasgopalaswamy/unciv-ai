@@ -105,6 +105,19 @@ promises remain nonbinding advice. See [trade operations and validation](../refe
 
 ## Communication waits
 
+During `STRATEGIC_REVIEW`, plain-text `send` requests from configured human seats
+are checkpointed in `CommunicationState.queuedMessages`. Only the author sees
+these pending messages through `state`; recipient streams and frozen review inputs
+remain unchanged. `unbarrier` publishes them in order and clears the queue in one
+commit before waking recipients. Request receipts prevent duplicate sends across
+retries/restart, and turn rewind restores the queue with the other communication
+state. Agent sends, native diplomatic actions, trades and promises remain fenced.
+
+The desktop keeps its communication screen and input stage alive while background
+game changes invalidate the underlying world view. Native screens still rebuild
+before accepting input. Session-local drafts are stored per conversation, including
+public chat, across map navigation; a new game epoch discards them.
+
 A subscription captures its player's notification version **before** reading the
 recipient stream. If the stream has no new events, or a negotiation remains
 active, it suspends until that version changes. Comparing the version while

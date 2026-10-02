@@ -22,6 +22,7 @@ internal fun communicationContext(runtime: GameExecutor, game: GameInfo, player:
         "finished" to gameFinished(game),
         "defeated" to player.isDefeated(),
         "communicationAvailable" to !runtime.communicationPaused,
+        "canQueueMessage" to runtime.communication.canQueueMessage(player.civID),
         "scenario" to communicationScenario(runtime, game, player)?.let { Json.encodeToJsonElement(GameplayScenario.serializer(), it) },
         "economy" to obj(
             "treasury" to economy.treasury,

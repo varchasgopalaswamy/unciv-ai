@@ -96,7 +96,12 @@ They hold gameplay while the existing service waits without continued gameplay
 inference. Native diplomacy remains available with the built-in AI and city-states.
 
 You can inspect your map and chat between turns. Opening and periodic strategic
-reviews pause both play and communication until all agent reports finish.
+reviews pause play and agent conversations until all reports finish. You can send
+messages during reviews: they appear as **Queued** in your conversation and reach
+their recipients when the review phase ends. Trades and promises wait until then.
+Unsent drafts stay with their public/private conversation when switching recipients
+or returning to the map. Background turns preserve chat focus and cursor position.
+Drafts last for the desktop session; interrupted-turn rewind discards them.
 Your turn has no model timeout; whole-match budgets still apply. The separate
 operator TUI contains debugging information and other players' private material,
 so it is not the human's gameplay interface.
@@ -183,8 +188,9 @@ play starts. Later reviews run concurrently after all players finish rounds
 5, 10, 15, etc. Set `--review-interval K` to change the later cadence; the opening
 review stays on turn 0. The interval is retained on resume.
 A review uses the player's model, effort, priority and optional strategy
-guide. Active conversations finish before capture; gameplay, communication and
-trade stay paused until all reviews finish. Subsequent turns and conversations
+guide. Active conversations finish before capture; gameplay, message delivery and
+trade stay paused until all reviews finish. Human messages submitted during this
+phase queue outside the frozen review inputs. Subsequent turns and conversations
 receive their civilization's report as dated advice. Waiting does not
 consume its gameplay timeout. There are no mandatory post-turn memory writes.
 

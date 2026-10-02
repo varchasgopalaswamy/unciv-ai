@@ -119,12 +119,30 @@ civ-agent chat send France --state-dir /tmp/mixed-diplomacy \
 ```
 
 The scheduler activates the human seat without starting a model or applying a
-model turn timeout. Opening/periodic reviews remain agent-only quiet phases.
+model turn timeout. Opening/periodic reviews remain agent-only quiet phases;
+human text messages queue privately until all reviews finish. The desktop labels
+queued messages and preserves unsent drafts per conversation across map navigation.
+Background actions leave chat focus and cursor position intact. Drafts are local
+to the desktop session and cleared on rewind.
 Closing the desktop stops the whole match; interrupted-turn resume rewinds native
 actions, communication and agent state together. See the
 [launcher guide](../guides/Full-vanilla-run.md#play-a-civilization-yourself).
 
 ## Verification
+
+### Human chat during reviews and background turns — October 2, 2026
+
+- **22 host checks passed**: communication, operator-control and input-schema suites.
+  `HumanChatReviewProbe` covers private/public queueing, frozen game state, recipient
+  privacy and wakeups, ordered delivery, duplicate requests, checkpoint restart,
+  and discarded-attempt rewind. Native actions, trades and agent sends remain
+  blocked during review; ordinary pauses do not admit new queued chat.
+- The rendered `ManagedDesktopProbe` exercises keyboard input after authority
+  changes and other players' turns, preserving focus, selection and caret. Public,
+  Roman and Greek drafts survive switching recipients and leaving/reopening chat.
+  Human review-time chat is displayed as queued, hidden from recipients until
+  release, then delivered to the intended recipient. Rewind clears unsent drafts.
+  Evidence: `/tmp/unciv-human-chat-02/COMPLETE` and adjacent screenshots.
 
 ### Unified native trading — October 2, 2026
 

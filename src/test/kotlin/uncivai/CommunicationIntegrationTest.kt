@@ -8,6 +8,11 @@ import java.util.concurrent.TimeUnit
 
 class CommunicationIntegrationTest {
     @Test
+    fun `human review chat queues privately survives restart and delivers once after review`() {
+        runProbe("uncivai.HumanChatReviewProbe")
+    }
+
+    @Test
     fun `all trade items share canonical terms and native effects across human and agent controllers`() {
         runProbe("uncivai.UnifiedTradeProbe")
     }

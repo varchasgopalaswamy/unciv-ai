@@ -125,6 +125,7 @@ class OperatorControl internal constructor(
                     if (runtime.communicationState.restorePending) throw OperatorFailure("RESTORE_INCOMPLETE")
                     runtime.communicationPaused = false
                     runtime.pauseReason = null
+                    runtime.communication.deliverQueuedMessages()
                     runtime.commitCheckpoint()
                 }
 
@@ -255,6 +256,8 @@ class OperatorControl internal constructor(
                     activation = null
                     runtime.scheduled = false
                     runtime.communicationPaused = false
+                    runtime.pauseReason = null
+                    runtime.communication.deliverQueuedMessages()
                     runtime.resume()
                 }
             }

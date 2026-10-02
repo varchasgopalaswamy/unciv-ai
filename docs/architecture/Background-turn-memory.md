@@ -25,6 +25,11 @@ communication. The services then capture fresh permitted views at the turn-6
 boundary and run their reviews concurrently. All reports must finish before play
 or communication resumes. Each report's `asOfTurn` names the completed round.
 
+Humans may submit plain chat during this pause. The host checkpoints it in a
+sender-private queue, outside all recipient streams and review inputs. Releasing
+the phase delivers those messages once, before normal conversations resume.
+Trade, social commitments and native diplomatic actions still wait for release.
+
 The scheduler waits before capturing the next turn checkpoint or creating a
 gameplay activation. The wait uses no gameplay model time or activation budget;
 the match wall-time budget still applies. It keeps the operator lease alive,

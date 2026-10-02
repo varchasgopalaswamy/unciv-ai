@@ -231,7 +231,9 @@ decisions still use the stale-state recovery checks above.
 
 The non-current participant can counteroffer or consent without switching Unciv's
 active player. A new negotiation requires the current player and running gameplay.
-Operator communication barriers fence decisions alongside chat. An interrupted
+Operator communication barriers fence decisions and message delivery. Humans can
+queue plain chat during strategic reviews; it is delivered after the barrier ends.
+An interrupted
 gameplay job resumes from durable receipts and the existing deadline; it does not
 reopen the negotiation. Emergency rollback restores the whole shared checkpoint.
 

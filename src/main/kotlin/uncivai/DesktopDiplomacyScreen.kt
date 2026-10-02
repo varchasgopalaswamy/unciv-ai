@@ -23,13 +23,31 @@ import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.intOrNull
 import java.util.UUID
 
+/** Local, unsent input belongs to its conversation and is discarded on a turn rewind. */
+internal class DesktopDiplomacyDrafts {
+    var selectedCivilization: String? = null
+    var tab = "Chat"
+    val conversations = mutableMapOf<String?, DesktopConversationDraft>()
+}
+
+internal data class DesktopConversationDraft(
+    val message: String,
+    val cursor: Int,
+    val promise: String,
+    val conditions: String,
+    val expiry: String,
+    val promiseKind: String,
+    val revisingPromise: JsonObject?,
+)
+
 /** Ordinary widgets over the human's existing player communication session. */
 internal class DesktopDiplomacyScreen(
     private val session: DesktopSession,
     initialCivilization: String?,
 ) : BaseScreen() {
     private val openedEpoch = session.epoch
-    var selectedCivilization: String? = initialCivilization
+    internal val isCurrent get() = openedEpoch == session.epoch
+    var selectedCivilization: String? = initialCivilization ?: session.diplomacyDrafts.selectedCivilization
         private set
     var changed = true
     private var unreadDirty = true
@@ -38,10 +56,11 @@ internal class DesktopDiplomacyScreen(
     private val content = Table()
     private val status = Label("", skin)
     private val contacts = SelectBox<String>(skin).apply { name = "contacts" }
-    private val message = TextArea("", skin)
+    private var updatingContacts = false
+    private val message = TextArea("", skin).apply { name = "chat-message" }
     private val composer = Table()
     private val composerCell: Cell<Table>
-    private var tab = "Chat"
+    private var tab = session.diplomacyDrafts.tab
     private var cursor = 0
     private val events = ArrayList<JsonObject>()
     private var notice = ""
@@ -56,22 +75,41 @@ internal class DesktopDiplomacyScreen(
         setItems("other", "peace")
     }
 
-    /** Preserve unsent drafts across ordinary world refreshes, never across a rewind. */
-    internal fun refreshed() = DesktopDiplomacyScreen(session, selectedCivilization).also { next ->
-        if (openedEpoch == session.epoch) {
-            next.tab = tab
-            next.message.text = message.text
-            next.promise.text = promise.text
-            next.conditions.text = conditions.text
-            next.expiry.text = expiry.text
-            next.promiseKind.selected = promiseKind.selected
-            next.revisingPromise = revisingPromise
-            next.notice = notice
-            next.rebuild()
+    internal fun refreshed(): DesktopDiplomacyScreen {
+        saveDraft()
+        return DesktopDiplomacyScreen(session, selectedCivilization)
+    }
+
+    private fun saveDraft() {
+        if (!isCurrent) return
+        session.diplomacyDrafts.apply {
+            selectedCivilization = this@DesktopDiplomacyScreen.selectedCivilization
+            tab = this@DesktopDiplomacyScreen.tab
+            conversations[selectedCivilization] = DesktopConversationDraft(
+                message.text, message.cursorPosition, promise.text, conditions.text,
+                expiry.text, promiseKind.selected, revisingPromise,
+            )
         }
     }
 
+    private fun restoreDraft() {
+        val draft = session.diplomacyDrafts.conversations[selectedCivilization]
+        message.text = draft?.message ?: ""
+        message.cursorPosition = draft?.cursor ?: 0
+        promise.text = draft?.promise ?: ""
+        conditions.text = draft?.conditions ?: ""
+        expiry.text = draft?.expiry ?: ""
+        promiseKind.selected = draft?.promiseKind ?: "other"
+        revisingPromise = draft?.revisingPromise
+    }
+
+    override fun hide() {
+        saveDraft()
+        super.hide()
+    }
+
     init {
+        restoreDraft()
         root.setFillParent(true)
         root.defaults().pad(8f)
         root.add(Label("Diplomacy · ${session.viewingCivilization}", skin)).left().growX()
@@ -103,7 +141,10 @@ internal class DesktopDiplomacyScreen(
         stage.addActor(root)
         contacts.addListener(object : ChangeListener() {
             override fun changed(event: ChangeEvent?, actor: Actor?) {
+                if (updatingContacts) return
+                saveDraft()
                 selectedCivilization = contacts.selected.takeUnless { it == "Public" }
+                restoreDraft()
                 rebuild()
             }
         })
@@ -138,9 +179,19 @@ internal class DesktopDiplomacyScreen(
                 .filter { it != session.viewingCivilization }
             val previous = selectedCivilization ?: "Public"
             if (contacts.items.toList() != names) {
-                contacts.setItems(*names.toTypedArray())
-                contacts.selected = previous.takeIf { it in names } ?: "Public"
-                selectedCivilization = contacts.selected.takeUnless { it == "Public" }
+                updatingContacts = true
+                try {
+                    contacts.setItems(*names.toTypedArray())
+                    contacts.selected = previous.takeIf { it in names } ?: "Public"
+                } finally {
+                    updatingContacts = false
+                }
+                val selected = contacts.selected.takeUnless { it == "Public" }
+                if (selected != selectedCivilization) {
+                    saveDraft()
+                    selectedCivilization = selected
+                    restoreDraft()
+                }
             }
             val page = request("read", "cursor" to cursor, "limit" to 100)
             events.addAll(page.array("events").map { it as JsonObject })
@@ -164,6 +215,7 @@ internal class DesktopDiplomacyScreen(
     }
 
     private val communicationAvailable get() = (state["context"] as? JsonObject)?.flag("communicationAvailable") == true
+    private val canQueueMessage get() = (state["context"] as? JsonObject)?.flag("canQueueMessage") == true
     private fun decision(text: String, enabled: Boolean = true, action: () -> Unit) = button(text, enabled && communicationAvailable, action)
 
     private fun rebuild() {
@@ -206,7 +258,7 @@ internal class DesktopDiplomacyScreen(
     }
 
     private fun sendMessage() = act {
-        require(communicationAvailable) { "Communication is paused. You can send this message when play resumes." }
+        require(communicationAvailable || canQueueMessage) { "Communication is paused. You can send this message when play resumes." }
         require(message.text.isNotBlank()) { "Write a message first." }
         val fields = mutableListOf<Pair<String, Any?>>("text" to message.text)
         selectedCivilization?.let { fields.add("to" to it) }
@@ -225,10 +277,17 @@ internal class DesktopDiplomacyScreen(
                 !body.flag("public") && body.array("participants").any { (it as? JsonPrimitive)?.content == selectedCivilization }
             }
         }
-        if (visible.isEmpty()) line("No messages in this conversation.")
+        val queued = state.array("queuedMessages").filterIsInstance<JsonObject>().filter { body ->
+            if (selectedCivilization == null) body.flag("public")
+            else !body.flag("public") && body.array("participants").any { (it as? JsonPrimitive)?.content == selectedCivilization }
+        }
+        if (visible.isEmpty() && queued.isEmpty()) line("No messages in this conversation.")
         visible.forEach { event ->
             val body = event["body"] as JsonObject
             line("Turn ${body.number("turn")} · ${body.text("author")}\n${body.text("text")}")
+        }
+        queued.forEach { body ->
+            line("Queued · Will be delivered when strategic reviews finish\n${body.text("text")}")
         }
         button("Load more history") { refresh() }
     }

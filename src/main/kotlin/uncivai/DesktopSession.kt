@@ -49,6 +49,7 @@ internal class DesktopSession(
             readEvents.clear()
             unreadEvents.clear()
             latestCursor = 0
+            diplomacyDrafts = DesktopDiplomacyDrafts()
             rewindNotice = "The interrupted turn was rewound. Messages and actions from that attempt were removed."
             reload = true
         },
@@ -74,6 +75,8 @@ internal class DesktopSession(
     private var latestCursor = 0
     private var communicationDirty = true
     internal var panel: DesktopDiplomacyScreen? = null
+    internal var diplomacyDrafts = DesktopDiplomacyDrafts()
+        private set
     internal var tradePanel: DesktopTradeController? = null
     private var tradeDraftToRestore: DesktopTradeDraft? = null
     private val host = PlayerHost(executor)
@@ -139,7 +142,7 @@ internal class DesktopSession(
             positionGeneration++
             reload = true
             // No cached picker or confirmation may accept input before it is rebuilt.
-            Gdx.input.inputProcessor = null
+            if (!chatOpen) Gdx.input.inputProcessor = null
         }
         lastWorld = world
         lastAuthority = nextAuthority
@@ -194,10 +197,13 @@ internal class DesktopSession(
         val epoch = executor.epoch
         val position = positionGeneration
         fun invoke(action: () -> Boolean): Boolean {
-            if (closed || loading || reload || game !== boundGame || epoch != executor.epoch || position != positionGeneration) return false
+            if (closed || loading || game !== boundGame || epoch != executor.epoch) return false
+            // Chat has no cached engine actions. Keep its stage and focus while the
+            // world underneath waits for a refresh; every send is freshly validated.
+            if (chatOpen && (app.screen as DesktopDiplomacyScreen).stage === processor) return action()
+            if (reload || position != positionGeneration) return false
             if (stoppedScreen) return action()
-            // This panel changes the game only through checkpointed player operations.
-            return if (app.screen is DesktopDiplomacyScreen) action() else nativeAction(action)
+            return nativeAction(action)
         }
         return object : InputProcessor by processor {
             override fun keyDown(keycode: Int) = invoke { processor.keyDown(keycode) }
@@ -263,6 +269,7 @@ internal class DesktopSession(
         }
     }
     internal val epoch get() = executor.epoch
+    private val chatOpen get() = (app.screen as? DesktopDiplomacyScreen)?.isCurrent == true
 
     override fun usesSharedDiplomacy(civilization: String): Boolean = game.civilizations.any {
         it.civID == civilization && it.isHuman() && it.isMajorCiv() && it.civID != viewingCivilization
@@ -311,7 +318,7 @@ internal class DesktopSession(
         executor.mutationFailure != null -> "The game stopped. Inspect the operator logs before resuming."
         error != null -> checkNotNull(error)
         executor.communicationState.restorePending -> "Restoring the interrupted turn…"
-        executor.pauseReason == "STRATEGIC_REVIEW" -> "Strategic reviews in progress. Gameplay and communication are paused."
+        executor.pauseReason == "STRATEGIC_REVIEW" -> "Strategic reviews in progress. You can send messages; they will be delivered when reviews finish."
         executor.communicationPaused -> "Gameplay and communication are paused."
         executor.communicationState.trades.activeProposal != null -> negotiationMessage()
         canChangeState(game) -> "Your turn · $viewingCivilization"
@@ -350,7 +357,7 @@ internal class DesktopSession(
             }
             return
         }
-        if (reload && !loading) {
+        if (reload && !loading && !chatOpen) {
             reload = false
             loading = true
             val reopen = panel?.takeIf { app.screen === it }

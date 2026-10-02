@@ -22,6 +22,7 @@ internal data class CommunicationState(
     val trades: EngineTradeState = EngineTradeState(),
     val agreements: AgreementState = AgreementState(),
     val streams: MutableMap<String, MutableList<CommunicationEvent>> = mutableMapOf(),
+    val queuedMessages: MutableList<ChatMessage> = mutableListOf(),
     val offers: MutableMap<String, MutableList<SocialOffer>> = mutableMapOf(),
     val consents: MutableList<SocialConsent> = mutableListOf(),
     val outcomes: MutableList<EngineOutcome> = mutableListOf(),
@@ -69,7 +70,8 @@ internal class Communication(private val runtime: GameExecutor) {
     private fun shortId(prefix: String): String = shortCommunicationId(prefix, random) { candidate ->
         when (prefix) {
             "p" -> candidate in state.offers
-            "m" -> state.streams.values.any { stream -> stream.any { it.kind == "message" && it.body["message"] == JsonPrimitive(candidate) } }
+            "m" -> state.queuedMessages.any { it.message == candidate } ||
+                state.streams.values.any { stream -> stream.any { it.kind == "message" && it.body["message"] == JsonPrimitive(candidate) } }
             "o" -> state.outcomes.any { it.outcome == candidate }
             else -> error("Unknown reference kind")
         }
@@ -81,6 +83,21 @@ internal class Communication(private val runtime: GameExecutor) {
             stream.add(CommunicationEvent(stream.size + 1, kind, body, recipient in wakes))
         }
         runtime.telemetry.communicationChanged()
+    }
+
+    internal fun canQueueMessage(civilization: String): Boolean = runtime.communicationPaused &&
+        runtime.pauseReason == "STRATEGIC_REVIEW" && !state.restorePending && civilization in state.humanPlayers
+
+    private fun deliver(message: ChatMessage) {
+        val recipients = if (message.public) message.mentions.toSet() else message.participants.toSet()
+        emit(message.participants, "message", message.recordJson(), recipients - message.author)
+    }
+
+    /** Publish queued human chat in the same commit that opens communication after review. */
+    internal fun deliverQueuedMessages() {
+        check(!runtime.communicationPaused && !state.restorePending)
+        state.queuedMessages.forEach(::deliver)
+        state.queuedMessages.clear()
     }
 
     fun handle(civilization: String, arguments: JsonObject): JsonObject {
@@ -116,12 +133,13 @@ internal class Communication(private val runtime: GameExecutor) {
 
                 "job_claim", "job_heartbeat", "job_release", "job_report" -> return@accessGame job(civilization, request)
             }
-            if (runtime.communicationPaused) throw PlayerSessionException(PlayerSessionFailure.COMMAND_UNAVAILABLE)
             val requestKey = "$civilization:${checkNotNull(request.requestId)}"
             state.requests[requestKey]?.let {
                 if (it.request != arguments) throw PlayerSessionException(PlayerSessionFailure.REQUEST_ID_CONFLICT)
                 return@accessGame it.response
             }
+            val queueMessage = request.op == "send" && request.nativeAction == null && canQueueMessage(civilization)
+            if (runtime.communicationPaused && !queueMessage) throw PlayerSessionException(PlayerSessionFailure.COMMAND_UNAVAILABLE)
             fun settlementState(): TradeSettlementState {
                 val majors = game.civilizations.filter { it.isMajorCiv() }.sortedBy { it.civID }
                 return TradeSettlementState(
@@ -141,8 +159,13 @@ internal class Communication(private val runtime: GameExecutor) {
                     if (request.mentions.any { it !in audience }) fail()
                     val nativeResult = request.nativeAction?.let { uncivai.player.TurnSession(runtime, civilization).executeDiplomaticAction(it, target) }
                     val message = ChatMessage(shortId("m"), civilization, audience, target == null, checkNotNull(request.text), request.mentions, game.turns, request.nativeAction)
-                    emit(audience, "message", message.recordJson(), (if (target != null) setOf(target) else request.mentions.toSet()) - civilization)
-                    obj("message" to message.recordJson(), "nativeOutcome" to nativeResult)
+                    if (queueMessage) {
+                        state.queuedMessages.add(message)
+                        obj("message" to message.recordJson(), "queued" to true)
+                    } else {
+                        deliver(message)
+                        obj("message" to message.recordJson(), "nativeOutcome" to nativeResult)
+                    }
                 }
 
                 "offer", "revise" -> {
@@ -272,6 +295,7 @@ internal class Communication(private val runtime: GameExecutor) {
         obj(
             "epoch" to runtime.epoch, "civilization" to civilization,
             "context" to communicationContext(runtime, game, game.getCivilization(civilization)), "channels" to participants,
+            "queuedMessages" to state.queuedMessages.filter { it.author == civilization }.map { it.recordJson() },
             "offers" to state.offers.values.flatten().filter { civilization in it.participants }.map { offer ->
                 JsonObject(offer.recordJson() + obj("effective" to (state.acceptedVersions[offer.proposal] == offer.version && accepted(offer, game.turns))))
             },

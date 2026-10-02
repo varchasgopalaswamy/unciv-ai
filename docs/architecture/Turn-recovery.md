@@ -35,6 +35,11 @@ and communication, and captures fresh inputs for concurrent reviews. Every repor
 must finish before the shared phase is released. Reviewers can read only the captured position and planning
 catalogues, and cannot write notebook entries.
 
+Human text messages submitted during review wait in a checkpointed, sender-private
+queue. They enter recipient streams only when the shared phase ends. Restoring a
+checkpoint restores its queue and request receipts together; discarded-attempt
+messages are not delivered.
+
 Pending reviews restart from saved inputs after a stop; completed reports are
 reused. The next gameplay checkpoint includes the completed reports and reviewed
 round marker, so rewinding that turn does not repeat its preceding review phase.
@@ -67,6 +72,10 @@ executor lock. Persistent native changes invalidate player observations and are
 checkpointed before the next operation. End Turn uses the host's durable handoff,
 not a second desktop copy of the game. Replacing the game or changing authority
 invalidates old UI callbacks and rebuilds the human's fixed player view.
+While chat is open, ordinary background changes defer that world rebuild so typing
+keeps its stage, focus and selection. Returning to native controls refreshes the
+world before accepting input. Unsent drafts are retained per conversation within
+the desktop session and cleared when a rewind replaces the game.
 
 The scheduler captures the same start-of-turn checkpoint before human activation.
 There is no human model conversation or memory store to restore. Credential

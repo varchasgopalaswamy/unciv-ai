@@ -99,7 +99,7 @@ object ManagedDesktopProbe {
                         return@Thread
                     }
                     exercise()
-                    Files.writeString(output.resolve("COMPLETE"), "Native input, HTTPS turns, private chat, human consent, quiet reviews and rewind passed.\n")
+                    Files.writeString(output.resolve("COMPLETE"), "Native input, HTTPS turns, chat focus and drafts, queued review messages, human consent and rewind passed.\n")
                     println("MANAGED-DESKTOP-COMPLETE:$output")
                     operator(OperatorRequest("release", lease))
                     onGl { session.exit() }
@@ -212,11 +212,37 @@ object ManagedDesktopProbe {
         onGl { actors().filterIsInstance<SelectBox<*>>().single { it.name == "contacts" }.setSelectedIndex(2) }
         waitFor { onGl { session.unreadCount == 0 } }
         onGl { actors().filterIsInstance<SelectBox<*>>().single { it.name == "contacts" }.setSelectedIndex(1) }
-        onGl { actors().filterIsInstance<TextArea>().first { it.isVisible }.text = "Unsent draft" }
+        val composer = onGl {
+            chatMessage().apply {
+                text = "Unsent draft"
+                setSelection(0, 6)
+                stage.keyboardFocus = this
+            }
+        }
         val previousPanel = onGl { app.screen }
         operator(OperatorRequest("barrier", lease))
-        waitFor { onGl { app.screen is DesktopDiplomacyScreen && app.screen !== previousPanel } }
-        check(onGl { actors().filterIsInstance<TextArea>().any { it.text == "Unsent draft" } })
+        communication("France", "state")
+        onGl {
+            check(app.screen === previousPanel && chatMessage() === composer)
+            check(composer.stage.keyboardFocus === composer && composer.selection == "Unsent" && composer.cursorPosition == 6)
+            checkNotNull(Gdx.input.inputProcessor).keyTyped('!')
+            check(composer.text == "! draft")
+        }
+        // Separate conversation drafts survive leaving the pane, including the selected channel.
+        onGl { selectConversation("Greece"); chatMessage().text = "Greek draft" }
+        onGl { selectConversation("Public"); chatMessage().text = "Public draft" }
+        onGl { selectConversation("Rome"); check(chatMessage().text == "! draft") }
+        click("Back to map")
+        waitFor { onGl { app.screen is WorldScreen && Gdx.input.inputProcessor != null } }
+        onGl { session.openDiplomacy(null) }
+        onGl {
+            check(session.panel?.selectedCivilization == "Rome" && chatMessage().text == "! draft")
+            selectConversation("Greece")
+            check(chatMessage().text == "Greek draft")
+            selectConversation("Public")
+            check(chatMessage().text == "Public draft")
+            selectConversation("Rome")
+        }
         operator(OperatorRequest("unbarrier", lease))
         activate()
         waitFor { onGl { app.screen is DesktopDiplomacyScreen && session.operator.humanCanAct("France", game) } }
@@ -301,8 +327,9 @@ object ManagedDesktopProbe {
         // A stopped attempt restores both native actions and communication, in the same window.
         onGl {
             session.openDiplomacy("Rome")
-            actors().filterIsInstance<TextArea>().first { it.isVisible }.text = "Discard this abandoned draft"
         }
+        click("Chat")
+        onGl { chatMessage().text = "Discard this abandoned draft" }
         operator(OperatorRequest("barrier", lease))
         val epoch = "desktop-rewind"
         operator(OperatorRequest("restore", leaseId = lease, epoch = epoch, checkpoint = saved))
@@ -343,18 +370,44 @@ object ManagedDesktopProbe {
         waitFor { onGl { session.executor.communicationState.trades.activeProposal == null } }
         check(onGl { game.getCivilization("France").gold == 1025 })
         closeNativeDiplomacy()
+        onGl { session.openDiplomacy("Rome") }
+        click("Chat")
+        val activeComposer = onGl {
+            chatMessage().apply {
+                text = "Keep typing"
+                cursorPosition = 4
+                stage.keyboardFocus = this
+            }
+        }
         finish(roman)
         val greek = checkNotNull(activate().playerToken)
         finish(greek)
         check(status().handoff == 3L && status().activeCivilization == "France" && status().turn == 1)
-        waitFor { onGl { app.screen is WorldScreen && world.selectedGameView.civView.getCiv().civID == "France" } }
+        onGl {
+            check(chatMessage() === activeComposer && activeComposer.stage.keyboardFocus === activeComposer)
+            check(activeComposer.cursorPosition == 4)
+            checkNotNull(Gdx.input.inputProcessor).keyTyped('!')
+            check(activeComposer.text == "Keep! typing")
+        }
 
         operator(OperatorRequest("barrier", lease, pauseReason = "STRATEGIC_REVIEW"))
-        waitFor { onGl { session.message().contains("Strategic reviews") && !world.isPlayersTurn } }
-        val denied = communication("France", "send", "to" to "Rome", "text" to "must not send during review")
+        waitFor { onGl { session.message().contains("Strategic reviews") } }
+        val denied = communication("Rome", "send", "to" to "France", "text" to "Agents still wait during review")
         check(denied["error"] != null)
+        onGl { chatMessage().text = "A question queued during review" }
+        click("Send message")
+        check(!communication("Rome", "read").toString().contains("A question queued during review"))
+        check(onGl { chatMessage().text.isEmpty() && actors().filterIsInstance<Label>().any { it.text.contains("Queued ·") } })
         capture("07-review-barrier")
+        click("Back to map")
+        waitFor { onGl { app.screen is WorldScreen && !world.isPlayersTurn && Gdx.input.inputProcessor != null } }
+        onGl { session.openDiplomacy("Rome") }
+        check(onGl { actors().filterIsInstance<Label>().any { it.text.contains("A question queued during review") } })
         operator(OperatorRequest("unbarrier", lease))
+        check(communication("Rome", "read").toString().contains("A question queued during review"))
+        check(!communication("Greece", "read").toString().contains("A question queued during review"))
+        waitFor { onGl { actors().filterIsInstance<Label>().none { it.text.contains("Queued ·") } } }
+        click("Back to map")
         activate()
         waitFor { onGl { world.isPlayersTurn } }
         check(onGl { session.executor.communicationState.telemetry.turns.values.any { it.civilization == "France" && it.nativeActions.isNotEmpty() } })
@@ -396,6 +449,11 @@ object ManagedDesktopProbe {
     private fun actors(): List<Actor> {
         fun descendants(actor: Actor): List<Actor> = listOf(actor) + if (actor is Group) actor.children.flatMap(::descendants) else emptyList()
         return descendants((app.screen as BaseScreen).stage.root)
+    }
+    private fun chatMessage(): TextArea = actors().filterIsInstance<TextArea>().single { it.name == "chat-message" }
+    private fun selectConversation(name: String) {
+        val contacts = actors().filterIsInstance<SelectBox<*>>().single { it.name == "contacts" }
+        contacts.setSelectedIndex(contacts.items.toList().indexOf(name).also { check(it >= 0) })
     }
     private fun click(text: String, prefix: Boolean = false) {
         Thread.sleep(350)
