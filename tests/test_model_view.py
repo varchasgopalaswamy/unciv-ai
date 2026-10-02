@@ -162,8 +162,9 @@ def test_controller_metadata_is_omitted_but_trade_terms_and_player_words_survive
             "counterofferAvailable",
         )
     }
-    expected["inspection"] = {"tool": "trade_read", "arguments": {"proposal": "d1"}}
-    expected["responses"] = [{"tool": "trade_decide", "arguments": {"proposal": "d1", "decision": "accept"}}]
+    expected["proposalId"] = expected.pop("proposal")
+    expected["inspection"] = {"tool": "trade_read", "arguments": {"proposalId": "d1"}}
+    expected["responses"] = [{"tool": "trade_decide", "arguments": {"proposalId": "d1", "decision": "accept"}}]
     assert view["trade"] == view["chat"]["trades"][0] == view["event"]["body"] == expected
     assert "instruction" not in view and "wake" not in view["event"]
     assert "mode" not in view["options"] and "initiationRule" not in view["options"]
@@ -183,12 +184,12 @@ def test_controller_metadata_is_omitted_but_trade_terms_and_player_words_survive
 
 def test_trade_templates_require_pending_terms_and_explicit_availability():
     summary = {"proposal": "dabc12", "author": "Egypt", "partner": "Rome", "status": "PENDING"}
-    assert model_view(summary)["inspection"] == {"tool": "trade_read", "arguments": {"proposal": "dabc12"}}
+    assert model_view(summary)["inspection"] == {"tool": "trade_read", "arguments": {"proposalId": "dabc12"}}
     assert "responses" not in model_view(summary)
     terms = {**summary, "acceptAvailable": False, "declineAvailable": True, "withdrawAvailable": False}
     projected = model_view(terms)
     assert projected["responses"] == [
-        {"tool": "trade_decide", "arguments": {"proposal": "dabc12", "decision": "decline"}}
+        {"tool": "trade_decide", "arguments": {"proposalId": "dabc12", "decision": "decline"}}
     ]
     assert model_view(projected) == projected
     # Re-projecting a closed or restricted response removes stale templates.
@@ -197,7 +198,7 @@ def test_trade_templates_require_pending_terms_and_explicit_availability():
     assert "inspection" not in closed and "responses" not in closed
     own_offer = model_view({**summary, "withdrawAvailable": True})
     assert own_offer["responses"] == [
-        {"tool": "trade_decide", "arguments": {"proposal": "dabc12", "decision": "withdraw"}}
+        {"tool": "trade_decide", "arguments": {"proposalId": "dabc12", "decision": "withdraw"}}
     ]
 
 

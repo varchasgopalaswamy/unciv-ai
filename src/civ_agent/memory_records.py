@@ -192,6 +192,16 @@ class MemorySearch(BoundaryModel):
     offset: NonnegativeInt = 0
 
 
+class InitiativeDecision(BoundaryModel):
+    initiative: Annotated[int, Field(ge=1, le=2)] = Field(description="One-based initiative number in that review.")
+    decision: Literal["acted", "deferred", "rejected"]
+    reason: Annotated[str, Field(min_length=1, max_length=600, pattern=r"\S")]
+
+
+class RecordedInitiativeDecision(InitiativeDecision):
+    reviewTurn: NonnegativeInt
+
+
 class Intent(BoundaryModel):
     reason: Annotated[str, Field(min_length=1, max_length=1000, pattern=r"\S")]
     strategy: str = Field(default="", max_length=160)
@@ -309,6 +319,9 @@ class DecisionRecord(BoundaryModel):
     type: Literal["decision"]
     turn: NonnegativeInt | None
     intent: Intent | None
+    initiativeDecisions: list[RecordedInitiativeDecision] = Field(
+        default_factory=list, exclude_if=lambda value: not value
+    )
     command: JsonObject
     outcome: Literal["pending", "confirmed", "rejected", "uncertain"]
     receipt: JsonObject | None
@@ -364,6 +377,9 @@ class SummaryAction(BoundaryModel):
     command: JsonObject
     receipt: JsonObject | None = None
     settlement: JsonObject | None = None
+    initiativeDecisions: Annotated[list[RecordedInitiativeDecision], Field(max_length=2)] = Field(
+        default_factory=list, exclude_if=lambda value: not value
+    )
 
 
 class MemoryAssessment(BoundaryModel):

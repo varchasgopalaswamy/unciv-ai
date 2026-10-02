@@ -13,6 +13,8 @@ class VictoryStatisticsIntegrationTest {
 
     @Test fun `statistics honor tabs and freeze demographics while validating selections`() = runProbe("settings")
 
+    @Test fun `total score is absent from player statistics and cannot be requested`() = runProbe("score")
+
     private fun runProbe(stage: String) {
         val root = Files.createTempDirectory("victory-statistics-")
         try {

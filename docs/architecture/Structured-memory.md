@@ -5,10 +5,10 @@ observations come first in the changing part of the turn preload; historical
 strategy follows as data. Stable instructions and capabilities remain at the
 front for prompt caching.
 
-**Memory format 8 requires fresh private stores in a new match directory.** Older
+**Memory format 9 requires fresh private stores in a new match directory.** Older
 databases and checkpoints are rejected without modification. There is no legacy
 runtime or automatic migration. Preserve old match directories for auditing.
-Restart and turn rewind work within format 8.
+Restart and turn rewind work within format 9.
 
 SQLite remains authoritative, with SQLAlchemy Core owning access. Immutable
 observations, decisions, receipts, notebook revisions and communication
@@ -41,9 +41,10 @@ review as provisional decisions.
 ### Routine strategic review
 
 A separate read-only adviser prepares an opening plan before the first move on
-turn 0, then works asynchronously after turns K, 2K, and so on (`--review-interval`,
-default 5). Opening reviews run concurrently using each civilization's own
-starting view and ability profile; its first gameplay turn waits for its report.
+turn 0, then works after all players finish rounds K, 2K, and so on
+(`--review-interval`, default 5). Reviews run concurrently during a shared pause
+in gameplay and communication. Opening reviews use each civilization's own
+starting view and ability profile; play waits for all reports.
 The adviser compares every enabled victory type,
 remaining requirements, timing assumptions and observed rivals. Every path leads
 with a useful intermediate objective, required investment and expected payoff
@@ -61,14 +62,14 @@ reviewer.
 Projections can describe development milestones and conditions, with detail
 suited to the game stage and evidence.
 
-The service captures opening inputs while connecting all players, before gameplay
-starts; periodic inputs are captured before the native handoff. Opening reviews
-have no preceding gameplay job. The reviewer uses the player's model, effort and priority, with frozen
+The service captures fresh inputs during the shared pause, after active
+conversations finish. Opening reviews have no preceding gameplay job.
+The reviewer uses the player's model, effort and priority, with frozen
 read tools, known foreign cities and recent factual actions. Private strategy,
 handoffs and the player's action rationales are excluded. It cannot act, communicate
-or edit memory. Other civilizations can play during the review; this civilization's
-next turn waits until the report is saved and includes it as dated advice at
-dispatch. Following the advice is optional, and it need not be copied into the notebook.
+or edit memory. All reviewers must finish before gameplay and communication resume.
+Subsequent jobs include the latest report as dated advice at dispatch. Following
+the advice is optional, and it need not be copied into the notebook.
 
 Command history uses the receipt's `actionSummary`, generated from native results
 and permitted before/after observations. An acknowledged attack that stopped en
@@ -160,6 +161,13 @@ Consequential actions require a current `intent.reason`. An optional
 reason. The service records its version when available without checking that the
 assessment is active, reviewed or correct. Native legality and command-specific
 freshness checks remain enforced.
+
+`END_TURN` can also include optional `initiativeDecisions`: a unique one-based
+initiative number from the delivered review, `acted`/`deferred`/`rejected`, and reason.
+The service records the delivered report's turn; agents do not supply its date.
+Other commands and tools do not accept this field. These private
+action-history entries make the player's choices inspectable without an extra
+model request or requiring compliance with the adviser.
 
 ## Background work, context and recovery
 

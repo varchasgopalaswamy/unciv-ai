@@ -7,7 +7,9 @@ plans and their measurements are in the [archive](../archive/README.md).
 
 Each scheduled turn starts a fresh conversation. The service prepares permitted
 observations through the same gateway used for explicit reads, selects private
-memory using their current subjects, and then reads the chosen records. Selection
+memory using their current subjects and players named in proposed diplomatic
+initiatives, and then reads the chosen records. Received message participants
+also select relevant notes; prose is never mined for implied facts. Selection
 stays within the memory budget and the dispatch snapshot's contribution boundary.
 Selection freezes the current versions of eligible dispatched records, including
 review notices; startup memory reads deliver those exact versions. Concurrent
@@ -24,7 +26,7 @@ from the current permitted catalogue:
 
 | Job | Prepared definitions |
 | --- | --- |
-| Gameplay | `player_turn`, `player_command`, `memory_read`, `unit_details`, `map_region` |
+| Gameplay | `player_turn`, `player_command`, `memory_read`, `unit_details`, `map_region`, `chat_send` |
 | Communication | `chat_read`, `chat_send`, `memory_update` |
 
 The model can call prepared tools directly. For additional tools, the shared
@@ -33,10 +35,24 @@ and names-only catalogue exploration. Previously read definitions are
 reused. All tools permitted for that job remain discoverable.
 
 `END_TURN` ends all gameplay and memory-tool access. Optional `memory_update`
-remains discoverable during play. A civilization's next gameplay activation waits
-for its pending adviser report, while other civilizations can act. The latest
-completed report is supplied once as dated advice before historical memory and
-need not be rewritten as a memory entry.
+remains discoverable during play. Scheduled reviews run concurrently at a shared
+round boundary after all players finish; gameplay and communication wait for the
+reports. The latest completed report is supplied once as dated advice before
+historical memory and need not be rewritten as a memory entry. It compares concrete
+plans, an optional preference and reconsideration conditions, alongside next steps,
+diplomatic initiatives and brief outlooks for each enabled victory.
+
+Gameplay can initiate useful diplomatic contact without an incoming message.
+Communication jobs pursue the civilization's objectives through questions,
+counteroffers and further contacts when worthwhile. Both receive dated advice
+and relevant private notes. Negotiation guidance covers cooperation, gathering
+information, threats, concealment, bluffs and breaking nonbinding promises,
+weighing incentives, relative gains, credibility and retaliation. Silence is
+valid; jobs finish when awaiting a reply or further communication has little value.
+Existing message events wake subsequent exchanges; no periodic diplomatic job
+or mandatory message count is added. Private plans enter the player's context,
+not outgoing messages. Useful unresolved questions and intentions use the
+existing notebook; routine receipts and acknowledgements need no duplicate notes.
 
 The command schema is a compact envelope of possible
 fields; inspected choices supply copyable arguments. The server still validates
@@ -115,11 +131,11 @@ serialized character measurements, not token counts or a live gameplay benchmark
 they describe the earlier prompt layout. Memory writing is now optional during
 play; there is no post-turn writing schema or mandatory strategy write.
 
-A [background strategic review](Structured-memory.md#routine-strategic-review)
-runs before the first move on turn 0, then at the end of every K turns, starting
-at K (`--review-interval`, default 5). Opening reviews run concurrently from each
-civilization's own starting view and ability profile. Each civilization waits for
-its own report before its first gameplay turn.
+A [shared strategic review](Structured-memory.md#routine-strategic-review)
+runs before the first move on turn 0, then after all players finish every Kth
+round, starting at K (`--review-interval`, default 5). Reviews run concurrently
+from each civilization's permitted view. Gameplay and communication stay paused
+until all reports are ready. Opening views include starting locations and abilities.
 It uses the player's model and effort, a captured permitted position and planning
 catalogues, and read-only frozen detail tools. Known foreign cities are summarized
 with observed capital status and visibility; current defenses require visibility.
@@ -133,6 +149,9 @@ chooses its own actions and can reject the recommendation. Reports arrive before
 the next own gameplay turn starts, rather than midway through its conversation.
 Players need not copy them into a strategy entry. Only one review can be pending
 for each civilization.
+Relevant diplomatic initiatives can be marked acted, deferred or rejected with a
+reason in the existing end-turn intent. This optional private history field adds
+no model call and does not constrain gameplay.
 
 Default chat includes effective promises and their latest pending revisions,
 pending trades and active agreements. It retains exact terms and version IDs.

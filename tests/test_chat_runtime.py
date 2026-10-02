@@ -62,7 +62,12 @@ def test_polling_health_reports_failures_and_recovery_without_losing_cursor(tmp_
             host.responses.put_nowait(
                 {
                     "events": [
-                        {"id": 1, "kind": "message", "wake": False, "body": {"author": "Greece", "text": "Hello"}}
+                        {
+                            "id": 1,
+                            "kind": "message",
+                            "wake": False,
+                            "body": {"message": "m1", "author": "Greece", "text": "Hello"},
+                        }
                     ],
                     "nextCursor": 1,
                     "hasMore": False,
@@ -111,7 +116,12 @@ class MailboxHost:
 
     def post(self, text, wake=True):
         self.events.append(
-            {"id": len(self.events) + 1, "kind": "message", "wake": wake, "body": {"author": "Greece", "text": text}}
+            {
+                "id": len(self.events) + 1,
+                "kind": "message",
+                "wake": wake,
+                "body": {"message": f"m{len(self.events) + 1}", "author": "Greece", "text": text},
+            }
         )
         self.changed.set()
 
@@ -132,6 +142,7 @@ class MailboxHost:
         if arguments["op"] == "state":
             return {
                 "civilization": "Rome",
+                "channels": ["Rome", "Greece"],
                 "epoch": "g1",
                 "peaceVersion": 0,
                 "offers": [],
@@ -244,6 +255,7 @@ def test_chat_batches_and_replies_while_planning_job_is_held(tmp_path, monkeypat
             )
             await asyncio.sleep(0.1)
             assert jobs.purposes == []  # A quiet mailbox costs no model invocation.
+            await service.review_phase({"epoch": "g1", "gameTurn": 0, "stage": "release"})
             await service.start(
                 {
                     "activationId": "planning",
@@ -269,9 +281,13 @@ def test_chat_batches_and_replies_while_planning_job_is_held(tmp_path, monkeypat
             await asyncio.wait_for(jobs.planning_started.wait(), 2)
             await service.heartbeat("planning")
             assert host.gameplay_heartbeats == 1
+            await service.review_phase({"epoch": "g1", "gameTurn": 0, "stage": "hold"})
             host.post("Can we discuss peace?")
             host.post("I can offer a luxury.")
             host.post("Let me know what you need.")
+            await asyncio.sleep(1.2)
+            assert jobs.purposes == ["gameplay"] and host.sent == []
+            await service.review_phase({"epoch": "g1", "gameTurn": 0, "stage": "release"})
             await asyncio.wait_for(jobs.replied.wait(), 3)
             assert jobs.purposes == ["gameplay", "communication"]
             for method, parameters in jobs.calls:

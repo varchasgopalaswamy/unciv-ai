@@ -495,7 +495,7 @@ class TurnArchive:
                     structured["actions"].append(
                         {
                             "decision": f"action{len(structured['actions']) + 1}",
-                            "action": action_text(arguments, receipt),
+                            "action": action_text(arguments, receipt, transport="player_command"),
                             "reason": arguments.get("intent", {}).get("reason", ""),
                             "outcome": "confirmed",
                             "command": arguments,

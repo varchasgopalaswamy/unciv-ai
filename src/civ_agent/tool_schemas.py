@@ -2,7 +2,7 @@
 
 from typing import Annotated, Literal
 
-from pydantic import Field, field_validator
+from pydantic import BaseModel, Field, RootModel, field_validator
 from pydantic.json_schema import SkipJsonSchema
 
 from civ_agent.game_commands import Position
@@ -18,6 +18,9 @@ from civ_agent.memory_records import (
 )
 from civ_agent.observations import DETAIL_MODELS, DetailResult, EntityDetails
 from civ_agent.schemas import BoundaryModel, NonnegativeInt
+
+ShortReference = Annotated[str, Field(min_length=1, max_length=16, pattern=r"^[A-Za-z0-9_-]+$")]
+PlayerName = Annotated[str, Field(min_length=1, max_length=128, pattern=r"\S")]
 
 
 class MovementPreview(EntityDetails):
@@ -58,7 +61,7 @@ class Partner(BoundaryModel):
 
 
 class Proposal(BoundaryModel):
-    proposal: str
+    proposalId: ShortReference = Field(description="Copy the short proposal ID from a received offer or trade.")
 
 
 class Agreement(BoundaryModel):
@@ -88,7 +91,9 @@ class TradeOffer(Partner, WithIntent):
     receive: Annotated[list[TradeItem], Field(max_length=64)]
     # Defaults make these fields optional without accepting explicit JSON null.
     # exclude_unset preserves omission when forwarding arguments to the host.
-    proposal: str = ""
+    counterofferTo: ShortReference = Field(
+        default="", description="Existing trade ID to counter, after trade_read. Omit when creating a new offer."
+    )
 
 
 class TradeDecision(Proposal, WithIntent):
@@ -128,35 +133,68 @@ class NativeDiplomaticResponse(BoundaryModel):
 
 
 class ChatSend(BoundaryModel):
-    text: str
-    to: str = ""
-    mentions: list[str] = Field(default_factory=list)
+    text: Annotated[str, Field(min_length=1, max_length=4000, pattern=r"\S")]
+    to: PlayerName = ""
+    mentions: Annotated[list[PlayerName], Field(max_length=100)] = Field(default_factory=list)
     intent: Intent | None = None
+
+    @field_validator("mentions")
+    @classmethod
+    def unique_mentions(cls, value):
+        if len(set(value)) != len(value):
+            raise ValueError("Mention each player only once")
+        return value
+
+
+class GameplayChatSend(ChatSend):
     nativeAction: (
         Annotated[NativeDenouncement | NativeDemand | NativeDiplomaticResponse, Field(discriminator="kind")] | None
     ) = None
 
 
 class CommitmentOffer(WithIntent):
-    participants: list[str]
-    terms: str
-    conditions: str
+    participants: Annotated[list[PlayerName], Field(min_length=2, max_length=100)] = Field(
+        description="All participants, including your own civilization. Use names from chatRecipients."
+    )
+    terms: Annotated[str, Field(min_length=1, max_length=4000, pattern=r"\S")]
+    conditions: Annotated[str, Field(min_length=1, max_length=2000, pattern=r"\S")]
     kind: Literal["peace", "other"]
-    expiresTurn: int = 0
-    sources: list[str] = Field(default_factory=list)
-    proposal: str = ""
+    expiresTurn: Annotated[int, Field(ge=0, le=2147483647)] = 0
+    sources: Annotated[list[ShortReference], Field(max_length=100)] = Field(
+        default_factory=list, description="Optional message IDs visible to every participant; copy IDs, not citations."
+    )
+    reviseProposalId: ShortReference = Field(
+        default="", description="Your existing commitment ID to revise. Omit when creating a new commitment."
+    )
+
+    @field_validator("sources")
+    @classmethod
+    def unique_sources(cls, value):
+        if len(set(value)) != len(value):
+            raise ValueError("List each message ID only once")
+        return value
 
 
-class CommitmentDecision(Proposal, WithIntent):
-    decision: Literal["accept", "withdraw", "reconsider"]
-    reason: str = ""
+class AcceptCommitment(Proposal, WithIntent):
+    decision: Literal["accept"]
+
+
+class ChangeCommitment(Proposal, WithIntent):
+    decision: Literal["withdraw", "reconsider"]
+    publicReason: Annotated[str, Field(min_length=1, max_length=1000, pattern=r"\S")] = Field(
+        description="Explanation shared with the participants. intent.reason is private."
+    )
+
+
+class CommitmentDecision(RootModel[Annotated[AcceptCommitment | ChangeCommitment, Field(discriminator="decision")]]):
+    model_config = {"json_schema_extra": {"type": "object"}}
 
 
 class FriendshipOffer(Partner, WithIntent):
     pass
 
 
-TOOL_MODELS: dict[str, type[BoundaryModel]] = {
+TOOL_MODELS: dict[str, type[BaseModel]] = {
     **DETAIL_MODELS,
     "movement_preview": MovementPreview,
     "player_inspect": PlayerInspection,
@@ -171,13 +209,18 @@ TOOL_MODELS: dict[str, type[BoundaryModel]] = {
     "history_read": HistoryRead,
     "chat_read": ChatRead,
     "chat_history": ChatHistory,
-    "chat_send": ChatSend,
+    "chat_send": GameplayChatSend,
     "commitment_offer": CommitmentOffer,
     "commitment_decide": CommitmentDecision,
     "memory_read": MemoryRead,
     "memory_search": MemorySearch,
     "memory_update": MemoryUpdate,
 }
+
+
+def tool_model(name: str, purpose: str) -> type[BaseModel]:
+    return ChatSend if name == "chat_send" and purpose != "gameplay" else TOOL_MODELS[name]
+
 
 TOOL_OUTPUT_MODELS: dict[str, type[BoundaryModel]] = {
     **dict.fromkeys(DETAIL_MODELS, DetailResult),

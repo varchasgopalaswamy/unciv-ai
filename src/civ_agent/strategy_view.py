@@ -40,8 +40,6 @@ class StrategyView:
                 state = (self.progress.get("modelStatus") or {}).get("state")
                 if state in {"waiting", "retrying"}:
                     label = state.capitalize()
-            if self.pending["status"] == "PREPARED":
-                label = "Preparing"
             return f"{label} T{self.pending['turn']}"
         return "Completed" if self.report else "No review yet"
 
@@ -189,7 +187,7 @@ def report_text(view: StrategyView) -> Text:
     text = Text()
 
     def section(title, body):
-        text.append(title + "\n", style="bold")
+        text.append(visible_text(title) + "\n", style="bold")
         text.append(visible_text(body) + "\n\n")
 
     if view.error:
@@ -204,24 +202,39 @@ def report_text(view: StrategyView) -> Text:
         return text
     report, review = view.report, view.report["review"]
     section("Assessment", report["assessment"])
+    preferred = review["preferredPlan"]
+    section(
+        "Recommendation",
+        "No preferred plan; the choice remains open."
+        if preferred is None
+        else f"Plan {preferred} · {review['plans'][preferred - 1]['name']}",
+    )
+    for number, plan in enumerate(review["plans"], 1):
+        section(f"Plan {number} · {plan['name']}", plan["objective"])
+        for label, field in (
+            ("Investment", "investment"),
+            ("Projection", "projection"),
+            ("Relative outcome", "relativeOutcome"),
+            ("Risks and uncertainties", "risks"),
+        ):
+            section(label, plan[field])
+    section("Reconsider when", review["reconsiderWhen"])
     section("Short-term plan", "\n".join(f"• {step}" for step in review["shortTerm"]))
     section("Mid-term plan", review["midTerm"])
     section("Long-term plan", review["longTerm"])
-    for title, field in (
-        ("Victory race", "race"),
-        ("Other approaches", "alternative"),
-        ("Disrupting rivals", "disruption"),
-        ("Diplomacy and agreements", "agreements"),
-    ):
-        section(title, review[field])
-    for path in review["victoryPaths"]:
-        text.append(visible_text(path["victory"]) + " victory\n", style="bold cyan")
-        # Display every saved report field without reinterpreting the advice.
-        order = ("objective", "investment", "payoff", "remaining", "projection", "rivals")
-        for field in sorted(path, key=lambda field: (order.index(field) if field in order else len(order), field)):
-            if field == "victory":
-                continue
-            text.append(visible_text(field.capitalize()) + ": ", style="bold")
-            text.append(visible_text(path[field]) + "\n")
-        text.append("\n")
+    diplomacy = review["diplomacy"]
+    section("Diplomacy", diplomacy["assessment"])
+    if not diplomacy["initiatives"]:
+        section("Diplomatic initiatives", "No initiative proposed.")
+    for initiative in diplomacy["initiatives"]:
+        section("Diplomatic initiative · " + ", ".join(initiative["players"]), initiative["objective"])
+        for label, field in (
+            ("Their incentives", "incentives"),
+            ("Approach", "approach"),
+            ("Next step", "nextStep"),
+            ("Reconsider when", "reconsiderWhen"),
+        ):
+            section(label, initiative[field])
+    for path in review["victoryOutlooks"]:
+        section(path["victory"] + " victory", path["outlook"])
     return text

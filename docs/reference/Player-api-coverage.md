@@ -485,9 +485,9 @@ Sources: [VictoryScreen][victory-ui], [progress][victory-progress],
 | `OurStatus` | Available | `victory_progress`: paths/milestones, policy counts, capital objectives, spaceship parts. |
 | `Global` | Available | Permitted known rivals/native next milestones; not arbitrary hidden progress. |
 | `Illustration` | Engine/UI | Artwork is presentation; scientific assembly counts represented. Custom illustrations outside scope. |
-| `Demographics` | Available | Own rank/value, native aggregates/permitted identities; settings enforced. |
-| `Rankings` | Available | Known living players/native metrics/short trends; Force includes native treasury adjustment. |
-| `Charts` | Available | Bounded/paginated history/current values with settings/visibility enforced. |
+| `Demographics` | Available | Own rank/value, native aggregates/permitted identities; settings enforced. Total score intentionally excluded. |
+| `Rankings` | Available | Known living players/native metrics/short trends; Force includes native treasury adjustment. Total score intentionally excluded. |
+| `Charts` | Available | Bounded/paginated history/current values with settings/visibility enforced. Total score intentionally excluded. |
 | `Replay` | Available | `player_inspect(REPLAY,turn)` pages territorial history inside the currently explored map; undisclosed owners remain unnamed. |
 | Vote/abstain/results | Available | `CAST_DIPLOMATIC_VOTE`, `ABSTAIN_DIPLOMATIC_VOTE`, `ACKNOWLEDGE_DIPLOMATIC_RESULTS`; private ballots/permitted results. |
 | Win/lose result | Available | `player_result`, terminal delivery, host winner/all-major-player scores. |

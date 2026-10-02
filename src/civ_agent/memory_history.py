@@ -8,10 +8,14 @@ from civ_agent.memory_snapshots import load_snapshot, record_bodies
 from civ_agent.memory_store import RecordStore
 
 
-def action_text(command, receipt, settlement=None):
-    if "kind" in command and receipt and "error" not in receipt:
+def action_text(command, receipt, settlement=None, *, transport):
+    native = transport == "player_command"
+    confirmed = receipt and "error" not in receipt
+    if native and confirmed:
         return receipt["actionSummary"]
-    kind = command.get("kind") or command.get("op", "action")
+    # Social offers also have a `kind` (peace or other). The journal's
+    # transport identifies the response contract, not the payload's field names.
+    kind = command["kind"] if native else command["op"]
     target = command.get("target") or command.get("partner") or command.get("to") or ""
     selection = command.get("selection") or ""
     if kind in {"trade_offer", "trade_decide", "friendship_offer"}:
@@ -20,21 +24,29 @@ def action_text(command, receipt, settlement=None):
         if trade.get("status") == "ENACTED" and (trade.get("outcome") or result.get("outcome")):
             return "Engine agreement enacted"
         return f"Diplomatic proposal {trade.get('status', 'recorded').lower()}"
+    if kind in {"offer", "revise"} and confirmed:
+        offer = receipt["offer"]
+        verb = "Offered" if kind == "offer" else "Revised"
+        participants = ", ".join(offer["participants"])
+        return f"{verb} {offer['kind']} commitment {offer['proposal']} v{offer['version']} between {participants}"
     label = " ".join(part for part in (kind.replace("_", " ").capitalize(), str(target), str(selection)) if part)
-    return f"Requested {label}" if "kind" in command else label
+    return f"Requested {label}" if native or not confirmed else label
 
 
-def action_record(key, decision):
+def action_record(key, decision, *, transport):
     intent = decision.get("intent") or {}
     reason = intent.get("reason", "")
     return {
         "decision": key,
-        "action": action_text(decision["command"], decision["receipt"], decision.get("settlement")),
+        "action": action_text(
+            decision["command"], decision["receipt"], decision.get("settlement"), transport=transport
+        ),
         "reason": reason,
         "outcome": decision["outcome"],
         "command": decision["command"],
         "receipt": decision["receipt"],
         "settlement": decision.get("settlement"),
+        **({"initiativeDecisions": decision["initiativeDecisions"]} if decision.get("initiativeDecisions") else {}),
     }
 
 
@@ -117,7 +129,7 @@ class SummaryReader:
         actions, unresolved = [], []
         for row in rows:
             decision = self.decisions[row["decision"]]["body"]
-            entry = action_record(row["decision"], decision)
+            entry = action_record(row["decision"], decision, transport=row["transport"])
             actions.append(entry)
             if decision["outcome"] in {"pending", "uncertain", "rejected"}:
                 unresolved.append(entry["action"] + ": " + decision["outcome"])

@@ -25,6 +25,8 @@ class ChatRuntime:
         self.listener = None
         self.worker = None
         self.running = False
+        self.held = True
+        self.dispatching = False
         self.settings = {}
         self.timeout = 300
         self.pending = asyncio.Event()
@@ -79,8 +81,6 @@ class ChatRuntime:
                 # subscription reconnect or an automatic model retry.
                 await service.gateway.resume_run()
             await service.flush_telemetry()
-            if identity.get("context", {}).get("turn") == 0:
-                await service.reviews.prepare_opening(self.connection, self.epoch, self.settings, self.timeout)
             await service.io.call(service.memory.allow_communication_retry)
             if await service.io.call(service.memory.has_wake):
                 self.pending.set()
@@ -90,8 +90,7 @@ class ChatRuntime:
         self.listener = asyncio.create_task(self.receive())
         self.worker = asyncio.create_task(self.dispatch())
         self.subscription.update(status="CONNECTING", consecutiveFailures=0)
-        service.reviews.start()
-        return {"connected": True, "epoch": self.epoch}
+        return {"connected": True, "epoch": self.epoch, "reviewInterval": service.reviews.interval}
 
     async def social(self, op, **fields):
         if self.connection is None:
@@ -165,13 +164,15 @@ class ChatRuntime:
             await asyncio.sleep(1)  # Batch in application code, never in model context.
             self.pending.clear()
             if (
-                self.service.gateway.paused
+                self.held
+                or self.service.gateway.paused
                 or self.service.gateway.checkpoint_requested
                 or self.service.gateway.run_failure
                 or not await self.service.io.call(self.service.memory.has_wake)
             ):
                 continue
             job = job_id()
+            self.dispatching = True
             try:
                 grant = await self.social("job_claim", job=job, purpose="communication")
                 if not grant["granted"]:
@@ -179,8 +180,9 @@ class ChatRuntime:
                     await asyncio.sleep(1)
                     continue
                 try:
-                    async with asyncio.timeout(self.timeout):
-                        await self.compute(job)
+                    if not self.held:
+                        async with asyncio.timeout(self.timeout):
+                            await self.compute(job)
                     self.error = None
                 finally:
                     with contextlib.suppress(OSError, ValueError, TimeoutError, aiohttp.ClientError):
@@ -191,6 +193,8 @@ class ChatRuntime:
                 self.error = "COMMUNICATION_JOB_FAILED"
                 # A failure does not cause an unbounded stream of paid retries.
                 # The next new event or operator resume can trigger reconsideration.
+            finally:
+                self.dispatching = False
 
     async def compute(self, id):
         service = self.service
@@ -261,7 +265,7 @@ class ChatRuntime:
             service.executable, workspace, service.gateway_url, service.gateway_ca_file, notification
         )
         self.jobs[id] = (job, process)
-        prompt = f"Handle {service.civilization}'s newly received communication."
+        prompt = f"Pursue {service.civilization}'s diplomatic objectives in light of newly received communication."
 
         owner = asyncio.current_task()
         assert owner is not None
@@ -363,6 +367,8 @@ class ChatRuntime:
 
     async def close(self):
         await self.service.reviews.close()
+        self.held = True
+        self.service.gateway.reviewing = False
         self.running = False
         self.subscription["status"] = "DISCONNECTED"
         for task in (self.listener, self.worker):

@@ -18,6 +18,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from civ_agent.action_templates import add_decision_commands, research_change
 from civ_agent.civilization_state import CivilizationState, StaleAssumptions, StateConflict
+from civ_agent.diplomacy_tools import argument_error, commitment_problem, unavailable
 from civ_agent.game_commands import add_combat_commands, command_arguments, command_error, command_schema
 from civ_agent.mcp_results import RESULT_FORMAT_HEADER, STRUCTURED_RESULT_FORMAT, canonical_tool_result
 from civ_agent.memory_records import (
@@ -55,7 +56,7 @@ from civ_agent.state_updates import apply_overview_update, changed_details, over
 from civ_agent.strategic_review import frozen_read
 from civ_agent.tactical_review import strategy_review, tactical_review
 from civ_agent.telemetry import JobAccounting
-from civ_agent.tool_schemas import TOOL_MODELS, TOOL_OUTPUT_MODELS
+from civ_agent.tool_schemas import TOOL_MODELS, TOOL_OUTPUT_MODELS, tool_model
 
 BOOKKEEPING = {"requestId", "epoch", "revision", "reviewId"}
 NATIVE_TRADE_GAMEPLAY_ONLY = "Handle built-in AI trade and friendship decisions during your gameplay turn."
@@ -149,6 +150,13 @@ class JobAccess:
     gameplay_ended: asyncio.Event = field(default_factory=asyncio.Event)
     model_stopped: asyncio.Event = field(default_factory=asyncio.Event)
     review_inputs: JsonObject | None = None
+    outgoing_start: int = 0
+    seen_messages: set[str] = field(default_factory=set)
+    pending_calls: dict[asyncio.Task, JsonObject] = field(default_factory=dict)
+    negotiation_calls: dict[asyncio.Task, JsonObject] = field(default_factory=dict)
+    completed_actions: dict[asyncio.Task, JsonObject] = field(default_factory=dict)
+    negotiation_pending: asyncio.Event = field(default_factory=asyncio.Event)
+    suspend_for_negotiation: bool = False
 
     def waiting_seconds(self) -> float:
         return self.completed_wait + (time.monotonic() - self.wait_started if self.wait_started is not None else 0)
@@ -159,6 +167,7 @@ class ProposalGateway:
         self.memory, self.io, self.workspace = memory, io, workspace
         self.jobs: dict[str, JobAccess] = {}
         self.paused = False
+        self.reviewing = False
         self.checkpoint_requested = False
         self.checkpoint_released = asyncio.Event()
         self.checkpoint_released.set()
@@ -168,23 +177,26 @@ class ProposalGateway:
         self.deferred_completions = []
         self.accounting: JobAccounting | None = None
         self.history = None
-        self.prepare_review = None
-        self.confirm_review = None
         self.run_failure = memory.run_failure()
         self.failed = asyncio.Event()
         if self.run_failure:
             self.failed.set()
 
     @asynccontextmanager
-    async def admit(self):
+    async def admit(self, *, review=False):
         """Drain accepted calls before capture; later calls wait without model retries."""
-        while not self.checkpoint_released.is_set():
-            await self.checkpoint_released.wait()
+        await self._wait_for_admission(review=review)
         self.calls_in_flight += 1
         try:
             yield
         finally:
             self.calls_in_flight -= 1
+
+    async def _wait_for_admission(self, *, review=False):
+        # MCP initialization and tool calls must use the same barrier rule.
+        # Reviewers have frozen inputs and may connect during the quiet phase.
+        while not self.checkpoint_released.is_set() and not (review and self.reviewing):
+            await self.checkpoint_released.wait()
 
     def request_checkpoint(self):
         self.checkpoint_requested = True
@@ -248,12 +260,19 @@ class ProposalGateway:
             await self.sync_failure()
             raise
         job = JobAccess(id, purpose, epoch, connection, snapshot, owns_connection=owns_connection)
+        job.outgoing_start = await self.io.call(self.memory.outgoing_position)
         self.jobs[job.token] = job
         return job
 
     async def close(self, job: JobAccess, completed: bool):
         job.closed = True
         self.jobs.pop(job.token, None)
+        pending = list(job.pending_calls)
+        for task in pending:
+            task.cancel()
+        await asyncio.gather(*pending, return_exceptions=True)
+        job.negotiation_calls.clear()
+        job.completed_actions.clear()
         if job.review_inputs is not None:
             return
         if job.owns_connection:
@@ -272,13 +291,17 @@ class ProposalGateway:
     def check(self, job: JobAccess, *, ended_allowed=False):
         if self.run_failure:
             raise StateConflict(self.run_failure["error"])
-        if self.paused or job.closed or self.jobs.get(job.token) is not job:
+        if (
+            (self.paused and not (self.reviewing and job.review_inputs is not None))
+            or job.closed
+            or self.jobs.get(job.token) is not job
+        ):
             raise StateConflict("JOB_PAUSED_OR_EXPIRED")
         if job.gameplay_fenced and not ended_allowed:
             raise StateConflict("TURN_ENDED: finish this conversation")
 
     async def tools(self, job: JobAccess):
-        async with self.admit():
+        async with self.admit(review=job.review_inputs is not None):
             return await self._tools(job)
 
     async def _tools(self, job: JobAccess):
@@ -417,7 +440,9 @@ class ProposalGateway:
                         "openWorldHint": False,
                     },
                     "inputSchema": (
-                        MemoryContributions if name == "memory_update" and purpose != "gameplay" else TOOL_MODELS[name]
+                        MemoryContributions
+                        if name == "memory_update" and purpose != "gameplay"
+                        else tool_model(name, purpose)
                     ).model_json_schema(),
                 }
             )
@@ -459,7 +484,7 @@ class ProposalGateway:
         )
         add(
             "trade_offer",
-            "Propose binding terms from trade_options when canInitiate is true. Copy the offered name, amount and duration for Embassy, Agreement, City, Treaty and WarDeclaration; choose resource and gold amounts within availability. WarDeclaration in give makes YOU declare; in receive makes the PARTNER declare. Both sides can declare on the same target for joint war. Inspect your declaration warnings. Social promises never restrict legal game actions. Treaties must match on both sides; at war include mutual Peace Treaty. Research Agreement amount is each player's signing cost after immediate gold transfers. give/receive are from YOUR perspective. Set proposal to counter a trade inspected with trade_read when counterofferAvailable is true. No effect until acceptance. Avoid duplicate proposals; changed circumstances or terms may justify a new proposal.",
+            "Propose binding terms from trade_options when canInitiate is true. Copy the offered name, amount and duration for Embassy, Agreement, City, Treaty and WarDeclaration; choose resource and gold amounts within availability. WarDeclaration in give makes YOU declare; in receive makes the PARTNER declare. Both sides can declare on the same target for joint war. Inspect your declaration warnings. Social promises never restrict legal game actions. Treaties must match on both sides; at war include mutual Peace Treaty. Research Agreement amount is each player's signing cost after immediate gold transfers. give/receive are from YOUR perspective. Set counterofferTo to counter a trade inspected with trade_read when counterofferAvailable is true. No effect until acceptance. Avoid duplicate proposals; changed circumstances or terms may justify a new proposal.",
         )
         add(
             "friendship_offer",
@@ -483,7 +508,12 @@ class ProposalGateway:
         )
         add(
             "chat_send",
-            "Send authenticated text. Omit to for public chat; mention players to notify them. Optional nativeAction explicitly executes DENOUNCE or ISSUE_DEMAND against target civilization (selection=type from native.availableDemandsToSend), or RESPOND_DIPLOMACY against an owned alert handle with an offered selection. Available demands are actions you may initiate, not incoming requests. Read player_turn first: native diplomacy requires your active turn and current observations. Inspect the received alert's nativeDiplomacy sender, event, options, declaresWar and consequences before responding. Ordinary text has no game effects. Built-in AI only understands explicit native requests. Trade and peace use trade tools.",
+            "Send authenticated text to chatRecipients from chat_read. Omit to for public chat; mention players to notify them. Ordinary text has no game effects. Trade and peace use trade tools. "
+            + (
+                "Optional nativeAction executes DENOUNCE or ISSUE_DEMAND against a civilization (selection=type from native.availableDemandsToSend), or RESPOND_DIPLOMACY against an owned alert handle with an offered selection. Available demands are actions you may initiate, not incoming requests. Read player_turn first; these actions require your active turn. Inspect nativeDiplomacy sender, event, options, declaresWar and consequences before responding. Built-in AI only understands explicit native requests."
+                if purpose == "gameplay"
+                else ""
+            ),
         )
         add(
             "commitment_offer",
@@ -552,10 +582,32 @@ class ProposalGateway:
             job.details_read.append(query)
         return {**value, "query": query.model_dump()}
 
+    async def invoke(self, job: JobAccess, name: str, arguments: JsonObject, call_id: str) -> JsonObject:
+        """Accepted MCP calls belong to the job, even if its model disconnects.
+
+        Interruption can cancel an entire parallel code-mode batch. Retain every
+        accepted call so the controller can deliver its result when it resumes.
+        """
+        self.check(job, ended_allowed=True)
+        if job.negotiation_pending.is_set():
+            return {"error": "GAMEPLAY_SUSPENDED", "applied": False}
+        task = asyncio.create_task(self.call(job, name, arguments, call_id))
+        job.pending_calls[task] = {"tool": name, "arguments": copy.deepcopy(arguments)}
+
+        def finished(task):
+            job.pending_calls.pop(task, None)
+            # The HTTP caller may have gone away; the controller still observes
+            # failures through negotiation_calls or the gateway's durable fence.
+            if not task.cancelled():
+                task.exception()
+
+        task.add_done_callback(finished)
+        return await asyncio.shield(task)
+
     async def call(
         self, job: JobAccess, name: str, arguments: JsonObject, call_id: str, *, source: str = "tool"
     ) -> JsonObject:
-        async with self.admit():
+        async with self.admit(review=job.review_inputs is not None):
             return await self._admitted_call(job, name, arguments, call_id, source=source)
 
     async def _admitted_call(
@@ -609,8 +661,6 @@ class ProposalGateway:
                 if job.handoff_at is None:
                     job.handoff_at = time.monotonic()
                 job.gameplay_ended.set()
-                if self.confirm_review is not None:
-                    await self.confirm_review(job.id)
 
     async def _call_once(
         self, job: JobAccess, name: str, arguments: JsonObject, call_id: str, *, startup: bool = False
@@ -736,7 +786,7 @@ class ProposalGateway:
         job.pending_invalidated.clear()
         for query in invalidated:
             if query.tool == "trade_read":
-                job.trades.pop(query.arguments["proposal"], None)
+                job.trades.pop(query.arguments["proposalId"], None)
         job.detail_revision = revision
         return result
 
@@ -854,6 +904,14 @@ class ProposalGateway:
                     raise StateConflict("NEGOTIATION_STATUS_UNAVAILABLE")
                 if not active:
                     return waited
+                if job.suspend_for_negotiation and job.pending_calls:
+                    # An earlier action's response may have reached the code
+                    # cell but never been printed before it was interrupted.
+                    # Rebase the settled response instead of referring to an
+                    # overview delta the model might not have received.
+                    job.delivered_overview = None
+                    job.negotiation_calls.update(job.pending_calls)
+                    job.negotiation_pending.set()
                 waited = True
         finally:
             job.completed_wait += time.monotonic() - job.wait_started
@@ -867,7 +925,7 @@ class ProposalGateway:
                 return result
             await self.wait_for_gameplay(job)
             # Return the settled canonical terms, even when this is recovery of a lost offer response.
-            final = await self._call(job, "trade_read", {"proposal": result["trade"]["proposal"]}, "settlement")
+            final = await self._call(job, "trade_read", {"proposalId": result["trade"]["proposal"]}, "settlement")
             return {
                 **final,
                 "outcome": final["trade"].get("outcome"),
@@ -915,6 +973,39 @@ class ProposalGateway:
                 }
         return value
 
+    @staticmethod
+    def same_conversation(arguments: JsonObject, message: JsonObject) -> bool:
+        target = arguments.get("to")
+        return not message["public"] and target in message["participants"] if target else message["public"]
+
+    async def chat_read(self, job: JobAccess, arguments: JsonObject) -> JsonObject:
+        # Mark only messages actually returned; concurrent sends stay unseen.
+        social = await self.read_social(
+            job,
+            include_context=arguments.get("includeContext", False),
+            include_history=arguments.get("includeHistory", False),
+        )
+        recent = await self.io.call(self.memory.snapshot, job.purpose)
+        events = recent["events"]
+        await self.io.call(
+            self.memory.refresh_memory, job.id, ["event:" + str(event["id"]) for event in events], recent["cursor"]
+        )
+        delivered = {event["body"]["message"] for event in events if event["kind"] == "message"}
+        outgoing = await self.io.call(self.memory.outgoing_messages, limit=20, echo_cursor=recent["cursor"])
+        messages = [
+            row["message"] for row in outgoing if row["message"]["message"] not in delivered | job.seen_messages
+        ]
+        job.seen_messages.update(delivered)
+        job.seen_messages.update(message["message"] for message in messages)
+        return public_result(
+            self.register_external_read(
+                job,
+                "chat_read",
+                arguments,
+                {**social, "messages": events, **({"recentSentMessages": messages} if messages else {})},
+            )
+        )
+
     async def _call(
         self, job: JobAccess, name: str, arguments: JsonObject, call_id: str, *, startup: bool = False
     ) -> JsonObject:
@@ -944,7 +1035,11 @@ class ProposalGateway:
             except ValidationError as error:
                 return memory_argument_error(arguments, error)
         elif name in TOOL_MODELS:
-            arguments = validate(TOOL_MODELS[name], arguments).model_dump(by_alias=True, exclude_unset=True)
+            model = tool_model(name, job.purpose)
+            try:
+                arguments = model.model_validate(arguments).model_dump(by_alias=True, exclude_unset=True)
+            except ValidationError as error:
+                return argument_error(model, arguments, error)
         if name == "player_command":
             try:
                 arguments = command_arguments(arguments)
@@ -953,6 +1048,18 @@ class ProposalGateway:
         intent = arguments.pop("intent", None)
         if intent is not None:
             intent = validate(Intent, intent).model_dump()
+        initiative_decisions = arguments.pop("initiativeDecisions", [])
+        if initiative_decisions:
+            advice = job.memory.get("strategicAdvice")
+            available = len(advice["review"]["diplomacy"]["initiatives"]) if advice else 0
+            if any(entry["initiative"] > available for entry in initiative_decisions):
+                return {
+                    "error": "INVALID_INITIATIVE",
+                    "applied": False,
+                    "recoverable": True,
+                    "availableInitiatives": list(range(1, available + 1)),
+                    "instruction": "Use initiative numbers from the delivered report. Decisions are optional.",
+                }
         if name == "history_read":
             return public_result(
                 await self.io.call(self.memory.history, arguments["turn"], arguments.get("offset", 0), job=job.id)
@@ -977,7 +1084,7 @@ class ProposalGateway:
             return public_result(delivered)
         if name in {"trade_options", "trade_read", "agreement_list", "agreement_read"}:
             value = (
-                await self.read_trade(job, arguments["proposal"])
+                await self.read_trade(job, arguments["proposalId"])
                 if name == "trade_read"
                 else await job.connection.tool("player_communication", {**arguments, "op": name, "epoch": job.epoch})
             )
@@ -998,7 +1105,7 @@ class ProposalGateway:
                 elif name == "trade_options":
                     scope = "trade_options/" + arguments["partner"]
                 else:
-                    scope = "trade/" + arguments["proposal"]
+                    scope = "trade/" + arguments["proposalId"]
                 if name.startswith("agreement_"):
                     value["evidence"] = "observation:" + scope
                 version = await self.io.call(self.memory.observe, scope, value, job.id)
@@ -1008,7 +1115,7 @@ class ProposalGateway:
                     "body": native_observation(value),
                 }
                 if name == "trade_read":
-                    job.trades[arguments["proposal"]] = copy.deepcopy(value["trade"])
+                    job.trades[arguments["proposalId"]] = copy.deepcopy(value["trade"])
                 value = self.register_external_read(job, name, arguments, value)
             return public_result(value)
         if name in READ_TOOLS:
@@ -1059,22 +1166,13 @@ class ProposalGateway:
                     value = self.register_external_read(job, name, arguments, value)
             return public_result(value)
         if name == "chat_read":
-            social = await self.read_social(
-                job,
-                include_context=arguments.get("includeContext", False),
-                include_history=arguments.get("includeHistory", False),
-            )
-            recent = await self.io.call(self.memory.snapshot, job.purpose)
-            events = recent["events"]
-            await self.io.call(
-                self.memory.refresh_memory, job.id, ["event:" + str(event["id"]) for event in events], recent["cursor"]
-            )
-            return public_result(self.register_external_read(job, name, arguments, {**social, "messages": events}))
+            return await self.chat_read(job, arguments)
         if name == "chat_history":
             page = await self.io.call(self.memory.chat_history, arguments.get("with"), arguments.get("query", ""))
             await self.io.call(
                 self.memory.refresh_memory, job.id, ["event:" + str(event["id"]) for event in page["events"]]
             )
+            job.seen_messages.update(event["body"]["message"] for event in page["events"] if event["kind"] == "message")
             return public_result(page)
         if name == "memory_read":
             chosen = await self.io.call(
@@ -1136,12 +1234,14 @@ class ProposalGateway:
         elif name in {"trade_offer", "trade_decide", "friendship_offer"}:
             payload = {**arguments, "op": name, "epoch": job.epoch}
             selected = None
-            if "proposal" in arguments:
-                selected = job.trades.get(arguments["proposal"])
+            reference = payload.pop("proposalId", None) or payload.pop("counterofferTo", None)
+            if reference:
+                payload["proposal"] = reference
+                selected = job.trades.get(reference)
                 if selected is None:
                     # Diagnose a typo without treating an internal read as the
                     # agent having inspected or consented to the terms.
-                    checked = await self.read_trade(job, arguments["proposal"])
+                    checked = await self.read_trade(job, reference)
                     if "error" in checked:
                         return checked
                     return {
@@ -1149,7 +1249,7 @@ class ProposalGateway:
                         "applied": False,
                         "recoverable": True,
                         "recovery": {
-                            "reads": [trade_inspection(arguments["proposal"])],
+                            "reads": [trade_inspection(reference)],
                             "instruction": "Read this proposal's exact terms, then make a new decision.",
                         },
                     }
@@ -1188,15 +1288,50 @@ class ProposalGateway:
                     }
                 else:
                     payload.pop("nativeAction", None)
+                    social = job.social if job.social is not None else await self.read_social(job, delivered=False)
+                    recipients = social["chatRecipients"]
+                    if arguments.get("to") and arguments["to"] not in recipients:
+                        return unavailable(
+                            "to",
+                            "Ordinary chat needs a player who can receive it. Use trade tools or native diplomatic actions for built-in AI.",
+                            chatRecipients=recipients,
+                        )
+                    audience = (
+                        {self.memory.civilization, arguments["to"]}
+                        if arguments.get("to")
+                        else {self.memory.civilization, *recipients}
+                    )
+                    if any(name not in audience for name in arguments.get("mentions", [])):
+                        return unavailable("mentions", "Mention only players receiving this message.")
+                if not payload.get("to"):
+                    payload.pop("to", None)
             elif name == "commitment_offer":
-                payload["op"] = "revise" if arguments.get("proposal") else "offer"
+                social = job.social if job.social is not None else await self.read_social(job, delivered=False)
+                problem = commitment_problem(self.memory.civilization, arguments, social)
+                if problem:
+                    return problem
+                reference = payload.pop("reviseProposalId", None)
+                payload["op"] = "revise" if reference else "offer"
+                if reference:
+                    payload["proposal"] = reference
             else:
                 payload["op"] = payload.pop("decision")
+                payload["proposal"] = payload.pop("proposalId")
+                if "publicReason" in payload:
+                    payload["reason"] = payload.pop("publicReason")
                 if job.social is None or not job.social_read:
-                    raise StateConflict("Read the current terms with chat_read before deciding.")
-                offers = [offer for offer in job.social["offers"] if offer["proposal"] == arguments.get("proposal")]
+                    return {
+                        "error": "PROPOSAL_NOT_OBSERVED",
+                        "applied": False,
+                        "recoverable": True,
+                        "recovery": {
+                            "reads": [{"tool": "chat_read", "arguments": {}}],
+                            "instruction": "Read the current commitment terms before deciding.",
+                        },
+                    }
+                offers = [offer for offer in job.social["offers"] if offer["proposal"] == arguments["proposalId"]]
                 if not offers:
-                    raise StateConflict("PROPOSAL_NOT_OBSERVED")
+                    return unavailable("proposalId", "Copy the proposalId from a current commitment in chat_read.")
                 selected = (
                     offers[-1]
                     if payload["op"] == "accept"
@@ -1235,7 +1370,7 @@ class ProposalGateway:
         if name == "trade_offer":
             war_terms = arguments.get("give", []) + arguments.get("receive", [])
         if name == "trade_decide":
-            selected = job.trades[arguments["proposal"]]
+            selected = job.trades[arguments["proposalId"]]
             other = selected["partner"] if selected["author"] == self.memory.civilization else selected["author"]
             war_terms = [clause["item"] for clause in selected.get("clauses", [])]
         diplomatic_subjects = {other} | {item["name"] for item in war_terms if item.get("type") == "WarDeclaration"}
@@ -1248,9 +1383,27 @@ class ProposalGateway:
         # serialized separately, never monopolizing the event inbox.
         async with self.dispatch:
             self.check(job)
+            if name == "chat_send" and not arguments.get("nativeAction"):
+                unseen = await self.io.call(self.memory.outgoing_messages, job.outgoing_start)
+                fresh = [
+                    row["message"]
+                    for row in unseen
+                    if row["job"] != job.id
+                    and row["message"]["message"] not in job.seen_messages
+                    and self.same_conversation(arguments, row["message"])
+                ]
+                if fresh:
+                    job.seen_messages.update(message["message"] for message in fresh)
+                    return {
+                        "error": "CONVERSATION_UPDATED",
+                        "applied": False,
+                        "recoverable": True,
+                        "messages": fresh,
+                        "instruction": "You already sent these messages from another conversation view. Reconsider whether this new message is still needed. No additional read is required.",
+                    }
             try:
                 request = await self.io.call(
-                    self.memory.queue, job.id, transport, payload, dependencies, call_id, intent
+                    self.memory.queue, job.id, transport, payload, dependencies, call_id, intent, initiative_decisions
                 )
             except StaleAssumptions:
                 if name != "trade_decide" or payload["decision"] != "accept":
@@ -1278,9 +1431,6 @@ class ProposalGateway:
             if request["result"] is not None:
                 return json.loads(request["result"])
             self.check(job)
-            if transport == "player_command" and payload.get("kind") == "END_TURN":
-                if self.prepare_review is not None:
-                    await self.prepare_review(job, call_id)
             self.in_flight += 1
             try:
                 value = await job.connection.tool(transport, json.loads(request["payload"]))
@@ -1293,6 +1443,14 @@ class ProposalGateway:
                 raise
             finally:
                 self.in_flight -= 1
+            if job.suspend_for_negotiation and "error" not in value:
+                task = asyncio.current_task()
+                assert task is not None
+                job.completed_actions[task] = {
+                    "tool": name,
+                    "arguments": copy.deepcopy(arguments),
+                    "result": public_result(value),
+                }
             if (
                 (
                     transport == "player_command"
@@ -1322,8 +1480,7 @@ class ProposalGateway:
         if "id" not in body:
             return web.Response(status=202)
         try:
-            while not self.checkpoint_released.is_set():
-                await self.checkpoint_released.wait()
+            await self._wait_for_admission(review=job.review_inputs is not None)
             self.check(job, ended_allowed=True)
             if method == "initialize":
                 result = {
@@ -1337,7 +1494,7 @@ class ProposalGateway:
                 result = {"tools": await self.tools(job)}
             elif method == "tools/call":
                 parameters = body.get("params", {})
-                value = await self.call(job, parameters["name"], parameters.get("arguments", {}), str(body["id"]))
+                value = await self.invoke(job, parameters["name"], parameters.get("arguments", {}), str(body["id"]))
                 result = tool_result(value)
             else:
                 return web.json_response(

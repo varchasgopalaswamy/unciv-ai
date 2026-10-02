@@ -97,7 +97,7 @@ def test_native_offer_returns_pending_without_waiting_for_the_next_ai_turn(tmp_p
 
 @pytest.mark.parametrize(
     "tool,arguments",
-    [("trade_decide", {"proposal": "n1", "decision": decision}) for decision in ("accept", "decline", "withdraw")]
+    [("trade_decide", {"proposalId": "n1", "decision": decision}) for decision in ("accept", "decline", "withdraw")]
     + [
         (
             "trade_offer",
@@ -108,7 +108,7 @@ def test_native_offer_returns_pending_without_waiting_for_the_next_ai_turn(tmp_p
                 **extra,
             },
         )
-        for extra in ({}, {"proposal": "n1"})
+        for extra in ({}, {"counterofferTo": "n1"})
     ]
     + [("friendship_offer", {"partner": "China"})],
 )
@@ -126,7 +126,7 @@ def test_native_trade_decisions_belong_to_gameplay(tmp_path, tool, arguments):
             # exact native terms, cannot act on the gameplay agent's request.
             for job in (chat, game):
                 await gateway.call(job, "player_turn", {}, "turn")
-                read = await gateway.call(job, "trade_read", {"proposal": "n1"}, "terms")
+                read = await gateway.call(job, "trade_read", {"proposalId": "n1"}, "terms")
                 for choice in ("accept", "decline", "withdraw", "counteroffer"):
                     assert read["trade"][choice + "Available"] is (job is game)
                 options = await gateway.call(job, "trade_options", {"partner": "China"}, "options")
@@ -164,13 +164,13 @@ def test_communication_inbox_excludes_native_offers_but_gameplay_keeps_them(tmp_
             for purpose, expected in (("communication", ["d1"]), ("gameplay", ["n1", "d1"])):
                 job = await gateway.open(purpose, purpose, "g1", host, {})
                 prepared = await prepare_startup(gateway, job)
-                assert [t["proposal"] for t in prepared["reads"]["chat_read"]["trades"]] == expected
+                assert [t["proposalId"] for t in prepared["reads"]["chat_read"]["trades"]] == expected
                 assert [t["inspection"] for t in prepared["reads"]["chat_read"]["trades"]] == [
-                    {"tool": "trade_read", "arguments": {"proposal": proposal}} for proposal in expected
+                    {"tool": "trade_read", "arguments": {"proposalId": proposal}} for proposal in expected
                 ]
                 inbox = await gateway.call(job, "chat_read", {"includeHistory": include_history}, "inbox")
-                assert [t["proposal"] for t in inbox["trades"]] == expected
-                assert [e["body"]["proposal"] for e in inbox["messages"]] == expected
+                assert [t["proposalId"] for t in inbox["trades"]] == expected
+                assert [e["body"]["proposalId"] for e in inbox["messages"]] == expected
             assert memory.chat_history("China")["events"][0]["body"]["proposal"] == "n1"
         finally:
             await io.close()
@@ -184,7 +184,7 @@ def test_explicit_chat_action_uses_observed_revision_and_replays_once(tmp_path):
         gateway = ProposalGateway(CivilizationState(tmp_path / "private", "Rome"), io, tmp_path / "workspace")
         host = NativeHost()
         try:
-            job = await gateway.open("chat", "communication", "g1", host, {})
+            job = await gateway.open("chat", "gameplay", "g1", host, {})
             args = {
                 "to": "Greece",
                 "text": "We denounce you.",
@@ -198,7 +198,7 @@ def test_explicit_chat_action_uses_observed_revision_and_replays_once(tmp_path):
             await gateway.call(job, "player_turn", {}, "observe")
             result = await gateway.call(job, "chat_send", args, "native")
             assert host.writes[-1]["nativeAction"]["revision"] == "rev1"
-            assert result["nativeOutcome"]["status"] == "ENACTED" and job.observation is None
+            assert result["nativeOutcome"]["status"] == "ENACTED" and job.observation is not None
             assert await gateway.call(job, "chat_send", args, "native") == result
             assert len(host.writes) == 2
         finally:

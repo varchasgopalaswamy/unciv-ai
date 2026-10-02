@@ -27,7 +27,7 @@ async def exercise_trade(civilization, communication, view, call):
         else []
     )
     counter = {
-        "proposal": "d1",
+        "counterofferTo": "d1",
         "partner": "Rome",
         "give": peace + [gpt, gold],
         "receive": peace + [silk],
@@ -35,7 +35,7 @@ async def exercise_trade(civilization, communication, view, call):
     }
     if communication:
         await call("memory_search", {"type": "strategy"})
-        await call("trade_read", {"proposal": "d1"})
+        await call("trade_read", {"proposalId": "d1"})
         if civilization == "Greece":
             await call(
                 "memory_update",
@@ -59,7 +59,7 @@ async def exercise_trade(civilization, communication, view, call):
         else:
             accepted = await call(
                 "trade_decide",
-                {"proposal": "d1", "decision": "accept", "intent": {"reason": "Advance the test objective"}},
+                {"proposalId": "d1", "decision": "accept", "intent": {"reason": "Advance the test objective"}},
             )
             assert accepted["trade"]["status"] == "ENACTED"
         return {"behavior": "complete"}
@@ -76,7 +76,7 @@ async def exercise_trade(civilization, communication, view, call):
             )
             assert settled["trade"]["status"] == "ENACTED"
         else:
-            settled = await call("trade_read", {"proposal": "d1"})
+            settled = await call("trade_read", {"proposalId": "d1"})
             assert settled["trade"]["status"] == "ENACTED"
     await call("player_turn", {})
     return await call("player_command", {"kind": "END_TURN"})
@@ -109,7 +109,7 @@ async def main():
     async def connection(request):
         websocket = web.WebSocketResponse()
         await websocket.prepare(request)
-        current: dict[str, Any] = {"thread": None, "turn": None, "task": None}
+        current: dict[str, Any] = {"thread": None, "turn": None, "task": None, "rpcId": 0}
 
         async def complete(status):
             await websocket.send_json(
@@ -211,12 +211,26 @@ async def main():
                 report = {
                     "assessment": "Develop the starting position before choosing a victory path.",
                     "review": {
-                        "victoryPaths": [],
+                        "plans": [
+                            {
+                                "name": "Explore",
+                                "objective": "Learn about the starting area.",
+                                "investment": "Use the starting units to scout before committing production.",
+                                "projection": "Explore first, then choose an expansion and development plan.",
+                                "relativeOutcome": "Better information could help claim useful land before rivals.",
+                                "risks": "Explorers may encounter hostile units.",
+                            }
+                        ],
+                        "preferredPlan": 1,
+                        "victoryOutlooks": [
+                            {"victory": victory, "outlook": "Reassess after scouting."}
+                            for victory in params["outputSchema"]["$defs"]["VictoryOutlook"]["properties"][
+                                "victory"
+                            ].get("enum", [])
+                        ],
                         "shortTerm": ["Explore the starting area."],
-                        **{
-                            field: "Reassess after scouting."
-                            for field in ("race", "alternative", "disruption", "agreements", "midTerm", "longTerm")
-                        },
+                        "diplomacy": {"assessment": "Reassess after scouting.", "initiatives": []},
+                        **{field: "Reassess after scouting." for field in ("reconsiderWhen", "midTerm", "longTerm")},
                     },
                 }
                 await websocket.send_json(
@@ -233,10 +247,21 @@ async def main():
                 await complete("completed")
                 return
             text = " ".join(item.get("text", "") for item in params["input"])
+            continuation = text.startswith("The negotiation has finished.")
+            if continuation:
+                results = json.loads(text.split("\n", 1)[1])["toolResults"]
+                assert results[0]["tool"] == "trade_offer"
+                assert results[0]["result"]["trade"]["status"] == "ENACTED"
+                record("test/negotiation_result", results[0])
+                text = current["gameplayPrompt"]
             match = re.search(r"Play (.*?)'s current game turn", text)
             communication = match is None
+            if not communication:
+                current["gameplayPrompt"] = text
             if communication:
-                match = re.search(r"Handle (.*?)'s newly received communication", text)
+                match = re.search(
+                    r"Pursue (.*?)'s diplomatic objectives in light of newly received communication", text
+                )
             assert match is not None
             common = dict(threadId=current["thread"], turnId=current["turn"])
             await websocket.send_json(
@@ -270,18 +295,16 @@ async def main():
             gateway = tomllib.loads(mcp)["mcp_servers"]["civ"]
             gateway_url = gateway["url"]
             async with ClientSession() as client:
-                rpc_id = 0
 
                 async def call(name, arguments_value):
-                    nonlocal rpc_id
-                    rpc_id += 1
+                    current["rpcId"] += 1
                     async with client.post(
                         gateway_url,
                         ssl=context,
                         headers={**gateway.get("http_headers", {}), "Authorization": "Bearer " + token},
                         json={
                             "jsonrpc": "2.0",
-                            "id": rpc_id,
+                            "id": current["rpcId"],
                             "method": "tools/call",
                             "params": {"name": name, "arguments": arguments_value},
                         },
@@ -329,7 +352,9 @@ async def main():
                     )
                 if scenario.get("testManyEvents") and not os.environ.get("CIV_TEST_MANY_EVENTS"):
                     await publish_history(common)
-                if scenario.get("name") == "CONCURRENT_TRADE_TEST":
+                if continuation:
+                    result = await call("player_command", {"kind": "END_TURN"})
+                elif scenario.get("name") == "CONCURRENT_TRADE_TEST":
                     assert "recovery.reads" in current["instructions"]
                     result = await exercise_trade(match.group(1), communication, view, call)
                 else:
@@ -374,6 +399,7 @@ async def main():
             elif method == "turn/interrupt":
                 if current["task"]:
                     current["task"].cancel()
+                    await asyncio.gather(current["task"], return_exceptions=True)
                 await complete("interrupted")
             elif method not in {"thread/unsubscribe", "thread/archive"}:
                 await websocket.send_json(

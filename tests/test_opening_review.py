@@ -53,7 +53,9 @@ class OpeningHost(ReviewHost):
                     "messages": [],
                 }
             if args["op"] == "read":
-                await asyncio.Future()
+                if args.get("waitSeconds"):
+                    await asyncio.Future()
+                return {"events": [], "nextCursor": args["cursor"], "hasMore": False}
             return {"granted": True}
         if name in {"research_details", "policy_details"}:
             field = "technologies" if name == "research_details" else "policies"
@@ -81,8 +83,8 @@ def test_opening_reviews_run_concurrently_then_each_civ_uses_its_own_report(tmp_
             services[civ], factories[civ], hosts[civ[0] * 43] = service, factory, OpeningHost(factory)
         monkeypatch.setattr("civ_agent.chat_runtime.HostConnection", lambda url, token, *args, **kwargs: hosts[token])
         try:
-            # Connecting each service captures its own initial state but does not
-            # wait for its model. All three reviews must reach RUNNING together.
+            # Connecting waits for the shared phase. All three reviews must
+            # reach RUNNING before any player makes its first move.
             for civ, service in services.items():
                 await service.chat.connect(
                     {
@@ -93,6 +95,16 @@ def test_opening_reviews_run_concurrently_then_each_civ_uses_its_own_report(tmp_
                         "timeoutSeconds": 30,
                     }
                 )
+            assert all(not f.review_started.is_set() for f in factories.values())
+            for service in services.values():
+                await service.review_phase({"epoch": "epoch-one", "gameTurn": 0, "stage": "hold"})
+                assert (await service_recovery.barrier(service, True))["ready"]
+            await asyncio.gather(
+                *(
+                    service.review_phase({"epoch": "epoch-one", "gameTurn": 0, "stage": "start"})
+                    for service in services.values()
+                )
+            )
             await asyncio.wait_for(asyncio.gather(*(f.review_started.wait() for f in factories.values())), 3)
             for civ, service in services.items():
                 task = service.reviews.store.pending()
@@ -105,7 +117,9 @@ def test_opening_reviews_run_concurrently_then_each_civ_uses_its_own_report(tmp_
                 assert "Opening position before the first move, turn 0" in prompt.user
                 assert civ + "_ABILITY" in prompt.user
                 assert all(other + "_ABILITY" not in prompt.user for other in services if other != civ)
-                assert (await service.turn_readiness({"epoch": "epoch-one", "gameTurn": 0}))["pendingReview"]
+                assert (await service.review_phase({"stage": "status", "epoch": "epoch-one", "gameTurn": 0}))[
+                    "pendingReview"
+                ]
                 claim = next(args for name, args in hosts[civ[0] * 43].requests if args.get("op") == "job_claim")
                 assert claim["purpose"] == "review" and "parentJob" not in claim
                 assert factories[civ].calls[0][1]["model"] == "gpt-5.6-luna"
@@ -132,21 +146,17 @@ def test_opening_reviews_run_concurrently_then_each_civ_uses_its_own_report(tmp_
             assert factory.review_process is not None
             await factory.review_process.finish_review()
             async with asyncio.timeout(3):
-                while rome.reviews.store.pending() is not None:
+                while rome.reviews.store.pending() is not None or rome.reviews.active:
                     await asyncio.sleep(0.01)
-            assert (await rome.turn_readiness({"epoch": "epoch-one", "gameTurn": 0}))["pendingReview"] is None
+            assert (await rome.review_phase({"stage": "status", "epoch": "epoch-one", "gameTurn": 0}))[
+                "pendingReview"
+            ] is None
             assert all(services[civ].reviews.store.pending() is not None for civ in ("Greece", "France"))
-            factory.complete = False
-            await rome.start(payload)
-            async with asyncio.timeout(3):
-                while rome.status()["phase"] != "RUNNING":
-                    await asyncio.sleep(0.01)
-            user = [p for method, p in factory.calls if method == "turn/start"][-1]["input"][0]["text"]
-            assert "Latest completed strategic advice" in user and '"asOfTurn":0' in user
-            assert all(services[civ].reviews.store.pending() is not None for civ in ("Greece", "France"))
-            # Completed opening advice is not captured or charged again on reconnect.
+            with pytest.raises(ServiceError, match="REVIEW_PHASE_ACTIVE"):
+                await rome.start(payload)
+            # Repeated preparation does not capture or pay for completed work.
             previous = len(hosts["R" * 43].requests)
-            await rome.reviews.prepare_opening(hosts["R" * 43], "epoch-one", {}, 30)
+            await rome.reviews.prepare_round(0)
             assert len(hosts["R" * 43].requests) == previous
 
             # Freeze an unfinished peer review and restore it with its attempt
@@ -158,7 +168,36 @@ def test_opening_reviews_run_concurrently_then_each_civ_uses_its_own_report(tmp_
                 greece, {"id": saved["id"], "sha256": saved["sha256"], "epoch": "restored"}
             )
             assert restored["pendingReviews"]
-            assert (await greece.turn_readiness({"epoch": "restored", "gameTurn": 0}))["pendingReview"]["attempts"] == 1
+            greece.chat.epoch = "restored"
+            assert (await greece.review_phase({"stage": "status", "epoch": "restored", "gameTurn": 0}))[
+                "pendingReview"
+            ]["attempts"] == 1
+            # Restart only the interrupted reviewer from its frozen input.
+            greece.chat.connection = hosts["G" * 43]
+            factories["Greece"].review_started.clear()
+            await greece.review_phase({"stage": "start", "epoch": "restored", "gameTurn": 0})
+            await asyncio.wait_for(factories["Greece"].review_started.wait(), 3)
+            assert factories["Greece"].review_process is not None
+            await factories["Greece"].review_process.finish_review()
+            assert factories["France"].review_process is not None
+            await factories["France"].review_process.finish_review()
+            async with asyncio.timeout(3):
+                while any(
+                    service.reviews.store.pending() is not None or service.reviews.active
+                    for service in services.values()
+                ):
+                    await asyncio.sleep(0.01)
+            # All reports are ready; the operator releases the shared phase.
+            for service in services.values():
+                await service.review_phase({"epoch": service.chat.epoch, "gameTurn": 0, "stage": "release"})
+                await service_recovery.barrier(service, False)
+            factory.complete = False
+            await rome.start(payload)
+            async with asyncio.timeout(3):
+                while rome.status()["phase"] != "RUNNING":
+                    await asyncio.sleep(0.01)
+            user = [p for method, p in factory.calls if method == "turn/start"][-1]["input"][0]["text"]
+            assert "Latest completed strategic advice" in user and '"asOfTurn":0' in user
         finally:
             await asyncio.gather(*(service.close() for service in services.values()))
 

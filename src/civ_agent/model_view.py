@@ -8,6 +8,7 @@ contract and linked field audit in docs/architecture/Agent-context.md.
 import json
 from typing import Any
 
+from civ_agent.diplomacy_tools import commitment_responses
 from civ_agent.protocol import JsonObject
 
 NARRATIVE_ALERTS = {
@@ -93,7 +94,7 @@ def player_alert(alert: JsonObject) -> JsonObject:
 
 
 def trade_inspection(proposal: str) -> JsonObject:
-    return {"tool": "trade_read", "arguments": {"proposal": proposal}}
+    return {"tool": "trade_read", "arguments": {"proposalId": proposal}}
 
 
 def model_view(value: Any) -> Any:
@@ -105,18 +106,24 @@ def model_view(value: Any) -> Any:
     value = dict(value)
     # Match owned response shapes: words such as "deadline" and "mode" can also
     # occur in player-authored promises and must not be stripped indiscriminately.
+    if {"civilization", "offers", "consents", "turn"} <= value.keys() and all(
+        "proposal" in entry for entry in value["offers"] + value["consents"]
+    ):
+        value["offers"] = [dict(offer) for offer in value["offers"]]
+        commitment_responses(value)
     if {"partner", "give", "receive", "canInitiate"} <= value.keys():
         for key in ("mode", "initiationRule", "negotiation"):
             value.pop(key, None)
-    if {"proposal", "author", "partner", "status"} <= value.keys():
+    if {"author", "partner", "status"} <= value.keys() and ("proposal" in value or "proposalId" in value):
+        proposal = value.get("proposal", value.get("proposalId"))
         # Summaries and chat events provide an exact read command. Only explicit
         # availability from an inspected trade can produce decision templates.
         value.pop("inspection", None)
         value.pop("responses", None)
         if value["status"] == "PENDING":
-            value["inspection"] = trade_inspection(value["proposal"])
+            value["inspection"] = trade_inspection(proposal)
             responses = [
-                {"tool": "trade_decide", "arguments": {"proposal": value["proposal"], "decision": decision}}
+                {"tool": "trade_decide", "arguments": {"proposalId": proposal, "decision": decision}}
                 for decision in ("accept", "decline", "withdraw")
                 if value.get(decision + "Available") is True
             ]
@@ -193,6 +200,8 @@ def model_view(value: Any) -> Any:
     # These are native UI trade requests, not player-written chat or offers.
     if {"civilizationId", "leaderName", "give", "receive", "message"} <= value.keys():
         value.pop("message")
+    if "proposal" in value and any(key in value for key in ("version", "author", "op", "error")):
+        value["proposalId"] = value.pop("proposal")
     projected = {key: model_view(item) for key, item in value.items()}
     # Archived MCP replies may contain the same native object in both forms.
     # Rewrite only text blocks proven to be that object, never arbitrary strings

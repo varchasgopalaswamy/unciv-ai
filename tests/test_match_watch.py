@@ -215,10 +215,11 @@ def log_text(app):
 def test_dashboard_shows_review_wait_before_gameplay_starts(tmp_path):
     run, _ = fixture(tmp_path)
     flight = run.pop("inFlight")
-    run["waitingForReview"] = {
-        "civilization": "Rome",
+    run["reviewPhase"] = {
+        "civilizations": ["Rome", "Greece"],
         "gameTurn": 2,
-        "review": {"job": "review-one", "turn": 1, "status": "PENDING", "attempts": 1},
+        "reviewTurn": 1,
+        "stage": "Reviewing",
     }
     put_state(tmp_path, "run", run)
 
@@ -226,14 +227,14 @@ def test_dashboard_shows_review_wait_before_gameplay_starts(tmp_path):
         app = match_watch.MatchWatch(tmp_path, refresh=60)
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
-            assert "Waiting for strategic review from turn 1" in str(app.query_one("#status", Static).render())
-            assert str(app.query_one("#players", DataTable).get_row("Rome")[1]) == "Review wait"
-            run.pop("waitingForReview")
+            assert "Shared review after round 1" in str(app.query_one("#status", Static).render())
+            assert str(app.query_one("#players", DataTable).get_row("Rome")[1]) == "Reviewing"
+            run.pop("reviewPhase")
             run["inFlight"] = flight
             put_state(tmp_path, "run", run)
             await app.poll_records()
             await pilot.pause()
-            assert "Waiting for strategic review" not in str(app.query_one("#status", Static).render())
+            assert "Shared review" not in str(app.query_one("#status", Static).render())
             assert str(app.query_one("#players", DataTable).get_row("Rome")[1]) == "Running"
 
     asyncio.run(check())
@@ -267,6 +268,30 @@ def test_dashboard_model_warning_clears_on_recovery_and_stays_in_history(tmp_pat
             assert "retrying" not in str(app.query_one("#status", Static).render())
             assert str(app.query_one("#players", DataTable).get_row("Rome")[1]) == "Running"
             assert "idle timeout" in log_text(app) and "resumed after 315s" in log_text(app)
+
+    asyncio.run(check())
+
+
+def test_dashboard_distinguishes_negotiation_suspension_from_model_stall(tmp_path):
+    run, _ = fixture(tmp_path)
+    run["inFlight"].update(
+        negotiationWait={"state": "waiting"},
+        modelStatus={"state": "waiting", "message": "No model progress", "elapsedSeconds": 301},
+    )
+    put_state(tmp_path, "run", run)
+
+    async def check():
+        app = match_watch.MatchWatch(tmp_path, refresh=60)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            assert "No model progress" not in str(app.query_one("#status", Static).render())
+            assert str(app.query_one("#players", DataTable).get_row("Rome")[1]) == "Negotiating (model suspended)"
+            run["inFlight"].pop("negotiationWait")
+            run["inFlight"].pop("modelStatus")
+            put_state(tmp_path, "run", run)
+            await app.poll_records()
+            await pilot.pause()
+            assert str(app.query_one("#players", DataTable).get_row("Rome")[1]) == "Running"
 
     asyncio.run(check())
 

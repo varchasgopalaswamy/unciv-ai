@@ -51,8 +51,8 @@ class Agent:
     def call(self, operation, **fields):
         if operation == "health":
             return {"civilization": self.civilization, "runFailure": None}
-        if operation == "turn_readiness":
-            return {"civilization": self.civilization, **fields, "pendingReview": None}
+        if operation == "review_phase":
+            return {"civilization": self.civilization, **fields, "pendingReview": None, "ready": True}
         key = fields["activationId"]
         if operation == "start":
             self.rows[key] = {
@@ -91,6 +91,7 @@ def make_scheduler(tmp_path, state=None, operator=None, agents=None):
     agents = agents or {civ: Agent(civ, operator) for civ in ("Rome", "Greece")}
     state = state or {
         "epoch": "g1",
+        "reviewedBoundary": 0,
         "sessions": {},
         "inFlight": None,
         "invocations": 0,
@@ -101,6 +102,7 @@ def make_scheduler(tmp_path, state=None, operator=None, agents=None):
     }
     scheduler = Scheduler(store, operator, agents, state)
     scheduler.services_connected = True
+    scheduler.round_open = True
     scheduler.state["status"] = "running"
     scheduler.turns.capture = lambda status, scheduler: None
     scheduler.history_for = lambda *args, **kwargs: SimpleNamespace(

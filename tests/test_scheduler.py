@@ -14,9 +14,6 @@ import uuid
 from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from unittest.mock import Mock
-
-import pytest
 
 from civ_agent.monitoring import MonitorStore, path_for, read_collection, read_record
 from civ_agent.protocol import JsonObject
@@ -61,65 +58,6 @@ def test_subscription_health_warnings_are_visible_and_not_repeated(capsys, tmp_p
         agent.subscription.update(failures=3)
         scheduler.check_agent_health()
         assert "3 failures, 0 consecutive" in capsys.readouterr().out
-    finally:
-        scheduler.finalizer.shutdown()
-
-
-@pytest.mark.parametrize("ending", ["pause", "wall_budget", "invocation_budget", "epoch"])
-def test_review_completion_rechecks_stops_and_budgets_before_dispatch(tmp_path, monkeypatch, ending):
-    status = {
-        "epoch": "match",
-        "serverInstance": "server",
-        "activeCivilization": "Rome",
-        "turn": 6,
-        "handoff": 18,
-        "phase": "PAUSED",
-        "modelInvocations": 2,
-    }
-    state = {
-        "epoch": "match",
-        "initialTurn": 5,
-        "invocations": 2,
-        "deadline": time.time() + 60,
-        "limits": {"maxTurns": 2, "maxInvocations": 3},
-    }
-    store = Mock(root=tmp_path)
-    store.requested.return_value = None
-    operator = Mock()
-    operator.call.side_effect = lambda *args, **kwargs: {"status": dict(status)}
-    reads = 0
-
-    def agent_call(operation, **fields):
-        nonlocal reads
-        if operation == "health":
-            return {"civilization": "Rome", "runFailure": None}
-        assert operation == "turn_readiness"
-        reads += 1
-        pending = {"job": "review-5", "turn": 5, "status": "PENDING", "attempts": 1} if reads == 1 else None
-        if reads == 2:
-            if ending == "pause":
-                store.requested.return_value = "pause"
-            elif ending == "wall_budget":
-                state["deadline"] = 0
-            elif ending == "invocation_budget":
-                status["modelInvocations"] = 3
-            else:
-                status["epoch"] = "changed"
-        return {"civilization": "Rome", **fields, "pendingReview": pending}
-
-    agent = Mock(call=agent_call)
-    scheduler = Scheduler(store, operator, {"Rome": agent}, state, color="never")
-    monkeypatch.setattr("civ_agent.scheduler.time.sleep", lambda _: None)
-    try:
-        if ending == "epoch":
-            with pytest.raises(RunnerError, match="Host epoch changed"):
-                scheduler.wait_for_review(dict(status), agent)
-        else:
-            assert not scheduler.wait_for_review(dict(status), agent)
-            assert state["status"] == ("paused" if ending == "pause" else "budget_exhausted")
-        assert state["invocations"] == 2 and "inFlight" not in state
-        assert "waitingForReview" not in state
-        assert all(call.args[0] == "heartbeat" for call in operator.call.call_args_list)
     finally:
         scheduler.finalizer.shutdown()
 
@@ -255,6 +193,7 @@ class FakeHost:
                                     "epoch": owner.epoch,
                                     "revision": "rev1",
                                     "turnReview": {"id": "review1"},
+                                    "rules": {"victoryTypes": []},
                                     "phase": owner.phase,
                                 }
                                 if owner.behaviors and owner.behaviors[0] == "many_events":
@@ -280,11 +219,22 @@ class FakeHost:
                                     "many_events",
                                 }:
                                     owner.handoff += 1
-                                result = {"behavior": behavior, "requestId": arguments["requestId"], "kind": "END_TURN"}
+                                result = {
+                                    "behavior": behavior,
+                                    "requestId": arguments["requestId"],
+                                    "kind": "END_TURN",
+                                    "actionSummary": "Ended turn.",
+                                }
                                 if behavior == "hang":
                                     result["error"] = "TEST_WAIT"
                             elif name == "player_receipt":
                                 result = {"error": "NOT_ENACTED"}
+                            elif name == "victory_progress":
+                                from tests.test_victory_snapshot import position
+
+                                result = position(owner.status()["turn"], names=[])
+                            elif name in {"research_details", "policy_details"}:
+                                result = {"technologies" if name == "research_details" else "policies": []}
                             else:
                                 result = {}
                             code, value = (
@@ -444,7 +394,7 @@ class FakeHost:
     def agent_request(self, civilization, body):
         if body["op"] == "health":
             return 200, {"status": {"civilization": civilization, "runFailure": self.agent_failures.get(civilization)}}
-        if body["op"] == "turn_readiness":
+        if body["op"] == "review_phase":
             self.readiness_checks.append((civilization, body["gameTurn"]))
             pending = self.pending_reviews.get(civilization)
             return 200, {
@@ -452,13 +402,14 @@ class FakeHost:
                     "civilization": civilization,
                     "epoch": body["epoch"],
                     "gameTurn": body["gameTurn"],
-                    "pendingReview": pending
-                    if pending and (pending["turn"] < body["gameTurn"] or pending["turn"] == body["gameTurn"] == 0)
-                    else None,
+                    "ready": True,
+                    "pendingReview": pending if pending and pending["turn"] == max(0, body["gameTurn"] - 1) else None,
                 }
             }
         if body["op"] in {"connect", "disconnect", "barrier", "flush_accounting"}:
-            return 200, {"status": {"connected": True, "ready": True, "paused": body.get("paused", False)}}
+            return 200, {
+                "status": {"connected": True, "ready": True, "paused": body.get("paused", False), "reviewInterval": 5}
+            }
         if body["op"] == "snapshot":
             self.snapshots[civilization, body["id"]] = copy.deepcopy(
                 {key[1]: value for key, value in self.activations.items() if key[0] == civilization}
@@ -722,7 +673,7 @@ class SchedulerTest(unittest.TestCase):
         streams = read_collection(path_for(self.state), "streams")
         self.assertEqual({row["gameTurn"] for row in streams if row["civilization"] == "France"}, {0, 1})
 
-    def test_review_waits_only_for_its_own_next_turn_before_checkpoint_and_activation(self):
+    def test_shared_review_waits_for_last_player_then_blocks_all_next_turns(self):
         self.add_france()
         self.host.handoff = 15  # Start at turn 5 with three players.
         self.host.pending_reviews["Rome"] = {"job": "roman-review", "turn": 5, "status": "PENDING", "attempts": 1}
@@ -737,19 +688,19 @@ class SchedulerTest(unittest.TestCase):
             # Greece and France finish while Rome's review is pending. Waiting
             # exceeds the gameplay timeout and keeps the operator lease alive.
             self.assertEqual([p["civ"] for p in self.host.plays], ["Rome", "Greece", "France"])
-            self.assertFalse(self.host.barrier_active)
+            self.assertTrue(self.host.barrier_active)
             self.assertEqual(len([c for c in self.host.calls if c["op"] == "snapshot"]), 3)
             self.assertGreaterEqual(len([c for c in self.host.calls if c["op"] == "heartbeat"]), 2)
             waiting = self.saved()
-            self.assertEqual(waiting["waitingForReview"]["gameTurn"], 6)
+            self.assertEqual(waiting["reviewPhase"]["gameTurn"], 6)
             self.assertEqual(waiting["invocations"], 3)
             self.assertIsNone(waiting["inFlight"])
             self.host.pending_reviews.clear()
         stdout, stderr = process.communicate(timeout=15)
         self.assertEqual(process.returncode, 0, stdout + stderr)
-        self.assertIn("Waiting for strategic review from turn 5", stdout)
+        self.assertIn("Preparing shared strategic review after round 5", stdout)
         self.assertEqual([p["civ"] for p in self.host.plays], ["Rome", "Greece", "France"] * 2)
-        self.assertNotIn("waitingForReview", self.saved())
+        self.assertNotIn("reviewPhase", self.saved())
 
     def test_opening_review_wait_can_pause_and_resume_before_any_moves(self):
         self.host.pending_reviews["Rome"] = {"job": "roman-review", "turn": 0, "status": "PENDING", "attempts": 1}
@@ -766,7 +717,7 @@ class SchedulerTest(unittest.TestCase):
         stdout, stderr = process.communicate(timeout=8)
         self.assertEqual(process.returncode, 0, stdout + stderr)
         self.assertEqual(self.saved()["status"], "paused")
-        self.assertNotIn("waitingForReview", self.saved())
+        self.assertIn("reviewPhase", self.saved())
         self.assertEqual(len(self.host.plays), 0)
         self.host.pending_reviews.clear()
         resumed = self.run_cli("resume")
@@ -793,7 +744,7 @@ class SchedulerTest(unittest.TestCase):
         self.assertEqual(process.returncode, 2, stdout + stderr)
         self.assertIn("STRATEGIC_REVIEW_ATTEMPTS_EXHAUSTED", stdout)
         self.assertEqual(self.saved()["status"], "needs_inspection")
-        self.assertNotIn("waitingForReview", self.saved())
+        self.assertIn("reviewPhase", self.saved())
         self.assertEqual(len(self.host.plays), 0)
 
     def test_consecutive_rounds_use_fresh_threads_tokens_and_authoritative_handoffs(self):

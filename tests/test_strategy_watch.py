@@ -12,7 +12,7 @@ from civ_agent.civilization_state import CivilizationState
 from civ_agent.match_watch import MatchWatch
 from civ_agent.monitoring import MonitorStore, path_for
 from civ_agent.review_store import ReviewStore
-from civ_agent.strategy_view import StrategyReader
+from civ_agent.strategy_view import StrategyReader, StrategyView, report_text
 from civ_agent.telemetry import JobAccounting
 from civ_agent.turn_archive import civilization_directory_name
 from civ_agent.watch_state import WatchReader
@@ -41,8 +41,9 @@ def prepare(memory, turn):
     job = f"turn{turn}"
     memory.start_job(job, "gameplay", {}, turn)
     store = ReviewStore(memory)
-    store.prepare(job, {"turn": turn, "privateInput": "Do not display frozen inputs"}, {}, 60)
-    store.confirm(job)
+    store.prepare(
+        job, {"turn": turn, "observation": {"turn": turn}, "privateInput": "Do not display frozen inputs"}, {}, 60
+    )
     store.attempt(job, 3)
     memory.finish_job(job, True)
     return job
@@ -50,6 +51,41 @@ def prepare(memory, turn):
 
 def complete(memory, job, text):
     ReviewStore(memory).complete(job, {**assessment(), "assessment": text})
+
+
+def test_report_displays_diplomatic_initiatives_and_empty_choice():
+    report = assessment()
+    diplomacy = report["review"]["diplomacy"]
+    initiative = diplomacy["initiatives"][0]
+    initiative["players"] = ["France\x1b[2J"]
+    text = report_text(StrategyView("Rome", report=report)).plain
+    assert "Diplomatic initiative · France" in text and "\x1b" not in text
+    assert all(
+        initiative[field] in text for field in ("objective", "incentives", "approach", "nextStep", "reconsiderWhen")
+    )
+    diplomacy["initiatives"] = []
+    text = report_text(StrategyView("Rome", report=report)).plain
+    assert diplomacy["assessment"] in text and "No initiative proposed." in text
+
+
+@pytest.mark.parametrize("preferred", [None, 1, 2])
+def test_report_displays_all_plans_outlooks_and_reconsideration(preferred):
+    report = assessment()
+    review = report["review"]
+    review["preferredPlan"] = preferred
+    review["plans"][0]["name"] += "\x1b[2J"
+    text = report_text(StrategyView("Rome", report=report)).plain
+    assert "\x1b" not in text
+    assert ("No preferred plan" in text) == (preferred is None)
+    for number, plan in enumerate(review["plans"], 1):
+        assert f"Plan {number} · " in text
+        assert all(
+            plan[field] in text for field in ("objective", "investment", "projection", "relativeOutcome", "risks")
+        )
+    assert review["reconsiderWhen"] in text
+    for outlook in review["victoryOutlooks"]:
+        assert outlook["victory"] + " victory" in text and outlook["outlook"] in text
+    assert text.index("Recommendation") < text.index("Investment") < text.index("Diplomacy")
 
 
 def telemetry(root, civilization, turn, phase="COMPLETED", *, epoch="g1", attempt=1):
@@ -167,7 +203,7 @@ def test_opening_report_is_visible_before_gameplay_and_delivered_on_turn_zero(tm
     put_state(tmp_path, "run", {**run, "sessions": {}})
     memory = memories("Rome")
     store = ReviewStore(memory)
-    store.prepare_opening("opening", {"turn": 0}, {}, 60)
+    store.prepare("opening", {"turn": 0, "observation": {"turn": 0}}, {}, 60)
     telemetry(tmp_path, "Rome", 0, "RUNNING")
     reader = WatchReader(tmp_path)
     pending = reader.read().strategies[0]
@@ -190,7 +226,7 @@ def test_civ_waiting_for_first_turn_is_in_strategy_roster(tmp_path, memories):
     result["scores"].append({"civilization": "France", "controller": "AGENT", "score": 0})
     store.put("state", "result", result)
     memory = memories("France")
-    ReviewStore(memory).prepare_opening("opening", {"turn": 0}, {}, 60)
+    ReviewStore(memory).prepare("opening", {"turn": 0, "observation": {"turn": 0}}, {}, 60)
     telemetry(tmp_path, "France", 0, "RUNNING")
     view = WatchReader(tmp_path).read()
     assert [s.civilization for s in view.strategies] == ["Rome", "Greece", "France"]
@@ -272,9 +308,13 @@ def test_strategy_tab_selection_refresh_freeze_and_reading_position(tmp_path, me
             text = "\n".join(line.text for line in log.lines)
             assert "[bold]Roman advice[/bold]" in text and "\x1b" not in text
             assert "Short-term plan" in text and "Scientific victory" in text
-            assert "Objective:" in text and "Investment:" in text and "Payoff:" in text
+            assert "Diplomatic initiative" in text and "Their incentives" in text and "Reconsider when" in text
+            assert "Plan 1 · " in text and "Investment" in text and "Relative outcome" in text
             assert (
-                text.index("Objective:") < text.index("Investment:") < text.index("Payoff:") < text.index("Remaining:")
+                text.index("Recommendation")
+                < text.index("Investment")
+                < text.index("Relative outcome")
+                < text.index("Scientific victory")
             )
             assert "Recommendations remain advisory" in str(app.query_one("#strategy-status", Static).render())
             log.scroll_to(y=5, animate=False)

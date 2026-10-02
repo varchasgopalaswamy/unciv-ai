@@ -76,7 +76,7 @@ class Player:
 def setup(tmp_path):
     host = Host()
     players = {name: Player(tmp_path / name, name) for name in ("Rome", "Greece")}
-    state = {"epoch": "g1", "initialTurn": 0, "usage": {"input_tokens": 700}, "invocations": 4}
+    state = {"epoch": "g1", "initialTurn": 0, "reviewedBoundary": 0, "usage": {"input_tokens": 700}, "invocations": 4}
     coordinator = TurnCoordinator(tmp_path, host, players, "lease")
     return host, players, state, coordinator
 
@@ -103,7 +103,6 @@ def test_partial_restore_remains_paused_then_repeats_same_epoch_without_refundin
 
         reviews = ReviewStore(player.memory)
         reviews.prepare("initial", {"turn": 5, "position": "Before capture"}, {}, 60)
-        reviews.confirm("initial")
     coordinator.capture({"epoch": "g1", "turn": 0, "handoff": 0}, state)
     manifest = json.loads(next(coordinator.root.glob("current.json")).read_text())
     host.world["gold"] = 999

@@ -5,7 +5,7 @@ import json
 import pytest
 from jsonschema import Draft202012Validator
 
-from civ_agent.civilization_state import CivilizationState, StateConflict
+from civ_agent.civilization_state import CivilizationState
 from civ_agent.game_commands import COMMANDS
 from civ_agent.observations import (
     DETAIL_MODELS,
@@ -300,13 +300,14 @@ def test_detail_tools_cache_reads_require_refresh_and_cannot_acknowledge_unread_
                 )
                 assert rejected["changes"][0]["accepted"]
                 assert rejected["changes"][0]["warnings"][0]["sources"] == [source]
-            with pytest.raises(StateConflict, match="chat_read"):
-                await gateway.call(
-                    job,
-                    "commitment_decide",
-                    {"proposal": "p1", "decision": "accept", "intent": {"reason": "Agree to these terms"}},
-                    "unread",
-                )
+            unread = await gateway.call(
+                job,
+                "commitment_decide",
+                {"proposalId": "p1", "decision": "accept", "intent": {"reason": "Agree to these terms"}},
+                "unread",
+            )
+            assert unread["error"] == "PROPOSAL_NOT_OBSERVED" and unread["applied"] is False
+            assert unread["recovery"]["reads"] == [{"tool": "chat_read", "arguments": {}}]
             action = {"kind": "MOVE_UNIT", "target": "unit1", "destination": {"x": 1, "y": 0}}
             rejected = await gateway.call(job, "player_command", action, "missing")
             assert rejected["error"] == "DETAIL_REQUIRED" and not host.executed
@@ -371,7 +372,7 @@ def test_only_changed_detail_invalidates_its_assumptions_and_survives_restart(tm
     [
         ("player_turn", {}, "observation:overview"),
         ("trade_options", {"partner": "Greece"}, "observation:trade_options/Greece"),
-        ("trade_read", {"proposal": "d1"}, "observation:trade/d1"),
+        ("trade_read", {"proposalId": "d1"}, "observation:trade/d1"),
     ],
 )
 def test_social_advisories_are_shown_without_staling_native_evidence(tmp_path, name, arguments, source):

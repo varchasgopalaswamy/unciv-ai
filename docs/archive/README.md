@@ -6,6 +6,9 @@ for current behavior.
 
 ## Reports
 
+- [Competing strategy plans — September 30, 2026](reports/Competing-strategy-plans-2026-09-30.md): concrete alternatives, relative diplomacy, and paired early/late three-round comparisons.
+- [Initiative decision evaluation — September 30, 2026](reports/Initiative-decisions-2026-09-30.md)
+- [Initiative and diplomacy fixes — 2026-09-30](reports/Initiative-diplomacy-fixes-2026-09-30.md): short references, aligned contracts, concurrent replies, and the follow-up paired replay.
 - [Agent communication audit — September 29, 2026](reports/Agent-communication-audit-2026-09-29.md)
 - [Action availability audit — September 29, 2026](reports/Action-availability-audit-2026-09-29.md)
 - [Routine strategic review — France, September 28, 2026](reports/Strategic-review-France-2026-09-28.md)

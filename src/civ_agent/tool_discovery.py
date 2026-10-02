@@ -7,7 +7,7 @@ def tool_discovery_instructions(purpose: Literal["gameplay", "communication"]) -
     names = (
         ("chat_read", "chat_send", "memory_search", "memory_update")
         if purpose == "communication"
-        else ("player_turn", "player_capabilities", "victory_progress", "chat_read")
+        else ("player_turn", "player_capabilities", "victory_progress", "chat_read", "chat_send")
     )
     selected = ", ".join(f'"mcp__civ__{name}"' for name in names)
     return (

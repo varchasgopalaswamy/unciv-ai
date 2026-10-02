@@ -24,12 +24,13 @@ from civ_agent.agent_results import ResultError, validate_result
 from civ_agent.agent_settings import add_settings_arguments, valid_setting
 from civ_agent.match_recovery import TurnCoordinator
 from civ_agent.monitoring import MonitorStore, read_record
+from civ_agent.round_review import review_round
 from civ_agent.runner_history import EventHistory, HistoryError
 from civ_agent.terminal_output import TerminalOutput
 from civ_agent.turn_display import display_turn
 from civ_agent.turn_finalization import finish_turn
 
-RUN_STATE_VERSION = 4
+RUN_STATE_VERSION = 5
 
 
 class RunnerError(Exception):
@@ -171,6 +172,8 @@ class JsonEndpoint:
                     "restore",
                     "cancel_jobs",
                 }
+                or operation == "review_phase"
+                and fields.get("stage") == "start"
                 else self.timeout
             )
             with self.opener.open(request, timeout=timeout) as response:
@@ -258,7 +261,7 @@ class Agent(JsonEndpoint):
             "close_interactive",
             "flush_accounting",
             "health",
-            "turn_readiness",
+            "review_phase",
         }:
             status = result.get("status")
             if not isinstance(status, dict):
@@ -406,6 +409,8 @@ class Scheduler:
         self.state.setdefault("pendingFinalizations", [])
         self.resume = resume
         self.services_connected = False
+        self.round_open = False
+        self.review_intervals = {}
         self.turns = TurnCoordinator(self.store.root.parent, self.operator, self.agents, self.lease)
 
     def history_for(self, flight, player_token=None):
@@ -579,6 +584,9 @@ class Scheduler:
             changed = True
         if flight.get("modelStatus") != status.get("modelStatus"):
             flight["modelStatus"] = status.get("modelStatus")
+            changed = True
+        if flight.get("negotiationWait") != status.get("negotiationWait"):
+            flight["negotiationWait"] = status.get("negotiationWait")
             changed = True
         if changed:
             self.save()
@@ -793,11 +801,12 @@ class Scheduler:
         return 2 if self.finalization_cleanup_failed else result
 
     def connect_services(self):
+        self.operator.call("barrier", leaseId=self.lease)
         for civilization, agent in self.agents.items():
             connection = self.operator.call(
                 "connect", leaseId=self.lease, epoch=self.state["epoch"], civilization=civilization
             )
-            self.turns.call_agent(
+            connected = self.turns.call_agent(
                 agent,
                 "connect",
                 epoch=self.state["epoch"],
@@ -809,10 +818,12 @@ class Scheduler:
                     connection["status"].get("negotiationTimeoutSeconds", 300),
                 ),
             )
-        self.turns.release()
+            interval = connected.get("reviewInterval")
+            if type(interval) is not int or interval < 1:
+                raise RunnerError("Invalid review interval from agent service")
+            self.review_intervals[civilization] = interval
         self.services_connected = True
         self.state.update(status="running", reason=None)
-        self.state.pop("waitingForReview", None)
         self.save()
 
     def _run(self):
@@ -923,7 +934,7 @@ class Scheduler:
         if agent is None:
             raise RunnerError("No HTTPS agent service is configured for the active civilization.")
         self.collect_finalizations(wait=True, civilization=civilization)
-        if not self.wait_for_review(status, agent):
+        if not review_round(self, status):
             return False
         self.turns.capture(status, self.state)
         requested = self.store.requested() or ("pause" if self.interrupted else None)
@@ -1105,89 +1116,6 @@ class Scheduler:
             )
         return False
 
-    def wait_for_review(self, status, agent):
-        """Wait before checkpointing or activating this civ, outside its gameplay timeout."""
-        civilization = status["activeCivilization"]
-
-        def pending_review():
-            result = agent.call("turn_readiness", epoch=status["epoch"], gameTurn=status["turn"])
-            if (
-                result.get("civilization") != civilization
-                or result.get("epoch") != status["epoch"]
-                or type(result.get("gameTurn")) is not int
-                or result.get("gameTurn") != status["turn"]
-                or "pendingReview" not in result
-            ):
-                raise RunnerError("Invalid turn readiness response; stopped for inspection.")
-            pending = result["pendingReview"]
-            if pending is not None and (
-                not isinstance(pending, dict)
-                or not isinstance(pending.get("job"), str)
-                or not pending["job"]
-                or pending.get("status") not in {"PREPARED", "PENDING"}
-                or type(pending.get("turn")) is not int
-                or not (0 <= pending["turn"] < status["turn"] or pending["turn"] == status["turn"] == 0)
-                or type(pending.get("attempts")) is not int
-                or pending["attempts"] < 0
-            ):
-                raise RunnerError("Invalid pending review response; stopped for inspection.")
-            return pending
-
-        pending = pending_review()
-        if pending is None:
-            return True
-        self.output.line(
-            "Status",
-            f"Waiting for strategic review from turn {pending['turn']} before starting turn {status['turn']}.",
-            civilization=civilization,
-        )
-        current, next_heartbeat = status, 0
-        try:
-            while True:
-                requested = self.store.requested() or ("pause" if self.interrupted else None)
-                if requested:
-                    self.note("stopped" if requested == "stop" else "paused", "Operator requested " + requested + ".")
-                    return False
-                if time.monotonic() >= next_heartbeat:
-                    current = self.operator.call("heartbeat", leaseId=self.lease)["status"]
-                    self.check_status(current)
-                    if current["phase"] == "FINISHED":
-                        self.complete_game(current)
-                        return False
-                    if current["phase"] == "HALTED":
-                        self.note("needs_inspection", "Host is HALTED.")
-                        return False
-                    if any(
-                        current[key] != status[key]
-                        for key in ("serverInstance", "handoff", "turn", "activeCivilization")
-                    ):
-                        raise RunnerError("Host changed while waiting for a strategic review; resume to reconcile.")
-                    self.check_agent_health()
-                    next_heartbeat = time.monotonic() + 3
-                reason = self.budget_reason(current)
-                if reason:
-                    self.note("budget_exhausted", reason)
-                    return False
-                self.collect_finalizations()
-                if pending is None:
-                    self.output.line(
-                        "Status", "Strategic review ready; starting the next turn.", civilization=civilization
-                    )
-                    return True
-                waiting = {"civilization": civilization, "gameTurn": status["turn"], "review": pending}
-                if self.state.get("waitingForReview") != waiting:
-                    self.state["waitingForReview"] = waiting
-                    self.save()
-                time.sleep(0.25)
-                pending = pending_review()
-                if pending is None:
-                    # A finished review may have used the last invocation or
-                    # completed alongside a pause. Recheck before activation.
-                    next_heartbeat = 0
-        finally:
-            self.state.pop("waitingForReview", None)
-            self.save()
-
     def check_agent_health(self):
         """Report subscription health and stop on fatal failures, including off-turn jobs."""
         for civilization, agent in self.agents.items():
@@ -1280,6 +1208,7 @@ def new_state(options, status):
         runId=str(uuid.uuid4()),
         epoch=status["epoch"],
         initialTurn=status["turn"],
+        reviewedBoundary=status["turn"] if status["turn"] else -1,
         startedAt=began,
         deadline=began + limits["maxSeconds"],
         limits=limits,

@@ -92,9 +92,10 @@ def recovery_reads(db, keys, name, arguments) -> JsonObject:
             {"tool": "memory_read", "arguments": {"ids": records[offset : offset + 20], "includeRetired": True}}
         )
     if name in {"trade_offer", "trade_decide", "friendship_offer"}:
+        reference = arguments.get("proposalId") or arguments.get("counterofferTo")
         reads.append(
-            {"tool": "trade_read", "arguments": {"proposal": arguments["proposal"]}}
-            if "proposal" in arguments
+            {"tool": "trade_read", "arguments": {"proposalId": reference}}
+            if reference
             else {"tool": "trade_options", "arguments": {"partner": arguments["partner"]}}
         )
     return {"reads": reads, "instruction": RECOVERY_INSTRUCTIONS}

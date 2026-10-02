@@ -53,6 +53,7 @@ from civ_agent.turn_archive import TurnArchive
 
 TERMINAL = {"COMPLETED", "INTERRUPTED", "FAILED"}
 TELEMETRY_SAMPLE_INTERVAL = 2.0
+MODEL_INTERRUPT_TIMEOUT = 30.0
 USAGE_KEYS = {
     "input_tokens": "inputTokens",
     "cached_input_tokens": "cachedInputTokens",
@@ -159,6 +160,8 @@ class CodexProcess:
         try:
             await self.socket.send_json({"id": request_id, "method": method, "params": parameters})
             return await asyncio.wait_for(future, 30)
+        except TimeoutError as error:
+            raise TimeoutError(f"Codex {method} did not respond within 30 seconds") from error
         finally:
             self.pending.pop(request_id, None)
             self.requests.pop(request_id, None)
@@ -351,8 +354,6 @@ class AgentService:
             self.gateway.paused = True
         self.chat = ChatRuntime(self)
         self.reviews = ReviewRuntime(self, review_interval, review_attempts)
-        self.gateway.prepare_review = self.reviews.prepare
-        self.gateway.confirm_review = self.reviews.confirm
         if self.match_file.exists():
             regular_file(self.match_file, private=True)
             self.match = json.loads(self.match_file.read_text())
@@ -565,7 +566,7 @@ class AgentService:
         return self.status(key)
 
     async def finish_handoff(self, payload):
-        """Accept the native handoff; seal gameplay and release any prepared review."""
+        """Accept the native handoff and seal gameplay."""
         if set(payload) != {"activationId", "epoch", "gameTurn", "committedHandoff"}:
             raise ServiceError("INVALID_ARGUMENT")
         if (
@@ -587,7 +588,6 @@ class AgentService:
             if record.get("confirmedHandoff") != payload["committedHandoff"]:
                 if self.chat.running:
                     await self.chat.reconcile()
-                await self.reviews.confirm(record["activationId"])
                 for job in list(self.gateway.jobs.values()):
                     if job.id == record["activationId"]:
                         async with job.lock:
@@ -672,17 +672,20 @@ class AgentService:
         if request.mcpUrl != self.mcp_url:
             raise ServiceError("INVALID_MCP_ENDPOINT")
 
-    async def turn_readiness(self, payload):
+    async def review_phase(self, payload):
         if (
-            set(payload) != {"epoch", "gameTurn"}
+            set(payload) != {"epoch", "gameTurn", "stage"}
             or not identifier(payload.get("epoch"))
             or type(payload.get("gameTurn")) is not int
             or payload["gameTurn"] < 0
+            or payload.get("stage") not in {"hold", "start", "status", "release"}
         ):
             raise ServiceError("INVALID_ARGUMENT")
         async with self.guard:
-            pending = await self._blocking_review(payload)
-        return {"civilization": self.civilization, **payload, "pendingReview": pending}
+            try:
+                return await self.reviews.phase(payload["epoch"], payload["gameTurn"], payload["stage"])
+            except ValueError as error:
+                raise ServiceError(str(error), 409) from None
 
     async def _blocking_review(self, payload):
         try:
@@ -732,6 +735,8 @@ class AgentService:
                 raise ServiceError("PREVIOUS_TURN_NOT_FINALIZED", 409)
             if await self._blocking_review(payload) is not None:
                 raise ServiceError("STRATEGIC_REVIEW_PENDING", 409)
+            if self.chat.running and self.chat.held:
+                raise ServiceError("REVIEW_PHASE_ACTIVE", 409)
             defaults = (
                 self.match.get("effectiveSettings", self.default_settings) if self.match else self.default_settings
             )
@@ -865,7 +870,11 @@ class AgentService:
             self.failure = "INTERACTIVE_DECISION_REQUIRED"
             self.stop_event.set()
         elif method == "service/disconnected":
-            if self.completion is None and not self.stopping and self.failure is None:
+            if (
+                (self.completion is None or record.get("negotiationWait"))
+                and not self.stopping
+                and self.failure is None
+            ):
                 self.failure = "CODEX_DISCONNECTED"
                 self.stop_event.set()
         elif method == "thread/tokenUsage/updated" and self.accept_usage and params.get("threadId") == thread_id:
@@ -903,6 +912,7 @@ class AgentService:
         """One gameplay conversation, with no post-turn model bookkeeping."""
         if self.failure:
             raise ServiceError(self.failure)
+        job.suspend_for_negotiation = True
         self.stop_event.clear()
         self.turn_id = self.completion = None
         self.early_usage.clear()
@@ -955,9 +965,42 @@ class AgentService:
         if self.failure:
             raise ServiceError(self.failure)
         self.accept_usage = True
+        message = prompt.user
+        while True:
+            await self._start_model_turn(record, process, message)
+            stopped = asyncio.create_task(self.stop_event.wait())
+            negotiating = asyncio.create_task(job.negotiation_pending.wait())
+            try:
+                await asyncio.wait({stopped, negotiating}, return_when=asyncio.FIRST_COMPLETED)
+                # A model may finish before an accepted offer reaches the host.
+                # Let that call establish its outcome (or negotiation hold)
+                # before treating the conversation as terminal.
+                while self.completion == "completed" and job.pending_calls and not job.negotiation_pending.is_set():
+                    await asyncio.wait({*job.pending_calls, negotiating}, return_when=asyncio.FIRST_COMPLETED)
+            finally:
+                stopped.cancel()
+                negotiating.cancel()
+                await asyncio.gather(stopped, negotiating, return_exceptions=True)
+            if self.failure:
+                raise ServiceError(self.failure)
+            if not job.negotiation_pending.is_set():
+                return
+            message = await self._settle_negotiation(record, job, process)
+            await self.io.call(self.history.next_conversation, record["activationId"], record["modelPhase"])
+            await self.io.call(self.history.negotiation_result, record["activationId"], message)
+
+    async def _start_model_turn(self, record, process, message):
+        """Continue the same thread; usage notifications contain cumulative totals."""
+        self.stop_event.clear()
+        self.turn_id = self.completion = None
+        self.early_usage.clear()
+        self.early_completions.clear()
+        record.pop("turnId", None)
+        record.pop("modelStatus", None)
+        effective_settings = record["effectiveSettings"]
         turn_options = {
-            "threadId": thread_id,
-            "input": [{"type": "text", "text": prompt.user}],
+            "threadId": record["threadId"],
+            "input": [{"type": "text", "text": message}],
             "approvalPolicy": "never",
             "summary": "auto",
             "model": effective_settings["model"],
@@ -970,7 +1013,7 @@ class AgentService:
         turn_id = result.get("turn", {}).get("id")
         if not identifier(turn_id):
             raise ServiceError("INVALID_CODEX_TURN", 502)
-        model_record["turnId"] = turn_id
+        record["turnId"] = turn_id
         await self.io.call(self.history.bind_turn, self.active_id, turn_id)
         # Buffer notifications until the acknowledged model turn is bound.
         self.turn_id = turn_id
@@ -982,9 +1025,60 @@ class AgentService:
             self.stop_event.set()
         record["phase"] = "RUNNING"
         await self._save(record)
-        await self.stop_event.wait()
+
+    async def _settle_negotiation(self, record, job, process):
+        """Stop inference, finish accepted tools, then supply their actual results."""
+        record["negotiationWait"] = {"state": "suspending"}
+        await self._save(record)
+        if self.completion is None:
+            try:
+                await process.request("turn/interrupt", {"threadId": record["threadId"], "turnId": self.turn_id})
+            except ServiceError:
+                # The turn can finish between checking it and requesting the
+                # interruption. A confirmed completion is already a safe pause.
+                if self.completion not in {"completed", "interrupted"}:
+                    raise
+            try:
+                await asyncio.wait_for(self.stop_event.wait(), MODEL_INTERRUPT_TIMEOUT)
+            except TimeoutError:
+                raise ServiceError("NEGOTIATION_SUSPEND_TIMEOUT", 502) from None
         if self.failure:
             raise ServiceError(self.failure)
+        if self.completion not in {"completed", "interrupted"}:
+            raise ServiceError("CODEX_TURN_FAILED", 502)
+        record["negotiationWait"] = {"state": "waiting"}
+        await self._save(record)
+        self.diagnostics.emit("gameplay_negotiation_suspended", activationId=job.id, turnId=self.turn_id)
+        calls = list(job.negotiation_calls.items())
+        # Shield individual calls from a model disconnect. A real job stop cancels
+        # and drains them in gateway.close(), retaining uncertain-action handling.
+        results = await asyncio.gather(*(asyncio.shield(task) for task, _ in calls))
+        if self.failure:
+            raise ServiceError(self.failure)
+        self.gateway.check(job, ended_allowed=True)
+        # Include native receipts from earlier in this model turn: a completed
+        # sibling call can still have been waiting inside the interrupted batch.
+        # These omit overview deltas; the settled response rebases that state.
+        completed = [value for task, value in job.completed_actions.items() if task not in job.negotiation_calls]
+        job.completed_actions.clear()
+        job.negotiation_calls.clear()
+        job.negotiation_pending.clear()
+        record.pop("negotiationWait", None)
+        self.diagnostics.emit("gameplay_negotiation_resumed", activationId=job.id, turnId=self.turn_id)
+        return (
+            "The negotiation has finished. Continue this gameplay turn using the completed tool results below. "
+            "Do not repeat successful actions.\n"
+            + json.dumps(
+                {
+                    **({"completedActions": completed} if completed else {}),
+                    "toolResults": [
+                        {**info, "result": result} for (_, info), result in zip(calls, results, strict=True)
+                    ],
+                },
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+        )
 
     async def _run(self, payload: JsonObject) -> None:
         try:
@@ -1059,8 +1153,8 @@ class AgentService:
                 if self.stopping:
                     return
                 now = time.monotonic()
-                if self.gateway.run_failure:
-                    self.failure = self.gateway.run_failure["error"]
+                if self.gateway.run_failure or self.failure:
+                    self.failure = self.gateway.run_failure["error"] if self.gateway.run_failure else self.failure
                 elif now - self.last_heartbeat >= payload["leaseSeconds"]:
                     self.failure = "HEARTBEAT_EXPIRED"
                 elif job.handoff_at is not None and now - job.handoff_at >= 60:
@@ -1165,6 +1259,7 @@ class AgentService:
                 self.failure = self.gateway.run_failure["error"]
                 record["runFailure"] = self.health()["runFailure"]
             record["negotiationWaitSeconds"] = job.waiting_seconds()
+            record.pop("negotiationWait", None)
             self.stopping = True
             if not job.gameplay_ended.is_set():
                 handoff_monitor.cancel()
@@ -1192,7 +1287,7 @@ class AgentService:
                 else "COMPLETED"
                 if self.completion == "completed" and self.failure is None
                 else "INTERRUPTED"
-                if self.failure == "INTERRUPTED" or self.completion == "interrupted"
+                if self.failure == "INTERRUPTED" or self.completion == "interrupted" and self.failure is None
                 else "FAILED"
             )
             finished["usageComplete"] = (
@@ -1252,8 +1347,8 @@ class AgentService:
                 operation = payload.pop("op", None)
                 if operation == "start":
                     result = await self.start(payload)
-                elif operation == "turn_readiness":
-                    result = await self.turn_readiness(payload)
+                elif operation == "review_phase":
+                    result = await self.review_phase(payload)
                 elif operation in {"open_interactive", "close_interactive"}:
                     from civ_agent import interactive_session
 

@@ -12,6 +12,7 @@ from civ_agent.game_commands import command_arguments
 from civ_agent.player_prompts import job_instructions
 from civ_agent.proposal_gateway import ProposalGateway
 from civ_agent.protocol import JsonObject
+from civ_agent.review_store import ReviewStore
 from civ_agent.service_io import ServiceIO
 from civ_agent.startup_context import (
     core_definitions,
@@ -25,13 +26,13 @@ from civ_agent.state_updates import apply_overview_update
 from civ_agent.strategy_guide import strategy_reference
 from civ_agent.telemetry import JobAccounting
 from tests.test_agent_service import StartupHost
+from tests.test_strategic_review import assessment
 from tests.test_structured_memory import create, strategy
 
 
 def test_victory_comparison_is_preloaded_once_and_chart_queries_pass_through(tmp_path):
     comparison = {
         "turn": 95,
-        "score": 384,
         "sections": ["our_status", "global_status", "rankings"],
         "metrics": [{"name": "Production", "meaning": "Empire production per turn"}],
         "rankings": {
@@ -87,6 +88,7 @@ def test_victory_comparison_is_preloaded_once_and_chart_queries_pass_through(tmp
             prompt = startup_prompt(prepared, "gameplay", "Play this turn")
             reads = json.JSONDecoder().raw_decode(prompt.user.split("Prepared player-visible reads:\n", 1)[1])[0]
             assert reads["victory_progress"] == {**comparison, "query": comparison_query}
+            assert "score" not in reads["victory_progress"]
             assert host.victory_calls == [{}]
             assert (await gateway.call(job, "victory_progress", query, "history")) == {
                 **chart,
@@ -239,14 +241,87 @@ def test_memory_topics_use_only_structured_delivered_facts_and_current_social_re
         "chat_read": {
             "agreements": [{"agreement": "a1", "partner": "France"}],
             "offers": [{"proposal": "p1", "participants": ["Egypt", "Rome"], "terms": "unstructured-text-sentinel"}],
+            "messages": [{"kind": "message", "body": {"author": "China", "text": "Greece is plotting."}}],
         },
     }
     topics = memory_topics(reads)
-    assert {"Mining", "city1", "Rome", "Granary", "growth", "economy", "Iron", "Silk", "France", "Egypt"} <= topics
+    assert {
+        "Mining",
+        "city1",
+        "Rome",
+        "Granary",
+        "growth",
+        "economy",
+        "Iron",
+        "Silk",
+        "France",
+        "Egypt",
+        "China",
+    } <= topics
     assert not {"Greece", "unstructured-text-sentinel", "science"} & topics
     assert memory_topics(
         {"chat_read": {"context": {"knownCivilizations": [{"civilizationId": "Egypt", "atWar": True}]}}}
     ) == {"Egypt", "war", "defense"}
+
+
+@pytest.mark.parametrize("purpose", ["gameplay", "communication"])
+def test_diplomatic_advice_selects_private_notes_without_automatically_sending_them(tmp_path, purpose):
+    async def run():
+        memory, io = CivilizationState(tmp_path / "memory", "Rome"), ServiceIO()
+        gateway = ProposalGateway(memory, io, tmp_path / "workspace")
+        memory.bind("g1")
+        memory.start_job("previous", "gameplay", {}, game_turn=0)
+        private = "PRIVATE: We cannot afford a prolonged war."
+        relevant = create(memory, {"type": "note", "text": private, "subjects": ["France"]}, "previous")
+        unrelated = create(memory, {"type": "note", "text": "Egypt old price", "subjects": ["Egypt"]}, "previous")
+        memory.finish_job("previous", True)
+        store = ReviewStore(memory)
+        store.prepare("review", {"turn": 5, "observation": {"turn": 5}}, {}, 60)
+        store.complete("review", assessment())
+
+        class RecordingHost(StartupHost):
+            def __init__(self):
+                super().__init__(
+                    SimpleNamespace(
+                        service=SimpleNamespace(active_id="job", records={"job": {"epoch": "g1", "gameTurn": 10}})
+                    )
+                )
+                self.sent = []
+
+            async def tool(self, name, args):
+                if name == "player_communication" and args["op"] == "send":
+                    self.sent.append(copy.deepcopy(args))
+                return await super().tool(name, args)
+
+        host = RecordingHost()
+        try:
+            job = await gateway.open("job", purpose, "g1", host, {}, 10)
+            assert not job.memory["events"]
+            prepared = await prepare_startup(gateway, job)
+            assert set(job.memory["contextIds"]) == {relevant}
+            assert unrelated not in job.memory["delivered"]
+            prompt = startup_prompt(prepared, purpose, "Consider diplomacy")
+            assert private in prompt.user
+            assert prompt.user.count(assessment()["review"]["diplomacy"]["initiatives"][0]["approach"]) == 1
+            for plan in assessment()["review"]["plans"]:
+                for field in ("objective", "investment", "projection", "relativeOutcome", "risks"):
+                    assert prompt.user.count(plan[field]) == 1
+            assert prompt.user.count(assessment()["review"]["reconsiderWhen"]) == 1
+            assert "PRIVATE" not in prompt.instructions and host.sent == []
+            result = await gateway.call(
+                job,
+                "chat_send",
+                {"to": "France", "text": "Would you share scouting of Greece?", "intent": {"reason": private}},
+                "contact",
+            )
+            assert "error" not in result
+            assert len(host.sent) == 1 and host.sent[0]["text"] == "Would you share scouting of Greece?"
+            assert private not in json.dumps(host.sent) and "troop shortage" not in json.dumps(host.sent)
+        finally:
+            await io.close()
+            memory.engine.dispose()
+
+    asyncio.run(run())
 
 
 def test_prepared_reads_establish_evidence_and_update_base_without_model_calls(tmp_path):
@@ -363,6 +438,7 @@ def test_prepared_reads_establish_evidence_and_update_base_without_model_calls(t
                 "mcp__civ__memory_read",
                 "mcp__civ__unit_details",
                 "mcp__civ__map_region",
+                "mcp__civ__chat_send",
             }
             for tool in prepared["coreTools"]:
                 Draft202012Validator.check_schema(tool["inputSchema"])

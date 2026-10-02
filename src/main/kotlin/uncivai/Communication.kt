@@ -56,13 +56,24 @@ internal fun obj(vararg pairs: Pair<String, Any?>): JsonObject = buildJsonObject
     }
 }
 
+internal fun shortCommunicationId(prefix: String, random: SecureRandom, occupied: (String) -> Boolean): String = generateSequence {
+    prefix + random.nextInt(60_466_176).toString(36).padStart(5, '0')
+}.first { !occupied(it) }
+
 internal class Communication(private val runtime: GameExecutor) {
     internal val trades = EngineTrades(runtime)
     internal val agreements = AgreementLifecycle(runtime)
     private val random = SecureRandom()
     private val state get() = runtime.communicationState
     private fun fail(): Nothing = throw PlayerSessionException(PlayerSessionFailure.INVALID_ARGUMENT)
-    private fun shortId(prefix: String) = prefix + java.lang.Long.toUnsignedString(random.nextLong(), 36).take(9)
+    private fun shortId(prefix: String): String = shortCommunicationId(prefix, random) { candidate ->
+        when (prefix) {
+            "p" -> candidate in state.offers
+            "m" -> state.streams.values.any { stream -> stream.any { it.kind == "message" && it.body["message"] == JsonPrimitive(candidate) } }
+            "o" -> state.outcomes.any { it.outcome == candidate }
+            else -> error("Unknown reference kind")
+        }
+    }
 
     internal fun emit(audience: List<String>, kind: String, body: JsonObject, wakes: Set<String> = emptySet()) {
         for (recipient in audience) {
@@ -144,7 +155,15 @@ internal class Communication(private val runtime: GameExecutor) {
                     val messages = own.filter { it.kind == "message" }.map {
                         communicationJson.decodeFromJsonElement(ChatMessage.serializer(), it.body)
                     }
-                    if (request.sources.any { source -> messages.none { it.message == source && it.participants.containsAll(audience) } }) fail()
+                    if (request.sources.any { source -> messages.none { it.message == source && it.participants.containsAll(audience) } }) {
+                        return@accessGame obj(
+                            "error" to "INVALID_TOOL_ARGUMENTS",
+                            "applied" to false,
+                            "recoverable" to true,
+                            "invalidFields" to listOf(obj("fields" to listOf("sources"))),
+                            "instruction" to "Copy message IDs visible to every participant, or omit sources. Text citations are not message IDs.",
+                        )
+                    }
                     val offer = SocialOffer(proposalId, (prior?.version ?: 0) + 1, civilization, audience, checkNotNull(request.kind), checkNotNull(request.terms), checkNotNull(request.conditions), request.expiresTurn, request.sources, game.turns)
                     state.offers.getOrPut(proposalId) { mutableListOf() }.add(offer)
                     emit(audience, "offer", offer.recordJson(), audience.toSet() - civilization)
@@ -195,8 +214,9 @@ internal class Communication(private val runtime: GameExecutor) {
             val openingReview = purpose == "review" && parent == null
             if (parent != null && (purpose != "review" || parent.civilization != civilization || parent.purpose != "gameplay")) fail()
             if (openingReview && runtime.accessGame { it.turns != 0 }) fail()
-            if (runtime.communicationPaused || state.invocations >= state.maxInvocations || active.size >= state.maxConcurrent ||
-                (purpose == "review" && (active.size >= (state.maxConcurrent - 1).coerceAtLeast(1) || runtime.accessGame(::gameFinished))) ||
+            val phaseAllowsJob = if (purpose == "review") runtime.communicationPaused && runtime.isPaused() else !runtime.communicationPaused
+            if (!phaseAllowsJob || state.invocations >= state.maxInvocations || active.size >= state.maxConcurrent ||
+                (purpose == "review" && runtime.accessGame(::gameFinished)) ||
                 active.count { it.civilization == civilization } >= state.maxPerCivilization || active.any { it.civilization == civilization && it.purpose == purpose }
             ) {
                 return obj("granted" to false)

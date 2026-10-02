@@ -8,6 +8,11 @@ import java.util.concurrent.TimeUnit
 
 class CommunicationIntegrationTest {
     @Test
+    fun `shared review admits all reviewers and fences gameplay and communication`() {
+        runProbe("uncivai.ReviewPhaseProbe")
+    }
+
+    @Test
     fun `quiet communication polls survive concurrent HTTPS calls`() {
         runProbe("uncivai.CommunicationHttpProbe")
     }

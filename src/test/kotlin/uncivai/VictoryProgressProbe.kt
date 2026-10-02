@@ -41,7 +41,6 @@ object VictoryProgressProbe {
             check(runtime.executor.turnSessions.getValue("Rome").observedRevision == null)
             check(initial.rivals.isEmpty())
             check(initial.victories.map { it.name }.toSet() == game.getEnabledVictories().keys)
-            check(initial.score == rome.calculateTotalScore().toInt())
             check(initial.maxTurns == game.gameParameters.maxTurns)
             val culture = initial.victories.single { it.name == "Cultural" }.milestones.first()
             check(culture.objectiveRequirement!!.run { rule == "AT_LEAST" && requiredCount == 5 && completedCount == 0 })
@@ -50,7 +49,7 @@ object VictoryProgressProbe {
             val plannedParts = initial.victories.single { it.name == "Scientific" }.milestones.last().parts
             check(plannedParts.sumOf { it.required } == 6 && plannedParts.all { it.completed == 0 })
             check(plannedParts.single { it.name == "SS Booster" }.required == 3)
-            // Changing an unmet rival's score and private science milestone must not affect this view.
+            // Changing an unmet rival's treasury and private science milestone must not affect this view.
             runtime.executor.accessGame {
                 france.addGold(10000)
                 france.cities.single().cityConstructions.addBuilding("Apollo Program")

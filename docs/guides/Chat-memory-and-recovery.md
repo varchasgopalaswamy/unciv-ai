@@ -79,6 +79,25 @@ a one-second batch window; unmentioned public messages wait for the next relevan
 activation. Failed jobs await new evidence or explicit resume instead of repeatedly
 calling the model on an idle inbox.
 
+`chat_read.chatRecipients` lists ordinary chat recipients, excluding the player
+itself. Plain text cannot be sent to built-in AI. Only gameplay exposes
+`chat_send.nativeAction`; communication jobs exchange text and shared trades.
+
+Message and commitment references use six characters (`m…`, `p…`), with collision
+checks. Agent tools use `proposalId` to identify a commitment decision and optional
+`reviseProposalId` when revising an offer. New offers omit that field. Participants
+include the author; optional `sources` contains shared message IDs, not prose.
+Received commitments include copyable decision arguments. Acceptance takes no
+public reason. Withdrawal/reconsideration require `publicReason`, which is shared;
+`intent.reason` remains private in every case.
+
+Before sending, the service checks confirmed sends from other jobs of the same
+civilization in the existing journal. If that conversation changed since the
+job's delivered view, `CONVERSATION_UPDATED` returns the unseen replies and confirms
+that nothing was sent. The model can reconsider directly, without another read.
+This does not interpret promises or prohibit a deliberate follow-up. Reads include
+recent sent messages whose subscription echoes have not yet arrived.
+
 The host stores three separate records: exact statements/offers, explicit consent
 to particular terms, and confirmed engine outcomes. Offering terms constitutes
 the author's consent. Everyone else must accept explicitly. Proposed amendments
@@ -189,13 +208,14 @@ If restoration itself is interrupted, run the same resume command again; its
 journal completes the restoration before gameplay is allowed.
 
 Opening reviewers save their starting view before gameplay and run concurrently.
-Periodic reviewers save their position before `END_TURN`, then work independently
-while other civilizations continue. An interrupted reviewer restarts with the frozen input
+Periodic reviewers capture fresh positions after all players finish the due round.
+Active conversations finish first; gameplay and communication then remain paused
+while reviews run concurrently. An interrupted reviewer restarts with the frozen input
 and the same model settings. Three attempts are allowed by default. An exhausted
 task stays pending; inspect the failure before increasing the limit, for example
 `civ-agent game resume --state-dir DIR --review-attempts 4`. Completion atomically
-saves the dated report and removes its temporary input. Each civilization waits
-for its own report before its first or next turn. Gameplay has no mandatory
+saves the dated report and removes its temporary input. All reports finish before
+gameplay and communication resume. Gameplay has no mandatory
 end-of-turn memory-writing phase.
 
 Keep the entire state directory: the boundary refers to private database records

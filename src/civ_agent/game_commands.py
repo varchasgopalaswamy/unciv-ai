@@ -4,7 +4,7 @@ from typing import Annotated, Literal
 
 from pydantic import Field, StrictBool, TypeAdapter, ValidationError, field_validator
 
-from civ_agent.memory_records import Intent
+from civ_agent.memory_records import InitiativeDecision, Intent
 from civ_agent.protocol import JsonObject
 from civ_agent.schemas import BoundaryModel, NonnegativeInt, argument_issues, argument_shape
 
@@ -199,8 +199,16 @@ class DeclareWar(Command):
 
 class EndTurn(Command):
     kind: Literal["END_TURN"]
+    initiativeDecisions: Annotated[list[InitiativeDecision], Field(max_length=2)] = Field(default_factory=list)
     deferReason: Annotated[str, Field(min_length=1, max_length=500)] = ""
     deferChoices: StrictBool = False
+
+    @field_validator("initiativeDecisions")
+    @classmethod
+    def unique_initiatives(cls, value):
+        if len({decision.initiative for decision in value}) != len(value):
+            raise ValueError("Assess each initiative only once")
+        return value
 
 
 class Autoplay(Command):
@@ -279,6 +287,9 @@ def command_schema() -> JsonObject:
                 name, {k: v for k, v in shape.items() if k not in {"title", "description", "default"}}
             )
     properties["kind"] = {"type": "string", "enum": sorted(kinds)}
+    properties["initiativeDecisions"]["description"] = (
+        "END_TURN only. Optional private decisions about the delivered strategic report's numbered initiatives."
+    )
     definitions = {}
 
     def references(value):

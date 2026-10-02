@@ -9,7 +9,7 @@ from civ_agent.protocol import JsonObject
 from civ_agent.strategy_guide import strategy_reference
 
 CORE_TOOLS = {
-    "gameplay": ("player_turn", "player_command", "memory_read", "unit_details", "map_region"),
+    "gameplay": ("player_turn", "player_command", "memory_read", "unit_details", "map_region", "chat_send"),
     "communication": ("chat_read", "chat_send", "memory_update"),
 }
 STARTUP_CALL_PREFIX = "startup:"
@@ -36,8 +36,8 @@ def tool_definitions(catalogue: list[JsonObject]) -> list[JsonObject]:
     ]
 
 
-def memory_topics(reads: JsonObject) -> set[str]:
-    """Match structured subjects in opening reads, never infer topics from player prose."""
+def memory_topics(reads: JsonObject, advice: JsonObject | None = None) -> set[str]:
+    """Match delivered subjects and proposed contacts, never infer topics from prose."""
     view, social = reads.get("player_turn", {}), reads.get("chat_read", {})
     topics: set[str] = set()
 
@@ -75,8 +75,15 @@ def memory_topics(reads: JsonObject) -> set[str]:
     for entity in changes.get("unitsNoLongerOwned", []) + changes.get("citiesNoLongerOwned", []):
         add(entity.get("handle"), entity.get("name"))
     for record in social.get("offers", []) + social.get("trades", []) + social.get("agreements", []):
-        add(record.get("proposal"), record.get("agreement"), record.get("partner"), record.get("author"))
+        add(record.get("proposalId"), record.get("agreement"), record.get("partner"), record.get("author"))
         add(*record.get("participants", []))
+    for event in social.get("messages", []):
+        record = event.get("body", {})
+        add(record.get("author"), record.get("from"), record.get("to"), record.get("partner"))
+        add(*record.get("participants", []))
+    if advice:
+        for initiative in advice["review"]["diplomacy"]["initiatives"]:
+            add(*initiative["players"])
     return topics
 
 
@@ -96,7 +103,7 @@ async def prepare_startup(gateway, job, *, call_prefix: str = STARTUP_CALL_PREFI
     # Select using fresh permitted facts, without admitting contributions that
     # arrived after dispatch. Explicit reads below deliver the chosen records;
     # selection alone does not deliver cached evidence.
-    await gateway.select_startup_memory(job, memory_topics(reads))
+    await gateway.select_startup_memory(job, memory_topics(reads, job.memory.get("strategicAdvice")))
     selected = job.memory["contextIds"]
     for offset in range(0, len(selected), 20):
         await gateway.call(

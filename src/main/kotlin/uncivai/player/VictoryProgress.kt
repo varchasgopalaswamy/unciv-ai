@@ -28,7 +28,6 @@ data class RivalVictoryProgress(val civilization: String, val defeated: Boolean,
 @Serializable
 data class VictoryProgress(
     val turn: Int,
-    val score: Int,
     val maxTurns: Int?,
     val sections: List<String>,
     val availability: Map<String, VictorySectionAvailability>,
@@ -50,8 +49,6 @@ internal fun observeVictoryProgress(player: Civilization, turn: PlayerTurnSnapsh
     val metrics = selectedVictoryMetrics(player, request)
     return VictoryProgress(
         turn = turn.turn,
-        // RankingType.Score displays an integer, not the underlying fractional score.
-        score = player.calculateTotalScore().toInt(),
         maxTurns = turn.rules.maxTurns,
         sections = frozenVictory(request.sections.toList()),
         availability = availability,

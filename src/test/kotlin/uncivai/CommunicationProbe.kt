@@ -48,7 +48,8 @@ object CommunicationProbe {
                     ),
                 )
                 val contact = players.getValue("Rome").turn().diplomacy
-                command("Rome", "send", "to" to "Greece", "text" to "My army is nowhere near your border")
+                val message = command("Rome", "send", "to" to "Greece", "text" to "My army is nowhere near your border")["message"]!!.jsonObject
+                check(Regex("m[0-9a-z]{5}").matches(message["message"]!!.jsonPrimitive.content))
                 check(read("Egypt")["nextCursor"]!!.jsonPrimitive.int == 0)
                 check(read("Greece")["events"]!!.jsonArray.single().jsonObject["wake"]!!.jsonPrimitive.boolean)
                 command("Greece", "send", "text" to "Public hello", "mentions" to listOf("Egypt"))
@@ -84,6 +85,18 @@ object CommunicationProbe {
                     "expiresTurn" to 10,
                 )["offer"]!!.jsonObject
                 val proposal = offered["proposal"]!!.jsonPrimitive.content
+                check(Regex("p[0-9a-z]{5}").matches(proposal))
+                val badSource = command(
+                    "Rome",
+                    "offer",
+                    "participants" to listOf("Rome", "Greece"),
+                    "kind" to "peace",
+                    "terms" to "No attacks",
+                    "conditions" to "Unconditional",
+                    "sources" to listOf("invented"),
+                )
+                check(badSource["error"]!!.jsonPrimitive.content == "INVALID_TOOL_ARGUMENTS")
+                check(state("Rome")["offers"]!!.jsonArray.size == 1)
                 check(state("Egypt")["offers"]!!.jsonArray.isEmpty())
                 val beforeConsent = players.getValue("Rome").turn()
                 command("Greece", "accept", "proposal" to proposal, "version" to 1)

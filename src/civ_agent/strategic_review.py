@@ -1,40 +1,68 @@
 """Periodic, advisory strategy reports from frozen player-visible facts."""
 
 import copy
-from typing import Annotated
+from typing import Annotated, Self
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
+from civ_agent.player_prompts import DIPLOMACY_GUIDANCE
 from civ_agent.protocol import JsonObject
 from civ_agent.schemas import BoundaryModel
 
 ReviewText = Annotated[str, Field(min_length=1, max_length=600)]
 
 
-class VictoryProjection(BoundaryModel):
+class StrategicPlan(BoundaryModel):
+    name: Annotated[str, Field(min_length=1, max_length=80)]
+    objective: ReviewText = Field(description="Concrete improvement in our position this plan seeks.")
+    investment: ReviewText = Field(description="Actions, preparation, resources and time required; what they postpone.")
+    projection: ReviewText = Field(
+        description="Short-, mid- and long-term development, using comparable horizons across plans and explicit uncertainty."
+    )
+    relativeOutcome: ReviewText = Field(
+        description="Expected gains and losses for us and rivals, including likely responses and who could finish first."
+    )
+    risks: ReviewText = Field(
+        description="Important assumptions, failure costs and information needed to judge the plan."
+    )
+
+
+class VictoryOutlook(BoundaryModel):
     victory: Annotated[str, Field(min_length=1, max_length=80)] = Field(
         description="Exact enabled victory name; put preferences and qualifications in the other fields."
     )
-    objective: ReviewText = Field(description="Next useful objective and what achieving it would enable.")
-    investment: ReviewText = Field(description="Preparation, resources, time and tradeoffs to pursue that objective.")
-    payoff: ReviewText = Field(
-        description="Expected change in our position relative to rivals, including their likely responses."
+    outlook: ReviewText = Field(description="Brief prospects, important bottleneck and next decision for this victory.")
+
+
+class DiplomaticInitiative(BoundaryModel):
+    players: Annotated[list[Annotated[str, Field(min_length=1, max_length=80)]], Field(min_length=1)] = Field(
+        description="Players to approach."
     )
-    remaining: ReviewText = Field(description="Requirements still needed to complete this victory.")
-    projection: ReviewText = Field(
-        description="Plausible development toward this victory, with milestones, timing and uncertainty."
+    objective: ReviewText = Field(
+        description="Change sought in another player's behavior and how it improves our position relative to rivals."
     )
-    rivals: ReviewText = Field(description="Relevant observed rival progress.")
+    incentives: ReviewText = Field(description="Why these players might cooperate or resist; likely responses.")
+    approach: ReviewText = Field(description="Proposed terms, what to disclose or conceal, and the risks.")
+    nextStep: ReviewText = Field(description="Concrete first contact or follow-up, with its timing.")
+    reconsiderWhen: ReviewText = Field(description="Conditions for revising or abandoning this initiative.")
+
+
+class DiplomaticAdvice(BoundaryModel):
+    assessment: ReviewText = Field(description="How relationships and agreements affect our chances of winning.")
+    initiatives: Annotated[list[DiplomaticInitiative], Field(max_length=2)] = Field(
+        description="Up to two worthwhile initiatives. An empty list is valid."
+    )
 
 
 class StrategicReview(BoundaryModel):
-    victoryPaths: Annotated[list[VictoryProjection], Field(max_length=10)]
-    race: ReviewText = Field(description="Our prospects of winning before rivals.")
-    alternative: ReviewText = Field(description="Other promising approaches and their tradeoffs.")
-    disruption: ReviewText = Field(
-        description="Opportunities to weaken or delay rivals, their costs, and conditions for pursuing or ending them."
+    plans: Annotated[list[StrategicPlan], Field(min_length=1, max_length=3)] = Field(
+        description="Concrete competing plans, numbered from 1; normally two or three, or one if only one is credible."
     )
-    agreements: ReviewText = Field(description="How diplomacy and agreements affect our chances of winning.")
+    preferredPlan: Annotated[int, Field(ge=1, le=3)] | None = Field(
+        description="One-based plan number, or null when evidence does not support a preference."
+    )
+    reconsiderWhen: ReviewText = Field(description="Evidence or developments that would change the recommendation.")
+    diplomacy: DiplomaticAdvice
     shortTerm: Annotated[list[ReviewText], Field(min_length=1, max_length=5)] = Field(
         description="Immediate priorities and their timing."
     )
@@ -42,11 +70,18 @@ class StrategicReview(BoundaryModel):
     longTerm: ReviewText = Field(
         description="Options to develop, commitments to make or defer, and evidence that would change the plan."
     )
+    victoryOutlooks: Annotated[list[VictoryOutlook], Field(max_length=10)]
+
+    @model_validator(mode="after")
+    def preferred_plan_exists(self) -> Self:
+        if self.preferredPlan is not None and self.preferredPlan > len(self.plans):
+            raise ValueError("STRATEGIC_REVIEW_PLAN: preferredPlan must reference a numbered plan.")
+        return self
 
 
 class StrategicAdvice(BoundaryModel):
     assessment: Annotated[str, Field(min_length=1, max_length=1200)] = Field(
-        description="Promising victory routes and reasons for a preference, or for leaving the choice open."
+        description="Why the recommended plan offers the best prospects relative to alternatives, or why the choice is open."
     )
     review: StrategicReview
 
@@ -81,12 +116,22 @@ def review_facts(value: JsonObject) -> JsonObject:
 ADVISOR_INSTRUCTIONS = (
     "You are this civilization's independent strategic adviser. Recommend how it can win from the supplied "
     "position. Your advice is for the player to judge.\n\n"
-    "Compare plausible plans for winning over short-, mid- and long-term horizons. Evaluate development, "
-    "expansion, diplomacy and military action by how they change our position relative to rivals. "
-    "Military action can support any victory path. For each enabled victory, identify useful intermediate "
-    "objectives, required investment, expected payoff and likely rival responses. Identify which "
-    "uncertainties matter to the next decision and how to resolve them. Recommend concrete next steps and "
-    "conditions for changing course.\n\n"
+    "Compare concrete investments that could improve our chances of winning. Normally compare continued "
+    "development with the strongest plausible alternatives in expansion, diplomacy or military action. "
+    "Use one plan when only one is credible. Evaluate plans over comparable short-, mid- and long-term horizons, "
+    "including preparation, opportunity costs, likely rival responses and what happens if rivals continue developing. "
+    "A military plan includes recruiting and positioning the needed forces; an economic plan considers who "
+    "benefits more and who could finish first. Identify uncertainties and useful ways to resolve them.\n\n"
+    "Explain the preference or leave it open. When undecided, recommend useful information gathering or reversible "
+    "investments. Distinguish investments useful across victories from committing to a particular finish. "
+    "Give each enabled victory a brief outlook; put detailed costs and projections in the competing plans. "
+    "Recommend concrete next steps and conditions for changing course.\n\n"
+    + DIPLOMACY_GUIDANCE
+    + "\nConsider whether influencing another player could improve a plan or make it feasible. "
+    "Connect worthwhile diplomatic initiatives to the plans being considered, accounting for existing exchanges "
+    "and agreements. Explain the desired change in another player's behavior, its incentives, our relative benefit "
+    "and proposed terms. "
+    "Human and agent players can negotiate in chat; built-in AI responds only to native diplomatic actions and trades.\n\n"
     "The supplied observations and read-only tools describe the frozen position. "
     "Use tools.<name>(arguments) in functions.exec to inspect additional details; discover tool schemas as needed. "
     "Return one complete JSON report matching the supplied schema, preferably under 6000 characters."
@@ -111,7 +156,7 @@ def advice_prompt(inputs, *, strategy_guide=False):
         + (
             "Opening position before the first move, turn "
             if inputs["turn"] == 0
-            else "Frozen position as of end of turn "
+            else "Frozen position after all players completed round "
         )
         + str(inputs["turn"])
         + ":\n"
@@ -205,11 +250,13 @@ def frozen_read(inputs: JsonObject, name: str, arguments: JsonObject) -> JsonObj
         return victory_read(inputs["reads"][name], arguments, civilization=inputs.get("civilization"))
     value = copy.deepcopy(inputs["reads"][name])
     if name == "chat_read":
+        # Review capture has already applied the model projection to these records.
         return social_context(
             value,
             include_context=arguments.get("includeContext", False),
             include_history=arguments.get("includeHistory", False),
             include_native_trades=True,
+            proposal_field="proposalId",
         )
     if name in {"research_details", "policy_details"}:
         names = arguments.get("names", [])
@@ -258,8 +305,8 @@ def advice_schema(observation: JsonObject) -> JsonObject:
     """Make the native victory identifiers explicit before generating the report."""
     schema = StrategicAdvice.model_json_schema()
     victories = observation["rules"]["victoryTypes"]
-    schema["$defs"]["VictoryProjection"]["properties"]["victory"]["enum"] = victories
-    schema["$defs"]["StrategicReview"]["properties"]["victoryPaths"].update(
+    schema["$defs"]["VictoryOutlook"]["properties"]["victory"]["enum"] = victories
+    schema["$defs"]["StrategicReview"]["properties"]["victoryOutlooks"].update(
         minItems=len(victories), maxItems=len(victories)
     )
     return schema
@@ -269,7 +316,7 @@ def validate_review_coverage(review: JsonObject, overview: JsonObject, turn: int
     if turn is None or overview.get("turn") != turn:
         raise ValueError("STRATEGIC_REVIEW_POSITION_MISMATCH")
     expected = set(overview.get("rules", {}).get("victoryTypes", []))
-    names = [path["victory"] for path in review["victoryPaths"]]
+    names = [path["victory"] for path in review["victoryOutlooks"]]
     if len(names) != len(set(names)) or set(names) != expected:
         raise ValueError(
             "STRATEGIC_REVIEW_COVERAGE: cover each enabled victory exactly once: " + ", ".join(sorted(expected))

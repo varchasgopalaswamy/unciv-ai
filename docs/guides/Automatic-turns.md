@@ -130,9 +130,10 @@ players. Interactive `civ-agent agent start` accepts the same two options; see
 Each activation identifies the game turn it must play. After native handoff, the
 next player can start while provider completion and accounting drain. There is
 no model-driven post-turn memory phase. Independent strategy reviews run
-concurrently before each civilization's first move on turn 0, then after every K
-turns starting at K (default 5). Other civilizations can play while a review runs,
-but its civilization's first or next turn waits for the report before starting its model.
+concurrently before any civilization's first move on turn 0, then after all
+players complete every Kth round starting at K (default 5). Active conversations
+finish before capture. Gameplay and communication stay paused until every report
+is ready, then subsequent jobs receive the advice.
 This wait does not consume that turn's timeout.
 See [background reviews](../architecture/Background-turn-memory.md).
 

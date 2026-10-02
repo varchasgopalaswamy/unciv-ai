@@ -106,7 +106,14 @@ async def opened(tmp_path, *, purpose="gameplay", message=False):
     if message:
         memory.ingest(
             "g1",
-            [{"id": 1, "kind": "message", "wake": True, "body": {"author": "Greece", "text": "UNIQUE_INCOMING_CHAT"}}],
+            [
+                {
+                    "id": 1,
+                    "kind": "message",
+                    "wake": True,
+                    "body": {"message": "m1", "author": "Greece", "text": "UNIQUE_INCOMING_CHAT"},
+                }
+            ],
             1,
         )
     host = ConsistencyHost()
@@ -164,7 +171,7 @@ def test_all_independent_reads_expire_without_requerying_them_after_action(tmp_p
                 ("victory_progress", {"sections": ["rankings"]}),
                 ("player_result", {}),
                 ("trade_options", {"partner": "Greece"}),
-                ("trade_read", {"proposal": "d1"}),
+                ("trade_read", {"proposalId": "d1"}),
                 ("agreement_list", {}),
                 ("agreement_read", {"agreement": "a1"}),
                 ("chat_read", {}),
@@ -286,7 +293,7 @@ def test_current_social_context_preserves_effective_and_proposed_versions_and_hi
     assert current["consents"] == [] and "outcomes" not in current
     assert len(current["trades"]) == len(current["agreements"]) == 1
     history = social_context(raw, include_context=True, include_history=True, include_native_trades=True)
-    assert history == {**raw, "context": {}, "turn": 20}
+    assert history == {**raw, "context": {}, "turn": 20, "chatRecipients": []}
     assert raw == before
 
 
@@ -349,7 +356,7 @@ def test_legacy_tools_are_absent_and_review_recovery_uses_public_arguments(tmp_p
             assert not old & tools.keys()
             capabilities = await gateway.call(job, "player_capabilities", {}, "capabilities")
             assert not old & set(capabilities["queries"])
-            assert set(tools["trade_decide"]["inputSchema"]["required"]) == {"proposal", "decision", "intent"}
+            assert set(tools["trade_decide"]["inputSchema"]["required"]) == {"proposalId", "decision", "intent"}
             assert "Supply only" not in tools["trade_decide"]["description"]
             for name in old:
                 with pytest.raises(ValueError, match="TOOL_NOT_PERMITTED"):

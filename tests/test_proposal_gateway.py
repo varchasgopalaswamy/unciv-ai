@@ -89,6 +89,8 @@ class Host:
                     "offers": copy.deepcopy(self.offers),
                     "consents": copy.deepcopy(self.consents),
                     "outcomes": [],
+                    "channels": ["Rome", "Greece", "France"],
+                    "context": {"turn": self.view["turn"]},
                 }
             return {"sent": True}
         if args["requestId"] in self.seen:
@@ -108,6 +110,38 @@ class Host:
         }
         self.seen[args["requestId"]] = result
         return result
+
+
+@pytest.mark.parametrize("decision", [None, "acted", "deferred", "rejected"])
+def test_end_turn_initiative_decision_is_optional_private_audit_metadata(tmp_path, decision):
+    async def run():
+        memory = CivilizationState(tmp_path / "private", "Rome")
+        io = ServiceIO()
+        gateway = ProposalGateway(memory, io, tmp_path / "workspace")
+        host = Host()
+        try:
+            from civ_agent.review_store import ReviewStore
+            from tests.test_strategic_review import assessment
+
+            memory.bind("g1")
+            store = ReviewStore(memory)
+            store.prepare("review", {"turn": 0, "observation": {"turn": 1}}, {}, 60)
+            store.complete("review", assessment())
+            host.view["turn"] = 1
+            job = await gateway.open("game", "gameplay", "g1", host, {}, 1)
+            await gateway.call(job, "player_turn", {}, "read")
+            entry = {"initiative": 1, "decision": decision, "reason": "Wait for reconnaissance."}
+            command = {"kind": "END_TURN", **({"initiativeDecisions": [entry]} if decision else {})}
+            result = await gateway.call(job, "player_command", command, "end")
+            assert result["done"] and len(host.executed) == 1
+            assert "intent" not in host.executed[0] and "initiativeDecisions" not in host.executed[0]
+            action = memory.summary(1)["actions"][0]
+            assert action.get("initiativeDecisions", []) == ([{**entry, "reviewTurn": 0}] if decision else [])
+        finally:
+            await io.close()
+            memory.engine.dispose()
+
+    asyncio.run(run())
 
 
 def test_gateway_owns_bookkeeping_and_retries_exact_call(tmp_path):
@@ -208,7 +242,7 @@ def test_social_promises_do_not_restrict_hostile_commands(tmp_path, action, deta
             await gateway.call(job, detail, arguments, "inspect")
             if new_consent:
                 host.offers[0]["effective"] = True
-                host.consents.append({"proposal": "p1", "author": "Greece", "decision": "accept"})
+                host.consents.append({"proposal": "p1", "version": 1, "author": "Greece", "decision": "accept"})
                 memory.ingest(
                     "g1",
                     [
@@ -252,7 +286,7 @@ def test_greeting_preserves_economic_job_and_chat_cannot_issue_gameplay(tmp_path
         job = await gateway.open("planning", "gameplay", "g1", host, {})
         await gateway.call(job, "player_turn", {}, "1")
         await gateway.call(job, "city_details", {"target": "city1"}, "city")
-        memory.ingest("g1", [{"id": 1, "kind": "message", "body": {"text": "Hello"}}], 1)
+        memory.ingest("g1", [{"id": 1, "kind": "message", "body": {"message": "m1", "text": "Hello"}}], 1)
         result = await gateway.call(
             job,
             "player_command",
@@ -304,7 +338,13 @@ def test_slow_game_dispatch_does_not_block_mailbox_or_memory(tmp_path):
         )
         await began.wait()
         await asyncio.wait_for(
-            io.call(memory.ingest, "g1", [{"id": 1, "kind": "message", "wake": True, "body": {"text": "Hello"}}], 1), 1
+            io.call(
+                memory.ingest,
+                "g1",
+                [{"id": 1, "kind": "message", "wake": True, "body": {"message": "m1", "text": "Hello"}}],
+                1,
+            ),
+            1,
         )
         await gateway.call(chat, "chat_read", {}, "messages")
         result = await asyncio.wait_for(
@@ -386,7 +426,17 @@ def test_game_overview_and_chat_read_deliver_distinct_evidence(tmp_path):
         gateway = ProposalGateway(memory, io, tmp_path / "workspace")
         host = Host()
         original = host.tool
-        ledger = {"offers": [{"proposal": "p1", "version": 1, "terms": "No attacks before turn 8"}], "consents": []}
+        ledger = {
+            "offers": [
+                {
+                    "proposal": "p1",
+                    "version": 1,
+                    "participants": ["Rome", "Greece"],
+                    "terms": "No attacks before turn 8",
+                }
+            ],
+            "consents": [],
+        }
 
         async def observed_host(name, args):
             value = await original(name, args)

@@ -1,8 +1,7 @@
-"""Restartable strategy work that overlaps other players and precedes the next own turn."""
+"""Concurrent, read-only strategy work during a shared pause between rounds."""
 
 import asyncio
 import contextlib
-import copy
 import json
 import time
 
@@ -13,6 +12,7 @@ from civ_agent.model_status import PROGRESS_METHODS, TOOL_ITEMS
 from civ_agent.observations import overview
 from civ_agent.proposal_gateway import JobAccess, public_result
 from civ_agent.protocol import JsonObject
+from civ_agent.review_context import development_changes, review_position, upcoming_events
 from civ_agent.review_store import ReviewStore
 from civ_agent.strategic_review import (
     REVIEW_READ_TOOLS,
@@ -27,7 +27,7 @@ from civ_agent.victory_snapshot import capture_victory
 
 
 class ReviewFatalError(RuntimeError):
-    """Retrying cannot safely repair persistence or unconfirmed process shutdown."""
+    """Input preparation, persistence and unconfirmed shutdown need operator inspection."""
 
 
 class OfflineConnection:
@@ -96,12 +96,60 @@ class ReviewRuntime:
         self.pending = asyncio.Event()
         self.failure = None
         self.unconfirmed_process = None
+        self.active = False
 
-    async def prepare_opening(self, connection, epoch, settings, timeout):
-        """Freeze each civ's initial view during operator connect, before any player moves."""
+    async def phase(self, epoch, game_turn, stage):
         service = self.service
-        if await service.io.call(self.store.has_opening):
+        if epoch != service.chat.epoch:
+            raise ValueError("WORKSPACE_EPOCH_CONFLICT")
+        turn = 0 if game_turn == 0 else game_turn - 1
+        if stage == "hold":
+            # Existing conversations finish; new incoming messages stay queued.
+            service.chat.held = True
+        elif stage == "start":
+            if not service.gateway.paused or not service.chat.held or service.chat.dispatching:
+                raise ValueError("REVIEW_BARRIER_REQUIRED")
+            await self.prepare_round(game_turn)
+            service.gateway.reviewing = True
+            self.start()
+        elif stage == "release":
+            service.gateway.reviewing = False
+            service.chat.held = False
+            service.chat.pending.set()
+        task = await service.io.call(self.store.at_turn, turn)
+        return {
+            "civilization": service.civilization,
+            "epoch": epoch,
+            "gameTurn": game_turn,
+            "ready": not service.chat.dispatching and not self.active,
+            "pendingReview": task if task and task["status"] != "COMPLETED" else None,
+        }
+
+    async def prepare_round(self, game_turn):
+        """Capture the common round boundary only after all mutations have stopped."""
+        service = self.service
+        turn = 0 if game_turn == 0 else game_turn - 1
+        if game_turn != 0 and not review_due(turn, self.interval):
             return
+        if await service.io.call(self.store.at_turn, turn):
+            return
+        parent = next(
+            (
+                r
+                for r in service.records.values()
+                if r.get("purpose") != "review"
+                and r.get("epoch") == service.chat.epoch
+                and r.get("gameTurn") == turn
+                and r.get("confirmedHandoff")
+                and not r.get("terminalOutcome")
+            ),
+            None,
+        )
+        if game_turn != 0 and parent is None:
+            return  # A defeated player has no completed turn to review.
+        connection, epoch = service.chat.connection, service.chat.epoch
+        if connection is None:
+            raise ValueError("COMMUNICATION_NOT_CONNECTED")
 
         async def read(name, arguments):
             value = await connection.tool(name, arguments)
@@ -111,75 +159,27 @@ class ReviewRuntime:
 
         try:
             snapshot = await read("player_turn", {})
-            if snapshot["turn"] != 0 or snapshot["epoch"] != epoch:
+            if snapshot["turn"] != game_turn or snapshot["epoch"] != epoch:
                 raise ValueError("STRATEGIC_REVIEW_POSITION_CHANGED")
+            if snapshot.get("result"):
+                return
             tools = service.gateway.tool_catalogue(await connection.list_tools(), "gameplay")
-            inputs = await self.capture(snapshot, read, tools, 0, epoch)
-            await service.io.call(self.store.prepare_opening, job_id(), inputs, settings, timeout)
-        except Exception as error:
-            service.diagnostics.emit("strategic_review_capture_failed", error=error, gameTurn=0)
-            raise
-
-    async def prepare(self, job, call_id):
-        """Persist the position before END_TURN; a failed command cannot start work."""
-        try:
-            await self._prepare(job)
-        except Exception as error:
-            service = self.service
-            service.diagnostics.emit("strategic_review_capture_failed", error=error, job=job.id)
+            inputs = await self.capture(snapshot, read, tools, turn, epoch)
             await service.io.call(
-                service.memory.fail_run,
-                job.id,
-                call_id,
-                "STRATEGIC_REVIEW_CAPTURE_FAILED",
-                {"exceptionType": type(error).__name__, "message": str(error)},
-                {
-                    "error": "STRATEGIC_REVIEW_CAPTURE_FAILED",
-                    "applied": False,
-                    "recoverable": False,
-                    "instruction": "Stop. Review inputs could not be saved, so END_TURN was not dispatched. The run requires operator inspection.",
-                },
+                self.store.prepare,
+                parent["activationId"] if parent else job_id(),
+                inputs,
+                parent.get("effectiveSettings", parent["settings"]) if parent else service.chat.settings,
+                service.chat.timeout,
             )
-            await service.gateway.sync_failure()
+        except Exception as error:
+            service.diagnostics.emit("strategic_review_capture_failed", error=error, gameTurn=turn)
             raise
-
-    async def _prepare(self, job):
-        service = self.service
-        record = service.records.get(job.id)
-        if record is None:  # Interactive sessions have no scheduled model/review lifecycle.
-            return
-        turn = record["gameTurn"]
-        if not review_due(turn, self.interval):
-            return
-        if not await service.io.call(self.store.available, job.id):
-            return
-        snapshot = copy.deepcopy(job.observation)
-
-        async def read(name, args):
-            counted = await service.io.call(service.accounting.begin_call, job.id, name, args, source="startup")
-            outcome = "incomplete"
-            try:
-                result = await job.connection.tool(name, args)
-                if "error" in result:
-                    raise ValueError("STRATEGIC_REVIEW_CAPTURE_FAILED: " + name)
-                outcome = "success"
-                return result
-            finally:
-                await service.io.call(service.accounting.end_call, counted, outcome, False)
-
-        inputs = await self.capture(snapshot, read, await service.gateway.tools(job), turn, job.epoch)
-        await service.io.call(
-            self.store.prepare,
-            job.id,
-            inputs,
-            record.get("effectiveSettings", record["settings"]),
-            record["timeoutSeconds"],
-        )
 
     async def capture(self, snapshot, read, tools, turn, epoch):
         service = self.service
         reads = {"player_turn": public_result(review_facts(overview(snapshot)))}
-        reads["victory_progress"] = await capture_victory(read, turn)
+        reads["victory_progress"] = await capture_victory(read, snapshot["turn"])
         for name, field in (("research_details", "technologies"), ("policy_details", "policies")):
             catalogue = await read(name, {})
             names = [row["name"] for row in catalogue[field]]
@@ -189,7 +189,25 @@ class ReviewRuntime:
             reads[name] = {**catalogue, field: details}
         social = await read("player_communication", {"op": "state", "epoch": epoch})
         messages = (await service.io.call(service.memory.snapshot, "gameplay"))["events"]
+        # The listener may be inside a long poll when the barrier closes. Include
+        # its undelivered arrivals without changing the paused memory or cursor.
+        cursor = await service.io.call(service.memory.cursor)
+        while True:
+            page = await read(
+                "player_communication", {"op": "read", "epoch": epoch, "cursor": cursor, "limit": 100, "waitSeconds": 0}
+            )
+            messages.extend(page["events"])
+            if not page["hasMore"]:
+                break
+            if page["nextCursor"] <= cursor:
+                raise ValueError("STRATEGIC_REVIEW_CAPTURE_FAILED: communication cursor did not advance")
+            cursor = page["nextCursor"]
+        messages = list({event["id"]: event for event in messages}.values())[-50:]
         reads["chat_read"] = {**social, "messages": messages}
+        position = review_position(snapshot)
+        previous = await service.io.call(self.store.last_position)
+        reads["player_turn"]["developmentSincePreviousReview"] = development_changes(previous, position)
+        reads["player_turn"]["upcomingEvents"] = upcoming_events(snapshot, social)
         catalogue = [tool for tool in tools if tool["name"] in REVIEW_READ_TOOLS]
         for tool in catalogue:
             if tool["name"] == "player_turn":
@@ -197,7 +215,11 @@ class ReviewRuntime:
             else:
                 tool["description"] = "Read only the frozen review position. " + tool.get("description", "")
         actions = []
-        for recent_turn in range(max(1, turn - self.interval + 1), turn + 1):
+        first_turn = max(1, turn - self.interval + 1)
+        previous_turn = await service.io.call(self.store.last_completed_turn)
+        if previous_turn is not None:
+            first_turn = 0 if previous_turn == 0 else previous_turn + 1
+        for recent_turn in range(first_turn, turn + 1):
             offset = 0
             while True:
                 page = await service.io.call(service.memory.history, recent_turn, offset)
@@ -222,10 +244,6 @@ class ReviewRuntime:
             "catalogue": catalogue,
             "actions": {"entries": actions, "omittedEarlierActions": total - len(actions)},
         }
-
-    async def confirm(self, parent):
-        await self.service.io.call(self.store.confirm, parent)
-        self.pending.set()
 
     def start(self):
         if self.unconfirmed_process is not None:
@@ -252,7 +270,7 @@ class ReviewRuntime:
             while True:
                 await self.pending.wait()
                 self.pending.clear()
-                async with service.gateway.admit():
+                async with service.gateway.admit(review=True):
                     task = await service.io.call(self.store.pending)
                 if task is None:
                     continue
@@ -266,8 +284,9 @@ class ReviewRuntime:
                     await asyncio.sleep(1)
                     self.pending.set()
                     continue
+                self.active = True
                 try:
-                    async with service.gateway.admit():
+                    async with service.gateway.admit(review=True):
                         task = await service.io.call(self.store.attempt, task["job"], self.attempts)
                     await self.compute(task, attempt_id)
                 except asyncio.CancelledError:
@@ -278,13 +297,16 @@ class ReviewRuntime:
                     service.diagnostics.emit(
                         "strategic_review_failed", error=error, job=attempt_id, gameTurn=task["turn"]
                     )
-                    async with service.gateway.admit():
+                    async with service.gateway.admit(review=True):
                         await service.io.call(self.store.failed, task["job"], str(error) or type(error).__name__)
                     self.pending.set()
                 finally:
-                    with contextlib.suppress(Exception):
-                        await service.flush_telemetry()
-                        await service.chat.social("job_release", job=attempt_id)
+                    try:
+                        with contextlib.suppress(Exception):
+                            await service.flush_telemetry()
+                            await service.chat.social("job_release", job=attempt_id)
+                    finally:
+                        self.active = False
         except asyncio.CancelledError:
             raise
         except Exception as error:
@@ -292,7 +314,7 @@ class ReviewRuntime:
             service.diagnostics.emit("strategic_review_stopped", error=error)
 
     async def compute(self, task, id):
-        """Local conversation state permits reviews, chat and gameplay concurrently."""
+        """Each reviewer has its own frozen view and runs beside other reviewers."""
         from civ_agent.agent_service import USAGE_KEYS
 
         service = self.service
@@ -395,9 +417,13 @@ class ReviewRuntime:
             service.gateway.jobs[job.token] = job
             service.records[id] = record
             try:
-                workspace = private_directory(service.workspace / "reviews" / id)
                 prompt = advice_prompt(inputs, strategy_guide=service.strategy_guide)
                 record["startup"] = prompt.metadata()
+                output_schema = advice_schema(inputs["reads"]["player_turn"])
+            except Exception as error:
+                raise ReviewFatalError("REVIEW_PROMPT_FAILED") from error
+            try:
+                workspace = private_directory(service.workspace / "reviews" / id)
                 await service.io.call(service.accounting.start, id, epoch, True)
                 await service.io.call(service.history.begin, record, None, job.token)
                 await service.io.call(service.history.next_conversation, id, "strategic_review")
@@ -443,7 +469,7 @@ class ReviewRuntime:
                         "model": record["effectiveSettings"]["model"],
                         **({"effort": settings["reasoningEffort"]} if settings.get("reasoningEffort") else {}),
                         **({"serviceTier": "fast"} if service.fast else {}),
-                        "outputSchema": advice_schema(inputs["reads"]["player_turn"]),
+                        "outputSchema": output_schema,
                     },
                 )
                 expected = response["turn"]["id"]
@@ -478,7 +504,7 @@ class ReviewRuntime:
             await save()
             # A checkpoint may capture pending work while a model is computing.
             # Publish only after the hold, so rewind restores exactly that boundary.
-            async with service.gateway.admit():
+            async with service.gateway.admit(review=True):
                 try:
                     await service.io.call(self.store.complete, task["job"], advice)
                 except Exception as error:

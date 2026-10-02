@@ -152,9 +152,11 @@ class TurnCoordinator:
             pendingFinalizations=[{**pending, "epoch": epoch} for pending in boundary.get("pendingFinalizations", [])],
             sessions={name: {**session, "threadId": None} for name, session in boundary.get("sessions", {}).items()},
             handoffs=boundary.get("handoffs", 0),
+            reviewedBoundary=boundary["reviewedBoundary"],
             status="paused",
             reason="Interrupted turn restored to its starting state",
         )
+        scheduler.pop("reviewPhase", None)
         # Persist the scheduler before publishing completion, so a crash cannot
         # leave its old epoch alongside an apparently completed restoration.
         MonitorStore(path_for(self.root.parent)).put("state", "run", scheduler)

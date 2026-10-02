@@ -28,6 +28,7 @@ object VictoryStatisticsProbe {
                 "statistics" -> statistics(runtime, session, root)
                 "privacy" -> privacy(runtime, session)
                 "settings" -> settings(runtime, session)
+                "score" -> score(runtime, session, root)
             }
         }
     }
@@ -63,13 +64,14 @@ object VictoryStatisticsProbe {
         val before = json().toJson(game)
         val progress = session.victoryProgress()
         check(progress.charts == null && progress.demographics == null)
-        check(progress.metrics.map { it.name } == RankingType.filteredEntries(game.gameParameters).map { it.name })
+        val metrics = RankingType.filteredEntries(game.gameParameters).filterNot { it == RankingType.Score }
+        check(progress.metrics.map { it.name } == metrics.map { it.name })
         val rankings = checkNotNull(progress.rankings)
         check(rankings.rows.map { it.civilization } == listOf("France", "Greece", "Rome"))
         check(rankings.comparedCivilizations == 3)
         for (row in rankings.rows) {
             val civ = game.getCivilization(row.civilization)
-            check(row.values == RankingType.filteredEntries(game.gameParameters).map { civ.getStatForRanking(it) })
+            check(row.values == metrics.map { civ.getStatForRanking(it) })
             val trend = checkNotNull(row.trend)
             check(trend.fromTurn == 109 && trend.toTurn == 119)
             check(trend.changes[progress.metrics.indexOfFirst { it.name == "Production" }] == 20)
@@ -174,6 +176,36 @@ object VictoryStatisticsProbe {
         check(defeated.charts!!.series.single { it.civilization == "France" }.let { it.history[10].all { v -> v == 123456 } && it.currentValues == null })
     }
 
+    private fun score(runtime: HeadlessRuntime, session: PlayerSession, root: Path) {
+        history(runtime)
+        meet(runtime, "Greece", "France")
+        runtime.executor.accessGame { it.gameParameters.showDemographics = true }
+        val sections = listOf("our_status", "global_status", "rankings", "charts", "demographics")
+        val query = VictoryProgressRequest(sections = sections)
+        val initial = session.victoryProgress(query)
+        val encoded = PlayerTurnJson.json.encodeToJsonElement(VictoryProgress.serializer(), initial).jsonObject
+        check("score" !in encoded && !encoded.toString().contains("\"Score\""))
+        check(initial.metrics.any { it.name == "Technologies" } && initial.metrics.any { it.name == "Force" })
+        check(initial.rankings != null && initial.charts != null && initial.demographics != null)
+        // Alter only the native score history: no player-facing values or trends may change.
+        runtime.executor.accessGame { game ->
+            for (civ in game.civilizations.filter { it.isMajorCiv() }) {
+                for (turn in civ.statsHistory.keys.toList()) {
+                    civ.statsHistory[turn] = civ.statsHistory.getValue(turn) + (RankingType.Score to 987654)
+                }
+            }
+        }
+        check(session.victoryProgress(query) == initial)
+        for (section in sections) {
+            rejected { session.victoryProgress(query.copy(sections = listOf(section), metrics = listOf("Score"))) }
+            rejected { session.victoryProgress(query.copy(sections = listOf(section), metrics = listOf("Production", "Score"))) }
+        }
+        GameplayTestApi(runtime, root.resolve("tls")).use { api ->
+            val arguments = PlayerTurnJson.json.encodeToJsonElement(VictoryProgressRequest.serializer(), query).jsonObject
+            check(api.tool(api.playerToken("Rome"), "victory_progress", arguments) == encoded)
+        }
+    }
+
     private fun settings(runtime: HeadlessRuntime, session: PlayerSession) {
         val charts = VictoryProgressRequest(sections = listOf("charts"))
         check(session.victoryProgress(charts).availability.getValue("charts").reason == "INSUFFICIENT_HISTORY")
@@ -224,6 +256,7 @@ object VictoryStatisticsProbe {
             it.victoryData = VictoryData(it.getCivilization("Rome"), "Time", it.turns)
         }
         val postgame = session.victoryProgress(all)
+        check(postgame.metrics.none { it.name == "Score" })
         check(postgame.availability.values.all { it.available })
         check(postgame.rankings!!.rows.map { it.civilization } == listOf("Greece", "Rome"))
         check(postgame.charts!!.series.map { it.civilization } == listOf("Greece", "Rome"))

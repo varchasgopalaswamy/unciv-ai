@@ -74,6 +74,7 @@ class ConcurrentTradeHost:
                 "epoch": host.epoch,
                 "civilization": civ,
                 "peaceVersion": 0,
+                "channels": list(host.agent_tokens),
                 "context": {
                     "turn": host.handoff // 2,
                     "scenario": {"name": "CONCURRENT_TRADE_TEST", "peace": self.peace},

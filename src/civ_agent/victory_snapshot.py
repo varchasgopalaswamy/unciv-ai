@@ -24,7 +24,6 @@ class VictoryQuery(BoundaryModel):
     metrics: Annotated[
         list[
             Literal[
-                "Score",
                 "Population",
                 "Growth",
                 "Production",
@@ -37,7 +36,7 @@ class VictoryQuery(BoundaryModel):
                 "TilesExplored",
             ]
         ],
-        Field(max_length=11),
+        Field(max_length=10),
     ] = []
     civilizations: Annotated[list[Name], Field(max_length=64)] = []
     fromTurn: Turn | None = None

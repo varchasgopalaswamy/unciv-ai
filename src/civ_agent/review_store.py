@@ -6,6 +6,7 @@ from sqlalchemy import insert, select
 
 from civ_agent import memory_schema as tables
 from civ_agent.memory_store import encode
+from civ_agent.review_context import review_position
 
 
 class ReviewStore:
@@ -17,18 +18,43 @@ class ReviewStore:
             row = db.execute(select(tables.reviews).where(tables.reviews.c.status == "PENDING")).mappings().first()
             return dict(row) if row else None
 
-    def has_opening(self):
+    def last_position(self):
         with self.memory.transaction() as db:
-            return db.execute(select(tables.reviews.c.job).where(tables.reviews.c.turn == 0)).first() is not None
+            return self.memory._meta(db, "reviewPosition")
 
-    def prepare_opening(self, id, inputs, settings, timeout):
+    def at_turn(self, turn):
         with self.memory.transaction() as db:
-            if db.execute(select(tables.reviews.c.job).where(tables.reviews.c.turn == 0)).first() is not None:
+            row = (
+                db.execute(
+                    select(
+                        tables.reviews.c.job, tables.reviews.c.turn, tables.reviews.c.status, tables.reviews.c.attempts
+                    ).where(tables.reviews.c.turn == turn)
+                )
+                .mappings()
+                .first()
+            )
+            return dict(row) if row else None
+
+    def last_completed_turn(self):
+        with self.memory.transaction() as db:
+            return db.execute(
+                select(tables.reviews.c.turn)
+                .where(tables.reviews.c.status == "COMPLETED")
+                .order_by(tables.reviews.c.turn.desc())
+                .limit(1)
+            ).scalar()
+
+    def prepare(self, id, inputs, settings, timeout):
+        with self.memory.transaction() as db:
+            if (
+                db.execute(select(tables.reviews.c.job).where(tables.reviews.c.turn == inputs["turn"])).first()
+                is not None
+            ):
                 return
             db.execute(
                 insert(tables.reviews).values(
                     job=id,
-                    turn=0,
+                    turn=inputs["turn"],
                     status="PENDING",
                     attempts=0,
                     inputs=encode(inputs),
@@ -56,35 +82,6 @@ class ReviewStore:
             )
             return dict(row) if row else None
 
-    def available(self, parent):
-        with self.memory.transaction() as db:
-            return not db.execute(
-                select(tables.reviews.c.job).where(
-                    (tables.reviews.c.status == "PENDING")
-                    | ((tables.reviews.c.job == parent) & (tables.reviews.c.status != "PREPARED"))
-                )
-            ).first()
-
-    def prepare(self, parent, inputs, settings, timeout):
-        with self.memory.transaction() as db:
-            # A rejected END_TURN may be corrected and retried with a newer position.
-            existing = db.execute(select(tables.reviews.c.status).where(tables.reviews.c.job == parent)).scalar()
-            if existing not in (None, "PREPARED"):
-                return
-            values = dict(turn=inputs["turn"], inputs=encode(inputs), settings=encode(settings), timeout=timeout)
-            if existing is None:
-                db.execute(insert(tables.reviews).values(job=parent, status="PREPARED", attempts=0, **values))
-            else:
-                db.execute(tables.reviews.update().where(tables.reviews.c.job == parent).values(**values))
-
-    def confirm(self, parent):
-        with self.memory.transaction() as db:
-            db.execute(
-                tables.reviews.update()
-                .where(tables.reviews.c.job == parent, tables.reviews.c.status == "PREPARED")
-                .values(status="PENDING")
-            )
-
     def attempt(self, parent, limit):
         with self.memory.transaction() as db:
             row = db.execute(select(tables.reviews).where(tables.reviews.c.job == parent)).mappings().one()
@@ -101,6 +98,20 @@ class ReviewStore:
 
     def complete(self, parent, advice):
         with self.memory.transaction() as db:
+            inputs = db.execute(
+                select(tables.reviews.c.inputs).where(
+                    tables.reviews.c.job == parent, tables.reviews.c.status == "PENDING"
+                )
+            ).scalar_one_or_none()
+            if inputs is None:
+                return
+            # Publish the factual baseline with its report. It participates in the
+            # existing metadata checkpoint and is rewound with that report.
+            observation = json.loads(inputs)["observation"]
+            self.memory._set(db, "reviewPosition", review_position(observation))
+            # Conversations resume before this civ's next gameplay observation.
+            # Make the new report available from the trusted boundary snapshot.
+            self.memory._advance_turn(db, observation["turn"])
             db.execute(
                 tables.reviews.update()
                 .where(tables.reviews.c.job == parent, tables.reviews.c.status == "PENDING")

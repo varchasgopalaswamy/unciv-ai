@@ -23,8 +23,8 @@ from tests.test_proposal_gateway import Host
                 "receive": [],
             },
         ),
-        ("trade_offer", {"partner": "Greece", "give": [], "receive": [], "proposal": None}),
-        ("trade_decide", {"proposal": "d1", "decision": "accept", "version": 3}),
+        ("trade_offer", {"partner": "Greece", "give": [], "receive": [], "counterofferTo": None}),
+        ("trade_decide", {"proposalId": "d1", "decision": "accept", "version": 3}),
         ("chat_send", {"text": "hello", "op": "trade_decide"}),
         ("history_read", {"turn": "1"}),
         ("memory_update", {"changes": [{"key": "SOUL", "category": "observation", "body": {"text": "invented"}}]}),
@@ -48,8 +48,8 @@ def test_advertised_schema_and_runtime_reject_invalid_input_before_mutation(tmp_
                 result = await gateway.call(job, tool, arguments, "one")
                 assert result["error"] == "INVALID_ARGUMENT" and not result["applied"]
             else:
-                with pytest.raises(ValueError, match="^INVALID_ARGUMENT$"):
-                    await gateway.call(job, tool, arguments, "one")
+                result = await gateway.call(job, tool, arguments, "one")
+                assert result["error"] == "INVALID_TOOL_ARGUMENTS" and not result["applied"]
             assert host.executed == []
             assert memory.pending() == []
         finally:
@@ -104,7 +104,7 @@ def test_models_do_not_echo_private_inputs_and_optional_tool_fields_stay_omitted
         ("chat_history", {"with": "Greece"}),
         ("trade_offer", {"partner": "Greece", "give": [], "receive": [], "intent": {"reason": "Offer terms"}}),
     ):
-        assert validate(TOOL_MODELS[name], arguments).model_dump(by_alias=True, exclude_unset=True) == arguments
+        assert TOOL_MODELS[name].model_validate(arguments).model_dump(by_alias=True, exclude_unset=True) == arguments
 
 
 def test_war_and_mediated_peace_terms_use_trade_but_introductions_remain_excluded():
@@ -116,11 +116,11 @@ def test_war_and_mediated_peace_terms_use_trade_but_introductions_remain_exclude
     }
     schema = TOOL_MODELS["trade_offer"].model_json_schema()
     assert Draft202012Validator(schema).is_valid(terms)
-    assert validate(TOOL_MODELS["trade_offer"], terms).model_dump(exclude_unset=True) == terms
+    assert TOOL_MODELS["trade_offer"].model_validate(terms).model_dump(exclude_unset=True) == terms
     terms["receive"][0]["type"] = "PeaceProposal"
     assert Draft202012Validator(schema).is_valid(terms)
     for kind in ("Introduction",):
         terms["receive"][0]["type"] = kind
         assert not Draft202012Validator(schema).is_valid(terms)
-        with pytest.raises(ValueError, match="INVALID_ARGUMENT"):
-            validate(TOOL_MODELS["trade_offer"], terms)
+        with pytest.raises(ValidationError):
+            TOOL_MODELS["trade_offer"].model_validate(terms)

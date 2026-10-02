@@ -16,7 +16,7 @@ from mcp.types import TextContent
 from civ_agent.agent_service import server_ssl_context
 from civ_agent.civilization_state import CivilizationState
 from civ_agent.mcp_results import RESULT_FORMAT_HEADER, STRUCTURED_RESULT_FORMAT, canonical_tool_result
-from civ_agent.proposal_gateway import ProposalGateway, public_result, tool_result
+from civ_agent.proposal_gateway import JobAccess, ProposalGateway, public_result, tool_result
 from civ_agent.service_io import ServiceIO
 from civ_agent.tls import client_ssl_context, ensure_server_certificate
 from tests.test_proposal_gateway import Host
@@ -93,6 +93,90 @@ async def gateway_endpoint(tmp_path, material, purpose="gameplay"):
         await runner.cleanup()
         await gateway.close(job, True)
         await io.close()
+
+
+@pytest.mark.parametrize("review_phase", [False, True])
+def test_review_http_admission_honors_review_and_checkpoint_boundaries(tmp_path, material, review_phase):
+    async def run():
+        async with gateway_endpoint(tmp_path, material) as (url, gateway, game, host):
+            review = JobAccess(
+                "review",
+                "review",
+                "g1",
+                host,
+                {},
+                verified=True,
+                catalogue=[
+                    {
+                        "name": "research_details",
+                        "description": "Frozen research",
+                        "inputSchema": {"type": "object", "properties": {}},
+                    }
+                ],
+                review_inputs={"reads": {"research_details": {"technologies": [{"name": "Mining", "cost": 55}]}}},
+            )
+            gateway.jobs[review.token] = review
+            gateway.paused = True
+            gateway.reviewing = review_phase
+            gateway.request_checkpoint()
+            tls = client_ssl_context(material["ca_file"])
+
+            async def read_review():
+                async with httpx2.AsyncClient(
+                    headers={"Authorization": "Bearer " + review.token},
+                    verify=tls,
+                    trust_env=False,
+                ) as http:
+                    async with Client(
+                        streamable_http_client(url, http_client=http), mode="legacy", cache=None
+                    ) as client:
+                        assert [tool.name for tool in (await client.list_tools()).tools] == ["research_details"]
+                        reply = await client.session.call_tool("research_details", {"names": ["Mining"]})
+                        assert reply.structured_content == {"technologies": [{"name": "Mining", "cost": 55}]}
+                        for name, arguments in (
+                            ("player_command", {"kind": "END_TURN"}),
+                            ("chat_send", {"text": "Hello"}),
+                            ("trade_accept", {"proposalId": "d12345"}),
+                        ):
+                            blocked = await client.session.call_tool(name, arguments)
+                            assert blocked.is_error and blocked.structured_content == {
+                                "error": "REVIEW_READ_ONLY",
+                                "applied": False,
+                            }
+
+            async with aiohttp.ClientSession() as client:
+
+                async def ping_game():
+                    async with client.post(
+                        url,
+                        ssl=tls,
+                        headers={"Authorization": "Bearer " + game.token},
+                        json={"jsonrpc": "2.0", "id": 1, "method": "ping"},
+                    ) as response:
+                        assert (await response.json())["result"] == {}
+
+                game_request = asyncio.create_task(ping_game())
+                review_request = asyncio.create_task(read_review())
+                try:
+                    if review_phase:
+                        await asyncio.wait_for(asyncio.shield(review_request), 2)
+                        assert not game_request.done()
+                        assert not gateway.checkpoint_released.is_set()
+                    else:
+                        await asyncio.sleep(0.05)
+                        assert not review_request.done() and not game_request.done()
+                    gateway.paused = False
+                    gateway.release_checkpoint()
+                    await asyncio.wait_for(asyncio.gather(game_request, review_request), 2)
+                    assert not host.executed
+                    assert gateway.calls_in_flight == 0
+                finally:
+                    gateway.paused = False
+                    gateway.release_checkpoint()
+                    await asyncio.gather(game_request, review_request, return_exceptions=True)
+                    await gateway.close(review, True)
+
+    asyncio.run(run())
 
 
 @pytest.mark.parametrize("purpose", ["gameplay", "communication"])

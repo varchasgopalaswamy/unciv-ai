@@ -35,7 +35,10 @@ terminal. `NO_COLOR` enables a monochrome display.
   the participants, whose response is needed and the remaining host deadline.
   An elapsed deadline remains labeled as awaiting the host outcome until the host
   records it; the viewer never expires a deal itself. Native AI offers do not
-  display a gameplay pause.
+  display a gameplay pause. The active player's row shows
+  `Negotiating (model suspended)` after its service confirms that generation has
+  stopped. Communication agents continue negotiating; gameplay resumes in the
+  same conversation when the host reports the outcome.
 - A Diplomacy tab grouping messages and offers by participants, with pending
   negotiations first and public chat in a separate conversation. Select a row to
   read the exchanged messages, exact directional trade terms, offer versions,
@@ -44,13 +47,15 @@ terminal. `NO_COLOR` enables a monochrome display.
   ambiguous promises or adjudicate whether they were broken.
 - A Strategy tab showing each agent's latest completed adviser report, its source
   turn and the first turn whose gameplay preload included it. Select a civilization
-  to read the assessment, short-, mid- and long-term plans, each victory path's next
-  objective, investment and expected payoff before its remaining requirements and
-  projection. The assessment can leave the victory choice open while recommending
-  concrete next steps. The report also covers other promising approaches, rival
-  disruption and diplomacy. Advice is not a record of adopted decisions.
+  to read the recommendation, up to three competing plans and conditions for
+  reconsideration. Each plan shows its objective, investment, projection, relative
+  outcome and risks. A recommendation can leave the choice open. Short-, mid- and
+  long-term next steps, diplomatic initiatives and brief outlooks for every enabled
+  victory follow. Advice is not a record of adopted decisions.
   The last completed report stays visible while another review runs. Pending work,
   attempt counts, failures, duration and token usage appear alongside it.
+  The main status area shows when active conversations are finishing before a
+  shared review, then lists the remaining reviewers while play and chat are paused.
   Active reviews show whether the adviser is thinking, reading tools, drafting,
   validating or publishing. The selected civilization also shows its model and
   reasoning effort, tool-call count, report character count, time since the last
@@ -194,7 +199,8 @@ expiry, repeated social decisions and restart/rewind recovery.
 `tests/test_strategy_watch.py` covers report publication, first preload delivery,
 pending reviews and retries, player/timeline isolation, read-only access, scroll
 preservation, freezing, keyboard selection and small terminals. Existing completed
-reports need no export or migration: restart the viewer to see the Strategy tab.
+reports use the current plan-comparison schema directly; older report formats
+are unsupported. No file export is needed.
 
 `tests/test_model_status.py` exercises waits, retries, tool execution, stale event
 filtering, and bounded log parsing without wall-clock delays. The scheduler/service

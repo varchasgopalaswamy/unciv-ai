@@ -80,11 +80,11 @@ def test_routine_changes_do_not_raise_notices_but_resource_loss_and_milestones_d
     assert "Resources no longer available: Iron" in current(memory, key)["needsReview"]
     victory = {
         "turn": 5,
-        "score": 100,
+        "rankings": {"rows": [{"civilization": "Rome", "values": [100]}]},
         "victories": [{"name": "Science", "milestones": [{"description": "Apollo", "status": "Current"}]}],
     }
     memory.observe("victory_progress", victory, "game")
-    victory["score"] = 101
+    victory["rankings"]["rows"][0]["values"] = [101]
     memory.observe("victory_progress", victory, "game")
     assert not any("Victory" in reason for reason in current(memory, key)["needsReview"])
     victory["victories"][0]["milestones"][0]["status"] = "Completed"

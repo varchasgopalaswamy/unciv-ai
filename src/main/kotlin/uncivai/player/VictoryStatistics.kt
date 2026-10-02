@@ -114,14 +114,17 @@ internal fun disclosedStatisticCivilizations(player: Civilization): List<Civiliz
         (it == player || player.gameInfo.victoryData != null || player.isSpectator() || !player.gameInfo.gameParameters.hideOtherCivilizationStats)
 }.sortedBy { it.civName }
 
+/** Total score is retained in operator telemetry, outside player observations. */
+private fun availableVictoryMetrics(player: Civilization): List<RankingType> = RankingType.filteredEntries(player.gameInfo.gameParameters).filterNot { it == RankingType.Score }
+
 internal fun validateVictoryRequest(player: Civilization, request: VictoryProgressRequest) {
     fun validNames(values: List<String>, limit: Int, allowed: Set<String>) = values.size <= limit && values.distinct().size == values.size && values.all { it in allowed }
-    val enabledMetrics = RankingType.filteredEntries(player.gameInfo.gameParameters).map { it.name }.toSet()
+    val enabledMetrics = availableVictoryMetrics(player).map { it.name }.toSet()
     val identifiable = player.gameInfo.civilizations.filter { it.isMajorCiv() && canIdentifyVictoryCivilization(player, it) }.map { it.civName }.toSet()
     val currentTurn = player.gameInfo.turns
     if (!validNames(request.names, 16, player.gameInfo.getEnabledVictories().keys) ||
         request.sections.isEmpty() || !validNames(request.sections, 5, victorySections.toSet()) ||
-        !validNames(request.metrics, 11, enabledMetrics) || !validNames(request.civilizations, 64, identifiable) ||
+        !validNames(request.metrics, 10, enabledMetrics) || !validNames(request.civilizations, 64, identifiable) ||
         request.fromTurn?.let { it !in 0..currentTurn } == true ||
         request.toTurn?.let { it !in 0..currentTurn } == true ||
         (request.fromTurn ?: 0) > (request.toTurn ?: currentTurn) ||
@@ -131,12 +134,12 @@ internal fun validateVictoryRequest(player: Civilization, request: VictoryProgre
     }
 }
 
-internal fun selectedVictoryMetrics(player: Civilization, request: VictoryProgressRequest): List<RankingType> = RankingType.filteredEntries(player.gameInfo.gameParameters).filter { request.metrics.isEmpty() || it.name in request.metrics }
+internal fun selectedVictoryMetrics(player: Civilization, request: VictoryProgressRequest): List<RankingType> = availableVictoryMetrics(player).filter { request.metrics.isEmpty() || it.name in request.metrics }
 
 internal fun victoryMetric(metric: RankingType) = VictoryMetric(
     metric.name,
     when (metric) {
-        RankingType.Score -> "Native integer game score; not a prediction of who will win."
+        RankingType.Score -> error("Total score is operator-only")
         RankingType.Population -> "Sum of city population."
         RankingType.Growth -> "Net empire food per turn, rounded."
         RankingType.Production -> "Empire production per turn, rounded; current construction modifiers apply."

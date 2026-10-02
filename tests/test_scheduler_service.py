@@ -1,5 +1,6 @@
 """Scheduler + real HTTPS agent services + fake native Unix app-server integration."""
 
+import hashlib
 import json
 import os
 import socket
@@ -165,6 +166,23 @@ class SchedulerServiceTest(unittest.TestCase):
     def records(self):
         return [json.loads(line) for line in self.trace.read_text().splitlines()]
 
+    def source_history(self, stream):
+        return (
+            self.state_dir
+            / "agent-services"
+            / stream["civilization"]
+            / "history"
+            / hashlib.sha256(stream["activationId"].encode()).hexdigest()
+            / "events.jsonl"
+        )
+
+    def gameplay_records(self, civilization="*"):
+        return [
+            row
+            for path in (self.state_dir / "agent-services").glob(civilization + "/activations/*.json")
+            if (row := json.loads(path.read_text())).get("purpose") != "review"
+        ]
+
     def test_terminal_results_reach_real_https_services_without_an_extra_model_turn(self):
         self.host.behaviors = ["victory"]
         result = self.run_cli("--max-turns", "2", "--max-seconds", "60")
@@ -173,7 +191,9 @@ class SchedulerServiceTest(unittest.TestCase):
         self.assertEqual(0, self.saved()["handoffs"])
         self.assertEqual(1, len(self.host.plays))
         self.assertEqual([], self.host.restores)
-        self.assertEqual(1, sum(record["method"] == "turn/start" for record in self.records()))
+        starts = [record for record in self.records() if record["method"] == "turn/start"]
+        self.assertEqual(2, sum("outputSchema" in record["params"] for record in starts))
+        self.assertEqual(1, sum("outputSchema" not in record["params"] for record in starts))
         for civilization in ("Rome", "Greece"):
             workspace = self.state_dir / "agents" / civilization
             delivered = json.loads((self.state_dir / "agent-services" / civilization / "result.json").read_text())
@@ -181,9 +201,7 @@ class SchedulerServiceTest(unittest.TestCase):
             self.assertEqual("Victory" if civilization == "Rome" else "Defeat", delivered["result"]["outcome"])
             self.assertIn(civilization + " permitted report", json.dumps(delivered))
             self.assertFalse((workspace / "result.md").exists())
-        records = [
-            json.loads(path.read_text()) for path in (self.state_dir / "agent-services/Rome/activations").glob("*.json")
-        ]
+        records = self.gameplay_records("Rome")
         self.assertTrue(records[0]["terminalOutcome"])
 
     def test_real_services_start_fresh_threads_with_turn_memory_and_pinned_settings(self):
@@ -195,9 +213,9 @@ class SchedulerServiceTest(unittest.TestCase):
         records = self.records()
         starts = [record for record in records if record["method"] == "thread/start"]
         resumes = [record for record in records if record["method"] == "thread/resume"]
-        self.assertEqual((len(starts), len(resumes)), (4, 0))
+        self.assertEqual((len(starts), len(resumes)), (6, 0))  # Two opening reviews and four turns.
         self.assertEqual(4, len({play["thread"] for play in self.host.plays}))
-        self.assertEqual(len({record["tokenHash"] for record in records}), 4)
+        self.assertEqual(len({record["tokenHash"] for record in records}), 6)
         for record in starts + resumes:
             self.assertFalse(record["operatorTokenPresent"])
             self.assertIn("mcp_servers.civ", " ".join(record["argv"]))
@@ -209,13 +227,20 @@ class SchedulerServiceTest(unittest.TestCase):
             self.assertIn("include_environment_context=false", record["argv"])
             self.assertIn("include_permissions_instructions=false", record["argv"])
             self.assertIn("skills.include_instructions=false", record["argv"])
-            self.assertIn("Civ tool discovery:", record["params"]["developerInstructions"])
+            label = (
+                "Read tool definitions:"
+                if Path(record["params"]["cwd"]).parent.name == "reviews"
+                else "Civ tool discovery:"
+            )
+            self.assertIn(label, record["params"]["developerInstructions"])
             self.assertIn(Path(record["params"]["cwd"]).parent.parent.name, {"Rome", "Greece"})
             self.assertEqual(Path(record["params"]["cwd"]).parent.parent.parent, self.state_dir / "agents")
             self.assertIn(record["params"]["model"], {"rome-service-model", "greece-service-model"})
             self.assertEqual({"model_reasoning_effort": "high"}, record["params"]["config"])
-        self.assertEqual(len({record["params"]["cwd"] for record in starts + resumes}), 4)
-        turns = [record for record in records if record["method"] == "turn/start"]
+        self.assertEqual(len({record["params"]["cwd"] for record in starts + resumes}), 6)
+        turns = [
+            record for record in records if record["method"] == "turn/start" and "outputSchema" not in record["params"]
+        ]
         self.assertEqual(4, len(turns))
         self.assertTrue(all(record["params"]["effort"] == "high" for record in turns))
         for first_turn in turns[:2]:
@@ -243,6 +268,25 @@ class SchedulerServiceTest(unittest.TestCase):
                 settings[civilization]["effectiveSettings"],
             )
 
+    def test_periodic_reviews_capture_the_completed_round_before_any_next_turn(self):
+        self.host.handoff = 10  # Both players begin round 5.
+        result = self.run_cli("--max-turns", "2", "--max-seconds", "60")
+        self.assertEqual(
+            result.returncode,
+            0,
+            result.stdout + result.stderr + "\n".join(path.read_text() for path in self.root.glob("*.log")),
+        )
+        self.assertEqual([play["civ"] for play in self.host.plays], ["Rome", "Greece"] * 2)
+        starts = [row["params"] for row in self.records() if row["method"] == "turn/start"]
+        self.assertEqual(["outputSchema" in row for row in starts], [False, False, True, True, False, False])
+        for report in starts[2:4]:
+            text = report["input"][0]["text"]
+            self.assertIn("after all players completed round 5", text)
+            self.assertIn('"turn":6', text)
+        for gameplay in starts[4:]:
+            self.assertIn('"asOfTurn":5', gameplay["input"][0]["text"])
+        self.assertEqual(self.saved()["reviewedBoundary"], 6)
+
     def test_run_overrides_reach_native_turns_and_resume_without_repeating_flags(self):
         first = self.run_cli(
             "--model", "run-model", "--reasoning", "custom-effort", "--max-invocations", "1", "--max-seconds", "60"
@@ -253,7 +297,7 @@ class SchedulerServiceTest(unittest.TestCase):
         records = [
             record for record in self.records() if record["method"] in {"thread/start", "thread/resume", "turn/start"}
         ]
-        self.assertEqual(6, len(records))
+        self.assertEqual(10, len(records))  # Two opening reviews plus three gameplay requests.
         for record in records:
             parameters = record["params"]
             self.assertEqual("run-model", parameters["model"])
@@ -290,9 +334,7 @@ class SchedulerServiceTest(unittest.TestCase):
         self.assertNotEqual(self.host.plays[0]["thread"], self.host.plays[1]["thread"])
         self.assertEqual(0, self.host.plays[1]["effectsBefore"])
         self.assertEqual(1, len(self.host.restores))
-        records = [
-            json.loads(path.read_text()) for path in (self.state_dir / "agent-services/Rome/activations").glob("*.json")
-        ]
+        records = self.gameplay_records("Rome")
         self.assertEqual(0, sum(record.get("aborted", False) for record in records))
         self.assertEqual(self.saved()["handoffs"], 2)
 
@@ -314,8 +356,8 @@ class SchedulerServiceTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         sources = list((self.state_dir / "agent-services").glob("*/history/*/events.jsonl"))
         streams = read_collection(path_for(self.state_dir), "streams")
-        self.assertEqual((len(sources), len(streams)), (1, 1))
-        source_events = [json.loads(line) for line in sources[0].read_text().splitlines()]
+        self.assertEqual((len(sources), len(streams)), (3, 1))  # Review histories are separate from gameplay.
+        source_events = [json.loads(line) for line in self.source_history(streams[0]).read_text().splitlines()]
         mirror_events = read_collection(path_for(self.state_dir), "events")
         self.assertGreater(len(source_events), 100)
         self.assertEqual(source_events, mirror_events)
@@ -355,6 +397,7 @@ class SchedulerServiceTest(unittest.TestCase):
                     "epoch": self.host.epoch,
                     "revision": "rev1",
                     "turnReview": {"id": "review1"},
+                    "rules": {"victoryTypes": []},
                     "phase": self.host.phase,
                     "scenario": {"testModelRetry": True},
                 }
@@ -366,7 +409,8 @@ class SchedulerServiceTest(unittest.TestCase):
         self.assertIn("[Rome] Warning: Model connection idle timeout; retrying (1/5", result.stdout)
         self.assertIn("Model response resumed", result.stdout)
         self.assertEqual(1, result.stdout.count("Model connection idle timeout"))
-        source = next((self.state_dir / "agent-services/Rome/history").glob("*/events.jsonl"))
+        identity = read_collection(path_for(self.state_dir), "streams")[0]
+        source = self.source_history(identity)
         mirror_events = read_collection(path_for(self.state_dir), "events")
         self.assertEqual(
             [json.loads(line) for line in source.read_text().splitlines()],
@@ -377,7 +421,6 @@ class SchedulerServiceTest(unittest.TestCase):
         diagnostics = (self.state_dir / "agent-services/Rome/diagnostics.jsonl").read_text()
         self.assertIn('"event": "model_status"', diagnostics)
         self.assertIn('"reason": "idle_timeout"', diagnostics)
-        identity = read_collection(path_for(self.state_dir), "streams")[0]
         from civ_agent.watch_state import activities
 
         activity = activities(path_for(self.state_dir), identity, mirror_events)
@@ -389,9 +432,7 @@ class SchedulerServiceTest(unittest.TestCase):
             self.assertNotIn(
                 secret, result.stdout + source.read_text() + diagnostics + render_markdown(identity, mirror_events)
             )
-        records = [
-            json.loads(path.read_text()) for path in (self.state_dir / "agent-services/Rome/activations").glob("*.json")
-        ]
+        records = self.gameplay_records("Rome")
         self.assertEqual("responding", records[0]["modelStatus"]["state"])
         self.assertEqual(1, len(self.host.plays))
 
@@ -421,9 +462,7 @@ class SchedulerServiceTest(unittest.TestCase):
         result = self.run_cli("--max-turns", "1", "--max-seconds", "60", "--turn-timeout", "15")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(self.host.handoff, 2)
-        records = [
-            json.loads(path.read_text()) for path in (self.state_dir / "agent-services").glob("*/activations/*.json")
-        ]
+        records = self.gameplay_records()
         self.assertEqual(len(records), 2)
         self.assertTrue(all(record["phase"] == "COMPLETED" for record in records))
         self.assertEqual(result.stdout.count("Settled and chose research."), 0)
@@ -504,5 +543,17 @@ class SchedulerServiceTest(unittest.TestCase):
         for path in (self.state_dir / "agent-services").glob("*/activations/*.json"):
             self.assertEqual(json.loads(path.read_text())["phase"], "COMPLETED")
         starts = [r for r in records if r["method"] == "turn/start"]
-        self.assertEqual(len(starts), 8)  # Two opening reviews, four turns and two chat jobs.
+        # Two opening reviews, four turns, two chat jobs and one gameplay continuation.
+        self.assertEqual(len(starts), 9)
         self.assertEqual(2, sum("outputSchema" in r["params"] for r in starts))
+        interruptions = [r for r in records if r["method"] == "turn/interrupt"]
+        self.assertEqual(len(interruptions), 1)
+        thread = interruptions[0]["params"]["threadId"]
+        self.assertEqual(sum(r["params"]["threadId"] == thread for r in starts), 2)
+        continuations = [r for r in records if r["method"] == "test/negotiation_result"]
+        self.assertEqual(len(continuations), 1)
+        self.assertEqual(continuations[0]["params"]["result"]["trade"]["version"], 2)
+        opening = next(r for r in self.gameplay_records("Rome") if r["gameTurn"] == 0)
+        self.assertEqual(opening["usage"]["input_tokens"], 20)
+        self.assertTrue(opening["usageComplete"])
+        self.assertGreater(opening["negotiationWaitSeconds"], 0)

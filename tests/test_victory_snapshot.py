@@ -16,13 +16,15 @@ from civ_agent.victory_snapshot import SECTIONS, capture_victory, victory_read
 def position(turn=5, names=("Scientific", "Domination")) -> JsonObject:
     return {
         "turn": turn,
-        "score": 33,
         "maxTurns": 330,
         "sections": list(SECTIONS),
         "availability": {s: {"available": True} for s in SECTIONS},
         "victories": [{"name": name, "milestones": []} for name in names],
         "rivals": [{"civilization": "Greece", "defeated": False, "nextMilestones": {n: "Current" for n in names}}],
-        "metrics": [{"name": "Score", "meaning": "Native score"}, {"name": "Production", "meaning": "Production"}],
+        "metrics": [
+            {"name": "Population", "meaning": "City population"},
+            {"name": "Production", "meaning": "Production"},
+        ],
         "rankings": {
             "comparedCivilizations": 2,
             "scope": "Disclosed only",
@@ -59,7 +61,7 @@ def position(turn=5, names=("Scientific", "Domination")) -> JsonObject:
             "scope": "Native aggregates",
             "rows": [
                 {
-                    "metric": "Score",
+                    "metric": "Population",
                     "ownValue": 33,
                     "ownRank": 2,
                     "best": {"civilization": None, "value": 43},
@@ -86,14 +88,14 @@ def test_live_failure_arguments_read_frozen_charts_without_mutating_the_snapshot
         "victory_progress",
         {
             "sections": ["charts", "rankings", "our_status", "global_status"],
-            "metrics": ["Production", "Score"],
+            "metrics": ["Production", "Population"],
             "civilizations": ["Rome"],
             "fromTurn": 1,
             "toTurn": 3,
             "names": ["Scientific"],
         },
     )
-    assert [m["name"] for m in result["metrics"]] == ["Score", "Production"]
+    assert [m["name"] for m in result["metrics"]] == ["Population", "Production"]
     assert result["charts"]["turns"] == [1, 2, 3]
     assert result["charts"]["series"] == [
         {"civilization": "Rome", "history": [[21, 1], [22, 2], [23, 3]], "currentValues": None}
@@ -128,7 +130,7 @@ def test_metric_columns_and_demographics_remain_aligned_and_concealed():
         {"names": ["Unknown"]},
         {"civilizations": ["Undiscovered"]},
         {"metrics": ["TilesExplored"]},
-        {"metrics": ["Score", "Score"]},
+        {"metrics": ["Population", "Population"]},
         {"fromTurn": 1},
         {"sections": ["charts"], "fromTurn": 3, "toTurn": 2},
         {"sections": ["charts"], "toTurn": 6},
@@ -139,6 +141,16 @@ def test_metric_columns_and_demographics_remain_aligned_and_concealed():
 def test_invalid_or_future_queries_are_rejected(args):
     with pytest.raises(ValueError, match="INVALID_ARGUMENT"):
         victory_read(position(), args)
+
+
+@pytest.mark.parametrize("section", SECTIONS)
+@pytest.mark.parametrize("metrics", [["Score"], ["Production", "Score"]])
+def test_total_score_is_rejected_by_live_schema_and_frozen_adviser_reads(section, metrics):
+    schema = json.loads(Path("src/main/resources/uncivai/schemas/victory-progress.json").read_text())
+    arguments = {"sections": [section], "metrics": metrics}
+    assert not Draft202012Validator(schema).is_valid(arguments)
+    with pytest.raises(ValueError, match="INVALID_ARGUMENT"):
+        frozen_read({"civilization": "Rome", "reads": {"victory_progress": position()}}, "victory_progress", arguments)
 
 
 def test_unavailable_and_uncaptured_sections_never_invent_data():
@@ -193,9 +205,12 @@ def test_victory_query_matches_advertised_native_arguments():
 
     schema = json.loads(Path("src/main/resources/uncivai/schemas/victory-progress.json").read_text())
     assert set(schema["properties"]) == set(VictoryQuery.model_fields)
+    frozen_metrics = VictoryQuery.model_json_schema()["properties"]["metrics"]
+    assert schema["properties"]["metrics"]["items"]["enum"] == frozen_metrics["items"]["enum"]
+    assert schema["properties"]["metrics"]["maxItems"] == frozen_metrics["maxItems"] == 10
     query = {
         "sections": ["charts", "demographics"],
-        "metrics": ["Score"],
+        "metrics": ["Population"],
         "names": ["Scientific"],
         "civilizations": ["Greece"],
         "fromTurn": 0,

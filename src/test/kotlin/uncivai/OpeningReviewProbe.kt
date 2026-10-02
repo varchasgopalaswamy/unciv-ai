@@ -20,6 +20,7 @@ object OpeningReviewProbe {
         val epoch = runtime.epoch
         GameplayTestApi(runtime, root.resolve("tls"), tokens).use { api ->
             api.acquire()
+            api.operator(OperatorRequest("barrier", api.lease))
             val gameBefore = json().toJson(runtime.game)
             for (civilization in civilizations) {
                 val credential = tokens.getValue(civilization)
@@ -55,6 +56,7 @@ object OpeningReviewProbe {
                 // Reviews finish before their owner's gameplay activation exists.
                 api.communicate(tokens.getValue(civilization), obj("op" to "job_release", "epoch" to epoch, "job" to "opening-$civilization", "usage" to ModelUsage(30L + index, 0, 5, 0).recordJson(), "telemetry" to report.recordJson()))
             }
+            api.operator(OperatorRequest("unbarrier", api.lease))
             for (civilization in civilizations) {
                 val activation = api.activate()
                 val job = activation.activationId!!

@@ -982,6 +982,7 @@ class CivilizationState:
         dependencies: JsonObject,
         call_id: str,
         intent: JsonObject | None = None,
+        initiative_decisions: list[JsonObject] | None = None,
     ) -> JsonObject:
         """Code owns identity. Retrying one tool call reuses the exact saved request."""
         request_id = "r" + hashlib.sha256((job + ":" + call_id).encode()).hexdigest()[:24]
@@ -1002,6 +1003,12 @@ class CivilizationState:
             )
             store = RecordStore(db, self._meta(db, "gameTurn"))
             pinned: JsonObject = {}
+            initiatives = []
+            if initiative_decisions:
+                advice = snapshot.get("strategicAdvice")
+                if payload.get("kind") != "END_TURN" or not advice:
+                    raise ValueError("INITIATIVE_REVIEW_REQUIRED")
+                initiatives = [{**entry, "reviewTurn": advice["asOfTurn"]} for entry in initiative_decisions]
             if intent is not None:
                 intent = validate(Intent, intent).model_dump()
                 # Intent is an audit annotation. Only command dependencies above
@@ -1035,6 +1042,7 @@ class CivilizationState:
                 {
                     "turn": store.turn,
                     "intent": intent,
+                    **({"initiativeDecisions": initiatives} if initiatives else {}),
                     "_pinned": pinned,
                     "command": body,
                     "outcome": "pending",
@@ -1118,6 +1126,54 @@ class CivilizationState:
                     .order_by(tables.request_order)
                 ).mappings()
             ]
+
+    def outgoing_position(self) -> int:
+        with self.transaction() as db:
+            return db.execute(
+                select(func.coalesce(func.max(tables.request_order), 0))
+                .select_from(tables.live_requests)
+                .where(tables.outbox.c.result.is_not(None))
+            ).scalar_one()
+
+    def outgoing_messages(
+        self, after: int = 0, *, limit: int | None = None, echo_cursor: int | None = None
+    ) -> list[JsonObject]:
+        """Confirmed sends from the existing journal, including not-yet-ingested echoes."""
+        with self.transaction() as db:
+            query = (
+                select(tables.outbox.c.job, tables.outbox.c.result)
+                .select_from(tables.live_requests)
+                .where(
+                    tables.request_order > after,
+                    tables.outbox.c.transport == "player_communication",
+                    func.json_extract(tables.outbox.c.payload, "$.op") == "send",
+                    func.json_extract(tables.outbox.c.result, "$.message.message").is_not(None),
+                )
+                .order_by(tables.request_order.desc())
+            )
+            if limit is not None:
+                query = query.limit(limit)
+            rows = [
+                {"job": row.job, "message": json.loads(row.result)["message"]}
+                for row in reversed(db.execute(query).all())
+            ]
+            if echo_cursor is not None and rows:
+                # Filter only this bounded page, without rescanning the whole
+                # outgoing journal for older, already handled messages.
+                message_id = func.json_extract(tables.events.c.body, "$.body.message")
+                echoed = set(
+                    db.scalars(
+                        select(message_id)
+                        .select_from(tables.events.join(tables.inbox))
+                        .where(
+                            tables.events.c.id <= echo_cursor,
+                            tables.events.c.kind == "message",
+                            message_id.in_([row["message"]["message"] for row in rows]),
+                        )
+                    )
+                )
+                rows = [row for row in rows if row["message"]["message"] not in echoed]
+            return rows
 
     def call_receipt(self, job: str, call_id: str):
         request_id = "r" + hashlib.sha256((job + ":" + call_id).encode()).hexdigest()[:24]
@@ -1308,7 +1364,7 @@ class CivilizationState:
             if job is not None:
                 self._validate(db, job, {})
             rows = db.execute(
-                select(tables.outbox.c.decision)
+                select(tables.outbox.c.decision, tables.outbox.c.transport)
                 .select_from(tables.live_requests.join(tables.jobs, tables.outbox.c.job == tables.jobs.c.id))
                 .where(tables.jobs.c.game_turn == game_turn)
                 .order_by(tables.request_order)
@@ -1319,7 +1375,10 @@ class CivilizationState:
             return HistoryReadResult.model_validate(
                 {
                     "turn": game_turn,
-                    "actions": [action_record(row[0], records[row[0]]["body"]) for row in rows[:20]],
+                    "actions": [
+                        action_record(row.decision, records[row.decision]["body"], transport=row.transport)
+                        for row in rows[:20]
+                    ],
                     "hasMore": len(rows) > 20,
                     "nextOffset": offset + min(len(rows), 20),
                 }

@@ -486,12 +486,14 @@ Victory progress uses Unciv's pure milestone completion checks and victory-scree
 header text, including cultural counts and spaceship-part progress. Rival next
 milestones follow `VictoryScreenCivGroup`'s visibility rule; unmet living rivals
 are omitted before ordering. `names` selects the displayed victory types returned
-by this query. Time victory is represented by the score and turn limit, following
-the UI's omission of its milestone column. The query does not acknowledge popups.
+by this query. The turn limit remains visible for Time victory. Total score is
+operator-only and excluded from preloads, reviews and all player statistics.
+The query does not acknowledge popups.
 
-This is partial victory-screen coverage: detailed per-nation/per-policy step
-buttons, demographics, global rankings and postgame exploration remain outside
-this slice. It does not establish full UI or privacy parity for existing surfaces.
+Rankings, charts and demographics follow the selectors and visibility rules in
+[Victory Status observations](Victory-and-turn-blockers.md#victory-status-observations).
+The [coverage ledger](Player-api-coverage.md#every-victory-screen-tab-and-terminal-control)
+tracks remaining victory-screen controls.
 
 Regression coverage includes cached detail reads, required confirmations, unread
 evidence rejection, selective assumption invalidation, restart, map-wrap distance

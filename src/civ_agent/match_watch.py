@@ -227,13 +227,20 @@ class MatchWatch(App):
         snapshot = self.snapshot
         run, result = snapshot.run, snapshot.result
         flight = run.get("inFlight") or {}
-        review_wait = run.get("waitingForReview") or {}
+        review_wait = run.get("reviewPhase") or {}
         current = flight or review_wait or (snapshot.latest_turn() or {}).get("turn", {})
         status = str(run.get("status") or result.get("status") or "Waiting for match records").replace("_", " ")
         title = Text(
             f"{status.capitalize()}  ·  Turn {current.get('gameTurn', '—')}  ·  {visible_text(current.get('civilization', '—'))}",
             style="bold",
         )
+        if review_wait:
+            title.append(
+                "  ·  "
+                + visible_text(review_wait["stage"])
+                + ": "
+                + visible_text(", ".join(review_wait["civilizations"]))
+            )
         if snapshot.updated_at is not None:
             age = max(0, int(time.time() - snapshot.updated_at))
             title.append(f"  ·  records updated {age}s ago", style="dim")
@@ -248,13 +255,19 @@ class MatchWatch(App):
             title.append("\n" + visible_text(run["reason"]), style="yellow")
         if review_wait:
             title.append(
-                f"\nWaiting for strategic review from turn {review_wait['review']['turn']} before this player's next turn.",
+                f"\nShared review after round {review_wait['reviewTurn']}; "
+                + (
+                    "finishing active conversations before the pause."
+                    if review_wait["stage"] == "Finishing communication"
+                    else "gameplay and communication are paused."
+                ),
                 style="yellow",
             )
         model_status = flight.get("modelStatus") or {}
         if (
             run.get("status") == "running"
             and flight.get("agentPhase") not in {"COMPLETED", "FAILED", "INTERRUPTED"}
+            and not flight.get("negotiationWait")
             and model_status.get("state") in {"waiting", "retrying", "warning", "failed"}
         ):
             title.append("\n" + visible_text(status_text(model_status)), style="yellow")
@@ -294,11 +307,17 @@ class MatchWatch(App):
                 phase = "Built-in AI" if score["controller"] == "BUILT_IN_AI" else "Human"
             elif name in pending:
                 phase = "Bookkeeping"
-            elif review_wait.get("civilization") == name:
-                phase = "Review wait"
+            elif name in review_wait.get("civilizations", []):
+                phase = review_wait["stage"]
             elif flight.get("civilization") == name:
                 phase = str(flight.get("agentPhase", "Starting")).replace("_", " ").capitalize()
-                if phase == "Running" and model_status.get("state") in {"waiting", "retrying"}:
+                if phase == "Running" and flight.get("negotiationWait"):
+                    phase = (
+                        "Negotiating (model suspended)"
+                        if flight["negotiationWait"]["state"] == "waiting"
+                        else "Suspending for negotiation"
+                    )
+                elif phase == "Running" and model_status.get("state") in {"waiting", "retrying"}:
                     phase = "Model " + model_status["state"]
                 if run.get("status") != "running":
                     phase = status.capitalize()

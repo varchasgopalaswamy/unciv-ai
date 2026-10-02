@@ -101,8 +101,8 @@ object TelemetryProbe {
             check(state.jobs.values.sumOf { it.usage!!.inputTokens } == 300L)
             check(runtime.executor.communicationState.telemetry.turns.size == 3)
             check(runtime.executor.communicationState.jobs.values.all { it.expires == 0L })
-            // A background reviewer belongs to its original turn across an epoch change.
-            runtime.executor.communicationPaused = false
+            // A reviewer in the shared pause belongs to its original turn across an epoch change.
+            runtime.executor.communicationPaused = true
             // A single-slot configuration serializes work but must still admit reviews.
             runtime.executor.communicationState.maxConcurrent = 1
             val parent = state.jobs.entries.single { it.value.civilization == "Rome" }.key

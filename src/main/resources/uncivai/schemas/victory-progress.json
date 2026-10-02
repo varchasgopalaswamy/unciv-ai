@@ -18,10 +18,10 @@
       "uniqueItems": true
     },
     "metrics": {
-      "description": "Empty selects all enabled native metrics. Returned columns use native metric order.",
+      "description": "Empty selects all available metrics. Returned columns use native metric order.",
       "type": "array",
-      "items": {"enum": ["Score", "Population", "Growth", "Production", "Gold", "Territory", "Force", "Happiness", "Technologies", "Culture", "TilesExplored"]},
-      "maxItems": 11,
+      "items": {"enum": ["Population", "Growth", "Production", "Gold", "Territory", "Force", "Happiness", "Technologies", "Culture", "TilesExplored"]},
+      "maxItems": 10,
       "uniqueItems": true
     },
     "civilizations": {

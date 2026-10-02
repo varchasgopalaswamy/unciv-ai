@@ -272,7 +272,7 @@ class HistoryLog:
             self.accept(candidate, kind, data)
 
     def next_conversation(self, model_role):
-        """A new app-server thread in this activation has independent item/turn IDs."""
+        """Bind a new model turn, including continuations in the same thread."""
         self.flush()
         self.turn_id = None
         self.model_role = model_role
@@ -333,6 +333,9 @@ class HistoryStore:
         if role not in {"developer", "user"}:
             raise ValueError("INVALID_PROMPT_ROLE")
         self.logs[activation_id].append(role + "_message", {"text": text, "source": "service_startup"})
+
+    def negotiation_result(self, activation_id, text):
+        self.logs[activation_id].append("user_message", {"text": text, "source": "service_negotiation"})
 
     def action(self, activation_id, call_id, kind, description):
         """Record a native receipt's description for observers, outside model context."""

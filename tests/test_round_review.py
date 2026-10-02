@@ -1,0 +1,106 @@
+"""Shared reviews drain conversations, finish together, and honor stop requests."""
+
+from types import SimpleNamespace
+from unittest.mock import Mock
+
+import pytest
+
+from civ_agent.round_review import review_round
+
+
+@pytest.mark.parametrize("stop", [None, "pause", "stop", "budget"])
+def test_all_reports_finish_before_release_and_last_completion_still_checks_limits(monkeypatch, stop):
+    status = {
+        "epoch": "g1",
+        "serverInstance": "host",
+        "handoff": 18,
+        "turn": 6,
+        "activeCivilization": "Rome",
+        "phase": "PAUSED",
+    }
+    names = ["Rome", "Greece", "France"]
+    calls, started, finished = [], set(), set()
+    holds, polls = dict.fromkeys(names, 0), dict.fromkeys(names, 0)
+    fenced = False
+    requested = None
+    budget = None
+
+    def call(name, operation, **fields):
+        nonlocal requested, budget
+        assert operation == "review_phase"
+        stage = fields["stage"]
+        calls.append((name, stage))
+        ready, pending = True, None
+        if stage == "hold":
+            holds[name] += 1
+            ready = name != "Greece" or holds[name] >= 3  # An existing conversation drains first.
+        elif stage == "start":
+            assert fenced and holds["Greece"] >= 3
+            started.add(name)
+        elif stage == "status":
+            assert started == set(names) and fenced
+            polls[name] += 1
+            if name == "Greece" and polls[name] == 1:
+                # Report committed, but final accounting/permit release still runs.
+                ready = False
+            else:
+                finished.add(name)
+            if finished == set(names):
+                if stop == "budget":
+                    budget = "Wall-time budget exhausted."
+                else:
+                    requested = stop
+        elif stage == "release":
+            assert finished == set(names) and not requested and not budget
+        return {"civilization": name, "epoch": "g1", "gameTurn": 6, "ready": ready, "pendingReview": pending}
+
+    agents = {name: SimpleNamespace(call=lambda op, name=name, **fields: call(name, op, **fields)) for name in names}
+
+    def quiesce():
+        nonlocal fenced
+        assert holds["Greece"] >= 3
+        fenced = True
+
+    def release():
+        nonlocal fenced
+        assert finished == set(names)
+        fenced = False
+
+    scheduler = SimpleNamespace(
+        review_intervals=dict.fromkeys(names, 5),
+        agents=agents,
+        state={"reviewedBoundary": 5},
+        round_open=True,
+        interrupted=False,
+        lease="lease",
+        store=SimpleNamespace(requested=lambda: requested),
+        operator=SimpleNamespace(call=lambda *args, **kwargs: {"status": status}),
+        turns=SimpleNamespace(
+            call_agent=lambda agent, op, **fields: agent.call(op, **fields), quiesce=quiesce, release=release
+        ),
+        collect_finalizations=Mock(),
+        check_status=Mock(),
+        check_agent_health=Mock(),
+        budget_reason=lambda current: budget,
+        note=Mock(),
+        save=Mock(),
+        output=SimpleNamespace(line=Mock()),
+    )
+    monkeypatch.setattr("civ_agent.round_review.time.sleep", lambda seconds: None)
+    assert review_round(scheduler, status) is (stop is None)
+    scheduler.collect_finalizations.assert_called_once_with(wait=True)
+    if stop:
+        assert fenced and scheduler.state["reviewedBoundary"] == 5
+        assert not any(stage == "release" for _, stage in calls)
+        assert (
+            scheduler.note.call_args.args[0]
+            == {"pause": "paused", "stop": "stopped", "budget": "budget_exhausted"}[stop]
+        )
+    else:
+        assert not fenced and scheduler.state == {"reviewedBoundary": 6}
+        assert [name for name, stage in calls if stage == "release"] == names
+        # Reconnecting at the completed boundary releases holds without another review.
+        scheduler.round_open = False
+        calls.clear()
+        assert review_round(scheduler, status)
+        assert calls == [(name, "release") for name in names]

@@ -364,6 +364,34 @@ def test_archive_can_render_during_dispatch_before_receipt_arrives(tmp_path, unc
     assert "Found the capital" in artifacts["summary"]
 
 
+@pytest.mark.parametrize("rejected", [False, True])
+def test_unconfirmed_social_offer_is_rendered_as_a_request(tmp_path, rejected):
+    memory = setup(tmp_path)
+    request = memory.queue(
+        "game",
+        "player_communication",
+        {"op": "offer", "kind": "peace", "participants": ["Rome", "France"], "terms": "Discuss borders"},
+        {},
+        "offer",
+    )
+    if rejected:
+        memory.receipt(request["id"], {"error": "OPTION_UNAVAILABLE", "applied": False})
+    action = memory.history(4)["actions"][0]
+    assert action["action"] == "Requested Offer"
+    assert action["outcome"] == ("rejected" if rejected else "pending")
+    summary = memory.summary(4)["actions"][0]
+    assert (summary["action"], summary["outcome"]) == (action["action"], action["outcome"])
+
+
+def test_native_success_without_an_effect_summary_remains_an_error(tmp_path):
+    memory = setup(tmp_path)
+    request = memory.queue("game", "player_command", {"kind": "FOUND_CITY", "target": "u1"}, {}, "found")
+    memory.receipt(request["id"], {"kind": "FOUND_CITY"})
+    for read in (memory.history, memory.summary):
+        with pytest.raises(KeyError, match="actionSummary"):
+            read(4)
+
+
 def test_input_and_response_models_reject_invented_types_and_metadata():
     with pytest.raises(ValidationError):
         MemoryUpdate.model_validate(

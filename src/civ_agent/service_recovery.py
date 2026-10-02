@@ -18,6 +18,7 @@ def checkpoint_path(service, id):
 async def barrier(service, paused):
     gateway = service.gateway
     if paused:
+        gateway.reviewing = False
         gateway.request_checkpoint()
         # Existing calls finish all their writes/receipts before memory is
         # frozen. A model still computing, or waiting to call a tool, need not.

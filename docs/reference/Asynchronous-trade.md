@@ -32,12 +32,12 @@ voluntary early cancellation of these enacted agreements.
 | Tool | Purpose |
 | --- | --- |
 | `trade_options(partner)` | Current trade-table maxima, engine durations, unavailable reasons and active agreements |
-| `trade_read(proposal)` | Full canonical terms, consent, status, execution outcome and previous versions |
+| `trade_read(proposalId)` | Full canonical terms, consent, status, execution outcome and previous versions |
 | `agreement_list()` | Player-local references, status and remaining turns for observed enacted rows and relationships |
 | `agreement_read(agreement)` | Current and originally observed terms, native ending history and actual bilateral effects |
 | `trade_offer(partner, give, receive, …)` | Publish terms; optionally counteroffer/revise an inspected proposal |
 | `friendship_offer(partner)` | Publish consent to the engine's fixed Declaration of Friendship |
-| `trade_decide(proposal, decision)` | Accept, decline, or (as author) withdraw the inspected terms |
+| `trade_decide(proposalId, decision)` | Accept, decline, or (as author) withdraw the inspected terms |
 
 `give` and `receive` in an offer are from the **proposing player's** perspective.
 The host converts them to canonical clauses with explicit `from` and `to` players.
@@ -94,10 +94,14 @@ Templates never supply the agent's intent. Unknown references return
 `UNKNOWN_TRADE` with only that player's pending proposals and their inspection
 commands; guessing a private reference yields the same error as a nonexistent one.
 
+Trade outputs expose `proposalId`; `trade_offer` uses optional `counterofferTo`
+for an inspected trade and omits it for a new offer. These fields contain short
+IDs, never descriptions of terms.
+
 The model supplies the proposal reference, decision and its own intent:
 
 ```json
-{"proposal":"d9bc1p", "decision":"accept", "intent":{"reason":"Secure our border with a mutual pact"}}
+{"proposalId":"d9bc1p", "decision":"accept", "intent":{"reason":"Secure our border with a mutual pact"}}
 ```
 
 Python attaches the exact version inspected by that job with `trade_read`, along
@@ -138,7 +142,25 @@ negotiation to close. A gameplay offer call returns the settled canonical propos
 The service waits through HTTPS long-polling outside its dispatch lock and memory
 actor; separate communication jobs, including the initiating civilization's job,
 handle counteroffers and decisions. Communication tool calls return immediately
-after their own command. No model polls or repeatedly restarts to wait for replies.
+after their own command.
+
+An unanswered MCP call does not stop code-mode inference: the model can continue
+generating while its tool runs. When the host confirms an active negotiation, the
+service interrupts its scheduled gameplay model turn and waits for acknowledgement. It keeps
+the app-server thread and accepted tool calls alive. After settlement, it continues
+that same thread once, supplying the pending calls' completed results. It also
+includes earlier action receipts from that model turn, because their outputs might
+still have been inside the interrupted code batch. The settlement response rebases
+the compact overview; subsequent action responses use deltas again. It never
+resubmits the offer. Native AI offers do not enter this pause. The controller uses app-server
+[`turn/interrupt` and `turn/start`](https://learn.chatgpt.com/docs/app-server).
+
+No gameplay model requests run during the acknowledged pause. Communication models
+still spend tokens negotiating. Thread token totals remain cumulative across the
+continuation; API accounting counts the actual tool executions once. The dashboard
+labels the waiting player `Negotiating (model suspended)`. Failure to acknowledge
+interruption stops the job; an operator stop, lost lease or disconnected app-server
+also stops it without starting a continuation. Existing turn-rewind recovery applies.
 Ordinary gameplay timeout accounting excludes this service wait; heartbeat leases,
 the negotiation deadline and whole-match time limits still apply.
 

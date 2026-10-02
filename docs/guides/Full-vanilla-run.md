@@ -136,13 +136,14 @@ saved the board before saving scheduler state in `runner/monitoring.sqlite3`, re
 saved board. If no board was created, fix the startup error and repeat `game start`.
 
 Opening reviews run concurrently before the first move on turn 0, from each
-civilization's own starting view and abilities. Each civilization waits for its
-own report before playing. Later reviews run asynchronously at the end of turns
+civilization's own starting view and abilities. All opening reports finish before
+play starts. Later reviews run concurrently after all players finish rounds
 5, 10, 15, etc. Set `--review-interval K` to change the later cadence; the opening
 review stays on turn 0. The interval is retained on resume.
 A review uses the player's model, effort, priority and optional strategy
-guide. Other civilizations can play while it runs; the reviewed civilization's
-next turn waits for the report and preloads it as dated advice. Waiting does not
+guide. Active conversations finish before capture; gameplay, communication and
+trade stay paused until all reviews finish. Subsequent turns and conversations
+receive their civilization's report as dated advice. Waiting does not
 consume its gameplay timeout. There are no mandatory post-turn memory writes.
 
 Pending reviews restart from frozen inputs after an interruption. The default

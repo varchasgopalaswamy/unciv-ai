@@ -96,10 +96,12 @@ def test_mistyped_trade_recovers_via_copyable_read_and_explicit_decision(tmp_pat
             chat = await gateway.call(game, "chat_read", {}, "chat")
             assert chat["trades"][0]["inspection"] == {
                 "tool": "trade_read",
-                "arguments": {"proposal": "dabc12"},
+                "arguments": {"proposalId": "dabc12"},
             }
             assert "responses" not in chat["trades"][0]
-            arguments: JsonObject = {"proposal": "dabc122"}  # One extra character, as in the stopped game.
+            arguments: JsonObject = {
+                ("counterofferTo" if tool == "trade_offer" else "proposalId"): "dabc122"
+            }  # One extra character, as in the stopped game.
             if tool != "trade_read":
                 arguments["intent"] = {"reason": "Consider the offered pact"}
             if tool == "trade_decide":
@@ -114,14 +116,14 @@ def test_mistyped_trade_recovers_via_copyable_read_and_explicit_decision(tmp_pat
             assert rejected["error"] == "UNKNOWN_TRADE" and rejected["applied"] is False
             assert rejected["recoverable"] is True
             pending = rejected["pendingTrades"][0]
-            assert pending["proposal"] == "dabc12" and pending["author"] == "Egypt"
+            assert pending["proposalId"] == "dabc12" and pending["author"] == "Egypt"
             assert "mode" not in pending and "responses" not in pending
             assert not host.writes and not memory.pending() and not game.trades
             assert await gateway.call(game, tool, arguments, "typo") == rejected
             assert host.reads == ["dabc122"]
 
             # Seeing the pending list does not count as reading exact terms.
-            choice = {"proposal": pending["proposal"], "decision": "decline", "intent": {"reason": "Avoid a pact"}}
+            choice = {"proposalId": pending["proposalId"], "decision": "decline", "intent": {"reason": "Avoid a pact"}}
             unread = await gateway.call(game, "trade_decide", choice, "unread")
             assert unread["error"] == "PROPOSAL_NOT_OBSERVED" and unread["applied"] is False
             assert unread["recovery"]["reads"] == [pending["inspection"]]
@@ -151,11 +153,11 @@ def test_unknown_trade_recovery_keeps_native_requests_out_of_communication_jobs(
         host = PendingTradesHost()
         try:
             job = await gateway.open("chat", "communication", "g1", host, {})
-            unknown = await gateway.call(job, "trade_read", {"proposal": "54"}, "event-id")
-            assert [t["proposal"] for t in unknown["pendingTrades"]] == ["ddef34"]
+            unknown = await gateway.call(job, "trade_read", {"proposalId": "54"}, "event-id")
+            assert [t["proposalId"] for t in unknown["pendingTrades"]] == ["ddef34"]
             assert "Egypt" not in json.dumps(unknown)
-            assert unknown["pendingTrades"][0]["inspection"]["arguments"] == {"proposal": "ddef34"}
-            native = await gateway.call(job, "trade_read", {"proposal": "dabc12"}, "native")
+            assert unknown["pendingTrades"][0]["inspection"]["arguments"] == {"proposalId": "ddef34"}
+            native = await gateway.call(job, "trade_read", {"proposalId": "dabc12"}, "native")
             assert "responses" not in native["trade"]
             assert native["trade"]["acceptAvailable"] is False and native["trade"]["declineAvailable"] is False
             assert not host.writes
@@ -248,6 +250,40 @@ class ResearchAgreementHost(Host):
         return await super().tool(name, args)
 
 
+def test_interactive_client_has_no_managed_model_to_suspend(tmp_path):
+    async def run():
+        io = ServiceIO()
+        gateway = ProposalGateway(CivilizationState(tmp_path / "private", "Rome"), io, tmp_path / "workspace")
+        host = HoldingHost()
+        job = await gateway.open("interactive", "gameplay", "g1", host, {})
+        try:
+            pending = asyncio.create_task(
+                gateway.invoke(
+                    job,
+                    "trade_offer",
+                    {
+                        "partner": "Greece",
+                        "give": [{"type": "Gold", "name": "Gold", "amount": 1, "duration": -1}],
+                        "receive": [],
+                        "intent": {"reason": "Offer a goodwill gift"},
+                    },
+                    "offer",
+                )
+            )
+            await asyncio.wait_for(host.waiting.wait(), 1)
+            assert not job.negotiation_pending.is_set()
+            host.active = False
+            host.trade["status"] = "EXPIRED"
+            host.settled.set()
+            assert (await pending)["trade"]["status"] == "EXPIRED"
+            assert "error" not in await gateway.invoke(job, "player_turn", {}, "read")
+        finally:
+            await gateway.close(job, True)
+            await io.close()
+
+    asyncio.run(run())
+
+
 @pytest.mark.parametrize("retrying_purpose", ["gameplay", "communication"])
 def test_concurrent_acceptance_of_enacted_terms_does_not_stop_the_run(tmp_path, retrying_purpose):
     """Shared trades can still race: another job accepts the offer after a refresh."""
@@ -260,7 +296,7 @@ def test_concurrent_acceptance_of_enacted_terms_does_not_stop_the_run(tmp_path, 
         # The turn-113/114 trade race occurs after this civilization's turn-110 review.
         with memory.transaction() as db:
             memory._set(db, "lastStrategicReviewTurn", 110)
-        arguments = {"proposal": "d1", "decision": "accept", "intent": {"reason": "Fund joint research"}}
+        arguments = {"proposalId": "d1", "decision": "accept", "intent": {"reason": "Fund joint research"}}
         try:
             winner_purpose = "communication" if retrying_purpose == "gameplay" else "gameplay"
             winner = await gateway.open("winner", winner_purpose, "g1", host, {})
@@ -269,12 +305,12 @@ def test_concurrent_acceptance_of_enacted_terms_does_not_stop_the_run(tmp_path, 
             host.view["turn"] = 114
             host.revision = "turn114"
             await gateway.call(winner, "player_turn", {}, "current-turn")
-            await gateway.call(retrying, "trade_read", {"proposal": "d1"}, "terms")
+            await gateway.call(retrying, "trade_read", {"proposalId": "d1"}, "terms")
             stale = await gateway.call(retrying, "trade_decide", arguments, "first")
             assert stale["error"] == "STALE_ASSUMPTIONS"
             for index, read in enumerate(stale["recovery"]["reads"]):
                 await gateway.call(retrying, read["tool"], read["arguments"], f"refresh:{index}")
-            await gateway.call(winner, "trade_read", {"proposal": "d1"}, "terms")
+            await gateway.call(winner, "trade_read", {"proposalId": "d1"}, "terms")
             enacted = await gateway.call(winner, "trade_decide", arguments, "accepted")
             assert enacted["trade"]["status"] == "ENACTED"
             if winner_purpose == "communication":
@@ -308,12 +344,12 @@ def test_stale_trade_decisions_still_require_recovery(tmp_path, status, version,
             game = await gateway.open("game", "gameplay", "g1", host, {})
             await gateway.call(game, "player_turn", {}, "previous-turn")
             chat = await gateway.open("chat", "communication", "g1", host, {})
-            await gateway.call(chat, "trade_read", {"proposal": "d1"}, "terms")
+            await gateway.call(chat, "trade_read", {"proposalId": "d1"}, "terms")
             host.trade.update(status=status, version=version)
             host.view["turn"] = 114
             host.revision = "turn114"
             await gateway.call(game, "player_turn", {}, "current-turn")
-            arguments = {"proposal": "d1", "decision": decision, "intent": {"reason": "Consider research"}}
+            arguments = {"proposalId": "d1", "decision": decision, "intent": {"reason": "Consider research"}}
             first = await gateway.call(chat, "trade_decide", arguments, "first")
             assert first["error"] == "STALE_ASSUMPTIONS" and first["applied"] is False
             second = await gateway.call(chat, "trade_decide", arguments, "second")
@@ -338,11 +374,11 @@ def test_game_command_waits_outside_dispatch_and_requires_a_new_decision(tmp_pat
             pending = asyncio.create_task(gateway.call(game, "player_command", {"kind": "END_TURN"}, "old"))
             await asyncio.wait_for(host.waiting.wait(), 1)
             assert not pending.done() and not gateway.dispatch.locked() and not host.executed
-            await gateway.call(chat, "trade_read", {"proposal": "d1"}, "read")
+            await gateway.call(chat, "trade_read", {"proposalId": "d1"}, "read")
             await gateway.call(
                 chat,
                 "trade_decide",
-                {"proposal": "d1", "decision": "accept", "intent": {"reason": "Advance the test assessment"}},
+                {"proposalId": "d1", "decision": "accept", "intent": {"reason": "Advance the test assessment"}},
                 "accept",
             )
             result = await asyncio.wait_for(pending, 1)
@@ -380,11 +416,11 @@ def test_interrupted_offer_wait_replays_receipt_without_reopening_negotiation(tm
             # Counteroffer arrival and acceptance can run while the gameplay caller is interrupted.
             host.trade.update(author="Greece", partner="Rome", version=2)
             chat = await gateway.open("chat", "communication", "g1", host, {})
-            await gateway.call(chat, "trade_read", {"proposal": "d1"}, "read")
+            await gateway.call(chat, "trade_read", {"proposalId": "d1"}, "read")
             await gateway.call(
                 chat,
                 "trade_decide",
-                {"proposal": "d1", "decision": "accept", "intent": {"reason": "Advance the test assessment"}},
+                {"proposalId": "d1", "decision": "accept", "intent": {"reason": "Advance the test assessment"}},
                 "accept",
             )
             result = await gateway.call(game, "trade_offer", arguments, "offer")
@@ -496,14 +532,14 @@ def test_war_consent_rechecks_observed_target_relations_before_dispatch(tmp_path
             old = await gateway.open("old", "communication", "g1", host, {})
             observer = await gateway.open("observer", "gameplay", "g1", host, {})
             await gateway.call(old, "player_turn", {}, "observe")
-            await gateway.call(old, "trade_read", {"proposal": "d1"}, "terms")
+            await gateway.call(old, "trade_read", {"proposalId": "d1"}, "terms")
             host.view["diplomacy"]["knownCivilizations"][0]["atWar"] = True
             host.revision = "after-war"
             await gateway.call(observer, "player_turn", {}, "new-observation")
             result = await gateway.call(
                 old,
                 "trade_decide",
-                {"proposal": "d1", "decision": "accept", "intent": {"reason": "Join the war"}},
+                {"proposalId": "d1", "decision": "accept", "intent": {"reason": "Join the war"}},
                 "accept",
             )
             assert result["error"] == "STALE_ASSUMPTIONS" and result["applied"] is False
@@ -559,13 +595,13 @@ def test_trade_acceptance_uses_the_jobs_inspected_version_despite_other_reads(tm
             unread = await gateway.call(
                 old,
                 "trade_decide",
-                {"proposal": "d1", "decision": "accept", "intent": {"reason": "Advance the test assessment"}},
+                {"proposalId": "d1", "decision": "accept", "intent": {"reason": "Advance the test assessment"}},
                 "unseen",
             )
             assert unread["error"] == "PROPOSAL_NOT_OBSERVED" and unread["applied"] is False
-            assert unread["recovery"]["reads"] == [{"tool": "trade_read", "arguments": {"proposal": "d1"}}]
+            assert unread["recovery"]["reads"] == [{"tool": "trade_read", "arguments": {"proposalId": "d1"}}]
             assert not old.trades and not host.writes
-            shown = await gateway.call(old, "trade_read", {"proposal": "d1"}, "read")
+            shown = await gateway.call(old, "trade_read", {"proposalId": "d1"}, "read")
             assert shown["trade"]["clauses"][0]["item"]["amount"] == 20
             host.trade["version"] = 2
             host.trade["clauses"][0]["item"]["amount"] = 40
@@ -574,13 +610,13 @@ def test_trade_acceptance_uses_the_jobs_inspected_version_despite_other_reads(tm
                 host.trade["yourWarDeclarations"] = [
                     {"targetCivilization": "Egypt", "confirmation": ["Declare war on Egypt?"]}
                 ]
-            await gateway.call(chat, "trade_read", {"proposal": "d1"}, "new-read")
+            await gateway.call(chat, "trade_read", {"proposalId": "d1"}, "new-read")
             # An unrelated ledger refresh must not select another job's newer terms.
             await gateway.call(old, "chat_read", {}, "greeting")
             stale = await gateway.call(
                 old,
                 "trade_decide",
-                {"proposal": "d1", "decision": "accept", "intent": {"reason": "Advance the test assessment"}},
+                {"proposalId": "d1", "decision": "accept", "intent": {"reason": "Advance the test assessment"}},
                 "accept",
             )
             assert stale == {"error": "STALE_REVISION"}
@@ -589,7 +625,7 @@ def test_trade_acceptance_uses_the_jobs_inspected_version_despite_other_reads(tm
             accepted = await gateway.call(
                 chat,
                 "trade_decide",
-                {"proposal": "d1", "decision": "accept", "intent": {"reason": "Advance the test assessment"}},
+                {"proposalId": "d1", "decision": "accept", "intent": {"reason": "Advance the test assessment"}},
                 "accept",
             )
             assert accepted["outcome"]["confirmation"]["source"] == "engine"
@@ -599,7 +635,7 @@ def test_trade_acceptance_uses_the_jobs_inspected_version_despite_other_reads(tm
                 await gateway.call(
                     chat,
                     "trade_decide",
-                    {"proposal": "d1", "decision": "accept", "intent": {"reason": "Advance the test assessment"}},
+                    {"proposalId": "d1", "decision": "accept", "intent": {"reason": "Advance the test assessment"}},
                     "accept",
                 )
                 == accepted
@@ -657,37 +693,37 @@ def test_trade_tools_keep_decisions_small_and_do_not_grant_gameplay(tmp_path):
                 "WarDeclaration",
                 "PeaceProposal",
             }
-            assert tools["trade_decide"]["inputSchema"]["required"] == ["intent", "proposal", "decision"]
-            assert set(tools["trade_decide"]["inputSchema"]["properties"]) == {"proposal", "decision", "intent"}
-            await gateway.call(job, "trade_read", {"proposal": "d1"}, "read")
-            with pytest.raises(ValueError):
-                await gateway.call(
-                    job,
-                    "trade_decide",
-                    {
-                        "proposal": "d1",
-                        "decision": "accept",
-                        "version": 2,
-                        "intent": {"reason": "Advance the test assessment"},
-                    },
-                    "version",
-                )
-            with pytest.raises(ValueError):
-                await gateway.call(
-                    job,
-                    "trade_decide",
-                    {
-                        "proposal": "d1",
-                        "decision": "accept",
-                        "clauses": [],
-                        "intent": {"reason": "Advance the test assessment"},
-                    },
-                    "terms",
-                )
+            assert tools["trade_decide"]["inputSchema"]["required"] == ["intent", "proposalId", "decision"]
+            assert set(tools["trade_decide"]["inputSchema"]["properties"]) == {"proposalId", "decision", "intent"}
+            await gateway.call(job, "trade_read", {"proposalId": "d1"}, "read")
+            result = await gateway.call(
+                job,
+                "trade_decide",
+                {
+                    "proposalId": "d1",
+                    "decision": "accept",
+                    "version": 2,
+                    "intent": {"reason": "Advance the test assessment"},
+                },
+                "version",
+            )
+            assert result["error"] == "INVALID_TOOL_ARGUMENTS"
+            result = await gateway.call(
+                job,
+                "trade_decide",
+                {
+                    "proposalId": "d1",
+                    "decision": "accept",
+                    "clauses": [],
+                    "intent": {"reason": "Advance the test assessment"},
+                },
+                "terms",
+            )
+            assert result["error"] == "INVALID_TOOL_ARGUMENTS"
             with pytest.raises(StateConflict, match="GAMEPLAY_NOT_PERMITTED"):
                 await gateway.call(job, "player_command", {"kind": "END_TURN"}, "move")
             offer = {
-                "proposal": "d1",
+                "counterofferTo": "d1",
                 "partner": "Greece",
                 "give": [],
                 "receive": [host.trade["clauses"][0]["item"]],
@@ -739,13 +775,13 @@ def test_friendship_proposal_uses_the_same_small_decision_and_durable_request_pa
                 == offered
             )
             assert len(host.writes) == 1
-            with pytest.raises(ValueError):
-                await gateway.call(
-                    job,
-                    "friendship_offer",
-                    {"partner": "Greece", "duration": 999, "intent": {"reason": "Invalid test"}},
-                    "forged",
-                )
+            result = await gateway.call(
+                job,
+                "friendship_offer",
+                {"partner": "Greece", "duration": 999, "intent": {"reason": "Invalid test"}},
+                "forged",
+            )
+            assert result["error"] == "INVALID_TOOL_ARGUMENTS"
             host.trade = {
                 "proposal": "d1",
                 "version": 1,
@@ -756,17 +792,17 @@ def test_friendship_proposal_uses_the_same_small_decision_and_durable_request_pa
                 "status": "PENDING",
                 "mode": "SHARED",
             }
-            await gateway.call(job, "trade_read", {"proposal": "d1"}, "inspect")
+            await gateway.call(job, "trade_read", {"proposalId": "d1"}, "inspect")
             result = await gateway.call(
                 job,
                 "trade_decide",
-                {"proposal": "d1", "decision": "accept", "intent": {"reason": "Advance the test assessment"}},
+                {"proposalId": "d1", "decision": "accept", "intent": {"reason": "Advance the test assessment"}},
                 "accept",
             )
             assert result["outcome"]
             assert set(host.writes[-1]) == {"op", "epoch", "requestId", "proposal", "version", "decision"}
             assert "d1" not in job.trades
-            assert {"tool": "trade_read", "arguments": {"proposal": "d1"}} in result["invalidatedDetails"]
+            assert {"tool": "trade_read", "arguments": {"proposalId": "d1"}} in result["invalidatedDetails"]
         finally:
             await io.close()
 
@@ -782,7 +818,7 @@ def test_private_policy_changes_do_not_gate_an_inspected_trade_decision(tmp_path
         try:
             chat = await gateway.open("chat", "communication", "g1", host, {})
             planner = await gateway.open("planner", "gameplay", "g1", host, {})
-            await gateway.call(chat, "trade_read", {"proposal": "d1"}, "read")
+            await gateway.call(chat, "trade_read", {"proposalId": "d1"}, "read")
             await gateway.call(
                 planner,
                 "memory_update",
@@ -805,7 +841,7 @@ def test_private_policy_changes_do_not_gate_an_inspected_trade_decision(tmp_path
             stale = await gateway.call(
                 chat,
                 "trade_decide",
-                {"proposal": "d1", "decision": "accept", "intent": {"strategy": "mem1", "reason": "Defend Rome"}},
+                {"proposalId": "d1", "decision": "accept", "intent": {"strategy": "mem1", "reason": "Defend Rome"}},
                 "accept",
             )
             assert "outcome" in stale
@@ -835,12 +871,12 @@ def test_trade_receipt_reconciliation_after_response_loss(tmp_path, enacted):
         host.tool = unreliable
         try:
             job = await gateway.open("chat", "communication", "g1", host, {})
-            await gateway.call(job, "trade_read", {"proposal": "d1"}, "read")
+            await gateway.call(job, "trade_read", {"proposalId": "d1"}, "read")
             with pytest.raises(TimeoutError):
                 await gateway.call(
                     job,
                     "trade_decide",
-                    {"proposal": "d1", "decision": "accept", "intent": {"reason": "Advance the test assessment"}},
+                    {"proposalId": "d1", "decision": "accept", "intent": {"reason": "Advance the test assessment"}},
                     "accept",
                 )
             assert job.closed and len(memory.pending()) == 1
@@ -892,7 +928,7 @@ def test_duplicate_offer_rejection_with_null_trade_is_durable_and_does_not_break
             # A later terminal read walks earlier receipts, including the null rejection.
             host.trade.update(status="ENACTED", outcome={"action": "ENACT_TRADE"})
             host.active = False
-            await gateway.call(chat, "trade_read", {"proposal": "d1"}, "settled")
+            await gateway.call(chat, "trade_read", {"proposalId": "d1"}, "settled")
             summary = memory.summary(job="game")
             assert summary["actions"][0]["outcome"] == "rejected"
             assert summary["actions"][0].get("settlement") is None

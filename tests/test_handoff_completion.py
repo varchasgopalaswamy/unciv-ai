@@ -242,7 +242,7 @@ def test_handoff_drains_final_usage_without_additional_model_work(tmp_path, monk
                 ("player_command", {"kind": "END_TURN"}),
                 ("chat_read", {}),
                 ("chat_send", {"to": "Greece", "text": "Hello"}),
-                ("trade_read", {"proposal": "trade1"}),
+                ("trade_read", {"proposalId": "trade1"}),
             ]:
                 with pytest.raises(StateConflict, match="TURN_ENDED"):
                     await service.gateway.call(job, name, arguments, "late-" + name)

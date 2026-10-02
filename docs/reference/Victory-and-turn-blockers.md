@@ -29,7 +29,7 @@ the game. Terminal reports are read-only; no acknowledgement is needed to finish
 ## Victory Status observations
 
 `victory_progress` defaults to `sections=["our_status","global_status","rankings"]`.
-It is already prepared at gameplay startup. It returns own integer score and
+It is already prepared at gameplay startup. It returns
 the turn limit, native victory milestones, permitted rival next milestones,
 and current rankings with short historical comparisons. Current policy-branch
 and capital objectives supplement the existing spaceship-part counts.
@@ -42,7 +42,7 @@ Optional selectors:
 - `names`: enabled victory names for own/global status.
 - `sections`: any of `our_status`, `global_status`, `rankings`, `charts`,
   `demographics`. `availability` reports why a section is inaccessible.
-- `metrics`: native metric names, in returned canonical column order.
+- `metrics`: available native metric names, in returned canonical column order.
 - `civilizations`: disclosed names for global status, rankings and charts.
   Filtering a ranking does not change the population against which ranks are
   calculated. Demographics always retains its native aggregate scope.
@@ -68,10 +68,15 @@ exist. Default responses contain no chart history.
 Metric meanings follow the engine: `Technologies` counts researched technologies,
 `Culture` counts adopted policies excluding branch completion, `Gold` is treasury,
 `Growth` is net food per turn, and `Force` is the native military rating including
-its treasury adjustment. `Score`, `Population`, `Production`, `Territory`, and
+its treasury adjustment. `Population`, `Production`, `Territory`, and
 `Happiness` retain their native meanings. `TilesExplored` is available only when
 the game's additional-ranking-types setting enables it. These fields are not
 forecasts or strategic instructions.
+
+Total score is excluded from player observations, including the startup preload,
+strategic reviews, rankings, charts and demographics. Explicit `Score` requests
+are invalid. Native scoring and Time-victory rules remain unchanged. Scores remain
+available in operator telemetry and the dashboard, with breakdowns in telemetry.
 
 Visibility is enforced before ranking, sorting, or reading history. Unmet
 civilizations are omitted from named rankings and charts; their raw series and
