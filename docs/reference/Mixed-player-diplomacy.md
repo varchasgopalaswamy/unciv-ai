@@ -7,7 +7,8 @@ agents, and Unciv's built-in AI. Direct city-state interactions remain a separat
 slice; decisions addressed by another major civilization about a protected or
 allied city-state are included.
 
-- Human–agent and agent–agent trades use the existing shared negotiation flow.
+- Human–human, human–agent and agent–agent trades use one shared negotiation service
+  with native UI and structured API adapters.
 - Only agent–built-in-AI trade and friendship requests use the native bridge.
 - Native requests await the recipient's native turn without pausing gameplay.
 - The gameplay agent owns offers, responses, counteroffers, withdrawals and
@@ -71,7 +72,7 @@ Plain chat remains a statement even when it uses identical words.
 
 | Pair / operation | Route | When effects occur |
 | --- | --- | --- |
-| Agent–agent or human–agent trade/friendship | Existing shared proposal and exact consent | Both participants accept the same version; shared negotiation pauses gameplay |
+| Human–human, human–agent or agent–agent trade/friendship | Shared proposal and exact consent | Both participants accept the same version; shared negotiation pauses gameplay |
 | Agent proposes trade/friendship to built-in AI | Same tools, proposal `mode: NATIVE_AI` | Native AI decides on its turn; `PENDING` returns immediately, without a gameplay pause or wall-clock deadline |
 | Built-in AI offers/counters to agent | Native request imported into the proposal history | Agent accepts/declines/counters on its turn; a counter sent back waits for the AI's turn |
 | Denounce, issue demand, respond to a diplomatic alert | Explicit `chat_send.nativeAction` | On the acting player's turn, with a fresh observation and engine validation |
@@ -96,9 +97,20 @@ selects native-bridge eligibility and is checked against the checkpoint on resum
 Do not issue a player credential to the built-in AI. The mixed launcher creates
 agent grants for Rome/Greece and human grants for France/Egypt.
 
-Humans use the existing `civ-agent chat` and `civ-agent trade` commands. An explicit
-native action prints the current options/consequences and asks the human to
-confirm it:
+One local human can use native desktop controls and the integrated Chat/Trades/
+Promises/Agreements panel via `game start --human France --agents Rome Greece`.
+Shared human–agent negotiations have no response deadline, preserve exact consent,
+and suspend gameplay inference while waiting. Trade and Negotiate Peace open
+Unciv’s native four-column trade table. Chat → Trades opens that same table and
+links proposal history; friendship remains in the shared panel. Native item
+controls prepare drafts, and the shared service publishes, counters, accepts,
+declines or withdraws them. The custom trade editor has been removed. Built-in AI
+and city-state diplomacy keep their native queued controls. Public/private messages and social promises use the
+same player-bound communication API; no operator data is loaded into the panel.
+
+The existing `civ-agent chat` and `civ-agent trade` commands remain useful for
+scripted scenarios. An explicit native action prints the current
+options/consequences and asks the human to confirm it:
 
 ```sh
 civ-agent chat send France --state-dir /tmp/mixed-diplomacy \
@@ -106,12 +118,75 @@ civ-agent chat send France --state-dir /tmp/mixed-diplomacy \
   --native-action DENOUNCE --target Greece
 ```
 
-This sprint does not embed a human desktop in the authoritative host or add human
-turn handling to the automatic agent scheduler. The mixed acceptance driver
-supplies ordinary human turns through their own credentials and uses the actual
-human trade CLI. Human-facing browser UI remains a separate task.
+The scheduler activates the human seat without starting a model or applying a
+model turn timeout. Opening/periodic reviews remain agent-only quiet phases.
+Closing the desktop stops the whole match; interrupted-turn resume rewinds native
+actions, communication and agent state together. See the
+[launcher guide](../guides/Full-vanilla-run.md#play-a-civilization-yourself).
 
 ## Verification
+
+### Unified native trading — October 2, 2026
+
+The shared engine/service architecture is documented in
+[Kotlin architecture](../architecture/Kotlin-architecture.md#shared-trade-execution).
+
+- `UnifiedTradeProbe` passed all four ordered human/agent pairings. Every Vanilla
+  item went through preparation, proposal, counteroffer and acceptance: cash/GPT,
+  luxury/strategic resources, embassies, open borders, both city directions, funded
+  research agreements, defensive pacts, peace, third-party war and mediated peace.
+  Native `TradeView` drafts and structured drafts produced identical canonical
+  items. Checks compare engine effects, controller-independent results, durations,
+  city ownership, stale consent, duplicate acceptance and nonmutating preparation.
+- The rendered production desktop/HTTPS scenario passed in
+  `/tmp/unciv-unified-trade-desktop-04/` (`COMPLETE` and screenshots). It used native
+  numeric/item controls and lifecycle buttons for publishing, human counteroffers,
+  withdrawal, decline and off-turn acceptance. An open acceptance popup rejected
+  consent after a newer counteroffer arrived. Turn rewind restored gameplay and
+  communication together, followed by a complete round and the quiet-review barrier.
+- The focused suites passed **33 host tests, 44 engine tests and 44 Python tests**.
+  Independent engine regressions exercise detached edits, paired treaties, exact
+  combined research affordability, explicit funding, duplicate/overflow/stale
+  terms, native queued acceptance and trade effects. The host regression suite
+  covers private terms, lost responses, checkpoint failures, restart and rewind.
+- Python draft-tool checks pass for gameplay and communication jobs: returned final
+  terms remain explicit, publish arguments validate, and preparation sends no offer.
+
+This establishes the tested Vanilla transactions, not mod support or remote human
+clients. The rendered run uses one local human and scripted peers; it spends no
+model tokens. The earlier paid one-round check below tested the local-human
+scheduler, before this native-editor replacement.
+
+### Authoritative local desktop — October 2, 2026
+
+- The scripted production desktop/HTTPS check passed native founding and research,
+  private-message isolation, human offers and exact counteroffer consent, off-turn
+  acceptance, the quiet-review barrier, and a complete France → Rome → Greece →
+  built-in Egypt round. Rewinding restored native actions and messages together;
+  credential rotation preserved the human seat. Rendered captures are retained in
+  `/tmp/unciv-managed-desktop-10/`. This also verifies that another conversation
+  stays unread, ordinary refreshes keep unsent drafts, and rewind discards them.
+- A live round in `/tmp/unciv-managed-live-02/` passed with scripted human France,
+  Rome/Greece using `gpt-6-luna` at medium reasoning, built-in Egypt and one city-state.
+  Both opening reviews and both agent turns completed. It stopped at the requested
+  one-round limit (turn 1, handoff 3). All three turn accounting records completed;
+  France recorded native actions and no model job.
+- 21 host communication/recovery/launch tests and 10 engine operation tests passed. Python
+  checks cover launcher roles, controller-preserving recovery, human waits longer
+  than model timeouts, and stopping or halting during human input without starting
+  a model for that seat.
+
+Repeat the rendered check with a **new** absolute output directory:
+
+```sh
+codex-log ./gradlew runManagedDesktop -PmanagedDesktopDir=/tmp/unciv-desktop-check
+```
+
+Add `-PmanagedLive=true` for the opt-in paid one-round model test. These checks need
+a desktop display. Long matches, exhaustive native UI actions, and remote human
+clients remain outside this acceptance result.
+
+### Earlier mixed-controller coverage
 
 September 19, 2026:
 

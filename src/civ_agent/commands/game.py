@@ -124,6 +124,7 @@ def parser(*, add_help=True, action="start"):
     result.add_argument("--repo-dir", type=Path, help="Host source checkout")
     result.add_argument("--unciv-dir", help="Engine checkout for both code and assets")
     if action == "start":
+        result.add_argument("--human", metavar="CIV", help="Play one civilization in the local Unciv window")
         result.add_argument("--seed", type=seed_number, help="Map seed (default: random)")
         result.add_argument(
             "--agents",
@@ -177,12 +178,16 @@ def resolve_options(args):
         args.agents = [
             entry["civilizationId"] for entry in grants["players"] if entry.get("controller", "AGENT") == "AGENT"
         ]
+        humans = [entry["civilizationId"] for entry in grants["players"] if entry.get("controller") == "HUMAN"]
+        if len(humans) > 1:
+            raise ValueError("The local desktop supports exactly one human.")
+        args.human = next(iter(humans), None)
     if not args.agents or len(set(args.agents)) != len(args.agents):
         raise ValueError("Choose at least one agent; civilizations must be distinct.")
     if args.action == "start":
-        nations = args.agents + args.built_in_ai
+        nations = args.agents + args.built_in_ai + ([args.human] if args.human else [])
         if len(set(nations)) != len(nations):
-            raise ValueError("Agent and built-in AI civilizations must be distinct.")
+            raise ValueError("Human, agent and built-in AI civilizations must be distinct.")
         args.seed = secrets.randbits(63) if args.seed is None else args.seed
     endpoints = read_json(root / "endpoints.json") or {}
     defaults = {
@@ -305,6 +310,8 @@ def run_services(args, output):
     host = ["host", "start", "--port", str(args.port), "--repo-dir", str(args.repo_dir)]
     if args.unciv_dir:
         host += ["--unciv-dir", args.unciv_dir]
+    if args.human:
+        host += ["--human", args.human]
     if args.action == "start":
         host += ["--new", "--seed", str(args.seed), "--city-states", str(args.city_states)]
         host += [item for civ in args.agents for item in ("--agent-player", civ)]
@@ -460,6 +467,8 @@ def launch(args):
                 output.line("Match", root)
                 output.line("Log", launch_dir / "console.log")
                 output.line("Dashboard", shlex.join(["civ-agent", "match", "watch", "--state-dir", str(root)]))
+                if args.human:
+                    output.line("Player", "Local human · Unciv desktop", civilization=args.human)
                 for civilization in args.agents:
                     selected = civilization_settings(args, civilization)
                     output.line(

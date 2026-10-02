@@ -59,6 +59,21 @@ version. Native checkpoint behavior is unchanged.
 Replaying work spends additional tokens and time and may produce different choices.
 Human players cannot forget messages already delivered before a rewind.
 
+## Local human turns
+
+The desktop shares the host's executor. Native input and asynchronous UI work run
+on the application thread; HTTPS operations dispatch there before acquiring the
+executor lock. Persistent native changes invalidate player observations and are
+checkpointed before the next operation. End Turn uses the host's durable handoff,
+not a second desktop copy of the game. Replacing the game or changing authority
+invalidates old UI callbacks and rebuilds the human's fixed player view.
+
+The scheduler captures the same start-of-turn checkpoint before human activation.
+There is no human model conversation or memory store to restore. Credential
+rotation retains both controller roles and the complete roster. Human telemetry
+records elapsed time and native actions separately from model/API spend. Closing
+the window writes the ordinary match stop request and lets services shut down.
+
 ## Validation
 
 The scripted engine tests interrupt a turn after founding a city and moving a unit,

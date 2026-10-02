@@ -31,6 +31,8 @@ class GameExecutor internal constructor(
     private val lifecycleLock: Any = Any(),
     private val onGameReplaced: (GameInfo) -> Unit = {},
     private val isAvailable: () -> Boolean = { true },
+    private val dispatch: GameDispatch = DirectGameDispatch,
+    private val onCommitted: () -> Unit = {},
 ) : AutoCloseable {
     // Epochs distinguish independent games; entity/revision counters are local to each player.
     internal var epoch = "g" + java.lang.Long.toUnsignedString(SecureRandom().nextLong(), 36)
@@ -66,14 +68,17 @@ class GameExecutor internal constructor(
     internal val telemetry = Telemetry(this)
     internal val communicationChanges = CommunicationChanges()
     internal var communicationPaused = false
+    internal var pauseReason: String? = null
     internal var clockMillis: () -> Long = System::currentTimeMillis
     private val tradeDeadlines = Executors.newSingleThreadScheduledExecutor { task ->
         Thread(task, "trade-deadline").apply { isDaemon = true }
     }
     private var tradeDeadline: ScheduledFuture<*>? = null
 
-    internal fun scheduleTradeDeadline(deadline: Long) {
+    internal fun scheduleTradeDeadline(deadline: Long?) {
         tradeDeadline?.cancel(false)
+        tradeDeadline = null
+        if (deadline == null) return
         tradeDeadline = tradeDeadlines.schedule({
             // Shutdown or fail-stop may win the race. Such a runtime must stay closed.
             runCatching { accessGame {} }
@@ -105,7 +110,7 @@ class GameExecutor internal constructor(
     internal var mutationFailure: Throwable? = null
         private set
 
-    internal fun <T> accessGame(block: (GameInfo) -> T): T = synchronized(lifecycleLock) {
+    internal fun <T> accessGame(block: (GameInfo) -> T): T = dispatch.call { synchronized(lifecycleLock) {
         checkAvailable()
         val outermost = !Thread.holdsLock(game)
         synchronized(game) {
@@ -117,10 +122,10 @@ class GameExecutor internal constructor(
             }
             block(game)
         }
-    }
+    } }
 
     /** Operator diagnostics remain available after an uncertain mutation; player queries do not. */
-    internal fun <T> accessOperatorGame(block: (GameInfo) -> T): T = synchronized(lifecycleLock) {
+    internal fun <T> accessOperatorGame(block: (GameInfo) -> T): T = dispatch.call { synchronized(lifecycleLock) {
         if (closed || !isAvailable()) throw RuntimeClosedException()
         val outermost = !Thread.holdsLock(game)
         synchronized(game) {
@@ -134,7 +139,7 @@ class GameExecutor internal constructor(
             }
             block(game)
         }
-    }
+    } }
 
     internal fun requireRunning() {
         if (paused) throw RuntimePausedException()
@@ -179,6 +184,7 @@ class GameExecutor internal constructor(
             checkpointStore?.write(CheckpointStore.capture(game, epoch, paused, turnSessions, handoff, scheduled, communicationState, communicationPaused))
             turnSessions.values.forEach { it.checkpointRevision = it.revision }
             communicationChanges.committed(communicationState)
+            onCommitted()
             checkpointStore?.let {
                 telemetry.publish(game, it.path)
                 TradeCycleScenarioSetup.recordEvidence(game, communicationState, it.path.parent)

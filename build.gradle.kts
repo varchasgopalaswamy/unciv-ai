@@ -29,7 +29,9 @@ kotlin {
 
 dependencies {
     implementation("local.unciv:core")
+    implementation("local.unciv:desktop")
     implementation(uncivLibs.gdx)
+    implementation(uncivLibs.gdx.backend.desktop)
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.11.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.11.0")
     implementation("com.github.ajalt.clikt:clikt:5.0.3")
@@ -45,12 +47,9 @@ dependencies {
     testImplementation("io.ktor:ktor-client-cio")
 }
 
-// Desktop dependencies are only used by the manual UI verification launcher.
+// Inspection launchers use the same runtime as the authoritative desktop.
 val uiRuntime by configurations.creating {
     extendsFrom(configurations.testRuntimeClasspath.get())
-}
-dependencies {
-    uiRuntime("local.unciv:desktop")
 }
 
 spotless {
@@ -219,6 +218,29 @@ fun Sync.copyDesktopAssets(destination: Provider<Directory>) {
         exclude("assets/mods/**", "assets/SaveFiles/**", "assets/MultiplayerFiles/**", "assets/GameSettings.json")
     }
     from(uncivRoot.resolve("docs")) { into("docs") }
+}
+tasks.register<Sync>("prepareDesktopAssets") {
+    group = "application"
+    description = "Copies the selected engine's desktop assets for a managed local game."
+    copyDesktopAssets(layout.buildDirectory.dir("desktop-engine"))
+}
+
+tasks.register<JavaExec>("runManagedDesktop") {
+    group = "verification"
+    description = "Exercises native controls and authenticated players against one managed desktop game."
+    dependsOn(tasks.testClasses, "prepareDesktopAssets")
+    classpath = sourceSets.test.get().runtimeClasspath
+    mainClass = "uncivai.ManagedDesktopProbe"
+    systemProperty("uncivai.liveDesktop", providers.gradleProperty("managedLive").getOrElse("false"))
+    systemProperty("uncivai.agentCli", project.file(".venv/bin/civ-agent").absolutePath)
+    workingDir = layout.buildDirectory.dir("desktop-engine/android/assets").get().asFile
+    systemProperty("uncivai.assetsDir", workingDir.absolutePath)
+    systemProperty("java.awt.headless", "false")
+    doFirst {
+        val output = providers.gradleProperty("managedDesktopDir")
+        require(output.isPresent) { "runManagedDesktop requires -PmanagedDesktopDir=<new absolute directory>" }
+        args(output.get())
+    }
 }
 val prepareS04UiAssets by tasks.registering(Sync::class) {
     group = "verification"

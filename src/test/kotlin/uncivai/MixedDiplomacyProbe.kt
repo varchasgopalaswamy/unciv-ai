@@ -147,6 +147,14 @@ object MixedDiplomacyProbe {
                 val read = command("trade_read", "proposal" to incoming["proposal"])["trade"]!!.jsonObject
                 check(read["acceptAvailable"]!!.jsonPrimitive.boolean) { read.toString() }
                 verifyNativeDelivery(runtime)
+                val queued = rome.tradeRequests.single { it.requestingCiv == china.civID }
+                val changedTerm = queued.trade.theirOffers.first()
+                val originalDuration = changedTerm.duration
+                changedTerm.duration = originalDuration + 1
+                val changedConsent = command("trade_decide", "proposal" to read["proposal"], "version" to read["version"], "decision" to "accept")
+                check(changedConsent["error"] != null && runtime.executor.mutationFailure == null)
+                check(rome.gold == beforeTypo && rome.tradeRequests.any { it === queued })
+                changedTerm.duration = originalDuration
                 val accepted = command("trade_decide", "proposal" to read["proposal"], "version" to read["version"], "decision" to "accept")
                 check(accepted["trade"]!!.jsonObject["status"]!!.jsonPrimitive.content == "ENACTED")
                 check(rome.gold == transferred + 13)

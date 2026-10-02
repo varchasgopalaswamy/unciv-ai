@@ -284,8 +284,15 @@ class MatchWatch(App):
         banner = self.query_one("#negotiation", Static)
         banner.display = negotiation is not None
         if negotiation:
-            remaining = max(0, (negotiation.get("deadlineMillis", 0) - int(time.time() * 1000)) // 1000)
-            timing = f"{remaining}s remaining" if remaining else "deadline elapsed; awaiting host outcome"
+            deadline = negotiation.get("deadlineMillis")
+            remaining = max(0, (deadline - int(time.time() * 1000)) // 1000) if deadline is not None else None
+            timing = (
+                "awaiting a decision; no response deadline"
+                if remaining is None
+                else f"{remaining}s remaining"
+                if remaining
+                else "deadline elapsed; awaiting host outcome"
+            )
             banner.update(
                 Text(
                     visible_text(
@@ -303,14 +310,18 @@ class MatchWatch(App):
             score, accounting = scores.get(name, {}), players.get(name, {})
             latest = snapshot.latest_turn(name)
             phase = "Waiting"
-            if score.get("controller") in {"BUILT_IN_AI", "HUMAN"}:
-                phase = "Built-in AI" if score["controller"] == "BUILT_IN_AI" else "Human"
+            if score.get("controller") == "BUILT_IN_AI":
+                phase = "Built-in AI"
             elif name in pending:
                 phase = "Bookkeeping"
             elif name in review_wait.get("civilizations", []):
                 phase = review_wait["stage"]
             elif flight.get("civilization") == name:
-                phase = str(flight.get("agentPhase", "Starting")).replace("_", " ").capitalize()
+                phase = (
+                    "Human turn"
+                    if flight.get("controller") == "HUMAN"
+                    else str(flight.get("agentPhase", "Starting")).replace("_", " ").capitalize()
+                )
                 if phase == "Running" and flight.get("negotiationWait"):
                     phase = (
                         "Negotiating (model suspended)"
@@ -321,6 +332,8 @@ class MatchWatch(App):
                     phase = "Model " + model_status["state"]
                 if run.get("status") != "running":
                     phase = status.capitalize()
+            elif score.get("controller") == "HUMAN":
+                phase = "Human"
             if score.get("defeated"):
                 phase = "Defeated"
             usage = accounting.get("usage", {})

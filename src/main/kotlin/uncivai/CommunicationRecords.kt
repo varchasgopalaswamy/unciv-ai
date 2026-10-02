@@ -38,6 +38,7 @@ internal data class CommunicationRequest(
     val partner: String? = null,
     val give: List<TradeSelection> = emptyList(),
     val receive: List<TradeSelection> = emptyList(),
+    val fundResearch: Boolean = true,
     val decision: String? = null,
     val nativeAction: NativeDiplomaticAction? = null,
 )

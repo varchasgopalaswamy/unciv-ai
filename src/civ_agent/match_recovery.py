@@ -140,7 +140,10 @@ class TurnCoordinator:
             if result.get("epoch") != epoch or not result.get("restored"):
                 raise ValueError("Civilization restoration is incomplete; match remains paused")
         credentials = self.operator.call("rotate_players", leaseId=self.lease, epoch=epoch)["players"]
-        if {player["civilizationId"] for player in credentials} != set(self.agents):
+        controllers = restored["playerControllers"]
+        if {player["civilizationId"]: player["controller"] for player in credentials} != controllers or {
+            name for name, role in controllers.items() if role == "AGENT"
+        } != set(self.agents):
             raise ValueError("Credential rotation is incomplete; match remains paused")
         write_private_json(self.root.parent / "players.json", {"players": credentials})
         # Accounting and time budgets survive; fresh jobs get only restored memory.

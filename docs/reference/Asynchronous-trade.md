@@ -13,7 +13,7 @@ memory remain available. The two players negotiate against the same game state.
 
 This supports bilateral gold, gold per turn, luxury and strategic resources,
 Open Borders, embassies, research agreements, defensive pacts and city transfers
-between met, surviving human major civilizations. At peace, one side can
+between met, surviving major civilizations controlled by humans or agents. At peace, one side can
 be empty for a gift. During war, both sides must include the offered Peace Treaty;
 peace and economic consideration use the same proposal and consent flow. See
 [war and peace](War-and-peace.md) for treaty rules.
@@ -32,6 +32,7 @@ voluntary early cancellation of these enacted agreements.
 | Tool | Purpose |
 | --- | --- |
 | `trade_options(partner)` | Current trade-table maxima, engine durations, unavailable reasons and active agreements |
+| `trade_prepare(partner, give, receive, fundResearch=true)` | Detached draft: pair treaties, optionally prepare explicit research funding, return final terms and legality without publishing |
 | `trade_read(proposalId)` | Full canonical terms, consent, status, execution outcome and previous versions |
 | `agreement_list()` | Player-local references, status and remaining turns for observed enacted rows and relationships |
 | `agreement_read(agreement)` | Current and originally observed terms, native ending history and actual bilateral effects |
@@ -43,6 +44,31 @@ voluntary early cancellation of these enacted agreements.
 The host converts them to canonical clauses with explicit `from` and `to` players.
 Both parties see the same clauses. Each item contains `type`, `name`, `amount` and
 `duration`, using the offered names and durations from `trade_options`.
+
+Humans select these items in Unciv's native trade table, backed by the same service
+as agent tools. Native edits use the engine's paired-term helper. Before publishing,
+the human reviews the complete prepared terms, including any funding payment.
+Agents can use `trade_prepare` for the same calculation; its `publish` template
+contains the returned exact terms and requires the agent's own intent. To counter,
+add the existing `counterofferTo` after inspecting that proposal. Removing an item
+from a structured draft means omitting it from the replacement term list (both
+sides for a paired treaty).
+
+`trade_prepare` does not reserve assets or create a proposal/version. Its canonical
+clauses describe a draft, not an agreement. `fundResearch=false` leaves payments
+unchanged. An invalid draft reports why it cannot execute. `trade_offer` and
+`trade_decide` never invoke funding or term-pairing helpers: they either validate
+all explicit terms or reject them. The engine rechecks the terms at execution.
+
+The implementation and native AI exception are described in
+[shared trade execution](../architecture/Kotlin-architecture.md#shared-trade-execution).
+There is no host-maintained item allowlist or separate human validation path.
+Vanilla's native generated capabilities determine the available menu. Stockpiled
+resources and introductions require mod features; technology has no ordinary
+native offer generator. These extensions are unvalidated and out of scope. The
+host additionally excludes city-state mediation and hides unknown target/city
+identities. Native rules prohibit mediated peace on behalf of a human/agent third
+party; that player must consent to a separate bilateral peace proposal.
 
 Treaties must occur identically on both sides. For a Research Agreement, `amount`
 is the **gold cost paid by each player**, not an adjustable quantity. Both final
@@ -119,10 +145,14 @@ replacement counts, including an author's revision. At the limit, the latest ter
 can still be accepted, declined or withdrawn. New proposal IDs cannot bypass an
 open negotiation. There is no negotiation-specific token budget.
 
-The default wall-clock deadline is five minutes after the first offer. Neither
+For agent–agent negotiations, the default wall-clock deadline is five minutes after the first offer. Neither
 counters nor restarts reset it. The host closes expired proposals, records a
 terminal event and releases gameplay even if no player is connected. This deadline
 is separate from the duration of an enacted treaty or resource agreement.
+
+If either participant is a human, there is no response deadline. That remains true
+through counters and checkpoint restoration; either party can still decline or
+withdraw as permitted. Whole-match stop and budget controls continue to apply.
 
 Configure subsequent negotiations at host launch:
 
@@ -162,7 +192,7 @@ labels the waiting player `Negotiating (model suspended)`. Failure to acknowledg
 interruption stops the job; an operator stop, lost lease or disconnected app-server
 also stops it without starting a continuation. Existing turn-rewind recovery applies.
 Ordinary gameplay timeout accounting excludes this service wait; heartbeat leases,
-the negotiation deadline and whole-match time limits still apply.
+any agent–agent negotiation deadline and whole-match time limits still apply.
 
 Routine communication prepares `chat_read(includeContext=true)`. Its top-level
 `turn` and compact `context` contain that player's scenario role, own economic totals and known

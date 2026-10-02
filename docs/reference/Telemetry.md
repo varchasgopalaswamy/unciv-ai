@@ -58,6 +58,12 @@ remaining wall time. After an interrupted host process, `timingComplete=false`
 marks active time as a lower bound. Job timing and negotiation waits are also
 reported separately. Concurrent job durations must not be summed as match wall time.
 
+Local human turns have `controller: HUMAN`, their own elapsed/active timing and
+`turn.nativeActions` counts (native screen/action categories, including End Turn).
+They have no gameplay model job or token report to wait for. Native clicks are not
+counted as MCP/API calls; any actual communication/API work retains its own counts.
+Human turns become accounting-complete at handoff or a terminal action.
+
 Usage often arrives after `END_TURN`. A committed turn can therefore initially
 have `accountingComplete=false`. The service stores cumulative reports in a private
 SQLite outbox outside game rollback snapshots, then sends them with increasing

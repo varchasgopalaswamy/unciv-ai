@@ -8,6 +8,16 @@ import java.util.concurrent.TimeUnit
 
 class CommunicationIntegrationTest {
     @Test
+    fun `all trade items share canonical terms and native effects across human and agent controllers`() {
+        runProbe("uncivai.UnifiedTradeProbe")
+    }
+
+    @Test
+    fun `human trade has no response deadline and preserves exact consent across restart`() {
+        runProbe("uncivai.HumanNegotiationProbe")
+    }
+
+    @Test
     fun `shared review admits all reviewers and fences gameplay and communication`() {
         runProbe("uncivai.ReviewPhaseProbe")
     }

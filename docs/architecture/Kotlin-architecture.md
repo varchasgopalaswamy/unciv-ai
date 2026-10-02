@@ -55,6 +55,54 @@ resolution. Ordinary gameplay tools publish their property and required-field
 constraints from the same bundled schemas; the host also rejects unknown root
 fields, which the SDK cannot currently advertise.
 
+## Shared trade execution
+
+```mermaid
+flowchart LR
+    Human[Human: native TradeTable and OfferColumnsTable] --> Adapter[DesktopTradeController]
+    Agent[Agent: structured trade tools] --> API[Player communication API]
+    Adapter --> Service[EngineTrades negotiation service]
+    API --> Service
+    Service --> Operations[Unciv TradeOperations]
+    Operations --> Native[TradeLogic and TradeEvaluation]
+    Service --> Save[Atomic game, proposal, consent and receipt checkpoint]
+    AI[Native queued AI responses] --> Operations
+```
+
+Human–human, human–agent and agent–agent deals use the same operations and
+versioned records. Controller type affects presentation, scheduling and the
+response deadline, never item availability or execution. Any negotiation involving
+a human has no response deadline. The local launcher currently displays one human
+seat; the service also accepts two human participants.
+
+- **Engine:** `TradeLogic` supplies native items and quantities. `TradeOperations`
+  provides detached drafts, paired treaty edits, optional research funding,
+  complete-term validation and enactment. It uses `TradeEvaluation` and native
+  effects, including cities, third-party war/peace and relationship modifiers.
+  UI maxima, current resource supply, city disposition, treaty symmetry/costs/
+  durations and signing affordability are checked here. Native queued acceptance,
+  peace operations and AI responses use these same mechanics.
+- **Service:** `EngineTrades` owns immutable proposal versions, consent, counters,
+  decline/withdrawal, privacy, the gameplay pause, deadlines, durable receipts and
+  recovery. It keeps player city references separate from engine city IDs.
+- **Adapters:** `DesktopTradeController` supplies the service's lifecycle buttons
+  to the native trade table. The structured API supplies the same operations.
+  Human review calls `trade_prepare`; agents can call that helper or supply
+  fully specified terms directly. Humans confirm the resulting native term list;
+  agents receive explicit `give`/`receive` and canonical clauses. Preparing has no gameplay effect and records no consent.
+
+Publishing and accepting never prepare or repair a draft. Acceptance revalidates
+the exact stored version immediately before execution. A stale popup or agent
+request cannot approve a later counteroffer. Duplicate requests return the stored
+receipt; another acceptance of an enacted version cannot repeat its effects.
+Turn rewind restores the game, negotiations and receipts together. UI drafts are
+kept across ordinary refreshes and discarded when their epoch/version changes.
+
+The built-in AI keeps its native queued lifecycle. Native request comparison
+includes amounts **and durations**. Automatic city-state/liberation grants still
+use their native engine rules; they are not bilateral player negotiations. Social
+promises remain nonbinding advice. See [trade operations and validation](../reference/Asynchronous-trade.md).
+
 ## Communication waits
 
 A subscription captures its player's notification version **before** reading the

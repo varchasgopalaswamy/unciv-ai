@@ -33,6 +33,7 @@ internal data class CliOptions(
     val agentPlayers: List<String> = emptyList(),
     val mapSize: String? = null,
     val mapRadius: Int? = null,
+    val human: String? = null,
 )
 
 /** Parsing and help belong to Clikt; cross-option host requirements stay here. */
@@ -55,6 +56,7 @@ internal class HostCli(private val launch: (CliOptions) -> Unit) : CliktCommand(
     private val scenario by option("--scenario", help = "Create a prepared exercise or verify its identity on resume.").choice("trade-cycle", "war-paid", "war-joint", "agreement-lifecycle", "mixed-diplomacy")
     private val counteroffers by option("--trade-counteroffers", help = "Counteroffer limit per negotiation.").int().restrictTo(0, 100)
     private val timeout by option("--trade-timeout", help = "Negotiation deadline in seconds.").int().restrictTo(1, 86400)
+    private val human by option("--human", help = "Open the local desktop for this human-controlled civilization.")
 
     override fun run() {
         fun requireOption(condition: Boolean, message: String) {
@@ -74,6 +76,7 @@ internal class HostCli(private val launch: (CliOptions) -> Unit) : CliktCommand(
         requireOption((tls != null) == (players != null), "Serving requires both --mcp-config and --tls-config (HTTPS only)")
         requireOption(scenario != "trade-cycle" || counteroffers == null || counteroffers == 3, "The trade-cycle exercise requires --trade-counteroffers 3")
         requireOption(scenario != "war-paid" || counteroffers?.let { it > 0 } != false, "The paid-war exercise requires at least one counteroffer")
-        launch(CliOptions(save, data, players, port ?: 8765, checkpoint, resume, newGame, scenario, seed, operator, tls, counteroffers, timeout, cityStates, builtInAI, agentPlayers, mapSize, mapRadius))
+        requireOption(human == null || (players != null && operator != null && scenario == null), "--human requires player/operator credentials and an ordinary game")
+        launch(CliOptions(save, data, players, port ?: 8765, checkpoint, resume, newGame, scenario, seed, operator, tls, counteroffers, timeout, cityStates, builtInAI, agentPlayers, mapSize, mapRadius, human))
     }
 }

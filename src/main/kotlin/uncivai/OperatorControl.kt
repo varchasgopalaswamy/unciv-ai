@@ -30,10 +30,11 @@ internal data class OperatorRequest(
     val maxConcurrent: Int? = null,
     val maxPerCivilization: Int? = null,
     val checkpoint: GameCheckpoint? = null,
+    val pauseReason: String? = null,
 )
 
 @Serializable
-internal data class RotatedPlayerCredential(val civilizationId: String, val token: String)
+internal data class RotatedPlayerCredential(val civilizationId: String, val token: String, val controller: String)
 
 @Serializable
 internal data class OperatorStatus(
@@ -51,6 +52,8 @@ internal data class OperatorStatus(
     val negotiationWaitMillis: Long = 0,
     val negotiationTimeoutSeconds: Int = 300,
     val telemetryWriteError: String? = null,
+    val activeController: String = "AGENT",
+    val playerControllers: Map<String, String> = emptyMap(),
 )
 
 @Serializable
@@ -112,6 +115,7 @@ class OperatorControl internal constructor(
                 "barrier" -> {
                     requireLease(request.leaseId)
                     activation = null
+                    runtime.pauseReason = request.pauseReason
                     runtime.communicationPaused = true
                     runtime.pause()
                 }
@@ -120,6 +124,7 @@ class OperatorControl internal constructor(
                     requireLease(request.leaseId)
                     if (runtime.communicationState.restorePending) throw OperatorFailure("RESTORE_INCOMPLETE")
                     runtime.communicationPaused = false
+                    runtime.pauseReason = null
                     runtime.commitCheckpoint()
                 }
 
@@ -161,7 +166,7 @@ class OperatorControl internal constructor(
                     val players = game.civilizations.filter { it.isHuman() && it.isMajorCiv() }.map { player ->
                         val token = newToken()
                         credentials.playerCredentials[credentialHash(token)] = player.civID
-                        RotatedPlayerCredential(player.civID, token)
+                        RotatedPlayerCredential(player.civID, token, controller(player))
                     }
                     runtime.commitCheckpoint()
                     return@accessOperatorGame OperatorResponse(status(game), players = players)
@@ -278,6 +283,23 @@ class OperatorControl internal constructor(
         }
     }
 
+    /** Local desktop authority is bound to the same scheduler activation as a remote player. */
+    internal fun humanCanAct(civilization: String, game: GameInfo): Boolean {
+        val current = activation
+        return civilization in runtime.communicationState.humanPlayers && current != null &&
+            current.civilization == civilization && current.handoff == runtime.handoff &&
+            leaseId != null && clockMillis() < expiresAt && !runtime.isPaused() && !runtime.communicationPaused &&
+            !runtime.communicationState.restorePending && runtime.mutationFailure == null &&
+            runtime.communicationState.trades.activeProposal == null &&
+            game.currentPlayer == civilization && !finished(game)
+    }
+
+    private fun controller(civilization: com.unciv.logic.civilization.Civilization) = when {
+        civilization.civID in runtime.communicationState.humanPlayers -> "HUMAN"
+        civilization.isHuman() -> "AGENT"
+        else -> "BUILT_IN_AI"
+    }
+
     internal fun activationSession(token: String): PlayerSession? = runtime.accessOperatorGame {
         runtime.communicationState.playerCredentials[credentialHash(token)]?.let { civilization ->
             return@accessOperatorGame manualSession(host.bindPlayer(civilization), token)
@@ -340,6 +362,9 @@ class OperatorControl internal constructor(
             else -> "ACTIVE"
         },
         activeCivilization = game.currentPlayer,
+        activeController = controller(game.currentPlayerCiv),
+        playerControllers = game.civilizations.filter { it.isHuman() && it.isMajorCiv() }
+            .associate { it.civID to controller(it) },
         negotiationWaitMillis = runtime.communication.trades.waitMillis(),
         negotiationTimeoutSeconds = runtime.communicationState.trades.timeoutSeconds,
         scheduled = runtime.scheduled,
@@ -373,11 +398,13 @@ class OperatorControl internal constructor(
             "connect" -> setOf("leaseId", "epoch", "civilization")
             "rotate_players", "restore_complete" -> setOf("leaseId", "epoch")
             "job_limits" -> setOf("leaseId", "maxInvocations", "maxConcurrent", "maxPerCivilization")
-            "barrier", "unbarrier", "snapshot" -> setOf("leaseId")
+            "barrier" -> setOf("leaseId") + if (request.pauseReason != null) setOf("pauseReason") else emptySet()
+            "unbarrier", "snapshot" -> setOf("leaseId")
             "restore" -> setOf("leaseId", "epoch", "checkpoint")
             else -> throw OperatorFailure("INVALID_ARGUMENT")
         }
-        val values = mapOf("leaseId" to request.leaseId, "epoch" to request.epoch, "serverInstance" to request.serverInstance, "handoff" to request.handoff, "civilization" to request.civilization, "activationId" to request.activationId, "maxInvocations" to request.maxInvocations, "maxConcurrent" to request.maxConcurrent, "maxPerCivilization" to request.maxPerCivilization, "checkpoint" to request.checkpoint)
+        val values = mapOf("leaseId" to request.leaseId, "epoch" to request.epoch, "serverInstance" to request.serverInstance, "handoff" to request.handoff, "civilization" to request.civilization, "activationId" to request.activationId, "maxInvocations" to request.maxInvocations, "maxConcurrent" to request.maxConcurrent, "maxPerCivilization" to request.maxPerCivilization, "checkpoint" to request.checkpoint, "pauseReason" to request.pauseReason)
+        if (request.pauseReason != null && request.pauseReason != "STRATEGIC_REVIEW") throw OperatorFailure("INVALID_ARGUMENT")
         if (values.filterValues { it != null }.keys != keys || values.values.any { it is String && (it.isBlank() || it.length > 256) } || (request.handoff != null && request.handoff < 0)) {
             throw OperatorFailure("INVALID_ARGUMENT")
         }

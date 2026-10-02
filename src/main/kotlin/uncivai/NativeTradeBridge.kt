@@ -6,7 +6,7 @@ import com.unciv.logic.civilization.Civilization
 import com.unciv.logic.civilization.NotificationCategory
 import com.unciv.logic.civilization.NotificationIcon
 import com.unciv.logic.civilization.PopupAlert
-import com.unciv.logic.trade.TradeLogic
+import com.unciv.logic.trade.TradeOperations
 import com.unciv.logic.trade.TradeOfferType
 import com.unciv.logic.trade.TradeRequest
 import kotlinx.serialization.json.JsonObject
@@ -55,13 +55,13 @@ internal class NativeTradeBridge(private val runtime: GameExecutor, private val 
         }
         if (!friendship && request.give.isEmpty() && request.receive.isEmpty()) fail(PlayerSessionFailure.INVALID_ARGUMENT)
         for (items in listOf(request.give, request.receive)) {
-            if (items.any { !supportedTradeTerm(it.type, it.name) } || items.map { it.type to it.name }.distinct().size != items.size) fail(PlayerSessionFailure.INVALID_ARGUMENT)
+            if (items.map { it.type to it.name }.distinct().size != items.size) fail(PlayerSessionFailure.INVALID_ARGUMENT)
         }
         val requestId = newRequestId()
         val proposal = EngineTradeProposal(
             previous?.proposal ?: trades.newProposalId(), (previous?.version ?: 0) + 1, actor, other.civID,
             if (friendship) emptyList() else trades.clauses(actor, other.civID, request.give, request.receive),
-            0, Int.MAX_VALUE, player.gameInfo.turns, listOf(TradeConsent(actor, "accept", player.gameInfo.turns)),
+            null, Int.MAX_VALUE, player.gameInfo.turns, listOf(TradeConsent(actor, "accept", player.gameInfo.turns)),
             friendship = if (friendship) FriendshipTerms() else null, mode = "NATIVE_AI", nativeRequestId = requestId,
         )
         trades.legality(proposal)?.let { return trades.unavailable(it) }
@@ -102,12 +102,8 @@ internal class NativeTradeBridge(private val runtime: GameExecutor, private val 
             val native = player.tradeRequests.singleOrNull { it.requestId == proposal.nativeRequestId } ?: fail()
             if (request.decision == "accept") {
                 trades.legality(proposal)?.let { return trades.unavailable(it, proposal, actor) }
-                if (!native.trade.equalTrade(trades.engineTrade(proposal).reverse())) return trades.unavailable("The native terms changed; inspect the new request.", proposal, actor)
-                player.tradeRequests.remove(native)
-                val logic = TradeLogic(player, other)
-                logic.currentTrade.set(native.trade)
-                logic.acceptTrade()
-                other.addNotification("[${player.civName}] has accepted your trade request", NotificationCategory.Trade, player.civName, NotificationIcon.Trade)
+                if (!TradeOperations.sameTerms(native.trade, trades.engineTrade(proposal).reverse())) return trades.unavailable("The native terms changed; inspect the new request.", proposal, actor)
+                check(TradeOperations(player, other).tryAcceptRequest(native))
                 resolved(proposal, "ENACTED", null)
             } else {
                 player.tradeRequests.remove(native)
@@ -207,8 +203,8 @@ internal class NativeTradeBridge(private val runtime: GameExecutor, private val 
     private fun importRequest(player: Civilization, sender: Civilization, request: TradeRequest, previous: EngineTradeProposal? = null) {
         if (request.requestId.isEmpty()) request.requestId = newRequestId()
         val safe = (request.trade.ourOffers + request.trade.theirOffers).all { item ->
-            supportedTradeTerm(item.type, item.name) && when (item.type) {
-                TradeOfferType.WarDeclaration, TradeOfferType.PeaceProposal -> player.getKnownCivs().any { it.isMajorCiv() && it.civID == item.name }
+            when (item.type) {
+                TradeOfferType.WarDeclaration, TradeOfferType.PeaceProposal, TradeOfferType.Introduction -> player.getKnownCivs().any { it.isMajorCiv() && it.civID == item.name }
                 TradeOfferType.City -> (player.cities + sender.cities).any { it.id == item.name }
                 else -> true
             }
@@ -216,7 +212,7 @@ internal class NativeTradeBridge(private val runtime: GameExecutor, private val 
         val proposal = EngineTradeProposal(
             previous?.proposal ?: trades.newProposalId(), (previous?.version ?: 0) + 1, sender.civID, player.civID,
             if (safe) trades.clauses(sender.civID, player.civID, request.trade.theirOffers.map(trades::selection), request.trade.ourOffers.map(trades::selection)) else emptyList(),
-            0, Int.MAX_VALUE, player.gameInfo.turns, listOf(TradeConsent(sender.civID, "accept", player.gameInfo.turns)),
+            null, Int.MAX_VALUE, player.gameInfo.turns, listOf(TradeConsent(sender.civID, "accept", player.gameInfo.turns)),
             failure = if (safe) null else "This native offer contains terms outside your permitted information or supported trade categories; it can be declined.",
             mode = "NATIVE_AI", nativeRequestId = request.requestId,
         )

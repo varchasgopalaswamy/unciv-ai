@@ -8,6 +8,7 @@ import pytest
 from civ_agent.civilization_state import CivilizationState
 from civ_agent.match_recovery import TurnCoordinator
 from civ_agent.monitoring import path_for, read_collection
+from civ_agent.protocol import JsonObject
 from civ_agent.runner_history import EventHistory
 from civ_agent.scheduler import OperatorError
 
@@ -17,6 +18,7 @@ class Host:
         self.world = {"epoch": "g1", "gold": 100, "turn": 0, "handoff": 0}
         self.paused = False
         self.calls = []
+        self.controllers = {"Rome": "AGENT", "Greece": "AGENT"}
 
     def call(self, op, **fields):
         self.calls.append(op)
@@ -36,11 +38,15 @@ class Host:
                     "turn": self.world["turn"],
                     "handoff": self.world["handoff"],
                     "phase": "PAUSED",
+                    "playerControllers": dict(self.controllers),
                 }
             }
         elif op == "rotate_players":
             return {
-                "players": [{"civilizationId": name, "token": name + "-new-credential"} for name in ("Rome", "Greece")]
+                "players": [
+                    {"civilizationId": name, "token": name + "-new-credential", "controller": role}
+                    for name, role in self.controllers.items()
+                ]
             }
         return {}
 
@@ -76,7 +82,13 @@ class Player:
 def setup(tmp_path):
     host = Host()
     players = {name: Player(tmp_path / name, name) for name in ("Rome", "Greece")}
-    state = {"epoch": "g1", "initialTurn": 0, "reviewedBoundary": 0, "usage": {"input_tokens": 700}, "invocations": 4}
+    state: JsonObject = {
+        "epoch": "g1",
+        "initialTurn": 0,
+        "reviewedBoundary": 0,
+        "usage": {"input_tokens": 700},
+        "invocations": 4,
+    }
     coordinator = TurnCoordinator(tmp_path, host, players, "lease")
     return host, players, state, coordinator
 
@@ -92,6 +104,20 @@ def test_partial_capture_is_not_restorable_and_retry_uses_fresh_components(tmp_p
     manifest = json.loads(next(coordinator.root.glob("current.json")).read_text())
     assert manifest["players"]["Rome"]["id"] != first_components[0].stem
     assert not host.paused
+
+
+def test_human_turn_rewinds_without_a_human_agent_store_and_preserves_credentials(tmp_path):
+    host, players, state, coordinator = setup(tmp_path)
+    host.controllers["France"] = "HUMAN"
+    coordinator.capture({"epoch": "g1", "turn": 0, "handoff": 0}, state)
+    manifest = json.loads((coordinator.root / "current.json").read_text())
+    assert set(manifest["players"]) == {"Rome", "Greece"}
+    host.world["gold"] = 5
+    state["inFlight"] = {"civilization": "France", "controller": "HUMAN", "handoff": 0}
+    coordinator.restore(manifest, state)
+    assert host.world["gold"] == 100 and state["inFlight"] is None
+    credentials = json.loads((tmp_path / "players.json").read_text())["players"]
+    assert {p["civilizationId"]: p["controller"] for p in credentials} == host.controllers
 
 
 def test_partial_restore_remains_paused_then_repeats_same_epoch_without_refunding_usage(tmp_path):

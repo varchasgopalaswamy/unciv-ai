@@ -64,9 +64,15 @@ class InputSchemaTest {
 
     @Test
     fun `trade term validation rejects malformed nested values and incomplete counters`() {
+        val categories = InputSchemas.communication.document.getValue("\$defs").jsonObject.getValue("tradeItem").jsonObject
+            .getValue("properties").jsonObject.getValue("type").jsonObject.getValue("enum").jsonArray.map { it.jsonPrimitive.content }.toSet()
+        assertEquals(com.unciv.logic.trade.TradeOfferType.entries.map { it.name }.toSet(), categories)
         val term = obj("type" to "Gold", "name" to "Gold", "amount" to 10, "duration" to -1)
         val offer = obj("op" to "trade_offer", "epoch" to "g1", "requestId" to "r1", "partner" to "Greece", "give" to listOf(term), "receive" to emptyList<String>())
         assertEquals(10, InputSchemas.communication.decode(CommunicationRequest.serializer(), offer).give.single().amount)
+        val draft = JsonObject(offer - "requestId" + obj("op" to "trade_prepare", "fundResearch" to false))
+        assertFalse(InputSchemas.communication.decode(CommunicationRequest.serializer(), draft).fundResearch)
+        assertThrows(PlayerSessionException::class.java) { InputSchemas.communication.validate(JsonObject(offer + obj("fundResearch" to true))) }
         for (bad in listOf(
             JsonObject(offer + obj("proposal" to "d1")),
             JsonObject(offer + obj("version" to 1)),

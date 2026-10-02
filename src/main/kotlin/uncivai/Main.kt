@@ -10,6 +10,10 @@ import java.util.concurrent.CountDownLatch
 fun main(args: Array<String>) = HostCli(::launchHost).main(args)
 
 private fun launchHost(options: CliOptions) {
+    if (options.human != null) {
+        DesktopHost.launch(options)
+        return
+    }
     try {
         val players = options.mcpConfig?.let(::loadMcpPlayerConfig)
         val operatorToken = options.operatorConfig?.let(::loadOperatorConfig)

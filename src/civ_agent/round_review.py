@@ -106,6 +106,7 @@ def review_round(scheduler, status):
     # No active player or conversation remains. Both human and model mutations
     # are fenced by the host, and ordinary gateway calls stay behind the barrier.
     scheduler.turns.quiesce()
+    scheduler.operator.call("barrier", leaseId=scheduler.lease, pauseReason="STRATEGIC_REVIEW")
     scheduler.round_open = False
     scheduler.state["reviewPhase"]["stage"] = "Reviewing"
     scheduler.save()

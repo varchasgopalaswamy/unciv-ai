@@ -1,6 +1,6 @@
 # unciv-ai
 
-A private headless host and player API for agents playing Unciv. The host uses a
+A private game host and player API for agents playing Unciv. The host uses a
 separately maintained Unciv fork and gives each player authenticated tools,
 private memory and only the game information that player may see. Native Unciv
 rules govern actions; social promises remain nonbinding player communications.
@@ -25,6 +25,17 @@ The launcher starts Rome, Greece and France with `gpt-5.6-luna` at medium
 reasoning, built-in Egypt, and two city-states. It manages the host, agent
 services and scheduler, builds the host from source, and records logs,
 checkpoints and token/call/timing telemetry.
+
+To join as the local human player, use Unciv's desktop controls and its integrated
+chat/trade panel:
+
+```sh
+.venv/bin/civ-agent game start --state-dir ~/.local/state/unciv-host/human-game \
+  --human France --agents Rome Greece --built-in-ai Egypt
+```
+
+The human plays first, has no model turn timeout, and uses the same authoritative
+game as the agents. Closing the window stops the whole match.
 
 See the [full-game guide](docs/guides/Full-vanilla-run.md) for directories,
 timeouts, stopping and resuming. Use the [local launcher guide](docs/guides/Local-launchers.md)

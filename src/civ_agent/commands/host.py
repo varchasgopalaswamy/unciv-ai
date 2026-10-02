@@ -57,6 +57,7 @@ def parser(*, add_help: bool = True) -> argparse.ArgumentParser:
         help="city-states in a new ordinary game (default: 0)",
     )
     parser.add_argument("--seed", type=seed_number, help="map seed for a new game only")
+    parser.add_argument("--human", help="Open the local desktop for one human civilization")
     parser.add_argument(
         "--built-in-ai",
         action="append",
@@ -163,19 +164,32 @@ def launch(options):
     if (options.agent_player or options.map_size or options.map_radius) and (resuming or options.scenario is not None):
         raise ValueError("Player and map options apply only to a new ordinary game.")
     agents = options.agent_player or ["Rome", "Greece", "France"]
-    nations = agents + options.built_in_ai
+    humans = [options.human] if options.human else []
+    if resuming:
+        ensure_players(players, True, ())
+        saved_players = json.loads(players.read_text())["players"]
+        agents = [entry["civilizationId"] for entry in saved_players if entry.get("controller", "AGENT") == "AGENT"]
+        saved_humans = [entry["civilizationId"] for entry in saved_players if entry.get("controller") == "HUMAN"]
+        if options.human and set(saved_humans) != set(humans):
+            raise ValueError("The requested desktop player differs from the saved controller assignments.")
+        if len(saved_humans) == 1 and options.scenario is None:
+            options.human = saved_humans[0]
+            humans = saved_humans
+    if options.human and options.scenario:
+        raise ValueError("--human requires an ordinary game.")
+    nations = humans + agents + options.built_in_ai
     if len(set(nations)) != len(nations):
-        raise ValueError("Built-in AI civilizations must be distinct from the agent players.")
+        raise ValueError("Human, agent and built-in AI civilizations must be distinct.")
     if bool(options.tls_config) != bool(options.ca_file):
         raise ValueError("--tls-config and --ca-file must be supplied together.")
     if options.tls_config and (options.listen_host or options.public_host):
         raise ValueError("A custom TLS configuration already supplies listenHost and publicHost.")
 
-    civilizations = ("Rome", "Greece") if options.scenario == "trade-cycle" else agents
+    civilizations = ("Rome", "Greece") if options.scenario == "trade-cycle" else humans + agents
     if options.scenario == "mixed-diplomacy":
         civilizations = ("Rome", "Greece", "France", "Egypt")
     ensure_players(
-        players, resuming, civilizations, ("France", "Egypt") if options.scenario == "mixed-diplomacy" else ()
+        players, resuming, civilizations, ("France", "Egypt") if options.scenario == "mixed-diplomacy" else humans
     )
     ensure_operator(operator, players)
     state_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -190,6 +204,8 @@ def launch(options):
         tls_config, ca_file = ensure_host_tls(state_dir, options.listen_host or "127.0.0.1", public_host)
     origin = host_origin(public_host, options.port)
     build_command = [str(repo_dir / "gradlew"), "installDist", "--console=plain"]
+    if options.human:
+        build_command.append("prepareDesktopAssets")
     engine = repo_dir / "vendor/Unciv"
     if options.unciv_dir:
         engine = Path(options.unciv_dir).expanduser()
@@ -200,6 +216,8 @@ def launch(options):
 
     executable = repo_dir / "build/install/unciv-ai/bin/unciv-ai"
     command = [str(executable)]
+    if options.human:
+        command.extend(["--human", options.human])
     if options.trade_counteroffers is not None:
         command.extend(["--trade-counteroffers", str(options.trade_counteroffers)])
     if options.trade_timeout is not None:
@@ -250,6 +268,8 @@ def launch(options):
     action = "Resuming" if resuming else f"Starting {options.scenario or 'Vanilla Rome/Greece/France'}"
     print(f"{action} game: {checkpoint}", flush=True)
     print(f"Wait for MCP-READY:{origin}/mcp, then launch each agent in another terminal.", flush=True)
+    if options.human:
+        os.chdir(repo_dir / "build/desktop-engine/android/assets")
     os.execv(str(executable), command)
 
 

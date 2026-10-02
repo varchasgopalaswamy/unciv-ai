@@ -72,6 +72,48 @@ The host builds through its normal source launcher.
 The launcher starts the existing services and calls the scheduler directly.
 Ordinary play does not run a test module or another launcher subprocess.
 
+## Play a civilization yourself
+
+```sh
+.venv/bin/civ-agent game start --state-dir ~/.local/state/unciv-host/human-game \
+  --human France --agents Rome Greece --built-in-ai Egypt --city-states 2
+```
+
+This opens the native Unciv desktop. It supports **one trusted local human**;
+human, agent and built-in AI names must be distinct. The desktop and HTTPS host
+share one live game. The human always sees their own civilization and fog of war,
+including while other players act. Ordinary city, unit, research, policy and
+diplomacy controls apply native rules. The human plays first in each round.
+No agent service or strategy review is created for that seat.
+
+Use **Chat** for public/private messages, social promises, friendship and agreement
+history. **Trade** and **Negotiate Peace** use Unciv’s native trade controls with
+the shared negotiation service. **Chat → Trades → Open trade** opens that same
+editor. It supports publishing, countering, accepting, declining and withdrawing.
+Acceptance confirms the displayed version and terms; changed or unaffordable
+terms require a fresh decision. Human negotiations have **no response deadline**.
+They hold gameplay while the existing service waits without continued gameplay
+inference. Native diplomacy remains available with the built-in AI and city-states.
+
+You can inspect your map and chat between turns. Opening and periodic strategic
+reviews pause both play and communication until all agent reports finish.
+Your turn has no model timeout; whole-match budgets still apply. The separate
+operator TUI contains debugging information and other players' private material,
+so it is not the human's gameplay interface.
+
+Close the desktop or use its **Stop game** menu item to stop all match services.
+Resume with the same state directory; the launcher remembers the human seat:
+
+```sh
+.venv/bin/civ-agent game resume --state-dir ~/.local/state/unciv-host/human-game
+```
+
+An interrupted turn is rewound with affected messages, deals and agent memories.
+The desktop displays a rewind notice. A committed End Turn remains committed.
+Native Undo, arbitrary save/load, new-game shortcuts and multi-turn autoplay are
+disabled in this managed match. Per-unit automation remains available. Code and
+assets both use the selected engine checkout; no migration of old matches is added.
+
 ## Limits and stopping
 
 | Limit | Default |

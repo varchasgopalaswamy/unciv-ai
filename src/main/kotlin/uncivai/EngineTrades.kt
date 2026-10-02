@@ -1,13 +1,12 @@
 package uncivai
 
-import com.unciv.Constants
 import com.unciv.logic.civilization.AlertType
 import com.unciv.logic.civilization.Civilization
 import com.unciv.logic.civilization.PlayerDiplomacyOperations
 import com.unciv.logic.civilization.PlayerFriendshipOperations
 import com.unciv.logic.civilization.PlayerPeaceOperations
 import com.unciv.logic.trade.Trade
-import com.unciv.logic.trade.TradeEvaluation
+import com.unciv.logic.trade.TradeOperations
 import com.unciv.logic.trade.TradeLogic
 import com.unciv.logic.trade.TradeOffer
 import com.unciv.logic.trade.TradeOfferType
@@ -19,7 +18,6 @@ import kotlinx.serialization.json.encodeToJsonElement
 import kotlinx.serialization.json.jsonObject
 import uncivai.player.PlayerSessionException
 import uncivai.player.PlayerSessionFailure
-import uncivai.player.gameHasResult
 import uncivai.player.toPlayerContent
 import java.security.SecureRandom
 
@@ -50,7 +48,7 @@ internal data class EngineTradeProposal(
     val author: String,
     val partner: String,
     val clauses: List<TradeClause>,
-    val deadlineMillis: Long,
+    val deadlineMillis: Long?,
     val counterofferLimit: Int,
     val turn: Int,
     val consents: List<TradeConsent>,
@@ -96,7 +94,8 @@ internal class EngineTrades(private val runtime: GameExecutor) {
     /** Called under the executor, including by its deadline task. No model or mailbox waits here. */
     fun expireIfNeeded() {
         val proposal = active() ?: return
-        if (runtime.clockMillis() < proposal.deadlineMillis) return
+        val deadline = proposal.deadlineMillis ?: return
+        if (runtime.clockMillis() < deadline) return
         replace(proposal.copy(status = "EXPIRED", failure = "The negotiation deadline elapsed."), "")
         runtime.commitCheckpoint()
     }
@@ -117,36 +116,23 @@ internal class EngineTrades(private val runtime: GameExecutor) {
 
     fun waitMillis(): Long = state.completedWaitMillis + (
         active()?.let {
-            (minOf(runtime.clockMillis(), it.deadlineMillis) - state.openedAtMillis).coerceAtLeast(0)
+            (minOf(runtime.clockMillis(), it.deadlineMillis ?: Long.MAX_VALUE) - state.openedAtMillis).coerceAtLeast(0)
         } ?: 0
         )
     private fun invalid(): Nothing = throw PlayerSessionException(PlayerSessionFailure.INVALID_ARGUMENT)
     internal fun player(id: String) = runtime.accessGame { game -> game.civilizations.singleOrNull { it.civID == id && it.isMajorCiv() } } ?: invalid()
     internal fun known(a: Civilization, b: Civilization) = a !== b && a.knows(b) && b.knows(a)
-    internal fun relationReason(a: Civilization, b: Civilization): String? = when {
-        !known(a, b) -> "Trade requires in-game contact between major civilizations."
-        a.isDefeated() || b.isDefeated() -> "A civilization has been defeated."
-        gameHasResult(a.gameInfo) -> "The game has ended."
-        a.isAtWarWith(b) || b.isAtWarWith(a) -> PlayerPeaceOperations(a).negotiationStateReason(b)
-        else -> null
-    }
+    internal fun relationReason(a: Civilization, b: Civilization): String? = TradeOperations(a, b).initiationReason()
 
     internal fun available(logic: TradeLogic, owner: Civilization): List<TradeSelection> {
         val offers = if (logic.ourCivilization === owner) logic.ourAvailableOffers else logic.theirAvailableOffers
-        val resources = owner.getCivResourcesByName()
-        return offers.filter {
-            supportedTradeTerm(it.type, it.name) &&
-                (it.type != TradeOfferType.PeaceProposal || owner.getKnownCivs().any { target -> target.civID == it.name && target.isMajorCiv() }) &&
-                (
-                    it.type != TradeOfferType.City || (
-                        owner.cities.any { city -> city.id == it.name && !city.hasJustBeenConquered } &&
-                            owner.popupAlerts.none { alert -> alert.value == it.name && alert.type in setOf(AlertType.CityTraded, AlertType.CityConquered) }
-                        )
-                    )
-        }.map {
-            val amount = if (it.type in setOf(TradeOfferType.Luxury_Resource, TradeOfferType.Strategic_Resource)) minOf(it.amount, resources[it.name] ?: 0) else it.amount
-            selection(it).copy(amount = amount.coerceAtLeast(0))
-        }
+        // City-state diplomacy is a separate player surface. All item mechanics come from Unciv.
+        return offers.filter { visibleTerm(owner, it) }.map(::selection)
+    }
+
+    private fun visibleTerm(reader: Civilization, offer: TradeOffer): Boolean = when (offer.type) {
+        TradeOfferType.PeaceProposal, TradeOfferType.WarDeclaration, TradeOfferType.Introduction -> reader.getKnownCivs().any { it.civID == offer.name && it.isMajorCiv() }
+        else -> true
     }
 
     private fun options(terms: List<TradeSelection>, owner: Civilization, reader: Civilization) = terms.map { item ->
@@ -172,6 +158,31 @@ internal class EngineTrades(private val runtime: GameExecutor) {
     fun read(civilization: String, request: CommunicationRequest): JsonObject {
         val referencesBefore = state.cityHandles.size
         val result = when (request.op) {
+            "trade_prepare" -> {
+                val a = player(civilization)
+                val b = player(checkNotNull(request.partner))
+                if (!known(a, b)) invalid()
+                val operations = TradeOperations(a, b)
+                operations.stateReason()?.let { return unavailable(it) }
+                val draft = TradeOperations.draft(request.give.map(::engineOffer), request.receive.map(::engineOffer))
+                val available = operations.available()
+                // A draft cannot inspect someone else's city by guessing a reference.
+                for ((offers, choices) in listOf(draft.ourOffers to available.ourOffers, draft.theirOffers to available.theirOffers)) {
+                    if (offers.any { offer -> !visibleTerm(a, offer) || !visibleTerm(b, offer) ||
+                            choices.none { it.type == offer.type && it.name == offer.name } })
+                        return unavailable("An item is no longer available to these players.")
+                }
+                val prepared = operations.prepare(draft, request.fundResearch)
+                val give = prepared.ourOffers.map(::selection)
+                val receive = prepared.theirOffers.map(::selection)
+                val reason = operations.invalidReason(prepared)
+                obj(
+                    "partner" to b.civID, "give" to json.encodeToJsonElement(give), "receive" to json.encodeToJsonElement(receive),
+                    "clauses" to json.encodeToJsonElement(clauses(a.civID, b.civID, give, receive)),
+                    "valid" to (reason == null), "unavailableReason" to reason,
+                )
+            }
+
             "trade_options" -> {
                 val a = player(civilization)
                 val b = player(checkNotNull(request.partner))
@@ -188,13 +199,17 @@ internal class EngineTrades(private val runtime: GameExecutor) {
                     "available" to (reason == null),
                     "unavailableReason" to reason,
                     "canInitiate" to (a.gameInfo.currentPlayer == civilization && active() == null && !runtime.isPaused()),
-                    "initiationRule" to if (native) "Queue an offer for the built-in AI to decide on its native turn. Gameplay continues while pending." else "Only the current player can open a negotiation. Ask them in chat when off turn. Publishing an offer pauses all gameplay until a decision or the deadline; counters share one limit.",
+                    "initiationRule" to when {
+                        native -> "Queue an offer for the built-in AI to decide on its native turn. Gameplay continues while pending."
+                        a.civID in runtime.communicationState.humanPlayers || b.civID in runtime.communicationState.humanPlayers -> "Only the current player can open a negotiation. Ask them in chat when off turn. Gameplay waits for a decision without a response deadline; counters share one limit."
+                        else -> "Only the current player can open a negotiation. Ask them in chat when off turn. Publishing an offer pauses all gameplay until a decision or the deadline; counters share one limit."
+                    },
                     "negotiation" to negotiation(civilization),
                     "requiresPeaceTreaty" to a.isAtWarWith(b),
                     "give" to options(give, a, a),
                     "receive" to options(receive, b, a),
-                    "unavailableGive" to bilateralUnavailable(a, b, give, reason),
-                    "unavailableReceive" to bilateralUnavailable(b, a, receive, reason),
+                    "unavailableGive" to bilateralUnavailable(a, b, reason),
+                    "unavailableReceive" to bilateralUnavailable(b, a, reason),
                     "friendship" to friendshipOption(a, b, reason),
                     "relationship" to bilateralStatus(a, b),
                     "researchFunding" to obj(
@@ -299,16 +314,22 @@ internal class EngineTrades(private val runtime: GameExecutor) {
             if (runtime.isPaused()) return unavailable("Gameplay is paused by the operator.")
             if (a.gameInfo.currentPlayer != civilization) return unavailable("Only the current player can open a negotiation. Invite them through chat.")
         }
+        relationReason(a, b)?.let { return unavailable(it) }
         val now = a.gameInfo.turns
         fun terms(items: List<TradeSelection>): List<TradeSelection> {
-            if (items.any { !supportedTradeTerm(it.type, it.name) } || items.map { it.type to it.name }.distinct().size != items.size) invalid()
+            if (items.map { it.type to it.name }.distinct().size != items.size) invalid()
             return items
         }
         val give = if (friendship) emptyList() else terms(request.give)
         val receive = if (friendship) emptyList() else terms(request.receive)
         if (!friendship && give.isEmpty() && receive.isEmpty()) invalid()
         val id = previous?.proposal ?: newProposalId()
-        val proposal = EngineTradeProposal(id, (previous?.version ?: 0) + 1, civilization, b.civID, clauses(civilization, b.civID, give, receive), previous?.deadlineMillis ?: (runtime.clockMillis() + state.timeoutSeconds * 1000L), previous?.counterofferLimit ?: state.counterofferLimit, now, listOf(TradeConsent(civilization, "accept", now)), friendship = if (friendship) FriendshipTerms() else null)
+        val deadline = when {
+            previous != null -> previous.deadlineMillis
+            civilization in runtime.communicationState.humanPlayers || b.civID in runtime.communicationState.humanPlayers -> null
+            else -> runtime.clockMillis() + state.timeoutSeconds * 1000L
+        }
+        val proposal = EngineTradeProposal(id, (previous?.version ?: 0) + 1, civilization, b.civID, clauses(civilization, b.civID, give, receive), deadline, previous?.counterofferLimit ?: state.counterofferLimit, now, listOf(TradeConsent(civilization, "accept", now)), friendship = if (friendship) FriendshipTerms() else null)
         legality(proposal)?.let { return unavailable(it) }
         if (previous != null) replace(previous.copy(status = "SUPERSEDED"), civilization)
         state.proposals.getOrPut(id) { mutableListOf() }.add(proposal)
@@ -345,21 +366,14 @@ internal class EngineTrades(private val runtime: GameExecutor) {
         }
         val a = player(proposal.author)
         val b = player(proposal.partner)
-        val logic = TradeLogic(a, b)
         val trade = engineTrade(proposal)
-        logic.currentTrade.set(trade)
         try {
-            if (trade.isPeaceTreaty()) {
-                // Obsolete native UI requests cannot remain as turn blockers after peace.
-                a.tradeRequests.removeAll { it.requestingCiv == b.civID && it.trade.isPeaceTreaty() }
-                b.tradeRequests.removeAll { it.requestingCiv == a.civID && it.trade.isPeaceTreaty() }
-            }
             if (proposal.friendship != null) {
                 a.getDiplomacyManager(b)!!.signDeclarationOfFriendship()
                 a.popupAlerts.removeAll { it.type == AlertType.DeclarationOfFriendship && it.value == b.civID }
                 b.popupAlerts.removeAll { it.type == AlertType.DeclarationOfFriendship && it.value == a.civID }
             } else {
-                logic.acceptTrade()
+                check(TradeOperations(a, b).tryEnact(trade)) { "Trade changed inside its serialized execution." }
             }
             a.gameInfo.checkForVictory()
             // A gameplay job must re-observe effects before spending changed resources or ending turn.
@@ -393,45 +407,12 @@ internal class EngineTrades(private val runtime: GameExecutor) {
         proposal.failure?.let { return it }
         val a = player(proposal.author)
         val b = player(proposal.partner)
-        relationReason(a, b)?.let { return it }
+        TradeOperations(a, b).stateReason()?.let { return it }
         if (proposal.friendship != null) return PlayerFriendshipOperations(a).stateReason(b)
-        // Native treaties execute from one side only. Consent must contain exactly the
-        // same treaty, cost and duration in both directions.
-        val ourTreaties = proposal.clauses.filter { it.from == a.civID && it.item.type == TradeOfferType.Treaty }.map { it.item }.toSet()
-        val theirTreaties = proposal.clauses.filter { it.from == b.civID && it.item.type == TradeOfferType.Treaty }.map { it.item }.toSet()
-        if (ourTreaties != theirTreaties) return "Every treaty must have identical quantity, cost and duration on both sides."
-        for (owner in listOf(a, b)) {
-            val treaties = proposal.clauses.filter { it.from == owner.civID && it.item.type == TradeOfferType.Treaty }
-            if (a.isAtWarWith(b)) {
-                if (treaties.size != 1 || treaties.single().item != TradeSelection(TradeOfferType.Treaty, Constants.peaceTreaty, 1, a.gameInfo.speed.peaceDealDuration)) return "Peace requires one Peace Treaty on each side with the engine's quantity and duration."
-            } else if (treaties.any { it.item.name == Constants.peaceTreaty }) {
-                return "These civilizations are already at peace."
-            }
-        }
-        val logic = TradeLogic(a, b)
-        for (owner in listOf(a, b)) {
-            val available = available(logic, owner)
-            for (clause in proposal.clauses.filter { it.from == owner.civID }) {
-                val item = clause.item
-                if (available.none {
-                        it.type == item.type && it.name == item.name && it.duration == item.duration &&
-                            if (item.type == TradeOfferType.Treaty) it.amount == item.amount else it.amount >= item.amount
-                    }
-                ) {
-                    return "${owner.civID}'s offered ${item.name} quantity, cost or duration is no longer available."
-                }
-            }
-        }
-        for (recipient in listOf(a, b)) {
-            // The engine transfers each side separately. A safe final net balance is insufficient
-            // if an incoming transfer could overflow before this player's outgoing transfer.
-            val incoming = proposal.clauses.filter { it.item.type == TradeOfferType.Gold && it.to == recipient.civID }.sumOf { it.item.amount.toLong() }
-            if (recipient.gold.toLong() + incoming > Int.MAX_VALUE) return "The gold transfer exceeds the engine balance limit."
-            val outgoing = proposal.clauses.filter { it.item.type == TradeOfferType.Gold && it.from == recipient.civID }.sumOf { it.item.amount.toLong() }
-            val researchCost = ourTreaties.singleOrNull { it.name == Constants.researchAgreement }?.amount ?: 0
-            if (recipient.gold.toLong() + incoming - outgoing < researchCost) return "${recipient.civID} cannot fund the research agreement after the proposed gold transfers."
-        }
-        return if (TradeEvaluation().isTradeValid(engineTrade(proposal), a, b)) null else "The engine no longer permits these trade terms."
+        val trade = engineTrade(proposal)
+        if ((trade.ourOffers + trade.theirOffers).any { !visibleTerm(a, it) || !visibleTerm(b, it) })
+            return "These terms are outside the players' permitted information."
+        return TradeOperations(a, b).invalidReason(trade)
     }
 
     fun invalidateDiplomacy(a: String, b: String) {
@@ -458,7 +439,7 @@ internal class EngineTrades(private val runtime: GameExecutor) {
         offer.duration,
     )
     private fun engineCityId(item: TradeSelection): String? = state.cityHandles.entries.singleOrNull { it.value == item.name }?.key
-    private fun engineOffer(item: TradeSelection) = if (item.type == TradeOfferType.City) TradeOffer(engineCityId(item) ?: invalid(), item.type, item.amount, item.duration) else item.offer()
+    internal fun engineOffer(item: TradeSelection) = if (item.type == TradeOfferType.City) TradeOffer(engineCityId(item) ?: invalid(), item.type, item.amount, item.duration) else item.offer()
     private fun cityDetails(item: TradeSelection): TradeCity? = if (item.type == TradeOfferType.City) {
         runtime.accessGame { game ->
             game.getCities().firstOrNull { it.id == engineCityId(item) }?.let { TradeCity(it.name, it.population.population) }
@@ -473,7 +454,7 @@ internal class EngineTrades(private val runtime: GameExecutor) {
     internal fun replace(proposal: EngineTradeProposal, actor: String) {
         state.proposals.getValue(proposal.proposal)[proposal.version - 1] = proposal
         if (state.activeProposal == proposal.proposal && proposal.status !in setOf("PENDING", "SUPERSEDED")) {
-            state.completedWaitMillis += (minOf(runtime.clockMillis(), proposal.deadlineMillis) - state.openedAtMillis).coerceAtLeast(0)
+            state.completedWaitMillis += (minOf(runtime.clockMillis(), proposal.deadlineMillis ?: Long.MAX_VALUE) - state.openedAtMillis).coerceAtLeast(0)
             state.activeProposal = null
             proposal.participants().forEach { runtime.turnSessions[it]?.invalidate() }
         }

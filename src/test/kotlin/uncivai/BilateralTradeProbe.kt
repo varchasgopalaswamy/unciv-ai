@@ -121,7 +121,8 @@ object BilateralTradeProbe {
                 val captured = PopupAlert(AlertType.CityConquered, city.id)
                 city.hasJustBeenConquered = true
                 greece.popupAlerts.add(captured)
-                check(calls.decide(staleCity)["error"] != null)
+                val staleCityResult = calls.decide(staleCity)
+                check(staleCityResult["error"] != null && !staleCityResult.toString().contains(cityId))
                 check(city.civ === rome && greece.popupAlerts.any { it === captured })
                 check(calls.options()["give"]!!.jsonArray.none { it.jsonObject["type"]!!.jsonPrimitive.content == "City" })
                 city.hasJustBeenConquered = false

@@ -108,7 +108,7 @@ internal class Communication(private val runtime: GameExecutor) {
 
                 "state" -> return@accessGame view(civilization, participants)
 
-                "trade_options", "trade_read" -> return@accessGame trades.read(civilization, request)
+                "trade_options", "trade_read", "trade_prepare" -> return@accessGame trades.read(civilization, request)
 
                 "agreement_list" -> return@accessGame obj("agreements" to agreements.summaries(civilization))
 

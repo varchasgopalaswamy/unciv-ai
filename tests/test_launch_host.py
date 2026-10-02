@@ -26,6 +26,7 @@ class HostLauncherTest(unittest.TestCase):
         self.build = patch.object(host.subprocess, "run").start()
         patch.object(host.subprocess, "check_output", return_value="test-revision").start()
         self.execute = patch.object(host.os, "execv").start()
+        self.chdir = patch.object(host.os, "chdir").start()
         self.tls = patch.object(
             host,
             "ensure_host_tls",
@@ -60,6 +61,33 @@ class HostLauncherTest(unittest.TestCase):
             {"Rome": "AGENT", "Greece": "AGENT", "France": "HUMAN", "Egypt": "HUMAN"},
         )
         self.assertEqual(4, len({entry["token"] for entry in players}))
+
+    def test_desktop_launch_and_resume_keep_the_human_first_and_use_runtime_assets(self):
+        self.assertEqual(
+            0,
+            self.run_launcher(
+                "--new",
+                "--human",
+                "France",
+                "--agent-player",
+                "Rome",
+                "--agent-player",
+                "Greece",
+                "--built-in-ai",
+                "Egypt",
+            ),
+        )
+        players = json.loads((self.state / "players.json").read_text())["players"]
+        self.assertEqual([p["civilizationId"] for p in players], ["France", "Rome", "Greece"])
+        self.assertEqual(players[0]["controller"], "HUMAN")
+        self.assertIn("prepareDesktopAssets", self.build.call_args.args[0])
+        self.assertTrue(str(self.chdir.call_args.args[0]).endswith("build/desktop-engine/android/assets"))
+        self.checkpoint()
+        self.assertEqual(0, self.run_launcher())
+        command = self.execute.call_args.args[1]
+        self.assertEqual(command[command.index("--human") + 1], "France")
+        self.assertIn("--resume-checkpoint", command)
+        self.assertNotIn("--agent-player", command)
 
     def test_ordinary_game_adds_native_ai_without_credentials(self):
         self.assertEqual(0, self.run_launcher("--new", "--built-in-ai", "Egypt", "--city-states", "2"))

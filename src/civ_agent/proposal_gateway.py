@@ -432,6 +432,7 @@ class ProposalGateway:
                             "memory_read",
                             "memory_search",
                             "trade_options",
+                            "trade_prepare",
                             "trade_read",
                             "agreement_list",
                             "agreement_read",
@@ -471,6 +472,10 @@ class ProposalGateway:
             "Inspect trade terms, city names/populations, eligibility, unavailable reasons, research funding, friendship and active agreements with a met player. WarDeclaration names a third civilization both players know; give commits you to war and receive asks the partner to declare. Your own native declaration warnings and possibly relevant social promises are included. Weigh socialAdvisories when choosing; they never restrict legal actions. give/receive are from your perspective. City names in terms are short trade IDs. Available during either player's turn.",
         )
         add(
+            "trade_prepare",
+            "Prepare a detached trade draft from give/receive items. Pairs treaty terms and optionally adds immediate gold to fund a research agreement. Returns explicit final terms and validity; no offer or game effects. Review the result and pass its exact give/receive to trade_offer to publish.",
+        )
+        add(
             "trade_read",
             "Read a binding trade before accepting, declining, withdrawing or counteroffering. Copy its inspection command from chat_read. Every clause has an explicit from/to direction, identical for both players. Interpret socialAdvisories yourself; they never restrict legal actions. Re-read changed terms; copy an available response and add your own intent.",
         )
@@ -484,7 +489,7 @@ class ProposalGateway:
         )
         add(
             "trade_offer",
-            "Propose binding terms from trade_options when canInitiate is true. Copy the offered name, amount and duration for Embassy, Agreement, City, Treaty and WarDeclaration; choose resource and gold amounts within availability. WarDeclaration in give makes YOU declare; in receive makes the PARTNER declare. Both sides can declare on the same target for joint war. Inspect your declaration warnings. Social promises never restrict legal game actions. Treaties must match on both sides; at war include mutual Peace Treaty. Research Agreement amount is each player's signing cost after immediate gold transfers. give/receive are from YOUR perspective. Set counterofferTo to counter a trade inspected with trade_read when counterofferAvailable is true. No effect until acceptance. Avoid duplicate proposals; changed circumstances or terms may justify a new proposal.",
+            "Propose binding terms from trade_options when canInitiate is true. Copy the offered name, amount and duration for Embassy, Agreement, City, Treaty and WarDeclaration; choose resource and gold amounts within availability. WarDeclaration in give makes YOU declare; in receive makes the PARTNER declare. Both sides can declare on the same target for joint war. Inspect your declaration warnings. Social promises never restrict legal game actions. Use trade_prepare to pair treaties and prepare research funding; review and publish its explicit terms. Research Agreement amount is each player's signing cost after immediate gold transfers. give/receive are from YOUR perspective. Set counterofferTo to counter a trade inspected with trade_read when counterofferAvailable is true. No effect until acceptance. Avoid duplicate proposals; changed circumstances or terms may justify a new proposal.",
         )
         add(
             "friendship_offer",
@@ -1082,6 +1087,15 @@ class ProposalGateway:
             if value["available"] and query not in job.details_read:
                 job.details_read.append(query)
             return public_result(delivered)
+        if name == "trade_prepare":
+            value = await job.connection.tool("player_communication", {**arguments, "op": name, "epoch": job.epoch})
+            self.check(job)
+            if value.get("valid"):
+                value["publish"] = {
+                    "tool": "trade_offer",
+                    "arguments": {"partner": arguments["partner"], "give": value["give"], "receive": value["receive"]},
+                }
+            return public_result(value)
         if name in {"trade_options", "trade_read", "agreement_list", "agreement_read"}:
             value = (
                 await self.read_trade(job, arguments["proposalId"])

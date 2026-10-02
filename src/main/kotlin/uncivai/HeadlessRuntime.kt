@@ -33,10 +33,10 @@ class HeadlessRuntime private constructor(
     internal val executor = GameExecutor(game, lifecycleLock, { replacement ->
         game = replacement
         uncivGame.gameInfo = replacement
-    }) {
+    }, isAvailable = {
         !closed && activeRuntime === this && UncivGame.isCurrentInitialized() &&
             UncivGame.Current === uncivGame && uncivGame.gameInfo === game
-    }
+    })
     internal val epoch get() = executor.epoch
     internal val mutationFailure get() = executor.mutationFailure
 
@@ -173,7 +173,7 @@ class HeadlessRuntime private constructor(
             }
         }
 
-        private fun controlledSettings() = GameSettings().apply {
+        internal fun controlledSettings() = GameSettings().apply {
             showTutorials = false
             autoAssignCityProduction = false
             autoBuildingRoads = false

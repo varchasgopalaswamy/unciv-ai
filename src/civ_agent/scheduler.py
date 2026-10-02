@@ -717,7 +717,13 @@ class Scheduler:
         if status["phase"] != "FINISHED":
             raise RunnerError("Host has not finished the game.")
         flight = self.state.get("inFlight")
-        if flight:
+        if flight and flight.get("controller") == "HUMAN":
+            if status["handoff"] > flight["handoff"]:
+                self.finish_human_turn(flight, status)
+            else:
+                self.state["inFlight"] = None
+                self.save()
+        elif flight:
             self.interrupt_agent(flight)
             if not self.poll_events(flight, drain=True):
                 raise RunnerError("Final agent history could not be mirrored; resume to retry.")
@@ -767,6 +773,9 @@ class Scheduler:
             return False
         flight = self.state.get("inFlight")
         if not flight:
+            return True
+        if flight.get("controller") == "HUMAN":
+            self.finish_human_turn(flight, status)
             return True
         agent = self.agent_for(flight)
         agent_missing = False
@@ -840,7 +849,7 @@ class Scheduler:
                     "Host returned to manual control during this unfinished turn. Finish the turn manually before resuming the scheduler."
                 )
             if initial["phase"] == "HALTED":
-                if self.state.get("inFlight"):
+                if self.state.get("inFlight") and self.state["inFlight"].get("controller") != "HUMAN":
                     flight = self.state["inFlight"]
                     self.interrupt_agent(flight)
                     if not self.poll_events(flight, drain=True):
@@ -897,7 +906,7 @@ class Scheduler:
                 except RunnerError:
                     pass
                 flight = self.state.get("inFlight")
-                if flight:
+                if flight and flight.get("controller") != "HUMAN":
                     try:
                         self.interrupt_agent(flight)
                         self.poll_events(flight, drain=True)
@@ -927,12 +936,80 @@ class Scheduler:
                     pass
             self.finalizer.shutdown(wait=True)
 
+    def finish_human_turn(self, flight, status):
+        if status["handoff"] != flight["handoff"] + 1:
+            raise RunnerError("The human turn has no confirmed handoff; resume must restore its starting save.")
+        self.state["handoffs"] += 1
+        self.state["inFlight"] = None
+        self.save()
+        self.output.line("Status", "Human turn completed.", civilization=flight["civilization"])
+
+    def invoke_human(self, status):
+        """Wait for desktop input while maintaining authority and background services."""
+        flight = dict(
+            controller="HUMAN",
+            activationId=str(uuid.uuid4()),
+            civilization=status["activeCivilization"],
+            handoff=status["handoff"],
+            gameTurn=status["turn"],
+            serverInstance=status["serverInstance"],
+            usage={},
+        )
+        self.state["inFlight"] = flight
+        self.save()
+        self.operator.call(
+            "activate",
+            leaseId=self.lease,
+            epoch=status["epoch"],
+            **{key: flight[key] for key in ("serverInstance", "handoff", "civilization", "activationId")},
+        )
+        self.output.turn(flight["civilization"], status["turn"])
+        self.output.line("Status", "Your turn in the Unciv window.", civilization=flight["civilization"])
+        heartbeat = time.monotonic()
+        try:
+            while True:
+                self.collect_finalizations()
+                requested = self.store.requested() or ("pause" if self.interrupted else None)
+                if requested:
+                    self.note("stopped" if requested == "stop" else "paused", "Operator requested " + requested + ".")
+                    return False
+                current = self.operator.call("status")["status"]
+                self.check_status(current)
+                if current["phase"] == "FINISHED":
+                    self.complete_game(current)
+                    return False
+                if current["phase"] == "HALTED":
+                    self.note(
+                        "needs_inspection", "Host halted during the human turn; inspect its logs before resuming."
+                    )
+                    return False
+                if current["handoff"] > flight["handoff"]:
+                    self.finish_human_turn(flight, current)
+                    return True
+                reason = self.budget_reason(current)
+                if reason:
+                    self.note("budget_exhausted", reason)
+                    return False
+                if current["serverInstance"] != flight["serverInstance"] or current["phase"] != "ACTIVE":
+                    self.note("paused", "Human turn interrupted; resume restores its starting save.")
+                    return False
+                if time.monotonic() - heartbeat >= 5:
+                    self.check_agent_health()
+                    self.operator.call("heartbeat", leaseId=self.lease)
+                    heartbeat = time.monotonic()
+                time.sleep(0.25)
+        finally:
+            self.pause_owned()
+
     def invoke(self, status):
         self.check_agent_health()
         civilization = status.get("activeCivilization")
         agent = self.agents.get(civilization)
-        if agent is None:
+        human = status.get("activeController") == "HUMAN"
+        if agent is None and not human:
             raise RunnerError("No HTTPS agent service is configured for the active civilization.")
+        if human and agent is not None:
+            raise RunnerError("A human civilization must not have an agent service.")
         self.collect_finalizations(wait=True, civilization=civilization)
         if not review_round(self, status):
             return False
@@ -944,6 +1021,9 @@ class Scheduler:
         if time.time() >= self.state["deadline"]:
             self.note("budget_exhausted", "Wall-time budget exhausted (pause and downtime count).")
             return False
+        if human:
+            return self.invoke_human(status)
+        assert agent is not None
         activation = str(uuid.uuid4())
         session = self.state["sessions"].setdefault(civilization, {"threadId": None})
         if session.get("gameTurn") != status["turn"]:

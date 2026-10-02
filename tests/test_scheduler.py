@@ -76,6 +76,7 @@ class FakeHost:
         self.behaviors = list(behaviors)
         self.calls, self.plays = [], []
         self.agent_tokens = {name: secrets.token_urlsafe(32) for name in ("Rome", "Greece")}
+        self.controllers = {name: "AGENT" for name in self.agent_tokens}
         self.activations = {}
         self.interruptions = []
         self.archive_failures = 0
@@ -303,7 +304,7 @@ class FakeHost:
         self.thread.join(timeout=2)
 
     def status(self):
-        civilizations = tuple(self.agent_tokens)
+        civilizations = tuple(self.controllers)
         return dict(
             epoch=self.epoch,
             serverInstance=self.instance,
@@ -311,6 +312,8 @@ class FakeHost:
             handoff=self.handoff,
             phase=self.phase,
             activeCivilization=civilizations[self.handoff % len(civilizations)],
+            activeController=self.controllers[civilizations[self.handoff % len(civilizations)]],
+            playerControllers=dict(self.controllers),
             scheduled=self.scheduled,
             leaseId=self.lease,
             leaseExpiresInMs=30000 if self.lease else 0,
@@ -341,7 +344,10 @@ class FakeHost:
             self.phase, self.player_token = "PAUSED", None
             self.restores.append(dict(body))
         elif operation == "rotate_players":
-            extra["players"] = [{"civilizationId": name, "token": token} for name, token in self.agent_tokens.items()]
+            extra["players"] = [
+                {"civilizationId": name, "token": token, "controller": "AGENT"}
+                for name, token in self.agent_tokens.items()
+            ]
         elif operation == "restore_complete":
             pass
         elif operation == "job_limits":
@@ -649,6 +655,7 @@ class SchedulerTest(unittest.TestCase):
     def add_france(self):
         token = secrets.token_urlsafe(32)
         self.host.agent_tokens["France"] = token
+        self.host.controllers["France"] = "AGENT"
         service = self.state / "agent-services" / "France"
         atomic_json(service / "token.json", {"token": token})
         atomic_json(
@@ -661,6 +668,29 @@ class SchedulerTest(unittest.TestCase):
             ),
         )
 
+    def test_human_wait_has_no_model_invocation_or_model_turn_timeout(self):
+        self.host.controllers = {"France": "HUMAN", "Rome": "AGENT", "Greece": "AGENT"}
+        process = self.background("--max-turns", "1", "--max-seconds", "30", "--turn-timeout", "1")
+        deadline = time.monotonic() + 10
+        while (self.saved().get("inFlight") or {}).get("controller") != "HUMAN":
+            self.assertIsNone(process.poll())
+            self.assertLess(time.monotonic(), deadline)
+            time.sleep(0.05)
+        time.sleep(5.3)
+        self.assertIsNone(process.poll())
+        self.assertEqual(self.host.plays, [])
+        self.assertEqual(self.saved()["invocations"], 0)
+        self.assertTrue(any(call["op"] == "heartbeat" for call in self.host.calls))
+        with self.host.changed:
+            self.host.handoff += 1  # The desktop commits the human's End Turn.
+            self.host.phase = "PAUSED"
+            self.host.changed.notify_all()
+        stdout, stderr = process.communicate(timeout=15)
+        self.assertEqual(process.returncode, 0, stdout + stderr)
+        self.assertEqual([play["civ"] for play in self.host.plays], ["Rome", "Greece"])
+        self.assertEqual(self.saved()["invocations"], 2)
+        self.assertEqual(self.saved()["handoffs"], 3)
+
     def test_three_players_cycle_and_resume_without_skipping_france(self):
         self.add_france()
         first = self.run_cli("--max-turns", "1", "--max-seconds", "60")
@@ -672,6 +702,30 @@ class SchedulerTest(unittest.TestCase):
         self.assertEqual(self.saved()["handoffs"], 6)
         streams = read_collection(path_for(self.state), "streams")
         self.assertEqual({row["gameTurn"] for row in streams if row["civilization"] == "France"}, {0, 1})
+
+    def assert_human_interruption(self, halted):
+        self.host.controllers = {"France": "HUMAN", "Rome": "AGENT", "Greece": "AGENT"}
+        process = self.background("--max-turns", "1", "--max-seconds", "30")
+        with self.host.changed:
+            self.assertTrue(self.host.changed.wait_for(lambda: self.host.activation is not None, timeout=10))
+            if halted:
+                self.host.phase = "HALTED"
+            else:
+                atomic_json(self.state / "runner" / "control.json", {"action": "stop"})
+        stdout, stderr = process.communicate(timeout=15)
+        self.assertEqual(process.returncode, 2 if halted else 0, stdout + stderr)
+        self.assertEqual(self.saved()["status"], "needs_inspection" if halted else "stopped")
+        self.assertEqual(self.saved()["inFlight"]["controller"], "HUMAN")
+        self.assertEqual(self.saved()["invocations"], 0)
+        self.assertEqual(self.host.plays, [])
+        self.assertEqual(self.host.interruptions, [])
+        self.assertIsNone(self.host.lease)
+
+    def test_stopping_a_human_turn_preserves_it_for_rewind(self):
+        self.assert_human_interruption(halted=False)
+
+    def test_halted_host_during_human_turn_stops_without_contacting_a_human_agent(self):
+        self.assert_human_interruption(halted=True)
 
     def test_shared_review_waits_for_last_player_then_blocks_all_next_turns(self):
         self.add_france()

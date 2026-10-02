@@ -48,6 +48,33 @@ def test_resume_requires_a_native_save_before_launching(tmp_path, fake_services,
     assert fake_services[0] == []
 
 
+def test_human_launch_has_no_human_agent_service(tmp_path, fake_services):
+    assert game.run(options(tmp_path, "--human", "France", "--agents", "Rome", "Greece")) == 3
+    processes, scheduled, _ = fake_services
+    assert len(processes) == 3
+    assert ["--human", "France"] == processes[0].command[processes[0].command.index("--human") :][:2]
+    assert [process.command[2] for process in processes[1:]] == ["Rome", "Greece"]
+    assert scheduled[0].human == "France"
+
+
+def test_human_roster_is_disjoint_and_resume_restores_roles(tmp_path):
+    with pytest.raises(ValueError, match="distinct"):
+        game.resolve_options(options(tmp_path, "--human", "France"))
+    saved_run(tmp_path)
+    write_private_json(
+        tmp_path / "players.json",
+        {
+            "players": [
+                {"civilizationId": "France", "controller": "HUMAN"},
+                {"civilizationId": "Rome", "controller": "AGENT"},
+            ]
+        },
+    )
+    args = options(tmp_path, action="resume")
+    game.resolve_options(args)
+    assert args.human == "France" and args.agents == ["Rome"]
+
+
 @pytest.fixture
 def fake_services(monkeypatch):
     processes, scheduled, closed = [], [], []

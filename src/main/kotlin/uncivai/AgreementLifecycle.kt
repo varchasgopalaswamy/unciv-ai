@@ -230,7 +230,7 @@ internal class AgreementLifecycle(private val runtime: GameExecutor) {
 
     private fun publicTerms(player: Civilization, terms: AgreementTerms, kind: String): JsonObject {
         fun items(items: List<TradeSelection>) = items.map {
-            val supported = (supportedTradeTerm(it.type, it.name) || (it.type == TradeOfferType.Treaty && it.name == "Declaration of Friendship")) && (it.type != TradeOfferType.WarDeclaration || player.getKnownCivs().any { target -> target.isMajorCiv() && target.civID == it.name })
+            val supported = (it.type !in setOf(TradeOfferType.WarDeclaration, TradeOfferType.PeaceProposal, TradeOfferType.Introduction) || player.getKnownCivs().any { target -> target.isMajorCiv() && target.civID == it.name })
             val name = if (supported && it.type != TradeOfferType.City) it.name else null
             val display = when {
                 kind != "TRADE" -> it.name.tr() + if (it.duration > 0) " (${it.duration})" else ""

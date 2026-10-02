@@ -86,6 +86,37 @@
       "type": "object",
       "properties": {
         "op": {
+          "const": "trade_prepare"
+        },
+        "epoch": {
+          "$ref": "#/$defs/epoch"
+        },
+        "partner": {
+          "$ref": "#/$defs/partner"
+        },
+        "give": {
+          "$ref": "#/$defs/give"
+        },
+        "receive": {
+          "$ref": "#/$defs/receive"
+        },
+        "fundResearch": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "op",
+        "epoch",
+        "partner",
+        "give",
+        "receive"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "op": {
           "const": "trade_options"
         },
         "epoch": {
@@ -744,102 +775,12 @@
     "give": {
       "type": "array",
       "items": {
-        "type": "object",
-        "properties": {
-          "type": {
-            "type": "string",
-            "enum": [
-              "Embassy",
-              "Gold",
-              "Gold_Per_Turn",
-              "Treaty",
-              "Agreement",
-              "Luxury_Resource",
-              "Strategic_Resource",
-              "Stockpiled_Resource",
-              "Technology",
-              "Introduction",
-              "WarDeclaration",
-              "PeaceProposal",
-              "City"
-            ]
-          },
-          "name": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 256,
-            "pattern": "\\S"
-          },
-          "amount": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 2147483647
-          },
-          "duration": {
-            "type": "integer",
-            "minimum": -1,
-            "maximum": 2147483647
-          }
-        },
-        "required": [
-          "type",
-          "name",
-          "amount",
-          "duration"
-        ],
-        "additionalProperties": false
+        "$ref": "#/$defs/tradeItem"
       },
       "maxItems": 64
     },
     "receive": {
-      "type": "array",
-      "items": {
-        "type": "object",
-        "properties": {
-          "type": {
-            "type": "string",
-            "enum": [
-              "Embassy",
-              "Gold",
-              "Gold_Per_Turn",
-              "Treaty",
-              "Agreement",
-              "Luxury_Resource",
-              "Strategic_Resource",
-              "Stockpiled_Resource",
-              "Technology",
-              "Introduction",
-              "WarDeclaration",
-              "PeaceProposal",
-              "City"
-            ]
-          },
-          "name": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 256,
-            "pattern": "\\S"
-          },
-          "amount": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 2147483647
-          },
-          "duration": {
-            "type": "integer",
-            "minimum": -1,
-            "maximum": 2147483647
-          }
-        },
-        "required": [
-          "type",
-          "name",
-          "amount",
-          "duration"
-        ],
-        "additionalProperties": false
-      },
-      "maxItems": 64
+      "$ref": "#/$defs/give"
     },
     "decision": {
       "enum": [
@@ -1110,6 +1051,52 @@
         "rejectedBatches",
         "rejectionReasons",
         "complete"
+      ],
+      "additionalProperties": false
+    },
+    "tradeItem": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "Embassy",
+            "Gold",
+            "Gold_Per_Turn",
+            "Treaty",
+            "Agreement",
+            "Luxury_Resource",
+            "Strategic_Resource",
+            "Stockpiled_Resource",
+            "Technology",
+            "Introduction",
+            "WarDeclaration",
+            "PeaceProposal",
+            "City"
+          ]
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "\\S"
+        },
+        "amount": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2147483647
+        },
+        "duration": {
+          "type": "integer",
+          "minimum": -1,
+          "maximum": 2147483647
+        }
+      },
+      "required": [
+        "type",
+        "name",
+        "amount",
+        "duration"
       ],
       "additionalProperties": false
     }

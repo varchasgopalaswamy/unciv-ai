@@ -69,21 +69,16 @@ class Agreement(BoundaryModel):
 
 
 class TradeItem(BoundaryModel):
-    type: Literal[
-        "Gold",
-        "Gold_Per_Turn",
-        "Luxury_Resource",
-        "Strategic_Resource",
-        "Treaty",
-        "Agreement",
-        "Embassy",
-        "City",
-        "WarDeclaration",
-        "PeaceProposal",
-    ]
+    type: Annotated[str, Field(min_length=1, max_length=64, description="Copy type from trade_options.")]
     name: str
     amount: Annotated[int, Field(ge=1)]
     duration: int
+
+
+class TradeDraft(Partner):
+    give: Annotated[list[TradeItem], Field(max_length=64)]
+    receive: Annotated[list[TradeItem], Field(max_length=64)]
+    fundResearch: bool = True
 
 
 class TradeOffer(Partner, WithIntent):
@@ -200,6 +195,7 @@ TOOL_MODELS: dict[str, type[BaseModel]] = {
     "player_inspect": PlayerInspection,
     "mission_preview": MissionPreview,
     "trade_options": Partner,
+    "trade_prepare": TradeDraft,
     "trade_read": Proposal,
     "agreement_list": BoundaryModel,
     "agreement_read": Agreement,

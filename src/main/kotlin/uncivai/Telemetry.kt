@@ -67,6 +67,7 @@ internal data class TurnMetrics(
     var activeMs: Long = 0,
     var timingComplete: Boolean = true,
     val activationIds: MutableSet<String> = linkedSetOf(),
+    val nativeActions: MutableMap<String, Long> = linkedMapOf(),
 )
 
 /** Cumulative service counters. Sequence numbers make retransmission and late delivery idempotent. */
@@ -135,6 +136,14 @@ internal class Telemetry(private val runtime: GameExecutor) {
         val turn = state.turns.getOrPut(key()) { TurnMetrics(runtime.epoch, runtime.handoff, game.turns, game.currentPlayer, System.currentTimeMillis()) }
         turn.activationIds.add(activationId)
         dirtyTurns.add(key())
+    }
+
+    fun nativeAction(kind: String) {
+        state.turns[key()]?.let { turn ->
+            turn.nativeActions[kind] = (turn.nativeActions[kind] ?: 0) + 1
+            dirtyTurns.add(key())
+            monitoringDirty = true
+        }
     }
 
     fun restored() {
@@ -306,10 +315,12 @@ internal class Telemetry(private val runtime: GameExecutor) {
             val turns = state.turns.filterKeys { rebuild || it in dirtyTurns }.map { (id, turn) ->
                 val attempts = jobs.filter { (_, job) -> belongsToTurn(job, turn) }
                 val elapsed = turn.endedAtMs?.let { (it - turn.startedAtMs).coerceAtLeast(0) }
+                val human = turn.civilization in runtime.communicationState.humanPlayers
                 obj(
                     "schemaVersion" to 1, "matchId" to game.gameId, "turnId" to id, "turn" to turn.recordJson(),
+                    "controller" to if (human) "HUMAN" else "AGENT",
                     "usage" to usage(attempts.values), "jobs" to attempts.keys.toList(), "attempts" to turn.activationIds.size,
-                    "accountingComplete" to (turn.endedAtMs != null && turn.activationIds.all { activation -> attempts.containsKey(activation) } && attempts.values.all { it.telemetry?.usageComplete == true }),
+                    "accountingComplete" to (turn.endedAtMs != null && (human || turn.activationIds.all { activation -> attempts.containsKey(activation) }) && attempts.values.all { it.telemetry?.usageComplete == true }),
                     "agentCalls" to aggregateCalls(attempts.values.map { it.telemetry?.apiCalls.orEmpty() }),
                     "memoryEdits" to aggregateMemoryEdits(attempts.values.map { it.telemetry?.memoryEdits }),
                     "hostCalls" to aggregateCalls(listOf(state.windows[id]?.actors?.get(turn.civilization).orEmpty())),

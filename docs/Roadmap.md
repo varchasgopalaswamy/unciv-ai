@@ -86,10 +86,16 @@ implemented; do not reopen them from an archived checklist.
 
 The [player API coverage ledger](reference/Player-api-coverage.md) is the detailed
 inventory. Remaining areas include broader city/unit controls and information,
-religion/espionage, embedded desktop-human play, and agent filesystem/network
+religion/espionage, broader human multiplayer/controller lifecycle, and agent filesystem/network
 isolation. Ordinary native turn-menu deferral also needs separate coverage from
 the current turn-button flow. These are not all required for the bounded Vanilla
 acceptance run and should receive their own scope and evidence.
+
+One local human can now join the authoritative desktop using `--human` with a
+disjoint agent roster. The integrated communication/trade panel, human scheduler
+wait and coordinated rewind are documented in the
+[launcher guide](guides/Full-vanilla-run.md#play-a-civilization-yourself).
+Long human–agent matches and exhaustive desktop-action acceptance remain open.
 
 Across this work, the host enforces authority and visibility; Unciv owns gameplay
 rules. Social promises can inform decisions without prohibiting legal actions.

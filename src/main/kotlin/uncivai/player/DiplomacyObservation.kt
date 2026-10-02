@@ -13,7 +13,6 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonObject
 import uncivai.GameExecutor
 import uncivai.bilateralStatus
-import uncivai.supportedTradeTerm
 import java.util.Collections
 
 @Serializable
@@ -100,8 +99,8 @@ internal fun observeDiplomacy(player: Civilization, active: Boolean, communicati
             // Imported requests may contain targets that this reader has never met.
             // Supporting the category does not authorize revealing those identities.
             val city = (player.cities + other.cities).firstOrNull { it.id == term.name }
-            val supported = supportedTradeTerm(term.type, term.name) && when (term.type) {
-                TradeOfferType.WarDeclaration, TradeOfferType.PeaceProposal -> player.getKnownCivs().any { it.isMajorCiv() && it.civID == term.name }
+            val supported = when (term.type) {
+                TradeOfferType.WarDeclaration, TradeOfferType.PeaceProposal, TradeOfferType.Introduction -> player.getKnownCivs().any { it.isMajorCiv() && it.civID == term.name }
                 TradeOfferType.City -> city != null
                 else -> true
             }
