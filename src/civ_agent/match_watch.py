@@ -24,11 +24,14 @@ def count(value):
     return "—" if value is None else number(value)
 
 
-def player_text(name, no_color=False):
+def player_text(name, no_color=False, *, model=None):
     color = player_style(name)
     if not color.startswith("bright_"):
         color = "bright_" + color
-    return Text(visible_text(name), style="bold" if no_color else "bold " + color)
+    text = Text(visible_text(name), style="bold" if no_color else "bold " + color)
+    if model:
+        text.append(" · " + visible_text(model), style="not bold dim")
+    return text
 
 
 def usage_text(usage):
@@ -341,7 +344,7 @@ class MatchWatch(App):
                 (
                     name,
                     (
-                        player_text(name, self.no_color),
+                        player_text(name, self.no_color, model=snapshot.player_model(name)),
                         phase,
                         str(latest["turn"]["gameTurn"]) if latest else "—",
                         count(score.get("score")),
@@ -442,7 +445,7 @@ class MatchWatch(App):
                 (
                     v.civilization,
                     (
-                        player_text(v.civilization, self.no_color),
+                        player_text(v.civilization, self.no_color, model=self.snapshot.player_model(v.civilization)),
                         v.status,
                         v.report["turn"] if v.report else "—",
                         v.delivered_turn if v.delivered_turn is not None else "—",

@@ -150,6 +150,14 @@ class WatchSnapshot:
             (r for r in reversed(self.turns) if civilization is None or r["turn"]["civilization"] == civilization), None
         )
 
+    def player_model(self, civilization):
+        settings = self.run.get("sessions", {}).get(civilization, {}).get("effectiveSettings") or {}
+        if settings.get("model"):
+            return settings["model"]
+        # Opening reviews can report the model before the first gameplay session.
+        review = next((view for view in self.strategies if view.civilization == civilization), None)
+        return ((review.job or {}).get("telemetry") or {}).get("model") if review else None
+
 
 class WatchReader:
     def __init__(self, root: Path):

@@ -24,6 +24,8 @@ remain read-only, and all database connections use read-only mode.
   gameplay and bookkeeping measurements.
 - Player scores and controllers, including built-in AI and human players when the
   host records them. Agent rows distinguish gameplay from background bookkeeping.
+  The player and strategy tables show each agent's reported model beside its
+  civilization, including opening reviews before the first gameplay turn.
 - Recorded input, cached-input, output, and reasoning-token counts. Cached tokens
   are part of input; reasoning tokens are part of output. Accounting can remain
   partial while a turn or its bookkeeping is in progress.

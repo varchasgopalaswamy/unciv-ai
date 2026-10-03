@@ -82,7 +82,16 @@ def fixture(root) -> tuple[JsonObject, list[JsonObject]]:
     run = {
         "epoch": "g1",
         "status": "running",
-        "sessions": {"Rome": {}, "Greece": {}},
+        "sessions": {
+            "Rome": {"effectiveSettings": {"provider": "openai", "model": "gpt-6-luna", "reasoningEffort": "high"}},
+            "Greece": {
+                "effectiveSettings": {
+                    "provider": "openrouter",
+                    "model": "anthropic/claude-sonnet-4.5",
+                    "reasoningEffort": "high",
+                }
+            },
+        },
         "inFlight": {
             "civilization": "Rome",
             "gameTurn": 2,
@@ -308,6 +317,9 @@ def test_dashboard_navigation_live_refresh_freeze_and_quit(tmp_path):
             await pilot.pause()
             players = app.query_one("#players", DataTable)
             assert players.row_count == 3
+            assert str(players.get_row("Rome")[0]) == "Rome · gpt-6-luna"
+            assert str(players.get_row("Greece")[0]) == "Greece · anthropic/claude-sonnet-4.5"
+            assert str(players.get_row("Egypt")[0]) == "Egypt"
             assert str(players.get_row("Rome")[-1]) == "3"  # Command breakdown is not counted twice.
             assert str(players.get_row("Egypt")[1]) == "Built-in AI"
             assert str(players.get_row("Greece")[1]) == "Bookkeeping"
