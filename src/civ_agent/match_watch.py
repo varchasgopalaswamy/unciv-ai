@@ -722,6 +722,9 @@ def parser(*, add_help=True):
     result.add_argument(
         "--verbose", action="store_true", help="Show startup context, tool details, and exposed reasoning summaries"
     )
+    result.add_argument(
+        "--local", action="store_true", help="Use the installed dashboard instead of the game's pinned container image"
+    )
     return result
 
 
@@ -732,7 +735,7 @@ def run(args):
         return 2
     from civ_agent.container_support import IN_CONTAINER, read_json, watch_mounts
 
-    if not IN_CONTAINER and (root / "container.json").exists():
+    if not args.local and not IN_CONTAINER and (root / "container.json").exists():
         import subprocess
 
         manifest = read_json(root / "container.json")

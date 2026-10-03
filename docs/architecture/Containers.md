@@ -120,6 +120,9 @@ notebooks and accounting). SQLite needs those directories to create WAL
 coordination files even for `mode=ro` connections. All dashboard queries use
 read-only connections. This trusted operator viewer reads existing databases and
 does not depend on published game ports. Agents never receive these mounts.
+`civ-agent match watch --local` instead runs the installed viewer on the operator's
+machine, retaining read-only database connections. This lets viewer updates reach
+existing games independently of their pinned images, without restarting services.
 
 ## Verification
 

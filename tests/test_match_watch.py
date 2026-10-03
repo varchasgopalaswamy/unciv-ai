@@ -1,10 +1,11 @@
 import asyncio
 import json
+import subprocess
 from unittest.mock import Mock
 
 from textual.widgets import DataTable, RichLog, Static, TabbedContent
 
-from civ_agent import cli, match_watch
+from civ_agent import cli, container_support, match_watch
 from civ_agent.monitoring import (
     MonitorStore,
     path_for,
@@ -404,3 +405,33 @@ def test_watch_cli_dispatch_and_nonterminal_error(tmp_path, monkeypatch, capsys)
     assert match_watch.run(match_watch.parser().parse_args(["--state-dir", str(tmp_path)])) == 2
     assert "interactive terminal" in capsys.readouterr().err
     assert list(tmp_path.iterdir()) == []
+
+
+def test_local_dashboard_can_view_a_container_game_without_starting_containers(tmp_path, monkeypatch):
+    manifest = tmp_path / "container.json"
+    manifest.write_text(json.dumps({"images": {"runtime": "sha256:pinned"}}))
+    original = manifest.read_bytes()
+    monkeypatch.setattr(container_support, "IN_CONTAINER", False)
+    mounts = Mock(return_value=[])
+    monkeypatch.setattr(container_support, "watch_mounts", mounts)
+    launch = Mock(return_value=7)
+    monkeypatch.setattr(subprocess, "call", launch)
+    viewer = Mock()
+    monkeypatch.setattr(match_watch, "MatchWatch", viewer)
+    monkeypatch.setattr(match_watch.sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(match_watch.sys.stdout, "isatty", lambda: True)
+    arguments = ["match", "watch", "--state-dir", str(tmp_path), "--verbose"]
+
+    assert cli.main(arguments) == 7
+    assert launch.call_args.args[0][-3:] == ["sha256:pinned", "watch", "--verbose"]
+    viewer.assert_not_called()
+    launch.reset_mock()
+    mounts.reset_mock()
+
+    assert cli.main([*arguments, "--local"]) == 0
+    viewer.assert_called_once_with(tmp_path.resolve(), verbose=True)
+    viewer.return_value.run.assert_called_once_with()
+    launch.assert_not_called()
+    mounts.assert_not_called()
+    assert manifest.read_bytes() == original
+    assert list(tmp_path.iterdir()) == [manifest]

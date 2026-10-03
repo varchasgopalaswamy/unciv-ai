@@ -15,6 +15,17 @@ from the saved image without network access; only SQLite coordination directorie
 and the control-request directory are writable. The game state and credentials
 remain read-only, and all database connections use read-only mode.
 
+To use an updated dashboard with an existing container game, add `--local`:
+
+```sh
+uv run civ-agent match watch --local --state-dir /path/to/match
+```
+
+This runs the installed viewer directly on your machine and reads the saved
+databases using read-only connections. It requires no image rebuild or game
+restart. Without `--local`, container games use their pinned viewer image, which
+does not change when you update the checkout or rebuild images.
+
 ## What it shows
 
 - Saved scheduler status, the current turn/player, stop reasons, and the age of the
