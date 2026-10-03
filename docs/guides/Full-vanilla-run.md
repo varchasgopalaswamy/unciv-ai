@@ -72,8 +72,8 @@ names. Mod content is out of scope. Choose `map_size` or a custom `map_radius`.
 | Section | Settings |
 | --- | --- |
 | `[game]` | `civilizations`, `randomize`, `assignment_seed`, `seed`, `map_type`, `map_size`/`map_radius`, `difficulty`, `speed`, `starting_era`, `city_states`, `victories` |
-| `[agents]` | `model`, `reasoning_effort`, `review_interval`, `review_attempts`, `strategy_guide`, `fast` |
-| `[[players]]` | Unique `name`, `controller` (`agent`, `human`, `built_in_ai`; defaults to `agent`); optional agent `model`/`reasoning_effort` |
+| `[agents]` | `provider` (`openai` or `openrouter`), `model`, `reasoning_effort`, `review_interval`, `review_attempts`, `strategy_guide`, `fast` |
+| `[[players]]` | Unique `name`, `controller` (`agent`, `human`, `built_in_ai`; defaults to `agent`); optional agent `provider`/`model`/`reasoning_effort` |
 | `[limits]` | `max_turns`, `max_invocations`, `max_seconds`, `turn_timeout`, `startup_timeout`, `max_concurrent_jobs` |
 | `[resources.controller]`, `[resources.desktop]`, `[resources.agent]` | `memory_mib`, `cpus`, `pids` |
 | `[runtime]` | `image`, `desktop_image`, `browser_port` |
@@ -103,6 +103,56 @@ Resume reads the saved assignments and never reshuffles. The old per-player
 `civilization` field and model-only rotation format are removed; existing games
 from that format require their previous checkout/images to resume.
 Player model/effort choices apply to gameplay, chat and reviews.
+
+### Mix OpenAI and OpenRouter models
+
+Use [the mixed-provider example](../../examples/mixed-providers.toml). Both
+providers use the same Codex runner, prompts, game tools, memory and review flow.
+OpenAI players retain the dedicated Codex login; OpenRouter players use an API key.
+Rebuild images after updating the source:
+
+```sh
+.venv/bin/civ-agent image build
+.venv/bin/civ-agent auth login --provider openrouter
+.venv/bin/civ-agent game start --config examples/mixed-providers.toml \
+  --state-dir ~/.local/state/unciv-host/mixed-providers
+```
+
+The OpenRouter login command prompts for a hidden API key. For unattended setup it
+can import `OPENROUTER_API_KEY` from the environment or an owner-only file using
+`--key-file PATH`. The key persists in `AUTH_DIR/openrouter.key` with mode `600`;
+never put it in TOML. Only OpenRouter agent containers mount this file, read-only.
+They receive no OpenAI login-manager socket or renewable credentials. OpenAI-only
+agents receive no OpenRouter key. An entirely OpenRouter roster requires no OpenAI
+login. `auth status --provider openrouter` reports key presence without contacting
+the provider. Recreate stopped game containers with `game resume` after rotating a key.
+
+Set `provider = "openrouter"` and the full OpenRouter model ID in any agent's
+`[[players]]` table. Provider/model/effort travel with that named player through
+random assignment and balanced rotations. Use `--provider` for the default or
+`--player-provider "Player name=openrouter"` alongside `--player-model` for a CLI
+override. The provider also appears in per-job telemetry, strategy status, and
+JSON/CSV batch results. `fast = true` requests OpenAI priority only.
+
+Choose models that advertise **tool calling and structured outputs**; reviews use
+a JSON schema. Before model work, the runner reads OpenRouter's public catalog,
+checks these capabilities and reasoning effort, and saves the model's context
+limit/capabilities under that player's durable Codex directory. Resumes reuse that
+snapshot. Set `reasoning_effort = "none"` for models without reasoning; otherwise
+choose an advertised effort. Catalog validation failures stop with an
+`OPENROUTER_*` error before inference. Reasoning levels are provider-specific
+and do not imply equal compute.
+
+Transport follows [OpenRouter's Codex configuration](https://openrouter.ai/blog/tutorials/codex-cli-openrouter/):
+its Responses API receives namespaced tools and structured review schemas.
+Model IDs and backend availability can change; OpenRouter may route a model across
+serving providers. Recorded `provider = "openrouter"` identifies the gateway,
+not the upstream serving company. Tokens reflect counters reported through Codex;
+this is not a provider-billing reconciliation or cost estimator.
+
+Existing games retain their saved images. This adds provider identity to persisted
+job settings; older games should finish with their pinned images rather than
+upgrading them in place. No migration is included.
 
 The default limits are a one-hour agent turn timeout, 900-second startup timeout,
 seven days total elapsed time, 10,000 model jobs and the native speed's turn limit

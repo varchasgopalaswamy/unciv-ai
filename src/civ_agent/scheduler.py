@@ -552,7 +552,8 @@ class Scheduler:
         settings = status.get("effectiveSettings")
         if settings is not None and (
             not isinstance(settings, dict)
-            or set(settings) != {"model", "reasoningEffort"}
+            or set(settings) != {"provider", "model", "reasoningEffort"}
+            or settings["provider"] not in {"openai", "openrouter"}
             or not valid_setting(settings["model"])
             or (settings["reasoningEffort"] is not None and not valid_setting(settings["reasoningEffort"]))
         ):
@@ -564,7 +565,7 @@ class Scheduler:
             changed = True
             self.output.line(
                 "Model",
-                f"{settings.get('model') or 'Codex config'}; "
+                f"{settings['provider']}: {settings.get('model') or 'Codex config'}; "
                 f"reasoning: {settings.get('reasoningEffort') or 'Codex default'}.",
                 civilization=flight["civilization"],
             )

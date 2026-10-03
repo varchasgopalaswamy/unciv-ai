@@ -64,7 +64,7 @@ def verify(root: Path) -> JsonObject:
             key in saved and saved[key] == value for key, value in old.items()
         )
     checks["all_game_agents_use_luna_medium"] = bool(settings) and all(
-        item == {"model": "gpt-5.6-luna", "reasoningEffort": "medium"} for item in settings
+        item == {"provider": "openai", "model": "gpt-5.6-luna", "reasoningEffort": "medium"} for item in settings
     )
     checks["three_rounds_nine_handoffs"] = game.get("turns", 0) == 3 and checkpoint["handoff"] == 9
     checks["same_epoch_across_planned_restart"] = (

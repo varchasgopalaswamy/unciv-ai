@@ -31,6 +31,7 @@ from civ_agent.container_support import (
 )
 from civ_agent.game_config import ContainerResources, ResolvedGameConfig
 from civ_agent.monitoring import path_for, read_record
+from civ_agent.providers import read_api_key
 from civ_agent.tls import private_directory, write_private_json
 from civ_agent.turn_archive import civilization_directory_name
 
@@ -67,6 +68,23 @@ def ensure_auth(root, image):
                 raise ContainerError("Benchmark login manager failed; run civ-agent auth status")
             time.sleep(0.2)
     return name
+
+
+def agent_auth_arguments(auth_root, name, provider):
+    """Only the selected credential is mounted; keys never appear in Podman argv/env."""
+    if provider == "openrouter":
+        return [
+            *mount(auth_root / "openrouter.key", "/run/secrets/openrouter.key"),
+            "--env",
+            "CIV_OPENROUTER_KEY_FILE=/run/secrets/openrouter.key",
+        ]
+    return [
+        *mount(auth_root / "ipc", "/auth-ipc"),
+        "--env",
+        "CIV_AUTH_SOCKET=/auth-ipc/broker.sock",
+        "--env",
+        f"CIV_AUTH_TOKEN_FILE=/match/agent-services/{name}/auth-client.json",
+    ]
 
 
 def authorize_agent(auth_root, game_id, seat, directory):
@@ -119,7 +137,9 @@ class GameRun:
         self.log_processes = []
         self.log_files = []
         self.log_paths = {}
-        self.auth_root = Path(self.record["auth_root"])
+        self.auth_root = Path(self.record["auth_root"]).resolve()
+        if self.auth_root.is_relative_to(self.root.resolve()):
+            raise ContainerError("The provider credential directory must be outside the match directory")
         self.controller = self.prefix + "-host"
         self.native_failure = None
 
@@ -176,7 +196,16 @@ class GameRun:
         for name in ("start.json", "request.json"):
             (self.root / "control" / name).unlink(missing_ok=True)
         (self.root / "runtime.json").unlink(missing_ok=True)
-        ensure_auth(self.auth_root, self.record["images"]["runtime"])
+        providers = {self.config.settings(p)["provider"] for p in self.config.agent_players}
+        if "openai" in providers:
+            ensure_auth(self.auth_root, self.record["images"]["runtime"])
+        if "openrouter" in providers:
+            key = self.auth_root / "openrouter.key"
+            if not key.is_file():
+                raise ContainerError(
+                    "Run civ-agent auth login --provider openrouter before launching OpenRouter players"
+                )
+            read_api_key(key)
         self.control_net = self.prefix + "-control"
         control = create_network(self.control_net, "cc" + self.game_id, internal=True)
         # A dedicated interface carries the browser; it never listens on player networks.
@@ -198,7 +227,8 @@ class GameRun:
             from civ_agent.tls import write_private
 
             write_private(codex_home / "config.toml", b'cli_auth_credentials_store = "ephemeral"\n')
-            authorize_agent(self.auth_root, self.game_id, index, directory)
+            if self.config.settings(player)["provider"] == "openai":
+                authorize_agent(self.auth_root, self.game_id, index, directory)
         firewall(self.game_id, bridges)
         resources = self.config.resources.desktop if self.config.human else self.config.resources.controller
         args = base_arguments(self.controller, game_id=self.game_id, resources=resources)
@@ -234,16 +264,12 @@ class GameRun:
             args += ["--network", f"{network}:alias=p{index}"]
             for folder in ("agent-services", "agents", "codex"):
                 args += mount(self.root / folder / name, f"/match/{folder}/{name}", writable=True)
-            args += mount(self.auth_root / "ipc", "/auth-ipc")
+            args += agent_auth_arguments(self.auth_root, name, self.config.settings(player)["provider"])
             args += [
                 "--env",
                 f"HOME=/match/codex/{name}",
                 "--env",
                 f"CODEX_HOME=/match/codex/{name}",
-                "--env",
-                "CIV_AUTH_SOCKET=/auth-ipc/broker.sock",
-                "--env",
-                f"CIV_AUTH_TOKEN_FILE=/match/agent-services/{name}/auth-client.json",
             ]
             self.start(args, container, self.record["images"]["runtime"], "agent", player.civilization)
         for container in self.names[1:]:

@@ -436,7 +436,7 @@ class ReviewRuntime:
                 service.executable, workspace, service.gateway_url, service.gateway_ca_file, notification
             )
             async with asyncio.timeout(task["timeout"]):
-                await process.start(job.token, settings["model"])
+                await process.start(job.token, settings)
                 thread = await process.request(
                     "thread/start",
                     {
@@ -449,13 +449,14 @@ class ReviewRuntime:
                 )
                 record["threadId"] = thread["thread"]["id"]
                 record["effectiveSettings"] = {
+                    "provider": thread.get("modelProvider"),
                     "model": thread.get("model"),
                     "reasoningEffort": thread.get("reasoningEffort"),
                 }
                 record["serviceTier"] = thread.get("serviceTier")
                 if not valid_setting(record["effectiveSettings"]["model"]) or any(
                     settings.get(key) is not None and record["effectiveSettings"][key] != settings[key]
-                    for key in ("model", "reasoningEffort")
+                    for key in ("provider", "model", "reasoningEffort")
                 ):
                     raise ValueError("REVIEW_SETTINGS_CHANGED")
                 await save()

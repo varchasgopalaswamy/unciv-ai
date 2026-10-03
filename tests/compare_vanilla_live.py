@@ -86,7 +86,8 @@ def collect(root, sessions, require_updates=False):
         assert len(paths) == 1, f"Missing/ambiguous provider trace for {id}"
         discovery = discovery_metrics(paths[0])
         assert discovery["modelSettings"] and all(
-            setting == activation["effectiveSettings"] for setting in discovery["modelSettings"]
+            setting == {key: activation["effectiveSettings"][key] for key in setting}
+            for setting in discovery["modelSettings"]
         )
         assert {key: discovery["usage"][key] for key in TOKEN_KEYS} == job["usage"], f"Provider usage differs for {id}"
         service = root / "agent-services" / job["civilization"]

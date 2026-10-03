@@ -39,7 +39,7 @@ def test_reports_survive_lost_acknowledgement_and_do_not_drop_newer_counts(tmp_p
 def test_model_telemetry_uses_effective_settings_and_survives_restart(tmp_path):
     store = JobAccounting(tmp_path)
     store.start("job", "epoch1", True)
-    effective = {"model": "resolved-model", "reasoningEffort": "high"}
+    effective = {"provider": "openrouter", "model": "test/resolved-model", "reasoningEffort": "high"}
     store.sample(
         record(
             phase="COMPLETED",

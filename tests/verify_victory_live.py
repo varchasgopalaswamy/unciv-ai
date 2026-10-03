@@ -80,7 +80,7 @@ def verify(root: Path) -> JsonObject:
             and all(saved[key]["receipt"] == receipts[civilization][key]["receipt"] for key in saved)
         )
     checks["every_model_uses_requested_settings"] = bool(settings) and all(
-        setting == {"model": "gpt-5.6-luna", "reasoningEffort": "medium"} for setting in settings
+        setting == {"provider": "openai", "model": "gpt-5.6-luna", "reasoningEffort": "medium"} for setting in settings
     )
     checks["three_model_players"] = all(
         next(c for c in game["civilizations"] if c["civID"] == name)["playerType"] == "Human" for name in PLAYERS

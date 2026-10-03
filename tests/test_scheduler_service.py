@@ -264,7 +264,7 @@ class SchedulerServiceTest(unittest.TestCase):
         settings = self.saved()["sessions"]
         for civilization in ("Rome", "Greece"):
             self.assertEqual(
-                {"model": civilization.lower() + "-service-model", "reasoningEffort": "high"},
+                {"provider": "openai", "model": civilization.lower() + "-service-model", "reasoningEffort": "high"},
                 settings[civilization]["effectiveSettings"],
             )
 

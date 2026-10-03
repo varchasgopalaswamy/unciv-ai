@@ -1,0 +1,44 @@
+# Rebuild the images, then authenticate with both:
+#   civ-agent auth login
+#   civ-agent auth login --provider openrouter
+# Run one game with `game start --config ...`, or the rotation with `batch start`.
+[game]
+civilizations = ["Rome", "Greece", "France", "Egypt"]
+seed = 42
+assignment_seed = 17
+randomize = true
+map_size = "Small"
+city_states = 2
+
+[agents]
+provider = "openai"
+model = "gpt-6-luna"
+reasoning_effort = "medium"
+
+[[players]]
+name = "OpenAI Luna"
+
+[[players]]
+name = "OpenRouter Claude"
+provider = "openrouter"
+model = "anthropic/claude-sonnet-4.5"
+reasoning_effort = "high"
+
+[[players]]
+name = "OpenRouter Gemini"
+provider = "openrouter"
+model = "google/gemini-2.5-pro"
+reasoning_effort = "high"
+
+[[players]]
+name = "Unciv"
+controller = "built_in_ai"
+
+[batch]
+seeds = [42, 43]
+parallel = 2
+rotate_players = true
+
+[limits]
+max_turns = 3 # Opening comparison; omit for full games.
+turn_timeout = 3600

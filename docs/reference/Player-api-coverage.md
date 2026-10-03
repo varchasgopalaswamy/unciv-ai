@@ -621,6 +621,37 @@ win, a load-capacity measurement, or an exhaustive security audit.
 - The former civilization-bound TOML/resolved format and model-only rotation
   have no compatibility path. Old saved games need the previous checkout/images.
 
+### Mixed model providers — October 3, 2026
+
+- Named agent profiles can select OpenAI or OpenRouter independently. The same
+  Codex app-server, player tools, prompts, communication and review lifecycle serve
+  both. Provider/model/effort persist through rotations, turn restart and telemetry.
+  OpenRouter capability snapshots supply context limits and validate tool calling,
+  structured review output and reasoning support. OpenAI fast priority stays on
+  OpenAI jobs.
+- Durable OpenRouter keys are imported through `auth login --provider openrouter`
+  and mounted only into the corresponding workers. OpenRouter-only setup does not
+  require or start the OpenAI login manager. The credential directory must remain
+  outside the match mount. No credential is embedded in TOML or Podman arguments.
+- The Python regression run passed 1,062 tests and 76 subtests; its two failures
+  were fixtures expecting the old settings shape. Both passed after updates in
+  a seven-test scheduler/recovery rerun. A subsequent 30-test config/provider run
+  includes OpenRouter-only launch and credential-directory isolation.
+- The regression run included four real-Codex/local-API checks: tool call/result
+  round trips, plain and JSON-schema final output, reasoning enabled/disabled,
+  model context limits, and input/cache/output/reasoning token counters. Mock API
+  servers and synthetic credentials were used; no paid inference occurred.
+- Six native telemetry/input-schema tests passed, including mixed provider fields
+  delivered over HTTPS and persisted in the monitoring database. Runtime and
+  desktop images were rebuilt; three rootless runtime probes passed for separate
+  provider mounts and the dashboard. The mixed-provider example passed native
+  setup validation; batch dry-run produced eight rotations with native AI last.
+- The example Claude/Gemini IDs and required capabilities were checked against
+  OpenRouter's public catalog. Actual OpenRouter inference and a complete mixed
+  provider game remain untested. These checks establish transport/configuration
+  behavior, not model quality, provider billing accuracy or an exhaustive security
+  boundary. Older games retain their pinned images; no settings migration is provided.
+
 ## Verification inventory
 
 These are regression sources for each area, not a claim that every named test was

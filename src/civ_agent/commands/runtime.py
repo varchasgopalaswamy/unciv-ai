@@ -1,6 +1,7 @@
 """Container setup, immutable images and the dedicated benchmark login."""
 
 import argparse
+import getpass
 import json
 import os
 import subprocess
@@ -19,7 +20,8 @@ from civ_agent.container_support import (
     preflight,
     resolve_image,
 )
-from civ_agent.tls import private_directory
+from civ_agent.providers import PROVIDERS, read_api_key, valid_api_key
+from civ_agent.tls import private_directory, write_private
 
 
 def parser(*, add_help=True, group="runtime", action="setup"):
@@ -31,8 +33,11 @@ def parser(*, add_help=True, group="runtime", action="setup"):
         result.add_argument("--codex", default="codex")
         result.add_argument("--tag", default="localhost/civ-agent")
     if group == "auth":
+        result.add_argument("--provider", choices=PROVIDERS, default="openai")
         result.add_argument("--auth-dir", type=Path, default=DEFAULT_AUTH)
         result.add_argument("--image", default="localhost/civ-agent:runtime")
+        if action == "login":
+            result.add_argument("--key-file", type=Path, help="Import an owner-only OpenRouter API key file")
     return result
 
 
@@ -54,6 +59,26 @@ def run(args):
             print("Rootless runtime ready. Games will survive terminal closure and logout.")
             return 0
         root = args.auth_dir.expanduser().resolve()
+        if args.provider == "openrouter":
+            path = root / "openrouter.key"
+            if args.action == "status":
+                print(
+                    json.dumps(
+                        {"provider": "openrouter", "auth_directory": str(root), "key_present": path.is_file()}, indent=2
+                    )
+                )
+                return 0
+            key = read_api_key(args.key_file.expanduser()) if args.key_file else os.environ.get("OPENROUTER_API_KEY")
+            if key is None:
+                key = getpass.getpass("OpenRouter API key: ").strip()
+            if not valid_api_key(key):
+                raise ValueError("Invalid OpenRouter API key")
+            private_directory(root)
+            write_private(path, (key + "\n").encode())
+            print(f"OpenRouter key stored in {path}. Resume stopped games to use the new key.")
+            return 0
+        if getattr(args, "key_file", None) is not None:
+            raise ValueError("--key-file is only supported for --provider openrouter")
         if args.action == "status":
             print(
                 json.dumps(

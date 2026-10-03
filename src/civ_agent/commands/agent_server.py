@@ -15,6 +15,7 @@ from aiohttp import web
 from civ_agent.agent_service import AgentService, ServiceError, server_ssl_context
 from civ_agent.agent_settings import add_settings_arguments
 from civ_agent.civilization_state import MemoryFormatError
+from civ_agent.providers import PROVIDERS
 from civ_agent.scheduler import positive
 from civ_agent.tls import (
     TLSConfigError,
@@ -54,6 +55,7 @@ def parser(*, add_help: bool = True) -> argparse.ArgumentParser:
     result.add_argument("--ca-file", type=Path, help="CA clients trust for this service certificate")
     result.add_argument("--token-file", type=Path, help="Existing service bearer token file (created if absent)")
     result.add_argument("--codex", default="codex", help="Codex executable path")
+    result.add_argument("--provider", choices=PROVIDERS, default="openai")
     result.add_argument(
         "--fast", action="store_true", help="Request Codex fast priority for gameplay and background work"
     )
@@ -153,6 +155,7 @@ def run(args: argparse.Namespace) -> int:
             mcp_ca,
             executable,
             model=args.model,
+            provider=args.provider,
             reasoning_effort=args.reasoning_effort,
             memory_context_chars=args.memory_context_chars,
             review_interval=args.review_interval,
@@ -179,7 +182,7 @@ def run(args: argparse.Namespace) -> int:
         print(f"Player turn files: {workspace}", flush=True)
         print(f"Service diagnostics: {service.diagnostics.path}", flush=True)
         print(f"Strategy guide: {'enabled (optional suggestions)' if args.strategy_guide else 'disabled'}", flush=True)
-        print(f"Requested service tier: {'fast' if args.fast else 'Codex default'}", flush=True)
+        print(f"Provider: {args.provider}; requested service tier: {'fast' if service.fast else 'default'}", flush=True)
         print(
             f"New conversation defaults: model={args.model or 'Codex config'}, reasoning={args.reasoning_effort or 'Codex config'}",
             flush=True,

@@ -175,3 +175,36 @@ def test_dashboard_can_read_closed_wal_databases_without_game_access(tmp_path):
         "print('read-only query succeeded')",
     )
     assert result.stdout.strip() == "read-only query succeeded"
+
+
+@pytest.mark.parametrize("provider", ["openai", "openrouter"])
+def test_worker_mounts_only_its_selected_provider_credential(tmp_path, provider):
+    from civ_agent.container_supervisor import agent_auth_arguments
+    from civ_agent.tls import private_directory, write_private
+
+    private_directory(tmp_path / "ipc")
+    write_private(tmp_path / "openrouter.key", b"synthetic-secret\n")
+    result = podman(
+        "run",
+        "--rm",
+        "--network=none",
+        "--userns=keep-id",
+        "--cap-drop=ALL",
+        "--security-opt=no-new-privileges",
+        "--read-only",
+        "--tmpfs",
+        "/tmp:rw,size=128m,mode=1777",
+        *agent_auth_arguments(tmp_path, "Rome", provider),
+        "--entrypoint",
+        "/opt/app/.venv/bin/python",
+        os.environ.get("CIV_TEST_IMAGE", "localhost/civ-agent:runtime"),
+        "-c",
+        "import os; from pathlib import Path; from civ_agent.providers import provider_environment; "
+        f"provider={provider!r}; "
+        "assert Path('/run/secrets/openrouter.key').is_file() == (provider == 'openrouter'); "
+        "assert Path('/auth-ipc').is_dir() == (provider == 'openai'); "
+        "environment=provider_environment(dict(os.environ), provider); "
+        "assert environment.get('OPENROUTER_API_KEY') == ('synthetic-secret' if provider == 'openrouter' else None); "
+        "print('provider isolation verified')",
+    )
+    assert result.stdout.strip() == "provider isolation verified"

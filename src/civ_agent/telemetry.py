@@ -63,6 +63,7 @@ class JobAccounting:
                             "usage": row["usage"],
                             "usageReported": row["telemetry"]["usageReported"],
                             "settings": {
+                                "provider": row["telemetry"].get("provider"),
                                 "model": row["telemetry"]["model"],
                                 "reasoningEffort": row["telemetry"]["reasoningEffort"],
                             },
@@ -88,6 +89,7 @@ class JobAccounting:
             "usageReported": False,
             "usageComplete": False,
             "model": None,
+            "provider": None,
             "reasoningEffort": None,
             "apiCalls": {},
         }
@@ -141,7 +143,11 @@ class JobAccounting:
                 report["elapsedMs"] = max(report["elapsedMs"], int((time.monotonic() - self.starts[id]) * 1000))
             report["negotiationWaitMs"] = max(report["negotiationWaitMs"], int(wait_seconds * 1000))
             settings = record.get("effectiveSettings", record.get("settings", {}))
-            report.update(model=settings.get("model"), reasoningEffort=settings.get("reasoningEffort"))
+            report.update(
+                provider=settings.get("provider"),
+                model=settings.get("model"),
+                reasoningEffort=settings.get("reasoningEffort"),
+            )
             if "reviewProgress" in record:
                 # Local operator metadata, outside the native accounting protocol.
                 row["reviewProgress"] = record["reviewProgress"]

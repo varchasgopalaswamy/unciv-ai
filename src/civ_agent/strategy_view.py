@@ -166,7 +166,10 @@ def progress_text(view: StrategyView) -> Text:
         return text
     telemetry = (view.job or {}).get("telemetry") or {}
     if telemetry.get("model"):
-        text.append(f"\n{telemetry['model']} · {telemetry.get('reasoningEffort') or 'default'} reasoning", style="dim")
+        text.append(
+            f"\n{telemetry.get('provider') or 'unknown provider'} / {telemetry['model']} · {telemetry.get('reasoningEffort') or 'default'} reasoning",
+            style="dim",
+        )
     progress = view.progress
     if progress:
         details = [f"{progress['toolCalls']} tool calls", f"{progress['draftCharacters']:,} report characters"]

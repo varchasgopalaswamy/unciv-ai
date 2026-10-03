@@ -389,6 +389,7 @@ async def main():
                 result = {
                     "thread": {"id": current["thread"], "turns": []},
                     "model": params.get("model", "fake-configured-model"),
+                    "modelProvider": params["modelProvider"],
                     "reasoningEffort": params.get("config", {}).get("model_reasoning_effort", "medium"),
                 }
             elif method == "turn/start":

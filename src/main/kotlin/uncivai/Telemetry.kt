@@ -87,6 +87,7 @@ internal data class JobTelemetry(
     val gameplayElapsedMs: Long? = null,
     val finalizationElapsedMs: Long? = null,
     val memoryEdits: MemoryEditCounts? = null,
+    val provider: String? = null,
 )
 
 @Serializable

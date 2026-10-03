@@ -8,9 +8,11 @@ from pathlib import Path
 
 import aiohttp
 from aiohttp import web
+from sqlalchemy import select
 
 from civ_agent.agent_service import AgentService, ServiceError, server_ssl_context
 from civ_agent.protocol import JsonObject
+from civ_agent.telemetry import jobs
 from civ_agent.tls import client_ssl_context, ensure_server_certificate, write_private
 from tests.test_proposal_gateway import Host
 
@@ -57,7 +59,7 @@ class FakeCodex:
         self.closed = False
         self.thread_id = None
 
-    async def start(self, token, model):
+    async def start(self, token, settings):
         self.factory.tokens.append(token)
         if self.factory.hold == "startup":
             await asyncio.Future()
@@ -71,6 +73,7 @@ class FakeCodex:
             )
             return {
                 "thread": {"id": self.thread_id},
+                "modelProvider": payload["modelProvider"],
                 "model": payload.get("model", self.factory.default_model),
                 "reasoningEffort": self.factory.default_effort
                 if self.factory.ignore_effort
@@ -515,11 +518,14 @@ class AgentServiceTests(AgentServiceTestCase):
         await self.service.close()
         self.service = self.make_service(model="service-model", reasoning_effort="high")
         self.assertEqual(
-            {"model": "service-model", "reasoningEffort": "high"}, self.service.status()["defaultSettings"]
+            {"provider": "openai", "model": "service-model", "reasoningEffort": "high"},
+            self.service.status()["defaultSettings"],
         )
         await self.service.start(self.payload())
         status = await self.terminal()
-        self.assertEqual({"model": "service-model", "reasoningEffort": "high"}, status["effectiveSettings"])
+        self.assertEqual(
+            {"provider": "openai", "model": "service-model", "reasoningEffort": "high"}, status["effectiveSettings"]
+        )
         thread = next(payload for method, payload in self.factory.calls if method == "thread/start")
         turn = next(payload for method, payload in self.factory.calls if method == "turn/start")
         self.assertEqual("service-model", thread["model"])
@@ -534,7 +540,10 @@ class AgentServiceTests(AgentServiceTestCase):
             self.payload("run-override", gameTurn=1, handoff=2, model="run-model", reasoningEffort="custom-effort")
         )
         status = await self.terminal()
-        self.assertEqual({"model": "run-model", "reasoningEffort": "custom-effort"}, status["effectiveSettings"])
+        self.assertEqual(
+            {"provider": "openai", "model": "run-model", "reasoningEffort": "custom-effort"},
+            status["effectiveSettings"],
+        )
         turn = next(payload for method, payload in self.factory.calls if method == "turn/start")
         self.assertEqual(("run-model", "custom-effort"), (turn["model"], turn["effort"]))
 
@@ -544,8 +553,10 @@ class AgentServiceTests(AgentServiceTestCase):
         thread = next(payload for method, payload in self.factory.calls if method == "thread/start")
         self.assertNotIn("model", thread)
         self.assertNotIn("config", thread)
-        self.assertEqual({"model": None, "reasoningEffort": None}, first["settings"])
-        self.assertEqual({"model": "configured-model", "reasoningEffort": "medium"}, first["effectiveSettings"])
+        self.assertEqual({"provider": "openai", "model": None, "reasoningEffort": None}, first["settings"])
+        self.assertEqual(
+            {"provider": "openai", "model": "configured-model", "reasoningEffort": "medium"}, first["effectiveSettings"]
+        )
         await self.service.close()
         self.factory.default_model, self.factory.default_effort = "changed-config", "low"
         self.service = self.make_service(model="changed-service", reasoning_effort="high")
@@ -581,6 +592,33 @@ class AgentServiceTests(AgentServiceTestCase):
         self.assertTrue(all(method != "thread/resume" for method, _ in self.factory.calls))
         self.assertEqual("fast", second["requestedServiceTier"])
         self.assertEqual("fast", second["serviceTier"])
+
+    async def test_openrouter_provider_is_persisted_and_never_requests_openai_priority(self):
+        await self.service.close()
+        self.service = self.make_service(
+            provider="openrouter", model="test/reasoner", reasoning_effort="high", fast=True
+        )
+        await self.service.start(self.payload())
+        first = await self.terminal()
+        self.assertEqual("COMPLETED", first["phase"])
+        self.assertEqual("openrouter", first["effectiveSettings"]["provider"])
+        await self.service.close()
+        self.service = self.make_service(
+            provider="openrouter", model="test/reasoner", reasoning_effort="high", fast=True
+        )
+        await self.service.start(self.payload("resume-router"))
+        second = await self.terminal()
+        self.assertEqual(first["effectiveSettings"], second["effectiveSettings"])
+        for method, payload in self.factory.calls:
+            if method in {"thread/start", "turn/start"}:
+                self.assertNotIn("serviceTier", payload)
+            if method == "thread/start":
+                self.assertEqual("openrouter", payload["modelProvider"])
+        self.assertIsNone(second["requestedServiceTier"])
+        with self.service.accounting.connect() as db:
+            reports = [json.loads(payload) for payload in db.execute(select(jobs.c.payload)).scalars()]
+        self.assertTrue(reports)
+        self.assertTrue(all(row["telemetry"]["provider"] == "openrouter" for row in reports))
 
     async def test_invalid_settings_never_start_a_codex_process(self):
         for key, code in (("model", "INVALID_MODEL"), ("reasoningEffort", "INVALID_REASONING_EFFORT")):

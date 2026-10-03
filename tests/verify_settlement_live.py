@@ -96,7 +96,8 @@ def verify(root: Path) -> JsonObject:
         "all_model_turns_completed": bool(activations) and all(row["phase"] == "COMPLETED" for row in activations),
         "luna_medium": bool(activations)
         and all(
-            row["effectiveSettings"] == {"model": "gpt-5.6-luna", "reasoningEffort": "medium"} for row in activations
+            row["effectiveSettings"] == {"provider": "openai", "model": "gpt-5.6-luna", "reasoningEffort": "medium"}
+            for row in activations
         ),
     }
     return {

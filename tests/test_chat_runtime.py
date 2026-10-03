@@ -173,7 +173,7 @@ class Jobs:
                 self.task = None
                 self.token = None
 
-            async def start(self, token, model):
+            async def start(self, token, settings):
                 self.token = token
 
             async def request(self, method, parameters):
@@ -182,7 +182,8 @@ class Jobs:
                     owner.instructions.append(parameters["developerInstructions"])
                     return {
                         "thread": {"id": workspace.name},
-                        "model": "test-model",
+                        "modelProvider": parameters["modelProvider"],
+                        "model": parameters.get("model", "test-model"),
                         "reasoningEffort": "medium",
                         "serviceTier": parameters.get("serviceTier"),
                     }
@@ -225,8 +226,11 @@ class Jobs:
 
 @pytest.mark.parametrize("strategy_guide", [False, True])
 @pytest.mark.parametrize("fast", [False, True])
-def test_chat_batches_and_replies_while_planning_job_is_held(tmp_path, monkeypatch, strategy_guide, fast):
+@pytest.mark.parametrize("provider", ["openai", "openrouter"])
+def test_chat_batches_and_replies_while_planning_job_is_held(tmp_path, monkeypatch, strategy_guide, fast, provider):
     async def run():
+        model = "test/model" if provider == "openrouter" else "test-model"
+        priority = fast and provider == "openai"
         host = MailboxHost()
         monkeypatch.setattr("civ_agent.chat_runtime.HostConnection", lambda *args, **kwargs: host)
         jobs = Jobs()
@@ -241,6 +245,8 @@ def test_chat_batches_and_replies_while_planning_job_is_held(tmp_path, monkeypat
             connection_factory=lambda *args, **kwargs: StartupHost(jobs),
             strategy_guide=strategy_guide,
             fast=fast,
+            provider=provider,
+            model=model,
         )
         jobs.service = service
         try:
@@ -248,7 +254,7 @@ def test_chat_batches_and_replies_while_planning_job_is_held(tmp_path, monkeypat
                 {
                     "epoch": "g1",
                     "playerToken": "P" * 43,
-                    "model": "test-model",
+                    "model": model,
                     "reasoningEffort": "medium",
                     "timeoutSeconds": 10,
                 }
@@ -267,7 +273,7 @@ def test_chat_batches_and_replies_while_planning_job_is_held(tmp_path, monkeypat
                     "mcpUrl": service.mcp_url,
                     "playerToken": "P" * 43,
                     "prompt": "Play Rome's current game turn.",
-                    "model": "test-model",
+                    "model": model,
                     "reasoningEffort": "medium",
                     "timeoutSeconds": 20,
                     "leaseSeconds": 30,
@@ -292,10 +298,11 @@ def test_chat_batches_and_replies_while_planning_job_is_held(tmp_path, monkeypat
             assert jobs.purposes == ["gameplay", "communication"]
             for method, parameters in jobs.calls:
                 if method in {"thread/start", "turn/start"}:
-                    assert parameters.get("serviceTier") == ("fast" if fast else None)
+                    assert parameters.get("serviceTier") == ("fast" if priority else None)
                     if method == "thread/start":
+                        assert parameters["modelProvider"] == provider
                         assert parameters["config"]["model_reasoning_effort"] == "medium"
-                        assert parameters["config"].get("features.fast_mode", False) == fast
+                        assert parameters["config"].get("features.fast_mode", False) == priority
             assert all(strategy_reference() not in prompt for prompt in jobs.instructions)
             assert all(prompt.count(strategy_reference()) == int(strategy_guide) for prompt in jobs.prompts)
             assert service.records["planning"]["startup"]["strategyGuide"]["enabled"] == strategy_guide
@@ -310,7 +317,8 @@ def test_chat_batches_and_replies_while_planning_job_is_held(tmp_path, monkeypat
             assert service.status()["phase"] == "RUNNING"  # Long planning still in progress.
             await asyncio.sleep(0.1)
             assert all(
-                record["requestedServiceTier"] == ("fast" if fast else None) for record in service.chat.jobs.values()
+                record["requestedServiceTier"] == ("fast" if priority else None)
+                for record in service.chat.jobs.values()
             )
             host.post("Unmentioned public remark", wake=False)
             await asyncio.sleep(1.2)

@@ -51,7 +51,8 @@ object TelemetryProbe {
                     val token = checkNotNull(activation.playerToken)
                     val job = checkNotNull(activation.activationId)
                     val credential = api.playerToken(civilization)
-                    fun report(sequence: Long) = obj("op" to "job_report", "epoch" to originalEpoch, "job" to job, "usage" to ModelUsage(100, 20, 30, 10).recordJson(), "telemetry" to finalReport.copy(sequence = sequence).recordJson())
+                    val provider = if (civilization == "Greece") "openrouter" else "openai"
+                    fun report(sequence: Long) = obj("op" to "job_report", "epoch" to originalEpoch, "job" to job, "usage" to ModelUsage(100, 20, 30, 10).recordJson(), "telemetry" to finalReport.copy(sequence = sequence, provider = provider).recordJson())
                     check(api.communicate(credential, obj("op" to "job_claim", "epoch" to originalEpoch, "job" to job, "purpose" to "gameplay")).getValue("granted").jsonPrimitive.boolean)
                     val before = api.turn(token)
                     val invalid = TurnCommandRequest("bad", before.epoch, before.revision, TurnCommandKind.FOUND_CITY, "missing-unit")
@@ -68,6 +69,8 @@ object TelemetryProbe {
                     api.communicate(credential, obj("op" to "job_release", "epoch" to originalEpoch, "job" to job))
                     val metrics = runtime.executor.communicationState.telemetry.turns.getValue("$originalEpoch/${activation.status.handoff}")
                     check(metrics.endedAtMs != null && metrics.activeMs >= 0 && metrics.civilization == civilization)
+                    val savedJob = monitoring(root, "jobs").single { it.getValue("jobId").jsonPrimitive.content == job }
+                    check(savedJob.getValue("job").jsonObject.getValue("telemetry").jsonObject.getValue("provider").jsonPrimitive.content == provider)
                 }
                 check(api.status().turn == 1 && api.status().activeCivilization == "Rome")
                 check(runtime.game.getCivilization("Egypt").cities.isNotEmpty()) { "Native AI did not take its ordinary turn" }

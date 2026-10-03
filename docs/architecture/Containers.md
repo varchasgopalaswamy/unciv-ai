@@ -56,7 +56,7 @@ cover the tested paths, not every possible kernel/container exploit.
 
 ## Authentication
 
-A dedicated durable Codex login belongs to the operator's existing account.
+A dedicated durable OpenAI Codex login belongs to the operator's existing account.
 The login-manager container alone mounts its renewable credential cache. Agent
 services authenticate over a mounted Unix socket using individual revocable
 client tokens. Only access tokens/account identity are returned. App-server
@@ -69,6 +69,24 @@ locks serialize simultaneous game starts. Games still share the account's usage
 limits; isolation does not create independent provider quotas. A login failure
 is surfaced as a service failure. The normal personal Codex configuration is not
 imported into player homes.
+
+Player profiles select `openai` or `openrouter`. Both use Codex app-server and the
+same player MCP gateway for gameplay, communication and structured reviews.
+OpenRouter uses a custom Responses provider with an explicit catalog model ID;
+it never runs the OpenAI login callback. Only OpenRouter workers mount the durable
+owner-only `AUTH_DIR/openrouter.key`, read-only at `/run/secrets/openrouter.key`.
+The worker loads it into the child process environment; it is absent from Podman
+arguments, game TOML, player prompts and telemetry. Other players and the game
+controller do not receive this mount. OpenRouter-only games do not start the
+OpenAI login manager.
+
+`providers.py` checks the public model catalog for tool calling, structured output
+and reasoning support and freezes context limits/capabilities in each worker's
+durable Codex directory. New and resumed jobs explicitly select the provider;
+effective provider/model/effort are checked and recorded across all job types.
+OpenAI priority is never requested on OpenRouter jobs. The catalog snapshot and
+credential file survive container replacement. No separate model loop or turn
+recovery path is introduced.
 
 ## Durability and provenance
 
@@ -112,3 +130,10 @@ minimization. `test_container_isolation.py` is an opt-in real-Podman test for
 service reachability, sibling/game denial, public internet, mount separation,
 read-only roots and dropped capabilities. Live acceptance results are recorded
 separately in the coverage ledger.
+
+`test_providers.py` checks mixed-provider rotations, credential mounts/import and
+capability validation. `test_openrouter_process.py` runs the real Codex executable
+against local Responses/MCP fixtures (set `CIV_TEST_CODEX` to opt in), including
+tool round trips, reasoning controls, review schemas, context limits and usage.
+This exercises the wire contract without paid inference; it does not establish
+that every model/backend on OpenRouter completes a game.

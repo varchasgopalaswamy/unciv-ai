@@ -10,6 +10,8 @@ from typing import Annotated, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from civ_agent.agent_settings import valid_setting
+from civ_agent.protocol import JsonObject
+from civ_agent.providers import Provider
 
 Positive = Annotated[int, Field(gt=0)]
 Seed = Annotated[int, Field(ge=-(2**63), lt=2**63)]
@@ -54,6 +56,7 @@ class GameSetup(Configuration):
 
 
 class AgentDefaults(Configuration):
+    provider: Provider = "openai"
     model: str = "gpt-6-luna"
     reasoning_effort: str = "medium"
     review_interval: Positive = 5
@@ -72,6 +75,7 @@ class AgentDefaults(Configuration):
 class Player(Configuration):
     name: str
     controller: Literal["agent", "human", "built_in_ai"] = "agent"
+    provider: Provider | None = None
     model: str | None = None
     reasoning_effort: str | None = None
 
@@ -84,6 +88,8 @@ class Player(Configuration):
 
     @model_validator(mode="after")
     def settings(self):
+        if self.provider is not None and self.controller != "agent":
+            raise ValueError("Only agent players have provider settings")
         for value in (self.model, self.reasoning_effort):
             if value is not None and not valid_setting(value):
                 raise ValueError("Invalid model or reasoning effort")
@@ -161,13 +167,21 @@ class GameConfig(Configuration):
             raise ValueError("Choose at least one agent player")
         if sum(p.controller == "human" for p in self.players) > 1:
             raise ValueError("The native desktop supports one human per game")
+        for player in self.players:
+            if player.controller == "agent":
+                settings = self.settings(player)
+                if settings["provider"] == "openrouter" and "/" not in settings["model"]:
+                    raise ValueError("OpenRouter requires an explicit model ID, such as anthropic/claude-sonnet-4.5")
         return self
 
-    def settings(self, player):
+    def settings(self, player) -> JsonObject:
+        provider = player.provider or self.agents.provider
         return {
             **self.agents.model_dump(),
+            "provider": provider,
             "model": player.model or self.agents.model,
             "reasoning_effort": player.reasoning_effort or self.agents.reasoning_effort,
+            "fast": self.agents.fast and provider == "openai",
         }
 
     def resolved(self):
@@ -229,7 +243,11 @@ class ResolvedGameConfig(GameConfig):
             record = player.model_dump(exclude_none=True)
             if player.controller == "agent":
                 settings = self.settings(player)
-                record.update(model=settings["model"], reasoning_effort=settings["reasoning_effort"])
+                record.update(
+                    provider=settings["provider"],
+                    model=settings["model"],
+                    reasoning_effort=settings["reasoning_effort"],
+                )
             records.append(record)
         return records
 
@@ -256,13 +274,29 @@ class ResolvedGameConfig(GameConfig):
         return arguments
 
 
-def load_config(path: Path | None, overrides: dict | None = None) -> GameConfig:
-    data = tomllib.loads(path.read_text()) if path else {}
+def load_config(
+    path: Path | None, overrides: dict | None = None, *, player_overrides: dict | None = None
+) -> GameConfig:
+    data: JsonObject = tomllib.loads(path.read_text()) if path else {}
     for section, values in (overrides or {}).items():
         if isinstance(values, dict):
             data[section] = {**data.get(section, {}), **values}
         else:
             data[section] = values
+    if player_overrides:
+        players = data.setdefault("players", [player.model_dump() for player in GameConfig().players])
+        for name, values in player_overrides.items():
+            selected = next(
+                (
+                    p
+                    for p in players
+                    if isinstance(p, dict) and p.get("name") == name and p.get("controller", "agent") == "agent"
+                ),
+                None,
+            )
+            if selected is None:
+                raise ValueError(f"{name} is not an agent player")
+            selected.update(values)
     return GameConfig.model_validate(data)
 
 

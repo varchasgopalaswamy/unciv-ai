@@ -66,7 +66,10 @@ class ChatRuntime:
             else service.default_settings
         )
         self.settings = {
-            key: payload[key] if payload[key] is not None else defaults[key] for key in ("model", "reasoningEffort")
+            "provider": defaults["provider"],
+            **{
+                key: payload[key] if payload[key] is not None else defaults[key] for key in ("model", "reasoningEffort")
+            },
         }
         self.timeout = payload["timeoutSeconds"]
         self.running = True
@@ -288,7 +291,7 @@ class ChatRuntime:
             await service.io.call(service.history.begin, record, None, job.token)
             await service.io.call(service.history.startup_context, id, startup.instructions, role="developer")
             await service.io.call(service.history.startup_context, id, startup.user)
-            await process.start(job.token, self.settings.get("model"))
+            await process.start(job.token, self.settings)
             options: JsonObject = {
                 "cwd": str(workspace),
                 "approvalPolicy": "never",
@@ -300,9 +303,14 @@ class ChatRuntime:
             record["threadId"] = thread["thread"]["id"]
             record["serviceTier"] = thread.get("serviceTier")
             record["effectiveSettings"] = {
+                "provider": thread.get("modelProvider"),
                 "model": thread.get("model"),
                 "reasoningEffort": thread.get("reasoningEffort"),
             }
+            if any(
+                value is not None and record["effectiveSettings"][key] != value for key, value in self.settings.items()
+            ):
+                raise ValueError("CODEX_SETTINGS_NOT_APPLIED")
             await service.io.call(service.history.lifecycle, record)
             turn = await process.request(
                 "turn/start",

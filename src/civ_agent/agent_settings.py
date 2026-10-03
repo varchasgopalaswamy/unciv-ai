@@ -9,13 +9,13 @@ from civ_agent.protocol import JsonObject
 
 def codex_thread_settings(settings: JsonObject, *, fast: bool) -> JsonObject:
     """Apply the same model, effort and optional priority to new and resumed jobs."""
-    options: JsonObject = {}
+    options: JsonObject = {"modelProvider": settings["provider"]}
     config: JsonObject = {}
     if settings.get("model") is not None:
         options["model"] = settings["model"]
     if settings.get("reasoningEffort") is not None:
         config["model_reasoning_effort"] = settings["reasoningEffort"]
-    if fast:
+    if fast and settings["provider"] == "openai":
         config["features.fast_mode"] = True
         options["serviceTier"] = "fast"
     if config:

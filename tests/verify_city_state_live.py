@@ -52,7 +52,7 @@ def verify(root: Path) -> JsonObject:
         )
 
     checks["all_models_use_requested_settings"] = bool(settings) and all(
-        setting == {"model": "gpt-5.6-luna", "reasoningEffort": "medium"} for setting in settings
+        setting == {"provider": "openai", "model": "gpt-5.6-luna", "reasoningEffort": "medium"} for setting in settings
     )
     checks["three_rounds_nine_handoffs"] = game.get("turns", 0) == 3 and checkpoint["handoff"] == 9
     checks["ordinary_vanilla_city_states"] = (

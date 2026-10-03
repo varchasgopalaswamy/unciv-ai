@@ -58,7 +58,7 @@ def verify(root: Path) -> JsonObject:
             "China" in body.get("subjects", []) and job in review_jobs for body, job in plans
         )
     checks["all_gameplay_and_chat_models_match"] = bool(settings) and all(
-        s == {"model": "gpt-5.6-luna", "reasoningEffort": "medium"} for s in settings
+        s == {"provider": "openai", "model": "gpt-5.6-luna", "reasoningEffort": "medium"} for s in settings
     )
 
     native_actions = [

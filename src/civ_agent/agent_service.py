@@ -43,6 +43,13 @@ from civ_agent.host_connection import HostConnection
 from civ_agent.model_status import LogLines, ModelStatus
 from civ_agent.proposal_gateway import ProposalGateway
 from civ_agent.protocol import AgentProcess, JsonObject, Notification
+from civ_agent.providers import (
+    PROVIDERS,
+    ProviderError,
+    openrouter_model_arguments,
+    provider_arguments,
+    provider_environment,
+)
 from civ_agent.review_runtime import ReviewRuntime
 from civ_agent.schemas import StartRequest, start_error
 from civ_agent.service_io import ServiceIO
@@ -100,15 +107,28 @@ class CodexProcess:
         self.requests: dict[int, tuple[str, JsonObject]] = {}
         self.sequence = 0
         self.auth_client = None
-        if os.environ.get("CIV_AUTH_SOCKET") and os.environ.get("CIV_AUTH_TOKEN_FILE"):
+
+    async def start(self, token: str, settings: JsonObject) -> None:
+        provider = settings["provider"]
+        if provider == "openai" and os.environ.get("CIV_AUTH_SOCKET") and os.environ.get("CIV_AUTH_TOKEN_FILE"):
             from civ_agent.container_auth import TokenClient
 
             self.auth_client = TokenClient(os.environ["CIV_AUTH_SOCKET"], os.environ["CIV_AUTH_TOKEN_FILE"])
-
-    async def start(self, token: str, model: str | None) -> None:
         self.temporary = tempfile.TemporaryDirectory(prefix="unciv-agent-ipc-")
         socket_path = Path(self.temporary.name) / "codex.sock"
-        environment = codex_trust_environment(self.ca_file, os.environ, self.workspace)
+        try:
+            environment = provider_environment(
+                codex_trust_environment(self.ca_file, os.environ, self.workspace), provider
+            )
+            provider_config = provider_arguments(provider)
+            if provider == "openrouter":
+                provider_config += await openrouter_model_arguments(
+                    settings["model"],
+                    settings.get("reasoningEffort"),
+                    environment.get("CODEX_HOME", self.workspace.parent / ".provider-cache"),
+                )
+        except ProviderError as error:
+            raise ServiceError(error.code) from None
         for name in list(environment):
             if name.startswith(("UNCIV_", "CIV_AUTH_")):
                 del environment[name]
@@ -123,6 +143,7 @@ class CodexProcess:
             self.executable,
             "-c",
             config,
+            *provider_config,
             *player_tool_arguments(),
             *scheduled_prompt_arguments(),
             "app-server",
@@ -300,6 +321,7 @@ class AgentService:
         process_factory: Callable[[str, Path, str, Path | None, Notification], AgentProcess] = CodexProcess,
         *,
         model: str | None = None,
+        provider: str = "openai",
         reasoning_effort: str | None = None,
         memory_context_chars: int = 12000,
         review_interval: int = 5,
@@ -314,9 +336,13 @@ class AgentService:
             raise ServiceError("INVALID_MODEL")
         if reasoning_effort is not None and not valid_setting(reasoning_effort):
             raise ServiceError("INVALID_REASONING_EFFORT")
-        self.default_settings = {"model": model, "reasoningEffort": reasoning_effort}
+        if provider not in PROVIDERS:
+            raise ServiceError("INVALID_PROVIDER")
+        if provider == "openrouter" and (model is None or "/" not in model):
+            raise ServiceError("OPENROUTER_MODEL_REQUIRED")
+        self.default_settings = {"provider": provider, "model": model, "reasoningEffort": reasoning_effort}
         self.strategy_guide = strategy_guide
-        self.fast = fast
+        self.fast = fast and provider == "openai"
         self.civilization = civilization
         self.workspace, self.state_dir = private_directory(workspace), private_directory(state_dir)
         if self.state_dir.resolve().is_relative_to(self.workspace.resolve()):
@@ -955,7 +981,7 @@ class AgentService:
         self.process = process
         await self.io.call(self.history.startup_context, record["activationId"], prompt.instructions, role="developer")
         await self.io.call(self.history.startup_context, record["activationId"], prompt.user)
-        await process.start(job.token, selected["model"])
+        await process.start(job.token, selected)
         options: JsonObject = {
             "cwd": str(workspace),
             "approvalPolicy": "never",
@@ -967,15 +993,25 @@ class AgentService:
         thread_id = result.get("thread", {}).get("id")
         if not identifier(thread_id) or thread_id in self.known_threads:
             raise ServiceError("INVALID_CODEX_THREAD", 502)
-        effective_settings = {"model": result.get("model"), "reasoningEffort": result.get("reasoningEffort")}
+        effective_settings = {
+            "provider": result.get("modelProvider"),
+            "model": result.get("model"),
+            "reasoningEffort": result.get("reasoningEffort"),
+        }
         record["serviceTier"] = result.get("serviceTier")
-        if not valid_setting(effective_settings["model"]) or (
-            effective_settings["reasoningEffort"] is not None
-            and not valid_setting(effective_settings["reasoningEffort"])
+        if (
+            effective_settings["provider"] != selected["provider"]
+            or not valid_setting(effective_settings["model"])
+            or (
+                effective_settings["reasoningEffort"] is not None
+                and not valid_setting(effective_settings["reasoningEffort"])
+            )
         ):
             raise ServiceError("INVALID_CODEX_SETTINGS", 502)
         if "effectiveSettings" in record and effective_settings != record["effectiveSettings"]:
             raise ServiceError("CODEX_SETTINGS_CHANGED", 409)
+        if selected["model"] is not None and effective_settings["model"] != selected["model"]:
+            raise ServiceError("CODEX_MODEL_NOT_APPLIED", 502)
         if (
             selected["reasoningEffort"] is not None
             and effective_settings["reasoningEffort"] != selected["reasoningEffort"]

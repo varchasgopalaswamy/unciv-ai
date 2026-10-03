@@ -152,7 +152,7 @@ def test_service_stops_running_gameplay_and_communication_without_model_cooperat
     class ChatProcess:
         closed = False
 
-        async def start(self, token, model):
+        async def start(self, token, settings):
             pass
 
         async def request(self, method, payload):
@@ -160,6 +160,7 @@ def test_service_stops_running_gameplay_and_communication_without_model_cooperat
                 "thread": {"id": "chat-thread"},
                 "turn": {"id": "chat-turn"},
                 "model": "test",
+                "modelProvider": "openai",
                 "reasoningEffort": "medium",
             }
 
@@ -233,6 +234,7 @@ def test_service_stops_running_gameplay_and_communication_without_model_cooperat
             game.connection.tool = with_job_reports
             service.chat.connection = game.connection
             service.chat.epoch = "g1"
+            service.chat.settings = dict(service.default_settings)
             chat_task = asyncio.create_task(service.chat.compute("chat"))
             async with asyncio.timeout(3):
                 while "chat" not in service.chat.jobs:

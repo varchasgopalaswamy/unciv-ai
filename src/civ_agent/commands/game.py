@@ -23,8 +23,9 @@ from civ_agent.container_support import (
     read_json,
     resolve_image,
 )
-from civ_agent.game_config import GameConfig, ResolvedGameConfig, load_config
+from civ_agent.game_config import ResolvedGameConfig, load_config
 from civ_agent.monitoring import path_for, read_record
+from civ_agent.providers import PROVIDERS
 from civ_agent.tls import private_directory, write_private, write_private_json
 
 DEFAULT_STATE = Path.home() / ".local/state/unciv-host/vanilla-full"
@@ -74,6 +75,10 @@ def parser(*, add_help=True, action="start"):
         add_settings_arguments(
             result, model_help="Default agent model", reasoning_help="Default agent reasoning effort"
         )
+        result.add_argument("--provider", choices=PROVIDERS, help="Default agent provider")
+        result.add_argument(
+            "--player-provider", dest="player_providers", action=PlayerSetting, metavar="PLAYER=PROVIDER"
+        )
         result.add_argument("--player-model", dest="player_models", action=PlayerSetting, metavar="PLAYER=MODEL")
         result.add_argument(
             "--player-reasoning-effort", dest="player_reasoning_efforts", action=PlayerSetting, metavar="PLAYER=LEVEL"
@@ -102,7 +107,15 @@ def resolve_options(args):
             "starting_era",
             "victories",
         ),
-        "agents": ("model", "reasoning_effort", "fast", "strategy_guide", "review_interval", "review_attempts"),
+        "agents": (
+            "provider",
+            "model",
+            "reasoning_effort",
+            "fast",
+            "strategy_guide",
+            "review_interval",
+            "review_attempts",
+        ),
         "limits": ("max_turns", "max_invocations", "max_seconds", "turn_timeout", "startup_timeout"),
     }
     for section, names in fields.items():
@@ -115,18 +128,20 @@ def resolve_options(args):
     for source, target in (("image", "image"), ("desktop_image", "desktop_image"), ("port", "browser_port")):
         if getattr(args, source, None) is not None:
             overrides["runtime"][target] = getattr(args, source)
-    config = load_config(getattr(args, "config", None), overrides)
-    data = config.model_dump()
-    for option, setting in (("player_models", "model"), ("player_reasoning_efforts", "reasoning_effort")):
+    player_overrides = {}
+    for option, setting in (
+        ("player_providers", "provider"),
+        ("player_models", "model"),
+        ("player_reasoning_efforts", "reasoning_effort"),
+    ):
         for name, value in (getattr(args, option, None) or {}).items():
-            selected = next((p for p in data["players"] if p["name"] == name and p["controller"] == "agent"), None)
-            if selected is None:
-                raise ValueError(f"{name} is not an agent player")
-            selected[setting] = value
-    return GameConfig.model_validate(data).resolved()
+            player_overrides.setdefault(name, {})[setting] = value
+    return load_config(getattr(args, "config", None), overrides, player_overrides=player_overrides).resolved()
 
 
 def initialize(root, config, auth_root, *, original=None, images=None, validation=None):
+    if auth_root.resolve().is_relative_to(root.resolve()):
+        raise ContainerError("The provider credential directory must be outside the match directory")
     if (root / "resolved.json").exists() or (root / "exploration.json").exists():
         raise ContainerError("A saved game exists; use game resume or a new --state-dir")
     images = images or {

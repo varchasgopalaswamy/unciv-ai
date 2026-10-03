@@ -36,7 +36,7 @@ integrated chat/trade panel to your browser:
 
 ```sh
 .venv/bin/civ-agent game start --state-dir ~/.local/state/unciv-host/human-game \
-  --human France --agents Rome Greece --built-in-ai Egypt
+  --config examples/human-game.toml
 ```
 
 The human plays first, has no model turn timeout, and uses the same authoritative
@@ -45,7 +45,8 @@ the password is in `PATH/desktop/password.txt`. Closing the browser leaves play
 running. Use `game stop` to pause and `game resume` to restart.
 
 TOML examples: [human game](examples/human-game.toml) and
-[model benchmark matrix](examples/benchmark.toml). Pass `--config FILE` to
+[model benchmark matrix](examples/benchmark.toml), plus a
+[mixed OpenAI/OpenRouter roster](examples/mixed-providers.toml). Pass `--config FILE` to
 `game start` or `batch start`.
 
 See the [full-game guide](docs/guides/Full-vanilla-run.md) for directories,

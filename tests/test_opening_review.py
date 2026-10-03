@@ -77,6 +77,9 @@ def test_opening_reviews_run_concurrently_then_each_civ_uses_its_own_report(tmp_
                 None,
                 process_factory=factory,
                 connection_factory=factory.connection,
+                provider="openrouter" if civ == "France" else "openai",
+                model="test/reasoner" if civ == "France" else "gpt-5.6-luna",
+                reasoning_effort="high" if civ == "France" else "max",
                 fast=True,
             )
             factory.service = service
@@ -90,8 +93,8 @@ def test_opening_reviews_run_concurrently_then_each_civ_uses_its_own_report(tmp_
                     {
                         "epoch": "epoch-one",
                         "playerToken": civ[0] * 43,
-                        "model": "gpt-5.6-luna",
-                        "reasoningEffort": "max",
+                        "model": None,
+                        "reasoningEffort": None,
                         "timeoutSeconds": 30,
                     }
                 )
@@ -122,8 +125,11 @@ def test_opening_reviews_run_concurrently_then_each_civ_uses_its_own_report(tmp_
                 ]
                 claim = next(args for name, args in hosts[civ[0] * 43].requests if args.get("op") == "job_claim")
                 assert claim["purpose"] == "review" and "parentJob" not in claim
-                assert factories[civ].calls[0][1]["model"] == "gpt-5.6-luna"
-                assert factories[civ].calls[0][1]["config"]["model_reasoning_effort"] == "max"
+                thread = factories[civ].calls[0][1]
+                assert thread["model"] == service.default_settings["model"]
+                assert thread["modelProvider"] == service.default_settings["provider"]
+                assert thread["config"]["model_reasoning_effort"] == service.default_settings["reasoningEffort"]
+                assert thread.get("serviceTier") == (None if civ == "France" else "fast")
 
             rome, factory = services["Rome"], factories["Rome"]
             payload = {
