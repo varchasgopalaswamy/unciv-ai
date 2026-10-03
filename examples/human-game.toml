@@ -1,8 +1,11 @@
 [game]
-seed = 953
+master_seed = 953
 civilizations = ["France", "Rome", "Greece", "Egypt"]
 randomize = false # Set true to shuffle all players onto these civilizations.
-# assignment_seed = 42 # Optional independent seed; resolved once and saved.
+# Optional overrides; omitted seeds are derived independently from master_seed.
+# map_seed = 42
+# starting_position_seed = 17
+# assignment_seed = 7
 map_type = "Pangaea"
 map_size = "Small"
 difficulty = "Prince"

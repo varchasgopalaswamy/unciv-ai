@@ -57,6 +57,7 @@ def parser(*, add_help: bool = True) -> argparse.ArgumentParser:
         help="city-states in a new ordinary game (default: 0)",
     )
     parser.add_argument("--seed", type=seed_number, help="map seed for a new game only")
+    parser.add_argument("--starting-position-seed", type=seed_number, help="native placement seed for a new game only")
     parser.add_argument("--human", help="Open the local desktop for one human civilization")
     parser.add_argument(
         "--built-in-ai",
@@ -157,6 +158,8 @@ def launch(options):
         raise ValueError(f"Checkpoint must be a regular file: {checkpoint}")
     if resuming and options.seed is not None:
         raise ValueError("--seed applies only to a new game; this checkpoint will be resumed.")
+    if options.starting_position_seed is not None and (resuming or options.scenario is not None):
+        raise ValueError("--starting-position-seed requires a new ordinary game")
     if options.city_states is not None and (resuming or options.scenario is not None):
         raise ValueError("--city-states applies only to a new ordinary game.")
     if options.built_in_ai and (resuming or options.scenario is not None):
@@ -238,6 +241,8 @@ def launch(options):
             command.extend(["--map-radius", str(options.map_radius)])
         if options.seed is not None:
             command.extend(["--seed", str(options.seed)])
+        if options.starting_position_seed is not None:
+            command.extend(["--starting-position-seed", str(options.starting_position_seed)])
     if options.scenario is not None:
         command.extend(["--scenario", options.scenario])
     command.extend(

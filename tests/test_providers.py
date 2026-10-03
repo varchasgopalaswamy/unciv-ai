@@ -11,15 +11,16 @@ from aiohttp.test_utils import TestServer
 
 from civ_agent import container_supervisor as supervisor
 from civ_agent import providers
+from civ_agent.benchmark import generate_runs
 from civ_agent.commands import game, runtime
 from civ_agent.container_supervisor import agent_auth_arguments
-from civ_agent.game_config import GameConfig, ResolvedGameConfig, expand_batch
+from civ_agent.game_config import GameConfig, ResolvedGameConfig
 from civ_agent.tls import write_private, write_private_json
 
 
 def mixed_config():
     return GameConfig(
-        game={"seed": 1, "assignment_seed": 2, "randomize": True},
+        game={"master_seed": 1, "randomize": True},
         agents={"fast": True},
         players=[
             {"name": "OpenAI"},
@@ -27,12 +28,11 @@ def mixed_config():
             {"name": "Human", "controller": "human"},
             {"name": "Native", "controller": "built_in_ai"},
         ],
-        batch={"rotate_players": True},
     )
 
 
-def test_provider_follows_player_through_rotation_and_resume():
-    for row in expand_batch(mixed_config()):
+def test_provider_follows_player_through_random_assignment_and_resume():
+    for row in generate_runs(mixed_config(), 8):
         config = ResolvedGameConfig.model_validate_json(json.dumps(row["config"]))
         players = {p.name: config.settings(p) for p in config.agent_players}
         assert players["OpenAI"]["provider"] == "openai" and players["OpenAI"]["fast"]

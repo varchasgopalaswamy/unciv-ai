@@ -18,6 +18,7 @@ data class VanillaOptions(
     val speed: String = "Quick",
     val startingEra: String = "Ancient era",
     val victories: List<String>? = null,
+    val startingPositionSeed: Long? = null,
 )
 
 /** Ordinary engine creation, with human slots so external players retain control. */
@@ -37,6 +38,7 @@ internal object VanillaGameSetup {
             startingEra = options.startingEra
             numberOfCityStates = cityStates
             shufflePlayerOrder = false
+            startingPositionSeed = options.startingPositionSeed
             val ruleset = RulesetCache.getComplexRuleset(this)
             require(difficulty in ruleset.difficulties) { "Unknown difficulty: $difficulty" }
             require(speed in ruleset.speeds) { "Unknown game speed: $speed" }

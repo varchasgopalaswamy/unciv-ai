@@ -556,7 +556,7 @@ Sources: [setup][setup], [game CLI][game-cli], [operator][operator],
 | Time/turn/invocation limits | Available | Scheduler/launcher limits and stop diagnostics. |
 | Hard monetary cap | Missing | Token accounting is not an enforced dollar budget. |
 | OS/filesystem/network isolation | Available, bounded | Rootless controller and per-agent containers, private mounts/namespaces, bridge/firewall separation and resource limits. Browser binds to localhost; TUI uses operator-only mounts. See container acceptance below; containers share the host kernel. |
-| Container/batch lifecycle | Available | Detached systemd user supervisors, frozen TOML/image IDs, bounded concurrent matrix/seat rotations, durable restart and per-run outcomes. No old-launcher migration. |
+| Container/batch lifecycle | Available | Detached systemd user supervisors, single-game TOML templates, independently seeded per-run inputs, bounded concurrency, frozen image IDs, durable restart and per-run outcomes. No old-launcher migration. |
 | Mod manager/editor/cheats/audiovisual settings | Engine/UI | Outside ordinary strategic player API scope. |
 
 ## Container acceptance — October 2, 2026
@@ -596,6 +596,9 @@ rendered evidence. These are short lifecycle/isolation checks, not a full-game
 win, a load-capacity measurement, or an exhaustive security audit.
 
 ### Named player assignment — October 3, 2026
+
+The rotation policy below records the earlier implementation; the independent
+batch-input policy described below supersedes it.
 
 - TOML separates named player profiles from `game.civilizations`. Optional
   random assignment includes human, model and built-in AI players and records
@@ -651,6 +654,40 @@ win, a load-capacity measurement, or an exhaustive security audit.
   provider game remain untested. These checks establish transport/configuration
   behavior, not model quality, provider billing accuracy or an exhaustive security
   boundary. Older games retain their pinned images; no settings migration is provided.
+
+### Independent benchmark inputs and native starting-position seeds — October 3, 2026
+
+- Every game has an optional `master_seed` and independently optional `map_seed`,
+  `starting_position_seed`, and `assignment_seed`. Explicit child values win;
+  only omitted values use separate stable derivations. Generated masters and all
+  derived seeds are recorded before launch. Native map seed zero is rejected
+  because the engine interprets it as the current time.
+- Unciv now accepts `GameParameters.startingPositionSeed`. New-game civilization
+  selection, region assignment, fallback starting positions, normalization and
+  resource placement use it. Previously ambient shuffles and object-hash tile
+  ordering were removed from these paths. Game IDs remain distinct and ordinary
+  turn randomness retains its existing behavior. The seed survives clones and
+  serialization; this does not claim deterministic subsequent model/AI play.
+- `batch generate --config FILE --games N` creates exactly N ordinary per-game
+  TOML inputs, with comments retained. Consecutive distinct masters independently
+  derive each run's child seeds; explicit template overrides remain fixed. There
+  is no rotation or Cartesian-product expansion. Built-in AI remains last after
+  player-to-civilization assignment. Inputs can be edited before start; launched
+  queues resume from frozen settings without rereading templates.
+- **102 Python tests and 18 subtests passed**, including all eight combinations of
+  seed overrides, CLI precedence, mixed-provider assignment, standalone TOML
+  round trips, interrupted generation/initialization, resume and result attribution.
+  **13 engine tests** (six seed/placement tests and seven serialization tests) and
+  **nine host setup/CLI tests** passed using `codex-log`. Repeated native checks
+  compare starting units and complete tile/resource data on Pangaea and Archipelago,
+  plus random-nation selection and saved-map fallback placement.
+- Runtime and desktop images were rebuilt with the selected working-tree engine.
+  Offline CLI generation produced twenty benchmark inputs and three mixed-provider
+  inputs. A generated input passed native setup validation inside the rebuilt
+  runtime; the rootless dashboard saved-config/cold-WAL probe also passed.
+  No paid inference or live model game was run for this change.
+- `game.seed` and the `[batch]` rotation schema are removed without migration.
+  Older saved games need their previous launcher checkout and pinned images.
 
 ## Verification inventory
 

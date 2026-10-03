@@ -11,6 +11,26 @@ import java.nio.file.Files
 
 class HostCliTest {
     @Test
+    fun `starting position seed is optional and independent of map seed`() {
+        val directory = Files.createTempDirectory("host-cli-starting-seed-")
+        try {
+            val base = listOf("--validate-setup", "--data-dir", directory.toString())
+            lateinit var parsed: CliOptions
+            HostCli { parsed = it }.parse(base)
+            assertEquals(null, parsed.vanilla.startingPositionSeed)
+            HostCli { parsed = it }.parse(base + listOf("--seed", "42", "--starting-position-seed", "0"))
+            assertEquals(42L, parsed.seed)
+            assertEquals(0L, parsed.vanilla.startingPositionSeed)
+            val save = Files.createFile(directory.resolve("game.json"))
+            assertThrows(UsageError::class.java) {
+                HostCli { error("Seed accepted on resume") }.parse(listOf("--resume-checkpoint", save.toString(), "--data-dir", directory.toString(), "--starting-position-seed", "1"))
+            }
+        } finally {
+            deleteTreeWithoutFollowingLinks(directory)
+        }
+    }
+
+    @Test
     fun `custom size options are exclusive and only apply to creation`() {
         val directory = Files.createTempDirectory("host-cli-map-")
         try {

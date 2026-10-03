@@ -33,7 +33,7 @@ def parser() -> argparse.ArgumentParser:
         command.set_defaults(handler=game.run)
 
     batches = groups.add_parser("batch", help="Run isolated benchmark games from TOML").add_subparsers(required=True)
-    for action in ("start", "resume", "stop", "status"):
+    for action in ("generate", "start", "resume", "stop", "status"):
         command = batches.add_parser(action, parents=[batch.parser(add_help=False, action=action)])
         command.set_defaults(handler=batch.run)
     for group, actions in (("runtime", ("setup",)), ("image", ("build",)), ("auth", ("login", "status"))):

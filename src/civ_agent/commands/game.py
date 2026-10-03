@@ -61,7 +61,9 @@ def parser(*, add_help=True, action="start"):
         result.add_argument(
             "--dry-run", action="store_true", help="Validate setup and show settings without starting models"
         )
-        result.add_argument("--seed", type=int)
+        result.add_argument("--master-seed", type=int, help="Derive every unspecified seed from this value")
+        result.add_argument("--map-seed", type=int, help="Override the derived terrain seed")
+        result.add_argument("--starting-position-seed", type=int, help="Override the derived native placement seed")
         result.add_argument("--assignment-seed", type=int, help="Player assignment seed, independent of the map seed")
         result.add_argument("--randomize", action=argparse.BooleanOptionalAction, default=None)
         result.add_argument("--civilizations", nargs="+", metavar="CIV")
@@ -94,7 +96,9 @@ def resolve_options(args):
     overrides = {}
     fields = {
         "game": (
-            "seed",
+            "master_seed",
+            "map_seed",
+            "starting_position_seed",
             "assignment_seed",
             "randomize",
             "civilizations",

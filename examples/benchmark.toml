@@ -1,7 +1,8 @@
+# One ordinary game template; batch generate/start --games N chooses N independent games.
 [game]
 civilizations = ["Rome", "Greece", "France", "Egypt"]
 randomize = true
-assignment_seed = 42
+master_seed = 42
 map_size = "Small"
 city_states = 2
 
@@ -25,12 +26,6 @@ reasoning_effort = "high"
 [[players]]
 name = "Unciv"
 controller = "built_in_ai"
-
-[batch]
-seeds = [42, 43]
-repetitions = 1
-parallel = 2
-rotate_players = true # Four games per seed; every player gets every civilization.
 
 [limits]
 max_turns = 3 # Opening comparison; omit for full games.

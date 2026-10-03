@@ -6,9 +6,10 @@ from unittest.mock import Mock
 import pytest
 
 from civ_agent import cli
+from civ_agent.benchmark import generate_runs
 from civ_agent.commands import game
 from civ_agent.container_support import ContainerError, identity, locked
-from civ_agent.game_config import GameConfig, ResolvedGameConfig, expand_batch, load_config
+from civ_agent.game_config import GameConfig, ResolvedGameConfig, load_config
 
 
 def options(root, *flags, action="start"):
@@ -19,7 +20,7 @@ def test_toml_cli_precedence_and_human_seat(tmp_path):
     source = tmp_path / "input.toml"
     source.write_text("""
 [game]
-seed = 41
+map_seed = 41
 civilizations = ["Rome", "Greece", "France", "Egypt"]
 map_size = "Large"
 speed = "Standard"
@@ -46,7 +47,7 @@ controller = "built_in_ai"
             tmp_path / "game",
             "--config",
             str(source),
-            "--seed",
+            "--map-seed",
             "42",
             "--map-radius",
             "26",
@@ -55,7 +56,7 @@ controller = "built_in_ai"
             "Second=greek-model",
         )
     )
-    assert config.game.seed == 42 and config.game.speed == "Standard"
+    assert config.game.map_seed == 42 and config.game.speed == "Standard"
     assert config.game.map_size is None and config.game.map_radius == 26
     assert not config.agents.fast and config.human == "France"
     assert [config.settings(p)["model"] for p in config.agent_players] == ["roman-model", "greek-model"]
@@ -87,42 +88,6 @@ def test_invalid_config_does_not_start_services(tmp_path, source, monkeypatch):
     assert game.run(options(tmp_path / "match", "--config", str(path))) == 2
     preflight.assert_not_called()
     assert not (tmp_path / "match").exists()
-
-
-def test_rotations_cover_every_player_and_civilization_with_native_ai_last():
-    civilizations = ["Inca", "Siam", "Egypt", "France", "Greece", "Arabia", "China", "Persia"]
-    players = [
-        {"name": "Human", "controller": "human"},
-        {"name": "Unciv", "controller": "built_in_ai"},
-        *[{"name": f"Model {i}", "model": "same-model", "reasoning_effort": "medium"} for i in range(5)],
-        {"name": "Max", "model": "other-model", "reasoning_effort": "max"},
-    ]
-    config = GameConfig.model_validate(
-        {
-            "game": {"seed": 45, "assignment_seed": 12, "randomize": True, "civilizations": civilizations},
-            "players": players,
-            "batch": {"seeds": [17, 29], "repetitions": 2, "rotate_players": True},
-        }
-    )
-    runs = expand_batch(config)
-    assert len(runs) == 32
-    assert runs == expand_batch(config)  # Both seeds are explicit; the schedule is reproducible.
-    for block_start in range(0, len(runs), 8):
-        seen = {p["name"]: [] for p in players}
-        for row in runs[block_start : block_start + 8]:
-            resolved = ResolvedGameConfig.model_validate(row["config"])
-            assert resolved.game.civilizations == civilizations
-            assert resolved.players == config.players
-            assert [p.controller for p in resolved.turn_order] == ["human", *(["agent"] * 6), "built_in_ai"]
-            assert resolved.resolved().assignments == resolved.assignments
-            for assignment in resolved.assignments:
-                seen[assignment.player].append(assignment.civilization)
-            maximum = next(p for p in resolved.assigned_players if p.name == "Max")
-            assert (maximum.model, maximum.reasoning_effort) == ("other-model", "max")
-        assert all(sorted(civs) == sorted(civilizations) for civs in seen.values())
-    assert runs[0]["config"]["assignments"] == runs[16]["config"]["assignments"]
-    assert runs[0]["config"]["game"]["assignment_seed"] != runs[8]["config"]["game"]["assignment_seed"]
-    assert len(expand_batch(GameConfig(batch={"rotate_players": True}))) == 4
 
 
 def test_assignment_precedes_turn_order_including_multiple_native_players():
@@ -164,13 +129,13 @@ def test_assignment_precedes_turn_order_including_multiple_native_players():
 def test_assignment_randomness_is_independent_of_map_seed_and_global_rng():
     import random
 
-    config = GameConfig(game={"seed": 42, "assignment_seed": 7, "randomize": True})
+    config = GameConfig(game={"map_seed": 42, "assignment_seed": 7, "randomize": True})
     first = config.resolved()
     random.seed(123)
-    config.game.seed = 99
+    config.game.map_seed = 99
     second = config.resolved()
     assert first.assignments == second.assignments
-    assert first.game.seed != second.game.seed
+    assert first.game.map_seed != second.game.map_seed
     assert [a.player for a in first.assignments] != [p.name for p in config.players]
     config.game.randomize = False
     assert [a.player for a in config.resolved().assignments] == [p.name for p in config.players]
@@ -210,12 +175,13 @@ def test_batch_results_and_status_attribute_civilizations_to_named_players(tmp_p
     from civ_agent.container_supervisor import batch_summary
     from civ_agent.tls import write_private_json
 
-    runs = expand_batch(
+    runs = generate_runs(
         GameConfig(
-            game={"seed": 42, "assignment_seed": 7, "randomize": True},
+            game={"map_seed": 42, "assignment_seed": 7, "randomize": True},
             agents={"model": "default-model", "reasoning_effort": "high"},
-            batch={"rotate_players": True},
-        )
+        ),
+        4,
+        100,
     )
     for row in runs:
         write_private_json(tmp_path / "games" / row["id"] / "resolved.json", row["config"])
@@ -239,7 +205,7 @@ def test_dashboard_mounts_follow_assigned_agent_civilizations(tmp_path):
     from civ_agent.tls import write_private_json
     from civ_agent.turn_archive import civilization_directory_name
 
-    config = GameConfig(game={"seed": 42, "randomize": True, "assignment_seed": 7}).resolved()
+    config = GameConfig(game={"map_seed": 42, "randomize": True, "assignment_seed": 7}).resolved()
     write_private_json(tmp_path / "resolved.json", config.model_dump())
     arguments = watch_mounts(tmp_path)
     assert arguments[:2] == mount(tmp_path, "/match")  # The overall game remains read-only.
@@ -253,7 +219,7 @@ def test_dashboard_mounts_follow_assigned_agent_civilizations(tmp_path):
 def test_saved_config_and_images_survive_input_edits_and_relocation(tmp_path, monkeypatch):
     root = tmp_path / "original"
     source = tmp_path / "game.toml"
-    source.write_text('[game]\nseed=19\nrandomize=true\n[agents]\nmodel="original-model"')
+    source.write_text('[game]\nmap_seed=19\nrandomize=true\n[agents]\nmodel="original-model"')
     config = load_config(source).resolved()
     monkeypatch.setattr(game, "resolve_image", lambda _: "sha256:fixed")
     monkeypatch.setattr(game, "validate_setup", lambda *_: {"maxTurns": 500})
@@ -287,21 +253,21 @@ def test_launch_is_detached_and_never_runs_scheduler_on_host(tmp_path, monkeypat
     monkeypatch.setattr(game, "validate_setup", lambda *_: {"maxTurns": 330})
     background = Mock(return_value="test.service")
     monkeypatch.setattr(game, "launch_background", background)
-    assert cli.main(["game", "start", "--state-dir", str(tmp_path / "match"), "--seed", "4"]) == 0
+    assert cli.main(["game", "start", "--state-dir", str(tmp_path / "match"), "--map-seed", "4"]) == 0
     background.assert_called_once_with(tmp_path / "match", "game")
     saved = json.loads((tmp_path / "match/resolved.json").read_text())
-    assert saved["game"]["seed"] == 4 and saved["limits"]["max_turns"] == 331
+    assert saved["game"]["map_seed"] == 4 and saved["limits"]["max_turns"] == 331
 
 
 def test_interrupted_batch_initialization_resumes_frozen_queue(tmp_path, monkeypatch):
     from civ_agent.commands import batch
 
     source = tmp_path / "batch.toml"
-    source.write_text("[batch]\nseeds=[42,43]\nparallel=2")
+    source.write_text("[game]\nmaster_seed=42\nrandomize=true")
     root = tmp_path / "batch"
     monkeypatch.setattr(batch, "preflight", lambda: None)
     monkeypatch.setattr(batch, "resolve_image", lambda _: "pinned-image")
-    monkeypatch.setattr(batch, "validate_setup", lambda *_: {"maxTurns": 330})
+    monkeypatch.setattr(game, "validate_setup", lambda *_: {"maxTurns": 330})
     background = Mock(return_value="batch-service")
     monkeypatch.setattr(batch, "launch_background", background)
     original = batch.initialize
@@ -315,15 +281,20 @@ def test_interrupted_batch_initialization_resumes_frozen_queue(tmp_path, monkeyp
         return original(*args, **kwargs)
 
     monkeypatch.setattr(batch, "initialize", interrupted)
-    assert cli.main(["batch", "start", "--config", str(source), "--state-dir", str(root)]) == 2
+    assert (
+        cli.main(
+            ["batch", "start", "--config", str(source), "--games", "2", "--parallel", "2", "--state-dir", str(root)]
+        )
+        == 2
+    )
     background.assert_not_called()
     first_id = identity(root / "games/g0001")["id"]
     assert len(json.loads((root / "batch.json").read_text())["runs"]) == 2
-    source.write_text("[batch]\nseeds=[999]")
+    source.write_text("[game]\nmaster_seed=999")
     monkeypatch.setattr(batch, "initialize", original)
     assert cli.main(["batch", "resume", "--state-dir", str(root)]) == 0
     assert identity(root / "games/g0001")["id"] == first_id
-    assert json.loads((root / "games/g0002/resolved.json").read_text())["game"]["seed"] == 43
+    assert json.loads((root / "games/g0002/resolved.json").read_text())["game"]["master_seed"] == 43
     background.assert_called_once_with(root, "batch")
 
 

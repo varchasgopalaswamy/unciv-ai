@@ -20,9 +20,11 @@ flowchart LR
 ## Responsibility and isolation
 
 `game_config.py` validates separate named player profiles and civilization lists.
-Resolution saves independent map/assignment seeds and an explicit player-to-civ
-mapping before launching. Random assignment includes every controller type;
-balanced batches cycle complete profiles through every civilization. Turn order
+Resolution derives omitted map, starting-position and assignment seeds from one
+master seed, preserves explicit overrides, and saves the player-to-civ mapping.
+`benchmark.py` copies one game template into independently seeded per-run TOML
+inputs; batch generation never enumerates rotations or a Cartesian product.
+Random assignment includes every controller type. Turn order
 is applied afterward: human, agents, built-in AI. Native setup
 validation runs the packaged engine before model work. `container_supervisor.py`
 owns lifecycle, resource sampling, health checks and the batch queue;
@@ -90,7 +92,7 @@ recovery path is introduced.
 
 ## Durability and provenance
 
-`resolved.json` freezes both seeds, player profiles, assignments and settings;
+`resolved.json` freezes all four seeds, player profiles, assignments and settings;
 `container.json` records image IDs, auth
 location and persisted game identity. Images contain host/engine revision and
 modified-tree status, Codex version and executable/helper checksums. The image ID
@@ -122,7 +124,7 @@ does not depend on published game ports. Agents never receive these mounts.
 ## Verification
 
 `tests/test_run_vanilla_game.py` covers config precedence, invalid settings,
-player rotations (including humans and native AI), immutable assignments on resume,
+player assignment (including humans and native AI), immutable assignments on resume,
 result attribution and directory relocation. `VanillaSetupTest`
 checks native map/difficulty/speed/era/victory selection. `test_container_auth.py`
 checks parallel authorization, single renewal, broker restart and credential
@@ -131,7 +133,12 @@ service reachability, sibling/game denial, public internet, mount separation,
 read-only roots and dropped capabilities. Live acceptance results are recorded
 separately in the coverage ledger.
 
-`test_providers.py` checks mixed-provider rotations, credential mounts/import and
+`test_benchmark.py` checks independent seed overrides, deterministic generation,
+standalone TOML round trips, exact game counts and interrupted input generation.
+Engine `GameStartingPositionSeedTest` checks repeated placement/resource generation
+and seed persistence.
+
+`test_providers.py` checks mixed-provider assignment, credential mounts/import and
 capability validation. `test_openrouter_process.py` runs the real Codex executable
 against local Responses/MCP fixtures (set `CIV_TEST_CODEX` to opt in), including
 tool round trips, reasoning controls, review schemas, context limits and usage.

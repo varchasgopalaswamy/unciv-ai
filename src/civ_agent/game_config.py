@@ -1,6 +1,6 @@
-"""One configuration for native setup, isolated players, and benchmark expansion."""
+"""One game's native setup, isolated players and reproducible seed selection."""
 
-import itertools
+import hashlib
 import random
 import secrets
 import tomllib
@@ -15,6 +15,17 @@ from civ_agent.providers import Provider
 
 Positive = Annotated[int, Field(gt=0)]
 Seed = Annotated[int, Field(ge=-(2**63), lt=2**63)]
+SEED_FIELDS = ("map_seed", "starting_position_seed", "assignment_seed")
+
+
+def derived_seed(master_seed: int, purpose: str) -> int:
+    """Separate stable streams; overriding one seed never changes another.
+
+    Native map seed zero means 'choose the current time', so derived seeds are
+    positive signed 64-bit integers. The namespace is part of the saved format.
+    """
+    digest = hashlib.sha256(f"civ-game-seed-v1:{master_seed}:{purpose}".encode()).digest()
+    return int.from_bytes(digest[:8], "big") % (2**63 - 1) + 1
 
 
 def valid_name(value):
@@ -26,7 +37,9 @@ class Configuration(BaseModel):
 
 
 class GameSetup(Configuration):
-    seed: Seed | None = None
+    master_seed: Seed | None = None
+    map_seed: Seed | None = None
+    starting_position_seed: Seed | None = None
     assignment_seed: Seed | None = None
     randomize: bool = False
     civilizations: list[str] = Field(default_factory=lambda: ["Rome", "Greece", "France", "Egypt"])
@@ -43,6 +56,8 @@ class GameSetup(Configuration):
     def size(self):
         if self.map_size is not None and self.map_radius is not None:
             raise ValueError("Choose map_size or map_radius, not both")
+        if self.map_seed == 0:
+            raise ValueError("map_seed must be nonzero; omit it to derive a reproducible seed")
         return self
 
     @field_validator("civilizations")
@@ -136,13 +151,6 @@ class Runtime(Configuration):
     browser_port: Annotated[int, Field(ge=0, le=65535)] = 0
 
 
-class Batch(Configuration):
-    seeds: list[Seed] = Field(default_factory=list)
-    repetitions: Positive = 1
-    parallel: Positive = 1
-    rotate_players: bool = False
-
-
 class GameConfig(Configuration):
     game: GameSetup = Field(default_factory=GameSetup)
     agents: AgentDefaults = Field(default_factory=AgentDefaults)
@@ -154,7 +162,6 @@ class GameConfig(Configuration):
     limits: Limits = Field(default_factory=Limits)
     resources: Resources = Field(default_factory=Resources)
     runtime: Runtime = Field(default_factory=Runtime)
-    batch: Batch = Field(default_factory=Batch)
 
     @model_validator(mode="after")
     def roster(self):
@@ -186,10 +193,11 @@ class GameConfig(Configuration):
 
     def resolved(self):
         config = self.model_copy(deep=True)
-        if config.game.seed is None:
-            config.game.seed = secrets.randbits(63)
-        if config.game.assignment_seed is None:
-            config.game.assignment_seed = secrets.randbits(63)
+        if config.game.master_seed is None:
+            config.game.master_seed = secrets.randbits(63)
+        for field in SEED_FIELDS:
+            if getattr(config.game, field) is None:
+                setattr(config.game, field, derived_seed(config.game.master_seed, field))
         names = [p.name for p in config.players]
         if config.game.randomize:
             random.Random(config.game.assignment_seed).shuffle(names)
@@ -209,8 +217,8 @@ class ResolvedGameConfig(GameConfig):
 
     @model_validator(mode="after")
     def complete_assignment(self):
-        if self.game.seed is None or self.game.assignment_seed is None:
-            raise ValueError("Resolved games must record both seeds")
+        if any(getattr(self.game, name) is None for name in ("master_seed", *SEED_FIELDS)):
+            raise ValueError("Resolved games must record every seed")
         if [a.civilization for a in self.assignments] != self.game.civilizations:
             raise ValueError("Assignments must preserve civilization order")
         if sorted(a.player for a in self.assignments) != sorted(p.name for p in self.players):
@@ -256,7 +264,14 @@ class ResolvedGameConfig(GameConfig):
 
     def engine_arguments(self):
         game = self.game
-        arguments = ["--seed", str(game.seed), "--city-states", str(game.city_states)]
+        arguments = [
+            "--seed",
+            str(game.map_seed),
+            "--starting-position-seed",
+            str(game.starting_position_seed),
+            "--city-states",
+            str(game.city_states),
+        ]
         for key in ("map_type", "difficulty", "speed", "starting_era"):
             arguments += ["--" + key.replace("_", "-"), getattr(game, key)]
         arguments += (
@@ -298,38 +313,3 @@ def load_config(
                 raise ValueError(f"{name} is not an agent player")
             selected.update(values)
     return GameConfig.model_validate(data)
-
-
-def expand_batch(config: GameConfig):
-    """Rotate complete player profiles across fixed civilization seats."""
-    config = config.resolved()
-    seeds = config.batch.seeds or [config.game.seed]
-    rotations = range(len(config.players) if config.batch.rotate_players else 1)
-    # The same assignment schedule is used on every map seed. Repetitions get
-    # independent, reproducible shuffles without consuming the map's randomness.
-    rng = random.Random(config.game.assignment_seed)
-    assignment_seeds = [config.game.assignment_seed] + [
-        rng.getrandbits(63) for _ in range(config.batch.repetitions - 1)
-    ]
-    result = []
-    for seed, repetition, rotation in itertools.product(seeds, range(config.batch.repetitions), rotations):
-        settings = GameConfig.model_validate(config.model_dump(exclude={"assignments"}))
-        settings.game.seed = seed
-        settings.game.assignment_seed = assignment_seeds[repetition]
-        settings.batch = Batch()
-        game = settings.resolved()
-        names = [a.player for a in game.assignments]
-        names = names[rotation:] + names[:rotation]
-        for assignment, name in zip(game.assignments, names, strict=True):
-            assignment.player = name
-        result.append(
-            {
-                "id": f"g{len(result) + 1:04d}",
-                "seed": seed,
-                "repetition": repetition,
-                "rotation": rotation,
-                "config": game.model_dump(),
-                "status": "pending",
-            }
-        )
-    return result

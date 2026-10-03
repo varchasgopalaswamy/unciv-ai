@@ -48,10 +48,11 @@ class VanillaSetupTest {
                 directory,
                 421L,
                 agentPlayers = listOf("Rome", "Greece"),
-                options = VanillaOptions(MapType.fractal, "King", "Standard", "Medieval era", listOf("Domination", "Scientific")),
+                options = VanillaOptions(MapType.fractal, "King", "Standard", "Medieval era", listOf("Domination", "Scientific"), 73L),
             ).use { runtime ->
                 val parameters = runtime.game.gameParameters
                 assertEquals("King", parameters.difficulty)
+                assertEquals(73L, parameters.startingPositionSeed)
                 assertEquals("Standard", parameters.speed)
                 assertEquals("Medieval era", parameters.startingEra)
                 assertEquals(listOf("Domination", "Scientific"), parameters.victoryTypes)

@@ -353,6 +353,9 @@ def batch_summary(root, manifest):
         rows.append(
             {
                 **{k: v for k, v in run.items() if k != "config"},
+                "master_seed": config.game.master_seed,
+                "map_seed": config.game.map_seed,
+                "starting_position_seed": config.game.starting_position_seed,
                 "assignment_seed": config.game.assignment_seed,
                 "players": config.player_records(),
                 "result": result,
@@ -367,10 +370,10 @@ def batch_summary(root, manifest):
             stream,
             fieldnames=(
                 "id",
-                "seed",
+                "master_seed",
+                "map_seed",
+                "starting_position_seed",
                 "assignment_seed",
-                "repetition",
-                "rotation",
                 "status",
                 "players",
                 "result",

@@ -1,8 +1,7 @@
 [game]
 civilizations = ["Inca", "Siam", "Egypt", "France", "Greece", "Arabia", "China", "Persia"]
 randomize = true
-seed = 42
-assignment_seed = 17
+master_seed = 42
 map_type = "Pangaea"
 map_size = "Large"
 city_states = 16
@@ -40,8 +39,4 @@ name = "Luna 5"
 name = "Luna 6"
 
 # For an automated benchmark, change Human's controller to "agent", then run
-# `civ-agent batch start --config ... --state-dir ...`. Eight games per seed.
-[batch]
-seeds = [42]
-rotate_players = true
-parallel = 1
+# `civ-agent batch start --config ... --games 20 --parallel 2 --state-dir ...`.

@@ -13,6 +13,7 @@ dependencies = [
     "rich>=14,<15",
     "sqlalchemy>=2.0,<3",
     "textual>=6,<7",
+    "tomlkit>=0.13,<1",
 ]
 classifiers = ["Private :: Do Not Upload", "Operating System :: POSIX :: Linux"]
 
