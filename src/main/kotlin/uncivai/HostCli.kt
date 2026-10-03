@@ -34,6 +34,8 @@ internal data class CliOptions(
     val mapSize: String? = null,
     val mapRadius: Int? = null,
     val human: String? = null,
+    val vanilla: VanillaOptions = VanillaOptions(),
+    val validateSetup: Boolean = false,
 )
 
 /** Parsing and help belong to Clikt; cross-option host requirements stay here. */
@@ -57,26 +59,35 @@ internal class HostCli(private val launch: (CliOptions) -> Unit) : CliktCommand(
     private val counteroffers by option("--trade-counteroffers", help = "Counteroffer limit per negotiation.").int().restrictTo(0, 100)
     private val timeout by option("--trade-timeout", help = "Negotiation deadline in seconds.").int().restrictTo(1, 86400)
     private val human by option("--human", help = "Open the local desktop for this human-controlled civilization.")
+    private val mapType by option("--map-type", help = "Native generated map type.").default("Pangaea")
+    private val difficulty by option("--difficulty", help = "Native Vanilla difficulty.").default("Prince")
+    private val speed by option("--speed", help = "Native game speed.").default("Quick")
+    private val startingEra by option("--starting-era", help = "Native starting era.").default("Ancient era")
+    private val victories by option("--victories", help = "Comma-separated enabled victory names; omitted enables all.")
+    private val validateSetup by option("--validate-setup", help = "Validate native setup and print its turn limit without starting services.").flag()
 
     override fun run() {
         fun requireOption(condition: Boolean, message: String) {
             if (!condition) throw UsageError(message)
         }
-        requireOption(listOf(save != null, resume != null, newGame).count { it } == 1, "Specify exactly one of --save, --resume-checkpoint or --new-game")
+        requireOption(listOf(save != null, resume != null, newGame, validateSetup).count { it } == 1, "Specify exactly one of --save, --resume-checkpoint, --new-game or --validate-setup")
         requireOption(checkpoint == null || save != null || newGame, "--checkpoint requires --save or --new-game")
         requireOption(!newGame || checkpoint != null, "--new-game requires --checkpoint to persist the new game")
-        requireOption(cityStates == null || (newGame && scenario == null), "--city-states requires an ordinary --new-game")
-        requireOption(builtInAI.isEmpty() || (newGame && scenario == null), "--built-in-ai requires an ordinary --new-game")
-        requireOption(agentPlayers.isEmpty() || (newGame && scenario == null), "--agent-player requires an ordinary --new-game")
-        requireOption((mapSize == null && mapRadius == null) || (newGame && scenario == null), "Map options require an ordinary --new-game")
+        requireOption(cityStates == null || ((newGame || validateSetup) && scenario == null), "--city-states requires an ordinary --new-game")
+        requireOption(builtInAI.isEmpty() || ((newGame || validateSetup) && scenario == null), "--built-in-ai requires an ordinary --new-game")
+        requireOption(agentPlayers.isEmpty() || ((newGame || validateSetup) && scenario == null), "--agent-player requires an ordinary --new-game")
+        requireOption((mapSize == null && mapRadius == null) || ((newGame || validateSetup) && scenario == null), "Map options require an ordinary --new-game")
         requireOption(mapSize == null || mapRadius == null, "Choose --map-size or --map-radius")
-        requireOption(seed == null || newGame, "--seed requires --new-game")
+        requireOption(seed == null || newGame || validateSetup, "--seed requires --new-game")
         requireOption(port == null || players != null, "--port requires --mcp-config")
         requireOption(operator == null || players != null, "--operator-config requires --mcp-config")
         requireOption((tls != null) == (players != null), "Serving requires both --mcp-config and --tls-config (HTTPS only)")
         requireOption(scenario != "trade-cycle" || counteroffers == null || counteroffers == 3, "The trade-cycle exercise requires --trade-counteroffers 3")
         requireOption(scenario != "war-paid" || counteroffers?.let { it > 0 } != false, "The paid-war exercise requires at least one counteroffer")
         requireOption(human == null || (players != null && operator != null && scenario == null), "--human requires player/operator credentials and an ordinary game")
-        launch(CliOptions(save, data, players, port ?: 8765, checkpoint, resume, newGame, scenario, seed, operator, tls, counteroffers, timeout, cityStates, builtInAI, agentPlayers, mapSize, mapRadius, human))
+        val vanilla = VanillaOptions(mapType, difficulty, speed, startingEra, victories?.split(',')?.map(String::trim))
+        requireOption(vanilla == VanillaOptions() || ((newGame || validateSetup) && scenario == null), "Native setup options require a new ordinary game")
+        requireOption(!validateSetup || (players == null && human == null && scenario == null), "Setup validation cannot start services or a scenario")
+        launch(CliOptions(save, data, players, port ?: 8765, checkpoint, resume, newGame, scenario, seed, operator, tls, counteroffers, timeout, cityStates, builtInAI, agentPlayers, mapSize, mapRadius, human, vanilla, validateSetup))
     }
 }

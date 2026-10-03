@@ -21,7 +21,7 @@ Run shell examples from the repository root unless a page says otherwise.
 
 | Guide | Use it for |
 | --- | --- |
-| [Full Vanilla run](guides/Full-vanilla-run.md) | One-command unattended launch, limits, logs and resume |
+| [Full Vanilla run](guides/Full-vanilla-run.md) | Container setup, TOML, human browser, batches, limits and resume |
 | [Local launchers](guides/Local-launchers.md) | Interactive agents, host setup and desktop inspection |
 | [Ordinary Vanilla setup](guides/Vanilla-game.md) | Manual multi-process launch and game settings |
 | [Automatic turns](guides/Automatic-turns.md) | Scheduler, HTTPS services, model settings and recovery |
@@ -34,6 +34,7 @@ Run shell examples from the repository root unless a page says otherwise.
 
 | Reference | Contents |
 | --- | --- |
+| [Containers](architecture/Containers.md) | Player/game isolation, durable state, shared login and image provenance |
 | [Turn recovery](architecture/Turn-recovery.md) | Coordinated turn rewind, durable notes and stop policy |
 | [Python architecture](architecture/Python-architecture.md) | Services, model jobs and module ownership |
 | [Kotlin architecture](architecture/Kotlin-architecture.md) | Engine boundary, input contracts and request handling |

@@ -110,8 +110,10 @@ completion now, not future decisions or guaranteed eventual outcomes.
 
 ### Integration and acceptance
 
-One local human can play through an embedded authoritative desktop. Broader setup/controller replacement, remote human play, OS/filesystem/
-network isolation and hard monetary spending caps remain unfinished. One More Turn
+One local human can play through the authoritative native desktop, including
+its containerized browser display. Rootless player/game isolation and TOML batch
+launches are implemented with the bounded validation recorded below. Controller
+replacement, multi-human remote play and hard monetary spending caps remain unfinished. One More Turn
 and native multiplayer resignation have no player API. Ancient-to-victory live
 acceptance remains open in the [roadmap](../Roadmap.md).
 
@@ -538,7 +540,7 @@ Sources: [setup][setup], [game CLI][game-cli], [operator][operator],
 | Surface | Status | Route and limits |
 | --- | --- | --- |
 | Generated-game launch | Available | Seed, agent/built-in-AI civilization lists, map size/radius, city-state count; no longer restricted to Rome/Greece/France. |
-| General setup | Partial | Launcher fixes Vanilla/Prince/Quick/Ancient/Pangaea; no complete ruleset/map-type/difficulty/speed/era/scenario/multiplayer setup UI. |
+| General setup | Available, bounded | TOML/CLI expose native map type/size/radius, difficulty, speed, era, victories, roster and seed. Packaged native setup validates names. Ruleset remains Vanilla; this is not a full scenario/mod/multiplayer setup UI. |
 | Save/load/pause/resume | Available | Operator persistence/coordinated `game resume`; active-turn rewind and affected communication/private state. |
 | Save/load/Undo as player commands | Missing | Native controls exist; agents lack arbitrary rollback/file access. Operator recovery is not an agent Undo API. |
 | Lost action response | Available | Durable receipts/exact-request lookup; no blind repeat mutation. |
@@ -553,8 +555,45 @@ Sources: [setup][setup], [game CLI][game-cli], [operator][operator],
 | Telemetry/dashboard | Available | Per-turn/job token kinds, API calls/errors, durations, model/strategy/diplomacy progress, final scores/winner. Database-backed views; explicit exports where retained. |
 | Time/turn/invocation limits | Available | Scheduler/launcher limits and stop diagnostics. |
 | Hard monetary cap | Missing | Token accounting is not an enforced dollar budget. |
-| OS/filesystem/network isolation | Missing | API authority does not provide process/container isolation. |
+| OS/filesystem/network isolation | Available, bounded | Rootless controller and per-agent containers, private mounts/namespaces, bridge/firewall separation and resource limits. Browser binds to localhost; TUI uses operator-only mounts. See container acceptance below; containers share the host kernel. |
+| Container/batch lifecycle | Available | Detached systemd user supervisors, frozen TOML/image IDs, bounded concurrent matrix/seat rotations, durable restart and per-run outcomes. No old-launcher migration. |
 | Mod manager/editor/cheats/audiovisual settings | Engine/UI | Outside ordinary strategic player API scope. |
+
+## Container acceptance — October 2, 2026
+
+Working-tree implementation; the engine pin is unchanged. See the
+[architecture](../architecture/Containers.md) and [operating guide](../guides/Full-vanilla-run.md).
+
+- Two independent Tiny/Pangaea/Prince/Quick games, seeds 42 and 43, ran concurrently.
+  Each used Rome/France on gpt-6-luna medium, Greece on gpt-6-sol medium, native
+  Egypt and two city-states. Both reached the requested three-round limit.
+- An intentional agent-container kill stopped only seed 42. Seed 43 continued.
+  Removing/recreating seed 42's containers retained its turn boundary, private
+  state and completed opening reviews; resume rewound the interrupted turn and
+  reached the same round limit. Interrupted usage remains explicitly partial.
+- A France-human game rendered through noVNC in Chromium. It was stopped, moved
+  to a different host directory, and resumed. The pinned-image TUI read its live
+  monitoring and private review databases after the move.
+- The existing `ManagedDesktopProbe` ran inside the desktop image: native city,
+  research, unit input; chat focus/drafts and queued review messages; native trade
+  draft/final terms/counteroffer/consent; between-turn offers; and coordinated
+  native/social rewind all passed.
+- Real Podman probes checked own-controller reachability, public internet,
+  denial of sibling-player/other-game connections and a listening host service,
+  private mounts, read-only roots and dropped capabilities. Separate tests cover
+  central token renewal, manager restart, parallel client provisioning, config
+  precedence/rotations and interrupted batch initialization.
+- Native setup and turn-recovery regressions passed through `codex-log`. The full
+  Python run passed 1,035 tests and exposed two old trade-schema assertions that
+  still expected a manually maintained item enum. Those assertions were updated
+  to the existing native-capability contract; the subsequent focused run passed
+  56 tests. The full suite was not repeated for those assertion-only changes.
+
+Artifacts are under `build/container-acceptance/` (ignored): `live-v2/` contains
+both game directories, per-run results, logs and databases; `human-moved/` retains
+the relocated human game; `human-browser.png` and `native-desktop/probe/` contain
+rendered evidence. These are short lifecycle/isolation checks, not a full-game
+win, a load-capacity measurement, or an exhaustive security audit.
 
 ## Verification inventory
 

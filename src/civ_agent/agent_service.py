@@ -99,13 +99,18 @@ class CodexProcess:
         self.pending: dict[int, asyncio.Future[JsonObject]] = {}
         self.requests: dict[int, tuple[str, JsonObject]] = {}
         self.sequence = 0
+        self.auth_client = None
+        if os.environ.get("CIV_AUTH_SOCKET") and os.environ.get("CIV_AUTH_TOKEN_FILE"):
+            from civ_agent.container_auth import TokenClient
+
+            self.auth_client = TokenClient(os.environ["CIV_AUTH_SOCKET"], os.environ["CIV_AUTH_TOKEN_FILE"])
 
     async def start(self, token: str, model: str | None) -> None:
         self.temporary = tempfile.TemporaryDirectory(prefix="unciv-agent-ipc-")
         socket_path = Path(self.temporary.name) / "codex.sock"
         environment = codex_trust_environment(self.ca_file, os.environ, self.workspace)
         for name in list(environment):
-            if name.startswith("UNCIV_"):
+            if name.startswith(("UNCIV_", "CIV_AUTH_")):
                 del environment[name]
         environment["UNCIV_PLAYER_TOKEN"] = token
         # Some automatic provider retries have no app-server notification. Only
@@ -149,6 +154,8 @@ class CodexProcess:
             {"clientInfo": {"name": "civ-agent-service", "version": "1"}, "capabilities": {"experimentalApi": True}},
         )
         await self.socket.send_json({"method": "initialized", "params": {}})
+        if self.auth_client is not None:
+            await self.request("account/login/start", {"type": "chatgptAuthTokens", **await self.auth_client.fetch()})
 
     async def request(self, method: str, parameters: JsonObject) -> JsonObject:
         assert self.socket is not None
@@ -194,6 +201,22 @@ class CodexProcess:
                 message = json.loads(frame.data)
                 if "method" in message:
                     if "id" in message:
+                        if message["method"] == "account/chatgptAuthTokens/refresh" and self.auth_client is not None:
+                            try:
+                                tokens = await self.auth_client.fetch(refresh=True)
+                                previous = message.get("params", {}).get("previousAccountId")
+                                if previous is not None and previous != tokens["chatgptAccountId"]:
+                                    raise RuntimeError("Benchmark account changed")
+                                await self.socket.send_json({"id": message["id"], "result": tokens})
+                            except (OSError, ValueError, RuntimeError, TimeoutError, aiohttp.ClientError):
+                                await self.socket.send_json(
+                                    {
+                                        "id": message["id"],
+                                        "error": {"code": -32000, "message": "Benchmark login unavailable"},
+                                    }
+                                )
+                                await self.notification("service/authRequired", {})
+                            continue
                         # No unattended approvals, user input, or external token requests.
                         await self.socket.send_json(
                             {
@@ -868,6 +891,9 @@ class AgentService:
             raise
         if method == "service/approvalRequired":
             self.failure = "INTERACTIVE_DECISION_REQUIRED"
+            self.stop_event.set()
+        elif method == "service/authRequired":
+            self.failure = "BENCHMARK_LOGIN_UNAVAILABLE"
             self.stop_event.set()
         elif method == "service/disconnected":
             if (

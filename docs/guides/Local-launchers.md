@@ -1,6 +1,6 @@
 # Local launchers
 
-`civ-agent game start` launches a complete local Vanilla game, and
+`civ-agent game start` launches a complete containerized Vanilla game, and
 `civ-agent game resume` restarts its services and scheduler from saved state.
 See [the full-game guide](Full-vanilla-run.md). The commands below also support
 running each component individually.
@@ -87,10 +87,11 @@ HTTPS service. Codex receives only that job's gateway token through
 and the launcher does not edit global Codex configuration. The service supplies
 request IDs, revisions and retry bookkeeping for the model's proposals.
 
-These are trusted local sessions: they inherit your normal Codex login, settings,
+The lower-level `host`, `agent-server` and interactive `agent` commands below are
+trusted development sessions: they inherit your normal Codex login, settings,
 with general shell and browsing tools disabled. Separate working directories and prompt instructions
 do not prevent filesystem access to operator state or another player's files.
-The isolated runner remains a separate project milestone.
+Use `game start` or `batch start` for the isolated container runner.
 
 Use Ctrl-C in the host terminal to stop the server. The checkpoint retains accepted
 commands. Exit each Codex session independently. Restarting `civ-agent host start` resumes

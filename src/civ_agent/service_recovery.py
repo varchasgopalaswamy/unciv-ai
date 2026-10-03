@@ -9,6 +9,25 @@ from civ_agent.agent_history import HistoryStore
 from civ_agent.tls import private_directory, write_private_json
 
 
+def archive_workspace(workspace, destination):
+    """Archive contents without renaming the player's bind-mount root."""
+    if not workspace.exists():
+        return
+    if not destination.exists():
+        staging = destination.with_name(".workspace-copy")
+        if staging.exists():
+            shutil.rmtree(staging)
+        shutil.copytree(workspace, staging, symlinks=True)
+        staging.rename(destination)
+    # A retry after archival finishes clearing the original contents. The mount
+    # itself remains in place; restored turn material is rebuilt by the service.
+    for child in workspace.iterdir():
+        if child.is_dir() and not child.is_symlink():
+            shutil.rmtree(child)
+        else:
+            child.unlink()
+
+
 def checkpoint_path(service, id):
     if not isinstance(id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", id):
         raise ValueError("INVALID_CHECKPOINT_ID")
@@ -105,17 +124,17 @@ async def _restore(service, payload):
 
     def install():
         archive = private_directory(service.state_dir / "abandoned" / payload["epoch"])
+        archive_workspace(service.workspace, archive / "workspace")
         # Checkpoint contains memory revisions and receipts, not copies of every
         # transcript. Old job histories stay operator-only after a rewind.
         for source in (
-            service.workspace,
             service.state_dir / "turn-archive",
             service.records_dir,
             service.state_dir / "history",
             service.state_dir / "chat-jobs",
             service.results.path,
         ):
-            destination = archive / ("workspace" if source == service.workspace else source.name)
+            destination = archive / source.name
             if source.exists() and not destination.exists():
                 shutil.move(source, destination)
         private_directory(service.workspace)

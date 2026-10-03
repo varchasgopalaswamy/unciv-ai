@@ -72,11 +72,13 @@ object HumanChatReviewProbe {
             for (civ in listOf("France", "Rome", "Greece")) {
                 val events = executor.communicationState.streams.getValue(civ)
                 check(events.map { it.body.text("message") } == if (civ == "Greece") listOf(publicId) else listOf(privateId, publicId))
-                check(events.filter { it.wake }.map { it.body.text("message") } == when (civ) {
-                    "Rome" -> listOf(privateId)
-                    "Greece" -> listOf(publicId)
-                    else -> emptyList()
-                })
+                check(
+                    events.filter { it.wake }.map { it.body.text("message") } == when (civ) {
+                        "Rome" -> listOf(privateId)
+                        "Greece" -> listOf(publicId)
+                        else -> emptyList()
+                    },
+                )
             }
             // Lost responses and repeated phase completion cannot publish twice.
             check(human.communication(privateRequest) == privateResponse)

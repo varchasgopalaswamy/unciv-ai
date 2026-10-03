@@ -3,23 +3,36 @@ package uncivai
 import com.unciv.Constants
 import com.unciv.json.json
 import com.unciv.logic.city.CityFlags
-import com.unciv.logic.civilization.Notification
-import com.unciv.logic.civilization.Civilization
-import com.unciv.logic.civilization.PopupAlert
 import com.unciv.logic.civilization.AlertType
+import com.unciv.logic.civilization.Civilization
+import com.unciv.logic.civilization.Notification
 import com.unciv.logic.civilization.PlayerUnitOperations
+import com.unciv.logic.civilization.PopupAlert
 import com.unciv.logic.civilization.diplomacy.DiplomacyFlags
 import com.unciv.logic.map.HexCoord
-import com.unciv.logic.map.tile.TileHistory
 import com.unciv.logic.map.tile.RoadStatus
-import kotlinx.serialization.json.*
-import uncivai.player.*
+import com.unciv.logic.map.tile.TileHistory
+import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.boolean
+import kotlinx.serialization.json.int
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import uncivai.player.InspectionSubject
+import uncivai.player.PlayerHost
+import uncivai.player.PlayerInspectionRequest
+import uncivai.player.PlayerSessionException
+import uncivai.player.PlayerSessionFailure
+import uncivai.player.PlayerTurnSnapshot
+import uncivai.player.TilePosition
+import uncivai.player.TurnCommandKind
+import uncivai.player.TurnCommandRequest
 import java.nio.file.Path
 import java.util.UUID
 
 object CoverageCompletionProbe {
-    private fun command(turn: PlayerTurnSnapshot, kind: TurnCommandKind, target: String? = null, selection: String? = null) =
-        TurnCommandRequest(UUID.randomUUID().toString(), turn.epoch, turn.revision, kind, target, selection).reviewedFor(turn)
+    private fun command(turn: PlayerTurnSnapshot, kind: TurnCommandKind, target: String? = null, selection: String? = null) = TurnCommandRequest(UUID.randomUUID().toString(), turn.epoch, turn.revision, kind, target, selection).reviewedFor(turn)
 
     fun controls(root: Path) = SettlementPreviewProbe.fixture(root.resolve("game")).use { runtime ->
         val game = runtime.game

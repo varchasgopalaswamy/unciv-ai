@@ -8,11 +8,13 @@ from civ_agent import match_watch, scheduler
 from civ_agent.commands import (
     agent,
     agent_server,
+    batch,
     chat,
     game,
     history,
     host,
     inspect,
+    runtime,
     trade,
     verify_agreement_scenario,
     verify_trade_cycle,
@@ -26,9 +28,19 @@ def parser() -> argparse.ArgumentParser:
     groups = result.add_subparsers(dest="command", required=True)
 
     games = groups.add_parser("game", help="Launch a complete local game").add_subparsers(required=True)
-    for action in ("start", "resume"):
+    for action in ("start", "resume", "stop", "status", "remove"):
         command = games.add_parser(action, parents=[game.parser(add_help=False, action=action)])
         command.set_defaults(handler=game.run)
+
+    batches = groups.add_parser("batch", help="Run isolated benchmark games from TOML").add_subparsers(required=True)
+    for action in ("start", "resume", "stop", "status"):
+        command = batches.add_parser(action, parents=[batch.parser(add_help=False, action=action)])
+        command.set_defaults(handler=batch.run)
+    for group, actions in (("runtime", ("setup",)), ("image", ("build",)), ("auth", ("login", "status"))):
+        commands = groups.add_parser(group).add_subparsers(required=True)
+        for action in actions:
+            command = commands.add_parser(action, parents=[runtime.parser(add_help=False, group=group, action=action)])
+            command.set_defaults(handler=runtime.run)
 
     host_commands = groups.add_parser("host", help="Start the game host or inspect a saved game").add_subparsers(
         required=True

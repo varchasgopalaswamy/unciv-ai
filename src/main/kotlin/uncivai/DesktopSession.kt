@@ -412,10 +412,11 @@ internal class DesktopSession(
     override fun exit() {
         if (closing) return
         closing = true
-        Files.createDirectories(runnerDirectory)
-        val temporary = Files.createTempFile(runnerDirectory, ".desktop-stop-", ".json")
+        val controlDirectory = runnerDirectory.parent.resolve("control")
+        Files.createDirectories(controlDirectory)
+        val temporary = Files.createTempFile(controlDirectory, ".desktop-stop-", ".json")
         Files.writeString(temporary, "{\"action\":\"stop\"}")
-        Files.move(temporary, runnerDirectory.resolve("control.json"), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
+        Files.move(temporary, controlDirectory.resolve("request.json"), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
         Gdx.graphics.requestRendering()
     }
 

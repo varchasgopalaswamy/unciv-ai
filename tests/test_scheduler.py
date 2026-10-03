@@ -711,7 +711,7 @@ class SchedulerTest(unittest.TestCase):
             if halted:
                 self.host.phase = "HALTED"
             else:
-                atomic_json(self.state / "runner" / "control.json", {"action": "stop"})
+                atomic_json(self.state / "control" / "request.json", {"action": "stop"})
         stdout, stderr = process.communicate(timeout=15)
         self.assertEqual(process.returncode, 2 if halted else 0, stdout + stderr)
         self.assertEqual(self.saved()["status"], "needs_inspection" if halted else "stopped")

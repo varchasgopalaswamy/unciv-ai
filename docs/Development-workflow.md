@@ -88,7 +88,11 @@ PACKAGE`, and include both metadata and lockfile changes. Apply formatting with
 `uv run ruff format .`. CI runs the locked checks; the local
 prek hooks check Python formatting, lint, and types when relevant files change.
 
-Host commands discover the JVM checkout from the working directory or editable
+Production `game`/`batch` commands use built container images and a dedicated
+benchmark login; see [the game guide](guides/Full-vanilla-run.md). Image builds use
+`codex-log` for Gradle and package the selected engine code and assets.
+
+Low-level host commands discover the JVM checkout from the working directory or editable
 source tree. An independently installed package can select it with `--repo-dir`
 or `CIV_AGENT_REPO`. Agent services need only the Python package and their runtime
 tools, credentials, and certificates. See [local commands](guides/Local-launchers.md).

@@ -1,253 +1,193 @@
-# Run the full Vanilla game locally
+# Run games in containers
 
-From the repository directory, using the existing project environment:
+`civ-agent game` runs a durable game under rootless Podman. Each agent has its own
+container; a controller runs Unciv and the scheduler. Games run in the background,
+survive terminal closure/logout, and use saved configuration and image IDs on resume.
+The [container architecture](../architecture/Containers.md) explains the boundaries.
 
-```sh
-.venv/bin/civ-agent game start
-```
+## One-time setup
 
-The launcher starts the host, the three agent services and the ordinary scheduler.
-It plays Rome, Greece and France with **gpt-6-luna / medium** by default against native Egypt,
-with two city-states. Setup remains Vanilla, Ancient, Quick/Prince, Small Pangaea
-and all five native victory types. Agents choose their actions without guided
-milestones. The host builds through its normal source-checkout launcher.
-
-Use `--model` and `--reasoning-effort` to select defaults for the agents,
-including gameplay, chat and background strategic reviews:
+Use Linux with rootless Podman, Netavark, cgroup v2, nftables, and a systemd user
+session. Building images also requires JDK 21+, Python 3.12+, uv, the selected
+engine checkout, and the standalone Linux Codex release (including its
+`codex-code-mode-host` companion).
 
 ```sh
-.venv/bin/civ-agent game start --model gpt-6-luna --reasoning-effort high
+git submodule update --init --recursive
+uv sync --locked
+.venv/bin/civ-agent image build
+.venv/bin/civ-agent runtime setup
+.venv/bin/civ-agent auth login
 ```
 
-Override either setting for individual civilizations with repeatable
-`--agent-model CIV=MODEL` and `--agent-reasoning-effort CIV=LEVEL` options:
+Image builds use `codex-log` for Gradle. `image build --unciv-dir ../Unciv`
+selects both code and assets from that engine checkout. `--codex PATH` selects a
+standalone Codex executable; `--tag localhost/my-civ` chooses the image name.
+Running a built image needs no JVM source checkout.
+
+`runtime setup` enables systemd user lingering so games survive logout.
+`auth login` opens a dedicated device login using your existing account. It leaves
+your everyday Codex home unchanged. The renewable login lives in
+`~/.local/state/unciv-host/auth`; a shared manager renews it and gives workers only
+short-lived access tokens. `auth status` reports whether the login exists and the
+manager is running. Use `--auth-dir` consistently to select another durable login.
+Changing the account requires stopping the manager and affected games first.
+
+## Start and watch
 
 ```sh
-.venv/bin/civ-agent game start --state-dir ~/.local/state/unciv-host/mixed-models \
-  --model gpt-6-luna --reasoning-effort max \
-  --agent-model Greece=gpt-5.6-luna \
-  --agent-reasoning-effort France=high
+.venv/bin/civ-agent game start --state-dir ~/.local/state/unciv-host/my-game
+.venv/bin/civ-agent game status --state-dir ~/.local/state/unciv-host/my-game
+.venv/bin/civ-agent match watch --state-dir ~/.local/state/unciv-host/my-game
 ```
 
-This gives Rome gpt-6-luna/max, Greece gpt-5.6-luna/max, and France
-gpt-6-luna/high. Each setting falls back independently to its global default.
-Use the civilization names from `--agents`; overrides for built-in opponents,
-unknown civilizations, or duplicate overrides for the same setting are rejected.
+Defaults: Rome, Greece and France use **gpt-6-luna / medium**, with native Egypt
+and two city-states on Small Pangaea, Ancient, Quick/Prince. Victory conditions
+are the native defaults. Games start with concurrent opening reviews; later
+reviews run after every fifth complete round. Quitting the TUI leaves play running.
+The TUI is an operator view and exposes all players' private information.
 
-The launcher passes the resolved settings to each agent service and shows them
-at startup. It omits a scheduler-wide override for a setting with per-civ choices,
-so the scheduler preserves those choices. Launch metadata records the resolved
-settings under `agentSettings`; job telemetry records the effective settings
-reported by Codex. Editing the launcher does not change running services.
+The launcher returns after starting a background supervisor. `game status` and
+`container-status.json` report eventual startup failures or stops; the launch
+command's exit status is not the eventual game outcome. Logs are durable.
 
-## Choose the game
+## Configure with TOML
 
-Map and roster changes are ordinary options; there is no Kotlin edit required:
+Start from [the human example](../../examples/human-game.toml) or
+[the benchmark example](../../examples/benchmark.toml):
 
 ```sh
-.venv/bin/civ-agent game start --state-dir ~/.local/state/unciv-host/my-game \
-  --map-radius 26 --city-states 8 \
-  --agents Rome Greece France --built-in-ai Egypt \
-  --model gpt-6-luna --reasoning-effort high --strategy-guide --fast
+.venv/bin/civ-agent game start --config examples/human-game.toml \
+  --state-dir ~/.local/state/unciv-host/human-game
+.venv/bin/civ-agent game start --config examples/human-game.toml --dry-run
 ```
 
-Use `--map-size Tiny|Small|Medium|Large|Huge` instead of `--map-radius` for an
-Unciv preset. Map names are case-insensitive. A new game's default remains Small
-Pangaea with three agents and Egypt; the example above chooses a larger map.
-Supply `--built-in-ai` without names for no built-in opponents. Native rules
-validate civilization names and map generation. `--seed` selects a reproducible
-map; otherwise the seed is random and recorded in the launch metadata.
+`--dry-run` validates configuration through the packaged native engine without
+starting agents. Unknown TOML keys, duplicate civilizations, multiple humans,
+invalid limits, and model overrides for non-agent seats are rejected.
+Native setup validates civilization, map type/size, difficulty, speed, era and victory
+names. Mod content is out of scope. Choose `map_size` or a custom `map_radius`.
 
-`--strategy-guide` supplies the [optional strategy reference](Strategy-guide.md).
-`--fast` requests fast priority for model work. Both default to off and are saved
-for resume. Their `--no-...` forms explicitly disable them. Model and reasoning
-settings apply to gameplay, communication and background strategic reviews.
+| Section | Settings |
+| --- | --- |
+| `[game]` | `seed`, `map_type`, `map_size`/`map_radius`, `difficulty`, `speed`, `starting_era`, `city_states`, `victories` |
+| `[agents]` | `model`, `reasoning_effort`, `review_interval`, `review_attempts`, `strategy_guide`, `fast` |
+| `[[players]]` | `civilization`, `controller` (`agent`, `human`, `built_in_ai`); optional per-agent `model`/`reasoning_effort` |
+| `[limits]` | `max_turns`, `max_invocations`, `max_seconds`, `turn_timeout`, `startup_timeout`, `max_concurrent_jobs` |
+| `[resources.controller]`, `[resources.desktop]`, `[resources.agent]` | `memory_mib`, `cpus`, `pids` |
+| `[runtime]` | `image`, `desktop_image`, `browser_port` |
+| `[batch]` | `seeds`, `repetitions`, `parallel`, `rotate_models` |
 
-The default match directory is `~/.local/state/unciv-host/vanilla-full`.
-The host uses port **8971**, followed by one consecutive port per agent; change
-this with `--port`. `--repo-dir` selects the host source checkout, and
-`--unciv-dir` selects an engine checkout for both code and runtime assets.
-The host builds through its normal source launcher.
+CLI options override corresponding TOML fields. `--agent-model Greece=gpt-6-sol`
+and `--agent-reasoning-effort France=high` override individual settings. A new game's
+random seed is resolved once. `resolved.json` and `container.json` freeze settings,
+seed, image IDs and login location; subsequent TOML edits do not alter the game.
+Player model/effort choices apply to gameplay, chat and reviews.
 
-The launcher starts the existing services and calls the scheduler directly.
-Ordinary play does not run a test module or another launcher subprocess.
+The default limits are a one-hour agent turn timeout, 900-second startup timeout,
+seven days total elapsed time, 10,000 model jobs and the native speed's turn limit
+plus one (331 for Quick). Pauses count toward total elapsed time. Native victory
+ends the run earlier. Human turns have no model timeout, but whole-match limits apply.
+
+Default limits per container: controller 4 GiB/2 CPUs, graphical controller
+6 GiB/2 CPUs, each agent 2 GiB/1 CPU. These are ceilings, not reservations. Size batch
+concurrency for actual machine capacity and the shared account's usage limits.
 
 ## Play a civilization yourself
 
 ```sh
-.venv/bin/civ-agent game start --state-dir ~/.local/state/unciv-host/human-game \
-  --human France --agents Rome Greece --built-in-ai Egypt --city-states 2
+.venv/bin/civ-agent game start --config examples/human-game.toml \
+  --state-dir ~/.local/state/unciv-host/human-game
+.venv/bin/civ-agent game status --state-dir ~/.local/state/unciv-host/human-game
 ```
 
-This opens the native Unciv desktop. It supports **one trusted local human**;
-human, agent and built-in AI names must be distinct. The desktop and HTTPS host
-share one live game. The human always sees their own civilization and fog of war,
-including while other players act. Ordinary city, unit, research, policy and
-diplomacy controls apply native rules. The human plays first in each round.
-No agent service or strategy review is created for that seat.
+Once startup finishes, open the `browser.url` printed by `game status`. Enter the
+password from `STATE_DIR/desktop/password.txt`. The browser streams the native
+Unciv window through noVNC; it is not a separate game implementation. Browser
+ports bind to **localhost only**. `browser_port = 0` allocates a free port for each
+game; `--port` overrides it. Internal game/agent ports are never published.
 
-Use **Chat** for public/private messages, social promises, friendship and agreement
-history. **Trade** and **Negotiate Peace** use Unciv’s native trade controls with
-the shared negotiation service. **Chat → Trades → Open trade** opens that same
-editor. It supports publishing, countering, accepting, declining and withdrawing.
-Acceptance confirms the displayed version and terms; changed or unaffordable
-terms require a fresh decision. Human negotiations have **no response deadline**.
-They hold gameplay while the existing service waits without continued gameplay
-inference. Native diplomacy remains available with the built-in AI and city-states.
+The human plays first and sees only their civilization's view. Native city, unit,
+research and diplomacy controls apply. **Chat** provides public/private messages
+and nonbinding promises. **Trade** uses native controls and the shared negotiation
+service. Human negotiations have no response deadline. Messages sent during
+strategic reviews queue for delivery when reviews finish; trades wait. Unsent
+chat drafts and focus survive navigation/background activity within the desktop
+session. The operator TUI is separate from the human player's interface.
 
-You can inspect your map and chat between turns. Opening and periodic strategic
-reviews pause play and agent conversations until all reports finish. You can send
-messages during reviews: they appear as **Queued** in your conversation and reach
-their recipients when the review phase ends. Trades and promises wait until then.
-Unsent drafts stay with their public/private conversation when switching recipients
-or returning to the map. Background turns preserve chat focus and cursor position.
-Drafts last for the desktop session; interrupted-turn rewind discards them.
-Your turn has no model timeout; whole-match budgets still apply. The separate
-operator TUI contains debugging information and other players' private material,
-so it is not the human's gameplay interface.
+Closing the browser merely disconnects the viewer. To stop play, use the native
+**Stop game** menu or `game stop`. Resume reconnects to the saved game, with any
+interrupted turn rewound. Native arbitrary save/load and Undo stay disabled in the
+managed match; per-unit automation remains available. Only one human seat per game
+is currently supported.
 
-Close the desktop or use its **Stop game** menu item to stop all match services.
-Resume with the same state directory; the launcher remembers the human seat:
+## Stop, remove and resume
 
 ```sh
-.venv/bin/civ-agent game resume --state-dir ~/.local/state/unciv-host/human-game
+.venv/bin/civ-agent game stop --state-dir ~/.local/state/unciv-host/my-game
+.venv/bin/civ-agent game remove --state-dir ~/.local/state/unciv-host/my-game
+.venv/bin/civ-agent game resume --state-dir ~/.local/state/unciv-host/my-game
 ```
 
-An interrupted turn is rewound with affected messages, deals and agent memories.
-The desktop displays a rewind notice. A committed End Turn remains committed.
-Native Undo, arbitrary save/load, new-game shortcuts and multi-turn autoplay are
-disabled in this managed match. Per-unit automation remains available. Code and
-assets both use the selected engine checkout; no migration of old matches is added.
+`stop` quiesces the scheduler and agent work. `remove` additionally removes game
+containers, networks and firewall rules. **Both retain the entire state directory.**
+Resume recreates infrastructure using the saved image IDs and rewinds the interrupted
+turn, including communication and affected private state. Completed handoffs remain
+committed; pending reviews restart from their frozen inputs. Recovery does not
+require a surviving container or a model conversation in memory.
 
-## Limits and stopping
+Resume retains model/settings and limits. Limits can explicitly increase, for example
+`--max-seconds 1209600`. `--image`/`--desktop-image` explicitly upgrade images; otherwise
+rebuilding a tag has no effect on existing games. Image upgrades require compatible
+saved game data; there are no migrations for the earlier launcher. Preserve pinned
+images when pruning Podman storage. For backups, stop the game and retain its full
+directory, the login directory, and the images (or reproducible image artifacts).
+A stopped game's directory can move; pass its new path to resume. If the login
+also moves, supply the new `--auth-dir`.
 
-| Limit | Default |
-| --- | ---: |
-| Agent turn timeout | 3,600 seconds (one hour) |
-| Startup allowance per service, including initial build | 900 seconds (15 minutes) |
-| Overall elapsed-time limit | 604,800 seconds (seven days) |
-| Round limit from the original start | 331, enough for the native Quick time victory |
-| Total model jobs, including chat and interrupted attempts | 10,000 |
+A failed service stops its game for inspection, not other games. There is no automatic
+model/game retry loop. Host reboot requires explicit resume; lingering covers logout,
+not automatic boot-time relaunch of games.
 
-Native victory stops the run before these limits. Ctrl-C requests a graceful pause;
-allow time for the scheduler to fence actions and flush its services. A timed-out,
-failed or blocked gameplay turn stops the launcher for inspection. There is no
-automatic restart loop. Repeated stale conflicts and internal state-update errors
-stop for inspection with durable [recovery diagnostics](Chat-memory-and-recovery.md#recovery-diagnostics).
-Normal recoverable tool errors can still be handled by
-the current agent within its turn, as before.
-
-Override limits with `--turn-timeout`, `--startup-timeout`, `--max-seconds`,
-`--max-turns` and `--max-invocations`. A new game accepts `--seed`.
-
-Normal output shows colored launcher status, player labels, turn headers,
-messages, confirmed actions, errors and turn totals. Completion is green; interrupts
-and exhausted limits are yellow; failures are red. `--color auto|always|never`
-controls terminal colors;
-`auto` detects the launcher's terminal, and `NO_COLOR` disables color in every
-mode. Saved `console.log` and histories remain plain text. `--verbose` also prints
-preloaded startup context and detailed tool activity; the full service history is
-saved regardless. See [live output](Automatic-turns.md#live-output-and-saved-history)
-for accounting scope and unavailable metrics.
-
-For the [interactive dashboard](Match-dashboard.md), open another terminal and run
-the command printed under `Dashboard`, or:
+## Benchmark batches
 
 ```sh
-.venv/bin/civ-agent match watch --state-dir ~/.local/state/unciv-host/vanilla-full
+.venv/bin/civ-agent batch start --config examples/benchmark.toml \
+  --state-dir ~/.local/state/unciv-host/benchmark --dry-run
+.venv/bin/civ-agent batch start --config examples/benchmark.toml \
+  --state-dir ~/.local/state/unciv-host/benchmark
+.venv/bin/civ-agent batch status --state-dir ~/.local/state/unciv-host/benchmark
+.venv/bin/civ-agent batch stop --state-dir ~/.local/state/unciv-host/benchmark
+.venv/bin/civ-agent batch resume --state-dir ~/.local/state/unciv-host/benchmark --retry-failed
 ```
 
-It attaches to the current run and shows player scores, activity, calls, tokens,
-and per-turn timings. Quitting the viewer leaves the game running.
+The matrix expands seeds × repetitions × unique cyclic agent-setting rotations.
+A rotation moves model and effort together, while keeping civilization/turn order,
+map seed, human and native AI seats fixed. Identical rotations are deduplicated.
+`parallel` bounds simultaneously running games; `--parallel` overrides it. Human
+batches with concurrent games must use automatically allocated browser ports.
 
-## Resume after inspection
+The queue is persisted before launching. A failed game is recorded and the next
+queued game can run. Resume continues pending/paused runs; `--retry-failed` opts into
+retrying failures. Completed and budget-exhausted runs are retained without relaunching. Explicit `--image` and
+`--desktop-image` upgrades affect unfinished resumed runs. Each game has its own
+`games/gNNNN` directory and can be watched with `match watch`. `results.json` and
+`results.csv` collect assignments, stop status, available game results and failures.
+Per-turn tokens, API calls, timing, winners and final player scores retain their
+existing database accounting; see [telemetry](../reference/Telemetry.md).
 
-For the default directory:
+## Files to retain for diagnosis
 
-```sh
-.venv/bin/civ-agent game resume
-```
+Keep the entire state directory. Key files are:
 
-For a custom directory, supply the same `--state-dir`. The port, guide, priority,
-startup timeout and checkout choices are saved in `launch-settings.json`.
-`game start` refuses to overwrite a saved board. Resume retains accounting and
-rewinds to the start of the interrupted turn, including communication and private state.
-Completed native handoffs are retained.
-It also inherits the saved global defaults and per-civilization model and reasoning
-choices. There is no need to repeat these flags on resume. Repeating one override
-retains the other saved overrides. Explicitly conflicting settings are rejected
-before services start; choose a new match directory to use a different model or
-reasoning effort.
-It requires `exploration.json` and the original player credentials. If startup
-saved the board before saving scheduler state in `runner/monitoring.sqlite3`, resume starts scheduling that
-saved board. If no board was created, fix the startup error and repeat `game start`.
+- `resolved.json`, `container.json`: frozen configuration, IDs and image references.
+- `supervisor.log`, `launches/<id>/*.log`, `host.log`: controller and service logs.
+- `container-status.json`, `runtime.json`, `resources.json`/`resources.jsonl`: status, failures and resource samples.
+- `exploration.json`, `turn-recovery/`: game and coordinated turn boundaries.
+- `runner/monitoring.sqlite3`: scheduler, events and accounting for the TUI.
+- `agent-services/<civ>/`: private databases, reviews, receipts and diagnostics.
+- `agents/<civ>/`, `codex/<civ>/`: isolated workspaces and Codex state.
+- `desktop/`: native client/VNC state for human games.
 
-Opening reviews run concurrently before the first move on turn 0, from each
-civilization's own starting view and abilities. All opening reports finish before
-play starts. Later reviews run concurrently after all players finish rounds
-5, 10, 15, etc. Set `--review-interval K` to change the later cadence; the opening
-review stays on turn 0. The interval is retained on resume.
-A review uses the player's model, effort, priority and optional strategy
-guide. Active conversations finish before capture; gameplay, message delivery and
-trade stay paused until all reviews finish. Human messages submitted during this
-phase queue outside the frozen review inputs. Subsequent turns and conversations
-receive their civilization's report as dated advice. Waiting does not
-consume its gameplay timeout. There are no mandatory post-turn memory writes.
-
-Pending reviews restart from frozen inputs after an interruption. The default
-is three attempts; `--review-attempts 4` explicitly permits another attempt.
-Interrupted gameplay still rewinds to the start of the active turn. A committed
-handoff is retained, and provider accounting remains incomplete when final usage
-was not received. Older memory/scheduler formats require their original code;
-this version requires a fresh match directory.
-
-Resume retains the saved limits exactly. Explicit limits may only increase.
-The elapsed-time limit is measured from the **original scheduler start**, including pauses; it is not reset
-on resume. For example, extend that total allowance to fourteen days with:
-
-```sh
-.venv/bin/civ-agent game resume --max-seconds 1209600
-```
-
-## What to bring back for analysis
-
-Tell Codex the **match directory** and the latest **stop report path** printed by
-the launcher. On this machine it can inspect the existing files directly. Keep
-the whole match directory until the failure has been diagnosed.
-
-Each launch gets its own `launches/TIMESTAMP-PID/` directory containing:
-
-- `console.log`: scheduler output, diagnostics and the final stop reason.
-- `launch.json`: resolved options, start time, source/engine revision and model settings.
-- `stop.json`: exit status, scheduler reason, unfinished activation, usage and any
-  native result/scores available at shutdown.
-
-The match also retains:
-
-- `host.log`, `Rome.log`, `Greece.log`, `France.log`: appended service logs.
-- `exploration.json` and `turn-recovery/`: native state and the current coordinated turn boundary.
-- `runner/monitoring.sqlite3`: scheduler progress, event streams, telemetry and scores.
-- `agent-services/`: per-civilization memory, audits, diagnostics and accounting databases.
-
-Exit codes distinguish a native completion (`0`), a stop requiring inspection
-(`2`), an exhausted limit (`3`) and a user interrupt (`130`). A failed service
-startup records its exit status and log path. A scheduler returning zero with a blocked turn is
-reported as a stop requiring inspection, not a completed game.
-
-The launcher is covered by tests using fake processes, including signal cleanup,
-saved-limit protection, diagnostic capture and completion classification. It
-does not add gameplay rules or a new recovery mechanism. See the
-[roadmap](../Roadmap.md#active-acceptance-complete-an-ordinary-vanilla-game) for
-full-game acceptance and [telemetry](../reference/Telemetry.md) for the accounting contract.
-
-## Short opening benchmark
-
-Use the same launcher with a fresh directory and a smaller round budget:
-
-```sh
-.venv/bin/civ-agent game start --state-dir /tmp/unciv-opening --seed 20260920 --max-turns 3
-```
-
-Reaching the requested limit returns exit code 3 and saves the same telemetry as
-a full game. The saved-position evaluation driver in `tests/live_saved_position.py`
-is only for preparing isolated comparisons and seeding evaluation memory.
+The [saved-position driver](../scenarios/Strategic-positions.md) remains a source-level
+development tool. Ordinary launches and opening benchmarks use these container commands.

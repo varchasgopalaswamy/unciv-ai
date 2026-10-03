@@ -86,8 +86,13 @@ internal class DesktopDiplomacyScreen(
             selectedCivilization = this@DesktopDiplomacyScreen.selectedCivilization
             tab = this@DesktopDiplomacyScreen.tab
             conversations[selectedCivilization] = DesktopConversationDraft(
-                message.text, message.cursorPosition, promise.text, conditions.text,
-                expiry.text, promiseKind.selected, revisingPromise,
+                message.text,
+                message.cursorPosition,
+                promise.text,
+                conditions.text,
+                expiry.text,
+                promiseKind.selected,
+                revisingPromise,
             )
         }
     }
@@ -278,8 +283,11 @@ internal class DesktopDiplomacyScreen(
             }
         }
         val queued = state.array("queuedMessages").filterIsInstance<JsonObject>().filter { body ->
-            if (selectedCivilization == null) body.flag("public")
-            else !body.flag("public") && body.array("participants").any { (it as? JsonPrimitive)?.content == selectedCivilization }
+            if (selectedCivilization == null) {
+                body.flag("public")
+            } else {
+                !body.flag("public") && body.array("participants").any { (it as? JsonPrimitive)?.content == selectedCivilization }
+            }
         }
         if (visible.isEmpty() && queued.isEmpty()) line("No messages in this conversation.")
         visible.forEach { event ->

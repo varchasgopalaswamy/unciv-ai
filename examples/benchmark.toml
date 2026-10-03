@@ -1,0 +1,45 @@
+[game]
+map_size = "Small"
+city_states = 2
+
+[agents]
+model = "gpt-6-luna"
+reasoning_effort = "medium"
+
+[[players]]
+civilization = "Rome"
+model = "gpt-6-luna"
+
+[[players]]
+civilization = "Greece"
+model = "gpt-6-sol"
+
+[[players]]
+civilization = "France"
+model = "gpt-6-luna"
+reasoning_effort = "high"
+
+[[players]]
+civilization = "Egypt"
+controller = "built_in_ai"
+
+[batch]
+seeds = [42, 43]
+repetitions = 1
+parallel = 2
+rotate_models = true
+
+[limits]
+max_turns = 3 # Opening comparison; omit for full games.
+turn_timeout = 3600
+max_seconds = 604800
+
+[resources.controller]
+memory_mib = 4096
+cpus = 2
+pids = 512
+
+[resources.agent]
+memory_mib = 2048
+cpus = 1
+pids = 256

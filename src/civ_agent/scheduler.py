@@ -337,7 +337,7 @@ class RunStore:
     def __init__(self, root):
         self.root = root
         self.path = root / "monitoring.sqlite3"
-        self.control = root / "control.json"
+        self.control = root.parent / "control" / "request.json"
         self.lock = None
 
     def acquire(self):

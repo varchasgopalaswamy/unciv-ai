@@ -26,7 +26,7 @@ private fun launchHost(options: CliOptions) {
                 else -> WarScenarioSetup.mapName(it)
             }
         }
-        val loaded = if (options.newGame) {
+        val loaded = if (options.newGame || options.validateSetup) {
             if (options.scenario == "mixed-diplomacy") {
                 HeadlessRuntime.createMixedDiplomacyExercise(options.dataDirectory, options.seed ?: 415L)
             } else if (options.scenario == "trade-cycle") {
@@ -45,6 +45,7 @@ private fun launchHost(options: CliOptions) {
                     options.builtInAI,
                     options.agentPlayers.ifEmpty { listOf("Rome", "Greece", "France") },
                     size,
+                    options.vanilla,
                 )
             }
         } else if (options.resumeCheckpoint != null) {
@@ -53,6 +54,10 @@ private fun launchHost(options: CliOptions) {
             HeadlessRuntime.load(checkNotNull(options.saveFile), options.dataDirectory)
         }
         loaded.use { runtime ->
+            if (options.validateSetup) {
+                println("SETUP-READY:" + obj("maxTurns" to runtime.game.gameParameters.maxTurns))
+                return
+            }
             require(expectedMap == null || runtime.game.tileMap.mapParameters.name == expectedMap) {
                 "Checkpoint is not the ${options.scenario} scenario. Choose a fresh --state-dir."
             }

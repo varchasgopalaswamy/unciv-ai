@@ -10,7 +10,10 @@ uv run civ-agent match watch --state-dir ~/.local/state/unciv-host/vanilla-full
 Use the directory of the match you want to inspect. The Vanilla launcher prints
 the matching command under `Dashboard`. The viewer can attach during a turn, before
 startup has finished, or after a match has stopped. It requires an interactive
-terminal. `NO_COLOR` enables a monochrome display.
+terminal. `NO_COLOR` enables a monochrome display. For container games it runs
+from the saved image without network access; only SQLite coordination directories
+and the control-request directory are writable. The game state and credentials
+remain read-only, and all database connections use read-only mode.
 
 ## What it shows
 

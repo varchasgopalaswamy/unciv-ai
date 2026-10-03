@@ -727,6 +727,31 @@ def run(args):
     if not root.is_dir():
         print(f"Match directory does not exist: {root}", file=sys.stderr)
         return 2
+    from civ_agent.container_support import IN_CONTAINER, read_json, watch_mounts
+
+    if not IN_CONTAINER and (root / "container.json").exists():
+        import subprocess
+
+        manifest = read_json(root / "container.json")
+        arguments = [
+            "podman",
+            "run",
+            "--rm",
+            "-it",
+            "--network=none",
+            "--userns=keep-id",
+            "--cap-drop=ALL",
+            "--security-opt=no-new-privileges",
+            "--read-only",
+            "--tmpfs",
+            "/tmp:rw,size=64m,mode=1777",
+            *watch_mounts(root),
+            manifest["images"]["runtime"],
+            "watch",
+        ]
+        if args.verbose:
+            arguments.append("--verbose")
+        return subprocess.call(arguments)
     if not sys.stdin.isatty() or not sys.stdout.isatty():
         print(
             "The dashboard requires an interactive terminal. Run civ-agent match watch in a terminal attached to this match directory.",

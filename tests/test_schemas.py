@@ -107,7 +107,7 @@ def test_models_do_not_echo_private_inputs_and_optional_tool_fields_stay_omitted
         assert TOOL_MODELS[name].model_validate(arguments).model_dump(by_alias=True, exclude_unset=True) == arguments
 
 
-def test_war_and_mediated_peace_terms_use_trade_but_introductions_remain_excluded():
+def test_trade_item_names_are_native_capabilities_with_bounded_protocol_strings():
     terms = {
         "partner": "Greece",
         "give": [],
@@ -119,7 +119,10 @@ def test_war_and_mediated_peace_terms_use_trade_but_introductions_remain_exclude
     assert TOOL_MODELS["trade_offer"].model_validate(terms).model_dump(exclude_unset=True) == terms
     terms["receive"][0]["type"] = "PeaceProposal"
     assert Draft202012Validator(schema).is_valid(terms)
-    for kind in ("Introduction",):
+    # Native trade_options/validation owns item support, not a second Python enum.
+    terms["receive"][0]["type"] = "Introduction"
+    assert Draft202012Validator(schema).is_valid(terms)
+    for kind in ("", "x" * 65):
         terms["receive"][0]["type"] = kind
         assert not Draft202012Validator(schema).is_valid(terms)
         with pytest.raises(ValidationError):

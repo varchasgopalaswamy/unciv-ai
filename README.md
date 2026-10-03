@@ -12,22 +12,27 @@ and [current roadmap](docs/Roadmap.md).
 
 ## Run a game
 
-Use JDK 21 or newer, Python 3.12 or newer, and [uv](https://docs.astral.sh/uv/).
+Use Linux with rootless Podman/Netavark, nftables, cgroup v2 and systemd.
+Image builds need JDK 21+, Python 3.12+, [uv](https://docs.astral.sh/uv/),
+and the standalone Codex release.
 From the repository directory:
 
 ```sh
 git submodule update --init --recursive
 uv sync --locked
+.venv/bin/civ-agent image build
+.venv/bin/civ-agent runtime setup
+.venv/bin/civ-agent auth login
 .venv/bin/civ-agent game start
 ```
 
-The launcher starts Rome, Greece and France with `gpt-5.6-luna` at medium
+The launcher starts Rome, Greece and France with `gpt-6-luna` at medium
 reasoning, built-in Egypt, and two city-states. It manages the host, agent
-services and scheduler, builds the host from source, and records logs,
+services and scheduler in isolated containers, and records logs,
 checkpoints and token/call/timing telemetry.
 
-To join as the local human player, use Unciv's desktop controls and its integrated
-chat/trade panel:
+To join as the local human player, stream Unciv's native desktop controls and
+integrated chat/trade panel to your browser:
 
 ```sh
 .venv/bin/civ-agent game start --state-dir ~/.local/state/unciv-host/human-game \
@@ -35,7 +40,13 @@ chat/trade panel:
 ```
 
 The human plays first, has no model turn timeout, and uses the same authoritative
-game as the agents. Closing the window stops the whole match.
+game as the agents. `game status --state-dir PATH` gives the local browser URL;
+the password is in `PATH/desktop/password.txt`. Closing the browser leaves play
+running. Use `game stop` to pause and `game resume` to restart.
+
+TOML examples: [human game](examples/human-game.toml) and
+[model benchmark matrix](examples/benchmark.toml). Pass `--config FILE` to
+`game start` or `batch start`.
 
 See the [full-game guide](docs/guides/Full-vanilla-run.md) for directories,
 timeouts, stopping and resuming. Use the [local launcher guide](docs/guides/Local-launchers.md)

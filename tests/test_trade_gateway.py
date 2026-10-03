@@ -681,18 +681,10 @@ def test_trade_tools_keep_decisions_small_and_do_not_grant_gameplay(tmp_path):
             assert "player_command" not in tools
             assert tools["friendship_offer"]["inputSchema"]["required"] == ["intent", "partner"]
             assert set(tools["friendship_offer"]["inputSchema"]["properties"]) == {"partner", "intent"}
-            assert set(tools["trade_offer"]["inputSchema"]["$defs"]["TradeItem"]["properties"]["type"]["enum"]) == {
-                "Gold",
-                "Gold_Per_Turn",
-                "Luxury_Resource",
-                "Strategic_Resource",
-                "Treaty",
-                "Agreement",
-                "Embassy",
-                "City",
-                "WarDeclaration",
-                "PeaceProposal",
-            }
+            item_type = tools["trade_offer"]["inputSchema"]["$defs"]["TradeItem"]["properties"]["type"]
+            assert item_type["type"] == "string"
+            assert "enum" not in item_type  # Native capabilities determine the available categories.
+            assert item_type["minLength"] == 1 and item_type["maxLength"] == 64
             assert tools["trade_decide"]["inputSchema"]["required"] == ["intent", "proposalId", "decision"]
             assert set(tools["trade_decide"]["inputSchema"]["properties"]) == {"proposalId", "decision", "intent"}
             await gateway.call(job, "trade_read", {"proposalId": "d1"}, "read")

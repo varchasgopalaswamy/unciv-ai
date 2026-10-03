@@ -93,6 +93,7 @@ private class HostedDesktopGame(
                     options.builtInAI,
                     listOf(human) + grants.filter { it.controller == "AGENT" }.map { it.civilizationId },
                     options.mapRadius?.let(::MapSize) ?: MapSize(options.mapSize ?: "Small"),
+                    options.vanilla,
                 )
             }
             require(!game.gameParameters.isOnlineMultiplayer && game.gameParameters.mods.isEmpty())

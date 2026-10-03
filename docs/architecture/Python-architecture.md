@@ -1,5 +1,10 @@
 # Python architecture
 
+For production launch, [containers](Containers.md) isolate each game and player;
+`container_supervisor.py` runs under systemd while `container_runtime.py` starts
+the existing services inside pinned images. Low-level component commands remain
+available for source-level development.
+
 The Python service coordinates model jobs, player memory and HTTPS calls to the
 trusted Kotlin host. Pydantic owns input shapes and tool schemas, the official MCP
 Python SDK owns the client protocol, and cryptography provisions TLS identities.

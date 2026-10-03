@@ -70,9 +70,12 @@ internal class Communication(private val runtime: GameExecutor) {
     private fun shortId(prefix: String): String = shortCommunicationId(prefix, random) { candidate ->
         when (prefix) {
             "p" -> candidate in state.offers
+
             "m" -> state.queuedMessages.any { it.message == candidate } ||
                 state.streams.values.any { stream -> stream.any { it.kind == "message" && it.body["message"] == JsonPrimitive(candidate) } }
+
             "o" -> state.outcomes.any { it.outcome == candidate }
+
             else -> error("Unknown reference kind")
         }
     }

@@ -13,9 +13,9 @@ from pathlib import Path
 
 from civ_agent import scheduler
 from civ_agent.agent_settings import resolve_run_settings
-from civ_agent.commands.game import services
 from civ_agent.commands.host import ensure_players
 from civ_agent.tls import write_private_json
+from tests.support import services
 
 DEFAULT_MODEL = "gpt-6-luna"
 DEFAULT_EFFORT = "medium"

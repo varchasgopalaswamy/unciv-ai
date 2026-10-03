@@ -229,9 +229,18 @@ object ManagedDesktopProbe {
             check(composer.text == "! draft")
         }
         // Separate conversation drafts survive leaving the pane, including the selected channel.
-        onGl { selectConversation("Greece"); chatMessage().text = "Greek draft" }
-        onGl { selectConversation("Public"); chatMessage().text = "Public draft" }
-        onGl { selectConversation("Rome"); check(chatMessage().text == "! draft") }
+        onGl {
+            selectConversation("Greece")
+            chatMessage().text = "Greek draft"
+        }
+        onGl {
+            selectConversation("Public")
+            chatMessage().text = "Public draft"
+        }
+        onGl {
+            selectConversation("Rome")
+            check(chatMessage().text == "! draft")
+        }
         click("Back to map")
         waitFor { onGl { app.screen is WorldScreen && Gdx.input.inputProcessor != null } }
         onGl { session.openDiplomacy(null) }
