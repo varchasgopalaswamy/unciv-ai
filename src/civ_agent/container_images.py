@@ -24,11 +24,8 @@ def build_images(*, repo_dir=None, unciv_dir=None, codex="codex", tag="localhost
     if not engine.is_absolute():
         engine = root / engine
     engine = engine.resolve()
-    logger = shutil.which("codex-log")
-    if not logger:
-        raise ContainerError("codex-log is required for the Gradle build")
     subprocess.run(
-        [logger, "./gradlew", f"-PuncivDir={engine}", "installDist", "prepareDesktopAssets", "--console=plain"],
+        ["./gradlew", f"-PuncivDir={engine}", "installDist", "prepareDesktopAssets", "--console=plain"],
         cwd=root,
         check=True,
     )

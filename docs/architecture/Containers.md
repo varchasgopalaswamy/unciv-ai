@@ -104,5 +104,5 @@ checks native map/difficulty/speed/era/victory selection. `test_container_auth.p
 checks parallel authorization, single renewal, broker restart and credential
 minimization. `test_container_isolation.py` is an opt-in real-Podman test for
 service reachability, sibling/game denial, public internet, mount separation,
-read-only roots and dropped capabilities. Run Python and Gradle checks through
-`codex-log`. Live acceptance results are recorded separately in the coverage ledger.
+read-only roots and dropped capabilities. Live acceptance results are recorded
+separately in the coverage ledger.

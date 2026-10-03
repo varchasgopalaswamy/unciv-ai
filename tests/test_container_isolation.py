@@ -1,6 +1,6 @@
 """Opt-in real rootless network/filesystem probes; no model requests.
 
-CIV_CONTAINER_TESTS=1 codex-log .venv/bin/pytest tests/test_container_isolation.py -q
+CIV_CONTAINER_TESTS=1 .venv/bin/pytest tests/test_container_isolation.py -q
 """
 
 import ipaddress

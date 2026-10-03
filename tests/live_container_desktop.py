@@ -1,6 +1,6 @@
 """Run the rendered native controls/trade/recovery regression inside the desktop image.
 
-Compile test classes with codex-log Gradle before invoking this developer probe.
+Compile test classes with ./gradlew testClasses before invoking this developer probe.
 """
 
 import argparse

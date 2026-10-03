@@ -20,7 +20,7 @@ uv sync --locked
 .venv/bin/civ-agent auth login
 ```
 
-Image builds use `codex-log` for Gradle. `image build --unciv-dir ../Unciv`
+Image builds invoke the Gradle wrapper directly. `image build --unciv-dir ../Unciv`
 selects both code and assets from that engine checkout. `--codex PATH` selects a
 standalone Codex executable; `--tag localhost/my-civ` chooses the image name.
 Running a built image needs no JVM source checkout.

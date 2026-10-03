@@ -197,7 +197,7 @@ scheduler, before this native-editor replacement.
 Repeat the rendered check with a **new** absolute output directory:
 
 ```sh
-codex-log ./gradlew runManagedDesktop -PmanagedDesktopDir=/tmp/unciv-desktop-check
+./gradlew runManagedDesktop -PmanagedDesktopDir=/tmp/unciv-desktop-check
 ```
 
 Add `-PmanagedLive=true` for the opt-in paid one-round model test. These checks need
