@@ -12,7 +12,7 @@ import sys
 import time
 from pathlib import Path
 
-from civ_agent.game_config import GameConfig
+from civ_agent.game_config import ResolvedGameConfig
 from civ_agent.tls import (
     ensure_host_tls,
     ensure_server_certificate,
@@ -67,6 +67,7 @@ def prepare(config):
             directory / "container-settings.json",
             {
                 "civilization": player.civilization,
+                "player": player.name,
                 "hostname": f"p{index}",
                 "settings": config.settings(player),
             },
@@ -151,7 +152,7 @@ def controller():
     from civ_agent import scheduler
     from civ_agent.monitoring import path_for, read_record
 
-    config = GameConfig.model_validate_json((ROOT / "resolved.json").read_text())
+    config = ResolvedGameConfig.model_validate_json((ROOT / "resolved.json").read_text())
     manifest = json.loads((ROOT / "container.json").read_text())
     provenance = json.loads(Path("/opt/unciv/provenance.json").read_text())
     os.environ["UNCIV_HOST_REVISION"] = provenance["source"]["revision"]

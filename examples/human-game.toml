@@ -1,5 +1,8 @@
 [game]
 seed = 953
+civilizations = ["France", "Rome", "Greece", "Egypt"]
+randomize = false # Set true to shuffle all players onto these civilizations.
+# assignment_seed = 42 # Optional independent seed; resolved once and saved.
 map_type = "Pangaea"
 map_size = "Small"
 difficulty = "Prince"
@@ -16,22 +19,22 @@ strategy_guide = false
 fast = false
 
 [[players]]
-civilization = "France"
+name = "Human"
 controller = "human"
 
 [[players]]
-civilization = "Rome"
+name = "Luna 1"
 controller = "agent"
 
 [[players]]
-civilization = "Greece"
+name = "Luna 2"
 controller = "agent"
 # Optional per-player overrides:
 # model = "gpt-6-sol"
 # reasoning_effort = "high"
 
 [[players]]
-civilization = "Egypt"
+name = "Unciv"
 controller = "built_in_ai"
 
 [limits]

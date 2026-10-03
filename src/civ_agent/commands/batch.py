@@ -20,7 +20,7 @@ from civ_agent.container_support import (
     read_json,
     resolve_image,
 )
-from civ_agent.game_config import GameConfig, expand_batch, load_config
+from civ_agent.game_config import ResolvedGameConfig, expand_batch, load_config
 from civ_agent.tls import private_directory, write_private, write_private_json
 
 
@@ -64,6 +64,7 @@ def run(args):
                             {
                                 "id": r["id"],
                                 "status": r["status"],
+                                "assignments": r["config"]["assignments"],
                                 "state_dir": str(root / "games" / r["id"]),
                                 "game": read_json(root / "games" / r["id"] / "container-status.json", {}),
                                 "browser": read_json(root / "games" / r["id"] / "browser.json"),
@@ -99,7 +100,7 @@ def run(args):
                 }
                 validation = validate_setup(config, images["runtime"])
                 for row in runs:
-                    game_config = GameConfig.model_validate(row["config"])
+                    game_config = ResolvedGameConfig.model_validate(row["config"])
                     if game_config.limits.max_turns is None:
                         game_config.limits.max_turns = validation["maxTurns"] + 1
                     row["config"] = game_config.model_dump()
@@ -133,7 +134,7 @@ def run(args):
                 if not (match / "resolved.json").exists():
                     initialize(
                         match,
-                        GameConfig.model_validate(row["config"]),
+                        ResolvedGameConfig.model_validate(row["config"]),
                         Path(manifest["auth_root"]),
                         images=manifest["images"],
                         validation=manifest["native_setup"],

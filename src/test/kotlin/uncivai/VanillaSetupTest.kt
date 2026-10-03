@@ -3,10 +3,43 @@ package uncivai
 import com.unciv.logic.map.MapType
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertThrows
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.nio.file.Files
 
 class VanillaSetupTest {
+    @Test
+    fun `assigned built in opponents play after all externally controlled civilizations`() {
+        val directory = Files.createTempDirectory("assigned-players-")
+        try {
+            // The assigned native opponents may have appeared first in a roster.
+            // Both display and headless callers pass the resolved controller groups.
+            HeadlessRuntime.createVanillaGame(
+                directory,
+                422L,
+                builtInAI = listOf("Rome", "Egypt"),
+                agentPlayers = listOf("Greece", "France", "China"),
+            ).use { runtime ->
+                val game = runtime.game
+                assertEquals(listOf("Greece", "France", "China", "Rome", "Egypt"), game.civilizations.filter { it.isMajorCiv() }.map { it.civID })
+                assertEquals("Greece", game.currentPlayer)
+                runtime.executor.accessGame {
+                    game.nextTurn()
+                    assertEquals("France", game.currentPlayer)
+                    game.nextTurn()
+                    assertEquals("China", game.currentPlayer)
+                    game.nextTurn()
+                    assertEquals("Greece", game.currentPlayer)
+                    for (name in listOf("Rome", "Egypt")) {
+                        assertTrue(game.getCivilization(name).cities.isNotEmpty())
+                    }
+                }
+            }
+        } finally {
+            deleteTreeWithoutFollowingLinks(directory)
+        }
+    }
+
     @Test
     fun `configured rules reach the native game and determine its duration`() {
         val directory = Files.createTempDirectory("native-setup-")

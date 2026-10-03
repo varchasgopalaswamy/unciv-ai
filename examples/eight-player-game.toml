@@ -1,0 +1,47 @@
+[game]
+civilizations = ["Inca", "Siam", "Egypt", "France", "Greece", "Arabia", "China", "Persia"]
+randomize = true
+seed = 42
+assignment_seed = 17
+map_type = "Pangaea"
+map_size = "Large"
+city_states = 16
+difficulty = "Prince"
+speed = "Quick"
+
+[agents]
+model = "gpt-6-luna"
+reasoning_effort = "medium"
+
+[[players]]
+name = "Human"
+controller = "human"
+
+[[players]]
+name = "Unciv"
+controller = "built_in_ai"
+
+[[players]]
+name = "Luna 1"
+
+[[players]]
+name = "Luna 2"
+
+[[players]]
+name = "Luna 3"
+
+[[players]]
+name = "Luna 4"
+
+[[players]]
+name = "Luna 5"
+
+[[players]]
+name = "Luna 6"
+
+# For an automated benchmark, change Human's controller to "agent", then run
+# `civ-agent batch start --config ... --state-dir ...`. Eight games per seed.
+[batch]
+seeds = [42]
+rotate_players = true
+parallel = 1

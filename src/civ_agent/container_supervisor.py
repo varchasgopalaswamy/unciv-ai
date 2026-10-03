@@ -29,7 +29,7 @@ from civ_agent.container_support import (
     read_json,
     stop_containers,
 )
-from civ_agent.game_config import ContainerResources, GameConfig
+from civ_agent.game_config import ContainerResources, ResolvedGameConfig
 from civ_agent.monitoring import path_for, read_record
 from civ_agent.tls import private_directory, write_private_json
 from civ_agent.turn_archive import civilization_directory_name
@@ -111,7 +111,7 @@ class GameRun:
     def __init__(self, root, stop_event=None):
         self.root = Path(root)
         self.stop_event = stop_event or threading.Event()
-        self.config = GameConfig.model_validate(read_json(root / "resolved.json"))
+        self.config = ResolvedGameConfig.model_validate(read_json(root / "resolved.json"))
         self.record = identity(root)
         self.game_id = self.record["id"]
         self.prefix = "civ-" + self.game_id
@@ -322,11 +322,13 @@ def batch_summary(root, manifest):
     rows = []
     for run in manifest["runs"]:
         directory = root / "games" / run["id"]
+        config = ResolvedGameConfig.model_validate(run["config"])
         result = read_record(path_for(directory), "state", "result") if path_for(directory).exists() else None
         rows.append(
             {
                 **{k: v for k, v in run.items() if k != "config"},
-                "players": run["config"]["players"],
+                "assignment_seed": config.game.assignment_seed,
+                "players": config.player_records(),
                 "result": result,
                 "resources": run["config"]["resources"],
                 "resource_usage": read_json(directory / "resources.json"),
@@ -336,7 +338,18 @@ def batch_summary(root, manifest):
     write_private_json(root / "results.json", {"parallel": manifest["parallel"], "runs": rows})
     with (root / "results.csv").open("w", newline="") as stream:
         writer = csv.DictWriter(
-            stream, fieldnames=("id", "seed", "repetition", "rotation", "status", "players", "result", "failure")
+            stream,
+            fieldnames=(
+                "id",
+                "seed",
+                "assignment_seed",
+                "repetition",
+                "rotation",
+                "status",
+                "players",
+                "result",
+                "failure",
+            ),
         )
         writer.writeheader()
         for row in rows:

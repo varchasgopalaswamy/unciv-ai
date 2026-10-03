@@ -26,6 +26,11 @@ RUN uv sync --locked --no-dev --no-cache --python /usr/bin/python3
 COPY lib /opt/unciv/lib
 COPY engine /opt/unciv/engine
 COPY provenance.json /opt/unciv/provenance.json
+# The CLI's private umask also applies to staging directories and provenance.
+# These curated image files contain only code/assets and must be readable by
+# the caller's non-root UID when running with --userns=keep-id.
+RUN chmod -R a+rX /opt/app /opt/unciv \
+    && chmod 755 /usr/local/bin/uv /usr/local/bin/codex /usr/local/bin/codex-code-mode-host
 
 FROM desktop-base AS desktop
 COPY --from=runtime /usr/local/bin/codex /usr/local/bin/codex

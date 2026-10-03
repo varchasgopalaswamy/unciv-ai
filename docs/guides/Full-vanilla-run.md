@@ -53,7 +53,8 @@ command's exit status is not the eventual game outcome. Logs are durable.
 
 ## Configure with TOML
 
-Start from [the human example](../../examples/human-game.toml) or
+Start from [the human example](../../examples/human-game.toml),
+[the eight-player example](../../examples/eight-player-game.toml), or
 [the benchmark example](../../examples/benchmark.toml):
 
 ```sh
@@ -63,25 +64,44 @@ Start from [the human example](../../examples/human-game.toml) or
 ```
 
 `--dry-run` validates configuration through the packaged native engine without
-starting agents. Unknown TOML keys, duplicate civilizations, multiple humans,
+starting agents. Unknown TOML keys, duplicate player names/civilizations, multiple humans,
 invalid limits, and model overrides for non-agent seats are rejected.
 Native setup validates civilization, map type/size, difficulty, speed, era and victory
 names. Mod content is out of scope. Choose `map_size` or a custom `map_radius`.
 
 | Section | Settings |
 | --- | --- |
-| `[game]` | `seed`, `map_type`, `map_size`/`map_radius`, `difficulty`, `speed`, `starting_era`, `city_states`, `victories` |
+| `[game]` | `civilizations`, `randomize`, `assignment_seed`, `seed`, `map_type`, `map_size`/`map_radius`, `difficulty`, `speed`, `starting_era`, `city_states`, `victories` |
 | `[agents]` | `model`, `reasoning_effort`, `review_interval`, `review_attempts`, `strategy_guide`, `fast` |
-| `[[players]]` | `civilization`, `controller` (`agent`, `human`, `built_in_ai`); optional per-agent `model`/`reasoning_effort` |
+| `[[players]]` | Unique `name`, `controller` (`agent`, `human`, `built_in_ai`; defaults to `agent`); optional agent `model`/`reasoning_effort` |
 | `[limits]` | `max_turns`, `max_invocations`, `max_seconds`, `turn_timeout`, `startup_timeout`, `max_concurrent_jobs` |
 | `[resources.controller]`, `[resources.desktop]`, `[resources.agent]` | `memory_mib`, `cpus`, `pids` |
 | `[runtime]` | `image`, `desktop_image`, `browser_port` |
-| `[batch]` | `seeds`, `repetitions`, `parallel`, `rotate_models` |
+| `[batch]` | `seeds`, `repetitions`, `parallel`, `rotate_players` |
 
-CLI options override corresponding TOML fields. `--agent-model Greece=gpt-6-sol`
-and `--agent-reasoning-effort France=high` override individual settings. A new game's
-random seed is resolved once. `resolved.json` and `container.json` freeze settings,
-seed, image IDs and login location; subsequent TOML edits do not alter the game.
+Players identify competitors independently of their civilizations. List exactly
+one player per entry in `game.civilizations`. With `randomize = false` (the default),
+the lists are paired in order. With `randomize = true`, player assignments are
+shuffled using `assignment_seed`; humans and built-in AI participate too. Omitted
+map and assignment seeds are generated independently and saved before launch.
+Set both seeds to reproduce the assignment schedule and map seed.
+
+**After assigning civilizations**, turns are ordered human first, then agents,
+then all built-in AI players. Each group retains civilization-list order; this
+does not change which civilization anyone controls. `game status` shows the
+resolved players in turn order. A map seed controls native map generation; Unciv
+also uses per-game randomness for starting locations and other setup details, so
+it does not guarantee identical starting positions across separate games.
+
+CLI options override corresponding TOML fields. `--player-model "Luna 1=gpt-6-sol"`
+and `--player-reasoning-effort "Luna 2=high"` select players by their stable names.
+Use `--civilizations`, `--randomize`/`--no-randomize`, and `--assignment-seed` to
+override assignment settings. Define controller types in TOML.
+`resolved.json` and `container.json` freeze settings,
+both seeds, explicit assignments, image IDs and login location; subsequent TOML edits do not alter the game.
+Resume reads the saved assignments and never reshuffles. The old per-player
+`civilization` field and model-only rotation format are removed; existing games
+from that format require their previous checkout/images to resume.
 Player model/effort choices apply to gameplay, chat and reviews.
 
 The default limits are a one-hour agent turn timeout, 900-second startup timeout,
@@ -161,9 +181,22 @@ not automatic boot-time relaunch of games.
 .venv/bin/civ-agent batch resume --state-dir ~/.local/state/unciv-host/benchmark --retry-failed
 ```
 
-The matrix expands seeds × repetitions × unique cyclic agent-setting rotations.
-A rotation moves model and effort together, while keeping civilization/turn order,
-map seed, human and native AI seats fixed. Identical rotations are deduplicated.
+The matrix expands map seeds × repetitions × player rotations. With
+`rotate_players = true`, every block contains one game per player: shuffle once
+if `game.randomize` is enabled, then cyclically rotate the complete named player
+profiles through all civilizations. Every player, including human and built-in AI,
+gets every civilization exactly once per map seed and repetition. Model and effort
+remain attached to player names. Distinct players with identical settings still
+get separate rotations. Final turn ordering always keeps built-in AI last.
+
+Assignment schedules are independent of map seeds: each repetition has its own
+reproducible assignment seed, reused across all maps in that repetition. With
+`rotate_players = false`, each seed/repetition produces one game. The four-player
+benchmark example produces eight runs (two seeds × four assignments). The
+eight-player example produces eight runs per seed; change its human player to an
+agent for unattended benchmarking. `game start` always starts just one game,
+regardless of the `[batch]` section.
+
 `parallel` bounds simultaneously running games; `--parallel` overrides it. Human
 batches with concurrent games must use automatically allocated browser ports.
 
@@ -172,7 +205,8 @@ queued game can run. Resume continues pending/paused runs; `--retry-failed` opts
 retrying failures. Completed and budget-exhausted runs are retained without relaunching. Explicit `--image` and
 `--desktop-image` upgrades affect unfinished resumed runs. Each game has its own
 `games/gNNNN` directory and can be watched with `match watch`. `results.json` and
-`results.csv` collect assignments, stop status, available game results and failures.
+`results.csv` collect player names, assigned civilizations, effective model/effort,
+assignment seeds, stop status, available game results and failures.
 Per-turn tokens, API calls, timing, winners and final player scores retain their
 existing database accounting; see [telemetry](../reference/Telemetry.md).
 

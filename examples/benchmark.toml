@@ -1,4 +1,7 @@
 [game]
+civilizations = ["Rome", "Greece", "France", "Egypt"]
+randomize = true
+assignment_seed = 42
 map_size = "Small"
 city_states = 2
 
@@ -7,27 +10,27 @@ model = "gpt-6-luna"
 reasoning_effort = "medium"
 
 [[players]]
-civilization = "Rome"
+name = "Luna medium"
 model = "gpt-6-luna"
 
 [[players]]
-civilization = "Greece"
+name = "Sol medium"
 model = "gpt-6-sol"
 
 [[players]]
-civilization = "France"
+name = "Luna high"
 model = "gpt-6-luna"
 reasoning_effort = "high"
 
 [[players]]
-civilization = "Egypt"
+name = "Unciv"
 controller = "built_in_ai"
 
 [batch]
 seeds = [42, 43]
 repetitions = 1
 parallel = 2
-rotate_models = true
+rotate_players = true # Four games per seed; every player gets every civilization.
 
 [limits]
 max_turns = 3 # Opening comparison; omit for full games.

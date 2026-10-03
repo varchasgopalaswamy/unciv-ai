@@ -84,14 +84,15 @@ to 20 rounds, 48 activations, one hour, and 180 seconds per activation.
 
 ## Select models and reasoning effort
 
-The combined launcher supports per-civ settings directly, for example:
+The combined launcher supports settings for named players independently of their
+assigned civilizations, for example:
 
 ```sh
 uv run civ-agent game start --model gpt-6-luna --reasoning-effort max \
-  --agent-model Greece=gpt-5.6-luna --agent-reasoning-effort France=high
+  --player-model "Agent 2=gpt-5.6-luna" --player-reasoning-effort "Agent 3=high"
 ```
 
-Both per-civ options are repeatable and retained by `game resume`; unspecified
+Both per-player options are repeatable and retained by `game resume`; unspecified
 settings use the global defaults. See the [full-game guide](Full-vanilla-run.md).
 
 When starting services manually, set both options on each service to choose

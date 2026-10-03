@@ -147,7 +147,8 @@ def test_dashboard_can_read_closed_wal_databases_without_game_access(tmp_path):
     from civ_agent.monitoring import MonitorStore, path_for
     from civ_agent.tls import write_private_json
 
-    write_private_json(tmp_path / "resolved.json", GameConfig().model_dump())
+    config = GameConfig(game={"randomize": True, "assignment_seed": 7}).resolved()
+    write_private_json(tmp_path / "resolved.json", config.model_dump())
     MonitorStore(path_for(tmp_path)).put("state", "run", {"status": "running"})
     # SQLite's final writer closes/removes its WAL sidecars. A read-only SQL
     # connection must still be able to create coordination files on next open.
@@ -167,6 +168,9 @@ def test_dashboard_can_read_closed_wal_databases_without_game_access(tmp_path):
         os.environ.get("CIV_TEST_IMAGE", "localhost/civ-agent:runtime"),
         "-c",
         "from pathlib import Path; from civ_agent.monitoring import read_record; "
+        "from civ_agent.game_config import ResolvedGameConfig; "
+        "config=ResolvedGameConfig.model_validate_json(Path('/match/resolved.json').read_text()); "
+        "assert len(config.agent_players)==3 and config.turn_order[-1].name=='Unciv'; "
         "assert read_record(Path('/match/runner/monitoring.sqlite3'),'state','run')['status']=='running'; "
         "print('read-only query succeeded')",
     )

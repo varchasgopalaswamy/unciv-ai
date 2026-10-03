@@ -595,6 +595,32 @@ the relocated human game; `human-browser.png` and `native-desktop/probe/` contai
 rendered evidence. These are short lifecycle/isolation checks, not a full-game
 win, a load-capacity measurement, or an exhaustive security audit.
 
+### Named player assignment — October 3, 2026
+
+- TOML separates named player profiles from `game.civilizations`. Optional
+  random assignment includes human, model and built-in AI players and records
+  an independent assignment seed. Saved explicit assignments survive resume.
+- Balanced batches rotate complete profiles, including model/effort, through
+  every civilization. Post-assignment turn order is human, agents, then all
+  built-in AI. Status and JSON/CSV results retain names, civilizations and
+  effective model settings for attribution across games.
+- The focused Python run passed 83 tests and 18 subtests (configuration, CLI,
+  container auth, low-level launchers, persistence, results and rotations).
+  Eight native setup/CLI tests passed, including a complete round with two
+  built-in AI opponents following three externally controlled civilizations.
+  Eight-player batch dry-run produced eight assignments with native AI last.
+- Both runtime and desktop images were rebuilt. Native setup validation accepted
+  the eight-player Large/Pangaea/16-city-state example. The non-root saved-roster
+  and cold-WAL dashboard check passed once against each image. These checks also
+  exposed and verified a fix for restrictive build-staging permissions: packaged
+  code/assets/provenance are readable by the runtime user even when the build
+  command uses a private umask.
+- Map seeds do not fix all native starting-position/setup randomness. These
+  checks establish assignment coverage and controller order, not matched starts
+  or equal civilization strength. No paid model game was run for this change.
+- The former civilization-bound TOML/resolved format and model-only rotation
+  have no compatibility path. Old saved games need the previous checkout/images.
+
 ## Verification inventory
 
 These are regression sources for each area, not a claim that every named test was

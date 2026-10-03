@@ -20,7 +20,7 @@ in additional terminals before the interactive commands below. See
 ## Start playing
 
 For native human gameplay alongside agents, use
-`civ-agent game start --human France --agents Rome Greece --built-in-ai Egypt`
+`civ-agent game start --config examples/human-game.toml`
 with a fresh `--state-dir`. See [local human play](Full-vanilla-run.md#play-a-civilization-yourself).
 The commands below are the lower-level interactive **agent** launchers.
 

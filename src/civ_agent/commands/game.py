@@ -23,23 +23,23 @@ from civ_agent.container_support import (
     read_json,
     resolve_image,
 )
-from civ_agent.game_config import GameConfig, load_config
+from civ_agent.game_config import GameConfig, ResolvedGameConfig, load_config
 from civ_agent.monitoring import path_for, read_record
 from civ_agent.tls import private_directory, write_private, write_private_json
 
 DEFAULT_STATE = Path.home() / ".local/state/unciv-host/vanilla-full"
 
 
-class AgentSetting(argparse.Action):
+class PlayerSetting(argparse.Action):
     def __call__(self, parser, namespace, values, option_string=None):
-        civilization, separator, value = values.partition("=")
-        if not separator or not civilization.strip():
-            raise argparse.ArgumentError(self, "expected CIV=VALUE")
+        player, separator, value = values.partition("=")
+        if not separator or not player.strip():
+            raise argparse.ArgumentError(self, "expected PLAYER=VALUE")
         value = setting_argument(value)
         current = dict(getattr(namespace, self.dest) or {})
-        if civilization in current:
-            raise argparse.ArgumentError(self, "civilization specified more than once")
-        current[civilization] = value
+        if player in current:
+            raise argparse.ArgumentError(self, "player specified more than once")
+        current[player] = value
         setattr(namespace, self.dest, current)
 
 
@@ -61,6 +61,9 @@ def parser(*, add_help=True, action="start"):
             "--dry-run", action="store_true", help="Validate setup and show settings without starting models"
         )
         result.add_argument("--seed", type=int)
+        result.add_argument("--assignment-seed", type=int, help="Player assignment seed, independent of the map seed")
+        result.add_argument("--randomize", action=argparse.BooleanOptionalAction, default=None)
+        result.add_argument("--civilizations", nargs="+", metavar="CIV")
         result.add_argument("--city-states", type=int)
         for field in ("map-type", "difficulty", "speed", "starting-era"):
             result.add_argument("--" + field)
@@ -68,15 +71,12 @@ def parser(*, add_help=True, action="start"):
         sizes.add_argument("--map-size")
         sizes.add_argument("--map-radius", type=int)
         result.add_argument("--victories", nargs="+")
-        result.add_argument("--agents", nargs="+", metavar="CIV")
-        result.add_argument("--human", metavar="CIV")
-        result.add_argument("--built-in-ai", nargs="*", metavar="CIV")
         add_settings_arguments(
             result, model_help="Default agent model", reasoning_help="Default agent reasoning effort"
         )
-        result.add_argument("--agent-model", dest="agent_models", action=AgentSetting, metavar="CIV=MODEL")
+        result.add_argument("--player-model", dest="player_models", action=PlayerSetting, metavar="PLAYER=MODEL")
         result.add_argument(
-            "--agent-reasoning-effort", dest="agent_reasoning_efforts", action=AgentSetting, metavar="CIV=LEVEL"
+            "--player-reasoning-effort", dest="player_reasoning_efforts", action=PlayerSetting, metavar="PLAYER=LEVEL"
         )
         result.add_argument("--fast", action=argparse.BooleanOptionalAction, default=None)
         result.add_argument("--strategy-guide", action=argparse.BooleanOptionalAction, default=None)
@@ -90,6 +90,9 @@ def resolve_options(args):
     fields = {
         "game": (
             "seed",
+            "assignment_seed",
+            "randomize",
+            "civilizations",
             "city_states",
             "map_type",
             "map_size",
@@ -114,21 +117,11 @@ def resolve_options(args):
             overrides["runtime"][target] = getattr(args, source)
     config = load_config(getattr(args, "config", None), overrides)
     data = config.model_dump()
-    for option, controller in (("agents", "agent"), ("built_in_ai", "built_in_ai")):
-        names = getattr(args, option, None)
-        if names is not None:
-            data["players"] = [p for p in data["players"] if p["controller"] != controller]
-            data["players"] += [{"civilization": name, "controller": controller} for name in names]
-    if getattr(args, "human", None):
-        data["players"] = [p for p in data["players"] if p["civilization"] != args.human and p["controller"] != "human"]
-        data["players"].insert(0, {"civilization": args.human, "controller": "human"})
-    for option, setting in (("agent_models", "model"), ("agent_reasoning_efforts", "reasoning_effort")):
-        for civilization, value in (getattr(args, option, None) or {}).items():
-            selected = next(
-                (p for p in data["players"] if p["civilization"] == civilization and p["controller"] == "agent"), None
-            )
+    for option, setting in (("player_models", "model"), ("player_reasoning_efforts", "reasoning_effort")):
+        for name, value in (getattr(args, option, None) or {}).items():
+            selected = next((p for p in data["players"] if p["name"] == name and p["controller"] == "agent"), None)
             if selected is None:
-                raise ValueError(f"{civilization} is not an agent player")
+                raise ValueError(f"{name} is not an agent player")
             selected[setting] = value
     return GameConfig.model_validate(data).resolved()
 
@@ -154,7 +147,7 @@ def initialize(root, config, auth_root, *, original=None, images=None, validatio
 
 
 def resume_configuration(root, args):
-    config = GameConfig.model_validate(read_json(root / "resolved.json"))
+    config = ResolvedGameConfig.model_validate(read_json(root / "resolved.json"))
     record = identity(root)
     for key in ("max_turns", "max_invocations", "max_seconds", "turn_timeout", "startup_timeout"):
         value = getattr(args, key, None)
@@ -169,7 +162,7 @@ def resume_configuration(root, args):
     for key, option in (("runtime", "image"), ("desktop", "desktop_image")):
         if getattr(args, option) is not None:
             record["images"][key] = resolve_image(getattr(args, option))
-    config = GameConfig.model_validate(config.model_dump())
+    config = ResolvedGameConfig.model_validate(config.model_dump())
     write_private_json(root / "container.json", record)
     write_private_json(root / "resolved.json", config.model_dump())
     return config
@@ -211,9 +204,17 @@ def run(args):
         if args.action == "status":
             status = read_json(root / "container-status.json", {})
             result = read_record(path_for(root), "state", "result") if path_for(root).exists() else None
+            saved = read_json(root / "resolved.json")
+            roster = ResolvedGameConfig.model_validate(saved) if saved else None
             print(
                 json.dumps(
-                    {"containers": status, "browser": read_json(root / "browser.json"), "result": result}, indent=2
+                    {
+                        "containers": status,
+                        "browser": read_json(root / "browser.json"),
+                        "result": result,
+                        "players": roster.player_records() if roster else [],
+                    },
+                    indent=2,
                 )
             )
             return 0
@@ -227,7 +228,16 @@ def run(args):
             config = resolve_options(args)
             if args.dry_run:
                 native = validate_setup(config, resolve_image(config.runtime.image))
-                print(json.dumps({"config": config.model_dump(), "native_setup": native}, indent=2))
+                print(
+                    json.dumps(
+                        {
+                            "config": config.model_dump(),
+                            "turn_order": [p.civilization for p in config.turn_order],
+                            "native_setup": native,
+                        },
+                        indent=2,
+                    )
+                )
                 return 0
         preflight()
         private_directory(root)

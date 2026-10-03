@@ -136,13 +136,14 @@ def mount(source, destination, *, writable=False):
 
 def watch_mounts(root):
     """SQLite readers may create WAL coordination files even with mode=ro."""
+    from civ_agent.game_config import ResolvedGameConfig
     from civ_agent.turn_archive import civilization_directory_name
 
     directories = [Path("control"), Path("runner")]
-    for player in read_json(root / "resolved.json")["players"]:
-        if player["controller"] == "agent":
-            base = Path("agent-services") / civilization_directory_name(player["civilization"])
-            directories += [base / "civilization", base / "telemetry"]
+    config = ResolvedGameConfig.model_validate(read_json(root / "resolved.json"))
+    for player in config.agent_players:
+        base = Path("agent-services") / civilization_directory_name(player.civilization)
+        directories += [base / "civilization", base / "telemetry"]
     arguments = mount(root, "/match")
     for directory in directories:
         private_directory(root / directory)

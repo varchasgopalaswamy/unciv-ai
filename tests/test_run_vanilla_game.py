@@ -8,7 +8,7 @@ import pytest
 from civ_agent import cli
 from civ_agent.commands import game
 from civ_agent.container_support import ContainerError, identity, locked
-from civ_agent.game_config import GameConfig, expand_batch, load_config
+from civ_agent.game_config import GameConfig, ResolvedGameConfig, expand_batch, load_config
 
 
 def options(root, *flags, action="start"):
@@ -20,6 +20,7 @@ def test_toml_cli_precedence_and_human_seat(tmp_path):
     source.write_text("""
 [game]
 seed = 41
+civilizations = ["Rome", "Greece", "France", "Egypt"]
 map_size = "Large"
 speed = "Standard"
 [agents]
@@ -27,17 +28,17 @@ model = "base-model"
 reasoning_effort = "high"
 fast = true
 [[players]]
-civilization = "Rome"
+name = "First"
 controller = "agent"
 model = "roman-model"
 [[players]]
-civilization = "Greece"
+name = "Second"
 controller = "agent"
 [[players]]
-civilization = "France"
+name = "Human"
 controller = "human"
 [[players]]
-civilization = "Egypt"
+name = "Unciv"
 controller = "built_in_ai"
 """)
     config = game.resolve_options(
@@ -50,8 +51,8 @@ controller = "built_in_ai"
             "--map-radius",
             "26",
             "--no-fast",
-            "--agent-model",
-            "Greece=greek-model",
+            "--player-model",
+            "Second=greek-model",
         )
     )
     assert config.game.seed == 42 and config.game.speed == "Standard"
@@ -69,9 +70,13 @@ controller = "built_in_ai"
         '[agents]\nreasonning_effort="high"',
         '[game]\nmap_size="Small"\nmap_radius=10',
         "[limits]\nturn_timeout=0",
-        '[[players]]\ncivilization="Rome"\n[[players]]\ncivilization="Rome"',
-        '[[players]]\ncivilization="France"\ncontroller="human"\nmodel="a"',
-        '[[players]]\ncivilization="Rome"\n[[players]]\ncivilization="Greece"\ncontroller="human"\n[[players]]\ncivilization="France"\ncontroller="human"',
+        '[game]\ncivilizations=["Rome","Greece"]\n[[players]]\nname="Same"\n[[players]]\nname="Same"',
+        '[[players]]\nname="Human"\ncontroller="human"\nmodel="a"',
+        '[game]\ncivilizations=["Rome","Greece","France"]\n[[players]]\nname="Agent"\n[[players]]\nname="Human1"\ncontroller="human"\n[[players]]\nname="Human2"\ncontroller="human"',
+        '[game]\ncivilizations=["Rome","Rome","France","Egypt"]',
+        '[game]\ncivilizations=["Rome"]',
+        '[[players]]\nname="Unciv"\ncontroller="built_in_ai"\nreasoning_effort="high"',
+        "[batch]\nrotate_models=true",
     ],
 )
 def test_invalid_config_does_not_start_services(tmp_path, source, monkeypatch):
@@ -84,34 +89,171 @@ def test_invalid_config_does_not_start_services(tmp_path, source, monkeypatch):
     assert not (tmp_path / "match").exists()
 
 
-def test_rotations_preserve_native_setup_and_move_model_effort_together():
+def test_rotations_cover_every_player_and_civilization_with_native_ai_last():
+    civilizations = ["Inca", "Siam", "Egypt", "France", "Greece", "Arabia", "China", "Persia"]
+    players = [
+        {"name": "Human", "controller": "human"},
+        {"name": "Unciv", "controller": "built_in_ai"},
+        *[{"name": f"Model {i}", "model": "same-model", "reasoning_effort": "medium"} for i in range(5)],
+        {"name": "Max", "model": "other-model", "reasoning_effort": "max"},
+    ]
     config = GameConfig.model_validate(
         {
-            "game": {"seed": 45},
-            "players": [
-                {"civilization": "Rome", "model": "a", "reasoning_effort": "medium"},
-                {"civilization": "Greece", "model": "b", "reasoning_effort": "max"},
-                {"civilization": "France", "controller": "human"},
-                {"civilization": "Egypt", "controller": "built_in_ai"},
-            ],
-            "batch": {"seeds": [17, 29], "repetitions": 2, "rotate_models": True},
+            "game": {"seed": 45, "assignment_seed": 12, "randomize": True, "civilizations": civilizations},
+            "players": players,
+            "batch": {"seeds": [17, 29], "repetitions": 2, "rotate_players": True},
         }
     )
     runs = expand_batch(config)
-    assert len(runs) == 8
-    for first, second in zip(runs[::2], runs[1::2], strict=True):
-        a, b = [GameConfig.model_validate(row["config"]) for row in (first, second)]
-        assert a.engine_arguments() == b.engine_arguments()
-        assert a.human == b.human == "France"
-        assert [(p.model, p.reasoning_effort) for p in b.agent_players] == [("b", "max"), ("a", "medium")]
-    same = GameConfig(batch={"rotate_models": True})
-    assert len(expand_batch(same)) == 1
+    assert len(runs) == 32
+    assert runs == expand_batch(config)  # Both seeds are explicit; the schedule is reproducible.
+    for block_start in range(0, len(runs), 8):
+        seen = {p["name"]: [] for p in players}
+        for row in runs[block_start : block_start + 8]:
+            resolved = ResolvedGameConfig.model_validate(row["config"])
+            assert resolved.game.civilizations == civilizations
+            assert resolved.players == config.players
+            assert [p.controller for p in resolved.turn_order] == ["human", *(["agent"] * 6), "built_in_ai"]
+            assert resolved.resolved().assignments == resolved.assignments
+            for assignment in resolved.assignments:
+                seen[assignment.player].append(assignment.civilization)
+            maximum = next(p for p in resolved.assigned_players if p.name == "Max")
+            assert (maximum.model, maximum.reasoning_effort) == ("other-model", "max")
+        assert all(sorted(civs) == sorted(civilizations) for civs in seen.values())
+    assert runs[0]["config"]["assignments"] == runs[16]["config"]["assignments"]
+    assert runs[0]["config"]["game"]["assignment_seed"] != runs[8]["config"]["game"]["assignment_seed"]
+    assert len(expand_batch(GameConfig(batch={"rotate_players": True}))) == 4
+
+
+def test_assignment_precedes_turn_order_including_multiple_native_players():
+    config = GameConfig.model_validate(
+        {
+            "game": {"civilizations": ["Rome", "Greece", "France", "Egypt", "China"]},
+            "players": [
+                {"name": "AI1", "controller": "built_in_ai"},
+                {"name": "Human", "controller": "human"},
+                {"name": "Agent1"},
+                {"name": "AI2", "controller": "built_in_ai"},
+                {"name": "Agent2"},
+            ],
+        }
+    ).resolved()
+    assert [p.civilization for p in config.assigned_players] == ["Rome", "Greece", "France", "Egypt", "China"]
+    assert [(p.name, p.civilization) for p in config.turn_order] == [
+        ("Human", "Greece"),
+        ("Agent1", "France"),
+        ("Agent2", "China"),
+        ("AI1", "Rome"),
+        ("AI2", "Egypt"),
+    ]
+    arguments = config.engine_arguments()
+    native_players = [
+        (flag, value)
+        for flag, value in zip(arguments[::2], arguments[1::2], strict=True)
+        if flag in {"--agent-player", "--built-in-ai"}
+    ]
+    assert native_players == [
+        ("--agent-player", "Greece"),
+        ("--agent-player", "France"),
+        ("--agent-player", "China"),
+        ("--built-in-ai", "Rome"),
+        ("--built-in-ai", "Egypt"),
+    ]
+
+
+def test_assignment_randomness_is_independent_of_map_seed_and_global_rng():
+    import random
+
+    config = GameConfig(game={"seed": 42, "assignment_seed": 7, "randomize": True})
+    first = config.resolved()
+    random.seed(123)
+    config.game.seed = 99
+    second = config.resolved()
+    assert first.assignments == second.assignments
+    assert first.game.seed != second.game.seed
+    assert [a.player for a in first.assignments] != [p.name for p in config.players]
+    config.game.randomize = False
+    assert [a.player for a in config.resolved().assignments] == [p.name for p in config.players]
+
+
+def test_resolved_assignments_require_every_player_once():
+    saved = GameConfig().resolved().model_dump()
+    saved["assignments"][0]["player"] = saved["assignments"][1]["player"]
+    with pytest.raises(ValueError, match="every player exactly once"):
+        ResolvedGameConfig.model_validate(saved)
+
+
+def test_cli_player_overrides_follow_identity_through_random_assignment(tmp_path):
+    resolved = game.resolve_options(
+        options(
+            tmp_path,
+            "--randomize",
+            "--assignment-seed",
+            "7",
+            "--player-model",
+            "Agent 1=chosen-model",
+            "--player-reasoning-effort",
+            "Agent 1=max",
+        )
+    )
+    player = next(p for p in resolved.assigned_players if p.name == "Agent 1")
+    assert player.civilization != "Rome"
+    assert resolved.settings(player)["model"] == "chosen-model"
+    assert resolved.settings(player)["reasoning_effort"] == "max"
+    with pytest.raises(ValueError, match="not an agent player"):
+        game.resolve_options(options(tmp_path, "--player-model", "Unciv=chosen-model"))
+
+
+def test_batch_results_and_status_attribute_civilizations_to_named_players(tmp_path, capsys):
+    import csv
+
+    from civ_agent.container_supervisor import batch_summary
+    from civ_agent.tls import write_private_json
+
+    runs = expand_batch(
+        GameConfig(
+            game={"seed": 42, "assignment_seed": 7, "randomize": True},
+            agents={"model": "default-model", "reasoning_effort": "high"},
+            batch={"rotate_players": True},
+        )
+    )
+    for row in runs:
+        write_private_json(tmp_path / "games" / row["id"] / "resolved.json", row["config"])
+    batch_summary(tmp_path, {"parallel": 1, "runs": runs})
+    result = json.loads((tmp_path / "results.json").read_text())["runs"][0]
+    expected = ResolvedGameConfig.model_validate(runs[0]["config"])
+    assert result["assignment_seed"] == 7
+    assert result["players"] == expected.player_records()
+    assert result["players"][-1]["name"] == "Unciv"
+    assert result["players"][0]["model"] == "default-model"
+    assert result["players"][0]["reasoning_effort"] == "high"
+    with (tmp_path / "results.csv").open() as stream:
+        csv_rows = list(csv.DictReader(stream))
+    assert json.loads(csv_rows[0]["players"]) == result["players"]
+    assert game.run(options(tmp_path / "games/g0001", action="status")) == 0
+    assert json.loads(capsys.readouterr().out)["players"] == result["players"]
+
+
+def test_dashboard_mounts_follow_assigned_agent_civilizations(tmp_path):
+    from civ_agent.container_support import mount, watch_mounts
+    from civ_agent.tls import write_private_json
+    from civ_agent.turn_archive import civilization_directory_name
+
+    config = GameConfig(game={"seed": 42, "randomize": True, "assignment_seed": 7}).resolved()
+    write_private_json(tmp_path / "resolved.json", config.model_dump())
+    arguments = watch_mounts(tmp_path)
+    assert arguments[:2] == mount(tmp_path, "/match")  # The overall game remains read-only.
+    for player in config.assigned_players:
+        directory = tmp_path / "agent-services" / civilization_directory_name(player.civilization)
+        for name in ("civilization", "telemetry"):
+            assert (directory / name).exists() == (player.controller == "agent")
+    assert len(arguments) == 2 * (1 + 2 + 2 * len(config.agent_players))
 
 
 def test_saved_config_and_images_survive_input_edits_and_relocation(tmp_path, monkeypatch):
     root = tmp_path / "original"
     source = tmp_path / "game.toml"
-    source.write_text('[game]\nseed=19\n[agents]\nmodel="original-model"')
+    source.write_text('[game]\nseed=19\nrandomize=true\n[agents]\nmodel="original-model"')
     config = load_config(source).resolved()
     monkeypatch.setattr(game, "resolve_image", lambda _: "sha256:fixed")
     monkeypatch.setattr(game, "validate_setup", lambda *_: {"maxTurns": 500})
@@ -121,6 +263,8 @@ def test_saved_config_and_images_survive_input_edits_and_relocation(tmp_path, mo
     moved = tmp_path / "moved"
     root.rename(moved)
     restored = game.resume_configuration(moved, options(moved, action="resume"))
+    assert restored.assignments == config.assignments
+    assert restored.game.assignment_seed == config.game.assignment_seed
     assert restored.agents.model == "original-model"
     assert identity(moved)["id"] == record["id"]
     assert identity(moved)["images"]["runtime"] == "sha256:fixed"
