@@ -87,6 +87,7 @@ def parser(*, add_help=True, action="start"):
         )
         result.add_argument("--fast", action=argparse.BooleanOptionalAction, default=None)
         result.add_argument("--strategy-guide", action=argparse.BooleanOptionalAction, default=None)
+        result.add_argument("--civilization-guide", action=argparse.BooleanOptionalAction, default=None)
         result.add_argument("--review-interval", type=int)
         result.add_argument("--review-attempts", type=int)
     return result
@@ -117,6 +118,7 @@ def resolve_options(args):
             "reasoning_effort",
             "fast",
             "strategy_guide",
+            "civilization_guide",
             "review_interval",
             "review_attempts",
         ),

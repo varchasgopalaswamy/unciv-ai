@@ -2,11 +2,26 @@
 
 from civ_agent.tool_discovery import tool_discovery_instructions
 
+STRATEGY_GUIDANCE = (
+    "Judge development by whether it can finish before rivals, not just improve our output. "
+    "If a rival could finish first, compare catching up with timely disruption or a coalition. "
+    "Limited military action can support any victory; it need not capture every capital. "
+    "Use reconnaissance to resolve important gaps; do not assume either peace or war is best."
+)
+
 DIPLOMACY_GUIDANCE = (
     "Diplomacy can change other players' choices. Cooperation, bargaining, information gathering, threats, "
     "concealment, bluffs and breaking social promises are available strategies in this game. "
     "Judge initiatives by how they could change another player's behavior and our position relative to rivals. "
-    "Consider its incentives and likely response, credibility and retaliation."
+    "Consider its incentives and likely response, credibility and retaliation.\n\n"
+    "Social promises record intent, not action restrictions or automatic breach penalties; withdrawal is optional. "
+    "Interpret their stated terms and conditions; native treaties and declarations of friendship have separate engine effects. "
+    "Before accepting or renewing peace, compare who gains more during its duration and which opportunities it delays.\n\n"
+    "When considering breaking a peace promise, compare acting now with waiting for its stated expiry or keeping peace. "
+    "Separate the costs of war itself from additional costs of breaking the promise. "
+    "For a private promise, identify who could learn of it, how, and what different response is plausible; "
+    "do not assume automatic public knowledge or a coalition. "
+    "Weigh credibility and future cooperation against surprise, lost military opportunities and rival progress while waiting."
 )
 
 GAMEPLAY_WORKFLOW = (
@@ -16,6 +31,8 @@ GAMEPLAY_WORKFLOW = (
     "A dated strategic adviser report may be supplied. Treat it as provisional advice: compare it with current facts, "
     "judge its competing plans and reconsideration conditions, and choose your own actions. You need not copy it into memory. "
     "Save private knowledge during play only when useful context is absent from observations and action records.\n\n"
+    + STRATEGY_GUIDANCE
+    + "\n\n"
     + DIPLOMACY_GUIDANCE
     + "\n\n"
     "Initiate contact with chat_send when it advances your goals; you need not wait for an incoming message. "

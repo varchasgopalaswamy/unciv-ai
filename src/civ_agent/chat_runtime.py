@@ -281,9 +281,23 @@ class ChatRuntime:
 
         try:
             prepared = await prepare_startup(service.gateway, job)
-            startup = startup_prompt(prepared, "communication", prompt, strategy_guide=service.strategy_guide)
+            startup = startup_prompt(
+                prepared,
+                "communication",
+                prompt,
+                strategy_guide=service.strategy_guide,
+                civilization_guide=service.civilization_guide,
+                civilization=service.civilization,
+            )
             record["startup"] = {
-                "characters": len(startup_text(prepared, strategy_guide=service.strategy_guide)),
+                "characters": len(
+                    startup_text(
+                        prepared,
+                        strategy_guide=service.strategy_guide,
+                        civilization_guide=service.civilization_guide,
+                        civilization=service.civilization,
+                    )
+                ),
                 "coreTools": [tool["name"] for tool in prepared["coreTools"]],
                 "reads": list(prepared["reads"]),
                 **startup.metadata(),

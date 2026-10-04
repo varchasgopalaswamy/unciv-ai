@@ -14,6 +14,7 @@ from aiohttp import web
 
 from civ_agent.agent_service import AgentService, ServiceError, server_ssl_context
 from civ_agent.agent_settings import add_settings_arguments
+from civ_agent.civilization_guide import UnsupportedCivilizationGuideError, civilization_reference
 from civ_agent.civilization_state import MemoryFormatError
 from civ_agent.providers import PROVIDERS
 from civ_agent.scheduler import positive
@@ -66,6 +67,12 @@ def parser(*, add_help: bool = True) -> argparse.ArgumentParser:
         help="Include optional Civ V strategy suggestions in agent context (default: off)",
     )
     result.add_argument(
+        "--civilization-guide",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Include optional advice for this civilization after the strategy guide (default: off)",
+    )
+    result.add_argument(
         "--memory-context-chars",
         type=int,
         default=12000,
@@ -94,6 +101,8 @@ def run(args: argparse.Namespace) -> int:
     try:
         if not args.civilization.strip() or len(args.civilization) > 128:
             raise ServiceError("INVALID_CIVILIZATION")
+        if args.civilization_guide:
+            civilization_reference(args.civilization)
         port = (
             args.port
             if args.port is not None
@@ -161,6 +170,7 @@ def run(args: argparse.Namespace) -> int:
             review_interval=args.review_interval,
             review_attempts=args.review_attempts,
             strategy_guide=args.strategy_guide,
+            civilization_guide=args.civilization_guide,
             fast=args.fast,
             gateway_url=host_origin(args.public_host, port) + "/mcp",
             gateway_ca_file=material["ca_file"],
@@ -182,6 +192,10 @@ def run(args: argparse.Namespace) -> int:
         print(f"Player turn files: {workspace}", flush=True)
         print(f"Service diagnostics: {service.diagnostics.path}", flush=True)
         print(f"Strategy guide: {'enabled (optional suggestions)' if args.strategy_guide else 'disabled'}", flush=True)
+        print(
+            f"Civilization guide: {'enabled (optional suggestions)' if args.civilization_guide else 'disabled'}",
+            flush=True,
+        )
         print(f"Provider: {args.provider}; requested service tier: {'fast' if service.fast else 'default'}", flush=True)
         print(
             f"New conversation defaults: model={args.model or 'Codex config'}, reasoning={args.reasoning_effort or 'Codex config'}",
@@ -197,7 +211,9 @@ def run(args: argparse.Namespace) -> int:
         )
         return 0
     except (OSError, ValueError, ServiceError, TLSConfigError) as error:
-        if isinstance(error, MemoryFormatError):
+        if isinstance(error, UnsupportedCivilizationGuideError):
+            print(f"Cannot launch agent service: {error}", file=sys.stderr)
+        elif isinstance(error, MemoryFormatError):
             print(
                 "Cannot launch agent service: unsupported memory format. Start a fresh match in a new state directory.",
                 file=sys.stderr,

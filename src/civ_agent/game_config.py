@@ -10,6 +10,7 @@ from typing import Annotated, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from civ_agent.agent_settings import valid_setting
+from civ_agent.civilization_guide import civilization_reference
 from civ_agent.protocol import JsonObject
 from civ_agent.providers import Provider
 
@@ -77,6 +78,7 @@ class AgentDefaults(Configuration):
     review_interval: Positive = 5
     review_attempts: Positive = 3
     strategy_guide: bool = False
+    civilization_guide: bool = False
     fast: bool = False
 
     @field_validator("model", "reasoning_effort")
@@ -223,6 +225,9 @@ class ResolvedGameConfig(GameConfig):
             raise ValueError("Assignments must preserve civilization order")
         if sorted(a.player for a in self.assignments) != sorted(p.name for p in self.players):
             raise ValueError("Assign every player exactly once")
+        if self.agents.civilization_guide:
+            for player in self.agent_players:
+                civilization_reference(player.civilization)
         return self
 
     @property

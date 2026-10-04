@@ -8,7 +8,9 @@ import pytest
 
 from civ_agent import service_recovery
 from civ_agent.agent_service import AgentService, ServiceError
+from civ_agent.civilization_guide import civilization_reference
 from civ_agent.strategic_review import advice_prompt
+from civ_agent.strategy_guide import strategy_reference
 from tests.test_proposal_gateway import Host
 from tests.test_strategic_adviser import ReviewFactory, ReviewHost
 from tests.test_strategic_review import VICTORIES
@@ -81,6 +83,8 @@ def test_opening_reviews_run_concurrently_then_each_civ_uses_its_own_report(tmp_
                 model="test/reasoner" if civ == "France" else "gpt-5.6-luna",
                 reasoning_effort="high" if civ == "France" else "max",
                 fast=True,
+                strategy_guide=True,
+                civilization_guide=civ != "Rome",
             )
             factory.service = service
             services[civ], factories[civ], hosts[civ[0] * 43] = service, factory, OpeningHost(factory)
@@ -130,6 +134,18 @@ def test_opening_reviews_run_concurrently_then_each_civ_uses_its_own_report(tmp_
                 assert thread["modelProvider"] == service.default_settings["provider"]
                 assert thread["config"]["model_reasoning_effort"] == service.default_settings["reasoningEffort"]
                 assert thread.get("serviceTier") == (None if civ == "France" else "fast")
+                delivered = next(
+                    payload["input"][0]["text"] for method, payload in factories[civ].calls if method == "turn/start"
+                )
+                assert delivered.count(strategy_reference()) == 1
+                if civ != "Rome":
+                    reference = civilization_reference(civ)
+                    assert delivered.count(reference) == 1
+                    assert delivered.index(strategy_reference()) < delivered.index(reference)
+                    assert reference not in thread["developerInstructions"]
+                for other in ("Greece", "France"):
+                    if other != civ:
+                        assert civilization_reference(other) not in delivered
 
             rome, factory = services["Rome"], factories["Rome"]
             payload = {

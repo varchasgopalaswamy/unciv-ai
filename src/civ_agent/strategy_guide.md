@@ -124,6 +124,21 @@ consider likely reactions and future cooperation. Those consequences depend on
 the players and native mechanics, not an invented obligation to comply. Built-in
 AI diplomatic behavior should not be assumed to predict human or agent choices.
 
+Before accepting or renewing peace, compare who gains more over the proposed
+duration and which opportunities it delays. A term that once bought valuable
+development time may now let a rival reinforce or finish first. Keeping peace,
+changing the terms, and declining renewal are all options, not prescribed choices.
+
+If considering an attack that conflicts with a social peace promise, compare
+acting now with waiting for its stated expiry or keeping peace. Separate the
+costs of war from the additional costs of breaking the promise. Private terms
+are not automatically public: consider who could learn them, how, and what
+different response that could cause. Lost trust and future cooperation can
+matter, but so can surprise and a military opportunity lost while waiting.
+Social promises do not restrict native-legal actions or impose automatic breach
+penalties; withdrawal is optional. Native treaties and declarations of friendship
+have separate engine effects. Interpret the stated wording and conditions yourself.
+
 City-states can provide resources and other benefits, and may matter for a
 diplomatic victory. Influence is an ongoing competition, not permanent ownership.
 Quests can be good opportunities when achievable without sacrificing a more
@@ -172,6 +187,12 @@ progress. A preferred route can remain open while useful investments develop
 several options. Pursuing every wonder and victory path can delay all of them.
 The leading player may need protection and efficient completion; a trailing
 player may need a calculated risk or coalition.
+
+Improving our output does not establish that we can finish before rivals. Compare
+plausible completion times using available evidence, and use reconnaissance to
+resolve important gaps. If a rival could finish first, compare catching up with
+timely disruption or a coalition. Limited military action can support any victory
+without capturing every capital; neither peace nor war is automatically best.
 
 For the Vanilla rules used here, science victory involves Apollo and the
 required spaceship parts, including delivering and adding the parts in the

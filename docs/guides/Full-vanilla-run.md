@@ -72,11 +72,19 @@ names. Mod content is out of scope. Choose `map_size` or a custom `map_radius`.
 | Section | Settings |
 | --- | --- |
 | `[game]` | `civilizations`, `randomize`, `master_seed`, `map_seed`, `starting_position_seed`, `assignment_seed`, `map_type`, `map_size`/`map_radius`, `difficulty`, `speed`, `starting_era`, `city_states`, `victories` |
-| `[agents]` | `provider` (`openai` or `openrouter`), `model`, `reasoning_effort`, `review_interval`, `review_attempts`, `strategy_guide`, `fast` |
+| `[agents]` | `provider` (`openai` or `openrouter`), `model`, `reasoning_effort`, `review_interval`, `review_attempts`, `strategy_guide`, `civilization_guide`, `fast` |
 | `[[players]]` | Unique `name`, `controller` (`agent`, `human`, `built_in_ai`; defaults to `agent`); optional agent `provider`/`model`/`reasoning_effort` |
 | `[limits]` | `max_turns`, `max_invocations`, `max_seconds`, `turn_timeout`, `startup_timeout`, `max_concurrent_jobs` |
 | `[resources.controller]`, `[resources.desktop]`, `[resources.agent]` | `memory_mib`, `cpus`, `pids` |
 | `[runtime]` | `image`, `desktop_image`, `browser_port` |
+
+`strategy_guide = true` supplies optional general strategy advice.
+`civilization_guide = true` adds the assigned civilization's pre-written advice
+after it, including during strategic reviews; it can also be used independently.
+Both default to false. Civilization advice currently supports Inca, France,
+Greece, Arabia, China, and Persia; enabling it for another agent civilization
+fails configuration validation after assignments are resolved. See the
+[strategy-guide instructions](Strategy-guide.md) for CLI flags and prompt details.
 
 Players identify competitors independently of their civilizations. List exactly
 one player per entry in `game.civilizations`. With `randomize = false` (the default),

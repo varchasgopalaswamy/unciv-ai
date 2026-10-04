@@ -183,6 +183,14 @@ def test_diplomatic_initiatives_are_optional_and_bounded():
         parse_advice(json.dumps(advice), position)
 
 
+def test_peaceful_single_plan_without_diplomatic_initiatives_remains_valid():
+    advice = assessment()
+    advice["review"]["plans"] = advice["review"]["plans"][:1]
+    advice["review"]["preferredPlan"] = 1
+    advice["review"]["diplomacy"]["initiatives"] = []
+    assert parse_advice(json.dumps(advice), {"turn": 5, "rules": {"victoryTypes": VICTORIES}}) == advice
+
+
 @pytest.mark.parametrize("field,value", [("players", []), ("approach", ""), ("objective", "x" * 601)])
 def test_initiative_requires_contacts_and_concise_actionable_fields(field, value):
     advice = assessment()

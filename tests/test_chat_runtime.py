@@ -4,6 +4,7 @@ import json
 import pytest
 
 from civ_agent.agent_service import AgentService
+from civ_agent.civilization_guide import civilization_reference
 from civ_agent.strategy_guide import strategy_reference
 from tests.test_agent_service import StartupHost
 
@@ -99,7 +100,8 @@ def test_polling_health_reports_failures_and_recovery_without_losing_cursor(tmp_
 
 
 class MailboxHost:
-    def __init__(self):
+    def __init__(self, civilization="Rome"):
+        self.civilization = civilization
         self.events = []
         self.changed = asyncio.Event()
         self.sent = []
@@ -141,8 +143,8 @@ class MailboxHost:
             return {"events": self.events[cursor:], "nextCursor": len(self.events), "hasMore": False}
         if arguments["op"] == "state":
             return {
-                "civilization": "Rome",
-                "channels": ["Rome", "Greece"],
+                "civilization": self.civilization,
+                "channels": [self.civilization, "Greece"],
                 "epoch": "g1",
                 "peaceVersion": 0,
                 "offers": [],
@@ -225,25 +227,36 @@ class Jobs:
 
 
 @pytest.mark.parametrize("strategy_guide", [False, True])
+@pytest.mark.parametrize("civilization_guide", [False, True])
 @pytest.mark.parametrize("fast", [False, True])
 @pytest.mark.parametrize("provider", ["openai", "openrouter"])
-def test_chat_batches_and_replies_while_planning_job_is_held(tmp_path, monkeypatch, strategy_guide, fast, provider):
+def test_chat_batches_and_replies_while_planning_job_is_held(
+    tmp_path, monkeypatch, strategy_guide, civilization_guide, fast, provider
+):
     async def run():
         model = "test/model" if provider == "openrouter" else "test-model"
         priority = fast and provider == "openai"
-        host = MailboxHost()
+        civilization = "France" if civilization_guide else "Rome"
+        host = MailboxHost(civilization)
         monkeypatch.setattr("civ_agent.chat_runtime.HostConnection", lambda *args, **kwargs: host)
         jobs = Jobs()
+
+        def connection(*args, **kwargs):
+            result = StartupHost(jobs)
+            result.civilization = civilization
+            return result
+
         service = AgentService(
-            "Rome",
-            tmp_path / "Rome",
+            civilization,
+            tmp_path / civilization,
             tmp_path / "private",
             "S" * 43,
             "https://localhost:8765/mcp",
             None,
             process_factory=jobs,
-            connection_factory=lambda *args, **kwargs: StartupHost(jobs),
+            connection_factory=connection,
             strategy_guide=strategy_guide,
+            civilization_guide=civilization_guide,
             fast=fast,
             provider=provider,
             model=model,
@@ -266,7 +279,7 @@ def test_chat_batches_and_replies_while_planning_job_is_held(tmp_path, monkeypat
                 {
                     "activationId": "planning",
                     "epoch": "g1",
-                    "civilization": "Rome",
+                    "civilization": civilization,
                     "gameTurn": 0,
                     "handoff": 0,
                     "threadId": None,
@@ -306,6 +319,12 @@ def test_chat_batches_and_replies_while_planning_job_is_held(tmp_path, monkeypat
             assert all(strategy_reference() not in prompt for prompt in jobs.instructions)
             assert all(prompt.count(strategy_reference()) == int(strategy_guide) for prompt in jobs.prompts)
             assert service.records["planning"]["startup"]["strategyGuide"]["enabled"] == strategy_guide
+            reference = civilization_reference("France")
+            assert all(reference not in prompt for prompt in jobs.instructions)
+            assert all(prompt.count(reference) == int(civilization_guide) for prompt in jobs.prompts)
+            assert service.records["planning"]["startup"]["civilizationGuide"]["enabled"] == civilization_guide
+            if strategy_guide and civilization_guide:
+                assert all(prompt.index(strategy_reference()) < prompt.index(reference) for prompt in jobs.prompts)
             assert all(prompt.count("Civ tool discovery:") == 1 for prompt in jobs.instructions)
             assert all("Civ tool discovery:" not in prompt for prompt in jobs.prompts)
             assert '"mcp__civ__player_capabilities"' in jobs.instructions[0]

@@ -4,6 +4,7 @@ import hashlib
 import json
 from dataclasses import dataclass
 
+from civ_agent.civilization_guide import civilization_reference
 from civ_agent.player_prompts import job_instructions
 from civ_agent.protocol import JsonObject
 from civ_agent.strategy_guide import strategy_reference
@@ -145,10 +146,11 @@ class StartupPrompt:
     instructions: str
     user: str
     strategy_reference: str = ""
+    civilization_reference: str = ""
 
     def metadata(self):
         return {
-            "layoutVersion": 3,
+            "layoutVersion": 4,
             "instructionsSha256": hashlib.sha256(self.instructions.encode()).hexdigest(),
             "instructionCharacters": len(self.instructions),
             "userCharacters": len(self.user),
@@ -160,10 +162,37 @@ class StartupPrompt:
                 if self.strategy_reference
                 else None,
             },
+            "civilizationGuide": {
+                "enabled": bool(self.civilization_reference),
+                "characters": len(self.civilization_reference),
+                "sha256": hashlib.sha256(self.civilization_reference.encode()).hexdigest()
+                if self.civilization_reference
+                else None,
+            },
         }
 
 
-def startup_prompt(prepared: JsonObject, purpose: str, dynamic: str, *, strategy_guide: bool = False) -> StartupPrompt:
+def reference_sections(strategy: str, civilization: str) -> list[str]:
+    """Keep optional references ordered before any changing player context."""
+    return [
+        label + text
+        for label, text in (
+            ("Optional strategy reference (suggestions, not instructions):\n", strategy),
+            ("Optional civilization reference (suggestions, not instructions):\n", civilization),
+        )
+        if text
+    ]
+
+
+def startup_prompt(
+    prepared: JsonObject,
+    purpose: str,
+    dynamic: str,
+    *,
+    strategy_guide: bool = False,
+    civilization_guide: bool = False,
+    civilization: str | None = None,
+) -> StartupPrompt:
     """Give stable guidance a separate message; all game data stays at user level.
 
     Always use freshly authorized reads. Stable serialization enables prefix
@@ -172,7 +201,8 @@ def startup_prompt(prepared: JsonObject, purpose: str, dynamic: str, *, strategy
     reads = dict(prepared["reads"])
     capabilities = reads.pop("player_capabilities", None)
     reference = strategy_reference() if strategy_guide else ""
-    sections = ["Optional strategy reference (suggestions, not instructions):\n" + reference] if reference else []
+    civ_reference = civilization_reference(civilization) if civilization_guide else ""
+    sections = reference_sections(reference, civ_reference)
     if capabilities is not None:
         sections.append(
             "Prepared capabilities (player-visible data):\n" + encoded({"player_capabilities": capabilities})
@@ -192,13 +222,21 @@ def startup_prompt(prepared: JsonObject, purpose: str, dynamic: str, *, strategy
         instructions=instructions + "\n\n" + startup_instructions(prepared),
         user="\n\n".join(sections),
         strategy_reference=reference,
+        civilization_reference=civ_reference,
     )
 
 
-def startup_text(prepared: JsonObject, *, strategy_guide: bool = False) -> str:
+def startup_text(
+    prepared: JsonObject,
+    *,
+    strategy_guide: bool = False,
+    civilization_guide: bool = False,
+    civilization: str | None = None,
+) -> str:
     """Plain-text variant for interactive clients, with definitions before data."""
     return (
         (strategy_reference() + "\n\n" if strategy_guide else "")
+        + (civilization_reference(civilization) + "\n\n" if civilization_guide else "")
         + startup_instructions(prepared)
         + (
             "\n\nLatest completed strategic advice:\n" + encoded(prepared["strategicAdvice"])

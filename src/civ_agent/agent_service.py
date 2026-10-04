@@ -37,6 +37,7 @@ from civ_agent.agent_settings import (
     valid_setting,
 )
 from civ_agent.chat_runtime import ChatRuntime
+from civ_agent.civilization_guide import civilization_reference
 from civ_agent.civilization_state import CivilizationState, StateConflict
 from civ_agent.diagnostics import Diagnostics
 from civ_agent.host_connection import HostConnection
@@ -327,6 +328,7 @@ class AgentService:
         review_interval: int = 5,
         review_attempts: int = 3,
         strategy_guide: bool = False,
+        civilization_guide: bool = False,
         fast: bool = False,
         gateway_url: str = "https://localhost:8865/mcp",
         gateway_ca_file: Path | None = None,
@@ -340,8 +342,11 @@ class AgentService:
             raise ServiceError("INVALID_PROVIDER")
         if provider == "openrouter" and (model is None or "/" not in model):
             raise ServiceError("OPENROUTER_MODEL_REQUIRED")
+        if civilization_guide:
+            civilization_reference(civilization)
         self.default_settings = {"provider": provider, "model": model, "reasoningEffort": reasoning_effort}
         self.strategy_guide = strategy_guide
+        self.civilization_guide = civilization_guide
         self.fast = fast and provider == "openai"
         self.civilization = civilization
         self.workspace, self.state_dir = private_directory(workspace), private_directory(state_dir)
@@ -1285,7 +1290,14 @@ class AgentService:
                 self.gameplay_permit == record["activationId"],
             )
             prepared = await prepare_startup(self.gateway, job)
-            prompt = startup_prompt(prepared, "gameplay", payload["prompt"], strategy_guide=self.strategy_guide)
+            prompt = startup_prompt(
+                prepared,
+                "gameplay",
+                payload["prompt"],
+                strategy_guide=self.strategy_guide,
+                civilization_guide=self.civilization_guide,
+                civilization=self.civilization,
+            )
             record["startup"] = {
                 "characters": len(prompt.user),
                 "coreTools": [tool["name"] for tool in prepared["coreTools"]],

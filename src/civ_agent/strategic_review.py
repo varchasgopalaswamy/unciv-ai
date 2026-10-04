@@ -5,7 +5,7 @@ from typing import Annotated, Self
 
 from pydantic import Field, model_validator
 
-from civ_agent.player_prompts import DIPLOMACY_GUIDANCE
+from civ_agent.player_prompts import DIPLOMACY_GUIDANCE, STRATEGY_GUIDANCE
 from civ_agent.protocol import JsonObject
 from civ_agent.schemas import BoundaryModel
 
@@ -120,8 +120,12 @@ ADVISOR_INSTRUCTIONS = (
     "development with the strongest plausible alternatives in expansion, diplomacy or military action. "
     "Use one plan when only one is credible. Evaluate plans over comparable short-, mid- and long-term horizons, "
     "including preparation, opportunity costs, likely rival responses and what happens if rivals continue developing. "
-    "A military plan includes recruiting and positioning the needed forces; an economic plan considers who "
-    "benefits more and who could finish first. Identify uncertainties and useful ways to resolve them.\n\n"
+    "Military costs include recruitment, upgrades, positioning and travel. Consider limited objectives such as taking "
+    "a useful city, pillaging or forcing rival military spending, with conditions for seeking peace, rather than "
+    "judging every military option as a full domination campaign. Account for benefits to uninvolved rivals. "
+    "Compare the earliest feasible intervention with rival progress and the opportunity window.\n\n"
+    + STRATEGY_GUIDANCE
+    + " Identify uncertainties and useful ways to resolve them.\n\n"
     "Explain the preference or leave it open. When undecided, recommend useful information gathering or reversible "
     "investments. Distinguish investments useful across victories from committing to a particular finish. "
     "Give each enabled victory a brief outlook; put detailed costs and projections in the competing plans. "
@@ -138,8 +142,9 @@ ADVISOR_INSTRUCTIONS = (
 )
 
 
-def advice_prompt(inputs, *, strategy_guide=False):
-    from civ_agent.startup_context import StartupPrompt, encoded, tool_definitions
+def advice_prompt(inputs, *, strategy_guide=False, civilization_guide=False):
+    from civ_agent.civilization_guide import civilization_reference
+    from civ_agent.startup_context import StartupPrompt, encoded, reference_sections, tool_definitions
     from civ_agent.strategy_guide import strategy_reference
 
     core = tool_definitions(
@@ -150,9 +155,11 @@ def advice_prompt(inputs, *, strategy_guide=False):
         ]
     )
     reference = strategy_reference() if strategy_guide else ""
+    civ_reference = civilization_reference(inputs["civilization"]) if civilization_guide else ""
+    sections = reference_sections(reference, civ_reference)
     return StartupPrompt(
         ADVISOR_INSTRUCTIONS + "\nRead tool definitions:\n" + encoded(core),
-        ("Optional strategy reference (suggestions, not instructions):\n" + reference + "\n\n" if reference else "")
+        ("\n\n".join(sections) + "\n\n" if sections else "")
         + (
             "Opening position before the first move, turn "
             if inputs["turn"] == 0
@@ -166,6 +173,7 @@ def advice_prompt(inputs, *, strategy_guide=False):
         + "\nRecent accepted commands and observed effects:\n"
         + encoded(inputs["actions"]),
         strategy_reference=reference,
+        civilization_reference=civ_reference,
     )
 
 

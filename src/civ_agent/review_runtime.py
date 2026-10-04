@@ -352,7 +352,8 @@ class ReviewRuntime:
         closing = False
         stopped = False
         process = None
-        final_messages, early_usage, early_completions = {}, {}, {}
+        final_messages, unphased_messages = {}, {}
+        early_usage, early_completions = {}, {}
 
         async def save():
             try:
@@ -409,15 +410,21 @@ class ReviewRuntime:
                     done.set()
             elif method == "item/completed":
                 item = params.get("item", {})
-                if item.get("type") == "agentMessage" and item.get("phase") == "final_answer":
-                    final_messages[params.get("turnId")] = item.get("text", "")
+                if item.get("type") == "agentMessage":
+                    if item.get("phase") == "final_answer":
+                        final_messages[params.get("turnId")] = item.get("text", "")
+                    elif item.get("phase") is None:
+                        # Phase is optional; explicit commentary is never a report.
+                        unphased_messages[params.get("turnId")] = item.get("text", "")
 
         success = False
         try:
             service.gateway.jobs[job.token] = job
             service.records[id] = record
             try:
-                prompt = advice_prompt(inputs, strategy_guide=service.strategy_guide)
+                prompt = advice_prompt(
+                    inputs, strategy_guide=service.strategy_guide, civilization_guide=service.civilization_guide
+                )
                 record["startup"] = prompt.metadata()
                 output_schema = advice_schema(inputs["reads"]["player_turn"])
             except Exception as error:
@@ -499,7 +506,8 @@ class ReviewRuntime:
                     raise ValueError(record.get("error", "STRATEGIC_REVIEW_FAILED"))
                 progress.value["stage"] = "Validating"
                 await save()
-                advice = parse_advice(final_messages.get(expected, ""), inputs["reads"]["player_turn"])
+                answer = final_messages.get(expected, unphased_messages.get(expected, ""))
+                advice = parse_advice(answer, inputs["reads"]["player_turn"])
             await stop()
             progress.value["stage"] = "Publishing"
             await save()
