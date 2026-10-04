@@ -22,12 +22,15 @@ flowchart LR
 `game_config.py` validates separate named player profiles and civilization lists.
 Resolution derives omitted map, starting-position and assignment seeds from one
 master seed, preserves explicit overrides, and saves the player-to-civ mapping.
-`benchmark.py` copies one game template into independently seeded per-run TOML
-inputs; batch generation never enumerates rotations or a Cartesian product.
-Random assignment includes every controller type. Turn order
-is applied afterward: human, agents, built-in AI. Native setup
-validation runs the packaged engine before model work. `container_supervisor.py`
-owns lifecycle, resource sampling, health checks and the batch queue;
+`benchmark.py` copies one game template into independently seeded, reusable
+single-game TOML inputs. A stable batch-seed hash gives each file a distinct
+master and retries collisions deterministically; generation writes no resolved
+configuration or run state. Batch start reads the files in filename order and
+never enumerates rotations or a Cartesian product. Random assignment includes
+every controller type. Turn order is applied afterward: human, agents, built-in
+AI. Native setup validation runs the packaged engine before model work.
+`container_supervisor.py` owns lifecycle, resource sampling, health checks and
+the batch scheduler;
 `container_runtime.py` runs services inside images. The existing scheduler still
 owns turns, communication waits, reviews and recovery. Controller type does not
 change native trade or gameplay mechanics.
@@ -110,9 +113,14 @@ No format migration or legacy production process launcher is retained.
 Systemd user units detach supervisors and flush logs into the match directory.
 Lingering keeps them alive after logout. An unexpected container exit records its
 exit/OOM state and stops only that game. Supervisors do not automatically restart
-failed games. Batch queues persist before service startup and retain per-game
-outcomes. Container removal leaves durable state intact; images and the dedicated
-login must also remain available for resume.
+failed games. The runner validates every input, pins its image pair, and prepares
+all `games/<input-stem>/` directories before atomically publishing the new run;
+a preparation failure cannot launch a partial batch. Each saved game owns its
+input copy, `resolved.json` and container metadata. `batch.json` contains only
+IDs, statuses and concurrency, while status/results read the saved per-game
+configuration. Resume never rereads the original input directory. Container
+removal leaves durable state intact; images and the dedicated login must also
+remain available for resume.
 
 The TUI runs from the saved runtime image with no network. Its match mount is
 read-only except for the control directory and SQLite directories (runner, private
@@ -136,8 +144,9 @@ service reachability, sibling/game denial, public internet, mount separation,
 read-only roots and dropped capabilities. Live acceptance results are recorded
 separately in the coverage ledger.
 
-`test_benchmark.py` checks independent seed overrides, deterministic generation,
-standalone TOML round trips, exact game counts and interrupted input generation.
+`test_benchmark.py` checks fresh and deterministic input generation, stable
+prefixes, collision-safe masters, explicit seed overrides, standalone TOML reuse,
+atomic preparation, resume isolation, concurrency and result attribution.
 Engine `GameStartingPositionSeedTest` checks repeated placement/resource generation
 and seed persistence.
 

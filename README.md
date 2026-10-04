@@ -47,9 +47,9 @@ running. Use `game stop` to pause and `game resume` to restart.
 TOML examples: [human game](examples/human-game.toml) and
 [benchmark game template](examples/benchmark.toml), plus a
 [mixed OpenAI/OpenRouter roster](examples/mixed-providers.toml). Pass `--config FILE` to
-`game start`, or generate a benchmark with
-`batch generate --config FILE --games 20 --master-seed 42 --state-dir PATH`
-and launch it with `batch start --state-dir PATH --parallel 2`.
+`game start`, or generate reusable benchmark inputs with
+`batch generate --config FILE --games 20 --output INPUTS --batch-seed 42`
+and launch them with `batch start --inputs INPUTS --state-dir PATH --parallel 2`.
 
 See the [full-game guide](docs/guides/Full-vanilla-run.md) for directories,
 timeouts, stopping and resuming. Use the [local launcher guide](docs/guides/Local-launchers.md)

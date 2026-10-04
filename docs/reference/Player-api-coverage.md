@@ -668,12 +668,14 @@ batch-input policy described below supersedes it.
   ordering were removed from these paths. Game IDs remain distinct and ordinary
   turn randomness retains its existing behavior. The seed survives clones and
   serialization; this does not claim deterministic subsequent model/AI play.
-- `batch generate --config FILE --games N` creates exactly N ordinary per-game
-  TOML inputs, with comments retained. Consecutive distinct masters independently
-  derive each run's child seeds; explicit template overrides remain fixed. There
-  is no rotation or Cartesian-product expansion. Built-in AI remains last after
-  player-to-civilization assignment. Inputs can be edited before start; launched
-  queues resume from frozen settings without rereading templates.
+- `batch generate --config FILE --games N --output DIR` creates exactly N ordinary
+  per-game TOML inputs, with comments retained. A batch seed produces distinct
+  hash-derived masters and stable prefixes; explicit child overrides remain fixed
+  while omitted child seeds remain omitted until launch. There is no rotation or
+  Cartesian-product expansion. Built-in AI remains last after player-to-
+  civilization assignment. The same input directory can be launched into
+  independent runs; each runner freezes its own saved configuration and resumes
+  without rereading the inputs.
 - **102 Python tests and 18 subtests passed**, including all eight combinations of
   seed overrides, CLI precedence, mixed-provider assignment, standalone TOML
   round trips, interrupted generation/initialization, resume and result attribution.

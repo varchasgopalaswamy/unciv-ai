@@ -249,52 +249,60 @@ not automatic boot-time relaunch of games.
 ## Benchmark batches
 
 Use an ordinary single-game TOML as the template. Batch size and concurrency are
-command options, not a second configuration format. For example, generate twenty
-independent games without Podman, model authentication or inference:
+command options, not a second configuration format. Generate twenty reusable
+single-game inputs without Podman, model authentication or inference:
 
 ```sh
 .venv/bin/civ-agent batch generate --config examples/benchmark.toml \
-  --games 20 --master-seed 42 --state-dir ~/.local/state/unciv-host/benchmark
+  --games 20 --batch-seed 42 \
+  --output ~/.local/state/unciv-host/benchmark-inputs
 .venv/bin/civ-agent batch start --state-dir ~/.local/state/unciv-host/benchmark \
-  --parallel 2
+  --inputs ~/.local/state/unciv-host/benchmark-inputs --parallel 2
 ```
 
-Or generate and launch in one command:
+The input directory is reusable. Launch it again into another independent run:
 
 ```sh
-.venv/bin/civ-agent batch start --config examples/benchmark.toml \
-  --games 20 --master-seed 42 --parallel 2 \
-  --state-dir ~/.local/state/unciv-host/benchmark
+.venv/bin/civ-agent batch start \
+  --inputs ~/.local/state/unciv-host/benchmark-inputs \
+  --state-dir ~/.local/state/unciv-host/benchmark-replay --parallel 2
 ```
 
-`--games 20` means exactly twenty games. The first master's value comes from
-`--master-seed`, then the template's `game.master_seed`, then a generated value.
-Each following game increments that master (42, 43, …, 61 here), wrapping within
-the signed 64-bit range. Each master derives its own map, starting-position and
-assignment seeds. There is no map × repetition × rotation expansion.
+`--games 20` means exactly twenty files named `g0001.toml` through `g0020.toml`.
+With `--batch-seed`, the set is reproducible. Each game's master is derived from
+the batch seed and its index with a stable hash; collision retries are deterministic,
+and adding games preserves the earlier files. Without `--batch-seed`, generation
+chooses a fresh batch seed. The template's `game.master_seed` never selects the
+batch. The batch seed and game index are recorded in each file's comments and the
+batch seed is printed by the command.
 
 Keep `randomize = true` and omit child seeds in the template for independently
-sampled maps and player/civilization matchings. An explicit child seed is preserved
-in every copy: for example, `assignment_seed = 7` fixes the matching while maps
-vary. Matching is sampled rather than balanced; a civilization assignment can
-recur by chance. With `randomize = false`, players stay paired in list order.
-Built-in AI still takes its turns last **after** assignment.
+sampled maps and player/civilization matchings. An explicit `map_seed`,
+`starting_position_seed`, or `assignment_seed` is preserved in every copy; omitted
+child seeds remain omitted and are derived when the ordinary game input launches.
+For example, `assignment_seed = 7` fixes the matching while maps vary. Matching is
+sampled rather than balanced, so an assignment can recur by chance. With
+`randomize = false`, players stay paired in list order. Built-in AI still takes its
+turns last **after** assignment.
 
-Each generated `games/gNNNN/input.toml` copies the template, preserves comments,
-and includes all resolved seed values. It is a normal single-game input:
+Each generated file copies the template and preserves its settings and comments.
+It is a normal single-game input:
 
 ```sh
 .venv/bin/civ-agent game start \
-  --config ~/.local/state/unciv-host/benchmark/games/g0001/input.toml \
+  --config ~/.local/state/unciv-host/benchmark-inputs/g0001.toml \
   --state-dir ~/.local/state/unciv-host/replayed-opening
 ```
 
-You can edit generated inputs before `batch start`. Starting freezes their
-settings and image IDs; resume never rereads edited inputs or chooses new seeds.
-The generated queue is persisted before writing individual files, so interruption
-cannot silently shrink the requested batch. `batch start` completes any missing
-input files from that queue. Once launched, resume needs no template files.
-All games in a batch select the same runtime/desktop image pair.
+The output directory is published atomically and an existing destination is never
+overwritten. You can edit generated inputs before `batch start`; the runner reads
+TOMLs in filename order and saves each one under `games/<input-stem>/`. It first
+validates and prepares every game, including pinned images, before launching the
+batch service. A preparation failure launches no partial batch. Each saved game
+contains its input copy, `resolved.json`, and container metadata. Resume reads only
+that saved run: changing or deleting the original input directory cannot change
+queued or interrupted games. All games in a batch select the same runtime/desktop
+image pair.
 
 `--parallel` bounds simultaneous games (default one). Concurrent human games need
 `runtime.browser_port = 0`. The eight-player example has a human seat; change it
@@ -310,20 +318,22 @@ limit play to three turns; omit `limits.max_turns` for full games.
 A failed game is recorded and the next queued game can run. Resume continues
 pending/paused runs; `--retry-failed` opts into retrying failures. Completed and
 budget-exhausted runs stay finished. Explicit image upgrades affect unfinished
-runs. Each game can be watched with `match watch --state-dir .../games/gNNNN`.
-`results.json` and `results.csv` include every seed, named players, assigned civs,
-effective provider/model/effort, stop status, results and failures. Existing
-per-turn token/call/timing accounting remains in the databases; see
-[telemetry](../reference/Telemetry.md).
+runs. Each game can be watched with `match watch --state-dir .../games/<stem>`.
+`results.json` and `results.csv` read every game's saved configuration and include
+every seed, named players, assigned civs, effective provider/model/effort, stop
+status, results and failures. Existing per-turn token/call/timing accounting
+remains in the databases; see [telemetry](../reference/Telemetry.md).
 
-`batch generate` and `batch start --config ...` accept `--dry-run` to print the
-resolved schedule without files or services. This validates the TOML, not native
-rules; native validation happens on actual start or `game start --dry-run`.
+`batch generate --dry-run` previews the generated TOMLs without publishing a
+directory. `batch start --dry-run` previews resolved inputs without creating state
+or contacting Podman. These validate the TOML, not native rules; native validation
+happens on actual start or `game start --dry-run`.
 
 The old `game.seed` and `[batch]` matrix fields are removed. Use `game.map_seed`
-for a terrain override and command options for batch generation. There is no
-migration for old saved configurations; keep their original checkout/images if
-resuming them. Rebuild images for new games with these fields.
+for a terrain override and `batch generate --batch-seed` for a reproducible input
+set. There is no migration for old batch manifests or saved configurations; keep
+their original checkout/images if resuming them. Rebuild images for new games with
+these fields.
 
 ## Files to retain for diagnosis
 

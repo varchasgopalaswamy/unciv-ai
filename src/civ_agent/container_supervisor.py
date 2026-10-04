@@ -348,7 +348,10 @@ def batch_summary(root, manifest):
     rows = []
     for run in manifest["runs"]:
         directory = root / "games" / run["id"]
-        config = ResolvedGameConfig.model_validate(run["config"])
+        saved = read_json(directory / "resolved.json")
+        if saved is None:
+            raise ContainerError(f"Saved configuration is missing for game {run['id']}")
+        config = ResolvedGameConfig.model_validate(saved)
         result = read_record(path_for(directory), "state", "result") if path_for(directory).exists() else None
         rows.append(
             {
@@ -359,7 +362,7 @@ def batch_summary(root, manifest):
                 "assignment_seed": config.game.assignment_seed,
                 "players": config.player_records(),
                 "result": result,
-                "resources": run["config"]["resources"],
+                "resources": config.resources.model_dump(),
                 "resource_usage": read_json(directory / "resources.json"),
                 "failure": read_json(directory / "container-status.json", {}).get("reason"),
             }
@@ -393,6 +396,8 @@ def batch_summary(root, manifest):
 def run_batch(root, stop_event):
     with locked(root / ".supervisor.lock"):
         manifest = read_json(root / "batch.json")
+        if not isinstance(manifest, dict) or manifest.get("format") != 2:
+            raise ContainerError("Unsupported batch manifest; start a new batch")
         active = {}
         with concurrent.futures.ThreadPoolExecutor(max_workers=manifest["parallel"]) as pool:
             try:

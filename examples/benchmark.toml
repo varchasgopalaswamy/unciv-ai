@@ -1,8 +1,7 @@
-# One ordinary game template; batch generate/start --games N chooses N independent games.
+# One ordinary game template. Batch generation supplies each input's master seed.
 [game]
 civilizations = ["Inca", "France", "Greece", "Arabia", "China", "Persia"]
 randomize = true
-master_seed = 42
 map_type = "Pangaea"
 map_size = "Medium"
 city_states = 12

@@ -185,7 +185,10 @@ def test_batch_results_and_status_attribute_civilizations_to_named_players(tmp_p
     )
     for row in runs:
         write_private_json(tmp_path / "games" / row["id"] / "resolved.json", row["config"])
-    batch_summary(tmp_path, {"parallel": 1, "runs": runs})
+    batch_summary(
+        tmp_path,
+        {"format": 2, "parallel": 1, "runs": [{"id": row["id"], "status": "completed"} for row in runs]},
+    )
     result = json.loads((tmp_path / "results.json").read_text())["runs"][0]
     expected = ResolvedGameConfig.model_validate(runs[0]["config"])
     assert result["assignment_seed"] == 7
@@ -264,7 +267,25 @@ def test_interrupted_batch_initialization_resumes_frozen_queue(tmp_path, monkeyp
 
     source = tmp_path / "batch.toml"
     source.write_text("[game]\nmaster_seed=42\nrandomize=true")
+    inputs = tmp_path / "inputs"
     root = tmp_path / "batch"
+    assert (
+        cli.main(
+            [
+                "batch",
+                "generate",
+                "--config",
+                str(source),
+                "--games",
+                "2",
+                "--batch-seed",
+                "42",
+                "--output",
+                str(inputs),
+            ]
+        )
+        == 0
+    )
     monkeypatch.setattr(batch, "preflight", lambda: None)
     monkeypatch.setattr(batch, "resolve_image", lambda _: "pinned-image")
     monkeypatch.setattr(game, "validate_setup", lambda *_: {"maxTurns": 330})
@@ -283,18 +304,42 @@ def test_interrupted_batch_initialization_resumes_frozen_queue(tmp_path, monkeyp
     monkeypatch.setattr(batch, "initialize", interrupted)
     assert (
         cli.main(
-            ["batch", "start", "--config", str(source), "--games", "2", "--parallel", "2", "--state-dir", str(root)]
+            [
+                "batch",
+                "start",
+                "--inputs",
+                str(inputs),
+                "--parallel",
+                "2",
+                "--state-dir",
+                str(root),
+            ]
         )
         == 2
     )
     background.assert_not_called()
-    first_id = identity(root / "games/g0001")["id"]
-    assert len(json.loads((root / "batch.json").read_text())["runs"]) == 2
-    source.write_text("[game]\nmaster_seed=999")
+    assert not root.exists()
     monkeypatch.setattr(batch, "initialize", original)
-    assert cli.main(["batch", "resume", "--state-dir", str(root)]) == 0
-    assert identity(root / "games/g0001")["id"] == first_id
-    assert json.loads((root / "games/g0002/resolved.json").read_text())["game"]["master_seed"] == 43
+    assert (
+        cli.main(
+            [
+                "batch",
+                "start",
+                "--inputs",
+                str(inputs),
+                "--parallel",
+                "2",
+                "--state-dir",
+                str(root),
+            ]
+        )
+        == 0
+    )
+    assert identity(root / "games/g0001")["id"] != identity(root / "games/g0002")["id"]
+    assert (
+        json.loads((root / "games/g0002/resolved.json").read_text())["game"]["master_seed"]
+        == load_config(inputs / "g0002.toml").game.master_seed
+    )
     background.assert_called_once_with(root, "batch")
 
 

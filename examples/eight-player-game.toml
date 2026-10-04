@@ -1,7 +1,6 @@
 [game]
 civilizations = ["Inca", "Siam", "Egypt", "France", "Greece", "Arabia", "China", "Persia"]
 randomize = true
-master_seed = 42
 map_type = "Pangaea"
 map_size = "Large"
 city_states = 16
@@ -38,5 +37,5 @@ name = "Luna 5"
 [[players]]
 name = "Luna 6"
 
-# For an automated benchmark, change Human's controller to "agent", then run
-# `civ-agent batch start --config ... --games 20 --parallel 2 --state-dir ...`.
+# For an automated benchmark, change Human's controller to "agent", then
+# generate inputs with `batch generate` and run them with `batch start --inputs`.

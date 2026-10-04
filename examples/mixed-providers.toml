@@ -2,10 +2,10 @@
 #   civ-agent auth login
 #   civ-agent auth login --provider openrouter
 # One game: game start --config ...
-# Benchmark: batch start --config ... --games 20 --master-seed 42 --parallel 2
+# Benchmark: batch generate --config ... --games 20 --output inputs/mixed --batch-seed 42
+# then batch start --inputs inputs/mixed --state-dir runs/mixed --parallel 2
 [game]
 civilizations = ["Rome", "Greece", "France", "Egypt"]
-master_seed = 42
 randomize = true
 map_size = "Small"
 city_states = 2
