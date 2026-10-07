@@ -74,6 +74,43 @@ def test_native_offers_never_wake_or_crowd_out_player_conversations(tmp_path):
     assert len(memory.snapshot("gameplay")["events"]) == 50
 
 
+def test_completed_communication_coalesces_later_replies_until_the_next_turn(tmp_path):
+    memory = state(tmp_path)
+    first = {
+        "id": 1,
+        "turn": 4,
+        "kind": "message",
+        "wake": True,
+        "body": {"author": "Greece", "text": "First proposal", "turn": 4},
+    }
+    memory.ingest("g1", [first], 1)
+    assert memory.has_wake()
+    snapshot = memory.start_job("chat-1", "communication", {})
+    assert snapshot["gameTurn"] == 4
+    memory.finish_job("chat-1", True)
+    reply = {
+        "id": 2,
+        "turn": 4,
+        "kind": "message",
+        "wake": True,
+        "body": {"author": "Greece", "text": "Thanks", "turn": 4},
+    }
+    memory.ingest("g1", [reply], 2)
+    assert not memory.has_wake()
+    next_turn = {
+        "id": 3,
+        "turn": 5,
+        "kind": "message",
+        "wake": True,
+        "body": {"author": "France", "text": "New terms", "turn": 5},
+    }
+    memory.ingest("g1", [next_turn], 3)
+    assert memory.has_wake()
+    queued = memory.start_job("chat-2", "communication", {})
+    assert queued["gameTurn"] == 5
+    assert [event["id"] for event in queued["events"]] == [2, 3]
+
+
 def test_outgoing_identity_exact_retry_and_crash_recovery(tmp_path):
     memory = state(tmp_path)
     memory.start_job("job", "gameplay", {}, game_turn=0)

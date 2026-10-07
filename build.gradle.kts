@@ -154,6 +154,15 @@ tasks.register<JavaExec>("prepareStrategyPositions") {
     }
 }
 
+tasks.register<JavaExec>("generateDominationPositions") {
+    group = "verification"
+    description = "Creates isolated early-game strategic choices with all native victory types enabled."
+    dependsOn(tasks.testClasses)
+    classpath = sourceSets.test.get().runtimeClasspath
+    mainClass = "uncivai.DominationPositionFixtures"
+    doFirst { args(providers.gradleProperty("dominationOutput").get()) }
+}
+
 tasks.register<JavaExec>("generateVictoryLiveFixtures") {
     group = "verification"
     description = "Creates fresh late-game checkpoints for opt-in live spaceship and election acceptance."

@@ -8,13 +8,17 @@ import time
 import aiohttp
 
 from civ_agent.agent_history import HISTORY_METHODS
-from civ_agent.agent_settings import codex_thread_settings
+from civ_agent.agent_settings import codex_thread_settings, communication_effort
 from civ_agent.civilization_state import StateConflict, job_id
 from civ_agent.host_connection import HostConnection
 from civ_agent.protocol import JsonObject
+from civ_agent.provider_usage import reconcile_provider_usage
 from civ_agent.schemas import ConnectRequest, validate
 from civ_agent.startup_context import prepare_startup, startup_prompt, startup_text
+from civ_agent.telemetry import merge_model_usage
 from civ_agent.tls import private_directory, write_private_json
+
+COMMUNICATION_BATCH_SECONDS = 3
 
 
 class ChatRuntime:
@@ -28,6 +32,7 @@ class ChatRuntime:
         self.held = True
         self.dispatching = False
         self.settings = {}
+        self.gameplay_settings = {}
         self.timeout = 300
         self.pending = asyncio.Event()
         self.jobs = {}
@@ -65,11 +70,18 @@ class ChatRuntime:
             if service.match
             else service.default_settings
         )
-        self.settings = {
+        gameplay_effort = (
+            payload["reasoningEffort"] if payload["reasoningEffort"] is not None else defaults["reasoningEffort"]
+        )
+        self.gameplay_settings = {
             "provider": defaults["provider"],
-            **{
-                key: payload[key] if payload[key] is not None else defaults[key] for key in ("model", "reasoningEffort")
-            },
+            "model": payload["model"] if payload["model"] is not None else defaults["model"],
+            "reasoningEffort": gameplay_effort,
+        }
+        self.settings = {
+            "provider": self.gameplay_settings["provider"],
+            "model": self.gameplay_settings["model"],
+            "reasoningEffort": communication_effort(gameplay_effort, service.communication_reasoning_effort),
         }
         self.timeout = payload["timeoutSeconds"]
         self.running = True
@@ -164,7 +176,7 @@ class ChatRuntime:
     async def dispatch(self):
         while self.running:
             await self.pending.wait()
-            await asyncio.sleep(1)  # Batch in application code, never in model context.
+            await asyncio.sleep(COMMUNICATION_BATCH_SECONDS)  # Batch in application code, never in model context.
             self.pending.clear()
             if (
                 self.held
@@ -210,6 +222,7 @@ class ChatRuntime:
             "threadId": None,
             "phase": "STARTING",
             "usage": {},
+            "modelRequests": 0,
             "settings": self.settings,
             "purpose": "communication",
             "requestedServiceTier": "fast" if service.fast else None,
@@ -225,14 +238,7 @@ class ChatRuntime:
             from civ_agent.agent_service import USAGE_KEYS
 
             total = usage.get("total", {})
-            if not isinstance(total, dict) or any(
-                type(total.get(field, 0)) is not int or total.get(field, 0) < 0 for field in USAGE_KEYS.values()
-            ):
-                return
-            record["usage"] = {
-                key: max(record["usage"].get(key, 0), total.get(field, 0)) for key, field in USAGE_KEYS.items()
-            }
-            record["usageReported"] = all(field in total for field in USAGE_KEYS.values())
+            merge_model_usage(record, total, USAGE_KEYS)
 
         async def notification(method, params):
             nonlocal final, completed
@@ -264,6 +270,7 @@ class ChatRuntime:
                 done.set()
 
         workspace = private_directory(service.workspace / "jobs" / id)
+        record_file = service.state_dir / "chat-jobs" / (hashlib.sha256(id.encode()).hexdigest() + ".json")
         process = service.process_factory(
             service.executable, workspace, service.gateway_url, service.gateway_ca_file, notification
         )
@@ -285,24 +292,22 @@ class ChatRuntime:
                 prepared,
                 "communication",
                 prompt,
-                strategy_guide=service.strategy_guide,
-                civilization_guide=service.civilization_guide,
                 civilization=service.civilization,
             )
             record["startup"] = {
                 "characters": len(
                     startup_text(
                         prepared,
-                        strategy_guide=service.strategy_guide,
-                        civilization_guide=service.civilization_guide,
                         civilization=service.civilization,
                     )
                 ),
                 "coreTools": [tool["name"] for tool in prepared["coreTools"]],
                 "reads": list(prepared["reads"]),
+                "decisionDetails": len(prepared.get("decisionDetails", [])),
                 **startup.metadata(),
             }
             await service.io.call(service.history.begin, record, None, job.token)
+            await service.io.call(write_private_json, record_file, record)
             await service.io.call(service.history.startup_context, id, startup.instructions, role="developer")
             await service.io.call(service.history.startup_context, id, startup.user)
             await process.start(job.token, self.settings)
@@ -326,6 +331,7 @@ class ChatRuntime:
             ):
                 raise ValueError("CODEX_SETTINGS_NOT_APPLIED")
             await service.io.call(service.history.lifecycle, record)
+            await service.io.call(write_private_json, record_file, record)
             turn = await process.request(
                 "turn/start",
                 {
@@ -371,15 +377,16 @@ class ChatRuntime:
                 record["runFailure"] = service.health()["runFailure"]
             job.closed = True
             await process.close()
+            trace_complete = await service.io.call(reconcile_provider_usage, record, service.provider_usage)
             await service.gateway.close(job, completed)
             record["phase"] = "FAILED" if record.get("error") else "COMPLETED" if completed else "INTERRUPTED"
             record["summary"] = final[:2400]
-            record["usageComplete"] = completed and record.get("usageReported", False)
+            record["usageComplete"] = trace_complete or (completed and record.get("usageReported", False))
             await service.io.call(service.accounting.sample, record, job.waiting_seconds())
             await service.io.call(service.history.lifecycle, record)
             await service.io.call(
                 write_private_json,
-                service.state_dir / "chat-jobs" / (hashlib.sha256(id.encode()).hexdigest() + ".json"),
+                record_file,
                 record,
             )
             with contextlib.suppress(OSError, ValueError, TimeoutError, aiohttp.ClientError):

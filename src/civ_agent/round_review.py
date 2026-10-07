@@ -10,12 +10,26 @@ def review_round(scheduler, status):
 
     boundary = status["turn"]
     turn = max(0, boundary - 1)
-    participants = [
-        name for name, interval in scheduler.review_intervals.items() if boundary == 0 or review_due(turn, interval)
-    ]
+    anchors = scheduler.state.setdefault("reviewAnchors", {})
+    war_turn = status.get("warDeclarationTurn")
+    forced = type(war_turn) is int and war_turn <= turn and war_turn > scheduler.state.get("reviewedWarTurn", -1)
+
+    def due(name, interval):
+        anchor = anchors.get(name)
+        return review_due(turn, interval) if type(anchor) is not int else turn - anchor >= interval
+
+    participants = (
+        list(scheduler.agents)
+        if boundary == 0 or forced
+        else [name for name, interval in scheduler.review_intervals.items() if due(name, interval)]
+    )
 
     def call(name, stage):
         fields = {"epoch": status["epoch"], "gameTurn": boundary, "stage": stage}
+        if stage == "start":
+            # Once an event resets the interval clock, scheduler-selected review
+            # turns no longer necessarily satisfy the service's original modulo.
+            fields["forceReview"] = True
         agent = scheduler.agents[name]
         # Capturing a position can take time. Metadata polls are short requests
         # and use the loop's heartbeat, without spawning a worker per poll.
@@ -86,12 +100,14 @@ def review_round(scheduler, status):
     scheduler.collect_finalizations(wait=True)
     if not can_continue():
         return False
-    scheduler.output.line("Status", f"Preparing shared strategic review after round {turn}.")
+    reason = " because war was declared" if forced else ""
+    scheduler.output.line("Status", f"Preparing shared strategic review after round {turn}{reason}.")
     scheduler.state["reviewPhase"] = {
         "gameTurn": boundary,
         "reviewTurn": turn,
         "stage": "Finishing communication",
         "civilizations": participants,
+        "trigger": "war_declaration" if forced else "interval",
     }
     scheduler.save()
     for name in scheduler.agents:
@@ -131,6 +147,10 @@ def review_round(scheduler, status):
         time.sleep(0.25)
 
     scheduler.state["reviewedBoundary"] = boundary
+    for name in participants:
+        anchors[name] = turn
+    if forced:
+        scheduler.state["reviewedWarTurn"] = war_turn
     scheduler.state.pop("reviewPhase", None)
     scheduler.save()
     release()

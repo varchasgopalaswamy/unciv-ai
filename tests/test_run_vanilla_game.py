@@ -60,6 +60,10 @@ controller = "built_in_ai"
     assert config.game.map_size is None and config.game.map_radius == 26
     assert not config.agents.fast and config.human == "France"
     assert [config.settings(p)["model"] for p in config.agent_players] == ["roman-model", "greek-model"]
+    assert [config.settings(p)["communication_reasoning_effort"] for p in config.agent_players] == [
+        "medium",
+        "medium",
+    ]
     args = config.engine_arguments()
     assert args[args.index("--agent-player") + 1] == "France"
     assert "--human" not in args  # Engine validation has the same seats without opening a display.
@@ -159,12 +163,15 @@ def test_cli_player_overrides_follow_identity_through_random_assignment(tmp_path
             "Agent 1=chosen-model",
             "--player-reasoning-effort",
             "Agent 1=max",
+            "--player-communication-reasoning-effort",
+            "Agent 1=low",
         )
     )
     player = next(p for p in resolved.assigned_players if p.name == "Agent 1")
     assert player.civilization != "Rome"
     assert resolved.settings(player)["model"] == "chosen-model"
     assert resolved.settings(player)["reasoning_effort"] == "max"
+    assert resolved.settings(player)["communication_reasoning_effort"] == "low"
     with pytest.raises(ValueError, match="not an agent player"):
         game.resolve_options(options(tmp_path, "--player-model", "Unciv=chosen-model"))
 
@@ -189,7 +196,9 @@ def test_batch_results_and_status_attribute_civilizations_to_named_players(tmp_p
         tmp_path,
         {"format": 2, "parallel": 1, "runs": [{"id": row["id"], "status": "completed"} for row in runs]},
     )
-    result = json.loads((tmp_path / "results.json").read_text())["runs"][0]
+    summary = json.loads((tmp_path / "results.json").read_text())
+    assert isinstance(summary["updated_at"], float)
+    result = summary["runs"][0]
     expected = ResolvedGameConfig.model_validate(runs[0]["config"])
     assert result["assignment_seed"] == 7
     assert result["players"] == expected.player_records()
@@ -362,6 +371,91 @@ def test_budget_exhaustion_is_distinct_from_a_resumable_operator_pause(tmp_path,
     monkeypatch.setattr(run.stop_event, "wait", lambda _: False)
     assert run.run() == "budget_exhausted"
     assert json.loads((root / "container-status.json").read_text())["status"] == "budget_exhausted"
+
+
+def test_terminal_model_capacity_failure_waits_and_resumes_from_checkpoint(tmp_path, monkeypatch):
+    from civ_agent.container_supervisor import GameRun
+    from civ_agent.monitoring import MonitorStore, path_for
+    from civ_agent.tls import write_private_json
+
+    config = GameConfig(limits={"model_capacity_retries": 2, "model_capacity_retry_delay": 17}).resolved()
+    game.initialize(
+        tmp_path / "game", config, tmp_path / "auth", images={"runtime": "fixed"}, validation={"maxTurns": 330}
+    )
+    root = tmp_path / "game"
+    monitor = MonitorStore(path_for(root))
+    monitor.put(
+        "state",
+        "run",
+        {
+            "status": "paused",
+            "inFlight": {
+                "agentPhase": "FAILED",
+                "modelStatus": {"state": "failed", "reason": "serverOverloaded"},
+            },
+        },
+    )
+    run = GameRun(root)
+    launches = 0
+    waits = []
+
+    def setup():
+        nonlocal launches
+        launches += 1
+        write_private_json(
+            root / "runtime.json",
+            {
+                "phase": "stopped",
+                "runner_status": "paused" if launches == 1 else "complete",
+                "reason": "Agent service failed without a confirmed handoff." if launches == 1 else "Game finished.",
+            },
+        )
+
+    def wait(seconds):
+        waits.append(seconds)
+        return False
+
+    monkeypatch.setattr(run, "setup", setup)
+    monkeypatch.setattr(run, "stop", lambda: None)
+    monkeypatch.setattr(run.stop_event, "wait", wait)
+    assert run.run() == "completed"
+    assert launches == 2
+    assert 17 in waits
+
+
+def test_noncapacity_model_failure_stays_paused_without_automatic_retry(tmp_path, monkeypatch):
+    from civ_agent.container_supervisor import GameRun
+    from civ_agent.monitoring import MonitorStore, path_for
+    from civ_agent.tls import write_private_json
+
+    game.initialize(
+        tmp_path / "game",
+        GameConfig().resolved(),
+        tmp_path / "auth",
+        images={"runtime": "fixed"},
+        validation={"maxTurns": 330},
+    )
+    root = tmp_path / "game"
+    MonitorStore(path_for(root)).put(
+        "state",
+        "run",
+        {
+            "status": "paused",
+            "inFlight": {
+                "agentPhase": "FAILED",
+                "modelStatus": {"state": "failed", "reason": "usageLimitExceeded"},
+            },
+        },
+    )
+    run = GameRun(root)
+    write_private_json(
+        root / "runtime.json",
+        {"phase": "stopped", "runner_status": "paused", "reason": "Agent service failed."},
+    )
+    monkeypatch.setattr(run, "setup", lambda: None)
+    monkeypatch.setattr(run, "stop", lambda: None)
+    monkeypatch.setattr(run.stop_event, "wait", lambda _: False)
+    assert run.run() == "paused"
 
 
 def test_stop_reports_cleanup_failure_without_retrying_it(tmp_path, monkeypatch):

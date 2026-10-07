@@ -9,7 +9,7 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from civ_agent.agent_settings import valid_setting
+from civ_agent.agent_settings import communication_effort, valid_setting
 from civ_agent.civilization_guide import civilization_reference
 from civ_agent.protocol import JsonObject
 from civ_agent.providers import Provider
@@ -75,6 +75,7 @@ class AgentDefaults(Configuration):
     provider: Provider = "openai"
     model: str = "gpt-6-luna"
     reasoning_effort: str = "medium"
+    communication_reasoning_effort: str | None = None
     review_interval: Positive = 5
     review_attempts: Positive = 3
     strategy_guide: bool = False
@@ -88,6 +89,13 @@ class AgentDefaults(Configuration):
             raise ValueError("Expected a nonempty model/effort name without whitespace")
         return value
 
+    @field_validator("communication_reasoning_effort")
+    @classmethod
+    def optional_setting(cls, value):
+        if value is not None and not valid_setting(value):
+            raise ValueError("Expected a nonempty effort name without whitespace")
+        return value
+
 
 class Player(Configuration):
     name: str
@@ -95,6 +103,7 @@ class Player(Configuration):
     provider: Provider | None = None
     model: str | None = None
     reasoning_effort: str | None = None
+    communication_reasoning_effort: str | None = None
 
     @field_validator("name")
     @classmethod
@@ -107,7 +116,7 @@ class Player(Configuration):
     def settings(self):
         if self.provider is not None and self.controller != "agent":
             raise ValueError("Only agent players have provider settings")
-        for value in (self.model, self.reasoning_effort):
+        for value in (self.model, self.reasoning_effort, self.communication_reasoning_effort):
             if value is not None and not valid_setting(value):
                 raise ValueError("Invalid model or reasoning effort")
             if value is not None and self.controller != "agent":
@@ -131,6 +140,8 @@ class Limits(Configuration):
     turn_timeout: Annotated[int, Field(gt=0, le=86400)] = 3600
     startup_timeout: Positive = 900
     max_concurrent_jobs: Positive = 4
+    model_capacity_retries: Annotated[int, Field(ge=0, le=100)] = 5
+    model_capacity_retry_delay: Annotated[int, Field(gt=0, le=86400)] = 180
 
 
 class ContainerResources(Configuration):
@@ -185,11 +196,16 @@ class GameConfig(Configuration):
 
     def settings(self, player) -> JsonObject:
         provider = player.provider or self.agents.provider
+        gameplay_effort = player.reasoning_effort or self.agents.reasoning_effort
         return {
             **self.agents.model_dump(),
             "provider": provider,
             "model": player.model or self.agents.model,
-            "reasoning_effort": player.reasoning_effort or self.agents.reasoning_effort,
+            "reasoning_effort": gameplay_effort,
+            "communication_reasoning_effort": communication_effort(
+                gameplay_effort,
+                player.communication_reasoning_effort or self.agents.communication_reasoning_effort,
+            ),
             "fast": self.agents.fast and provider == "openai",
         }
 
@@ -260,6 +276,7 @@ class ResolvedGameConfig(GameConfig):
                     provider=settings["provider"],
                     model=settings["model"],
                     reasoning_effort=settings["reasoning_effort"],
+                    communication_reasoning_effort=settings["communication_reasoning_effort"],
                 )
             records.append(record)
         return records

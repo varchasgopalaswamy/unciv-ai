@@ -54,6 +54,7 @@ internal data class OperatorStatus(
     val telemetryWriteError: String? = null,
     val activeController: String = "AGENT",
     val playerControllers: Map<String, String> = emptyMap(),
+    val warDeclarationTurn: Int? = null,
 )
 
 @Serializable
@@ -368,6 +369,7 @@ class OperatorControl internal constructor(
         activeController = controller(game.currentPlayerCiv),
         playerControllers = game.civilizations.filter { it.isHuman() && it.isMajorCiv() }
             .associate { it.civID to controller(it) },
+        warDeclarationTurn = runtime.communicationState.warDeclarationTurn,
         negotiationWaitMillis = runtime.communication.trades.waitMillis(),
         negotiationTimeoutSeconds = runtime.communicationState.trades.timeoutSeconds,
         scheduled = runtime.scheduled,

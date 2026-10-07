@@ -15,6 +15,15 @@ from the saved image without network access; only SQLite coordination directorie
 and the control-request directory are writable. The game state and credentials
 remain read-only, and all database connections use read-only mode.
 
+The same command accepts a batch directory. A game strip shows every saved game
+and its batch status; `[` and `]` switch to the previous or next game without
+closing the dashboard. Batch dashboards run from the local checkout so all game
+directories remain available to one viewer.
+
+```sh
+.venv/bin/civ-agent match watch --state-dir ~/.local/state/unciv-host/benchmark
+```
+
 To use an updated dashboard with an existing container game, add `--local`:
 
 ```sh
@@ -103,7 +112,8 @@ does not change when you update the checkout or rebuild images.
   completeness. Select an older turn to load its saved event history.
 - An API-call breakdown for the selected turn. The Game API total counts host
   `tool:` calls once; `command:` rows are a breakdown of those calls. Model-request
-  counts are labeled unavailable because the current records do not contain them.
+  counts come from cumulative app-server usage updates and are reconciled against
+  response IDs in the closed provider trace when that trace is available.
 - The native winner and final player scores when the game finishes.
 
 ## Controls
@@ -116,6 +126,7 @@ does not change when you update the checkout or rebuild images.
 | `d` | Open Diplomacy and focus the conversation list. |
 | Enter on a conversation | Read its messages, proposals and outcomes. |
 | `s` | Open Strategy and focus the civilization list. |
+| `[` / `]` | Switch to the previous or next game in a batch. |
 | Enter on a strategy row | Read that civilization's latest completed strategic report. |
 | Enter on a turn | Inspect that player's recorded activity for that turn. |
 | `a` | Return to all players and recent activity. |

@@ -33,6 +33,11 @@ turn. Match totals include both gameplay and chat and retain interrupted attempt
 Input usage adds the context processed by every model request within a game turn.
 It is not the size of one prompt or a count of distinct game information. Cached
 input is included in that total; uncached input is input minus cached input.
+`modelRequests` counts distinct provider responses observed through cumulative
+usage updates. After a model process closes, the service reconciles tokens and
+the exact response-ID count from that thread's local Codex usage records. Only
+usage records are read; conversation content is not copied into telemetry. A
+missing or malformed trace leaves the live counters and incomplete label intact.
 
 Strategic reviewers have separate `review` jobs. Periodic reviews link to their
 source gameplay job; opening reviews have no parent and count toward their owner's

@@ -12,6 +12,7 @@ from civ_agent.model_status import PROGRESS_METHODS, TOOL_ITEMS
 from civ_agent.observations import overview
 from civ_agent.proposal_gateway import JobAccess, public_result
 from civ_agent.protocol import JsonObject
+from civ_agent.provider_usage import reconcile_provider_usage
 from civ_agent.review_context import development_changes, review_position, upcoming_events
 from civ_agent.review_store import ReviewStore
 from civ_agent.strategic_review import (
@@ -22,6 +23,7 @@ from civ_agent.strategic_review import (
     review_due,
     review_facts,
 )
+from civ_agent.telemetry import merge_model_usage
 from civ_agent.tls import private_directory
 from civ_agent.victory_snapshot import capture_victory
 
@@ -98,7 +100,7 @@ class ReviewRuntime:
         self.unconfirmed_process = None
         self.active = False
 
-    async def phase(self, epoch, game_turn, stage):
+    async def phase(self, epoch, game_turn, stage, force_review=False):
         service = self.service
         if epoch != service.chat.epoch:
             raise ValueError("WORKSPACE_EPOCH_CONFLICT")
@@ -109,7 +111,7 @@ class ReviewRuntime:
         elif stage == "start":
             if not service.gateway.paused or not service.chat.held or service.chat.dispatching:
                 raise ValueError("REVIEW_BARRIER_REQUIRED")
-            await self.prepare_round(game_turn)
+            await self.prepare_round(game_turn, force_review)
             service.gateway.reviewing = True
             self.start()
         elif stage == "release":
@@ -125,11 +127,11 @@ class ReviewRuntime:
             "pendingReview": task if task and task["status"] != "COMPLETED" else None,
         }
 
-    async def prepare_round(self, game_turn):
+    async def prepare_round(self, game_turn, force_review=False):
         """Capture the common round boundary only after all mutations have stopped."""
         service = self.service
         turn = 0 if game_turn == 0 else game_turn - 1
-        if game_turn != 0 and not review_due(turn, self.interval):
+        if game_turn != 0 and not force_review and not review_due(turn, self.interval):
             return
         if await service.io.call(self.store.at_turn, turn):
             return
@@ -169,7 +171,9 @@ class ReviewRuntime:
                 self.store.prepare,
                 parent["activationId"] if parent else job_id(),
                 inputs,
-                parent.get("effectiveSettings", parent["settings"]) if parent else service.chat.settings,
+                parent.get("effectiveSettings", parent["settings"])
+                if parent
+                else service.chat.gameplay_settings or service.chat.settings,
                 service.chat.timeout,
             )
         except Exception as error:
@@ -341,6 +345,7 @@ class ReviewRuntime:
             "threadId": None,
             "phase": "STARTING",
             "usage": dict.fromkeys(USAGE_KEYS, 0),
+            "modelRequests": 0,
             "settings": settings,
             "requestedServiceTier": "fast" if service.fast else None,
         }
@@ -376,13 +381,8 @@ class ReviewRuntime:
 
         async def usage(value):
             total = value.get("total", {})
-            if not isinstance(total, dict) or any(
-                type(total.get(field, 0)) is not int or total.get(field, 0) < 0 for field in USAGE_KEYS.values()
-            ):
+            if not merge_model_usage(record, total, USAGE_KEYS):
                 return
-            for key, field in USAGE_KEYS.items():
-                record["usage"][key] = max(record["usage"][key], total.get(field, 0))
-            record["usageReported"] = all(field in total for field in USAGE_KEYS.values())
             await save()
 
         async def notification(method, params):
@@ -535,10 +535,17 @@ class ReviewRuntime:
                     await stop()
             finally:
                 await service.gateway.close(job, success)
+                trace_complete = (
+                    await service.io.call(reconcile_provider_usage, record, service.provider_usage)
+                    if stopped
+                    else False
+                )
                 if stopped:
                     record["phase"] = (
                         "COMPLETED" if success else "INTERRUPTED" if record.get("error") == "INTERRUPTED" else "FAILED"
                     )
                 progress.value["stage"] = record["phase"].capitalize()
-                record["usageComplete"] = stopped and completed == "completed" and record.get("usageReported", False)
+                record["usageComplete"] = trace_complete or (
+                    stopped and completed == "completed" and record.get("usageReported", False)
+                )
                 await save()

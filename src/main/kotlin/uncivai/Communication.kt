@@ -38,6 +38,10 @@ internal data class CommunicationState(
     val playerCredentials: MutableMap<String, String> = mutableMapOf(),
     // Trusted controller configuration. Existing matches use agent controllers by default.
     val humanPlayers: MutableSet<String> = mutableSetOf(),
+    // Trusted scheduler metadata. This is never exposed through a player session.
+    val observedMajorWars: MutableSet<String> = mutableSetOf(),
+    var observedWarTurn: Int? = null,
+    var warDeclarationTurn: Int? = null,
 )
 
 internal fun obj(vararg pairs: Pair<String, Any?>): JsonObject = buildJsonObject {
@@ -258,11 +262,11 @@ internal class Communication(private val runtime: GameExecutor) {
             if (report != null && oldReport != null && report.sequence == oldReport.sequence && (report != oldReport || request.usage != prior.reportedUsage)) fail()
             if (report != null && request.usage != null && prior.reportedUsage != null && listOf("input_tokens", "cached_input_tokens", "output_tokens", "reasoning_output_tokens").any { request.usage.tokens(it) < prior.reportedUsage.tokens(it) }) fail()
             if (report != null) {
-                if ((report.gameplayElapsedMs ?: 0) < 0 || (report.finalizationElapsedMs ?: 0) < 0) fail()
+                if ((report.gameplayElapsedMs ?: 0) < 0 || (report.finalizationElapsedMs ?: 0) < 0 || report.modelRequests < 0) fail()
                 if (report.memoryEdits?.valid() == false) fail()
                 if (oldReport?.memoryEdits?.let { report.memoryEdits?.follows(it) != true } == true) fail()
                 if (report.usageComplete && (!report.usageReported || request.usage == null || report.endedAtMs == null)) fail()
-                if (oldReport != null && (report.elapsedMs < oldReport.elapsedMs || (oldReport.usageComplete && !report.usageComplete) || oldReport.apiCalls.any { (name, count) -> (report.apiCalls[name]?.calls ?: 0) < count.calls })) fail()
+                if (oldReport != null && (report.elapsedMs < oldReport.elapsedMs || report.modelRequests < oldReport.modelRequests || (oldReport.usageComplete && !report.usageComplete) || oldReport.apiCalls.any { (name, count) -> (report.apiCalls[name]?.calls ?: 0) < count.calls })) fail()
             }
             state.jobs[id] = prior.copy(
                 expires = if (request.op == "job_release") {

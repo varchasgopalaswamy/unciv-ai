@@ -157,6 +157,7 @@ object WarPeaceRunProbe {
         val response = checkNotNull(declarationReceipt.feedback)
         check(response.title.isNotBlank() && response.paragraphs.any { it.isNotBlank() } && response.acknowledgement.isNotBlank())
         check(execute(token, declaration) == declarationReceipt)
+        check(operator(OperatorRequest("status")).status.warDeclarationTurn == snapshot.turn)
         snapshot = turn(token)
         check(snapshot.diplomacy.knownCivilizations.single().atWar)
         check(snapshot.scenario == null)

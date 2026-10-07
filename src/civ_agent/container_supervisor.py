@@ -35,6 +35,27 @@ from civ_agent.providers import read_api_key
 from civ_agent.tls import private_directory, write_private_json
 from civ_agent.turn_archive import civilization_directory_name
 
+RECOVERABLE_MODEL_FAILURES = frozenset({"serverOverloaded", "internalServerError"})
+
+
+def recoverable_model_failure(root: Path) -> str | None:
+    """Return a machine-classified transient failure, never infer it from prose."""
+    path = path_for(root)
+    if not path.exists():
+        return None
+    state = read_record(path, "state", "run") or {}
+    flight = state.get("inFlight") or {}
+    model = flight.get("modelStatus") or {}
+    reason = model.get("reason")
+    if (
+        state.get("status") == "paused"
+        and flight.get("agentPhase") == "FAILED"
+        and model.get("state") == "failed"
+        and reason in RECOVERABLE_MODEL_FAILURES
+    ):
+        return reason
+    return None
+
 
 def ensure_auth(root, image):
     private_directory(root)
@@ -292,56 +313,87 @@ class GameRun:
         for log in self.log_files:
             log.close()
 
+    def run_once(self):
+        status, error = "failed", None
+        self.names, self.log_processes, self.log_files, self.log_paths = [], [], [], {}
+        self.native_failure = None
+        self.status("starting")
+        try:
+            self.setup()
+            self.status("running", browser=read_json(self.root / "browser.json"))
+            sampled = 0.0
+            while not self.stop_event.wait(1):
+                runtime = read_json(self.root / "runtime.json", {})
+                if runtime.get("phase") == "stopped":
+                    status = {
+                        "complete": "completed",
+                        "budget_exhausted": "budget_exhausted",
+                        "paused": "paused",
+                        "stopped": "paused",
+                    }.get(runtime.get("runner_status"), "failed")
+                    error = runtime.get("reason")
+                    break
+                self.check_services()
+                if time.monotonic() - sampled > 10:
+                    result = podman("stats", "--no-stream", "--format", "json", *self.names, check=False)
+                    if result.returncode == 0:
+                        sample = {
+                            "at": time.time(),
+                            "launch": self.record["launch"],
+                            "containers": json.loads(result.stdout),
+                        }
+                        with (self.root / "resources.jsonl").open("a") as stream:
+                            stream.write(json.dumps(sample) + "\n")
+                        write_private_json(self.root / "resources.json", sample)
+                    sampled = time.monotonic()
+            else:
+                status = "paused"
+        except InterruptedError:
+            status = "paused"
+        except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as failure:
+            error = str(failure)
+        finally:
+            try:
+                self.stop()
+            except (OSError, RuntimeError, subprocess.SubprocessError) as failure:
+                status, error = "failed", f"{error or ''} Cleanup failed: {failure}".strip()
+            self.status(
+                status, reason=error, failure=self.native_failure, browser=read_json(self.root / "browser.json")
+            )
+        return status
+
     def run(self):
         with locked(self.root / ".supervisor.lock"):
-            status, error = "failed", None
-            self.status("starting")
-            try:
-                self.setup()
-                self.status("running", browser=read_json(self.root / "browser.json"))
-                sampled = 0.0
-                while not self.stop_event.wait(1):
-                    runtime = read_json(self.root / "runtime.json", {})
-                    if runtime.get("phase") == "stopped":
-                        status = {
-                            "complete": "completed",
-                            "budget_exhausted": "budget_exhausted",
-                            "paused": "paused",
-                            "stopped": "paused",
-                        }.get(runtime.get("runner_status"), "failed")
-                        error = runtime.get("reason")
-                        break
-                    self.check_services()
-                    if time.monotonic() - sampled > 10:
-                        result = podman("stats", "--no-stream", "--format", "json", *self.names, check=False)
-                        if result.returncode == 0:
-                            sample = {
-                                "at": time.time(),
-                                "launch": self.record["launch"],
-                                "containers": json.loads(result.stdout),
-                            }
-                            with (self.root / "resources.jsonl").open("a") as stream:
-                                stream.write(json.dumps(sample) + "\n")
-                            write_private_json(
-                                self.root / "resources.json",
-                                sample,
-                            )
-                        sampled = time.monotonic()
-                else:
-                    status = "paused"
-            except InterruptedError:
-                status = "paused"
-            except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as failure:
-                error = str(failure)
-            finally:
-                try:
-                    self.stop()
-                except (OSError, RuntimeError, subprocess.SubprocessError) as failure:
-                    status, error = "failed", f"{error or ''} Cleanup failed: {failure}".strip()
+            retries = 0
+            while True:
+                status = self.run_once()
+                reason = recoverable_model_failure(self.root) if status == "paused" else None
+                if reason is None:
+                    return status
+                if retries >= self.config.limits.model_capacity_retries:
+                    self.status(
+                        "paused",
+                        reason=f"Model capacity remained unavailable after {retries} automatic retries.",
+                        recovery={"reason": reason, "attempts": retries, "exhausted": True},
+                    )
+                    return status
+                retries += 1
+                delay = self.config.limits.model_capacity_retry_delay
                 self.status(
-                    status, reason=error, failure=self.native_failure, browser=read_json(self.root / "browser.json")
+                    "retrying",
+                    reason=f"Model capacity is unavailable; retrying in {delay} seconds.",
+                    recovery={
+                        "reason": reason,
+                        "attempt": retries,
+                        "maximum": self.config.limits.model_capacity_retries,
+                    },
                 )
-            return status
+                if self.stop_event.wait(delay):
+                    self.status("paused", reason="Operator stopped automatic model-capacity recovery.")
+                    return "paused"
+
+
+BATCH_SUMMARY_INTERVAL = 10.0
 
 
 def batch_summary(root, manifest):
@@ -367,7 +419,9 @@ def batch_summary(root, manifest):
                 "failure": read_json(directory / "container-status.json", {}).get("reason"),
             }
         )
-    write_private_json(root / "results.json", {"parallel": manifest["parallel"], "runs": rows})
+    write_private_json(
+        root / "results.json", {"parallel": manifest["parallel"], "updated_at": time.time(), "runs": rows}
+    )
     with (root / "results.csv").open("w", newline="") as stream:
         writer = csv.DictWriter(
             stream,
@@ -399,8 +453,11 @@ def run_batch(root, stop_event):
         if not isinstance(manifest, dict) or manifest.get("format") != 2:
             raise ContainerError("Unsupported batch manifest; start a new batch")
         active = {}
+        last_summary = 0.0
         with concurrent.futures.ThreadPoolExecutor(max_workers=manifest["parallel"]) as pool:
             try:
+                batch_summary(root, manifest)
+                last_summary = time.monotonic()
                 while True:
                     for future, run in list(active.items()):
                         if future.done():
@@ -411,12 +468,18 @@ def run_batch(root, stop_event):
                             del active[future]
                             write_private_json(root / "batch.json", manifest)
                             batch_summary(root, manifest)
+                            last_summary = time.monotonic()
                     queued = [r for r in manifest["runs"] if r["status"] == "pending"]
+                    started = False
                     if not stop_event.is_set():
                         for run in queued[: manifest["parallel"] - len(active)]:
                             run["status"] = "running"
                             write_private_json(root / "batch.json", manifest)
                             active[pool.submit(GameRun(root / "games" / run["id"], stop_event).run)] = run
+                            started = True
+                    if started or time.monotonic() - last_summary >= BATCH_SUMMARY_INTERVAL:
+                        batch_summary(root, manifest)
+                        last_summary = time.monotonic()
                     if not active and (stop_event.is_set() or not queued):
                         break
                     time.sleep(0.5)

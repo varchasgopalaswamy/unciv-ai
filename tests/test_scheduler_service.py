@@ -287,6 +287,19 @@ class SchedulerServiceTest(unittest.TestCase):
             self.assertIn('"asOfTurn":5', gameplay["input"][0]["text"])
         self.assertEqual(self.saved()["reviewedBoundary"], 6)
 
+    def test_war_declaration_forces_review_and_resets_interval_clock(self):
+        self.host.handoff = 8  # Both players begin round 4, one before the configured interval.
+        self.host.war_declaration_turn = 4
+        result = self.run_cli("--max-turns", "2", "--max-seconds", "60")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        starts = [row["params"] for row in self.records() if row["method"] == "turn/start"]
+        self.assertEqual(["outputSchema" in row for row in starts], [False, False, True, True, False, False])
+        for report in starts[2:4]:
+            self.assertIn("after all players completed round 4", report["input"][0]["text"])
+        saved = self.saved()
+        self.assertEqual(saved["reviewAnchors"], {"Rome": 4, "Greece": 4})
+        self.assertEqual(saved["reviewedWarTurn"], 4)
+
     def test_run_overrides_reach_native_turns_and_resume_without_repeating_flags(self):
         first = self.run_cli(
             "--model", "run-model", "--reasoning", "custom-effort", "--max-invocations", "1", "--max-seconds", "60"

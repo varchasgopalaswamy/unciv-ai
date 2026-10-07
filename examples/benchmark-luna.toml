@@ -2,6 +2,7 @@
 [game]
 civilizations = ["Inca", "France", "Greece", "Arabia", "China", "Persia"]
 randomize = true
+map_seed = 19238721
 map_type = "Pangaea"
 map_size = "Medium"
 city_states = 12
@@ -12,8 +13,10 @@ speed = "Standard"
 provider = "openai"
 model = "gpt-5.6-luna"
 reasoning_effort = "max"
+communication_reasoning_effort = "medium"
 review_interval = 10
 strategy_guide = true
+civilization_guide = true
 
 [[players]]
 name = "Unciv"

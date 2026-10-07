@@ -719,6 +719,9 @@ class CivilizationState:
 
     def has_wake(self) -> bool:
         with self.transaction() as db:
+            game_turn = self._meta(db, "gameTurn", 0)
+            if self._meta(db, "lastCompletedCommunicationTurn", -1) >= game_turn:
+                return False
             return (
                 db.execute(
                     select(tables.events.c.id)
@@ -840,6 +843,12 @@ class CivilizationState:
             if completed:
                 key = "handled:" + row["purpose"]
                 self._set(db, key, max(snapshot["cursor"], self._meta(db, key, 0)))
+                if row["purpose"] == "communication" and type(snapshot.get("gameTurn")) is int:
+                    self._set(
+                        db,
+                        "lastCompletedCommunicationTurn",
+                        max(snapshot["gameTurn"], self._meta(db, "lastCompletedCommunicationTurn", -1)),
+                    )
 
     def _validate(self, db, job, dependencies):
         if self._meta(db, "paused", False):

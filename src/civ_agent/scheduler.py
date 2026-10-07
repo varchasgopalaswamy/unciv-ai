@@ -231,6 +231,9 @@ class Operator(JsonEndpoint):
                 raise ValueError()
             if any(type(status.get(key)) is not int or status[key] < 0 for key in ("turn", "handoff")):
                 raise ValueError()
+            war_turn = status.get("warDeclarationTurn")
+            if war_turn is not None and (type(war_turn) is not int or war_turn < 0):
+                raise ValueError()
             return value
         except (ValueError, KeyError, TypeError):
             raise OperatorError("Invalid operator response; stopped for inspection.") from None

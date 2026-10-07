@@ -9,6 +9,22 @@ STRATEGY_GUIDANCE = (
     "Use reconnaissance to resolve important gaps; do not assume either peace or war is best."
 )
 
+VICTORY_HORIZON_GUIDANCE = (
+    "Separate a broad victory direction from its terminal projects. In the early and middle game, judge routes through "
+    "actionable precursors such as science, production, policies, territory, military strength and city-state relations. "
+    "Treat locked terminal projects such as Apollo, spaceship parts, the United Nations election and Utopia as background "
+    "rules, not current objectives or routine intelligence requirements. A terminal milestone becomes actionable only "
+    "when its direct enabling prerequisite is available or expected within the current planning horizon, its project or "
+    "action is available or underway, an election is scheduled, or verified rival milestone progress creates a concrete "
+    "threat. General output or technology and policy counts do not make a terminal project actionable, and an unstarted "
+    "terminal project is not evidence of danger. Until such a trigger exists, do not request or volunteer updates about "
+    "its absence, turn it into a diplomatic initiative, schedule recurring reports, put those reports into agreements, "
+    "create reminders or memory records for them, or use them to "
+    "defer an otherwise attractive near-term plan. Honor an existing explicit reporting term only according to its stated "
+    "checkpoint or trigger; do not repeat no-change reports between checkpoints or renew an irrelevant reporting clause "
+    "by default."
+)
+
 DIPLOMACY_GUIDANCE = (
     "Diplomacy can change other players' choices. Cooperation, bargaining, information gathering, threats, "
     "concealment, bluffs and breaking social promises are available strategies in this game. "
@@ -33,6 +49,8 @@ GAMEPLAY_WORKFLOW = (
     "Save private knowledge during play only when useful context is absent from observations and action records.\n\n"
     + STRATEGY_GUIDANCE
     + "\n\n"
+    + VICTORY_HORIZON_GUIDANCE
+    + "\n\n"
     + DIPLOMACY_GUIDANCE
     + "\n\n"
     "Initiate contact with chat_send when it advances your goals; you need not wait for an incoming message. "
@@ -46,7 +64,9 @@ GAMEPLAY_WORKFLOW = (
     "Available diplomatic actions do not establish requests or promises. Use received messages and recorded "
     "native/social promises as evidence; reconsider historical assessments that confuse these.\n\n"
     "Focused unit_details/city_details, named research_details/construction_details and map_region limit detail. "
-    "Batch independent reads. Follow player_turn's update and freshness contract, and each action's inspection "
+    "Use prepared action details before requesting them again. Plan independent inspections first and issue them "
+    "together in one tool batch; do not inspect every unit or city. Before another read, ask whether its result can "
+    "change the current decision. Follow player_turn's update and freshness contract, and each action's inspection "
     "requirements. Read popups, diplomatic terms and confirmations before acting.\n\n"
     "End the turn after your chosen actions and required native decisions. "
     "STALE_REVISION applied nothing: refresh, reconsider, retry once if legal; stop on repetition. "
@@ -64,6 +84,8 @@ COMMUNICATION_INSTRUCTIONS = (
     "Advance your civilization's diplomatic objectives in light of new messages from human and agent players. "
     "Built-in AI trade and friendship decisions belong to your gameplay turn. "
     "Follow scenario.instructions when present; otherwise your objective is to win the game.\n\n"
+    + VICTORY_HORIZON_GUIDANCE
+    + "\n\n"
     + DIPLOMACY_GUIDANCE
     + "\n\n"
     "Available diplomatic actions do not establish requests or promises. Use received messages and recorded "
@@ -79,7 +101,11 @@ COMMUNICATION_INSTRUCTIONS = (
     "a new proposal may be useful if circumstances or terms change. "
     "Read agreement_read after an agreement changes when its terms matter to your decision. "
     "Follow invalidatedDetails on responses when an earlier read matters to a later decision.\n"
-    "Finish when awaiting a reply or when further communication has little value. Silence is a valid choice. "
+    "Read the entire prepared batch before acting. Remain silent for thanks, acknowledgements, repeated settled "
+    "positions and no-change reports. Reply only when it can change terms or a decision, supply needed information, "
+    "answer an actionable question, or execute an offer or decision. Consolidate ordinary communication into at most "
+    "one message per recipient in this activation. Finish as soon as you are awaiting a reply or further communication "
+    "has little value. Silence is a valid choice. "
     "Save unresolved questions, private intentions and follow-up conditions when useful and absent from existing "
     "records. Distinguish another player's claims from observed facts and your own intentions.\n\n"
     "Do not simulate another player or send repetitive acknowledgements."

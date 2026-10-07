@@ -16,6 +16,24 @@ from civ_agent.tls import private_directory
 TOKEN_KEYS = ("input_tokens", "cached_input_tokens", "output_tokens", "reasoning_output_tokens")
 TERMINAL = {"COMPLETED", "FAILED", "INTERRUPTED"}
 
+
+def merge_model_usage(record: JsonObject, total: object, fields: dict[str, str]) -> bool:
+    """Merge one cumulative app-server sample and estimate newly billed responses."""
+    if not isinstance(total, dict):
+        return False
+    values = {key: total.get(field, 0) for key, field in fields.items()}
+    if any(type(value) is not int or value < 0 for value in values.values()):
+        return False
+    usage = record.setdefault("usage", {})
+    increased = any(values[key] > usage.get(key, 0) for key in fields)
+    for key in fields:
+        usage[key] = max(usage.get(key, 0), values[key])
+    if increased:
+        record["modelRequests"] = record.get("modelRequests", 0) + 1
+    record["usageReported"] = all(field in total for field in fields.values())
+    return True
+
+
 metadata = MetaData()
 jobs = Table(
     "jobs",
@@ -62,6 +80,7 @@ class JobAccounting:
                             "phase": "FAILED",
                             "usage": row["usage"],
                             "usageReported": row["telemetry"]["usageReported"],
+                            "modelRequests": row["telemetry"].get("modelRequests", 0),
                             "settings": {
                                 "provider": row["telemetry"].get("provider"),
                                 "model": row["telemetry"]["model"],
@@ -91,6 +110,7 @@ class JobAccounting:
             "model": None,
             "provider": None,
             "reasoningEffort": None,
+            "modelRequests": 0,
             "apiCalls": {},
         }
         row = {"epoch": epoch, "claimed": claimed, "usage": dict.fromkeys(TOKEN_KEYS, 0), "telemetry": report}
@@ -157,6 +177,7 @@ class JobAccounting:
             report["usageComplete"] = report["usageComplete"] or (
                 bool(record.get("usageReported", False)) and bool(record.get("usageComplete", False))
             )
+            report["modelRequests"] = max(report.get("modelRequests", 0), record.get("modelRequests", 0))
             for field in ("gameplayElapsedMs", "finalizationElapsedMs"):
                 if field in record:
                     report[field] = max(report.get(field, 0), record[field])

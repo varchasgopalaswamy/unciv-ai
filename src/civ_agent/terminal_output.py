@@ -11,7 +11,30 @@ from rich.console import Console
 from rich.text import Text
 
 ANSI = re.compile(r"\x1b(?:\][^\x07\x1b]*(?:\x07|\x1b\\)|\[[0-?]*[ -/]*[@-~]|[@-_])")
-PLAYER_COLORS = ("cyan", "magenta", "blue", "bright_cyan", "bright_magenta", "bright_blue")
+PLAYER_COLORS = (
+    "bright_cyan",
+    "bright_magenta",
+    "bright_green",
+    "bright_yellow",
+    "bright_blue",
+    "bright_red",
+    "cyan",
+    "magenta",
+    "green",
+    "yellow",
+    "blue",
+    "red",
+)
+KNOWN_PLAYER_COLORS = {
+    "Inca": "bright_yellow",
+    "France": "bright_blue",
+    "Greece": "bright_cyan",
+    "Arabia": "bright_green",
+    "China": "bright_red",
+    "Persia": "bright_magenta",
+    "Rome": "magenta",
+    "Egypt": "yellow",
+}
 
 
 def visible_text(value):
@@ -30,8 +53,7 @@ def color_enabled(mode="auto", stream=None):
 
 
 def player_style(civilization):
-    known = {"Rome": "magenta", "Greece": "cyan", "France": "bright_blue", "Egypt": "bright_magenta"}
-    return known.get(
+    return KNOWN_PLAYER_COLORS.get(
         civilization,
         PLAYER_COLORS[int.from_bytes(hashlib.sha256(civilization.encode()).digest()[:2]) % len(PLAYER_COLORS)],
     )

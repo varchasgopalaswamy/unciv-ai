@@ -72,9 +72,9 @@ names. Mod content is out of scope. Choose `map_size` or a custom `map_radius`.
 | Section | Settings |
 | --- | --- |
 | `[game]` | `civilizations`, `randomize`, `master_seed`, `map_seed`, `starting_position_seed`, `assignment_seed`, `map_type`, `map_size`/`map_radius`, `difficulty`, `speed`, `starting_era`, `city_states`, `victories` |
-| `[agents]` | `provider` (`openai` or `openrouter`), `model`, `reasoning_effort`, `review_interval`, `review_attempts`, `strategy_guide`, `civilization_guide`, `fast` |
-| `[[players]]` | Unique `name`, `controller` (`agent`, `human`, `built_in_ai`; defaults to `agent`); optional agent `provider`/`model`/`reasoning_effort` |
-| `[limits]` | `max_turns`, `max_invocations`, `max_seconds`, `turn_timeout`, `startup_timeout`, `max_concurrent_jobs` |
+| `[agents]` | `provider` (`openai` or `openrouter`), `model`, `reasoning_effort`, `communication_reasoning_effort`, `review_interval`, `review_attempts`, `strategy_guide`, `civilization_guide`, `fast` |
+| `[[players]]` | Unique `name`, `controller` (`agent`, `human`, `built_in_ai`; defaults to `agent`); optional agent `provider`/`model`/`reasoning_effort`/`communication_reasoning_effort` |
+| `[limits]` | `max_turns`, `max_invocations`, `max_seconds`, `turn_timeout`, `startup_timeout`, `max_concurrent_jobs`, `model_capacity_retries`, `model_capacity_retry_delay` |
 | `[resources.controller]`, `[resources.desktop]`, `[resources.agent]` | `memory_mib`, `cpus`, `pids` |
 | `[runtime]` | `image`, `desktop_image`, `browser_port` |
 
@@ -85,6 +85,14 @@ Both default to false. Civilization advice currently supports Inca, France,
 Greece, Arabia, China, and Persia; enabling it for another agent civilization
 fails configuration validation after assignments are resolved. See the
 [strategy-guide instructions](Strategy-guide.md) for CLI flags and prompt details.
+Gameplay and strategic reviews receive the enabled references. Background
+communication uses compact diplomacy guidance instead, avoiding repeated copies
+of the full references for acknowledgement-sized exchanges.
+
+`communication_reasoning_effort` independently controls background diplomacy.
+When omitted, known gameplay levels above `medium` are capped at `medium`; lower,
+`none`, and unknown model-specific levels are preserved. Gameplay and strategic
+reviews continue to use `reasoning_effort`.
 
 Players identify competitors independently of their civilizations. List exactly
 one player per entry in `game.civilizations`. With `randomize = false` (the default),
@@ -318,11 +326,15 @@ limit play to three turns; omit `limits.max_turns` for full games.
 A failed game is recorded and the next queued game can run. Resume continues
 pending/paused runs; `--retry-failed` opts into retrying failures. Completed and
 budget-exhausted runs stay finished. Explicit image upgrades affect unfinished
-runs. Each game can be watched with `match watch --state-dir .../games/<stem>`.
-`results.json` and `results.csv` read every game's saved configuration and include
-every seed, named players, assigned civs, effective provider/model/effort, stop
-status, results and failures. Existing per-turn token/call/timing accounting
-remains in the databases; see [telemetry](../reference/Telemetry.md).
+runs. `results.json` and `results.csv` read every game's saved configuration and
+include every seed, named players, assigned civs, effective provider/model/effort,
+stop status, results and failures. While the batch service is active they refresh
+after launches/completions and at least every ten seconds; `updated_at` in
+`results.json` records the latest refresh. Watch the whole batch with
+`match watch --state-dir .../benchmark`, then use `[` and `]` to move between
+games. A specific game remains directly watchable with
+`match watch --state-dir .../games/<stem>`. Existing per-turn token/call/timing
+accounting remains in the databases; see [telemetry](../reference/Telemetry.md).
 
 `batch generate --dry-run` previews the generated TOMLs without publishing a
 directory. `batch start --dry-run` previews resolved inputs without creating state

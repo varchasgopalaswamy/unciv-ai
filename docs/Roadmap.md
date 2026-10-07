@@ -1,6 +1,6 @@
 # Current roadmap
 
-Updated September 25, 2026. This is the current work summary; completed sprint
+Updated October 6, 2026. This is the current work summary; completed sprint
 checklists and measurements live in the [archive](archive/README.md).
 
 ## Active acceptance: complete an ordinary Vanilla game
@@ -73,6 +73,14 @@ Remaining recommendations:
 3. **Investigate recurring communication-read failures if they return.** The last
    review found eleven recoverable background MCP errors before a restart, with
    no established server-side cause.
+4. **Improve long-horizon strategic conversion.** The
+   [October 6 four-game audit](archive/reports/Benchmark-agent-play-audit-2026-10-06.md)
+   found that agents usually led in science or military force but trailed the
+   built-in control in cities, population, production, wonders, and total score.
+   Prioritize a permitted comparative conversion audit, a compact persistent
+   execution plan, explicit treasury and expansion decisions, and a five-turn
+   wartime progress review. Validate them from fixed checkpoints before adding
+   more general strategy prose.
 
 Current efficiency behavior is documented in
 [agent context](architecture/Agent-context.md),

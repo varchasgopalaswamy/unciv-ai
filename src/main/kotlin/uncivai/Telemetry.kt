@@ -88,6 +88,7 @@ internal data class JobTelemetry(
     val finalizationElapsedMs: Long? = null,
     val memoryEdits: MemoryEditCounts? = null,
     val provider: String? = null,
+    val modelRequests: Long = 0,
 )
 
 @Serializable
@@ -321,6 +322,7 @@ internal class Telemetry(private val runtime: GameExecutor) {
                     "schemaVersion" to 1, "matchId" to game.gameId, "turnId" to id, "turn" to turn.recordJson(),
                     "controller" to if (human) "HUMAN" else "AGENT",
                     "usage" to usage(attempts.values), "jobs" to attempts.keys.toList(), "attempts" to turn.activationIds.size,
+                    "modelRequests" to attempts.values.sumOf { it.telemetry?.modelRequests ?: 0 },
                     "accountingComplete" to (turn.endedAtMs != null && (human || turn.activationIds.all { activation -> attempts.containsKey(activation) }) && attempts.values.all { it.telemetry?.usageComplete == true }),
                     "agentCalls" to aggregateCalls(attempts.values.map { it.telemetry?.apiCalls.orEmpty() }),
                     "memoryEdits" to aggregateMemoryEdits(attempts.values.map { it.telemetry?.memoryEdits }),
@@ -354,6 +356,7 @@ internal class Telemetry(private val runtime: GameExecutor) {
                 },
                 "result" to state.result?.recordJson(), "scores" to (state.result?.scores ?: scores(game)).map { it.recordJson() },
                 "usage" to usage(jobs.values), "modelJobs" to jobs.size,
+                "modelRequests" to jobs.values.sumOf { it.telemetry?.modelRequests ?: 0 },
                 "agentCalls" to aggregateCalls(jobs.values.map { it.telemetry?.apiCalls.orEmpty() }),
                 "memoryEdits" to aggregateMemoryEdits(jobs.values.map { it.telemetry?.memoryEdits }),
                 "hostCalls" to aggregateCalls(state.windows.values.flatMap { it.actors.values }),
@@ -361,6 +364,7 @@ internal class Telemetry(private val runtime: GameExecutor) {
                     val owned = jobs.values.filter { it.civilization == player.civID }
                     obj(
                         "civilization" to player.civID, "usage" to usage(owned), "modelJobs" to owned.size,
+                        "modelRequests" to owned.sumOf { it.telemetry?.modelRequests ?: 0 },
                         "gameplayUsage" to usage(owned.filter { it.purpose == "gameplay" }), "reviewUsage" to usage(owned.filter { it.purpose == "review" }), "chatUsage" to usage(owned.filter { it.purpose == "communication" }),
                         "agentCalls" to aggregateCalls(owned.map { it.telemetry?.apiCalls.orEmpty() }),
                         "memoryEdits" to aggregateMemoryEdits(owned.map { it.telemetry?.memoryEdits }),

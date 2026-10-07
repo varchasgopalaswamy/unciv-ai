@@ -78,9 +78,10 @@ remain undisclosed.
 
 ## Opportunities at turn start
 
-The separately prepared `victory_progress` includes a compact rankings table and
-changes across up to ten recorded turns. It uses the existing startup read and
-does not add a model request. Full chart history remains on demand; see
+The separately prepared `victory_progress` is deliberately limited to a compact
+rankings table and changes across up to ten recorded turns. It uses the existing
+startup read and does not add a model request. Full milestone data and chart history
+remain on demand; see
 [Victory Status observations](Victory-and-turn-blockers.md#victory-status-observations).
 These are observations at the returned `turn`, independent of `player_turn`
 command deltas. Reread relevant sections when a later action changes a comparison

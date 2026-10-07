@@ -15,6 +15,7 @@ import time
 from pathlib import Path
 
 from civ_agent.monitoring import path_for, read_collection, read_record
+from civ_agent.scheduler import positive
 from civ_agent.tls import write_private_json
 
 
@@ -42,8 +43,13 @@ def main():
     parser.add_argument("--reasoning-effort", default="high")
     parser.add_argument("--fast", action="store_true")
     parser.add_argument("--strategy-guide", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--civilization-guide", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--review-interval", type=positive, default=5)
+    parser.add_argument(
+        "--manifest", type=Path, default=Path(__file__).parent / "fixtures/strategy_positions/manifest.json"
+    )
     args = parser.parse_args()
-    manifest = json.loads((Path(__file__).parent / "fixtures/strategy_positions/manifest.json").read_text())
+    manifest = json.loads(args.manifest.read_text())
     selected = set(args.case or [case["id"] for case in manifest["positions"]])
     cases = [case for case in manifest["positions"] if case["id"] in selected]
     if selected != {case["id"] for case in cases}:
@@ -60,6 +66,8 @@ def main():
         "model": args.model,
         "reasoningEffort": args.reasoning_effort,
         "strategyGuide": args.strategy_guide,
+        "civilizationGuide": args.civilization_guide,
+        "reviewInterval": args.review_interval,
         "fast": args.fast,
         "freshPrivateMemory": True,
         "positions": cases,
@@ -90,6 +98,9 @@ def main():
             "--turn-timeout",
             "1200",
             "--strategy-guide" if args.strategy_guide else "--no-strategy-guide",
+            "--civilization-guide" if args.civilization_guide else "--no-civilization-guide",
+            "--review-interval",
+            str(args.review_interval),
             *(["--fast"] if args.fast else []),
         ]
         started = time.monotonic()

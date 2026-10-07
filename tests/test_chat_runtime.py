@@ -186,7 +186,7 @@ class Jobs:
                         "thread": {"id": workspace.name},
                         "modelProvider": parameters["modelProvider"],
                         "model": parameters.get("model", "test-model"),
-                        "reasoningEffort": "medium",
+                        "reasoningEffort": parameters.get("config", {}).get("model_reasoning_effort", "medium"),
                         "serviceTier": parameters.get("serviceTier"),
                     }
                 if method == "turn/start":
@@ -234,6 +234,7 @@ def test_chat_batches_and_replies_while_planning_job_is_held(
     tmp_path, monkeypatch, strategy_guide, civilization_guide, fast, provider
 ):
     async def run():
+        monkeypatch.setattr("civ_agent.chat_runtime.COMMUNICATION_BATCH_SECONDS", 0.05)
         model = "test/model" if provider == "openrouter" else "test-model"
         priority = fast and provider == "openai"
         civilization = "France" if civilization_guide else "Rome"
@@ -260,6 +261,7 @@ def test_chat_batches_and_replies_while_planning_job_is_held(
             fast=fast,
             provider=provider,
             model=model,
+            reasoning_effort="max",
         )
         jobs.service = service
         try:
@@ -268,7 +270,7 @@ def test_chat_batches_and_replies_while_planning_job_is_held(
                     "epoch": "g1",
                     "playerToken": "P" * 43,
                     "model": model,
-                    "reasoningEffort": "medium",
+                    "reasoningEffort": None,
                     "timeoutSeconds": 10,
                 }
             )
@@ -287,7 +289,7 @@ def test_chat_batches_and_replies_while_planning_job_is_held(
                     "playerToken": "P" * 43,
                     "prompt": "Play Rome's current game turn.",
                     "model": model,
-                    "reasoningEffort": "medium",
+                    "reasoningEffort": "max",
                     "timeoutSeconds": 20,
                     "leaseSeconds": 30,
                 }
@@ -304,27 +306,31 @@ def test_chat_batches_and_replies_while_planning_job_is_held(
             host.post("Can we discuss peace?")
             host.post("I can offer a luxury.")
             host.post("Let me know what you need.")
-            await asyncio.sleep(1.2)
+            await asyncio.sleep(0.15)
             assert jobs.purposes == ["gameplay"] and host.sent == []
             await service.review_phase({"epoch": "g1", "gameTurn": 0, "stage": "release"})
             await asyncio.wait_for(jobs.replied.wait(), 3)
             assert jobs.purposes == ["gameplay", "communication"]
+            thread_efforts = []
             for method, parameters in jobs.calls:
                 if method in {"thread/start", "turn/start"}:
                     assert parameters.get("serviceTier") == ("fast" if priority else None)
                     if method == "thread/start":
                         assert parameters["modelProvider"] == provider
-                        assert parameters["config"]["model_reasoning_effort"] == "medium"
+                        thread_efforts.append(parameters["config"]["model_reasoning_effort"])
                         assert parameters["config"].get("features.fast_mode", False) == priority
+            assert thread_efforts == ["max", "medium"]
             assert all(strategy_reference() not in prompt for prompt in jobs.instructions)
-            assert all(prompt.count(strategy_reference()) == int(strategy_guide) for prompt in jobs.prompts)
+            assert jobs.prompts[0].count(strategy_reference()) == int(strategy_guide)
+            assert strategy_reference() not in jobs.prompts[1]
             assert service.records["planning"]["startup"]["strategyGuide"]["enabled"] == strategy_guide
             reference = civilization_reference("France")
             assert all(reference not in prompt for prompt in jobs.instructions)
-            assert all(prompt.count(reference) == int(civilization_guide) for prompt in jobs.prompts)
+            assert jobs.prompts[0].count(reference) == int(civilization_guide)
+            assert reference not in jobs.prompts[1]
             assert service.records["planning"]["startup"]["civilizationGuide"]["enabled"] == civilization_guide
             if strategy_guide and civilization_guide:
-                assert all(prompt.index(strategy_reference()) < prompt.index(reference) for prompt in jobs.prompts)
+                assert jobs.prompts[0].index(strategy_reference()) < jobs.prompts[0].index(reference)
             assert all(prompt.count("Civ tool discovery:") == 1 for prompt in jobs.instructions)
             assert all("Civ tool discovery:" not in prompt for prompt in jobs.prompts)
             assert '"mcp__civ__player_capabilities"' in jobs.instructions[0]
@@ -340,7 +346,7 @@ def test_chat_batches_and_replies_while_planning_job_is_held(
                 for record in service.chat.jobs.values()
             )
             host.post("Unmentioned public remark", wake=False)
-            await asyncio.sleep(1.2)
+            await asyncio.sleep(0.15)
             assert jobs.purposes == ["gameplay", "communication"]
             host.expire_gameplay = True
             await service.heartbeat("planning")

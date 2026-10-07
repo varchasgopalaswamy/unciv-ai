@@ -85,6 +85,17 @@ def parser(*, add_help=True, action="start"):
         result.add_argument(
             "--player-reasoning-effort", dest="player_reasoning_efforts", action=PlayerSetting, metavar="PLAYER=LEVEL"
         )
+        result.add_argument(
+            "--communication-reasoning-effort",
+            type=setting_argument,
+            help="Default reasoning effort for background diplomacy (default: cap high/max gameplay at medium)",
+        )
+        result.add_argument(
+            "--player-communication-reasoning-effort",
+            dest="player_communication_reasoning_efforts",
+            action=PlayerSetting,
+            metavar="PLAYER=LEVEL",
+        )
         result.add_argument("--fast", action=argparse.BooleanOptionalAction, default=None)
         result.add_argument("--strategy-guide", action=argparse.BooleanOptionalAction, default=None)
         result.add_argument("--civilization-guide", action=argparse.BooleanOptionalAction, default=None)
@@ -116,6 +127,7 @@ def resolve_options(args):
             "provider",
             "model",
             "reasoning_effort",
+            "communication_reasoning_effort",
             "fast",
             "strategy_guide",
             "civilization_guide",
@@ -139,6 +151,7 @@ def resolve_options(args):
         ("player_providers", "provider"),
         ("player_models", "model"),
         ("player_reasoning_efforts", "reasoning_effort"),
+        ("player_communication_reasoning_efforts", "communication_reasoning_effort"),
     ):
         for name, value in (getattr(args, option, None) or {}).items():
             player_overrides.setdefault(name, {})[setting] = value

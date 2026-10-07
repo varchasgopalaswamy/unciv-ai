@@ -13,7 +13,7 @@ from pathlib import Path
 from aiohttp import web
 
 from civ_agent.agent_service import AgentService, ServiceError, server_ssl_context
-from civ_agent.agent_settings import add_settings_arguments
+from civ_agent.agent_settings import add_settings_arguments, setting_argument
 from civ_agent.civilization_guide import UnsupportedCivilizationGuideError, civilization_reference
 from civ_agent.civilization_state import MemoryFormatError
 from civ_agent.providers import PROVIDERS
@@ -92,6 +92,12 @@ def parser(*, add_help: bool = True) -> argparse.ArgumentParser:
         model_help="Default model for new conversations; civ-agent match start --model overrides it",
         reasoning_help="Default reasoning effort for new conversations; civ-agent match start --reasoning-effort overrides it",
     )
+    result.add_argument(
+        "--communication-reasoning-effort",
+        type=setting_argument,
+        metavar="LEVEL",
+        help="Reasoning effort for background diplomacy; defaults to at most medium for known effort levels",
+    )
     return result
 
 
@@ -166,6 +172,7 @@ def run(args: argparse.Namespace) -> int:
             model=args.model,
             provider=args.provider,
             reasoning_effort=args.reasoning_effort,
+            communication_reasoning_effort=args.communication_reasoning_effort,
             memory_context_chars=args.memory_context_chars,
             review_interval=args.review_interval,
             review_attempts=args.review_attempts,
@@ -199,6 +206,11 @@ def run(args: argparse.Namespace) -> int:
         print(f"Provider: {args.provider}; requested service tier: {'fast' if service.fast else 'default'}", flush=True)
         print(
             f"New conversation defaults: model={args.model or 'Codex config'}, reasoning={args.reasoning_effort or 'Codex config'}",
+            flush=True,
+        )
+        print(
+            "Background diplomacy reasoning: "
+            + (args.communication_reasoning_effort or "automatic (at most medium for known effort levels)"),
             flush=True,
         )
         web.run_app(

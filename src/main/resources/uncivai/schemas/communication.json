@@ -972,6 +972,11 @@
         "provider": {
           "enum": ["openai", "openrouter", null]
         },
+        "modelRequests": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9223372036854775807
+        },
         "apiCalls": {
           "type": "object",
           "maxProperties": 512,
@@ -1004,6 +1009,7 @@
         "usageComplete",
         "model",
         "reasoningEffort",
+        "modelRequests",
         "apiCalls"
       ],
       "additionalProperties": false

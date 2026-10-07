@@ -50,6 +50,8 @@ def main() -> int:
         default=False,
         help="Give all agents optional Civ V strategy suggestions (default: off)",
     )
+    parser.add_argument("--civilization-guide", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--review-interval", type=scheduler.positive, default=5)
     parser.add_argument(
         "--startup-timeout", type=scheduler.positive, default=180, help="Seconds allowed per service startup"
     )
@@ -113,6 +115,8 @@ def main() -> int:
                 "model": args.model,
                 "reasoningEffort": args.reasoning_effort,
                 "strategyGuide": args.strategy_guide,
+                "civilizationGuide": args.civilization_guide,
+                "reviewInterval": args.review_interval,
                 "requestedServiceTier": "fast" if args.fast else None,
                 "serviceRevision": subprocess.check_output(
                     ["git", "rev-parse", "HEAD"], cwd=repository, text=True
@@ -139,6 +143,8 @@ def main() -> int:
                 "model": args.model,
                 "reasoningEffort": args.reasoning_effort,
                 "strategyGuide": args.strategy_guide,
+                "civilizationGuide": args.civilization_guide,
+                "reviewInterval": args.review_interval,
                 "requestedServiceTier": "fast" if args.fast else None,
                 "serviceRevision": subprocess.check_output(
                     ["git", "rev-parse", "HEAD"], cwd=repository, text=True
@@ -170,7 +176,10 @@ def main() -> int:
                     args.model,
                     "--reasoning-effort",
                     args.reasoning_effort,
+                    "--review-interval",
+                    str(args.review_interval),
                     *(["--strategy-guide"] if args.strategy_guide else []),
+                    *(["--civilization-guide"] if args.civilization_guide else []),
                     *(["--fast"] if args.fast else []),
                 ],
                 civilization,

@@ -98,6 +98,25 @@ class GameExecutor internal constructor(
             }
         }
     }
+
+    /** Persist newly started major-civilization wars for the external review scheduler. */
+    internal fun synchronizeWarDeclarations() {
+        val current = mutableSetOf<String>()
+        val majors = game.civilizations.filter { it.isMajorCiv() }.sortedBy { it.civID }
+        for (index in majors.indices) {
+            for (other in majors.drop(index + 1)) {
+                if (majors[index].isAtWarWith(other)) current.add(majors[index].civID + "\u001f" + other.civID)
+            }
+        }
+        val previousTurn = communicationState.observedWarTurn
+        if (previousTurn != null && current.any { it !in communicationState.observedMajorWars }) {
+            val declarationTurn = minOf(previousTurn, game.turns)
+            communicationState.warDeclarationTurn = maxOf(communicationState.warDeclarationTurn ?: -1, declarationTurn)
+        }
+        communicationState.observedMajorWars.clear()
+        communicationState.observedMajorWars.addAll(current)
+        communicationState.observedWarTurn = game.turns
+    }
     private var closed = false
     private var paused = false
     internal var scheduled = false
@@ -170,6 +189,7 @@ class GameExecutor internal constructor(
     internal fun enableCheckpoints(store: CheckpointStore) = accessGame {
         check(checkpointStore == null) { "Checkpointing is already configured" }
         try {
+            synchronizeWarDeclarations()
             store.writeInitial(CheckpointStore.capture(game, epoch, paused, turnSessions, handoff, scheduled, communication = communicationState))
             checkpointStore = store
             telemetry.publish(game, store.path)
@@ -184,6 +204,7 @@ class GameExecutor internal constructor(
         try {
             communication.trades.nativeBridge.synchronize(game)
             communication.agreements.synchronize(game)
+            synchronizeWarDeclarations()
             telemetry.synchronize(game)
             checkpointStore?.write(CheckpointStore.capture(game, epoch, paused, turnSessions, handoff, scheduled, communicationState, communicationPaused))
             turnSessions.values.forEach { it.checkpointRevision = it.revision }

@@ -79,7 +79,8 @@ def display_turn(renderer, state_directory, flight, status):
         elapsed += " (activation)"
     renderer.line("Time", elapsed, civilization=civilization)
     total = api_calls(metrics.get("hostCalls")) if metrics else None
-    renderer.line("Calls", f"Game API {number(total)} · Model requests unavailable", civilization=civilization)
+    requests = metrics.get("modelRequests") if metrics else status.get("modelRequests")
+    renderer.line("Calls", f"Game API {number(total)} · Model requests {number(requests)}", civilization=civilization)
     renderer.line("Memory", memory_edits_text((metrics or {}).get("memoryEdits")), civilization=civilization)
     if available and isinstance(usage, dict):
         renderer.line(

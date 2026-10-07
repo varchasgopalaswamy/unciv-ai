@@ -28,10 +28,11 @@ the game. Terminal reports are read-only; no acknowledgement is needed to finish
 
 ## Victory Status observations
 
-`victory_progress` defaults to `sections=["our_status","global_status","rankings"]`.
-It is already prepared at gameplay startup. It returns
-the turn limit, native victory milestones, permitted rival next milestones,
-and current rankings with short historical comparisons. Current policy-branch
+`victory_progress` defaults to `sections=["our_status","global_status","rankings"]`
+when called directly. Gameplay startup instead prepares only `sections=["rankings"]`;
+milestones remain available through a deliberate tool call when they become relevant.
+The full default returns the turn limit, native victory milestones, permitted rival
+next milestones, and current rankings with short historical comparisons. Current policy-branch
 and capital objectives supplement the existing spaceship-part counts.
 Policy-branch milestones include `objectiveRequirement` with `rule: "AT_LEAST"`,
 `requiredCount` and `completedCount`. Listed branches are alternatives for meeting

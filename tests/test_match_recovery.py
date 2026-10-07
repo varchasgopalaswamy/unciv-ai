@@ -122,6 +122,8 @@ def test_human_turn_rewinds_without_a_human_agent_store_and_preserves_credential
 
 def test_partial_restore_remains_paused_then_repeats_same_epoch_without_refunding_usage(tmp_path):
     host, players, state, coordinator = setup(tmp_path)
+    state["reviewAnchors"] = {"Rome": 5, "Greece": 5}
+    state["reviewedWarTurn"] = 5
     for player in players.values():
         player.memory.start_job("initial", "gameplay", {})
         player.memory.patch("initial", [{"op": "create", "content": {"type": "note", "text": "Build peacefully"}}])
@@ -132,6 +134,8 @@ def test_partial_restore_remains_paused_then_repeats_same_epoch_without_refundin
     coordinator.capture({"epoch": "g1", "turn": 0, "handoff": 0}, state)
     manifest = json.loads(next(coordinator.root.glob("current.json")).read_text())
     host.world["gold"] = 999
+    state["reviewAnchors"] = {"Rome": 9, "Greece": 9}
+    state["reviewedWarTurn"] = 9
     for player in players.values():
         player.memory.patch("initial", [{"op": "amend", "id": "mem1", "fields": {"text": "Invade"}}])
         player.memory.ingest(
@@ -151,6 +155,7 @@ def test_partial_restore_remains_paused_then_repeats_same_epoch_without_refundin
     old_mirror.append([{"sequence": 0, "kind": "assistant_message", "data": {"text": "Old attempt"}}])
     coordinator.restore(manifest, state)
     assert state["epoch"] == epoch and state["invocations"] == 4
+    assert state["reviewAnchors"] == {"Rome": 5, "Greece": 5} and state["reviewedWarTurn"] == 5
     assert state["pendingFinalizations"] == []
     assert all(ReviewStore(player.memory).pending() is not None for player in players.values())
     assert host.world["gold"] == 100 and host.paused

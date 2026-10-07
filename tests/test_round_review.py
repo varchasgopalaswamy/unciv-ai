@@ -97,10 +97,83 @@ def test_all_reports_finish_before_release_and_last_completion_still_checks_limi
             == {"pause": "paused", "stop": "stopped", "budget": "budget_exhausted"}[stop]
         )
     else:
-        assert not fenced and scheduler.state == {"reviewedBoundary": 6}
+        assert not fenced and scheduler.state == {
+            "reviewedBoundary": 6,
+            "reviewAnchors": {name: 5 for name in names},
+        }
         assert [name for name, stage in calls if stage == "release"] == names
         # Reconnecting at the completed boundary releases holds without another review.
         scheduler.round_open = False
         calls.clear()
         assert review_round(scheduler, status)
         assert calls == [(name, "release") for name in names]
+
+
+def test_war_review_resets_each_civilizations_interval_clock(monkeypatch):
+    names = ["Rome", "Greece"]
+    status = {
+        "epoch": "g1",
+        "serverInstance": "host",
+        "handoff": 20,
+        "turn": 10,
+        "activeCivilization": "Rome",
+        "phase": "PAUSED",
+        "warDeclarationTurn": 9,
+    }
+    calls = []
+
+    def call(name, operation, **fields):
+        calls.append((name, fields["stage"], fields.get("forceReview", False)))
+        return {
+            "civilization": name,
+            "epoch": "g1",
+            "gameTurn": status["turn"],
+            "ready": True,
+            "pendingReview": None,
+        }
+
+    agents = {name: SimpleNamespace(call=lambda op, name=name, **fields: call(name, op, **fields)) for name in names}
+    scheduler = SimpleNamespace(
+        review_intervals=dict.fromkeys(names, 10),
+        agents=agents,
+        state={"reviewedBoundary": 9, "reviewAnchors": dict.fromkeys(names, 0)},
+        round_open=True,
+        interrupted=False,
+        lease="lease",
+        store=SimpleNamespace(requested=lambda: None),
+        operator=SimpleNamespace(call=lambda *args, **kwargs: {"status": status}),
+        turns=SimpleNamespace(call_agent=lambda agent, op, **fields: agent.call(op, **fields), quiesce=Mock()),
+        collect_finalizations=Mock(),
+        check_status=Mock(),
+        check_agent_health=Mock(),
+        budget_reason=lambda current: None,
+        note=Mock(),
+        save=Mock(),
+        output=SimpleNamespace(line=Mock()),
+    )
+    scheduler.turns.release = lambda: setattr(scheduler, "round_open", True)
+    monkeypatch.setattr("civ_agent.round_review.time.sleep", lambda seconds: None)
+
+    assert review_round(scheduler, status)
+    assert scheduler.state == {
+        "reviewedBoundary": 10,
+        "reviewAnchors": {name: 9 for name in names},
+        "reviewedWarTurn": 9,
+    }
+    assert {(name, forced) for name, stage, forced in calls if stage == "start"} == {
+        ("Rome", True),
+        ("Greece", True),
+    }
+
+    # The old modulo boundary at round 10 no longer fires. Ten completed
+    # rounds after the declaration, round 19 is the next interval review.
+    calls.clear()
+    status["turn"] = 11
+    assert review_round(scheduler, status)
+    assert not [row for row in calls if row[1] == "start"]
+    status["turn"] = 20
+    assert review_round(scheduler, status)
+    assert {(name, forced) for name, stage, forced in calls if stage == "start"} == {
+        ("Rome", True),
+        ("Greece", True),
+    }

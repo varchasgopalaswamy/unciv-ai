@@ -33,7 +33,9 @@ from tests.test_structured_memory import create, strategy
 def test_victory_comparison_is_preloaded_once_and_chart_queries_pass_through(tmp_path):
     comparison = {
         "turn": 95,
-        "sections": ["our_status", "global_status", "rankings"],
+        "sections": ["rankings"],
+        "victories": [],
+        "rivals": [],
         "metrics": [{"name": "Production", "meaning": "Empire production per turn"}],
         "rankings": {
             "comparedCivilizations": 2,
@@ -70,7 +72,7 @@ def test_victory_comparison_is_preloaded_once_and_chart_queries_pass_through(tmp
         async def tool(self, name, args):
             if name == "victory_progress":
                 self.victory_calls.append(copy.deepcopy(args))
-                return copy.deepcopy(chart if args else comparison)
+                return copy.deepcopy(chart if args == query else comparison)
             return await super().tool(name, args)
 
     async def run():
@@ -83,18 +85,19 @@ def test_victory_comparison_is_preloaded_once_and_chart_queries_pass_through(tmp
         try:
             job = await gateway.open("job", "gameplay", "g1", host, {}, 95)
             prepared = await prepare_startup(gateway, job)
-            comparison_query = {"tool": "victory_progress", "arguments": {}}
+            startup_query = {"sections": ["rankings"]}
+            comparison_query = {"tool": "victory_progress", "arguments": startup_query}
             assert prepared["reads"]["victory_progress"] == {**comparison, "query": comparison_query}
             prompt = startup_prompt(prepared, "gameplay", "Play this turn")
             reads = json.JSONDecoder().raw_decode(prompt.user.split("Prepared player-visible reads:\n", 1)[1])[0]
             assert reads["victory_progress"] == {**comparison, "query": comparison_query}
             assert "score" not in reads["victory_progress"]
-            assert host.victory_calls == [{}]
+            assert host.victory_calls == [startup_query]
             assert (await gateway.call(job, "victory_progress", query, "history")) == {
                 **chart,
                 "query": {"tool": "victory_progress", "arguments": query},
             }
-            assert host.victory_calls == [{}, query]
+            assert host.victory_calls == [startup_query, query]
         finally:
             await io.close()
 
@@ -414,7 +417,22 @@ def test_prepared_reads_establish_evidence_and_update_base_without_model_calls(t
             view = prepared["reads"]["player_turn"]
             assert view == job.delivered_overview
             assert job.social_read and job.verified
-            assert {q.tool for q in job.details_read} == {"victory_progress", "chat_read"}
+            assert {q.tool for q in job.details_read} == {"victory_progress", "chat_read", "unit_details"}
+            assert len(prepared["decisionDetails"]) == 2
+            unit_detail = next(
+                detail for detail in prepared["decisionDetails"] if detail["query"]["tool"] == "unit_details"
+            )
+            assert unit_detail["query"]["arguments"] == {
+                "target": "unit1",
+                "sections": ["economy", "settlement"],
+            }
+            construction_detail = next(
+                detail for detail in prepared["decisionDetails"] if detail["query"]["tool"] == "construction_details"
+            )
+            assert construction_detail["query"]["arguments"] == {
+                "target": "city1",
+                "names": ["Workshop", "Market"],
+            }
             assert "observation:overview" in job.memory["records"]
             assert "queries" in prepared["reads"]["player_capabilities"]
             assert "version" not in prepared["reads"]["player_capabilities"]
@@ -460,16 +478,16 @@ def test_prepared_reads_establish_evidence_and_update_base_without_model_calls(t
             assert "deferReason is optional" in view["endTurn"]["instruction"]
             settlement = view["units"][0]["inspections"]["FOUND_CITY"]
             args = {"kind": "FOUND_CITY", "target": "unit1", "intent": {"reason": "Settle here"}}
-            rejection = await gateway.call(job, "player_command", args, "uninspected")
-            assert rejection["recovery"]["reads"] == [settlement]
-            await gateway.call(job, settlement["tool"], settlement["arguments"], "settlement")
+            assert settlement["arguments"]["sections"] == ["settlement"]
             assert "error" not in await gateway.call(job, "player_command", args, "found")
             assert len(host.executed) == 2
             await io.call(gateway.accounting.sample, {"activationId": "job", "phase": "RUNNING"})
             calls = gateway.accounting.pending()[0]["telemetry"]["apiCalls"]
             assert calls["startup:player_turn"]["calls"] == 1
             assert "tool:player_turn" not in calls
-            assert calls["tool:player_command"]["calls"] == 3
+            assert calls["startup:unit_details"]["calls"] == 1
+            assert calls["startup:construction_details"]["calls"] == 1
+            assert calls["tool:player_command"]["calls"] == 2
             assert memory.call("job", "startup:player_turn", "player_turn", {}) == view
         finally:
             await io.close()

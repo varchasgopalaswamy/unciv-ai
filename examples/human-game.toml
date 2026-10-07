@@ -46,6 +46,9 @@ startup_timeout = 900
 max_seconds = 604800
 max_invocations = 10000
 # max_turns defaults to the native game speed's turn limit plus one.
+# Terminal model overloads retry from the saved turn up to 5 times, 180 seconds apart.
+# model_capacity_retries = 5
+# model_capacity_retry_delay = 180
 
 [runtime]
 browser_port = 0 # Allocate a free localhost port; game status prints the URL.

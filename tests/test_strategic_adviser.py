@@ -250,6 +250,7 @@ class StrategicAdviserServiceTests(AgentServiceTestCase):
             prompt.user.split("Frozen position after all players completed round 5:\n", 1)[1]
         )[0]
         victory = facts["victory_progress"]
+        assert victory["sections"] == ["rankings"] and victory["victories"] == [] and victory["rivals"] == []
         assert "score" not in victory
         assert [metric["name"] for metric in victory["metrics"]] == ["Population", "Production"]
         assert victory["rankings"]["rows"][0]["values"] == [33, 7]

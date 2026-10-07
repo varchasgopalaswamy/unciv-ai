@@ -2,9 +2,11 @@
 
 import argparse
 import asyncio
+import json
 import os
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from rich.text import Text
@@ -41,6 +43,33 @@ def usage_text(usage):
     )
 
 
+def game_directories(root: Path) -> list[tuple[str, Path]]:
+    """Resolve either one match or the saved games in a batch, without writing."""
+    path = root / "batch.json"
+    if not path.is_file():
+        return [(root.name, root)]
+    manifest = json.loads(path.read_text())
+    if not isinstance(manifest, dict) or manifest.get("format") != 2 or not isinstance(manifest.get("runs"), list):
+        raise ValueError("Unsupported batch manifest")
+    games = []
+    seen = set()
+    for row in manifest["runs"]:
+        game_id = row.get("id") if isinstance(row, dict) else None
+        if (
+            not isinstance(game_id, str)
+            or not game_id
+            or Path(game_id).name != game_id
+            or game_id in {".", ".."}
+            or game_id in seen
+        ):
+            raise ValueError("Invalid game ID in batch manifest")
+        seen.add(game_id)
+        games.append((game_id, root / "games" / game_id))
+    if not games:
+        raise ValueError("Batch contains no games")
+    return games
+
+
 class MatchWatch(App):
     TITLE = "Unciv · Match dashboard"
     ENABLE_COMMAND_PALETTE = False
@@ -48,6 +77,7 @@ class MatchWatch(App):
     Screen { background: $surface; }
     Header { background: $panel; }
     #status { height: auto; min-height: 2; max-height: 5; padding: 0 1; }
+    #game-switcher { height: auto; max-height: 3; padding: 0 1; color: $text-muted; }
     #negotiation { height: auto; padding: 0 1; color: $warning; }
     #players { height: 7; border: round $primary; margin: 0 1; }
     #metrics { height: auto; max-height: 5; padding: 0 2; }
@@ -73,12 +103,18 @@ class MatchWatch(App):
         Binding("v", "verbose", "Verbose"),
         Binding("d", "diplomacy", "Diplomacy"),
         Binding("s", "strategy", "Strategy"),
+        Binding("left_square_bracket", "previous_game", "Previous game", priority=True),
+        Binding("right_square_bracket", "next_game", "Next game", priority=True),
     ]
 
     def __init__(self, state_directory: Path, *, verbose=False, refresh=1.0):
         super().__init__()
-        self.reader = WatchReader(state_directory)
-        self.sub_title = visible_text(str(state_directory))
+        self.state_directory = state_directory
+        self.games = game_directories(state_directory)
+        self.game_index = 0
+        self.game_id, self.game_directory = self.games[0]
+        self.reader = WatchReader(self.game_directory)
+        self.sub_title = self.game_subtitle()
         self.verbose = verbose
         self.refresh_seconds = refresh
         self.frozen = False
@@ -88,7 +124,9 @@ class MatchWatch(App):
         self.snapshot = WatchSnapshot({}, {}, (), (), (), None)
         self.table_values = {}
         self.last_activity = None
+        self.read_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="match-watch")
         self.reading = False
+        self.poll_pending = False
         self.turn_rows: dict[str, tuple[str, int]] = {}
         self.conversation: str | None = None
         self.last_diplomacy = None
@@ -99,6 +137,7 @@ class MatchWatch(App):
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
+        yield Static(id="game-switcher", markup=False)
         yield Static("Waiting for match records…", id="status", markup=False)
         yield Static(id="negotiation", markup=False)
         yield DataTable(id="players", cursor_type="row", zebra_stripes=True)
@@ -142,18 +181,22 @@ class MatchWatch(App):
         }.items():
             self.query_one(f"#{identity}", DataTable).add_columns(*columns)
         self.query_one("#players", DataTable).border_title = "Players · Enter to filter"
+        self.render_game_switcher()
         self.query_one("#activity", RichLog).focus()
         await self.poll_records()
         self.set_interval(self.refresh_seconds, self.poll_records)
 
     async def poll_records(self):
-        if self.frozen or self.reading:
+        if self.frozen:
+            return
+        if self.reading:
+            self.poll_pending = True
             return
         self.reading = True
-        selection = self.selected
+        selection, reader = self.selected, self.reader
         try:
-            snapshot = await asyncio.to_thread(self.reader.read, selection)
-            if selection == self.selected and not self.frozen:
+            snapshot = await asyncio.get_running_loop().run_in_executor(self.read_executor, reader.read, selection)
+            if reader is self.reader and selection == self.selected and not self.frozen:
                 self.snapshot = snapshot
                 self.render_records()
         except (OSError, ValueError, TypeError, KeyError) as error:
@@ -165,6 +208,13 @@ class MatchWatch(App):
             )
         finally:
             self.reading = False
+            pending, self.poll_pending = self.poll_pending, False
+            if pending and self.is_running:
+                self.call_later(self.poll_records)
+
+    def on_unmount(self):
+        self.poll_pending = False
+        self.read_executor.shutdown(wait=False, cancel_futures=True)
 
     def on_resize(self):
         if self.is_mounted:
@@ -227,6 +277,7 @@ class MatchWatch(App):
         return self.snapshot.latest_turn(self.civilization)
 
     def render_records(self):
+        self.render_game_switcher()
         snapshot = self.snapshot
         run, result = snapshot.run, snapshot.result
         flight = run.get("inFlight") or {}
@@ -369,7 +420,10 @@ class MatchWatch(App):
             complete = accounting.get("accountingComplete") is True
             label = f"Turn {self.selected[1]} · {scope}"
         metrics = f"{label}:  {usage_text(usage)}\n"
-        metrics += f"Game API {count(api_calls(accounting.get('hostCalls')))} · Model requests unavailable"
+        metrics += (
+            f"Game API {count(api_calls(accounting.get('hostCalls')))} · "
+            f"Model requests {count(accounting.get('modelRequests'))}"
+        )
         metrics += " · Usage " + ("complete" if complete else "partial / not yet finalized")
         metrics += " · Cached and reasoning tokens are included in input and output."
         metrics += "\n" + memory_edits_text(accounting.get("memoryEdits"))
@@ -711,6 +765,58 @@ class MatchWatch(App):
         self.query_one("#main-tabs", TabbedContent).active = "strategy-tab"
         self.query_one("#strategies", DataTable).focus()
 
+    def game_subtitle(self):
+        prefix = f"[{self.game_index + 1}/{len(self.games)}] {self.game_id} · " if len(self.games) > 1 else ""
+        return visible_text(prefix + str(self.game_directory))
+
+    def render_game_switcher(self):
+        banner = self.query_one("#game-switcher", Static)
+        banner.display = len(self.games) > 1
+        if len(self.games) <= 1:
+            return
+        statuses = {}
+        try:
+            manifest = json.loads((self.state_directory / "batch.json").read_text())
+            statuses = {
+                row["id"]: row.get("status", "unknown")
+                for row in manifest.get("runs", [])
+                if isinstance(row, dict) and isinstance(row.get("id"), str)
+            }
+        except (OSError, ValueError, TypeError):
+            pass
+        text = Text(f"Game {self.game_index + 1}/{len(self.games)} · {self.game_id}", style="bold")
+        text.append("  ·  [ previous  ] next", style="dim")
+        text.append("\n")
+        for index, (game_id, _) in enumerate(self.games):
+            if index:
+                text.append("  ")
+            style = "bold bright_cyan" if index == self.game_index else "dim"
+            text.append(f"{game_id} {statuses.get(game_id, 'unknown')}", style=style)
+        banner.update(text)
+
+    async def select_game(self, offset):
+        if len(self.games) <= 1:
+            return
+        self.game_index = (self.game_index + offset) % len(self.games)
+        self.game_id, self.game_directory = self.games[self.game_index]
+        self.reader = WatchReader(self.game_directory)
+        self.sub_title = self.game_subtitle()
+        self.civilization = self.selected = self.conversation = self.strategy_civilization = None
+        self.snapshot = WatchSnapshot({}, {}, (), (), (), None)
+        self.table_values.clear()
+        self.turn_rows.clear()
+        self.last_activity = self.last_diplomacy = self.last_strategy_selection = None
+        self.last_strategy = self.last_strategy_trace = None
+        self.frozen = False
+        self.render_records()
+        await self.poll_records()
+
+    async def action_previous_game(self):
+        await self.select_game(-1)
+
+    async def action_next_game(self):
+        await self.select_game(1)
+
 
 def parser(*, add_help=True):
     result = argparse.ArgumentParser(add_help=add_help, description=__doc__)
@@ -718,6 +824,7 @@ def parser(*, add_help=True):
         "--state-dir",
         type=Path,
         default=Path(os.environ.get("UNCIV_HOST_DIR", Path.home() / ".local/state/unciv-host/vanilla-full")),
+        help="Match directory or batch root",
     )
     result.add_argument(
         "--verbose", action="store_true", help="Show startup context, tool details, and exposed reasoning summaries"
@@ -735,7 +842,8 @@ def run(args):
         return 2
     from civ_agent.container_support import IN_CONTAINER, read_json, watch_mounts
 
-    if not args.local and not IN_CONTAINER and (root / "container.json").exists():
+    batch = (root / "batch.json").is_file()
+    if not args.local and not batch and not IN_CONTAINER and (root / "container.json").exists():
         import subprocess
 
         manifest = read_json(root / "container.json")
@@ -764,5 +872,10 @@ def run(args):
             file=sys.stderr,
         )
         return 2
-    MatchWatch(root, verbose=args.verbose).run()
+    try:
+        app = MatchWatch(root, verbose=args.verbose)
+    except (OSError, ValueError, TypeError) as error:
+        print(f"Cannot open match dashboard: {error}", file=sys.stderr)
+        return 2
+    app.run()
     return 0

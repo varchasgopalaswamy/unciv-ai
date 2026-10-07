@@ -72,6 +72,7 @@ class FakeHost:
         self.phase: str = "ACTIVE"
         self.scheduled = False
         self.handoff = 0
+        self.war_declaration_turn = None
         self.barrier_active = False
         self.behaviors = list(behaviors)
         self.calls, self.plays = [], []
@@ -317,6 +318,7 @@ class FakeHost:
             scheduled=self.scheduled,
             leaseId=self.lease,
             leaseExpiresInMs=30000 if self.lease else 0,
+            warDeclarationTurn=self.war_declaration_turn,
         )
 
     def request(self, body):

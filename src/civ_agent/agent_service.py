@@ -44,6 +44,7 @@ from civ_agent.host_connection import HostConnection
 from civ_agent.model_status import LogLines, ModelStatus
 from civ_agent.proposal_gateway import ProposalGateway
 from civ_agent.protocol import AgentProcess, JsonObject, Notification
+from civ_agent.provider_usage import ProviderUsageReader, reconcile_provider_usage
 from civ_agent.providers import (
     PROVIDERS,
     ProviderError,
@@ -55,7 +56,7 @@ from civ_agent.review_runtime import ReviewRuntime
 from civ_agent.schemas import StartRequest, start_error
 from civ_agent.service_io import ServiceIO
 from civ_agent.startup_context import prepare_startup, startup_prompt
-from civ_agent.telemetry import JobAccounting
+from civ_agent.telemetry import JobAccounting, merge_model_usage
 from civ_agent.tls import codex_trust_environment, https_url, private_directory, regular_file, write_private_json
 from civ_agent.turn_archive import TurnArchive
 
@@ -324,6 +325,7 @@ class AgentService:
         model: str | None = None,
         provider: str = "openai",
         reasoning_effort: str | None = None,
+        communication_reasoning_effort: str | None = None,
         memory_context_chars: int = 12000,
         review_interval: int = 5,
         review_attempts: int = 3,
@@ -333,10 +335,13 @@ class AgentService:
         gateway_url: str = "https://localhost:8865/mcp",
         gateway_ca_file: Path | None = None,
         connection_factory=HostConnection,
+        sessions_root: Path | None = None,
     ) -> None:
         if model is not None and not valid_setting(model):
             raise ServiceError("INVALID_MODEL")
         if reasoning_effort is not None and not valid_setting(reasoning_effort):
+            raise ServiceError("INVALID_REASONING_EFFORT")
+        if communication_reasoning_effort is not None and not valid_setting(communication_reasoning_effort):
             raise ServiceError("INVALID_REASONING_EFFORT")
         if provider not in PROVIDERS:
             raise ServiceError("INVALID_PROVIDER")
@@ -345,11 +350,15 @@ class AgentService:
         if civilization_guide:
             civilization_reference(civilization)
         self.default_settings = {"provider": provider, "model": model, "reasoningEffort": reasoning_effort}
+        self.communication_reasoning_effort = communication_reasoning_effort
         self.strategy_guide = strategy_guide
         self.civilization_guide = civilization_guide
         self.fast = fast and provider == "openai"
         self.civilization = civilization
         self.workspace, self.state_dir = private_directory(workspace), private_directory(state_dir)
+        self.provider_usage = ProviderUsageReader(
+            sessions_root or Path(os.environ.get("CODEX_HOME", Path.home() / ".codex")) / "sessions"
+        )
         if self.state_dir.resolve().is_relative_to(self.workspace.resolve()):
             raise ServiceError("PRIVATE_STATE_INSIDE_WORKSPACE")
         self.token, self.mcp_url, self.ca_file = token, https_url(mcp_url, ("/mcp",)), ca_file
@@ -417,9 +426,31 @@ class AgentService:
             self.records[record["activationId"]] = record
             if record.get("threadId"):
                 self.known_threads.add(record["threadId"])
+            was_reconciled = record.get("providerUsageReconciled") is True
+            reconciled = reconcile_provider_usage(record, self.provider_usage)
             if record["phase"] not in TERMINAL:
                 record["phase"], record["error"] = "FAILED", "SERVICE_RESTARTED"
+                record["usageComplete"] = reconciled
                 self._persist(record)
+            elif reconciled and not was_reconciled:
+                record["usageComplete"] = True
+                self._persist(record)
+        chat_records = self.state_dir / "chat-jobs"
+        if chat_records.is_dir():
+            for file in sorted(chat_records.glob("*.json")):
+                regular_file(file, private=True)
+                record = json.loads(file.read_text())
+                was_reconciled = record.get("providerUsageReconciled") is True
+                reconciled = reconcile_provider_usage(record, self.provider_usage)
+                restarted = record.get("phase") not in TERMINAL
+                if restarted:
+                    record["phase"], record["error"] = "FAILED", "SERVICE_RESTARTED"
+                if reconciled:
+                    record["usageComplete"] = True
+                if (reconciled and not was_reconciled) or restarted:
+                    self.history.lifecycle(record)
+                    self.accounting.sample(record)
+                    write_private_json(file, record)
         received = self.results.load()
         if received is not None:
             if self.match is None or self.match["epoch"] != received["epoch"]:
@@ -728,16 +759,19 @@ class AgentService:
 
     async def review_phase(self, payload):
         if (
-            set(payload) != {"epoch", "gameTurn", "stage"}
+            set(payload) not in ({"epoch", "gameTurn", "stage"}, {"epoch", "gameTurn", "stage", "forceReview"})
             or not identifier(payload.get("epoch"))
             or type(payload.get("gameTurn")) is not int
             or payload["gameTurn"] < 0
             or payload.get("stage") not in {"hold", "start", "status", "release"}
+            or type(payload.get("forceReview", False)) is not bool
         ):
             raise ServiceError("INVALID_ARGUMENT")
         async with self.guard:
             try:
-                return await self.reviews.phase(payload["epoch"], payload["gameTurn"], payload["stage"])
+                return await self.reviews.phase(
+                    payload["epoch"], payload["gameTurn"], payload["stage"], payload.get("forceReview", False)
+                )
             except ValueError as error:
                 raise ServiceError(str(error), 409) from None
 
@@ -815,6 +849,7 @@ class AgentService:
                 "threadId": payload["threadId"],
                 "phase": "STARTING",
                 "usage": dict.fromkeys(USAGE_KEYS, 0),
+                "modelRequests": 0,
                 "fingerprint": fingerprint,
                 "settings": settings,
                 "requestedServiceTier": "fast" if self.fast else None,
@@ -955,14 +990,8 @@ class AgentService:
 
     async def _record_usage(self, record, token_usage):
         total = token_usage.get("total", {})
-        if not isinstance(total, dict):
+        if not merge_model_usage(record, total, USAGE_KEYS):
             return
-        values = {key: total.get(field, 0) for key, field in USAGE_KEYS.items()}
-        if any(type(value) is not int or value < 0 for value in values.values()):
-            return
-        for key in USAGE_KEYS:
-            record["usage"][key] = max(record["usage"][key], values[key])
-        record["usageReported"] = all(field in total for field in USAGE_KEYS.values())
         await self._save(record)
 
     async def _model_turn(self, record, job, prompt, workspace, selected):
@@ -1302,6 +1331,7 @@ class AgentService:
                 "characters": len(prompt.user),
                 "coreTools": [tool["name"] for tool in prepared["coreTools"]],
                 "reads": list(prepared["reads"]),
+                "decisionDetails": len(prepared.get("decisionDetails", [])),
                 **prompt.metadata(),
             }
             record["modelPhase"] = "gameplay"
@@ -1353,6 +1383,7 @@ class AgentService:
                 record["error"] = "STOP_UNCONFIRMED"
                 await self._save(record)
                 raise
+            trace_complete = await self.io.call(reconcile_provider_usage, record, self.provider_usage)
             job.model_stopped.set()
             finished = copy.deepcopy(record)
             finished["phase"] = (
@@ -1364,7 +1395,7 @@ class AgentService:
                 if self.failure == "INTERRUPTED" or self.completion == "interrupted" and self.failure is None
                 else "FAILED"
             )
-            finished["usageComplete"] = (
+            finished["usageComplete"] = trace_complete or (
                 self.completion == "completed"
                 and finished.get("usageReported", False)
                 and "accountingIncompleteReason" not in record

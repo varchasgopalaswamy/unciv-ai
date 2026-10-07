@@ -1,5 +1,11 @@
 # Tactical and strategic review
 
+Routine strategic reviews use each agent's configured `review_interval`. A new
+war between major civilizations also forces a shared review for every agent after
+that round completes, whether the agent declared war or was declared upon. That
+review resets the interval clock: with an interval of 10, a declaration in round
+9 produces reviews after rounds 9 and 19, rather than rounds 9 and 10.
+
 `player_turn` includes compact factual reviews derived from the permitted snapshot.
 They inform decisions without imposing strategic priorities.
 

@@ -156,6 +156,8 @@ class TurnCoordinator:
             sessions={name: {**session, "threadId": None} for name, session in boundary.get("sessions", {}).items()},
             handoffs=boundary.get("handoffs", 0),
             reviewedBoundary=boundary["reviewedBoundary"],
+            reviewAnchors=boundary.get("reviewAnchors", {}),
+            reviewedWarTurn=boundary.get("reviewedWarTurn", -1),
             status="paused",
             reason="Interrupted turn restored to its starting state",
         )

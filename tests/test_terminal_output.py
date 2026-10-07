@@ -10,7 +10,7 @@ from civ_agent.agent_history import HistoryStore
 from civ_agent.monitoring import MonitorStore, path_for
 from civ_agent.protocol import JsonObject
 from civ_agent.runner_history import EventHistory
-from civ_agent.terminal_output import TerminalOutput, color_enabled, visible_text
+from civ_agent.terminal_output import TerminalOutput, color_enabled, player_style, visible_text
 from civ_agent.turn_display import display_turn, turn_metrics
 
 
@@ -33,6 +33,19 @@ def test_color_policy_and_literal_untrusted_text(monkeypatch):
     plain = io.StringIO()
     TerminalOutput(color="always", file=plain).line("Error", "Visible without color")
     assert "\x1b" not in plain.getvalue()
+
+
+def test_benchmark_player_colors_are_distinct():
+    colors = [player_style(name) for name in ("Inca", "France", "Greece", "Arabia", "China", "Persia")]
+    assert colors == [
+        "bright_yellow",
+        "bright_blue",
+        "bright_cyan",
+        "bright_green",
+        "bright_red",
+        "bright_magenta",
+    ]
+    assert len(set(colors)) == 6
 
 
 def test_background_output_cannot_join_another_players_partial_line():
@@ -109,6 +122,7 @@ def test_turn_summary_uses_matching_host_totals_without_double_counting(tmp_path
             "tool:player_turn": {"calls": 2},
             "command:END_TURN": {"calls": 1},
         },
+        "modelRequests": 7,
         "memoryEdits": {
             "batches": 3,
             "accepted": 5,
@@ -123,7 +137,7 @@ def test_turn_summary_uses_matching_host_totals_without_double_counting(tmp_path
     output = io.StringIO()
     display_turn(TerminalOutput(color="never", file=output), tmp_path, flight, {})
     text = output.getvalue()
-    assert "Game API 5" in text and "Model requests unavailable" in text
+    assert "Game API 5" in text and "Model requests 7" in text
     assert "Memory edits 5 accepted" in text and "2 rejected" in text and "SOURCE_NOT_DELIVERED: 2" in text
     assert "12.4s gameplay" in text and "0.3s bookkeeping" in text
     assert "Input 24,000 (cached 19,000)" in text

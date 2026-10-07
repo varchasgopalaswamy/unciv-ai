@@ -37,7 +37,7 @@ object TelemetryProbe {
         val tokens = civilizations.associateWith { it.first().toString().repeat(43) }
         lateinit var originalEpoch: String
         val edits = MemoryEditCounts(2, 3, 1, 1, mapOf("SOURCE_NOT_DELIVERED" to 1))
-        val finalReport = JobTelemetry(2, "COMPLETED", 1000, 2000, 1000, 50, true, true, "gpt-5.6-luna", "medium", mapOf("tool:unit_details" to ApiCounts(3, 2, 1), "startup:player_turn" to ApiCounts(1, 1)), gameplayElapsedMs = 850, finalizationElapsedMs = 150, memoryEdits = edits)
+        val finalReport = JobTelemetry(2, "COMPLETED", 1000, 2000, 1000, 50, true, true, "gpt-5.6-luna", "medium", mapOf("tool:unit_details" to ApiCounts(3, 2, 1), "startup:player_turn" to ApiCounts(1, 1)), gameplayElapsedMs = 850, finalizationElapsedMs = 150, memoryEdits = edits, modelRequests = 4)
         HeadlessRuntime.createVanillaGame(root.resolve("initial"), 42, 2, listOf("Egypt")).use { runtime ->
             check(runtime.game.getCivilization("Egypt").isAI())
             check(runtime.game.civilizations.count { it.isCityState } == 2)
@@ -79,6 +79,7 @@ object TelemetryProbe {
                 val turns = monitoring(root, "turns")
                 check(turns.size == 3 && turns.all { it.getValue("usage").jsonObject.getValue("total_tokens").jsonPrimitive.long == 130L })
                 check(turns.all { it.getValue("accountingComplete").jsonPrimitive.boolean })
+                check(turns.all { it.getValue("modelRequests").jsonPrimitive.long == 4L })
                 check(turns.all { it.getValue("gameplayElapsedMs").jsonPrimitive.long == 850L })
                 check(turns.all { it.getValue("finalizationElapsedMs").jsonPrimitive.long == 150L })
                 check(turns.all { it.getValue("agentCalls").jsonObject.getValue("startup:player_turn").jsonObject.getValue("calls").jsonPrimitive.long == 1L })

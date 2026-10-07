@@ -83,6 +83,20 @@ def valid_setting(value):
     )
 
 
+def communication_effort(gameplay_effort: str | None, configured: str | None = None) -> str | None:
+    """Use a cheaper diplomacy effort unless the operator chose one explicitly.
+
+    Preserve model-specific effort names we do not recognize: replacing an
+    unknown supported value with ``medium`` could make an otherwise valid model
+    fail at startup.
+    """
+    if configured is not None:
+        return configured
+    if gameplay_effort in {"high", "xhigh", "max"}:
+        return "medium"
+    return gameplay_effort
+
+
 def setting_argument(value):
     if not valid_setting(value):
         raise argparse.ArgumentTypeError("must be a nonempty name of at most 128 characters without whitespace")

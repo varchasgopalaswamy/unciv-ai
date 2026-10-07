@@ -4,7 +4,7 @@ import copy
 
 import pytest
 
-from civ_agent.player_prompts import DIPLOMACY_GUIDANCE, STRATEGY_GUIDANCE
+from civ_agent.player_prompts import DIPLOMACY_GUIDANCE, STRATEGY_GUIDANCE, VICTORY_HORIZON_GUIDANCE
 from civ_agent.protocol import JsonObject
 from civ_agent.startup_context import startup_prompt
 from civ_agent.strategic_review import ADVISOR_INSTRUCTIONS, advice_prompt
@@ -39,6 +39,7 @@ def test_guidance_reaches_each_prompt_independently_of_optional_reference(review
         prompt = startup_prompt(prepared, purpose, "Choose your next steps", strategy_guide=strategy_guide)
     assert prompt.instructions.count(DIPLOMACY_GUIDANCE) == 1
     assert prompt.instructions.count(STRATEGY_GUIDANCE) == int(purpose != "communication")
+    assert prompt.instructions.count(VICTORY_HORIZON_GUIDANCE) == 1
     assert prompt.user.count(strategy_reference()) == int(strategy_guide)
     assert review_inputs == before
 
@@ -80,6 +81,24 @@ def test_review_compares_limited_intervention_with_relative_development():
         "earliest feasible intervention with rival progress and the opportunity window",
     ):
         assert principle in ADVISOR_INSTRUCTIONS
+
+
+def test_victory_horizon_keeps_locked_endgame_projects_out_of_early_diplomacy_and_memory():
+    for principle in (
+        "Separate a broad victory direction from its terminal projects",
+        "background rules, not current objectives or routine intelligence requirements",
+        "direct enabling prerequisite is available or expected within the current planning horizon",
+        "General output or technology and policy counts do not make a terminal project actionable",
+        "an unstarted terminal project is not evidence of danger",
+        "do not request or volunteer updates about its absence",
+        "turn it into a diplomatic initiative",
+        "put those reports into agreements",
+        "create reminders or memory records for them",
+        "only according to its stated checkpoint or trigger",
+        "do not repeat no-change reports between checkpoints",
+        "renew an irrelevant reporting clause by default",
+    ):
+        assert principle in VICTORY_HORIZON_GUIDANCE
 
 
 def test_optional_reference_matches_peace_and_relative_finish_guidance():

@@ -5,7 +5,7 @@ from typing import Annotated, Self
 
 from pydantic import Field, model_validator
 
-from civ_agent.player_prompts import DIPLOMACY_GUIDANCE, STRATEGY_GUIDANCE
+from civ_agent.player_prompts import DIPLOMACY_GUIDANCE, STRATEGY_GUIDANCE, VICTORY_HORIZON_GUIDANCE
 from civ_agent.protocol import JsonObject
 from civ_agent.schemas import BoundaryModel
 
@@ -126,6 +126,8 @@ ADVISOR_INSTRUCTIONS = (
     "Compare the earliest feasible intervention with rival progress and the opportunity window.\n\n"
     + STRATEGY_GUIDANCE
     + " Identify uncertainties and useful ways to resolve them.\n\n"
+    + VICTORY_HORIZON_GUIDANCE
+    + "\n\n"
     "Explain the preference or leave it open. When undecided, recommend useful information gathering or reversible "
     "investments. Distinguish investments useful across victories from committing to a particular finish. "
     "Give each enabled victory a brief outlook; put detailed costs and projections in the competing plans. "
@@ -167,7 +169,13 @@ def advice_prompt(inputs, *, strategy_guide=False, civilization_guide=False):
         )
         + str(inputs["turn"])
         + ":\n"
-        + encoded({key: frozen_read(inputs, key, {}) for key in ("player_turn", "victory_progress", "chat_read")})
+        + encoded(
+            {
+                "player_turn": frozen_read(inputs, "player_turn", {}),
+                "victory_progress": frozen_read(inputs, "victory_progress", {"sections": ["rankings"]}),
+                "chat_read": frozen_read(inputs, "chat_read", {}),
+            }
+        )
         + "\nKnown foreign cities (current visibility or last observation; hex distances are not travel times):\n"
         + encoded(review_cities(inputs["observation"], inputs["civilization"]))
         + "\nRecent accepted commands and observed effects:\n"

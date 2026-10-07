@@ -3,8 +3,9 @@ import json
 
 from civ_agent.civilization_state import CivilizationState
 from civ_agent.proposal_gateway import ProposalGateway
+from civ_agent.provider_usage import ProviderUsageReader, reconcile_provider_usage
 from civ_agent.service_io import ServiceIO
-from civ_agent.telemetry import JobAccounting
+from civ_agent.telemetry import JobAccounting, merge_model_usage
 
 
 def record(id="job", **changes):
@@ -14,6 +15,7 @@ def record(id="job", **changes):
         "usage": {"input_tokens": 100, "cached_input_tokens": 20, "output_tokens": 30, "reasoning_output_tokens": 10},
         "usageReported": True,
         "usageComplete": False,
+        "modelRequests": 2,
         "effectiveSettings": {"model": "gpt-5.6-luna", "reasoningEffort": "medium"},
         **changes,
     }
@@ -34,6 +36,68 @@ def test_reports_survive_lost_acknowledgement_and_do_not_drop_newer_counts(tmp_p
     assert restored.pending() == []
     assert final["usage"]["input_tokens"] + final["usage"]["output_tokens"] == 130
     assert final["telemetry"]["usageComplete"]
+    assert final["telemetry"]["modelRequests"] == 2
+
+
+def test_cumulative_usage_counts_new_responses_but_not_duplicate_notifications():
+    fields = {
+        "input_tokens": "inputTokens",
+        "cached_input_tokens": "cachedInputTokens",
+        "output_tokens": "outputTokens",
+        "reasoning_output_tokens": "reasoningOutputTokens",
+    }
+    job = {"usage": dict.fromkeys(fields, 0), "modelRequests": 0}
+    first = {"inputTokens": 100, "cachedInputTokens": 80, "outputTokens": 20, "reasoningOutputTokens": 5}
+    assert merge_model_usage(job, first, fields)
+    assert merge_model_usage(job, first, fields)
+    second = {**first, "inputTokens": 250, "outputTokens": 35}
+    assert merge_model_usage(job, second, fields)
+    assert job["modelRequests"] == 2
+    assert job["usage"]["input_tokens"] == 250
+
+
+def test_closed_provider_trace_reconciles_interrupted_usage_and_exact_request_count(tmp_path):
+    thread = "01a1027a-1ec6-79e3-8a18-721f87b5b338"
+    directory = tmp_path / "sessions" / "2026" / "10" / "03"
+    directory.mkdir(parents=True)
+    path = directory / f"rollout-2026-10-03T12-00-00-{thread}.jsonl"
+
+    def usage(response, input_tokens, cached, output, reasoning):
+        return {
+            "type": "token_usage_record",
+            "payload": {
+                "thread_id": thread,
+                "response_id": response,
+                "usage": {
+                    "input_tokens": input_tokens,
+                    "cached_input_tokens": cached,
+                    "output_tokens": output,
+                    "reasoning_output_tokens": reasoning,
+                },
+            },
+        }
+
+    rows = [
+        {"type": "event_msg", "payload": {"private": "not inspected"}},
+        usage("response-1", 100, 80, 20, 5),
+        usage("response-1", 100, 80, 20, 5),
+        usage("response-2", 150, 120, 30, 7),
+    ]
+    path.write_text("".join(json.dumps(row) + "\n" for row in rows))
+    job = {
+        "threadId": thread,
+        "usage": {"input_tokens": 100, "cached_input_tokens": 80, "output_tokens": 20},
+        "modelRequests": 9,
+    }
+    assert reconcile_provider_usage(job, ProviderUsageReader(tmp_path / "sessions"))
+    assert job["usage"] == {
+        "input_tokens": 250,
+        "cached_input_tokens": 200,
+        "output_tokens": 50,
+        "reasoning_output_tokens": 12,
+    }
+    assert job["modelRequests"] == 2
+    assert job["usageReported"] and job["providerUsageReconciled"]
 
 
 def test_model_telemetry_uses_effective_settings_and_survives_restart(tmp_path):

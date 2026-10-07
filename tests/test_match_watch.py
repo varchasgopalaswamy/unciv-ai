@@ -3,6 +3,7 @@ import json
 import subprocess
 from unittest.mock import Mock
 
+import pytest
 from textual.widgets import DataTable, RichLog, Static, TabbedContent
 
 from civ_agent import cli, container_support, match_watch
@@ -70,6 +71,7 @@ def fixture(root) -> tuple[JsonObject, list[JsonObject]]:
                 "gameplayElapsedMs": 25000 if phase == "ended" else None,
                 "finalizationElapsedMs": 1500 if phase == "ended" else None,
                 "hostCalls": {"tool:player_command": {"calls": 3}, "command:FOUND_CITY": {"calls": 1}},
+                "modelRequests": 5,
                 "memoryEdits": {
                     "batches": 2,
                     "accepted": 3,
@@ -118,8 +120,11 @@ def fixture(root) -> tuple[JsonObject, list[JsonObject]]:
                 {"civilization": "Greece", "score": 38, "controller": "AGENT"},
                 {"civilization": "Egypt", "score": 50, "controller": "BUILT_IN_AI"},
             ],
-            "players": [{"civilization": "Rome", "usage": usage, "hostCalls": records[-1]["hostCalls"]}],
+            "players": [
+                {"civilization": "Rome", "usage": usage, "hostCalls": records[-1]["hostCalls"], "modelRequests": 10}
+            ],
             "hostCalls": records[-1]["hostCalls"],
+            "modelRequests": 15,
         },
     )
     return run, records
@@ -395,6 +400,45 @@ def test_empty_and_completed_matches(tmp_path):
     asyncio.run(check())
 
 
+def test_batch_dashboard_switches_games(tmp_path):
+    batch = tmp_path / "batch"
+    first, second = batch / "games/g0001", batch / "games/g0002"
+    first.mkdir(parents=True)
+    second.mkdir(parents=True)
+    fixture(first)
+    second_run, _ = fixture(second)
+    second_run.update(status="paused", reason="Capacity recovery")
+    put_state(second, "run", second_run)
+    (batch / "batch.json").write_text(
+        json.dumps(
+            {
+                "format": 2,
+                "parallel": 2,
+                "runs": [{"id": "g0001", "status": "running"}, {"id": "g0002", "status": "paused"}],
+            }
+        )
+    )
+
+    async def check():
+        app = match_watch.MatchWatch(batch, refresh=60)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            assert app.game_id == "g0001"
+            assert "g0001 running" in str(app.query_one("#game-switcher", Static).render())
+            await pilot.press("right_square_bracket")
+            await pilot.pause()
+            assert app.game_id == "g0002" and app.snapshot.run["status"] == "paused"
+            assert "[2/2] g0002" in app.sub_title
+            await pilot.press("right_square_bracket")
+            await pilot.pause()
+            assert app.game_id == "g0001"
+            await pilot.press("left_square_bracket")
+            await pilot.pause()
+            assert app.game_id == "g0002"
+
+    asyncio.run(check())
+
+
 def test_watch_cli_dispatch_and_nonterminal_error(tmp_path, monkeypatch, capsys):
     run = Mock(return_value=7)
     monkeypatch.setattr(match_watch, "run", run)
@@ -405,6 +449,16 @@ def test_watch_cli_dispatch_and_nonterminal_error(tmp_path, monkeypatch, capsys)
     assert match_watch.run(match_watch.parser().parse_args(["--state-dir", str(tmp_path)])) == 2
     assert "interactive terminal" in capsys.readouterr().err
     assert list(tmp_path.iterdir()) == []
+
+
+def test_batch_manifest_rejects_duplicate_or_unsafe_game_ids(tmp_path):
+    manifest = tmp_path / "batch.json"
+    manifest.write_text(json.dumps({"format": 2, "runs": [{"id": "g0001"}, {"id": "g0001"}]}))
+    with pytest.raises(ValueError, match="Invalid game ID"):
+        match_watch.game_directories(tmp_path)
+    manifest.write_text(json.dumps({"format": 2, "runs": [{"id": "../other"}]}))
+    with pytest.raises(ValueError, match="Invalid game ID"):
+        match_watch.game_directories(tmp_path)
 
 
 def test_local_dashboard_can_view_a_container_game_without_starting_containers(tmp_path, monkeypatch):
@@ -435,3 +489,15 @@ def test_local_dashboard_can_view_a_container_game_without_starting_containers(t
     mounts.assert_not_called()
     assert manifest.read_bytes() == original
     assert list(tmp_path.iterdir()) == [manifest]
+
+    batch = tmp_path / "batch"
+    batch.mkdir()
+    (batch / "batch.json").write_text(json.dumps({"format": 2, "runs": [{"id": "g0001"}]}))
+    (batch / "container.json").write_text(json.dumps({"images": None}))
+    viewer.reset_mock()
+
+    assert cli.main(["match", "watch", "--state-dir", str(batch)]) == 0
+    viewer.assert_called_once_with(batch.resolve(), verbose=False)
+    viewer.return_value.run.assert_called_once_with()
+    launch.assert_not_called()
+    mounts.assert_not_called()
