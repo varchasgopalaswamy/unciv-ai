@@ -10,19 +10,12 @@ STRATEGY_GUIDANCE = (
 )
 
 VICTORY_HORIZON_GUIDANCE = (
-    "Separate a broad victory direction from its terminal projects. In the early and middle game, judge routes through "
-    "actionable precursors such as science, production, policies, territory, military strength and city-state relations. "
-    "Treat locked terminal projects such as Apollo, spaceship parts, the United Nations election and Utopia as background "
-    "rules, not current objectives or routine intelligence requirements. A terminal milestone becomes actionable only "
-    "when its direct enabling prerequisite is available or expected within the current planning horizon, its project or "
-    "action is available or underway, an election is scheduled, or verified rival milestone progress creates a concrete "
-    "threat. General output or technology and policy counts do not make a terminal project actionable, and an unstarted "
-    "terminal project is not evidence of danger. Until such a trigger exists, do not request or volunteer updates about "
-    "its absence, turn it into a diplomatic initiative, schedule recurring reports, put those reports into agreements, "
-    "create reminders or memory records for them, or use them to "
-    "defer an otherwise attractive near-term plan. Honor an existing explicit reporting term only according to its stated "
-    "checkpoint or trigger; do not repeat no-change reports between checkpoints or renew an irrelevant reporting clause "
-    "by default."
+    "Separate a broad victory direction from its terminal projects. Compare investments that can change our position "
+    "within the planning horizon. Examine terminal projects when their prerequisites, availability, timing or observed "
+    "rival progress could change a current choice. General output and technology counts alone do not establish an "
+    "imminent finish; an unstarted terminal project is not evidence of danger. Request information when its answer "
+    "could change a decision. Follow existing reporting terms at their stated checkpoint or trigger, and reconsider "
+    "whether recurring reports still serve an objective."
 )
 
 DIPLOMACY_GUIDANCE = (
@@ -44,9 +37,15 @@ GAMEPLAY_WORKFLOW = (
     "Follow scenario.instructions when present; otherwise your objective is to win the game.\n\n"
     "Private memory is historical evidence and provisional assessment. Use current observations to decide what "
     "still applies. Choose your own goals and priorities; tactical summaries and notebook review notices are advisory.\n\n"
-    "A dated strategic adviser report may be supplied. Treat it as provisional advice: compare it with current facts, "
-    "judge its competing plans and reconsideration conditions, and choose your own actions. You need not copy it into memory. "
-    "Save private knowledge during play only when useful context is absent from observations and action records.\n\n"
+    "Judge the dated adviser's alternatives against current facts and choose your own actions. Record useful multi-turn "
+    "choices in strategy.decisions: investment, observable expectations, a review horizon and reconsideration conditions. "
+    "Keep each choice's id and content stable until it changes; adviser preference does not adopt a choice for you. "
+    "Save a choice with memory_update before linking actions: intent.strategy takes the returned memory ID, "
+    "and intent.decision takes the choice's id. Ordinary tactical actions need no plan reference. Use player_turn.decisionFeedback to compare "
+    "expectations with evidence, then continue, revise or abandon. Saving, conversion and waiting remain valid choices. "
+    "outputSummary separates science from production conversion; construction_details(names=[...], horizonTurns=N) "
+    "compares selected investments under stated static assumptions. Save other private knowledge when useful context "
+    "is absent from observations and action records.\n\n"
     + STRATEGY_GUIDANCE
     + "\n\n"
     + VICTORY_HORIZON_GUIDANCE
@@ -90,7 +89,7 @@ COMMUNICATION_INSTRUCTIONS = (
     + "\n\n"
     "Available diplomatic actions do not establish requests or promises. Use received messages and recorded "
     "native/social promises as evidence; reconsider historical assessments that confuse these.\n\n"
-    "Reassess the latest strategic advice, its alternatives and reconsideration conditions against the exchange and current facts. "
+    "Use the player's chosen strategy decisions to identify useful negotiations and unresolved questions. Reassess relevant strategic advice against the exchange and current facts. Do not treat an adviser initiative as a player commitment. "
     "Use prepared chat_read and relevant memory, or read them if absent. Use player_turn only for a specific missing "
     "gameplay detail. Statements are attributed claims, not game facts.\n"
     "You may ask questions, negotiate conditions, counteroffer or approach another player when useful. "

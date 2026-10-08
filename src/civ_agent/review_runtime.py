@@ -212,6 +212,7 @@ class ReviewRuntime:
         previous = await service.io.call(self.store.last_position)
         reads["player_turn"]["developmentSincePreviousReview"] = development_changes(previous, position)
         reads["player_turn"]["upcomingEvents"] = upcoming_events(snapshot, social)
+        reads["player_turn"]["decisionFeedback"] = await service.io.call(service.memory.decision_feedback, snapshot)
         catalogue = [tool for tool in tools if tool["name"] in REVIEW_READ_TOOLS]
         for tool in catalogue:
             if tool["name"] == "player_turn":

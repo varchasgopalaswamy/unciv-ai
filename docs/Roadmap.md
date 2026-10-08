@@ -1,6 +1,6 @@
 # Current roadmap
 
-Updated October 6, 2026. This is the current work summary; completed sprint
+Updated October 7, 2026. This is the current work summary; completed sprint
 checklists and measurements live in the [archive](archive/README.md).
 
 ## Active acceptance: complete an ordinary Vanilla game
@@ -73,14 +73,26 @@ Remaining recommendations:
 3. **Investigate recurring communication-read failures if they return.** The last
    review found eleven recoverable background MCP errors before a restart, with
    no established server-side cause.
-4. **Improve long-horizon strategic conversion.** The
-   [October 6 four-game audit](archive/reports/Benchmark-agent-play-audit-2026-10-06.md)
-   found that agents usually led in science or military force but trailed the
-   built-in control in cities, population, production, wonders, and total score.
-   Prioritize a permitted comparative conversion audit, a compact persistent
-   execution plan, explicit treasury and expansion decisions, and a five-turn
-   wartime progress review. Validate them from fixed checkpoints before adding
-   more general strategy prose.
+4. **Refactor strategic decisions and feedback.** The
+   [October 7 four-game audit](archive/reports/Benchmark-agent-play-audit-2026-10-07.md)
+   found universal model technology leads but weaker population and usually weaker
+   production, with extensive Science conversion and uneven military results.
+   The [decision-process refactor](architecture/Decision-process-refactor.md)
+   now supplies common output summaries, native investment comparisons, a smaller
+   review schema and gameplay-owned choices with dated feedback. Receipt links and
+   baselines survive restart/rewind; plans remain advisory. Format 10 is for new
+   games only. The four current games and all 20 player memories are frozen and
+   verified in a private baseline bundle. Six cases include cultural success and
+   a held-out start. [Evaluation tooling](scenarios/Strategic-positions.md#decision-process-comparisons)
+   rotates implementations across repetitions and retains incomplete attempts.
+   The [October 8 implementation report](archive/reports/Decision-process-refactor-2026-10-08.md)
+   records the first native review–play–review cycle and fixes for unlinked intent
+   references and city subject names found during those trials.
+   The subsequent three-pair investment/culture screen reached a provider usage
+   limit before any trial completed; repeat it from the frozen v4 sources when
+   capacity is available, keeping all failed attempts.
+   Demonstrating stronger play across repeated long-horizon cases and full games
+   remains open; current benchmark images continue unchanged.
 
 Current efficiency behavior is documented in
 [agent context](architecture/Agent-context.md),

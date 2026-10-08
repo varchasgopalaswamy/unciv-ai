@@ -62,8 +62,9 @@ without advancing the paused inbox listener's cursor.
 
 The reviewer receives its own conversation and credential, using the player's
 model, reasoning effort, fast-priority setting and optional strategy guide. Its
-context excludes private strategy, handoffs, contributions and previous model
-reasoning. Frozen detail tools have no live host connection. The reviewer cannot
+context excludes prior strategy assessments, handoffs, contributions and previous
+model reasoning. Selected objectives and expectations arrive as dated hypotheses
+in factual `decisionFeedback`. Frozen detail tools have no live host connection. The reviewer cannot
 act, communicate, write memory, inspect private history or request live movement
 previews. Current tactical validation remains the gameplay player's responsibility.
 The initial prompt includes current diplomatic commitments; the older ledger and
@@ -117,24 +118,31 @@ the matching baseline, and the full review inputs are still deleted on completio
 ## Reports and diplomatic advice
 
 Reviews compare up to three concrete `plans`, each with an objective, required
-investment, short-/mid-/long-term projection, relative outcome and risks. They
-normally compare continued development with the strongest plausible alternatives,
-including preparation, opportunity costs and rival responses over comparable
-horizons. `preferredPlan` is a one-based number or null when the choice is open;
+investment, expected observations, first actions, relative outcome and risks.
+They compare current choices, preparation, opportunity costs and rival responses
+over one `horizonTurns` (1–100). `preferredPlan` is a one-based number or null when the choice is open;
 `reconsiderWhen` identifies evidence that would change the recommendation. An
 undecided review can recommend information gathering or reversible investments.
-The assessment explains the choice, and short-, mid- and long-term advice makes
-the next steps concrete.
+`outcomeAssessment` interprets previous expectations against observed changes
+and linked receipts, retaining uncertainty about causes and missing evidence.
+The schema validates structure and plan references, not a preferred strategy.
+Enabled victory rules remain readable; exhaustive `victoryOutlooks` and the
+overlapping short-/mid-/long-term sections are removed. Runtime format 10 requires
+new stores; read-only dashboard rendering supports retained baseline reports.
 
-`victoryOutlooks` covers every enabled victory exactly once with brief prospects,
-the important bottleneck and the next decision. Detailed costs and projections
-belong to the competing plans. Investment in research can support multiple
-victories without committing to a Scientific finish. The format replaces the
-former victory-by-victory projections and separate race/alternative/disruption
-sections; old report records are unsupported, with no migration or fallback.
+Both gameplay and reviews receive `outputSummary` from the same owned-position
+projection, including science contributed by production conversion. The remainder
+can still include temporary bonuses. Focused `construction_details` with selected
+`names` and `horizonTurns` compares continuing current output, building and
+purchasing. It uses native rates, costs, blockers and completion previews, with
+static timing assumptions and no aggregate utility score. Missing previews stay
+unavailable. Purchase costs are separate; completion outputs exclude conversion,
+and the helper does not assume subsequent builds, resumed conversion, growth or
+future specialist staffing.
 
 The report's `diplomacy` section contains an assessment of relationships and
-agreements and zero to two proposed initiatives. Each names the players to
+agreements and zero to two proposed initiatives. Each references its supporting
+plan and names the players to
 approach, the desired change in their behavior and our relative benefit, their
 incentives, proposed terms and disclosures, a concrete next step and conditions
 for reconsideration. The overall report targets 6,000 characters. Gameplay and
@@ -160,8 +168,10 @@ the review, contacting another player or writing a notebook entry.
 
 Both kinds of player job receive the latest report and use initiative participants
 to select relevant private notes within the existing memory budget. Private advice
-is not sent automatically. Reviewer inputs continue to exclude prior plans and
-private rationales, preserving an independent assessment each period.
+is not sent automatically. Communication receives gameplay-owned decisions as
+part of the strategy and uses them to judge which negotiations matter. Reviewer
+inputs include dated chosen expectations, while excluding the player's persuasive
+strategy and action rationales. Earlier choices are hypotheses to reconsider.
 
 Detail matches the game stage and evidence. The reviewer chooses its calculations
 and strategic conclusions; projections can describe development milestones and

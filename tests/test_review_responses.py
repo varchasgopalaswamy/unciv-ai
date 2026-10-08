@@ -11,7 +11,7 @@ from civ_agent import service_recovery
 from civ_agent.agent_service import AgentService
 from tests.test_opening_review import OpeningHost
 from tests.test_strategic_adviser import ReviewCodex, ReviewFactory
-from tests.test_strategic_review import VICTORIES, assessment
+from tests.test_strategic_review import assessment
 
 MISSING_PHASE = object()
 
@@ -142,10 +142,14 @@ def test_invalid_explicit_final_does_not_fall_back_to_valid_unlabeled_report(tmp
     [
         pytest.param("invalid", "Invalid JSON", id="json"),
         pytest.param(json.dumps({"assessment": "Missing review."}), "Field required", id="schema"),
-        pytest.param(json.dumps(assessment(VICTORIES[:-1])), "STRATEGIC_REVIEW_COVERAGE", id="coverage"),
+        pytest.param(
+            json.dumps({**assessment(), "review": {**assessment()["review"], "horizonTurns": 0}}),
+            "greater than or equal to 1",
+            id="horizon",
+        ),
     ],
 )
-def test_last_unlabeled_report_still_requires_json_schema_and_victory_coverage(tmp_path, text, error):
+def test_last_unlabeled_report_still_requires_valid_json_and_schema(tmp_path, text, error):
     async def run():
         async with reviewing(tmp_path) as (service, process):
             # Never search backwards for an earlier valid report or concatenate replies.

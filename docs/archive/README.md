@@ -6,6 +6,8 @@ for current behavior.
 
 ## Reports
 
+- [Decision-process refactor — October 8, 2026](reports/Decision-process-refactor-2026-10-08.md): implementation, preserved baseline, paired trials, interface findings and acceptance gates.
+- [Benchmark agent play audit — October 7, 2026](reports/Benchmark-agent-play-audit-2026-10-07.md): model/native gaps and the baseline for the decision-process refactor.
 - [Benchmark agent play audit — October 6, 2026](reports/Benchmark-agent-play-audit-2026-10-06.md): four-game comparison with the built-in controls, recurring conversion failures, proposed review changes, and checkpoint validation.
 - [Competing strategy plans — September 30, 2026](reports/Competing-strategy-plans-2026-09-30.md): concrete alternatives, relative diplomacy, and paired early/late three-round comparisons.
 - [Initiative decision evaluation — September 30, 2026](reports/Initiative-decisions-2026-09-30.md)

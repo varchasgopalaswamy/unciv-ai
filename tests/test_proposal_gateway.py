@@ -112,6 +112,35 @@ class Host:
         return result
 
 
+def test_unrecorded_intent_is_explained_without_blocking_or_changing_native_receipt(tmp_path):
+    async def run():
+        memory = CivilizationState(tmp_path / "private", "Rome")
+        io = ServiceIO()
+        gateway = ProposalGateway(memory, io, tmp_path / "workspace")
+        host = Host()
+        try:
+            job = await gateway.open("game", "gameplay", "g1", host, {}, 0)
+            await gateway.call(job, "player_turn", {}, "read")
+            arguments = {
+                "kind": "END_TURN",
+                "intent": {"reason": "Finish chosen actions", "strategy": "invented-plan", "decision": "defense"},
+            }
+            result = await gateway.call(job, "player_command", arguments, "end")
+            assert result["done"] and len(host.executed) == 1
+            assert result["intentFeedback"]["unverifiedStrategy"] == "invented-plan"
+            assert not result["intentFeedback"]["linked"]
+            assert "intent" not in host.executed[0]
+            receipt = memory.call_receipt("game", "end")
+            assert receipt is not None and "intentFeedback" not in receipt
+            assert await gateway.call(job, "player_command", arguments, "end") == result
+            assert len(host.executed) == 1
+        finally:
+            await io.close()
+            memory.engine.dispose()
+
+    asyncio.run(run())
+
+
 @pytest.mark.parametrize("decision", [None, "acted", "deferred", "rejected"])
 def test_end_turn_initiative_decision_is_optional_private_audit_metadata(tmp_path, decision):
     async def run():

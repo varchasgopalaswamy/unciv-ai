@@ -11,10 +11,12 @@ import shutil
 import subprocess
 from pathlib import Path
 
+import civ_agent
 from civ_agent import scheduler
 from civ_agent.agent_settings import resolve_run_settings
 from civ_agent.commands.host import ensure_players
 from civ_agent.tls import write_private_json
+from tests.evaluation_sources import tree_hash
 from tests.support import services
 
 DEFAULT_MODEL = "gpt-6-luna"
@@ -150,6 +152,8 @@ def main() -> int:
                     ["git", "rev-parse", "HEAD"], cwd=repository, text=True
                 ).strip(),
                 "sourceTreeSha256": source_fingerprint(repository),
+                "pythonSource": str(Path(civ_agent.__file__).parent),
+                "pythonSourceSha256": tree_hash(Path(civ_agent.__file__).parent),
                 "engineRevision": subprocess.check_output(
                     ["git", "rev-parse", "HEAD"], cwd=repository / "vendor/Unciv", text=True
                 ).strip(),

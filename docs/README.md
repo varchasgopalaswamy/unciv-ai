@@ -46,6 +46,11 @@ Run shell examples from the repository root unless a page says otherwise.
 | [Background turn memory](architecture/Background-turn-memory.md) | Handoff, concurrent reflection, finalization and checkpoints |
 | [Database access](architecture/Database-access.md) | SQLAlchemy/SQLite ownership and transactions |
 
+The [decision-process refactor](architecture/Decision-process-refactor.md)
+connects factual comparisons, player choices and observed outcomes. Its first
+implementation and [saved-position results](archive/reports/Decision-process-refactor-2026-10-08.md)
+retain staged acceptance gates for stronger play.
+
 ## Player and operator reference
 
 ### Contracts and accounting

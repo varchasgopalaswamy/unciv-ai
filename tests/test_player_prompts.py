@@ -72,7 +72,7 @@ def test_review_compares_limited_intervention_with_relative_development():
         assert principle in STRATEGY_GUIDANCE
     for principle in (
         "Use one plan when only one is credible",
-        "comparable short-, mid- and long-term horizons",
+        "one shared horizon",
         "Military costs include recruitment, upgrades, positioning and travel",
         "taking a useful city, pillaging or forcing rival military spending",
         "conditions for seeking peace",
@@ -83,20 +83,13 @@ def test_review_compares_limited_intervention_with_relative_development():
         assert principle in ADVISOR_INSTRUCTIONS
 
 
-def test_victory_horizon_keeps_locked_endgame_projects_out_of_early_diplomacy_and_memory():
+def test_victory_horizon_focuses_information_on_current_decisions():
     for principle in (
         "Separate a broad victory direction from its terminal projects",
-        "background rules, not current objectives or routine intelligence requirements",
-        "direct enabling prerequisite is available or expected within the current planning horizon",
-        "General output or technology and policy counts do not make a terminal project actionable",
+        "could change a current choice",
         "an unstarted terminal project is not evidence of danger",
-        "do not request or volunteer updates about its absence",
-        "turn it into a diplomatic initiative",
-        "put those reports into agreements",
-        "create reminders or memory records for them",
-        "only according to its stated checkpoint or trigger",
-        "do not repeat no-change reports between checkpoints",
-        "renew an irrelevant reporting clause by default",
+        "could change a decision",
+        "at their stated checkpoint or trigger",
     ):
         assert principle in VICTORY_HORIZON_GUIDANCE
 

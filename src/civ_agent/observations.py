@@ -10,7 +10,7 @@ import hashlib
 import json
 from typing import Annotated, Any, Literal
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from civ_agent.action_templates import (
     add_city_commands,
@@ -22,6 +22,7 @@ from civ_agent.construction_estimates import (
     ESTIMATE_BASIS,
     completion_summary,
     construction_estimate,
+    investment_comparison,
     overview_estimates,
     queue_progress,
 )
@@ -45,11 +46,19 @@ from civ_agent.mechanics_overview import (
     settlement_summary,
 )
 from civ_agent.protocol import JsonObject
+from civ_agent.review_context import review_position
 from civ_agent.schemas import BoundaryModel
 
 
 class ConstructionDetails(EntityDetails):
     names: Annotated[list[str], Field(max_length=16)] = Field(default_factory=list)
+    horizonTurns: Annotated[int, Field(ge=1, le=100)] | None = None
+
+    @model_validator(mode="after")
+    def comparison_requires_names(self):
+        if self.horizonTurns is not None and not self.names:
+            raise ValueError("Supply names when comparing investments over horizonTurns")
+        return self
 
 
 class MapRegion(BoundaryModel):
@@ -202,6 +211,7 @@ class TurnOverview(BoundaryModel):
     endTurn: JsonObject | None = None
     tacticalReview: JsonObject = Field(default_factory=dict)
     strategyReview: JsonObject = Field(default_factory=dict)
+    decisionFeedback: JsonObject | None = None
     pending: list[JsonObject] = Field(default_factory=list)
     alerts: list[JsonObject] = Field(default_factory=list)
     notifications: list[PlayerNotification] = Field(default_factory=list)
@@ -216,6 +226,7 @@ class TurnOverview(BoundaryModel):
     researchQueue: list[str] = Field(default_factory=list)
     research: JsonObject | None = None
     culture: JsonObject | None = None
+    outputSummary: JsonObject = Field(default_factory=dict)
     greatPeople: list[JsonObject] = Field(default_factory=list)
     researchOptions: list[str] = Field(default_factory=list)
     policyOptions: list[str] = Field(default_factory=list)
@@ -406,6 +417,11 @@ def overview(snapshot: JsonObject) -> JsonObject:
         "limits": "Building gains are separate current-population comparisons, not an additive budget. New luxuries require acquisition/connection; duplicate luxuries do not ordinarily add happiness. See settlement for new-city costs and potential resources.",
     }
     value["research"] = research_summary(snapshot)
+    value["outputSummary"] = {
+        "asOfTurn": snapshot["turn"],
+        "totals": review_position(snapshot)["totals"],
+        "basis": "Owned current rates, not forecasts. Production includes current construction modifiers. Science from production is shown separately; the remainder can still include temporary bonuses. Unknown rates are null.",
+    }
     value["exploration"] = exploration_summary(snapshot)
     value["diplomacy"] = [
         {
@@ -663,6 +679,17 @@ def project_detail(snapshot: JsonObject, query: DetailQuery) -> JsonObject:
                                 if p["name"] == n
                             ],
                             **(construction_estimate(estimates[n], detailed=bool(names)) if n in estimates else {}),
+                            **(
+                                {
+                                    "investmentComparison": investment_comparison(
+                                        {**estimates[n], "queueUnavailableReasons": queue_reasons(n)},
+                                        purchases.get(n),
+                                        args["horizonTurns"],
+                                    )
+                                }
+                                if n in estimates and args.get("horizonTurns") is not None
+                                else {}
+                            ),
                             "queueUnavailableReasons": queue_reasons(n),
                             **(
                                 {"conversion": entity["productionConversions"][n]}

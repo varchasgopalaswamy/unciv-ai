@@ -58,7 +58,7 @@ Attempts and paid usage survive rewind. Completion atomically saves advice and r
 - Operator pauses and budget limits stop work until explicit resume.
 
 This replaces historical round checkpoints and the manual round-rollback command.
-The memory store uses format 9 and scheduler state uses format 5. Older matches
+The memory store uses format 10 and scheduler state uses format 5. Older matches
 require their original code; there is no migration. Start a fresh match with this
 version. Native checkpoint behavior is unchanged.
 Replaying work spends additional tokens and time and may produce different choices.

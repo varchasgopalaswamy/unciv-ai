@@ -7,6 +7,8 @@ in the operator manifest; the agents receive only ordinary authorized reads.
 import argparse
 import concurrent.futures
 import json
+import os
+import re
 import signal
 import subprocess
 import sys
@@ -14,9 +16,38 @@ import threading
 import time
 from pathlib import Path
 
+from sqlalchemy.exc import SQLAlchemyError
+
 from civ_agent.monitoring import path_for, read_collection, read_record
 from civ_agent.scheduler import positive
 from civ_agent.tls import write_private_json
+from tests.evaluation_sources import tree_hash
+
+
+def trial_schedule(cases, variants, repetitions):
+    """Rotate implementation order, retaining every attempt under a unique label."""
+    return [
+        {
+            "case": case,
+            "variant": variant,
+            "repetition": repetition + 1,
+            "id": case["id"] if len(variants) == repetitions == 1 else f"{case['id']}-{variant}-{repetition + 1}",
+        }
+        for repetition in range(repetitions)
+        for case in cases
+        for variant in variants[repetition % len(variants) :] + variants[: repetition % len(variants)]
+    ]
+
+
+def validate_case(case, position):
+    """Check diagnostic selection assumptions without changing the player's objective."""
+    if case.get("requiresScienceConversion") and not any(
+        city.get("constructionQueue", [])[:1] == ["Science"] for city in position.get("cities", [])
+    ):
+        raise ValueError(f"{case['id']}: expected an active Science conversion")
+    minimum = case.get("minimumCulturePerTurn")
+    if minimum is not None and float((position.get("culture") or {}).get("culturePerTurn", 0)) < minimum:
+        raise ValueError(f"{case['id']}: cultural specialization is missing")
 
 
 def evaluation_status(root, expected_rounds, exit_code):
@@ -32,6 +63,26 @@ def evaluation_status(root, expected_rounds, exit_code):
     }
 
 
+def provider_usage_exhausted(root):
+    """Use structured provider status, never infer an account limit from prose."""
+    state = read_record(path_for(root), "state", "run") or {}
+    statuses = [(state.get("inFlight") or {}).get("modelStatus") or {}]
+    for path in root.glob("agent-services/*/activations/*.json"):
+        record = json.loads(path.read_text())
+        if record.get("phase") == "FAILED":
+            statuses.append((record.get("reviewProgress") or {}).get("modelStatus") or {})
+    return any(status.get("state") == "failed" and status.get("reason") == "usageLimitExceeded" for status in statuses)
+
+
+def reported_model_tokens(root):
+    """Count each job once, including reviews, chat, failures and cached input."""
+    return sum(
+        row["job"].get("usage", {}).get(key, 0)
+        for row in read_collection(path_for(root), "jobs")
+        for key in ("input_tokens", "output_tokens")
+    )
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--prepared", required=True, type=Path)
@@ -45,6 +96,19 @@ def main():
     parser.add_argument("--strategy-guide", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--civilization-guide", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--review-interval", type=positive, default=5)
+    parser.add_argument("--rounds", type=positive, help="Override case length, e.g. 5 to screen or 25 for outcomes")
+    parser.add_argument("--repetitions", type=positive, default=1)
+    parser.add_argument(
+        "--variant", action="append", help="NAME=SOURCE_ROOT containing civ_agent; default: current checkout"
+    )
+    parser.add_argument("--max-invocations", type=positive, default=60)
+    parser.add_argument("--max-seconds", type=positive, default=14400)
+    parser.add_argument("--turn-timeout", type=positive, default=1200)
+    parser.add_argument(
+        "--max-tokens",
+        type=positive,
+        help="Per-trial input plus output tokens, including cached input; checked every two seconds",
+    )
     parser.add_argument(
         "--manifest", type=Path, default=Path(__file__).parent / "fixtures/strategy_positions/manifest.json"
     )
@@ -54,6 +118,22 @@ def main():
     cases = [case for case in manifest["positions"] if case["id"] in selected]
     if selected != {case["id"] for case in cases}:
         parser.error("Unknown position ID")
+    if args.rounds:
+        cases = [{**case, "rounds": args.rounds} for case in cases]
+    for case in cases:
+        validate_case(case, json.loads((args.prepared / case["id"] / "initial-turn.json").read_text()))
+    sources = {}
+    for value in args.variant or [f"current={Path(__file__).resolve().parents[1] / 'src'}"]:
+        name, separator, path = value.partition("=")
+        if (
+            not separator
+            or not re.fullmatch(r"[a-zA-Z0-9_-]+", name)
+            or name in sources
+            or not (Path(path) / "civ_agent").is_dir()
+        ):
+            parser.error("Each variant needs a unique simple name and a source directory containing civ_agent")
+        sources[name] = Path(path).resolve()
+    trials = trial_schedule(cases, list(sources), args.repetitions)
     root = args.state_dir.resolve()
     if root.exists() and any(root.iterdir()):
         parser.error("Use a fresh suite directory; failed attempts are retained")
@@ -61,6 +141,7 @@ def main():
     processes = []
     lock = threading.Lock()
     stopping = threading.Event()
+    stop_reason = "Suite interrupted before launch"
     results = []
     metadata = {
         "model": args.model,
@@ -71,10 +152,24 @@ def main():
         "fast": args.fast,
         "freshPrivateMemory": True,
         "positions": cases,
+        "manifest": manifest,
+        "sources": {
+            name: {"path": str(path), "sha256": tree_hash(path / "civ_agent")} for name, path in sources.items()
+        },
+        "repetitions": args.repetitions,
+        "limits": {
+            "invocations": args.max_invocations,
+            "seconds": args.max_seconds,
+            "turnSeconds": args.turn_timeout,
+            "tokens": args.max_tokens,
+            "tokenAccounting": "Reported input plus output across all model jobs; cached input included once",
+        },
     }
     write_private_json(root / "suite.json", metadata)
 
-    def run_case(index, case):
+    def run_case(index, trial):
+        nonlocal stop_reason
+        case, label = trial["case"], trial["id"]
         command = [
             sys.executable,
             "-m",
@@ -82,7 +177,7 @@ def main():
             "--position",
             str(args.prepared.resolve() / case["id"]),
             "--state-dir",
-            str(root / case["id"]),
+            str(root / label),
             "--port",
             str(args.port + 4 * index),
             "--model",
@@ -92,11 +187,11 @@ def main():
             "--max-turns",
             str(case["rounds"]),
             "--max-invocations",
-            "12",
+            str(args.max_invocations),
             "--max-seconds",
-            "3600",
+            str(args.max_seconds),
             "--turn-timeout",
-            "1200",
+            str(args.turn_timeout),
             "--strategy-guide" if args.strategy_guide else "--no-strategy-guide",
             "--civilization-guide" if args.civilization_guide else "--no-civilization-guide",
             "--review-interval",
@@ -104,27 +199,66 @@ def main():
             *(["--fast"] if args.fast else []),
         ]
         started = time.monotonic()
-        print(f"Starting {case['id']} ({case['rounds']} rounds)", flush=True)
-        with (root / f"{case['id']}.log").open("w") as log:
+        environment = {
+            **os.environ,
+            "PYTHONPATH": str(sources[trial["variant"]]) + os.pathsep + os.environ.get("PYTHONPATH", ""),
+        }
+        with (root / f"{label}.log").open("w") as log:
             with lock:
                 if stopping.is_set():
-                    return {"id": case["id"], "completedEvaluation": False, "reason": "Suite interrupted before launch"}
-                process = subprocess.Popen(command, stdout=log, stderr=log)
+                    return {
+                        "id": label,
+                        "case": case["id"],
+                        "variant": trial["variant"],
+                        "repetition": trial["repetition"],
+                        "completedEvaluation": False,
+                        "notStarted": True,
+                        "reason": stop_reason,
+                    }
+                print(f"Starting {label} ({case['rounds']} rounds)", flush=True)
+                process = subprocess.Popen(command, stdout=log, stderr=log, env=environment)
                 processes.append(process)
-            code = process.wait()
+            token_stop = None
+            while process.poll() is None:
+                try:
+                    process.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    if args.max_tokens and token_stop is None:
+                        try:
+                            total = reported_model_tokens(root / label)
+                        except (OSError, ValueError, SQLAlchemyError):
+                            continue
+                        if total >= args.max_tokens:
+                            token_stop = total
+                            process.send_signal(signal.SIGINT)
+            code = process.returncode
+        provider_limit = provider_usage_exhausted(root / label)
+        if provider_limit:
+            with lock:
+                stop_reason = "Suite stopped after provider usageLimitExceeded; no further trials launched"
+                stopping.set()
         result = {
-            "id": case["id"],
+            "id": label,
+            "case": case["id"],
+            "variant": trial["variant"],
+            "repetition": trial["repetition"],
             "exitCode": code,
             "elapsedSeconds": time.monotonic() - started,
-            **evaluation_status(root / case["id"], case["rounds"], code),
+            **evaluation_status(root / label, case["rounds"], code),
+            "tokenBudgetStop": token_stop,
+            "providerFailure": "usageLimitExceeded" if provider_limit else None,
         }
-        print(f"Finished {case['id']}: exit {code}", flush=True)
+        print(
+            f"Finished {label}: {result['completedRounds']}/{result['expectedRounds']} rounds with complete accounting, "
+            f"{result['runnerStatus']}, exit {code}",
+            flush=True,
+        )
         return result
 
     pool = concurrent.futures.ThreadPoolExecutor(max_workers=args.parallel)
     futures = []
     try:
-        futures = [pool.submit(run_case, index, case) for index, case in enumerate(cases)]
+        futures = [pool.submit(run_case, index, trial) for index, trial in enumerate(trials)]
         for future in concurrent.futures.as_completed(futures):
             results.append(future.result())
             write_private_json(root / "results.json", results)

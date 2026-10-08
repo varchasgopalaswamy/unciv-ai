@@ -79,12 +79,11 @@ def test_report_displays_all_plans_outlooks_and_reconsideration(preferred):
     assert ("No preferred plan" in text) == (preferred is None)
     for number, plan in enumerate(review["plans"], 1):
         assert f"Plan {number} · " in text
-        assert all(
-            plan[field] in text for field in ("objective", "investment", "projection", "relativeOutcome", "risks")
-        )
+        assert all(plan[field] in text for field in ("objective", "investment", "relativeOutcome", "risks"))
     assert review["reconsiderWhen"] in text
-    for outlook in review["victoryOutlooks"]:
-        assert outlook["victory"] + " victory" in text and outlook["outlook"] in text
+    assert review["outcomeAssessment"] in text
+    for plan in review["plans"]:
+        assert all(item in text for item in plan["expectedObservations"] + plan["firstActions"])
     assert text.index("Recommendation") < text.index("Investment") < text.index("Diplomacy")
 
 
@@ -307,14 +306,14 @@ def test_strategy_tab_selection_refresh_freeze_and_reading_position(tmp_path, me
             assert not app.query_one("#metrics", Static).display
             text = "\n".join(line.text for line in log.lines)
             assert "[bold]Roman advice[/bold]" in text and "\x1b" not in text
-            assert "Short-term plan" in text and "Scientific victory" in text
+            assert "Expected observations" in text and "Prior outcomes" in text
             assert "Diplomatic initiative" in text and "Their incentives" in text and "Reconsider when" in text
             assert "Plan 1 · " in text and "Investment" in text and "Relative outcome" in text
             assert (
                 text.index("Recommendation")
                 < text.index("Investment")
                 < text.index("Relative outcome")
-                < text.index("Scientific victory")
+                < text.index("Prior outcomes")
             )
             assert "Recommendations remain advisory" in str(app.query_one("#strategy-status", Static).render())
             log.scroll_to(y=5, animate=False)

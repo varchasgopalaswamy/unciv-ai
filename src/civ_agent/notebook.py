@@ -4,6 +4,7 @@ The caller owns the transaction. Gameplay is the sole notebook writer; other
 jobs append immutable contributions for a subsequent gameplay activation.
 """
 
+from civ_agent.decision_context import decision_baselines
 from civ_agent.memory_records import BRIEF_TYPES, MEMORY_TYPES, MemoryContentError, amended_content, public_record
 from civ_agent.memory_store import RecordStore
 
@@ -85,6 +86,13 @@ class Notebook:
                         raise ValueError("TYPE_CHANGE_REQUIRES_NEW_RECORD")
                 content = self.store.content(proposed, self.snapshot, old["body"] if old else None)
                 category = content["type"] if self.purpose == "gameplay" else "contribution"
+                if category == "strategy":
+                    content["_decisionBaselines"] = decision_baselines(
+                        content, old["body"] if old else {}, self.snapshot, self.basis["turn"]
+                    )
+                    for baseline in content["_decisionBaselines"].values():
+                        if "id" not in baseline:
+                            baseline["id"] = self.store.handle("choice")
                 if category in BRIEF_TYPES and any(
                     k != key and r["body"].get("state") == "active"
                     for k, r in self.store.all(categories={category}).items()

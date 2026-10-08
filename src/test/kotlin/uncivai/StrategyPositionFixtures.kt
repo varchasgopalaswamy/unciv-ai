@@ -142,6 +142,14 @@ object StrategyPositionFixtures {
                         },
                     ),
                 )
+                // Advancing the raw fixture can leave observation callbacks for former
+                // human opponents. They are now native AI and have no player session
+                // to restore; their stale alert handles must not enter the checkpoint.
+                game.civilizations.filter { it.civID != civilization }.forEach {
+                    it.cache.onTileRevealed = null
+                    it.cache.onViewableTilesUpdated = null
+                }
+                runtime.executor.turnSessions.keys.retainAll(setOf(civilization))
                 runtime.executor.enableCheckpoints(output.resolve("exploration.json"))
             }
             // Reload the exact artifact used by live services; recompute visibility.

@@ -2,6 +2,7 @@
 
 import argparse
 import json
+import os
 from collections import Counter
 from pathlib import Path
 
@@ -11,6 +12,7 @@ from civ_agent import memory_schema as tables
 from civ_agent.memory_snapshots import record_bodies
 from civ_agent.monitoring import path_for, read_collection, read_record
 from civ_agent.protocol import JsonObject
+from civ_agent.review_context import review_position
 from civ_agent.telemetry import TOKEN_KEYS
 from tests.verify_tool_discovery_live import discovery_metrics
 
@@ -62,6 +64,8 @@ def native_position(checkpoint_path, civilizations):
                     for c in civ.get("cities", [])
                 ],
                 "researchQueue": civ["tech"].get("techsToResearch", []),
+                "technologies": sorted(civ["tech"].get("techsResearched", [])),
+                "policies": sorted(civ.get("policies", {}).get("adoptedPolicies", [])),
             }
         )
     return positions
@@ -85,6 +89,10 @@ def position_changes(initial, final):
                 "toTurn": after["turn"],
                 "exploredTilesDelta": after["exploredTiles"] - before["exploredTiles"],
                 "goldDelta": after["gold"] - before["gold"],
+                "populationDelta": sum(c["population"] for c in after["cities"])
+                - sum(c["population"] for c in before["cities"]),
+                "technologiesAcquired": sorted(set(after["technologies"]) - set(before["technologies"])),
+                "policiesAcquired": sorted(set(after["policies"]) - set(before["policies"])),
                 "unitCounts": {
                     name: {"before": counts_before[name], "after": counts_after[name]}
                     for name in sorted(counts_before.keys() | counts_after.keys())
@@ -101,6 +109,7 @@ def position_changes(initial, final):
 
 def analyze(root, sessions, rounds=None):
     latest = {row["turnId"]: row for row in read_collection(path_for(root), "turns")}
+    unfinished = sum(row["turn"]["status"] != "completed" or not row["accountingComplete"] for row in latest.values())
     turns = [row for row in latest.values() if row["turn"]["status"] == "completed"]
     turns.sort(key=lambda row: row["turn"]["handoff"])
     if rounds and turns:
@@ -143,6 +152,7 @@ def analyze(root, sessions, rounds=None):
     for row in turns:
         assert all(row["usage"][key] == sum(jobs[job]["usage"][key] for job in row["jobs"]) for key in TOKEN_KEYS)
     commands, observations, errors = [], [], []
+    choices, feedback, comparisons, reviews = [], [], [], []
     calls = Counter()
     for path in root.glob("agent-services/*/civilization/memory.sqlite3"):
         engine = create_engine(
@@ -156,6 +166,10 @@ def analyze(root, sessions, rounds=None):
                 for row in rows:
                     result = json.loads(row["result"]) if row["result"] else {}
                     arguments = json.loads(row["arguments"])
+                    if result.get("decisionFeedback", {}).get("choices"):
+                        feedback.append({"job": row["job"], "feedback": result["decisionFeedback"]})
+                    if row["name"] == "construction_details" and arguments.get("horizonTurns"):
+                        comparisons.append({"job": row["job"], "arguments": arguments, "result": result})
                     calls[("startup:" if row["id"].startswith("startup:") else "tool:") + row["name"]] += 1
                     if "error" in result:
                         errors.append(
@@ -213,6 +227,37 @@ def analyze(root, sessions, rounds=None):
                             ],
                             "researchQueue": snapshot["researchQueue"],
                             "economy": snapshot.get("economy"),
+                            "outputSummary": review_position(snapshot)["totals"],
+                        }
+                    )
+                for row in db.execute(
+                    select(tables.records)
+                    .where(tables.records.c.category == "strategy", tables.records.c.job.in_(job_ids))
+                    .order_by(tables.record_order)
+                ).mappings():
+                    body = json.loads(row["body"])
+                    choices.append(
+                        {
+                            "job": row["job"],
+                            "strategy": row["key"],
+                            "version": row["version"],
+                            "turn": body.get("updatedTurn"),
+                            "state": body.get("state"),
+                            "decisions": body.get("decisions", []),
+                        }
+                    )
+                first_turn = min(row["turn"]["gameTurn"] for row in turns)
+                last_turn = max(row["turn"]["gameTurn"] for row in turns)
+                for row in db.execute(
+                    select(tables.reviews.c.turn, tables.reviews.c.advice)
+                    .where(tables.reviews.c.status == "COMPLETED", tables.reviews.c.turn.between(first_turn, last_turn))
+                    .order_by(tables.reviews.c.turn)
+                ).mappings():
+                    reviews.append(
+                        {
+                            "civilization": path.parent.parent.name,
+                            "turn": row["turn"],
+                            "advice": json.loads(row["advice"]),
                         }
                     )
         finally:
@@ -220,12 +265,13 @@ def analyze(root, sessions, rounds=None):
     usage = {key: sum(row["usage"][key] for row in turns) for key in TOKEN_KEYS}
     usage["uncached_input_tokens"] = usage["input_tokens"] - usage["cached_input_tokens"]
     civilizations = {row["turn"]["civilization"] for row in turns}
-    final = native_position(root / "exploration.json", civilizations) if rounds is None else None
+    final = native_position(root / "exploration.json", civilizations) if rounds is None and not unfinished else None
     initial_path = root / "initial-game.json"
     initial = native_position(initial_path, civilizations) if initial_path.exists() else None
     return {
         "stateDirectory": str(root.resolve()),
         "completedTurns": len(turns),
+        "unfinishedTurns": unfinished,
         "usage": usage,
         "modelRequests": sum(a["modelRequests"] for a in activations) if not missing_traces else None,
         "missingProviderTraces": missing_traces,
@@ -239,19 +285,27 @@ def analyze(root, sessions, rounds=None):
         },
         "activations": sorted(activations, key=lambda row: (row["turn"], row["civilization"])),
         "commands": commands,
+        "decisionEvidence": {
+            "choices": choices,
+            "feedback": feedback,
+            "investmentComparisons": comparisons,
+            "reviews": reviews,
+        },
         "lastObservedStates": observations,
         "initialNativePositions": initial,
         "finalNativePositions": final,
         "outcomes": position_changes(initial, final) if initial and final else None,
         "runner": (read_record(path_for(root), "state", "run") or {}).get("status"),
-        "limitation": "Final native positions include opponent actions after the last handoff. Omitted for historical round-limited reports whose final checkpoint is from a later turn.",
+        "limitation": "Final native positions include opponent actions after the last handoff. Omitted when unfinished turns/accounting exist or for historical round-limited reports whose final checkpoint is from a later turn.",
     }
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("state_dir", type=Path)
-    parser.add_argument("--sessions", type=Path, default=Path.home() / ".codex/sessions")
+    parser.add_argument(
+        "--sessions", type=Path, default=Path(os.environ.get("CODEX_HOME", Path.home() / ".codex")) / "sessions"
+    )
     parser.add_argument("--rounds", type=int)
     parser.add_argument("--output", required=True, type=Path)
     args = parser.parse_args()
@@ -271,6 +325,7 @@ def main():
                     "finalNativePositions",
                     "outcomes",
                     "toolCalls",
+                    "decisionEvidence",
                 }
             },
             indent=2,

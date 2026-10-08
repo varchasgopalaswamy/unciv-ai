@@ -307,8 +307,11 @@ def test_diplomatic_advice_selects_private_notes_without_automatically_sending_t
             assert private in prompt.user
             assert prompt.user.count(assessment()["review"]["diplomacy"]["initiatives"][0]["approach"]) == 1
             for plan in assessment()["review"]["plans"]:
-                for field in ("objective", "investment", "projection", "relativeOutcome", "risks"):
+                for field in ("objective", "investment", "relativeOutcome", "risks"):
                     assert prompt.user.count(plan[field]) == 1
+                for field in ("expectedObservations", "firstActions"):
+                    for entry in plan[field]:
+                        assert prompt.user.count(entry) == 1
             assert prompt.user.count(assessment()["review"]["reconsiderWhen"]) == 1
             assert "PRIVATE" not in prompt.instructions and host.sent == []
             result = await gateway.call(

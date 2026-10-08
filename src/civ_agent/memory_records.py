@@ -2,7 +2,7 @@
 
 from typing import Annotated, Literal
 
-from pydantic import Field, ValidationError
+from pydantic import Field, ValidationError, model_validator
 
 from civ_agent.model_view import model_view
 from civ_agent.protocol import JsonObject
@@ -43,6 +43,21 @@ ShortThought = Annotated[str, Field(min_length=1, max_length=400)]
 Thoughts = Annotated[list[ShortThought], Field(max_length=5)]
 
 
+class ChosenDecision(BoundaryModel):
+    id: Annotated[str, Field(min_length=1, max_length=40, pattern=r"^[a-zA-Z0-9_-]+$")] = Field(
+        description="Stable name within this strategy; retain it while pursuing the same investment."
+    )
+    objective: ShortThought
+    investment: ShortThought
+    expectedObservations: Annotated[list[ShortThought], Field(min_length=1, max_length=3)]
+    reviewAfterTurns: Annotated[int, Field(ge=1, le=100)]
+    reconsiderWhen: ShortThought
+    subjects: Annotated[list[Source], Field(max_length=8)] = Field(
+        default_factory=list,
+        description="Relevant subject tags; city handles or names include current city facts in feedback.",
+    )
+
+
 class Strategy(Content):
     type: Literal["strategy"]
     assessment: Text
@@ -51,6 +66,13 @@ class Strategy(Content):
     reconsiderWhen: Thoughts = Field(default_factory=list)
     assumptions: Annotated[list[Assumption], Field(max_length=20)] = Field(default_factory=list)
     sources: Sources = Field(default_factory=list)
+    decisions: Annotated[list[ChosenDecision], Field(max_length=3)] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def unique_decisions(self):
+        if len({decision.id for decision in self.decisions}) != len(self.decisions):
+            raise ValueError("Decision IDs must be unique within a strategy")
+        return self
 
 
 class Handoff(Content):
@@ -204,7 +226,16 @@ class RecordedInitiativeDecision(InitiativeDecision):
 
 class Intent(BoundaryModel):
     reason: Annotated[str, Field(min_length=1, max_length=1000, pattern=r"\S")]
-    strategy: str = Field(default="", max_length=160)
+    strategy: str = Field(
+        default="",
+        max_length=160,
+        description="Optional saved strategy memory ID returned by memory_update/read (for example mem12), not an invented plan name. Omit when no saved strategy applies.",
+    )
+    decision: str = Field(
+        default="",
+        max_length=40,
+        description="Optional id from that saved strategy's decisions. Save the choice before linking actions; omit when unrecorded.",
+    )
     expectedOutcome: str = Field(default="", max_length=1000)
     assumptions: Annotated[list[Assumption], Field(max_length=20)] = Field(default_factory=list)
 

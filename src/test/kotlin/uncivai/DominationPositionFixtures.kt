@@ -94,7 +94,13 @@ object DominationPositionFixtures {
         }
         val ruleset = RulesetCache.getComplexRuleset(parameters)
         parameters.victoryTypes = ArrayList(ruleset.victories.keys)
-        val setup = GameSetupInfo(parameters, MapParameters().apply { noRuins = true; seed = 412L })
+        val setup = GameSetupInfo(
+            parameters,
+            MapParameters().apply {
+                noRuins = true
+                seed = 412L
+            },
+        )
         val map = TileMap(14, ruleset).apply {
             mapParameters = setup.mapParameters.apply {
                 name = "Saved strategic position"
@@ -174,7 +180,10 @@ object DominationPositionFixtures {
             civ.popupAlerts.clear()
             civ.notifications.clear()
             civ.units.getCivUnits().forEach { it.updateVisibleTiles(updateCivViewableTiles = false) }
-            civ.cities.forEach { it.reassignPopulation(resetLocked = true); it.cityStats.update() }
+            civ.cities.forEach {
+                it.reassignPopulation(resetLocked = true)
+                it.cityStats.update()
+            }
             civ.cache.updateCivResources()
             civ.cache.updateViewableTiles()
             civ.updateStatsForNextTurn()
@@ -182,11 +191,10 @@ object DominationPositionFixtures {
         return game
     }
 
-    private fun place(game: GameInfo, player: Civilization, name: String, position: HexCoord) =
-        checkNotNull(game.tileMap.placeUnitNearTile(position, name, player)).also {
-            check(it.currentTile.position == position) { "Cannot place $name at $position" }
-            it.currentMovement = it.getMaxMovement().toFloat()
-        }
+    private fun place(game: GameInfo, player: Civilization, name: String, position: HexCoord) = checkNotNull(game.tileMap.placeUnitNearTile(position, name, player)).also {
+        check(it.currentTile.position == position) { "Cannot place $name at $position" }
+        it.currentMovement = it.getMaxMovement().toFloat()
+    }
 
     private fun sha256(text: String) = MessageDigest.getInstance("SHA-256").digest(text.toByteArray()).joinToString("") { "%02x".format(it) }
 }

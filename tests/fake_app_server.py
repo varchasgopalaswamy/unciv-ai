@@ -211,26 +211,22 @@ async def main():
                 report = {
                     "assessment": "Develop the starting position before choosing a victory path.",
                     "review": {
+                        "horizonTurns": 5,
+                        "outcomeAssessment": "No previous choices at opening.",
                         "plans": [
                             {
                                 "name": "Explore",
                                 "objective": "Learn about the starting area.",
                                 "investment": "Use the starting units to scout before committing production.",
-                                "projection": "Explore first, then choose an expansion and development plan.",
+                                "expectedObservations": ["Find a possible settlement site within five turns."],
+                                "firstActions": ["Explore the starting area."],
                                 "relativeOutcome": "Better information could help claim useful land before rivals.",
                                 "risks": "Explorers may encounter hostile units.",
                             }
                         ],
                         "preferredPlan": 1,
-                        "victoryOutlooks": [
-                            {"victory": victory, "outlook": "Reassess after scouting."}
-                            for victory in params["outputSchema"]["$defs"]["VictoryOutlook"]["properties"][
-                                "victory"
-                            ].get("enum", [])
-                        ],
-                        "shortTerm": ["Explore the starting area."],
                         "diplomacy": {"assessment": "Reassess after scouting.", "initiatives": []},
-                        **{field: "Reassess after scouting." for field in ("reconsiderWhen", "midTerm", "longTerm")},
+                        "reconsiderWhen": "Reassess after scouting.",
                     },
                 }
                 await websocket.send_json(

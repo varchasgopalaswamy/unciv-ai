@@ -59,7 +59,8 @@ movement to an injured unit near a visible hostile.
 ```
 
 The suite runs at most two isolated games at once, with 20-minute activation
-timeouts and an hour per case. `--parallel 1` runs sequentially; repeat `--case ID`
+timeouts, 60 activations and four hours per case by default. Override these with
+`--turn-timeout`, `--max-invocations` and `--max-seconds`. `--parallel 1` runs sequentially; repeat `--case ID`
 to select cases. It retains logs and checkpoints and verifies completed rounds:
 a clean driver exit after an agent stops prematurely is an incomplete evaluation.
 Infrastructure completion does not mean the strategy was good.
@@ -117,7 +118,97 @@ a bad decision, and waiting can be sensible. Inspect native legality and the
 agent's actual reads before assigning a failure. Short, single-sample runs cannot
 establish overall win rate or separate every prompt/model/opponent effect.
 
+## Decision-process comparisons
+
+The [fixed manifest](../../tests/fixtures/decision_positions/manifest.json) records
+the October 7 baseline: g0001 turn 175, g0002 turn 200, g0003 turn 231 and g0004
+turn 191. Game 2 advanced after the audit's turn 180 comparison. Preserve those
+dates when comparing the two reports. All 20 memory histories verified against
+their retained recovery boundaries. The full private bundle is at
+`build/decision-baseline-2026-10-07`; it includes credentials and must stay outside Git.
+`tests.preserve_benchmark_baseline` can capture a new, separately named bundle,
+without opening services or modifying source games. SQLite online backup includes
+the WAL; do not copy a live `.sqlite3` file alone.
+
+| Case | Player | Evaluation purpose |
+| --- | --- | --- |
+| `conversion-capacity` | g0001 Inca | Active Science conversion, weak productive capacity and the cost of changing investment |
+| `science-capacity` | g0001 China | Retained initial screen: urgent defensive pressure, currently building units rather than Science |
+| `treasury-reserve` | g0003 China | All four cities convert Science; timing and opportunity cost of a large reserve |
+| `military-objective` | g0003 France | Strong army and an unresolved operation |
+| `cultural-strength` | g0004 Greece | Protect the successful cultural specialization |
+| `held-out-start` | g0002 France | Different starting assignment, excluded from tuning |
+
+The first China screen exposed a selection mismatch. Its original manifest stays
+in the retained suite; do not relabel its results as a pure conversion test.
+The runner now verifies active conversion and the cultural-output threshold
+where requested by the case manifest. Evaluation conditions are never player instructions.
+
+Prepare isolated saves and immutable implementation snapshots in fresh directories:
+
+```bash
+uv run --no-sync python -m tests.prepare_decision_positions \
+  --baseline build/decision-baseline-2026-10-07 \
+  --output build/decision-sources-new --variants-output build/decision-variants-new
+
+./gradlew prepareStrategyPositions -PstrategyMode=capture \
+  -PstrategySource="$PWD/build/decision-sources-new" \
+  -PstrategyOutput="$PWD/build/decision-prepared-new"
+
+uv run --no-sync python -m tests.live_strategy_positions \
+  --prepared build/decision-prepared-new \
+  --manifest tests/fixtures/decision_positions/manifest.json \
+  --state-dir build/decision-comparison-new --port 12501 \
+  --case conversion-capacity --case cultural-strength \
+  --variant facts=build/decision-variants-new/facts/src \
+  --variant full=build/decision-variants-new/full/src \
+  --model gpt-5.6-luna --reasoning-effort max \
+  --strategy-guide --civilization-guide --review-interval 5 \
+  --rounds 7 --repetitions 3 --parallel 2 \
+  --max-invocations 20 --max-seconds 5400 --max-tokens 20000000
+```
+
+`facts` preserves revision `89a93c0`'s prompts, review and memory contracts, adding
+the current factual projections and construction-comparison tools. `full` uses
+the current implementation. Both variants start with fresh memory and the same
+prepared opponents, model and engine. Each run records the actual imported Python
+source hash, prepared-save hash, guide settings and prompts. The baseline games
+used older revision `a5358d5` and model opponents. Their retained trajectories are
+historical evidence, not a controlled counterpart to these fresh-memory,
+native-opponent trials. The full refactor also shortens prompt guidance, so it is
+not a schema-only ablation.
+
+Trial order rotates between repetitions. All attempts, including incomplete
+ones, remain in `results.json`. Limits apply per trial; the token guard polls
+reported input plus output across all model jobs (gameplay, reviews and chat),
+including cached input once, every two seconds and requests
+shutdown on exhaustion. Reporting lag and an in-flight request can overshoot it.
+Structured provider `usageLimitExceeded` in gameplay or a review stops further
+launches; remaining cases are recorded as unstarted and already running cases
+finish normally. A process exit of zero does not establish completed rounds or
+complete accounting. Keep failed attempts and use a fresh suite directory to retry.
+Seven turns from the conversion position cover reviews after rounds 175 and 180.
+Use the preserved benchmark's interval of ten in later matched trials, and increase
+rounds to 20–30 for realized investment outcomes. Explicitly set suitable token,
+time and invocation caps for those longer runs.
+
+`report_strategy_positions` now includes chosen-decision revisions, delivered
+feedback, named investment comparisons, adviser reports, observed output excluding
+conversion, and native technology/policy/population changes. Interpret these with
+the case's preregistered measures. Missing evidence is not failure; receipt
+acceptance is not an achieved objective. Classify findings manually as information,
+mechanics, investment comparison, execution, reconsideration or service failures.
+Reports suppress final native comparisons for unfinished turns, since their
+checkpoints may include actions outside the completed/accounted interval.
+Do not promote a variant solely for spending more, fighting more, producing more
+plan records or using fewer tokens. Baseline variance and tolerable regression
+remain unknown until repeated outcomes establish them. Longer trials, tactical
+regressions, the held-out start and full games remain acceptance gates.
+
 ## Memory comparisons
+
+The decision-process comparison above uses fresh memory on both sides. Historical
+memory seeds in this section belong to the earlier notebook experiment.
 
 `tests.live_memory_comparison` runs a paired comparison on prepared positions,
 with fresh stores and logs for every trial. It never resumes the source match.

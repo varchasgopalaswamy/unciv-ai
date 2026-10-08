@@ -22,8 +22,11 @@ def review_position(snapshot: JsonObject) -> JsonObject:
     cities = {
         city["handle"]: {
             "name": city["name"],
-            "population": (city.get("development") or {}).get("population"),
-            "buildings": (city.get("development") or {}).get("builtBuildings", []),
+            "population": (city.get("development") or city).get("population"),
+            "buildings": (city.get("development") or {}).get("builtBuildings"),
+            "construction": next(iter(city.get("constructionQueue", [])), None),
+            "conversion": city.get("constructionConversion")
+            or city.get("productionConversions", {}).get(next(iter(city.get("constructionQueue", [])), "")),
         }
         for city in snapshot.get("cities", [])
     }
@@ -34,16 +37,30 @@ def review_position(snapshot: JsonObject) -> JsonObject:
                 for y in (city.get("development") or {}).get("yields", [])
                 if y["stat"] == "Production"
             ),
-            None,
+            number(city.get("yields", {}).get("Production")),
         )
         for city in snapshot.get("cities", [])
     ]
     population = [city["population"] for city in cities.values()]
     military = {
-        unit["handle"]: unit["name"] for unit in snapshot.get("map", {}).get("units", []) if unit.get("military")
+        unit["handle"]: unit["name"]
+        for unit in snapshot.get("map", {}).get("units", snapshot.get("units", []))
+        if unit.get("military")
     }
     economy = snapshot.get("economy") or {}
     research = snapshot.get("research") or {}
+    conversion_science = [
+        number(city["conversion"]["yieldPerTurn"])
+        if city["conversion"] and city["conversion"]["stat"] == "Science"
+        else None
+        if city["construction"] in {None, "Science"}
+        else 0
+        for city in cities.values()
+    ]
+    from_production = (
+        sum(n for n in conversion_science if n is not None) if all(n is not None for n in conversion_science) else None
+    )
+    science = number(research.get("sciencePerTurn"))
     return copy.deepcopy(
         {
             "turn": snapshot["turn"],
@@ -52,18 +69,35 @@ def review_position(snapshot: JsonObject) -> JsonObject:
                 "population": sum(n for n in population if n is not None)
                 if all(n is not None for n in population)
                 else None,
-                "sciencePerTurn": number(research.get("sciencePerTurn")),
+                "sciencePerTurn": science,
+                "scienceFromProductionPerTurn": from_production,
+                "scienceExcludingProductionPerTurn": science - from_production
+                if science is not None and from_production is not None
+                else None,
                 "culturePerTurn": number((snapshot.get("culture") or {}).get("culturePerTurn")),
                 "productionPerTurn": sum(n for n in production if n is not None)
                 if all(n is not None for n in production)
                 else None,
                 "netGoldPerTurn": economy.get("goldPerTurn"),
+                "treasury": economy.get("treasury"),
                 "happiness": economy.get("happiness"),
                 "militaryUnits": len(military),
             },
             "cities": cities,
             "military": military,
-            "technologies": sorted(t["name"] for t in research.get("technologies", []) if t["researched"]),
+            "technologies": sorted(t["name"] for t in research.get("technologies", []) if t["researched"])
+            if "map" in snapshot
+            else None,
+            "policies": sorted(
+                {
+                    name
+                    for branch in (snapshot.get("culture") or {}).get("branches", [])
+                    for name in [branch["name"], *branch["adopted"]]
+                }
+            )
+            if "branches" in (snapshot.get("culture") or {})
+            and all("adopted" in branch for branch in snapshot["culture"]["branches"])
+            else None,
         }
     )
 
@@ -100,6 +134,8 @@ def development_changes(before: JsonObject | None, after: JsonObject) -> JsonObj
         )
     buildings = []
     for handle in sorted(cities.keys() & old_cities.keys()):
+        if cities[handle]["buildings"] is None or old_cities[handle]["buildings"] is None:
+            continue
         added = sorted(set(cities[handle]["buildings"]) - set(old_cities[handle]["buildings"]))
         if added:
             row: JsonObject = {"city": handle, "name": cities[handle]["name"], "buildings": added[:MAX_CHANGES]}
@@ -107,7 +143,10 @@ def development_changes(before: JsonObject | None, after: JsonObject) -> JsonObj
                 row["omittedBuildings"] = len(added) - MAX_CHANGES
             buildings.append(row)
     changes("buildingsAdded", buildings)
-    changes("technologiesAcquired", sorted(set(after["technologies"]) - set(before["technologies"])))
+    if before["technologies"] is not None and after["technologies"] is not None:
+        changes("technologiesAcquired", sorted(set(after["technologies"]) - set(before["technologies"])))
+    if before.get("policies") is not None and after.get("policies") is not None:
+        changes("policiesAcquired", sorted(set(after["policies"]) - set(before["policies"])))
     old_units, units = before["military"], after["military"]
     for key, source, other in (("militaryAdded", units, old_units), ("militaryNoLongerOwned", old_units, units)):
         counts = Counter(source[handle] for handle in source.keys() - other.keys())

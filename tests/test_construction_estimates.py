@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from typing import Literal
 
 from civ_agent.civilization_state import CivilizationState
+from civ_agent.construction_estimates import investment_comparison
 from civ_agent.observations import DetailQuery, overview, project_detail
 from civ_agent.proposal_gateway import ProposalGateway
 from civ_agent.protocol import JsonObject
@@ -282,3 +283,41 @@ def test_locked_victory_construction_costs_are_named_planning_details_not_legal_
     assert "command" not in json.dumps(named)
     assert "SS Booster" not in [row["name"] for row in project_detail(view, query())["data"]["constructions"]]
     assert "SS Booster" not in overview(view)["cities"][0]["constructionEstimates"]
+
+
+def test_common_horizon_compares_native_conversion_losses_and_completion_returns():
+    native = estimate()
+    result = investment_comparison(native, {"available": True, "goldCost": 200}, 10)
+    assert result["continueCurrent"] == {"Science": 110}
+    assert result["build"]["yieldDifferenceOverHorizon"] == {"Science": 5}  # -1*5 + 2*5
+    assert result["build"]["breakEvenTurnsByStat"] == {"Science": 8}
+    assert result["purchase"]["yieldDifferenceOverHorizon"] == {"Science": 20}
+    assert result["purchase"]["goldCostNow"] == 200
+    assert investment_comparison(native, None, 3)["build"]["yieldDifferenceOverHorizon"] == {"Science": -3}
+    assert native == estimate()
+
+
+def test_comparison_preserves_blockers_and_does_not_invent_completion_benefits():
+    native = estimate()
+    native["queueUnavailableReasons"] = ["Requires Education"]
+    result = investment_comparison(native, {"available": False, "goldCost": 200}, 10)
+    assert result["build"] == {"available": False, "reasons": ["Requires Education"]}
+    assert result["purchase"] == {"available": False}
+    assert not investment_comparison({**native, "completion": None}, None, 10)["available"]
+    view = snapshot().view
+    selected = DetailQuery(
+        tool="construction_details", arguments={"target": "city1", "names": ["Library"], "horizonTurns": 10}
+    )
+    assert project_detail(view, selected)["data"]["constructions"][0]["investmentComparison"]["horizonTurns"] == 10
+
+
+def test_happiness_is_a_level_not_an_accumulating_yield():
+    native = estimate()
+    native["whileBuilding"]["before"]["Happiness"] = "4"
+    native["whileBuilding"]["after"]["Happiness"] = "4"
+    native["completion"]["yields"]["after"]["Happiness"] = "6"
+    result = investment_comparison(native, {"available": True, "goldCost": 200}, 20)
+    assert result["happiness"] == {"current": 4, "afterCompletion": 6, "difference": 2}
+    assert "Happiness" not in result["continueCurrent"]
+    assert "Happiness" not in result["build"]["yieldDifferenceOverHorizon"]
+    assert "Happiness" not in result["purchase"]["yieldDifferenceOverHorizon"]

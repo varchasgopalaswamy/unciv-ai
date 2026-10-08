@@ -1,8 +1,76 @@
 """Select compact or detailed views of native city-specific construction estimates."""
 
 import copy
+import math
 
 from civ_agent.protocol import JsonObject
+
+
+def investment_comparison(estimate: JsonObject, purchase: JsonObject | None, horizon: int) -> JsonObject:
+    """Arithmetic over native current-state previews, not a future city simulation."""
+    result: JsonObject = {
+        "horizonTurns": horizon,
+        "basis": (
+            "Compare continuing the current output for this horizon with starting the named construction now. "
+            "Rates, population and assignments are held fixed. Completion benefits begin after the estimated build "
+            "turns; post-completion output excludes conversion and construction-specific production bonuses. "
+            "This is a static comparison, not a growth forecast or a recommendation. One-time grants, subsequent "
+            "builds, specialist staffing, empire-wide effects and rival responses are excluded. Gold yields already "
+            "include maintenance; purchase cost is reported separately. Purchase assumes immediate completion and "
+            "the same non-conversion output, not automatic resumption of the old queue. Break-even reports the first "
+            "turn at or after completion that repays construction-period yield losses when the later rate improves; "
+            "it does not value the production or gold spent. Happiness is a level change, not a cumulative yield. "
+            "Only stats present on both sides are compared."
+        ),
+    }
+    completion = estimate.get("completion")
+    if completion is None:
+        return {**result, "available": False, "reason": "No native building-completion preview"}
+    before = estimate.get("whileBuilding", {}).get("before", {})
+    during = estimate.get("whileBuilding", {}).get("after", {})
+    after = completion["yields"]["after"]
+    stats = sorted((before.keys() & during.keys() & after.keys()) - {"Happiness"})
+    if not stats:
+        return {**result, "available": False, "reason": "No comparable native yield rates"}
+    baseline = {s: float(before[s]) for s in stats}
+    gain = {s: float(after[s]) - baseline[s] for s in stats}
+    result.update(available=True, continueCurrent={s: round(baseline[s] * horizon, 2) for s in stats})
+    if "Happiness" in before and "Happiness" in after:
+        result["happiness"] = {
+            "current": float(before["Happiness"]),
+            "afterCompletion": float(after["Happiness"]),
+            "difference": round(float(after["Happiness"]) - float(before["Happiness"]), 2),
+        }
+    turns = estimate.get("production", {}).get("turnsIfStartedNow")
+    if estimate.get("queueUnavailableReasons") or turns is None:
+        result["build"] = {"available": False, "reasons": estimate.get("queueUnavailableReasons") or ["No current ETA"]}
+    else:
+        delay = max(0, turns)
+        construction_delta = {s: float(during[s]) - baseline[s] for s in stats}
+        result["build"] = {
+            "available": True,
+            "completionInTurns": turns,
+            "yieldDifferenceOverHorizon": {
+                s: round(construction_delta[s] * min(horizon, delay) + gain[s] * max(0, horizon - delay), 2)
+                for s in stats
+            },
+            "postCompletionRateDifference": {s: round(gain[s], 2) for s in stats},
+            "breakEvenTurnsByStat": {
+                s: delay + math.ceil(max(0, -construction_delta[s] * delay) / gain[s]) if gain[s] > 0 else None
+                for s in stats
+            },
+        }
+    result["purchase"] = (
+        {
+            "available": True,
+            "goldCostNow": purchase["goldCost"],
+            "yieldDifferenceOverHorizon": {s: round(gain[s] * horizon, 2) for s in stats},
+        }
+        if purchase and purchase.get("available") and purchase.get("goldCost") is not None
+        else {"available": False}
+    )
+    return result
+
 
 ESTIMATE_BASIS = (
     "Completion compares ongoing city yields at current population and citizen assignments, with no "

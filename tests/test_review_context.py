@@ -135,6 +135,24 @@ def test_missing_previous_position_and_missing_rates_are_not_zeroes():
         development_changes(current, current)
 
 
+def test_output_separates_native_conversion_and_keeps_missing_evidence_unknown():
+    raw = position()
+    raw["economy"]["treasury"] = 1700
+    city = raw["cities"][0]
+    city["constructionQueue"] = ["Science"]
+    city["productionConversions"] = {"Science": {"stat": "Science", "productionPerTurn": "10", "yieldPerTurn": "5"}}
+    result = review_position(raw)
+    assert result["totals"]["treasury"] == 1700
+    assert result["totals"]["scienceFromProductionPerTurn"] == 5
+    assert result["totals"]["scienceExcludingProductionPerTurn"] == 15
+    city["productionConversions"].clear()
+    assert review_position(raw)["totals"]["scienceFromProductionPerTurn"] is None
+    city["constructionQueue"] = ["Library"]
+    assert review_position(raw)["totals"]["scienceFromProductionPerTurn"] == 0
+    raw["culture"]["branches"] = [{"name": "Tradition"}]
+    assert review_position(raw)["policies"] is None
+
+
 def test_large_development_changes_report_omissions():
     current = position()
     before = review_position(current)

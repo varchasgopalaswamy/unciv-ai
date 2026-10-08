@@ -216,21 +216,34 @@ def report_text(view: StrategyView) -> Text:
         section(f"Plan {number} · {plan['name']}", plan["objective"])
         for label, field in (
             ("Investment", "investment"),
-            ("Projection", "projection"),
             ("Relative outcome", "relativeOutcome"),
             ("Risks and uncertainties", "risks"),
         ):
             section(label, plan[field])
+        if "expectedObservations" in plan:
+            section("Expected observations", "\n".join(plan["expectedObservations"]))
+            section("First actions", "\n".join(plan["firstActions"]))
+        else:
+            # Read-only display of retained baseline reports; never migrate their stores.
+            section("Projection", plan["projection"])
+    if "horizonTurns" in review:
+        section("Comparison horizon", f"{review['horizonTurns']} turns")
+        section("Prior outcomes", review["outcomeAssessment"])
+    else:
+        section("Short-term plan", "\n".join(review["shortTerm"]))
+        section("Mid-term plan", review["midTerm"])
+        section("Long-term plan", review["longTerm"])
+        for outlook in review["victoryOutlooks"]:
+            section(outlook["victory"] + " victory", outlook["outlook"])
     section("Reconsider when", review["reconsiderWhen"])
-    section("Short-term plan", "\n".join(f"• {step}" for step in review["shortTerm"]))
-    section("Mid-term plan", review["midTerm"])
-    section("Long-term plan", review["longTerm"])
     diplomacy = review["diplomacy"]
     section("Diplomacy", diplomacy["assessment"])
     if not diplomacy["initiatives"]:
         section("Diplomatic initiatives", "No initiative proposed.")
     for initiative in diplomacy["initiatives"]:
         section("Diplomatic initiative · " + ", ".join(initiative["players"]), initiative["objective"])
+        if "plan" in initiative:
+            section("Supports plan", str(initiative["plan"]))
         for label, field in (
             ("Their incentives", "incentives"),
             ("Approach", "approach"),
@@ -238,6 +251,4 @@ def report_text(view: StrategyView) -> Text:
             ("Reconsider when", "reconsiderWhen"),
         ):
             section(label, initiative[field])
-    for path in review["victoryOutlooks"]:
-        section(path["victory"] + " victory", path["outlook"])
     return text

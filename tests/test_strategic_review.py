@@ -25,12 +25,15 @@ def assessment(victories=VICTORIES) -> JsonObject:
     return {
         "assessment": "Invest in production and compare our spaceship timing against Greece before committing to war.",
         "review": {
+            "horizonTurns": 10,
+            "outcomeAssessment": "No prior chosen investment is available.",
             "plans": [
                 {
                     "name": "Expand production",
                     "objective": "Speed up our own spaceship construction.",
                     "investment": "Build factories before spending production on parts; postpone recruitment.",
-                    "projection": "Factories first, then parallel parts; compare the finish with Greece's progress.",
+                    "expectedObservations": ["Factory completed and output increased."],
+                    "firstActions": ["Inspect and queue a Factory."],
                     "relativeOutcome": "Our output improves, but Greece can continue building without interruption.",
                     "risks": "Greece may finish before the factories repay their cost.",
                 },
@@ -38,24 +41,19 @@ def assessment(victories=VICTORIES) -> JsonObject:
                     "name": "Delay Greece",
                     "objective": "Disrupt Greece's spaceship production.",
                     "investment": "Recruit siege support and scout a safe approach; postpone factories.",
-                    "projection": "Scout now, prepare a limited attack, then reassess our own finish.",
+                    "expectedObservations": ["Scout finds an attainable target."],
+                    "firstActions": ["Scout the approach."],
                     "relativeOutcome": "A successful attack buys time; France also gains from Greece's delay.",
                     "risks": "Defensive pacts or strong reinforcements could make the attack too expensive.",
                 },
             ],
             "preferredPlan": None,
             "reconsiderWhen": "Reassess after inspecting production costs and the approach to Greece.",
-            "victoryOutlooks": [
-                {
-                    "victory": victory,
-                    "outlook": "Greece has installed a spaceship part; inspect costs and timing before committing.",
-                }
-                for victory in victories
-            ],
             "diplomacy": {
                 "assessment": "Avoid assuming a reciprocal research agreement improves our relative chances.",
                 "initiatives": [
                     {
+                        "plan": 1,
                         "players": ["France"],
                         "objective": "Find out whether France would help delay Greece's spaceship.",
                         "incentives": "France also loses if Greece finishes first, but might prefer that we bear the cost.",
@@ -65,11 +63,6 @@ def assessment(victories=VICTORIES) -> JsonObject:
                     }
                 ],
             },
-            "shortTerm": [
-                "Inspect production investments and rival approaches this turn before spending the treasury."
-            ],
-            "midTerm": "Build productive capacity over 5–15 turns, then reassess the race and military option.",
-            "longTerm": "Aim to complete the spaceship within 40 turns; intervene if Greece's lead becomes decisive.",
         },
     }
 
@@ -125,24 +118,15 @@ def test_review_due_does_not_gate_actions_or_require_memory_write(tmp_path):
     asyncio.run(run())
 
 
-def test_advice_requires_every_enabled_victory():
+def test_advice_compares_current_choices_without_exhaustive_victory_reports():
     value = assessment()
-    assert parse_advice(json.dumps(value), {"turn": 5, "rules": {"victoryTypes": VICTORIES}}) == value
-    value["review"]["victoryOutlooks"].pop()
-    with pytest.raises(ValueError, match="STRATEGIC_REVIEW_COVERAGE"):
-        parse_advice(json.dumps(value), {"turn": 5, "rules": {"victoryTypes": VICTORIES}})
-
-
-def test_report_schema_uses_exact_enabled_victory_names():
-    for enabled in (VICTORIES, ["Domination", "Time"]):
-        schema = advice_schema({"rules": {"victoryTypes": enabled}})
-        assert schema["$defs"]["VictoryOutlook"]["properties"]["victory"]["enum"] == enabled
-        paths = schema["$defs"]["StrategicReview"]["properties"]["victoryOutlooks"]
-        assert paths["minItems"] == paths["maxItems"] == len(enabled)
-    advice = assessment()
-    advice["review"]["victoryOutlooks"][0]["victory"] = "Scientific — hedge"
-    with pytest.raises(ValueError, match="STRATEGIC_REVIEW_COVERAGE"):
-        parse_advice(json.dumps(advice), {"turn": 0, "rules": {"victoryTypes": VICTORIES}})
+    for victories in (VICTORIES, ["Time"]):
+        assert parse_advice(json.dumps(value), {"turn": 5, "rules": {"victoryTypes": victories}}) == value
+        schema = advice_schema({"rules": {"victoryTypes": victories}})
+        assert "victoryOutlooks" not in schema["$defs"]["StrategicReview"]["properties"]
+    value["review"]["horizonTurns"] = 0
+    with pytest.raises(ValueError):
+        parse_advice(json.dumps(value), {"turn": 5})
 
 
 @pytest.mark.parametrize("count", [1, 2, 3])
@@ -164,11 +148,11 @@ def test_invalid_plan_count_or_reference_is_rejected(count, preferred):
         parse_advice(json.dumps(advice), {"turn": 5, "rules": {"victoryTypes": VICTORIES}})
 
 
-def test_duplicate_victory_outlook_does_not_satisfy_coverage():
+def test_diplomacy_must_reference_an_existing_alternative():
     advice = assessment()
-    advice["review"]["victoryOutlooks"][1] = advice["review"]["victoryOutlooks"][0]
-    with pytest.raises(ValueError, match="STRATEGIC_REVIEW_COVERAGE"):
-        parse_advice(json.dumps(advice), {"turn": 5, "rules": {"victoryTypes": VICTORIES}})
+    advice["review"]["diplomacy"]["initiatives"][0]["plan"] = 3
+    with pytest.raises(ValueError, match="STRATEGIC_REVIEW_PLAN"):
+        parse_advice(json.dumps(advice), {"turn": 5})
 
 
 def test_diplomatic_initiatives_are_optional_and_bounded():

@@ -203,7 +203,7 @@ class StartupPrompt:
 
     def metadata(self):
         return {
-            "layoutVersion": 4,
+            "layoutVersion": 5,
             "instructionsSha256": hashlib.sha256(self.instructions.encode()).hexdigest(),
             "instructionCharacters": len(self.instructions),
             "userCharacters": len(self.user),

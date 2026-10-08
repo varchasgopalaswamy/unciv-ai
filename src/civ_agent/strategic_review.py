@@ -16,25 +16,18 @@ class StrategicPlan(BoundaryModel):
     name: Annotated[str, Field(min_length=1, max_length=80)]
     objective: ReviewText = Field(description="Concrete improvement in our position this plan seeks.")
     investment: ReviewText = Field(description="Actions, preparation, resources and time required; what they postpone.")
-    projection: ReviewText = Field(
-        description="Short-, mid- and long-term development, using comparable horizons across plans and explicit uncertainty."
+    expectedObservations: Annotated[list[ReviewText], Field(min_length=1, max_length=3)] = Field(
+        description="Observable effects expected within the shared horizon, with estimates and uncertainty."
     )
+    firstActions: Annotated[list[ReviewText], Field(min_length=1, max_length=3)]
     relativeOutcome: ReviewText = Field(
-        description="Expected gains and losses for us and rivals, including likely responses and who could finish first."
+        description="Likely gains and costs for us and rivals, including rival responses."
     )
-    risks: ReviewText = Field(
-        description="Important assumptions, failure costs and information needed to judge the plan."
-    )
-
-
-class VictoryOutlook(BoundaryModel):
-    victory: Annotated[str, Field(min_length=1, max_length=80)] = Field(
-        description="Exact enabled victory name; put preferences and qualifications in the other fields."
-    )
-    outlook: ReviewText = Field(description="Brief prospects, important bottleneck and next decision for this victory.")
+    risks: ReviewText = Field(description="Assumptions, failure costs and information that could change this choice.")
 
 
 class DiplomaticInitiative(BoundaryModel):
+    plan: Annotated[int, Field(ge=1, le=3)] = Field(description="Plan this initiative supports.")
     players: Annotated[list[Annotated[str, Field(min_length=1, max_length=80)]], Field(min_length=1)] = Field(
         description="Players to approach."
     )
@@ -55,6 +48,10 @@ class DiplomaticAdvice(BoundaryModel):
 
 
 class StrategicReview(BoundaryModel):
+    horizonTurns: Annotated[int, Field(ge=1, le=100)] = Field(description="Common comparison horizon for all plans.")
+    outcomeAssessment: ReviewText = Field(
+        description="What prior choices achieved, what is unknown, and which assumptions changed. An opening review may state that no prior choice exists."
+    )
     plans: Annotated[list[StrategicPlan], Field(min_length=1, max_length=3)] = Field(
         description="Concrete competing plans, numbered from 1; normally two or three, or one if only one is credible."
     )
@@ -63,19 +60,13 @@ class StrategicReview(BoundaryModel):
     )
     reconsiderWhen: ReviewText = Field(description="Evidence or developments that would change the recommendation.")
     diplomacy: DiplomaticAdvice
-    shortTerm: Annotated[list[ReviewText], Field(min_length=1, max_length=5)] = Field(
-        description="Immediate priorities and their timing."
-    )
-    midTerm: ReviewText = Field(description="Development priorities and milestones.")
-    longTerm: ReviewText = Field(
-        description="Options to develop, commitments to make or defer, and evidence that would change the plan."
-    )
-    victoryOutlooks: Annotated[list[VictoryOutlook], Field(max_length=10)]
 
     @model_validator(mode="after")
     def preferred_plan_exists(self) -> Self:
         if self.preferredPlan is not None and self.preferredPlan > len(self.plans):
             raise ValueError("STRATEGIC_REVIEW_PLAN: preferredPlan must reference a numbered plan.")
+        if any(initiative.plan > len(self.plans) for initiative in self.diplomacy.initiatives):
+            raise ValueError("STRATEGIC_REVIEW_PLAN: initiative must reference a supplied plan.")
         return self
 
 
@@ -118,7 +109,7 @@ ADVISOR_INSTRUCTIONS = (
     "position. Your advice is for the player to judge.\n\n"
     "Compare concrete investments that could improve our chances of winning. Normally compare continued "
     "development with the strongest plausible alternatives in expansion, diplomacy or military action. "
-    "Use one plan when only one is credible. Evaluate plans over comparable short-, mid- and long-term horizons, "
+    "Use one plan when only one is credible. Compare investments over one shared horizon, "
     "including preparation, opportunity costs, likely rival responses and what happens if rivals continue developing. "
     "Military costs include recruitment, upgrades, positioning and travel. Consider limited objectives such as taking "
     "a useful city, pillaging or forcing rival military spending, with conditions for seeking peace, rather than "
@@ -130,8 +121,13 @@ ADVISOR_INSTRUCTIONS = (
     + "\n\n"
     "Explain the preference or leave it open. When undecided, recommend useful information gathering or reversible "
     "investments. Distinguish investments useful across victories from committing to a particular finish. "
-    "Give each enabled victory a brief outlook; put detailed costs and projections in the competing plans. "
-    "Recommend concrete next steps and conditions for changing course.\n\n"
+    "Use decisionFeedback to compare the player's earlier expectations with observed results. Treat prior choices "
+    "as hypotheses and reassess alternatives, including abandonment; do not preserve a plan merely because it exists. "
+    "Distinguish a command being accepted from its intended result and correlation from causation. "
+    "Compare continued production conversion or saving with feasible investments, including the cost of waiting. "
+    "Use named construction_details with horizonTurns for native city investment comparisons. "
+    "Give observable expectations, first actions and conditions for reconsideration. A broad victory direction can "
+    "remain open; cover terminal projects only when they affect a current decision.\n\n"
     + DIPLOMACY_GUIDANCE
     + "\nConsider whether influencing another player could improve a plan or make it feasible. "
     "Connect worthwhile diplomatic initiatives to the plans being considered, accounting for existing exchanges "
@@ -313,27 +309,11 @@ def frozen_read(inputs: JsonObject, name: str, arguments: JsonObject) -> JsonObj
 
 def parse_advice(text: str, observation: JsonObject) -> JsonObject:
     advice = StrategicAdvice.model_validate_json(text).model_dump()
-    validate_review_coverage(advice["review"], observation, observation.get("turn"))
+    if type(observation.get("turn")) is not int:
+        raise ValueError("STRATEGIC_REVIEW_POSITION_MISMATCH")
     return advice
 
 
 def advice_schema(observation: JsonObject) -> JsonObject:
-    """Make the native victory identifiers explicit before generating the report."""
-    schema = StrategicAdvice.model_json_schema()
-    victories = observation["rules"]["victoryTypes"]
-    schema["$defs"]["VictoryOutlook"]["properties"]["victory"]["enum"] = victories
-    schema["$defs"]["StrategicReview"]["properties"]["victoryOutlooks"].update(
-        minItems=len(victories), maxItems=len(victories)
-    )
-    return schema
-
-
-def validate_review_coverage(review: JsonObject, overview: JsonObject, turn: int | None) -> None:
-    if turn is None or overview.get("turn") != turn:
-        raise ValueError("STRATEGIC_REVIEW_POSITION_MISMATCH")
-    expected = set(overview.get("rules", {}).get("victoryTypes", []))
-    names = [path["victory"] for path in review["victoryOutlooks"]]
-    if len(names) != len(set(names)) or set(names) != expected:
-        raise ValueError(
-            "STRATEGIC_REVIEW_COVERAGE: cover each enabled victory exactly once: " + ", ".join(sorted(expected))
-        )
+    """Validate usable choices and references, without prescribing victory coverage."""
+    return StrategicAdvice.model_json_schema()

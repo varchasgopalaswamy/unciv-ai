@@ -5,10 +5,11 @@ observations come first in the changing part of the turn preload; historical
 strategy follows as data. Stable instructions and capabilities remain at the
 front for prompt caching.
 
-**Memory format 9 requires fresh private stores in a new match directory.** Older
+**Memory format 10 requires fresh private stores in a new match directory.** Older
 databases and checkpoints are rejected without modification. There is no legacy
 runtime or automatic migration. Preserve old match directories for auditing.
-Restart and turn rewind work within format 9.
+Restart and turn rewind work within format 10. Preserve existing benchmark images
+and stores; the operator dashboard can still render their older reports.
 
 SQLite remains authoritative, with SQLAlchemy Core owning access. Immutable
 observations, decisions, receipts, notebook revisions and communication
@@ -28,15 +29,41 @@ loading the corresponding observation bodies or marking them delivered.
 
 | Type | Purpose | Updating it |
 | --- | --- | --- |
-| `strategy` | A provisional assessment, with reasons, uncertainties, conditions for reconsidering and conditions for changing course | Replace its complete content; at most one active |
+| `strategy` | A provisional assessment and up to three chosen investments, expectations and review horizons | Replace its complete content; at most one active |
 | `handoff` | Unfinished work or questions for the next game turn | Replace its complete content; at most one active |
 | `belief` | A claim with uncertainty and optional historical citations | Amend changed fields or retire |
 | `note` | Useful retained information, optionally referring to another memory ID | Amend changed fields or retire |
 
 The agent chooses its strategy; the service neither scores it nor requires a
 particular victory route. There is no separate persistent `plan`, `soul` or
-success-criteria record. Short-, mid- and long-term plans belong in the strategic
-review as provisional decisions.
+success-criteria record. Adviser recommendations and player choices have separate
+ownership: only gameplay can select or change the strategy's decisions.
+
+Each `decisions` entry has a stable `id`, `objective`, `investment`, one to three
+`expectedObservations`, `reviewAfterTurns` (1–100), `reconsiderWhen`, and optional
+`subjects`; city handles or names include current city facts in feedback, matched
+without case sensitivity. The service attaches an immutable identity and factual baseline from
+the overview actually delivered that turn. An unchanged choice keeps its baseline
+when other strategy prose changes. A revised choice receives a new identity, even
+within the same turn. Missing observations remain unknown.
+
+`intent.strategy` takes the saved memory ID returned by `memory_update` or
+`memory_read`; `intent.decision` takes an `id` from that strategy's decisions.
+Together they associate relevant actions with the exact delivered choice.
+These annotations never participate in native legality or
+freshness checks. Unread or unknown references remain unverified; a missing plan
+or an overdue expectation never blocks an action. An unlinked annotation returns
+nonblocking `intentFeedback` explaining how to link future actions, without
+changing the native receipt or requiring an executed command to be repeated.
+
+`player_turn.decisionFeedback` presents active choices and recently ended choices
+since the previous review, up to six total. Each includes due status, endpoint
+changes, linked command-status counts and the last eight factual action summaries
+with receipt references. Omitted choices/actions and a truncated revision scan
+are explicit. The scan follows strategy ancestors only, up to 256 revisions;
+restored heads and outgoing-request membership exclude discarded futures. The
+player interprets whether expectations were met. Endpoint changes are not causal
+attribution, and an accepted command is not proof of its expected result.
 
 ### Routine strategic review
 
@@ -45,28 +72,20 @@ turn 0, then works after all players finish rounds K, 2K, and so on
 (`--review-interval`, default 5). Reviews run concurrently during a shared pause
 in gameplay and communication. Opening reviews use each civilization's own
 starting view and ability profile; play waits for all reports.
-The adviser compares every enabled victory type,
-remaining requirements, timing assumptions and observed rivals. Every path leads
-with a useful intermediate objective, required investment and expected payoff
-relative to rivals, including their likely responses. Development, expansion,
-diplomacy and military action can contribute to any victory path. Consequential
-uncertainties are tied to the next decision and how to resolve them.
-
-The assessment can identify a preferred victory or leave the choice open. It
-still recommends concrete next steps, options to develop, commitments to make or
-defer, and evidence that would change the plan. It considers other promising
-approaches, ways to disrupt rivals and conditions for pursuing or ending them,
-and the relative value of agreements, then suggests short-, mid- and long-term
-plans. The prompt defines the review's goals and leaves analytical methods to the
-reviewer.
-Projections can describe development milestones and conditions, with detail
-suited to the game stage and evidence.
+The adviser compares up to three current alternatives over one `horizonTurns`,
+with investment, expected observations, first actions, relative outcome and risks.
+`outcomeAssessment` considers earlier player choices against factual feedback.
+The preference can remain open. Enabled victory information stays available;
+the report no longer requires an essay for every victory or duplicate short-,
+mid- and long-term plans. War-triggered reviews and the existing interval remain
+unchanged; reaching a choice's review date adds no model job.
 
 The service captures fresh inputs during the shared pause, after active
 conversations finish. Opening reviews have no preceding gameplay job.
 The reviewer uses the player's model, effort and priority, with frozen
-read tools, known foreign cities and recent factual actions. Private strategy,
-handoffs and the player's action rationales are excluded. It cannot act, communicate
+read tools, known foreign cities and recent factual actions. Chosen objectives
+and expectations are supplied as dated hypotheses through feedback. The rest of
+the private strategy, handoffs and action rationales are excluded. It cannot act, communicate
 or edit memory. All reviewers must finish before gameplay and communication resume.
 Subsequent jobs include the latest report as dated advice at dispatch. Following
 the advice is optional, and it need not be copied into the notebook.

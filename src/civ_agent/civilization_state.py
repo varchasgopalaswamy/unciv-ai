@@ -17,8 +17,9 @@ from sqlalchemy import bindparam, func, insert, inspect, or_, select
 
 from civ_agent import memory_schema as tables
 from civ_agent.agreement_memory import affected_subjects, lifecycle_terms
+from civ_agent.decision_context import choice_versions, decision_feedback, intent_feedback
 from civ_agent.memory_exports import export_files, notebook_files
-from civ_agent.memory_history import action_record, build_summary
+from civ_agent.memory_history import action_record, action_text, build_summary
 from civ_agent.memory_records import (
     MEMORY_TYPES,
     HistoryReadResult,
@@ -482,6 +483,69 @@ class CivilizationState:
         with self.transaction() as db:
             return self._observe_player(db, body, job, compact)
 
+    def decision_feedback(self, body: JsonObject):
+        with self.transaction() as db:
+            return self._decision_feedback(db, body)
+
+    def _decision_feedback(self, db, body: JsonObject):
+        history = (
+            select(tables.records.c.key, tables.records.c.version)
+            .select_from(tables.current_records)
+            .where(tables.records.c.category == "strategy")
+            .cte("strategy_history", recursive=True)
+        )
+        history = history.union(
+            select(tables.records.c.key, tables.records.c.parent)
+            .select_from(tables.record_versions(history))
+            .where(tables.records.c.parent.is_not(None))
+        )
+        query = (
+            select(tables.records.c.key, tables.records.c.version, tables.records.c.body)
+            .select_from(tables.record_versions(history))
+            .where(tables.records.c.category == "strategy")
+            .order_by(tables.record_order.desc())
+            .limit(257)
+        )
+        rows = db.execute(query).mappings().all()
+        since = db.scalar(select(func.max(tables.reviews.c.turn)).where(tables.reviews.c.status == "COMPLETED"))
+        choices = choice_versions([{**row, "body": json.loads(row["body"])} for row in rows[:256]], since or 0)
+        actions = []
+        if choices:
+            first = min(
+                (c["baseline"]["authoredTurn"] for c in choices if c["baseline"].get("authoredTurn") is not None),
+                default=body["turn"],
+            )
+            query = (
+                select(tables.records.c.key, tables.records.c.body, tables.outbox.c.transport)
+                .select_from(
+                    tables.current_records.join(tables.outbox, tables.outbox.c.decision == tables.records.c.key)
+                )
+                .join(tables.outgoing, tables.outgoing.c.id == tables.outbox.c.id)
+                .where(
+                    tables.records.c.category == "decision",
+                    func.json_extract(tables.records.c.body, "$.turn") >= first,
+                    func.json_extract(tables.records.c.body, "$.turn") <= body["turn"],
+                    func.json_extract(tables.records.c.body, "$._pinned.decision").is_not(None),
+                )
+                .order_by(tables.request_order)
+            )
+            for row in db.execute(query).mappings():
+                saved = json.loads(row["body"])
+                actions.append(
+                    {
+                        "turn": saved["turn"],
+                        "commandStatus": saved["outcome"],
+                        "action": action_text(
+                            saved["command"], saved.get("receipt"), saved.get("settlement"), transport=row["transport"]
+                        ),
+                        "receipt": row["key"],
+                        "_pinned": saved.get("_pinned", {}),
+                    }
+                )
+        result = decision_feedback(choices, body, actions)
+        result["earlierStrategyRevisionsOmitted"] = len(rows) > 256
+        return result
+
     def deliver_player(
         self,
         body: JsonObject,
@@ -518,6 +582,7 @@ class CivilizationState:
                 and snapshot["delivered"][key] != record["version"]
             }
             RecordStore.deliver(snapshot, changed)
+            compact["decisionFeedback"] = self._decision_feedback(db, body)
             # strategyReview delivers advisory notices, without delivering a new
             # notebook revision or the contents of the referenced observations.
             for key, record in records.items():
@@ -1005,7 +1070,10 @@ class CivilizationState:
                     "requestId": request_id,
                 }:
                     raise StateConflict("CALL_CONFLICT")
-                return dict(previous)
+                saved = RecordStore(db).all(keys=[previous["decision"]])[previous["decision"]]
+                queued = {name: previous[name] for name in tables.outbox.c.keys()}
+                queued.update(intent_feedback(saved["body"].get("_pinned", {})))
+                return queued
             body = {**payload, "requestId": request_id}
             snapshot = load_snapshot(
                 db, db.execute(select(tables.jobs.c.snapshot).where(tables.jobs.c.id == job)).scalar_one()
@@ -1023,6 +1091,9 @@ class CivilizationState:
                 # Intent is an audit annotation. Only command dependencies above
                 # participate in freshness/authority checks.
                 key = intent.get("strategy")
+                chosen = intent.get("decision")
+                if chosen:
+                    pinned["unverifiedDecision"] = chosen
                 prior = snapshot["records"].get(key)
                 if (
                     key
@@ -1035,6 +1106,10 @@ class CivilizationState:
                         "version": prior["version"],
                         "assessment": prior["body"]["assessment"],
                     }
+                    baseline = prior["body"].get("_decisionBaselines", {}).get(chosen)
+                    if chosen and baseline:
+                        pinned["decision"] = {"strategy": key, "id": chosen, "baseline": baseline["id"]}
+                        pinned.pop("unverifiedDecision")
                 elif key:
                     pinned["unverifiedStrategy"] = key
                 pinned["assumptions"] = []
@@ -1080,6 +1155,7 @@ class CivilizationState:
                 "dependencies": encode(dependencies),
                 "result": None,
                 "decision": decision,
+                **intent_feedback(pinned),
             }
 
     @staticmethod

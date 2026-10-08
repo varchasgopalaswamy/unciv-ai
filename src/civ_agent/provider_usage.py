@@ -4,6 +4,7 @@ import json
 import re
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import cast
 from uuid import UUID
 
 from civ_agent.protocol import JsonObject
@@ -70,6 +71,7 @@ class ProviderUsageReader:
                     values = tuple(usage.get(key) for key in TOKEN_KEYS)
                     if any(type(value) is not int or value < 0 for value in values):
                         return None
+                    values = cast(tuple[int, ...], values)
                     if response in responses:
                         if responses[response] != values:
                             return None
