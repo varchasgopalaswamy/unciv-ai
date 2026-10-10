@@ -6,7 +6,7 @@ import pytest
 from sqlalchemy import select
 
 from civ_agent import memory_schema as tables
-from civ_agent.civilization_state import CivilizationState, StaleAssumptions, StateConflict
+from civ_agent.civilization_state import CivilizationState, StateConflict
 from civ_agent.memory_records import MemoryUpdate
 from tests.test_structured_memory import create, current, setup, strategy
 
@@ -34,26 +34,17 @@ def test_repeated_notebook_conflicts_preserve_independent_edits_and_do_not_halt(
     assert memory.patch("next", changes[:1], "reconciled")["changes"][0]["accepted"]
 
 
-def test_stale_command_state_still_blocks_dispatch_but_intent_does_not(tmp_path):
+def test_cached_observations_and_retired_intent_do_not_block_dispatch(tmp_path):
     memory = setup(tmp_path)
     key = create(memory, strategy())
     memory.patch("game", [{"op": "retire", "id": key, "reason": "abandoned"}])
     memory.observe("border", {"units": 1}, "game")
     memory.observe("border", {"units": 2})
-    with pytest.raises(StaleAssumptions):
-        memory.queue(
-            "game",
-            "player_command",
-            {"kind": "ATTACK"},
-            {"observation:border": 1},
-            "stale",
-            {"strategy": key, "reason": "Defend Rome"},
-        )
-    assert not memory.pending()
     request = memory.queue(
-        "game", "player_command", {"kind": "ATTACK"}, {}, "fresh", {"strategy": key, "reason": "Defend Rome"}
+        "game", "player_command", {"kind": "ATTACK"}, "fresh", {"strategy": key, "reason": "Defend Rome"}
     )
     assert request["id"]
+    assert len(memory.pending()) == 1
 
 
 def test_contributions_and_notices_restore_with_their_timeline(tmp_path):

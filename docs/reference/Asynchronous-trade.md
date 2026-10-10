@@ -49,7 +49,7 @@ Humans select these items in Unciv's native trade table, backed by the same serv
 as agent tools. Native edits use the engine's paired-term helper. Before publishing,
 the human reviews the complete prepared terms, including any funding payment.
 Agents can use `trade_prepare` for the same calculation; its `publish` template
-contains the returned exact terms and requires the agent's own intent. To counter,
+contains the returned exact terms; the agent may add optional private intent. To counter,
 add the existing `counterofferTo` after inspecting that proposal. Removing an item
 from a structured draft means omitting it from the replacement term list (both
 sides for a paired treaty).
@@ -211,23 +211,13 @@ the gateway enforces this even when a communication job is already running.
 Gameplay's prepared `chat_read` retains their pending IDs, alongside the turn
 overview's native decision blockers. No native trade terms or legality rules change.
 
-If another job changes a required command observation before dispatch,
-the gateway returns `STALE_ASSUMPTIONS` with `applied: false`, `recoverable: true`,
-the changed record keys and `recovery.reads`. No command was sent. The agent reads
-those records, reconsiders the affected action and either makes a fresh decision
-or skips work already completed by the other job. A second stale rejection of the
-same operation stops the run with `REPEATED_STALE_ASSUMPTIONS` and durable
-diagnostics; it cannot be deferred to continue the benchmark. Private assessments
-and their review notices do not independently block commands. Replaying the
-rejected call returns the same rejection even after a refresh;
-it cannot execute an obsolete decision. Uncertain transmitted requests still
-stop the job and require receipt reconciliation.
-
-If gameplay and communication both accept the same shared proposal, a stale acceptance
-first checks its current status with the host. When that exact proposal version
-is already `ENACTED`, it reaches the native handler, which returns the existing
-outcome without repeating transfers. Pending offers, changed versions and other
-decisions still use the stale-state recovery checks above.
+Trade decisions use the exact proposal version delivered to that job. The host
+checks current status and legality at execution; another job refreshing a cached
+relationship does not reject the decision in Python. If gameplay and communication
+both accept the same shared proposal version, the native handler returns the
+existing enacted outcome without repeating transfers. Changed or unavailable terms
+remain subject to host rejection. Uncertain transmitted requests stop the job and
+require receipt reconciliation.
 
 The non-current participant can counteroffer or consent without switching Unciv's
 active player. A new negotiation requires the current player and running gameplay.

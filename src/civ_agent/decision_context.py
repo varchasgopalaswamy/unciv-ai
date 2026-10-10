@@ -11,14 +11,18 @@ MAX_CHOICES = 6
 
 
 def intent_feedback(pinned: JsonObject) -> JsonObject:
-    unverified = {key: pinned[key] for key in ("unverifiedStrategy", "unverifiedDecision") if key in pinned}
+    unverified = {
+        key: pinned[key]
+        for key in ("unverifiedStrategy", "unverifiedDecision", "unverifiedInitiatives")
+        if key in pinned
+    }
     if not unverified:
         return {}
     return {
         "intentFeedback": {
             "linked": False,
             **unverified,
-            "instruction": "This annotation did not link to a saved choice and does not affect command execution. For future links, use memory_update/read's returned strategy ID in intent.strategy and an id from its decisions in intent.decision, or omit the references. Do not repeat an executed command just to change intent.",
+            "instruction": "These references could not be verified and do not affect command execution. Use saved strategy/decision IDs and initiative numbers from the delivered report, or omit the references. Do not repeat an executed command just to change annotations.",
         }
     }
 

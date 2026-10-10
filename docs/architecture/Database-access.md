@@ -10,7 +10,7 @@ sessions or additional database services.
 - [memory_schema.py](../../src/civ_agent/memory_schema.py) defines the existing memory
   tables and indexes, shared joins for current records and live requests, and the
   recursive query that follows a restored revision's ancestors. The memory store,
-  stale-recovery diagnostics, summaries, exports and checkpoints use these
+  summaries, exports and checkpoints use these
   expressions instead of maintaining separate SQL strings.
 - [telemetry.py](../../src/civ_agent/telemetry.py) defines the accounting schema and
   uses Core for job reports, call counts and acknowledgement updates. Accounting
@@ -77,7 +77,7 @@ refresh, including fingerprint initialization, fell from about 9.0 seconds to
 
 ## Store format and rollback
 
-The notebook uses format 10. Older memory files and checkpoints are rejected;
+The notebook uses format 11. Older memory files and checkpoints are rejected;
 there is no migration or compatibility path. Use a fresh match after this change.
 
 Within the current format, checkpoint hashes cover the referenced immutable record

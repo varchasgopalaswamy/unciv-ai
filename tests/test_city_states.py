@@ -7,7 +7,6 @@ from pydantic import ValidationError
 
 from civ_agent.civilization_state import CivilizationState
 from civ_agent.game_commands import command_arguments, command_schema
-from civ_agent.memory_records import REQUIRED_COMMANDS
 from civ_agent.observations import overview, required_detail
 from civ_agent.proposal_gateway import ProposalGateway
 from civ_agent.service_io import ServiceIO
@@ -32,28 +31,18 @@ def city_state():
 
 
 @pytest.mark.parametrize(
-    "command,tool",
+    "command",
     [
-        ({"kind": "CITY_STATE_ACTION", "target": "Geneva", "selection": "giftGold250"}, "player_details"),
-        (
-            {
-                "kind": "CITY_STATE_ACTION",
-                "target": "Geneva",
-                "selection": "pledgeProtection",
-                "confirmAction": True,
-            },
-            "player_details",
-        ),
-        ({"kind": "GIFT_UNIT", "target": "unit1"}, "unit_details"),
+        {"kind": "CITY_STATE_ACTION", "target": "Geneva", "selection": "giftGold250"},
+        {"kind": "CITY_STATE_ACTION", "target": "Geneva", "selection": "pledgeProtection", "confirmAction": True},
+        {"kind": "GIFT_UNIT", "target": "unit1"},
     ],
 )
-def test_city_state_command_shapes_and_read_requirements(command, tool):
+def test_city_state_command_shapes_without_required_details(command):
     schema = Draft202012Validator(command_schema())
     assert schema.is_valid(command)
     assert command_arguments(command) == command
-    detail = required_detail(command)
-    assert detail is not None and detail.tool == tool
-    assert command["kind"] in REQUIRED_COMMANDS
+    assert required_detail(command) is None
     for extra in ({"destination": {"x": 0, "y": 0}}, {"amount": 300}, {"confirmWar": True}):
         invalid = {**command, **extra}
         with pytest.raises(ValidationError):
@@ -88,11 +77,10 @@ def test_gateway_reads_native_choices_and_keeps_city_state_evidence(tmp_path):
         try:
             await gateway.call(job, "player_turn", {}, "read")
             response = await gateway.call(job, "player_command", command, "unread")
-            assert response["error"] == "DETAIL_REQUIRED"
-            assert not host.executed
+            assert response["done"] and len(host.executed) == 1
             detail = await gateway.call(job, "player_details", {"section": "diplomacy"}, "choices")
             assert detail["data"]["diplomacy"]["cityStates"][0]["actions"][0]["name"] == "giftGold250"
-            await gateway.call(job, "player_command", command, "gift")
+            assert await gateway.call(job, "player_command", command, "unread") == response
             assert host.executed[-1]["kind"] == "CITY_STATE_ACTION"
             assert host.executed[-1]["selection"] == "giftGold250"
             before = copy.deepcopy(job.memory["records"]["observation:diplomacy/Geneva"])

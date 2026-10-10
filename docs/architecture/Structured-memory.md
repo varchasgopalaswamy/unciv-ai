@@ -5,10 +5,11 @@ observations come first in the changing part of the turn preload; historical
 strategy follows as data. Stable instructions and capabilities remain at the
 front for prompt caching.
 
-**Memory format 10 requires fresh private stores in a new match directory.** Older
+**Memory format 11 removes cached-observation command dependencies and requires
+fresh private stores in a new match directory.** Older
 databases and checkpoints are rejected without modification. There is no legacy
 runtime or automatic migration. Preserve old match directories for auditing.
-Restart and turn rewind work within format 10. Preserve existing benchmark images
+Restart and turn rewind work within format 11. Preserve existing benchmark images
 and stores; the operator dashboard can still render their older reports.
 
 SQLite remains authoritative, with SQLAlchemy Core owning access. Immutable
@@ -22,8 +23,6 @@ events; historical detail queries enter the job only when read. Completed jobs
 retain those references without copying the full current record store again.
 Operator reports use a separate reference to the
 job's latest native view; that reference does not mark it as model-delivered evidence.
-Dispatch also retains small version counters for command freshness checks, without
-loading the corresponding observation bodies or marking them delivered.
 
 ## Memory content
 
@@ -175,15 +174,17 @@ conversation. Later notices remain pending. A handoff edit cannot acknowledge a
 strategy notice. No notice, citation, strategy age or retirement independently
 blocks a native-legal command. Social promises remain advisory as well.
 
-Consequential actions require a current `intent.reason`. An optional
-`intent.strategy` references a historical assessment, but cannot replace the
-reason. The service records its version when available without checking that the
-assessment is active, reviewed or correct. Native legality and command-specific
-freshness checks remain enforced.
+Actions may include optional `intent` with a reason and historical strategy or
+decision references. The service records the referenced version when available
+without checking that the assessment is active, reviewed or correct. Unverified
+references produce `intentFeedback` without blocking the action. The host checks
+native legality, gameplay revisions and exact proposal versions.
 
 `END_TURN` can also include optional `initiativeDecisions`: a unique one-based
 initiative number from the delivered review, `acted`/`deferred`/`rejected`, and reason.
 The service records the delivered report's turn; agents do not supply its date.
+An initiative absent from that report is omitted from linked action history and
+reported in `intentFeedback.unverifiedInitiatives`; ending the turn still proceeds.
 Other commands and tools do not accept this field. These private
 action-history entries make the player's choices inspectable without an extra
 model request or requiring compliance with the adviser.

@@ -12,7 +12,6 @@ from civ_agent.observations import (
     DetailQuery,
     DetailResult,
     TurnOverview,
-    detail_satisfies,
     overview,
     project_detail,
     required_detail,
@@ -147,10 +146,7 @@ def test_named_constructions_preserve_confirmations_and_unavailable_catalogue_en
     assert named["data"]["constructions"][0]["purchase"] == purchase
     assert not named["data"]["constructions"][0]["canQueue"]
     command = {"kind": "BUY_CONSTRUCTION", "target": city["handle"], "selection": "Future Wonder"}
-    required = required_detail(command)
-    assert required is not None
-    assert not detail_satisfies(DetailQuery.model_validate(catalogue["query"]), required, command)
-    assert detail_satisfies(DetailQuery.model_validate(named["query"]), required, command)
+    assert required_detail(command) is None
 
 
 def test_conversion_can_be_compared_before_queueing_and_only_current_output_is_preloaded():
@@ -309,19 +305,19 @@ def test_detail_tools_cache_reads_require_refresh_and_cannot_acknowledge_unread_
             assert unread["error"] == "PROPOSAL_NOT_OBSERVED" and unread["applied"] is False
             assert unread["recovery"]["reads"] == [{"tool": "chat_read", "arguments": {}}]
             action = {"kind": "MOVE_UNIT", "target": "unit1", "destination": {"x": 1, "y": 0}}
-            rejected = await gateway.call(job, "player_command", action, "missing")
-            assert rejected["error"] == "DETAIL_REQUIRED" and not host.executed
+            first = await gateway.call(job, "player_command", action, "missing")
+            assert first["done"] and len(host.executed) == 1
             before = len(calls)
             detail = await gateway.call(job, "unit_details", {"target": "unit1"}, "detail")
             assert len(calls) == before
             tools = {t["name"]: t for t in await gateway.tools(job)}
             assert Draft202012Validator(tools["unit_details"]["outputSchema"]).is_valid(detail)
             create(memory, strategy(sources=[detail["evidence"]]), job=job.id)
-            assert await gateway.call(job, "player_command", action, "missing") == rejected
+            assert await gateway.call(job, "player_command", action, "missing") == first
             receipt = await gateway.call(job, "player_command", action, "move")
-            assert receipt["done"] and len(host.executed) == 1
+            assert receipt["done"] and len(host.executed) == 2
             assert receipt["stateUpdate"]["kind"] == "delta"
-            assert (await gateway.call(job, "player_command", action, "again"))["error"] == "DETAIL_REQUIRED"
+            assert (await gateway.call(job, "player_command", action, "again"))["done"]
             assert await gateway.call(job, "player_command", action, "move") == receipt
             await gateway.call(job, "unit_details", {"target": "unit1"}, "updated")
             assert (await gateway.call(job, "player_command", action, "move-fresh"))["done"]
@@ -474,23 +470,13 @@ def test_detail_input_schemas_and_every_command_have_a_deliberate_read_path():
     assert not Draft202012Validator(DETAIL_MODELS["map_region"].model_json_schema()).is_valid(
         {"center": {"x": 0, "y": 0}, "radius": 5}
     )
-    no_target_detail = {
-        "AUTOPLAY",
-        "MOVE_AUTOMATED_UNITS",
-        "END_TURN",
-        "SET_RESEARCH_QUEUE",
-        "CHOOSE_FREE_TECHNOLOGY",
-        "ADOPT_POLICY",
-        "DISMISS_POLICY_PICKER",
-        "CHOOSE_FREE_GREAT_PERSON",
-        "CAST_DIPLOMATIC_VOTE",
-        "ABSTAIN_DIPLOMATIC_VOTE",
-        "ACKNOWLEDGE_DIPLOMATIC_RESULTS",
-        "ACKNOWLEDGE_ALERT",
-        "DISMISS_NOTIFICATIONS",
-        "RESPOND_FRIENDSHIP",
-        "RESPOND_CITY_STATE_ALERT",
-        "RESOLVE_CAPTURED_CITY",
+    preview_commands = {
+        "SET_UNIT_DESTINATION",
+        "REBASE_UNIT",
+        "PARADROP",
+        "AIR_SWEEP",
+        "NUCLEAR_STRIKE",
+        "CONNECT_ROAD",
     }
     schema = COMMANDS.json_schema()
     for kind, ref in schema["discriminator"]["mapping"].items():
@@ -498,7 +484,7 @@ def test_detail_input_schemas_and_every_command_have_a_deliberate_read_path():
         command = {"kind": kind, "selection": "Worker", **({"target": "id"} if "target" in properties else {})}
         if "destination" in properties:
             command["destination"] = {"x": 6, "y": 0}
-        assert (required_detail(command) is None) == (kind in no_target_detail), kind
+        assert (required_detail(command) is not None) == (kind in preview_commands), kind
     assert public_result({"epoch": "secret", "data": {"revision": "internal", "health": 100}}) == {
         "data": {"health": 100}
     }

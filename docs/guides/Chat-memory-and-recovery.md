@@ -21,8 +21,8 @@ The model chooses entities and intent:
 {"kind":"QUEUE_CONSTRUCTION","target":"city1","selection":"Granary"}
 ```
 
-The service supplies the host credential, request identity, observed revision,
-turn-review acknowledgement and mandatory dependency checks. It stores the exact
+The service supplies the host credential, request identity, observed revision and
+turn-review acknowledgement. The host checks current legality. The service stores the exact
 request before transmission and reconciles uncertain responses against host
 receipts. The model gets a revocable credential for its job's HTTPS gateway.
 The interactive `agent start` launcher also uses this gateway and requires its
@@ -47,22 +47,17 @@ explicitly choose consequential confirmations such as declaring war. Supplying
 bookkeeping automatically does not invent a gameplay decision or refresh an
 unseen observation. Successful gameplay actions return receipts and
 [state updates](../architecture/Command-state-updates.md); the service refreshes
-the underlying snapshot and identifies inspections that need renewing. Unit,
-city, economic and diplomatic game-state observations have separate versions; the host also retains its conservative full-view
-revision check and performs engine legality checks atomically.
+the underlying snapshot and identifies inspections that need renewing. The host
+checks the current gameplay revision and native legality atomically.
+Refreshing another job's Python observation cache does not block an action.
+Routine actions need no prescribed unit/city detail read; native movement,
+mission and road previews, explicit confirmations and exact trade terms retain
+their requirements. Read details when they help decide what to do.
 
-A concurrent change returns a recoverable `STALE_ASSUMPTIONS` result naming the
-affected records and the reads needed to reconsider that action. It explicitly
-confirms that nothing was dispatched. The agent can skip work another job already
-handled and continue its turn; a rejected decision is never automatically replayed
-against fresh assumptions. Uncertain network responses retain their separate
-stop-and-reconcile behavior.
-
-A second stale rejection of the same operation after one fresh attempt stops the
-run for inspection. Notebook conflicts stay local to their edits and do not halt
-the match. The service enforces command-state stops and
-preserves diagnostics across restart. See the
-[recovery diagnostics](#recovery-diagnostics) for identity, replay and resume rules.
+Host rejections are returned to the player for reconsideration. Uncertain network
+responses retain their separate stop-and-reconcile behavior. Notebook conflicts
+stay local to their edits and do not halt the match. See the
+[recovery diagnostics](#recovery-diagnostics) for persistence failures and resume.
 
 Communication jobs normally read `chat_read` for compact, player-bound turn,
 scenario, economy and diplomatic context. Full gameplay observations remain on
@@ -71,7 +66,10 @@ handling and trade negotiation.
 
 ## Delivery and commitments
 
-Public chat includes everyone from the start. Private chat is one-to-one.
+Public chat includes everyone from the start. Private chat supports direct messages
+and groups identified by their exact participant set. Changing recipients starts
+a separate conversation without sharing earlier history; recipient order does not
+matter. A private group containing every eligible player is still distinct from public chat.
 Chat neither establishes in-game contact nor reveals map state. Application code
 maintains HTTPS long polling with a durable, recipient-specific cursor. The model
 never polls. Private messages and public mentions trigger communication jobs after
@@ -82,6 +80,19 @@ calling the model on an idle inbox.
 `chat_read.chatRecipients` lists ordinary chat recipients, excluding the player
 itself. Plain text cannot be sent to built-in AI. Only gameplay exposes
 `chat_send.nativeAction`; communication jobs exchange text and shared trades.
+
+Use `to` for a direct message or `recipients` for a private group, excluding yourself:
+
+```json
+{"tool":"chat_send","arguments":{"recipients":["Greece","France"],"text":"Shall we discuss our borders?"}}
+```
+
+Reply to all using the received message's `participants` minus yourself. For example,
+France replies to Rome and Greece with `recipients:["Rome","Greece"]`. Omitting both
+`to` and `recipients` sends public chat. Recipient lists must be nonempty and unique;
+they cannot accompany `to` or `nativeAction`. Group messages contain ordinary text
+only. All private recipients are notified, even if only one is mentioned. Mentions
+must belong to the audience. Invalid recipients reject the send without public fallback.
 
 Message and commitment references use six characters (`m…`, `p…`), with collision
 checks. Agent tools use `proposalId` to identify a commitment decision and optional
@@ -95,6 +106,8 @@ Before sending, the service checks confirmed sends from other jobs of the same
 civilization in the existing journal. If that conversation changed since the
 job's delivered view, `CONVERSATION_UPDATED` returns the unseen replies and confirms
 that nothing was sent. The model can reconsider directly, without another read.
+This comparison uses the exact participant set; overlapping groups and direct
+conversations do not invalidate each other.
 This does not interpret promises or prohibit a deliberate follow-up. Reads include
 recent sent messages whose subscription echoes have not yet arrived.
 
@@ -152,8 +165,8 @@ in `runner/monitoring.sqlite3`; the TUI reads this database directly. See
 
 Gameplay creates and replaces complete strategies and next-turn handoffs, and
 amends notes and beliefs. Communication jobs append
-immutable contributions for the next gameplay turn. Consequential actions record
-intent with a current reason and an optional historical strategy reference;
+immutable contributions for the next gameplay turn. Actions may record
+optional intent with a reason and a historical strategy reference;
 review notices are advisory. Retirement removes current context
 and subsequent exports while preserving revision history. See [structured memory](../architecture/Structured-memory.md)
 for schemas and examples. This format
@@ -161,26 +174,18 @@ requires a fresh match; all previous memory formats are rejected without migrati
 
 ## Recovery diagnostics
 
-Stale recovery is tracked per operation within a job. Gameplay identity includes
-the tool and chosen arguments, excluding explanatory `intent`. Notebook edits
-do not participate in the terminal stale-command counter. A successful operation resets that
-operation's counter. Replaying the same transport call ID returns the saved
-response without counting another attempt.
-
-A second stale rejection without an intervening success records
-`REPEATED_STALE_ASSUMPTIONS`, `recoverable: false`, and a diagnostic ID. The service
-fences new mutations and model jobs, and the scheduler checks all civilizations
-between turns and at heartbeats. Already dispatched actions retain their receipts.
+Repeated tool-call IDs return their saved response without executing again.
 For memory batches, inspect each edit's `accepted` field; successful edits remain
 committed even when other edits fail.
 
-Diagnostic JSON lives at
-`SERVICE_DIR/civilization/failures/<diagnosticId>.json`; authoritative failure
-records live in `civilization/memory.sqlite3`. They include the conflicting
-attempts, record versions and intervening recovery reads. Process restart retains
-the stop. An operator reconnect during `match resume` clears the active stop
-after old jobs close and receipts reconcile; previous diagnostics remain.
-Checkpoint restore uses the captured failure state under the new epoch.
+Fatal failures retain diagnostics in
+`SERVICE_DIR/civilization/failures/<diagnosticId>.json` and
+`civilization/memory.sqlite3`. The service fences new mutations and model jobs,
+and the scheduler checks all civilizations between turns and at heartbeats.
+Already dispatched actions retain their receipts. An operator reconnect during
+`match resume` clears the active stop after old jobs close and receipts reconcile;
+previous diagnostics remain. Checkpoint restore uses the captured failure state
+under the new epoch.
 
 An internal projection, validation or persistence failure while preparing a
 command update returns `STATE_UPDATE_FAILED` and stops for inspection. The native

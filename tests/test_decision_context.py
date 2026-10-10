@@ -45,7 +45,6 @@ def act(memory, key, call, *, chosen="capacity", job="game", summary="Library qu
         job,
         "player_command",
         {"kind": "QUEUE_CONSTRUCTION", "target": "city1", "selection": "Library"},
-        {},
         call,
         intent={"reason": "PRIVATE RATIONALE", "strategy": key, "decision": chosen},
     )

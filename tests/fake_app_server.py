@@ -326,6 +326,7 @@ async def main():
                     else await call("player_turn", {})
                 )
                 scenario = view.get("scenario") or view.get("context", {}).get("scenario", {})
+                current["slowCompletion"] = scenario.get("testSlowCompletion", False)
                 if scenario.get("testModelRetry"):
                     # Match the real warning which isn't emitted as a protocol event
                     # on the first automatic retry. Extra stderr must stay private.
@@ -397,6 +398,8 @@ async def main():
                 if current["task"]:
                     current["task"].cancel()
                     await asyncio.gather(current["task"], return_exceptions=True)
+                if current.get("slowCompletion"):
+                    await asyncio.sleep(4)
                 await complete("interrupted")
             elif method not in {"thread/unsubscribe", "thread/archive"}:
                 await websocket.send_json(

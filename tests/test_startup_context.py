@@ -456,7 +456,7 @@ def test_prepared_reads_establish_evidence_and_update_base_without_model_calls(t
             assert {tool["name"] for tool in prepared["coreTools"]} == {
                 "mcp__civ__player_turn",
                 "mcp__civ__player_command",
-                "mcp__civ__memory_read",
+                "mcp__civ__construction_details",
                 "mcp__civ__unit_details",
                 "mcp__civ__map_region",
                 "mcp__civ__chat_send",
@@ -625,11 +625,13 @@ def test_core_definitions_keep_complete_schemas_and_do_not_mutate_catalogue():
         "additionalProperties": False,
     }
     catalogue = [
-        {"name": "player_command", "description": "Execute", "inputSchema": schema, "outputSchema": {"type": "object"}}
+        {"name": name, "description": name, "inputSchema": schema, "outputSchema": {"type": "object"}}
+        for name in ("player_command", "movement_preview", "construction_details", "memory_read", "memory_update")
     ]
     before = copy.deepcopy(catalogue)
     assert core_definitions(catalogue, "gameplay") == [
-        {"name": "mcp__civ__player_command", "description": "Execute", "inputSchema": schema}
+        {"name": "mcp__civ__" + name, "description": name, "inputSchema": schema}
+        for name in ("player_command", "movement_preview", "construction_details")
     ]
     assert catalogue == before
     assert command_arguments({"kind": "END_TURN", "deferReason": "Stay fortified"})["deferReason"] == "Stay fortified"

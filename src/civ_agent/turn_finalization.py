@@ -35,7 +35,6 @@ def finalize_turn(agent, flight):
         status = agent.call("heartbeat", activationId=flight["activationId"])
     if status.get("error") in {
         "DURABLE_RECORD_FAILED",
-        "REPEATED_STALE_ASSUMPTIONS",
         "STATE_UPDATE_FAILED",
         "STOP_UNCONFIRMED",
         "STATE_STORE_FAILED",

@@ -70,8 +70,8 @@ def seed_memory(directory):
         )
         db.execute("INSERT INTO live_jobs VALUES ('previous')")
         db.execute(
-            "INSERT INTO outbox VALUES (?,?,?,?,?,?,?)",
-            ("request-old", "previous", "player_command", encode(command), "{}", encode(receipt), "dec1"),
+            "INSERT INTO outbox VALUES (?,?,?,?,?,?)",
+            ("request-old", "previous", "player_command", encode(command), encode(receipt), "dec1"),
         )
         db.execute("INSERT INTO outgoing VALUES ('request-old')")
         db.execute(
@@ -172,7 +172,7 @@ def test_memory_checkpoint_restart_and_revision_branch(tmp_path):
     assert path.stat().st_mode & 0o777 == 0o600
 
 
-@pytest.mark.parametrize("old_format", [2, 3, 4, 5, 6])
+@pytest.mark.parametrize("old_format", range(2, tables.FORMAT_VERSION))
 def test_old_memory_format_is_rejected_without_migration(tmp_path, old_format):
     path = seed_memory(tmp_path / "old-format")
     with closing(sqlite3.connect(path)) as db, db:

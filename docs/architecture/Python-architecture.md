@@ -18,7 +18,7 @@ flowchart TB
     Codex -->|HTTPS tool calls| Gateway[Player tool gateway]
 
     Gateway --> Schemas[Pydantic tool schemas]
-    Gateway --> Guards[Permission and stale-state checks]
+    Gateway --> Guards[Permission and job checks]
     Guards --> SDK[Official MCP Python client]
     SDK -->|HTTPS| Host[Trusted Kotlin game host]
     Host --> Engine[Unciv engine]
@@ -50,7 +50,7 @@ as a turn number. API errors expose fixed codes, without the submitted input.
 chat, commitment, history and memory tools. Each model supplies both its advertised
 JSON schema and its runtime validation. Optional arguments remain omitted when
 forwarded. Engine tool schemas still come from the host, which validates game
-commands against the actual state. Identity, authorization, stale assumptions,
+commands against the actual state. Identity, authorization, job authority,
 memory provenance and durable receipts remain explicit domain checks.
 
 [memory_records.py](../../src/civ_agent/memory_records.py) provides Pydantic models for
@@ -132,7 +132,7 @@ sequenceDiagram
     participant Model as Model job
     participant Gateway as Tool gateway
     participant Host as Kotlin host
-    State->>Model: Snapshot with relevant state and policy versions
+    State->>Model: Player context and delivered observations
     par Model computation
         Model->>Model: Plan actions
     and Event reception
@@ -141,15 +141,12 @@ sequenceDiagram
         Events->>State: Persist event and update relevant versions
     end
     Model->>Gateway: Proposed action
-    Gateway->>State: Validate dependencies and persist request identity
-    alt Assumptions still valid
-        Gateway->>Host: Execute validated command over HTTPS
-        Host-->>Gateway: Authoritative receipt
-        Gateway->>State: Persist receipt
-        Gateway-->>Model: Confirmed result
-    else Relevant assumptions changed
-        Gateway-->>Model: Required observations for a fresh decision
-    end
+    Gateway->>State: Validate job and persist request identity
+    Gateway->>Host: Command with gameplay revision or exact proposal version
+    Host->>Host: Check authoritative state and native legality
+    Host-->>Gateway: Receipt or rejection
+    Gateway->>State: Persist result
+    Gateway-->>Model: Confirmed result
 ```
 
 Model computation and network waits do not hold the memory writer. `ServiceIO`

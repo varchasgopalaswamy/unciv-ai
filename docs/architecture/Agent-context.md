@@ -26,13 +26,23 @@ from the current permitted catalogue:
 
 | Job | Prepared definitions |
 | --- | --- |
-| Gameplay | `player_turn`, `player_command`, `memory_read`, `unit_details`, `map_region`, `chat_send` |
+| Gameplay | `player_turn`, `player_command`, `unit_details`, `movement_preview`, `construction_details`, `map_region`, `chat_send` |
 | Communication | `chat_read`, `chat_send`, `memory_update` |
+| Review | All permitted read-only tools: `player_turn`, `victory_progress`, `research_details`, `policy_details`, `city_details`, `unit_details`, `construction_details`, `player_details`, `map_region`, `chat_read` |
 
 The model can call prepared tools directly. For additional tools, the shared
 discovery guidance uses exact-name lookup, small relevant definition lookups,
 and names-only catalogue exploration. Previously read definitions are
 reused. All tools permitted for that job remain discoverable.
+Reviewers receive their complete catalogue and can call those tools without discovery.
+Gameplay memory reads and writes remain available on demand; selected startup
+records are still delivered automatically.
+
+Gameplay batches already-chosen independent actions in one script, awaiting each
+command sequentially and retaining every receipt. Errors or unavailable state
+updates stop the batch; successful earlier commands remain applied. Decisions
+that depend on combat, scouting or fresh previews use another model pass.
+The player reviews the results before ending the turn.
 
 `END_TURN` ends all gameplay and memory-tool access. Optional `memory_update`
 remains discoverable during play. Scheduled reviews run concurrently at a shared
@@ -175,7 +185,8 @@ does not drop warnings or imply that every response is only a bare JSON object.
 
 Use focused unit/city sections, named research/construction details and local map
 regions for the next decision. Options expose copyable command arguments and any
-required inspection. Discovery, action templates and prompts are guidance; native
+suggested detail read or required native preview. Routine detail reads and intent
+annotations are optional. Discovery, action templates and prompts are guidance; native
 legality, authority and observation checks still apply.
 
 Successful commands return receipts and [state updates](Command-state-updates.md).
@@ -259,17 +270,16 @@ are not silently rewritten by a projection update.
 
 Agents use current observations before historical memory. The notebook separates
 a provisional strategy from a next-turn handoff and retained knowledge. Handoff
-edits cannot refresh strategy dates or clear strategy notices. Consequential
-actions require a current `intent.reason`; strategy references are optional.
+edits cannot refresh strategy dates or clear strategy notices. Actions may include optional
+`intent` with a reason and historical strategy references.
 [Structured memory](Structured-memory.md) describes evidence and
 version checks; [background reviews](Background-turn-memory.md) describes the
 post-turn tools, frozen evidence and checkpoint behavior.
 
-The host tracks stale retries per operation. Agents follow the supplied recovery
-reads; only a terminal `REPEATED_STALE_ASSUMPTIONS` response declares recovery
-exhausted. A successful operation resets its counter. Partial memory batches
-require checking each edit's `accepted` field. See the
-[recovery guide](../guides/Chat-memory-and-recovery.md#interruption-and-emergency-restore).
+The host validates gameplay revisions and proposal versions against authoritative
+state. Python cache updates never gate commands or count toward a terminal
+stale-retry limit. Partial memory batches require checking each edit's `accepted`
+field. See the [recovery guide](../guides/Chat-memory-and-recovery.md#interruption-and-emergency-restore).
 
 ## Implementation entry points
 

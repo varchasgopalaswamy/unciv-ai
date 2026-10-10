@@ -210,7 +210,7 @@ tool calls are needed.
   choices are legal now, the summary includes their mechanical descriptions,
   whether they are retained after selection, newly satisfied promotion
   prerequisites, copyable commands, and the XP balance/cost after selection.
-  `inspections.PROMOTE_UNIT` supplies the focused read required before acting.
+  `inspections.PROMOTE_UNIT` supplies a focused read for comparing promotion choices.
   The complete promotion tree and unavailable reasons stay in
   `unit_details(sections=["promotions"])`. Units with no XP or promotions and no
   legal choices omit this summary.
@@ -408,7 +408,7 @@ a section. These projections use only the permission-filtered cached snapshot.
 
 | City section | Details and applicable actions |
 | --- | --- |
-| `status` | Capture choices; also satisfies the rename inspection |
+| `status` | Capture choices and city status |
 | `production` | Queue, available names, progress, queued construction estimates and queue management |
 | `citizens` | Growth, food, focus, worked/locked tiles, specialists and shared tiles |
 | `economy` | Yields/breakdowns, buildings and sales with confirmation text |
@@ -419,28 +419,24 @@ Prefer named research, policy and construction reads after selecting candidates
 from the overview or a catalogue. Named research includes copyable native
 prerequisite queues and free-technology choices; named construction includes
 queue/purchase commands. Available entity options and native movement/mission
-previews also include commands. Copy only command arguments, add your own
+previews also include commands. Copy only command arguments, optionally add private
 structured `intent`, and read any `confirmationField` and consequences before
 explicitly confirming. Templates never prefill consent or intent, and native
 legality is checked again during execution. Air-base options provide the exact
 preview request; reading an air section alone does not satisfy a mission preview.
 
-`DETAIL_REQUIRED` applies nothing and names the detail query needed before an
-action. A construction catalogue does not establish that purchase confirmations
-were read; inspect the named entry, full city, or `city_details(sections=["purchases"])`.
-Queueing a construction still requires its named entry or the full production and
-purchase information. City bombardment summaries attach their combat inspection
-request before exposing the command.
-A movement read cannot satisfy a disband, gift, promotion or settlement inspection.
-Declaration warnings require
-`player_details({section:"diplomacy"})`. Popup responses use the gameplay content
-already present in the overview, as does ordinary notification dismissal. Social
-commitment decisions require `chat_read`; formal trades continue to require
-`trade_read`.
+Routine commands do not require a particular detail read. Use named construction,
+unit sections and city sections to inspect options and consequences when useful.
+The host still checks legality and explicit confirmations at execution.
+`DETAIL_REQUIRED` applies nothing and names an exact native movement, mission or
+road preview needed before its command. Air-section reads cannot replace a mission
+preview, and another action may invalidate a previously delivered preview.
+Social commitment decisions require `chat_read`; formal trades require `trade_read`
+so consent remains tied to the exact delivered terms.
 
 Available major-player diplomatic responses expose a `responseTool` template
 for `chat_send` with `nativeAction=RESPOND_DIPLOMACY`. The agent supplies its own
-text and intent after inspecting consequences. City-state responses retain their
+text and optional intent after inspecting consequences. City-state responses retain their
 separate `RESPOND_CITY_STATE_ALERT` commands; trade and peace use trade tools.
 
 Worker and Work Boat details include `workScope`: the offered jobs apply to the

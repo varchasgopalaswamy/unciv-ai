@@ -27,7 +27,7 @@ flowchart TB
         Memory[("CivilizationState · private SQLite<br/>Evidence, assessments, jobs, inbox and exact receipts")]
         Gameplay["Codex gameplay job<br/>Fresh selected context"]
         Conversation["Codex communication job<br/>Can run outside the player's game turn"]
-        Gateway["ProposalGateway · HTTPS /mcp<br/>Job permissions, credentials, request IDs,<br/>dependency checks and retries"]
+        Gateway["ProposalGateway · HTTPS /mcp<br/>Job permissions, credentials, request IDs,<br/>observed host versions and retries"]
         Journal[("Private event journal<br/>Authenticated stream and saved note context")]
 
         Control --> Chat

@@ -356,7 +356,7 @@ def test_legacy_tools_are_absent_and_review_recovery_uses_public_arguments(tmp_p
             assert not old & tools.keys()
             capabilities = await gateway.call(job, "player_capabilities", {}, "capabilities")
             assert not old & set(capabilities["queries"])
-            assert set(tools["trade_decide"]["inputSchema"]["required"]) == {"proposalId", "decision", "intent"}
+            assert set(tools["trade_decide"]["inputSchema"]["required"]) == {"proposalId", "decision"}
             assert "Supply only" not in tools["trade_decide"]["description"]
             for name in old:
                 with pytest.raises(ValueError, match="TOOL_NOT_PERMITTED"):

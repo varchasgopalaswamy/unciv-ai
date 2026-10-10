@@ -255,6 +255,15 @@
         },
         "nativeAction": {
           "$ref": "#/$defs/nativeAction"
+        },
+        "recipients": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/to"
+          },
+          "minItems": 1,
+          "maxItems": 100,
+          "uniqueItems": true
         }
       },
       "required": [
@@ -263,7 +272,25 @@
         "requestId",
         "text"
       ],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "not": {
+            "required": [
+              "to",
+              "recipients"
+            ]
+          }
+        },
+        {
+          "not": {
+            "required": [
+              "recipients",
+              "nativeAction"
+            ]
+          }
+        }
+      ]
     },
     {
       "type": "object",
@@ -970,7 +997,11 @@
           "maxLength": 256
         },
         "provider": {
-          "enum": ["openai", "openrouter", null]
+          "enum": [
+            "openai",
+            "openrouter",
+            null
+          ]
         },
         "modelRequests": {
           "type": "integer",

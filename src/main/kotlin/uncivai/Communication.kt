@@ -160,12 +160,25 @@ internal class Communication(private val runtime: GameExecutor) {
 
                 "send" -> {
                     val target = request.to
+                    val recipients = request.recipients
+                    if (recipients != null && (
+                            target != null || request.nativeAction != null || recipients.isEmpty() ||
+                                recipients.distinct().size != recipients.size || recipients.any { it == civilization || it !in participants }
+                            )
+                    ) {
+                        fail()
+                    }
                     val nativeRecipient = game.civilizations.firstOrNull { it.civID == target && it.isAI() && it.isMajorCiv() && game.getCivilization(civilization).knows(it) }
                     if (target != null && (target == civilization || (target !in participants && (nativeRecipient == null || request.nativeAction == null)))) fail()
-                    val audience = if (target == null) participants else listOf(civilization, target)
+                    val public = target == null && recipients == null
+                    val audience = when {
+                        recipients != null -> (recipients + civilization).sorted()
+                        target != null -> listOf(civilization, target).sorted()
+                        else -> participants
+                    }
                     if (request.mentions.any { it !in audience }) fail()
                     val nativeResult = request.nativeAction?.let { uncivai.player.TurnSession(runtime, civilization).executeDiplomaticAction(it, target) }
-                    val message = ChatMessage(shortId("m"), civilization, audience, target == null, checkNotNull(request.text), request.mentions, game.turns, request.nativeAction)
+                    val message = ChatMessage(shortId("m"), civilization, audience, public, checkNotNull(request.text), request.mentions, game.turns, request.nativeAction)
                     if (queueMessage) {
                         state.queuedMessages.add(message)
                         obj("message" to message.recordJson(), "queued" to true)

@@ -44,15 +44,15 @@ def test_route_confirmation_only_applies_to_current_stop_and_never_prefills_cons
     "command,read",
     [
         ({"kind": "SET_UNIT_DESTINATION", "target": "unit1", "destination": {"x": 8, "y": 0}}, "movement_preview"),
-        ({"kind": "CANCEL_UNIT_MOVEMENT", "target": "unit1"}, "unit_details"),
-        ({"kind": "CREATE_WATER_IMPROVEMENT", "target": "unit1", "selection": "Fishing Boats"}, "unit_details"),
+        ({"kind": "CANCEL_UNIT_MOVEMENT", "target": "unit1"}, None),
+        ({"kind": "CREATE_WATER_IMPROVEMENT", "target": "unit1", "selection": "Fishing Boats"}, None),
     ],
 )
 def test_naval_commands_have_explicit_shapes_and_offer_reads(command, read):
     assert Draft202012Validator(command_schema()).is_valid(command)
     assert command_arguments(command) == command
     detail = required_detail(command)
-    assert detail is not None and detail.tool == read
+    assert (detail.tool if detail else None) == read
     with pytest.raises(ValidationError):
         command_arguments({**command, "attackFrom": {"x": 0, "y": 0}})
 

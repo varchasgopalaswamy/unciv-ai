@@ -37,7 +37,7 @@ They inform decisions without imposing strategic priorities.
   a Worker. The capture outcome is conditional on a successful legal capture and
   keeping the unit. `directCaptureOrders` contains current native move or melee
   attack offers against an unguarded civilian outside a city, with copyable
-  commands and required movement/combat inspections. Ranged units can capture by
+  commands and suggested movement/combat inspections. Ranged units can capture by
   moving onto the tile; ranged fire alone does not capture. A guard or city needs
   combat and does not receive a direct capture order in this summary. Native uncapturable
   units are excluded. Other players' original ownership is not disclosed.
@@ -61,7 +61,7 @@ They inform decisions without imposing strategic priorities.
   gives its original owner a Settler; keep gives this player a Worker. The
   temporarily owned Settler in the roster is still awaiting that choice.
 - Every currently offered city bombardment, damage ranges, copyable arguments and
-  its required `city_details(sections=["combat"])` inspection.
+  its suggested `city_details(sections=["combat"])` inspection.
 - Confirmed losses from the delivered combat reports, city count, Settlers and
   cities currently producing Settlers. A Settler later in the queue is not current
   production. Treasury, income and happiness appear once in `economy`.
@@ -208,7 +208,7 @@ field combinations return `INVALID_COMMAND_ARGUMENTS`, required/allowed fields a
 recovery guidance before a request or intent is dispatched.
 
 Combat, unit-order and promotion offers contain a `command`. Copy it after reading
-the offer, and add your own intent for consequential choices:
+the offer, and optionally annotate your intent:
 
 ```json
 {"kind":"CITY_ATTACK","target":"city2","destination":{"x":-6,"y":-1},"intent":{"reason":"Damage the Brute threatening the Worker"}}

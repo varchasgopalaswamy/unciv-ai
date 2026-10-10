@@ -49,7 +49,7 @@ def test_victory_commands_have_explicit_shapes_and_reads(command):
     validator = Draft202012Validator(command_schema())
     assert validator.is_valid(command)
     assert command_arguments(command) == command
-    assert (required_detail(command) is not None) == (command["kind"] == "ADD_SPACESHIP_PART")
+    assert required_detail(command) is None
     invalid = {**command, "destination": {"x": 0, "y": 0}}
     with pytest.raises(ValidationError):
         command_arguments(invalid)
@@ -77,7 +77,7 @@ def test_overview_preserves_whole_election_and_discovers_assembly():
     assert shown["units"][0]["canAssembleSpaceshipPart"]
 
 
-def test_gateway_requires_part_details_and_forwards_intended_vote(tmp_path):
+def test_gateway_assembles_without_part_details_and_forwards_vote(tmp_path):
     async def run():
         io = ServiceIO()
         state = CivilizationState(tmp_path / "state", "Rome")
@@ -91,10 +91,9 @@ def test_gateway_requires_part_details_and_forwards_intended_vote(tmp_path):
             assert shown["victory"]["votingResults"] == results()
             command = {"kind": "ADD_SPACESHIP_PART", "target": "unit1", "intent": {"reason": "Complete the ship"}}
             response = await gateway.call(job, "player_command", command, "unread-part")
-            assert response["error"] == "DETAIL_REQUIRED"
-            assert not host.executed
+            assert response["done"] and len(host.executed) == 1
             await gateway.call(job, "unit_details", {"target": "unit1"}, "part")
-            await gateway.call(job, "player_command", command, "assemble")
+            assert await gateway.call(job, "player_command", command, "unread-part") == response
             assert host.executed[-1]["kind"] == "ADD_SPACESHIP_PART"
             await gateway.call(job, "player_turn", {}, "refresh")
             await gateway.call(

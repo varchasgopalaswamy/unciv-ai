@@ -287,6 +287,42 @@ which city handles were gained; post-action influence is null if it no longer
 exists. Each transferred city receives its native annex/puppet/destroy choice
 through the capture interface, including after recovery.
 
+## Player chat
+
+`player_communication` accepts a `request` with `op="send"`, the current `epoch`,
+a stable `requestId`, and `text`. Omit both addressing fields for public chat;
+use `to` for one recipient or `recipients` for a private participant group:
+
+```json
+{"op":"send","epoch":"<current epoch>","requestId":"group-1","recipients":["Greece","France"],"text":"Shall we discuss our borders?"}
+```
+
+`recipients` must be nonempty, unique, and contain eligible ordinary chat players
+other than the sender. It cannot accompany `to` or `nativeAction`. Built-in AI
+does not receive ordinary chat. Invalid addressing rejects the request before
+any delivery or native effect; it never becomes public chat.
+
+Private messages store the sender and recipients in `participants` and set
+`public=false`. Conversation identity is the sorted, exact participant set:
+recipient order does not matter, and `recipients:["Greece"]` identifies the same
+conversation as `to:"Greece"`. A changed audience starts a different conversation
+without sharing earlier history. Public chat is distinct even when a private
+audience includes every eligible player.
+
+To reply to all, copy the received `participants` minus your own civilization into
+`recipients`. France replying to the message above would send:
+
+```json
+{"op":"send","epoch":"<current epoch>","requestId":"group-reply-1","recipients":["Greece","Rome"],"text":"Yes, let us compare proposals."}
+```
+
+Only participants receive private content, and every recipient except the sender
+is notified. Optional `mentions` must belong to the audience; they do not narrow
+private delivery or notifications. Public messages notify only mentioned players.
+Receipts, checkpoint restart and rewind use the existing communication transaction.
+During strategic review, human text is queued privately to its author and released
+in order when reviews finish. Trusted operator access is unchanged.
+
 ## Launch and recovery
 
 Create a fresh Ancient-era Vanilla game with Rome and Greece in human slots:

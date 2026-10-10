@@ -2,7 +2,7 @@
 
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field, RootModel, field_validator
+from pydantic import BaseModel, Field, RootModel, field_validator, model_validator
 from pydantic.json_schema import SkipJsonSchema
 
 from civ_agent.game_commands import Position
@@ -53,7 +53,7 @@ class PlayerInspection(BoundaryModel):
 
 
 class WithIntent(BoundaryModel):
-    intent: Intent
+    intent: Intent | None = None
 
 
 class Partner(BoundaryModel):
@@ -130,15 +130,26 @@ class NativeDiplomaticResponse(BoundaryModel):
 class ChatSend(BoundaryModel):
     text: Annotated[str, Field(min_length=1, max_length=4000, pattern=r"\S")]
     to: PlayerName = ""
+    recipients: Annotated[list[PlayerName], Field(min_length=1, max_length=100)] = Field(
+        default_factory=list,
+        description="Private recipients, each once, excluding yourself. Omit to and nativeAction. Reply to all using the message participants minus yourself.",
+        json_schema_extra={"uniqueItems": True},
+    )
     mentions: Annotated[list[PlayerName], Field(max_length=100)] = Field(default_factory=list)
     intent: Intent | None = None
 
-    @field_validator("mentions")
+    @field_validator("mentions", "recipients")
     @classmethod
     def unique_mentions(cls, value):
         if len(set(value)) != len(value):
-            raise ValueError("Mention each player only once")
+            raise ValueError("List each player only once")
         return value
+
+    @model_validator(mode="after")
+    def exclusive_addressing(self):
+        if "recipients" in self.model_fields_set and {"to", "nativeAction"} & self.model_fields_set:
+            raise ValueError("Use recipients without to or nativeAction")
+        return self
 
 
 class GameplayChatSend(ChatSend):

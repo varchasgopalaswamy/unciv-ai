@@ -99,7 +99,7 @@ object ManagedDesktopProbe {
                         return@Thread
                     }
                     exercise()
-                    Files.writeString(output.resolve("COMPLETE"), "Native input, HTTPS turns, chat focus and drafts, queued review messages, human consent and rewind passed.\n")
+                    Files.writeString(output.resolve("COMPLETE"), "Native input, HTTPS turns, private groups, exact chat history and unread audiences, focus and drafts, queued review messages, human consent and rewind passed.\n")
                     println("MANAGED-DESKTOP-COMPLETE:$output")
                     operator(OperatorRequest("release", lease))
                     onGl { session.exit() }
@@ -255,6 +255,7 @@ object ManagedDesktopProbe {
         operator(OperatorRequest("unbarrier", lease))
         activate()
         waitFor { onGl { app.screen is DesktopDiplomacyScreen && session.operator.humanCanAct("France", game) } }
+        exerciseGroups()
         click("Trades")
         click("Open trade")
         clickNamed("OurAvail:Gold:Gold")
@@ -350,6 +351,20 @@ object ManagedDesktopProbe {
         activate()
         waitFor { onGl { app.screen is DesktopDiplomacyScreen && world.isPlayersTurn } }
         check(onGl { actors().filterIsInstance<TextArea>().none { it.text == "Discard this abandoned draft" } })
+        check(onGl { session.diplomacyDrafts.chats.isEmpty() && GROUP_LABEL !in conversationNames() })
+        communication("Rome", "send", "recipients" to listOf("Greece", "France"), "text" to "Discovered incoming group after rewind")
+        waitFor { onGl { GROUP_LABEL in conversationNames() && session.unreadCount == 1 } }
+        onGl { selectConversation(GROUP_LABEL) }
+        waitFor { onGl { session.unreadCount == 0 && hasChatText("Discovered incoming group after rewind") } }
+        onGl {
+            check(chatMessage().text.isEmpty())
+            chatMessage().text = "Reply to all discovered participants"
+        }
+        click("Send message")
+        val reply = communication("Greece", "read").array("events").last().jsonObject.getValue("body").jsonObject
+        check(!reply.flag("public") && reply.array("participants").size == 3 && reply.text("text") == "Reply to all discovered participants")
+        capture("04a-incoming-group")
+        onGl { selectConversation("Rome") }
         click("Back to map")
         waitFor { onGl { app.screen is WorldScreen && world.isPlayersTurn } }
         check(onGl { game.getCivilization("France").cities.isEmpty() && session.rewindNotice != null })
@@ -407,6 +422,18 @@ object ManagedDesktopProbe {
         click("Send message")
         check(!communication("Rome", "read").toString().contains("A question queued during review"))
         check(onGl { chatMessage().text.isEmpty() && actors().filterIsInstance<Label>().any { it.text.contains("Queued ·") } })
+        onGl {
+            selectConversation(GROUP_LABEL)
+            check(!hasChatText("A question queued during review"))
+            chatMessage().text = "A group question queued during review"
+        }
+        click("Send message")
+        check(!communication("Greece", "read").toString().contains("A group question queued during review"))
+        onGl {
+            check(hasChatText("A group question queued during review"))
+            selectConversation("Rome")
+            check(hasChatText("A question queued during review") && !hasChatText("A group question queued during review"))
+        }
         capture("07-review-barrier")
         click("Back to map")
         waitFor { onGl { app.screen is WorldScreen && !world.isPlayersTurn && Gdx.input.inputProcessor != null } }
@@ -415,12 +442,107 @@ object ManagedDesktopProbe {
         operator(OperatorRequest("unbarrier", lease))
         check(communication("Rome", "read").toString().contains("A question queued during review"))
         check(!communication("Greece", "read").toString().contains("A question queued during review"))
+        check(communication("Greece", "read").toString().contains("A group question queued during review"))
+        check(communication("Rome", "read").toString().contains("A group question queued during review"))
         waitFor { onGl { actors().filterIsInstance<Label>().none { it.text.contains("Queued ·") } } }
         click("Back to map")
         activate()
         waitFor { onGl { world.isPlayersTurn } }
         check(onGl { session.executor.communicationState.telemetry.turns.values.any { it.civilization == "France" && it.nativeActions.isNotEmpty() } })
         capture("08-next-human-turn")
+    }
+
+    private const val GROUP_LABEL = "Group · France, Greece, Rome"
+    private fun conversationNames() = actors().filterIsInstance<SelectBox<*>>().single { it.name == "contacts" }.items.toList()
+    private fun hasChatText(text: String) = actors().filterIsInstance<Label>().any { it.text.contains(text) }
+
+    private fun exerciseGroups() {
+        click("New group")
+        onGl {
+            check(actors().filterIsInstance<Button>().single { button -> button.children.filterIsInstance<Label>().any { it.text.toString() == "Open conversation" } }.isDisabled)
+            check(actors().none { it.name in listOf("group-recipient-Egypt", "group-recipient-France") })
+        }
+        clickNamed("group-recipient-Greece")
+        onGl { check(actors().filterIsInstance<Label>().single { it.name == "group-participants" }.text.toString() == "Private · Participants: France, Greece") }
+        clickNamed("group-recipient-Rome")
+        capture("03e-new-group-preview")
+        click("Open conversation")
+        onGl {
+            check(session.panel?.selectedCivilization == "Rome")
+            check(hasChatText("Private · Participants: France, Greece, Rome"))
+            check(!hasChatText("Private human message"))
+            chatMessage().apply {
+                text = "Private group draft"
+                cursorPosition = 7
+                stage.keyboardFocus = this
+            }
+            selectConversation("Rome")
+            check(chatMessage().text == "! draft" && hasChatText("Private human message"))
+        }
+        // Reversing checkbox selection reopens the same unsent conversation and its cursor.
+        click("New group")
+        clickNamed("group-recipient-Rome")
+        clickNamed("group-recipient-Greece")
+        click("Open conversation")
+        onGl {
+            check(conversationNames().count { it == GROUP_LABEL } == 1)
+            check(chatMessage().text == "Private group draft" && chatMessage().cursorPosition == 7)
+            chatMessage().text = "Private group message"
+        }
+        click("Send message")
+        for (recipient in listOf("Rome", "Greece")) {
+            val message = communication(recipient, "read").array("events").last().jsonObject.getValue("body").jsonObject
+            check(!message.flag("public") && message.array("participants").size == 3 && message.text("text") == "Private group message")
+        }
+        onGl {
+            chatMessage().apply {
+                text = "Keep group draft"
+                cursorPosition = 4
+                stage.keyboardFocus = this
+            }
+            selectConversation("Rome")
+        }
+        communication("Greece", "send", "recipients" to listOf("Rome", "France"), "text" to "Incoming group only")
+        communication("Greece", "send", "to" to "France", "text" to "Incoming direct only")
+        communication("Greece", "send", "text" to "Incoming public only")
+        waitFor { onGl { session.unreadCount == 3 } }
+        onGl { selectConversation(GROUP_LABEL) }
+        waitFor { onGl { session.unreadCount == 2 } }
+        val composer = onGl {
+            check(hasChatText("Incoming group only") && !hasChatText("Incoming direct only") && !hasChatText("Incoming public only"))
+            check(chatMessage().text == "Keep group draft" && chatMessage().cursorPosition == 4)
+            chatMessage().also { it.stage.keyboardFocus = it }
+        }
+        communication("Rome", "send", "recipients" to listOf("France", "Greece"), "text" to "Group refresh while typing")
+        waitFor { onGl { hasChatText("Group refresh while typing") } }
+        onGl {
+            check(chatMessage() === composer && composer.stage.keyboardFocus === composer && composer.cursorPosition == 4)
+            selectConversation("Greece")
+        }
+        waitFor { onGl { session.unreadCount == 1 } }
+        onGl {
+            check(hasChatText("Incoming direct only") && !hasChatText("Incoming group only"))
+            selectConversation("Public")
+        }
+        waitFor { onGl { session.unreadCount == 0 } }
+        onGl {
+            check(hasChatText("Incoming public only") && !hasChatText("Private group message"))
+            selectConversation("Rome")
+            selectConversation(GROUP_LABEL)
+        }
+        click("Trades")
+        onGl { check(session.panel?.selectedCivilization == "Rome" && GROUP_LABEL !in conversationNames()) }
+        click("Chat")
+        onGl { check(session.panel?.selectedChat?.label("France") == GROUP_LABEL && chatMessage().text == "Keep group draft") }
+        capture("03f-private-group-chat")
+        click("Back to map")
+        waitFor { onGl { app.screen is WorldScreen } }
+        onGl { session.openDiplomacy(null) }
+        onGl {
+            check(session.panel?.selectedChat?.label("France") == GROUP_LABEL)
+            check(chatMessage().text == "Keep group draft" && chatMessage().cursorPosition == 4)
+            check(chatMessage().stage.keyboardFocus === chatMessage())
+        }
     }
 
     private fun status() = operator(OperatorRequest("status")).status

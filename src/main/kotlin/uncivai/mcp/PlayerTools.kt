@@ -58,7 +58,7 @@ internal fun createPlayerToolsServer(session: PlayerSession): Server = Server(
     }
     addTool(
         name = "player_communication",
-        description = "Authenticated host communication transport. Civilization services manage requests, cursors, and subscriptions.",
+        description = "Authenticated host communication transport. Send public text by omitting to and recipients, direct text with to, or private group text with recipients excluding the sender. Reply to all using a message's participants minus yourself. Recipients cannot accompany to or nativeAction. Civilization services manage requests, cursors, and subscriptions.",
         inputSchema = COMMUNICATION_INPUT_SCHEMA,
         toolAnnotations = COMMAND_ANNOTATIONS,
     ) { request ->

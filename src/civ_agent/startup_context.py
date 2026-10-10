@@ -10,7 +10,15 @@ from civ_agent.protocol import JsonObject
 from civ_agent.strategy_guide import strategy_reference
 
 CORE_TOOLS = {
-    "gameplay": ("player_turn", "player_command", "memory_read", "unit_details", "map_region", "chat_send"),
+    "gameplay": (
+        "player_turn",
+        "player_command",
+        "unit_details",
+        "movement_preview",
+        "construction_details",
+        "map_region",
+        "chat_send",
+    ),
     "communication": ("chat_read", "chat_send", "memory_update"),
 }
 STARTUP_CALL_PREFIX = "startup:"

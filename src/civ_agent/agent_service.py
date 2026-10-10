@@ -1066,8 +1066,9 @@ class AgentService:
             await self._start_model_turn(record, process, message)
             stopped = asyncio.create_task(self.stop_event.wait())
             negotiating = asyncio.create_task(job.negotiation_pending.wait())
+            handed_off = asyncio.create_task(job.gameplay_ended.wait())
             try:
-                await asyncio.wait({stopped, negotiating}, return_when=asyncio.FIRST_COMPLETED)
+                await asyncio.wait({stopped, negotiating, handed_off}, return_when=asyncio.FIRST_COMPLETED)
                 # A model may finish before an accepted offer reaches the host.
                 # Let that call establish its outcome (or negotiation hold)
                 # before treating the conversation as terminal.
@@ -1076,9 +1077,15 @@ class AgentService:
             finally:
                 stopped.cancel()
                 negotiating.cancel()
-                await asyncio.gather(stopped, negotiating, return_exceptions=True)
+                handed_off.cancel()
+                await asyncio.gather(stopped, negotiating, handed_off, return_exceptions=True)
             if self.failure:
                 raise ServiceError(self.failure)
+            if job.gameplay_ended.is_set():
+                # The gateway has saved the native receipt and fenced gameplay.
+                # Stop inference before a closing message reprocesses the context.
+                await self._interrupt_model_turn(record, process, "COMPLETION_TIMEOUT")
+                return
             if not job.negotiation_pending.is_set():
                 return
             message = await self._settle_negotiation(record, job, process)
@@ -1122,10 +1129,8 @@ class AgentService:
         record["phase"] = "RUNNING"
         await self._save(record)
 
-    async def _settle_negotiation(self, record, job, process):
-        """Stop inference, finish accepted tools, then supply their actual results."""
-        record["negotiationWait"] = {"state": "suspending"}
-        await self._save(record)
+    async def _interrupt_model_turn(self, record, process, timeout_error):
+        """Stop inference while still accepting completion and usage notifications."""
         if self.completion is None:
             try:
                 await process.request("turn/interrupt", {"threadId": record["threadId"], "turnId": self.turn_id})
@@ -1137,11 +1142,17 @@ class AgentService:
             try:
                 await asyncio.wait_for(self.stop_event.wait(), MODEL_INTERRUPT_TIMEOUT)
             except TimeoutError:
-                raise ServiceError("NEGOTIATION_SUSPEND_TIMEOUT", 502) from None
+                raise ServiceError(timeout_error, 502) from None
         if self.failure:
             raise ServiceError(self.failure)
         if self.completion not in {"completed", "interrupted"}:
             raise ServiceError("CODEX_TURN_FAILED", 502)
+
+    async def _settle_negotiation(self, record, job, process):
+        """Stop inference, finish accepted tools, then supply their actual results."""
+        record["negotiationWait"] = {"state": "suspending"}
+        await self._save(record)
+        await self._interrupt_model_turn(record, process, "NEGOTIATION_SUSPEND_TIMEOUT")
         record["negotiationWait"] = {"state": "waiting"}
         await self._save(record)
         self.diagnostics.emit("gameplay_negotiation_suspended", activationId=job.id, turnId=self.turn_id)
@@ -1390,7 +1401,8 @@ class AgentService:
                 "FAILED"
                 if self.gateway.run_failure
                 else "COMPLETED"
-                if self.completion == "completed" and self.failure is None
+                if self.failure is None
+                and (self.completion == "completed" or self.completion == "interrupted" and job.gameplay_ended.is_set())
                 else "INTERRUPTED"
                 if self.failure == "INTERRUPTED" or self.completion == "interrupted" and self.failure is None
                 else "FAILED"

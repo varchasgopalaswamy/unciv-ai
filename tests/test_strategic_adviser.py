@@ -152,17 +152,6 @@ class StrategicAdviserServiceTests(AgentServiceTestCase):
         job = await self.begin_turn(turn)
         result = await self.service.gateway.call(job, "player_command", {"kind": "END_TURN"}, "end")
         assert result["kind"] == "END_TURN" and "memoryPhase" not in result
-        # Lost acknowledgements replay the committed command without preparing another review.
-        assert await self.service.gateway.call(job, "player_command", {"kind": "END_TURN"}, "end") == result
-        with pytest.raises(ValueError, match="TURN_ENDED"):
-            await self.service.gateway.call(job, "memory_update", {"changes": []}, "too-late")
-        await self.factory.instances[0].notification(
-            "turn/completed",
-            {
-                "threadId": self.service.status()["threadId"],
-                "turn": {"id": self.service.turn_id, "status": "completed"},
-            },
-        )
         record = await self.terminal()
         proof = {
             "activationId": record["activationId"],
@@ -286,7 +275,7 @@ class StrategicAdviserServiceTests(AgentServiceTestCase):
                 "destination": {"x": 3, "y": 0},
             }
             request = self.service.memory.queue(
-                job.id, "player_command", command, {}, f"receipt-{i}", {"reason": "OLD_PLAN"}
+                job.id, "player_command", command, f"receipt-{i}", {"reason": "OLD_PLAN"}
             )
             self.service.memory.receipt(request["id"], {"kind": command["kind"], "actionSummary": summary})
         await self.capture_review(job)
@@ -316,7 +305,7 @@ class StrategicAdviserServiceTests(AgentServiceTestCase):
             "terms": "Discuss borders before settling nearby",
         }
         request = memory.queue(
-            "earlier", "player_communication", {"op": "offer", **offer}, {}, "offer", {"reason": "OLD_PLAN"}
+            "earlier", "player_communication", {"op": "offer", **offer}, "offer", {"reason": "OLD_PLAN"}
         )
         memory.receipt(request["id"], {"offer": {**offer, "proposal": "pabc12", "version": 1}})
         memory.finish_job("earlier", True)
@@ -397,12 +386,16 @@ class StrategicAdviserServiceTests(AgentServiceTestCase):
     async def test_next_own_turn_waits_for_review_and_preloads_its_report(self):
         assert isinstance(self.factory, ReviewFactory)
         record = await self.handoff()
-        assert record["usageComplete"]
+        assert record["phase"] == "COMPLETED" and record["usageReported"]
         await self.start_review()
         pending = self.service.reviews.store.pending()
         assert pending is not None
         inputs = json.loads(pending["inputs"])
-        assert "old strategy" not in advice_prompt(inputs).user
+        prompt = advice_prompt(inputs)
+        assert "old strategy" not in prompt.user
+        definitions = json.loads(prompt.instructions.split("Read tool definitions:\n", 1)[1])
+        assert {tool["name"] for tool in definitions} == {"mcp__civ__" + tool["name"] for tool in inputs["catalogue"]}
+        assert "mcp__civ__policy_details" in {tool["name"] for tool in definitions}
         assert len(self.factory.instances) == 2
         reviewer = next(job for job in self.service.gateway.jobs.values() if job.review_inputs is not None)
         before = self.factory.native_reads

@@ -151,6 +151,12 @@ class FakeCodex:
                     "turn/completed", {"threadId": self.thread_id, "turn": {"id": turn_id, "status": "completed"}}
                 )
             return {"turn": {"id": turn_id}}
+        if method == "turn/interrupt":
+            await self.notification(
+                "turn/completed",
+                {"threadId": self.thread_id, "turn": {"id": payload["turnId"], "status": "interrupted"}},
+            )
+            return {}
         raise AssertionError(method)
 
     async def close(self):

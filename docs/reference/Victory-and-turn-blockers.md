@@ -15,9 +15,9 @@ full-game or expansion-feature acceptance claim.
 | Read election results | `player_turn.victory.votingResults`: native threshold, winner and permitted ballot rows | `ACKNOWLEDGE_DIPLOMATIC_RESULTS`, no target or selection |
 
 The compact turn overview retains the entire ballot/results decision and flags
-units that can assemble a part. Assembly requires a unit detail read; voting
-and acknowledgement use the full decision already delivered in the overview.
-Assembly and voting require strategic intent, like other consequential choices.
+units that can assemble a part. Unit details describe assembly consequences;
+voting and acknowledgement use the full decision delivered in the overview.
+Assembly and voting accept optional private intent annotations.
 All four commands require a freshly observed player revision. They use the
 ordinary durable command receipts and checkpoint transaction.
 

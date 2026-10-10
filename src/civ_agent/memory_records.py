@@ -215,7 +215,7 @@ class MemorySearch(BoundaryModel):
 
 
 class InitiativeDecision(BoundaryModel):
-    initiative: Annotated[int, Field(ge=1, le=2)] = Field(description="One-based initiative number in that review.")
+    initiative: Annotated[int, Field(ge=1)] = Field(description="One-based initiative number in that review.")
     decision: Literal["acted", "deferred", "rejected"]
     reason: Annotated[str, Field(min_length=1, max_length=600, pattern=r"\S")]
 
@@ -238,45 +238,6 @@ class Intent(BoundaryModel):
     )
     expectedOutcome: str = Field(default="", max_length=1000)
     assumptions: Annotated[list[Assumption], Field(max_length=20)] = Field(default_factory=list)
-
-
-REQUIRED_COMMANDS = {
-    "SET_RESEARCH_QUEUE",
-    "CHOOSE_FREE_TECHNOLOGY",
-    "ADOPT_POLICY",
-    "CHOOSE_FREE_GREAT_PERSON",
-    "FOUND_CITY",
-    "QUEUE_CONSTRUCTION",
-    "REMOVE_CONSTRUCTION",
-    "CLEAR_CONSTRUCTION_QUEUE",
-    "REORDER_CONSTRUCTION",
-    "BUY_CONSTRUCTION",
-    "BUY_TILE",
-    "SELL_BUILDING",
-    "UPGRADE_UNIT",
-    "DISBAND_UNIT",
-    "ACTIVATE_GREAT_PERSON",
-    "ADD_SPACESHIP_PART",
-    "SET_UNIT_DESTINATION",
-    "REBASE_UNIT",
-    "PARADROP",
-    "AIR_SWEEP",
-    "NUCLEAR_STRIKE",
-    "CREATE_WATER_IMPROVEMENT",
-    "CAST_DIPLOMATIC_VOTE",
-    "ABSTAIN_DIPLOMATIC_VOTE",
-    "DECLARE_WAR",
-    "CITY_STATE_ACTION",
-    "GIFT_UNIT",
-    "ATTACK",
-    "CITY_ATTACK",
-    "PROMOTE_UNIT",
-    "RESOLVE_CAPTURED_CITY",
-    "MANAGE_CAPTURED_CITY",
-    "RESPOND_FRIENDSHIP",
-    "MOVE_CONSTRUCTION",
-}
-REQUIRED_TOOLS = {"trade_offer", "trade_decide", "friendship_offer", "commitment_offer", "commitment_decide"}
 
 
 def public_record(key, record):

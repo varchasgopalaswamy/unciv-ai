@@ -200,7 +200,6 @@ def test_agreement_ending_flags_dependencies_and_relevant_plans_without_promotin
         "game",
         "player_command",
         {"kind": "BUY_CONSTRUCTION"},
-        {},
         "old-strategy",
         {"strategy": dependent, "reason": "Defend Rome"},
     )["id"]
@@ -310,7 +309,6 @@ def test_lifecycle_event_invalidates_older_list_even_if_full_read_is_current(tmp
         "game",
         "player_command",
         {"kind": "BUY_CONSTRUCTION"},
-        {},
         "historical-intent",
         {
             "reason": "Spend expected income",

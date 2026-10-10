@@ -127,7 +127,7 @@ undecided review can recommend information gathering or reversible investments.
 and linked receipts, retaining uncertainty about causes and missing evidence.
 The schema validates structure and plan references, not a preferred strategy.
 Enabled victory rules remain readable; exhaustive `victoryOutlooks` and the
-overlapping short-/mid-/long-term sections are removed. Runtime format 10 requires
+overlapping short-/mid-/long-term sections are removed. Runtime format 11 requires
 new stores; read-only dashboard rendering supports retained baseline reports.
 
 Both gameplay and reviews receive `outputSummary` from the same owned-position
@@ -164,7 +164,8 @@ a reason. The service supplies the date of the delivered report and validates
 the initiative number. Deferral explains when or under what conditions
 to revisit it. These private decisions appear in action history, cost no additional
 model call, and are stripped before native dispatch. They do not require following
-the review, contacting another player or writing a notebook entry.
+the review, contacting another player or writing a notebook entry. References to
+unavailable initiative numbers produce feedback without blocking END_TURN.
 
 Both kinds of player job receive the latest report and use initiative participants
 to select relevant private notes within the existing memory budget. Private advice
@@ -215,10 +216,13 @@ state. A restored pending review must finish before the shared phase is released
 
 ## Mechanical completion and telemetry
 
-After `END_TURN`, gameplay tools are fenced. The conversation finishes immediately;
-the service allows up to 60 seconds for provider completion, final usage and
-process shutdown. This is not a second thinking or writing budget. The scheduler
-can start the next player while that completion drains.
+After a successful `END_TURN`, the gateway saves the receipt and fences gameplay
+tools. The service immediately requests inference interruption instead of waiting
+for a closing model response. It accepts final usage notifications, confirms
+process shutdown and reconciles provider usage records. The committed game turn
+is completed even when the provider conversation ends as interrupted. Usage
+remains incomplete if interruption leaves no authoritative accounting record.
+The scheduler can start the next player while this accounting finishes.
 
 `finish_handoff` accepts an activation-specific native handoff proof.
 `begin_finalize` performs durable completion/accounting asynchronously, with

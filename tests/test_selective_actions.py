@@ -13,7 +13,7 @@ from civ_agent.civilization_state import CivilizationState
 from civ_agent.entity_sections import CityDetails, UnitDetails
 from civ_agent.game_commands import command_arguments, command_error
 from civ_agent.model_view import model_view
-from civ_agent.observations import DetailQuery, detail_satisfies, overview, project_detail, required_detail
+from civ_agent.observations import DetailQuery, overview, project_detail, required_detail
 from civ_agent.proposal_gateway import ProposalGateway
 from civ_agent.protocol import JsonObject
 from civ_agent.service_io import ServiceIO
@@ -265,34 +265,6 @@ def test_unavailable_founding_still_offers_inspection_without_exposing_full_deta
     assert "movement_preview" in detail["settlementInstruction"]
 
 
-@pytest.mark.parametrize(
-    "kind,section",
-    [
-        ("DISBAND_UNIT", "economy"),
-        ("GIFT_UNIT", "abilities"),
-        ("FOUND_CITY", "settlement"),
-        ("PROMOTE_UNIT", "promotions"),
-    ],
-)
-def test_movement_cannot_stand_in_for_consequential_inspections(kind, section):
-    needed = required_detail({"kind": kind, "target": "unit1"})
-    assert needed is not None
-    assert not detail_satisfies(query("unit_details", "unit1", ["movement"]), needed)
-    assert not detail_satisfies(query("unit_details", "different-unit", [section]), needed)
-    assert detail_satisfies(query("unit_details", "unit1", [section]), needed)
-    assert detail_satisfies(query("unit_details", "unit1", ["all"]), needed)
-
-
-def test_production_alone_does_not_authorize_a_purchase_or_unread_construction():
-    needed = required_detail({"kind": "BUY_CONSTRUCTION", "target": "city1", "selection": "Market"})
-    assert needed is not None
-    assert not detail_satisfies(query("city_details", "city1", ["production"]), needed)
-    assert detail_satisfies(query("city_details", "city1", ["production", "purchases"]), needed)
-    assert not detail_satisfies(
-        DetailQuery(tool="construction_details", arguments={"target": "city1", "names": ["Granary"]}), needed
-    )
-
-
 def test_sections_are_canonical_and_invalid_selections_are_rejected():
     assert query("unit_details", "unit1", ["movement", "combat"]) == query(
         "unit_details", "unit1", ["combat", "movement", "combat"]
@@ -432,16 +404,14 @@ def test_preview_commands_require_exact_native_preview(mission, kind):
     assert value["command"] == {"kind": kind, "target": "unit1", "destination": {"x": 5, "y": 1}}
     needed = required_detail(value["command"])
     assert needed is not None
-    assert detail_satisfies(DetailQuery(tool=name, arguments=arguments), needed)
-    assert not detail_satisfies(
-        DetailQuery(tool=name, arguments={**arguments, "destination": {"x": 5, "y": 2}}), needed
-    )
+    assert DetailQuery(tool=name, arguments=arguments) == needed
+    assert DetailQuery(tool=name, arguments={**arguments, "destination": {"x": 5, "y": 2}}) != needed
     unavailable = {"available": False}
     add_decision_commands(name, unavailable, arguments)
     assert "command" not in unavailable
 
 
-def test_only_delivered_sections_invalidate_assumptions_and_satisfy_actions(tmp_path):
+def test_only_delivered_sections_invalidate_assumptions_without_gating_actions(tmp_path):
     async def run():
         memory, io, host = CivilizationState(tmp_path / "private", "Rome"), ServiceIO(), Host()
         host.view = options_snapshot()
@@ -465,9 +435,6 @@ def test_only_delivered_sections_invalidate_assumptions_and_satisfy_actions(tmp_
                 job=job.id,
             )
             command = {"kind": "DISBAND_UNIT", "target": "unit1", "intent": {"reason": "No longer needed"}}
-            rejected = await gateway.call(job, "player_command", command, "uninspected")
-            assert rejected["error"] == "DETAIL_REQUIRED" and not host.executed
-            assert rejected["recovery"]["reads"][0]["arguments"]["sections"] == ["economy"]
             host.view["map"]["units"][0]["economy"]["disband"]["gold"] = 9
             host.revision = "changed-economy"
             await gateway.call(job, "player_turn", {}, "refresh")
@@ -477,10 +444,10 @@ def test_only_delivered_sections_invalidate_assumptions_and_satisfy_actions(tmp_
             await gateway.call(job, "player_turn", {}, "changed")
             assert current(memory, key)["needsReview"]
             assert not job.details_read  # Internal reprojection never counts as a delivered read.
-            await gateway.call(job, "unit_details", {"target": "unit1", "sections": ["economy"]}, "economy")
-            assert (await gateway.call(job, "player_command", command, "inspected"))["done"]
-            missing = await gateway.call(job, "player_command", command, "stale-copy")
-            assert missing["error"] == "DETAIL_REQUIRED" and len(host.executed) == 1
+            receipt = await gateway.call(job, "player_command", command, "uninspected")
+            assert receipt["done"] and not host.view["map"]["units"]
+            assert await gateway.call(job, "player_command", command, "uninspected") == receipt
+            assert len(host.executed) == 1
         finally:
             await gateway.close(job, True)
             await io.close()

@@ -23,6 +23,7 @@ internal data class CommunicationRequest(
     val usage: ModelUsage? = null,
     val telemetry: JobTelemetry? = null,
     val to: String? = null,
+    val recipients: List<String>? = null,
     val text: String? = null,
     val mentions: List<String> = emptyList(),
     val proposal: String? = null,

@@ -200,6 +200,8 @@ class FakeHost:
                                 }
                                 if owner.behaviors and owner.behaviors[0] == "many_events":
                                     result["scenario"] = {"testManyEvents": "true"}
+                                if owner.behaviors and owner.behaviors[0] == "slow_report":
+                                    result["scenario"] = {"testSlowCompletion": "true"}
                             elif name == "player_command":
                                 behavior = owner.behaviors.pop(0) if owner.behaviors else "complete"
                                 owner.plays.append(
@@ -1102,13 +1104,13 @@ class SchedulerTest(unittest.TestCase):
         with self.host.changed:
             self.assertTrue(self.host.changed.wait_for(lambda: bool(self.host.activations), timeout=5))
             self.host.agent_failures["Greece"] = {
-                "error": "REPEATED_STALE_ASSUMPTIONS",
+                "error": "STATE_STORE_FAILED",
                 "diagnosticId": "failure-1",
                 "job": "chat",
             }
         stdout, stderr = process.communicate(timeout=12)
         self.assertEqual(process.returncode, 2, stdout + stderr)
-        self.assertIn("Greece: REPEATED_STALE_ASSUMPTIONS", stdout)
+        self.assertIn("Greece: STATE_STORE_FAILED", stdout)
         self.assertEqual(self.host.handoff, 0)
         self.assertEqual(self.saved()["status"], "needs_inspection")
         self.assertEqual(self.host.phase, "PAUSED")

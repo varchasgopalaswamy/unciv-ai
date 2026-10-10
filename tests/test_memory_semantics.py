@@ -27,7 +27,7 @@ def test_retired_plan_and_unproven_belief_do_not_gate_commands(tmp_path):
     belief = create(memory, {"type": "belief", "claim": "We could still win", "uncertainty": "high"})
     assert current(memory, belief)["sources"] == []
     queued = memory.queue(
-        "game", "player_command", {"kind": "ATTACK"}, {}, "attack", {"strategy": key, "reason": "Defend Rome"}
+        "game", "player_command", {"kind": "ATTACK"}, "attack", {"strategy": key, "reason": "Defend Rome"}
     )
     assert queued["id"] and memory.pending()
 

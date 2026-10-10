@@ -114,11 +114,11 @@ def test_completed_communication_coalesces_later_replies_until_the_next_turn(tmp
 def test_outgoing_identity_exact_retry_and_crash_recovery(tmp_path):
     memory = state(tmp_path)
     memory.start_job("job", "gameplay", {}, game_turn=0)
-    request = memory.queue("job", "player_command", {"kind": "MOVE_UNIT", "target": "unit1"}, {}, "call1")
-    retry = memory.queue("job", "player_command", {"kind": "MOVE_UNIT", "target": "unit1"}, {}, "call1")
+    request = memory.queue("job", "player_command", {"kind": "MOVE_UNIT", "target": "unit1"}, "call1")
+    retry = memory.queue("job", "player_command", {"kind": "MOVE_UNIT", "target": "unit1"}, "call1")
     assert request["id"] == retry["id"]
     with pytest.raises(StateConflict):
-        memory.queue("job", "player_command", {"kind": "END_TURN"}, {}, "call1")
+        memory.queue("job", "player_command", {"kind": "END_TURN"}, "call1")
     restarted = CivilizationState(tmp_path / "private", "Rome")
     assert restarted.pending()[0]["id"] == request["id"]
     with pytest.raises(StateConflict):
@@ -149,10 +149,10 @@ def test_round_restore_fences_jobs_and_regenerates_projections(tmp_path):
     assert "Develop peacefully" in (workspace / "notes/mem1.md").read_text()
     assert (workspace / "chat.jsonl").read_text() == ""
     with pytest.raises(StateConflict):
-        memory.queue("job", "player_command", {}, {}, "late")
+        memory.queue("job", "player_command", {}, "late")
     memory.start_job("new", "gameplay", {})
     assert memory.snapshot("gameplay")["epoch"] == "g2"
-    assert json.loads(memory.queue("new", "chat", {"text": "Hello"}, {}, "c")["payload"])["text"] == "Hello"
+    assert json.loads(memory.queue("new", "chat", {"text": "Hello"}, "c")["payload"])["text"] == "Hello"
 
 
 def test_history_search_and_newly_read_events_survive_job_completion(tmp_path):

@@ -2,6 +2,7 @@ package uncivai
 
 import com.badlogic.gdx.scenes.scene2d.Actor
 import com.badlogic.gdx.scenes.scene2d.ui.Cell
+import com.badlogic.gdx.scenes.scene2d.ui.CheckBox
 import com.badlogic.gdx.scenes.scene2d.ui.Label
 import com.badlogic.gdx.scenes.scene2d.ui.ScrollPane
 import com.badlogic.gdx.scenes.scene2d.ui.SelectBox
@@ -13,6 +14,7 @@ import com.unciv.ui.components.extensions.isEnabled
 import com.unciv.ui.components.extensions.toTextButton
 import com.unciv.ui.components.input.onClick
 import com.unciv.ui.popups.ConfirmPopup
+import com.unciv.ui.popups.Popup
 import com.unciv.ui.screens.basescreen.BaseScreen
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -26,13 +28,37 @@ import java.util.UUID
 /** Local, unsent input belongs to its conversation and is discarded on a turn rewind. */
 internal class DesktopDiplomacyDrafts {
     var selectedCivilization: String? = null
+    var selectedChat = DesktopChatConversation.Public
     var tab = "Chat"
     val conversations = mutableMapOf<String?, DesktopConversationDraft>()
+    val chats = mutableMapOf<DesktopChatConversation, DesktopChatDraft>()
 }
 
-internal data class DesktopConversationDraft(
+/** Public chat stays distinct even when a private audience includes every player. */
+@ConsistentCopyVisibility
+internal data class DesktopChatConversation private constructor(val participants: List<String>?) {
+    companion object {
+        val Public = DesktopChatConversation(null)
+        fun private(participants: Collection<String>) = DesktopChatConversation(participants.distinct().sorted())
+        fun fromMessage(message: JsonObject) = if (message.flag("public")) Public else private(message.array("participants").map { (it as JsonPrimitive).content })
+    }
+
+    fun label(viewer: String): String = when {
+        participants == null -> "Public"
+        participants.size == 2 -> participants.single { it != viewer }
+        else -> "Group · ${participants.joinToString(", ")}"
+    }
+
+    fun matches(message: JsonObject) = this == fromMessage(message)
+}
+
+internal data class DesktopChatDraft(
     val message: String,
     val cursor: Int,
+    val focused: Boolean,
+)
+
+internal data class DesktopConversationDraft(
     val promise: String,
     val conditions: String,
     val expiry: String,
@@ -49,6 +75,9 @@ internal class DesktopDiplomacyScreen(
     internal val isCurrent get() = openedEpoch == session.epoch
     var selectedCivilization: String? = initialCivilization ?: session.diplomacyDrafts.selectedCivilization
         private set
+    internal var selectedChat = initialCivilization?.let { DesktopChatConversation.private(listOf(session.viewingCivilization, it)) }
+        ?: session.diplomacyDrafts.selectedChat
+        private set
     var changed = true
     private var unreadDirty = true
     private var state = JsonObject(emptyMap())
@@ -56,6 +85,8 @@ internal class DesktopDiplomacyScreen(
     private val content = Table()
     private val status = Label("", skin)
     private val contacts = SelectBox<String>(skin).apply { name = "contacts" }
+    private var chatChoices = emptyList<DesktopChatConversation>()
+    private val newGroup = "New group".toTextButton().apply { onClick { newGroup() } }
     private var updatingContacts = false
     private val message = TextArea("", skin).apply { name = "chat-message" }
     private val composer = Table()
@@ -77,17 +108,17 @@ internal class DesktopDiplomacyScreen(
 
     internal fun refreshed(): DesktopDiplomacyScreen {
         saveDraft()
-        return DesktopDiplomacyScreen(session, selectedCivilization)
+        return DesktopDiplomacyScreen(session, null)
     }
 
     private fun saveDraft() {
         if (!isCurrent) return
         session.diplomacyDrafts.apply {
             selectedCivilization = this@DesktopDiplomacyScreen.selectedCivilization
+            selectedChat = this@DesktopDiplomacyScreen.selectedChat
             tab = this@DesktopDiplomacyScreen.tab
+            chats[selectedChat] = DesktopChatDraft(message.text, message.cursorPosition, stage.keyboardFocus === message)
             conversations[selectedCivilization] = DesktopConversationDraft(
-                message.text,
-                message.cursorPosition,
                 promise.text,
                 conditions.text,
                 expiry.text,
@@ -98,9 +129,11 @@ internal class DesktopDiplomacyScreen(
     }
 
     private fun restoreDraft() {
+        val chat = session.diplomacyDrafts.chats[selectedChat]
+        message.text = chat?.message ?: ""
+        message.cursorPosition = chat?.cursor ?: 0
+        if (chat?.focused == true) stage.keyboardFocus = message
         val draft = session.diplomacyDrafts.conversations[selectedCivilization]
-        message.text = draft?.message ?: ""
-        message.cursorPosition = draft?.cursor ?: 0
         promise.text = draft?.promise ?: ""
         conditions.text = draft?.conditions ?: ""
         expiry.text = draft?.expiry ?: ""
@@ -121,12 +154,14 @@ internal class DesktopDiplomacyScreen(
         root.add("Back to map".toTextButton().apply { onClick { game.popScreen() } }).right().row()
         status.setWrap(true)
         root.add(status).colspan(2).growX().row()
-        root.add(contacts).colspan(2).growX().row()
+        root.add(contacts).growX()
+        root.add(newGroup).row()
         val tabs = Table()
         for (name in listOf("Chat", "Trades", "Promises", "Agreements")) {
             tabs.add(
                 name.toTextButton().apply {
                     onClick {
+                        saveDraft()
                         tab = name
                         rebuild()
                     }
@@ -148,7 +183,14 @@ internal class DesktopDiplomacyScreen(
             override fun changed(event: ChangeEvent?, actor: Actor?) {
                 if (updatingContacts) return
                 saveDraft()
-                selectedCivilization = contacts.selected.takeUnless { it == "Public" }
+                if (tab == "Chat") {
+                    selectedChat = chatChoices[contacts.selectedIndex]
+                    if (selectedChat.participants == null || selectedChat.participants?.size == 2) {
+                        selectedCivilization = selectedChat.participants?.single { it != session.viewingCivilization }
+                    }
+                } else {
+                    selectedCivilization = contacts.selected.takeUnless { it == "All players" }
+                }
                 restoreDraft()
                 rebuild()
             }
@@ -180,30 +222,75 @@ internal class DesktopDiplomacyScreen(
         changed = false
         act(clearNotice = false) {
             state = request("state")
-            val names = listOf("Public") + state.array("channels").mapNotNull { (it as? JsonPrimitive)?.content }
-                .filter { it != session.viewingCivilization }
-            val previous = selectedCivilization ?: "Public"
-            if (contacts.items.toList() != names) {
-                updatingContacts = true
-                try {
-                    contacts.setItems(*names.toTypedArray())
-                    contacts.selected = previous.takeIf { it in names } ?: "Public"
-                } finally {
-                    updatingContacts = false
-                }
-                val selected = contacts.selected.takeUnless { it == "Public" }
-                if (selected != selectedCivilization) {
-                    saveDraft()
-                    selectedCivilization = selected
-                    restoreDraft()
-                }
-            }
             val page = request("read", "cursor" to cursor, "limit" to 100)
             events.addAll(page.array("events").map { it as JsonObject })
             cursor = page.number("nextCursor") ?: cursor
             rebuild()
         }
         changed = false
+    }
+
+    private fun eligibleRecipients() = state.array("channels").map { (it as JsonPrimitive).content }.filter { it != session.viewingCivilization }
+
+    private fun updateContacts() {
+        val recipients = eligibleRecipients()
+        val messages = events.filter { it.text("kind") == "message" }.map { it.getValue("body") as JsonObject } +
+            state.array("queuedMessages").filterIsInstance<JsonObject>()
+        val groups = (messages.map(DesktopChatConversation::fromMessage) + session.diplomacyDrafts.chats.keys + selectedChat)
+            .filter { (it.participants?.size ?: 0) > 2 }.distinct().sortedBy { it.label(session.viewingCivilization) }
+        chatChoices = listOf(DesktopChatConversation.Public) + recipients.map { DesktopChatConversation.private(listOf(session.viewingCivilization, it)) } + groups
+        val names = if (tab == "Chat") chatChoices.map { it.label(session.viewingCivilization) } else listOf("All players") + recipients
+        updatingContacts = true
+        try {
+            if (contacts.items.toList() != names) contacts.setItems(*names.toTypedArray())
+            contacts.selected = if (tab == "Chat") selectedChat.label(session.viewingCivilization) else selectedCivilization ?: "All players"
+        } finally {
+            updatingContacts = false
+        }
+        newGroup.isVisible = tab == "Chat"
+    }
+
+    private fun newGroup() {
+        val popup = Popup(this)
+        val selected = linkedSetOf<String>()
+        val preview = Label("", skin).apply {
+            setWrap(true)
+            name = "group-participants"
+        }
+        popup.addGoodSizedLabel("Choose private recipients").row()
+        popup.add(preview).width(420f).pad(10f).row()
+        val open = "Open conversation".toTextButton().apply {
+            onClick {
+                if (selected.isEmpty()) return@onClick
+                saveDraft()
+                selectedChat = DesktopChatConversation.private(selected + session.viewingCivilization)
+                restoreDraft()
+                popup.close()
+                this@DesktopDiplomacyScreen.stage.keyboardFocus = message
+                rebuild()
+            }
+        }
+        fun updatePreview() {
+            preview.setText("Private · Participants: ${(selected + session.viewingCivilization).sorted().joinToString(", ")}")
+            open.isEnabled = selected.isNotEmpty()
+        }
+        for (recipient in eligibleRecipients()) {
+            popup.add(
+                CheckBox(recipient, skin).apply {
+                    name = "group-recipient-$recipient"
+                    addListener(object : ChangeListener() {
+                        override fun changed(event: ChangeEvent?, actor: Actor?) {
+                            if (isChecked) selected.add(recipient) else selected.remove(recipient)
+                            updatePreview()
+                        }
+                    })
+                },
+            ).left().row()
+        }
+        popup.add(open).pad(10f).row()
+        popup.addCloseButton("Cancel")
+        updatePreview()
+        popup.open()
     }
 
     private fun line(value: String, table: Table = content) {
@@ -224,6 +311,7 @@ internal class DesktopDiplomacyScreen(
     private fun decision(text: String, enabled: Boolean = true, action: () -> Unit) = button(text, enabled && communicationAvailable, action)
 
     private fun rebuild() {
+        updateContacts()
         composer.isVisible = tab == "Chat"
         composerCell.height(if (composer.isVisible) 90f else 0f)
         content.clear()
@@ -249,8 +337,8 @@ internal class DesktopDiplomacyScreen(
                     "Agreements" -> event.text("kind") == "agreement"
                     else -> false
                 }
-                matchesTab && if (tab == "Chat" && selectedCivilization == null) {
-                    body.flag("public")
+                matchesTab && if (tab == "Chat") {
+                    selectedChat.matches(body)
                 } else {
                     selectedCivilization == null || (
                         !body.flag("public") &&
@@ -266,28 +354,25 @@ internal class DesktopDiplomacyScreen(
         require(communicationAvailable || canQueueMessage) { "Communication is paused. You can send this message when play resumes." }
         require(message.text.isNotBlank()) { "Write a message first." }
         val fields = mutableListOf<Pair<String, Any?>>("text" to message.text)
-        selectedCivilization?.let { fields.add("to" to it) }
-        if (selectedCivilization == null) fields.add("mentions" to contacts.items.toList().filter { it != "Public" })
+        val recipients = selectedChat.participants?.filter { it != session.viewingCivilization }
+        when {
+            recipients == null -> fields.add("mentions" to eligibleRecipients())
+            recipients.size == 1 -> fields.add("to" to recipients.single())
+            else -> fields.add("recipients" to recipients)
+        }
         request("send", *fields.toTypedArray(), mutation = true)
         message.text = ""
     }
 
     private fun chat() {
+        line(selectedChat.participants?.let { "Private · Participants: ${it.joinToString(", ")}" } ?: "Public · All players")
         val visible = events.filter { event ->
             if (event.text("kind") != "message") return@filter false
             val body = event["body"] as JsonObject
-            if (selectedCivilization == null) {
-                body.flag("public")
-            } else {
-                !body.flag("public") && body.array("participants").any { (it as? JsonPrimitive)?.content == selectedCivilization }
-            }
+            selectedChat.matches(body)
         }
         val queued = state.array("queuedMessages").filterIsInstance<JsonObject>().filter { body ->
-            if (selectedCivilization == null) {
-                body.flag("public")
-            } else {
-                !body.flag("public") && body.array("participants").any { (it as? JsonPrimitive)?.content == selectedCivilization }
-            }
+            selectedChat.matches(body)
         }
         if (visible.isEmpty() && queued.isEmpty()) line("No messages in this conversation.")
         visible.forEach { event ->

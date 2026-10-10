@@ -74,12 +74,12 @@ def test_explicit_exports_preserve_unchanged_files_and_recover_failed_writes(tmp
 
 def test_explicit_export_combines_attempts(tmp_path):
     memory = setup(tmp_path)
-    memory.queue("game", "player_command", {"kind": "END_TURN"}, {}, "first")
+    memory.queue("game", "player_command", {"kind": "END_TURN"}, "first")
     memory.finish_job("game", False)
     workspace = tmp_path / "workspace"
     memory.export(workspace)
     memory.start_job("retry", "gameplay", {}, game_turn=4)
-    memory.queue("retry", "player_command", {"kind": "END_TURN"}, {}, "second")
+    memory.queue("retry", "player_command", {"kind": "END_TURN"}, "second")
     memory.export(workspace)
     receipts = (workspace / "turn_4/receipts.jsonl").read_text().splitlines()
     assert len(receipts) == 2

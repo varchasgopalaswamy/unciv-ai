@@ -302,7 +302,6 @@ def test_summaries_survive_interruptions_preserve_reason_and_receipt_truth(tmp_p
         "game",
         "player_command",
         {"kind": "QUEUE_CONSTRUCTION", "target": "c1", "selection": "Granary"},
-        {},
         "build",
         {"strategy": campaign, "reason": "Grow Rome"},
     )
@@ -314,7 +313,6 @@ def test_summaries_survive_interruptions_preserve_reason_and_receipt_truth(tmp_p
         "game",
         "player_command",
         {"kind": "MOVE_UNIT", "target": "u1", "destination": "far"},
-        {},
         "move",
         {"reason": "Explore the coast"},
     )
@@ -349,7 +347,7 @@ def test_summaries_survive_interruptions_preserve_reason_and_receipt_truth(tmp_p
 def test_archive_can_render_during_dispatch_before_receipt_arrives(tmp_path, uncertain):
     memory = setup(tmp_path)
     request = memory.queue(
-        "game", "player_command", {"kind": "FOUND_CITY", "target": "u1"}, {}, "found", {"reason": "Found the capital"}
+        "game", "player_command", {"kind": "FOUND_CITY", "target": "u1"}, "found", {"reason": "Found the capital"}
     )
     if uncertain:
         memory.uncertain(request["id"])
@@ -371,7 +369,6 @@ def test_unconfirmed_social_offer_is_rendered_as_a_request(tmp_path, rejected):
         "game",
         "player_communication",
         {"op": "offer", "kind": "peace", "participants": ["Rome", "France"], "terms": "Discuss borders"},
-        {},
         "offer",
     )
     if rejected:
@@ -385,7 +382,7 @@ def test_unconfirmed_social_offer_is_rendered_as_a_request(tmp_path, rejected):
 
 def test_native_success_without_an_effect_summary_remains_an_error(tmp_path):
     memory = setup(tmp_path)
-    request = memory.queue("game", "player_command", {"kind": "FOUND_CITY", "target": "u1"}, {}, "found")
+    request = memory.queue("game", "player_command", {"kind": "FOUND_CITY", "target": "u1"}, "found")
     memory.receipt(request["id"], {"kind": "FOUND_CITY"})
     for read in (memory.history, memory.summary):
         with pytest.raises(KeyError, match="actionSummary"):
@@ -462,8 +459,8 @@ def test_intent_is_recorded_and_retirement_does_not_gate_dispatch(tmp_path):
             await gateway.call(game, "player_turn", {}, "observe")
             await gateway.call(game, "construction_details", {"target": "city1", "names": ["Granary"]}, "inspect")
             action = {"kind": "QUEUE_CONSTRUCTION", "target": "city1", "selection": "Granary"}
-            missing = await gateway.call(game, "player_command", action, "missing")
-            assert missing["error"] == "INTENT_REQUIRED" and not host.executed
+            unannotated = await gateway.call(game, "player_command", action, "missing")
+            assert unannotated["done"] and len(host.executed) == 1
             created = await gateway.call(
                 game, "memory_update", {"changes": [{"op": "create", "content": strategy()}]}, "strategy"
             )
@@ -480,10 +477,10 @@ def test_intent_is_recorded_and_retirement_does_not_gate_dispatch(tmp_path):
             result = await gateway.call(
                 game, "player_command", {**action, "intent": {"strategy": key, "reason": "Defend Rome"}}, "act"
             )
-            assert result["done"] and len(host.executed) == 1
-            assert "intent" not in host.executed[0]
-            assert memory.summary(0)["actions"][0]["reason"] == "Defend Rome"
-            assert await gateway.call(game, "player_command", action, "missing") == missing
+            assert result["done"] and len(host.executed) == 2
+            assert "intent" not in host.executed[-1]
+            assert memory.summary(0)["actions"][-1]["reason"] == "Defend Rome"
+            assert await gateway.call(game, "player_command", action, "missing") == unannotated
         finally:
             await io.close()
 
@@ -497,7 +494,6 @@ def test_retirement_after_approval_cannot_undo_an_inflight_command(tmp_path):
         "game",
         "player_command",
         {"kind": "ATTACK", "target": "u1"},
-        {},
         "attack",
         {"strategy": key, "reason": "Defend Rome"},
     )
@@ -510,7 +506,6 @@ def test_retirement_after_approval_cannot_undo_an_inflight_command(tmp_path):
         "game",
         "player_command",
         {"kind": "ATTACK", "target": "u1"},
-        {},
         "another",
         {"strategy": key, "reason": "Defend Rome"},
     )["id"]

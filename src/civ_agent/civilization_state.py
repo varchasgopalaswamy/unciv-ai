@@ -35,7 +35,6 @@ from civ_agent.protocol import JsonObject
 from civ_agent.review_store import latest_advice
 from civ_agent.schemas import validate
 from civ_agent.sqlite_database import sqlite_engine
-from civ_agent.stale_recovery import conflict_details, record_conflicts, recovery_reads
 from civ_agent.tls import private_directory, write_private_json
 from civ_agent.turn_changes import turn_basis, turn_changes
 
@@ -52,15 +51,6 @@ class StateConflict(ValueError):
 
 class MemoryFormatError(StateConflict):
     """An unsupported store needs a fresh match, not an implicit migration."""
-
-
-class StaleAssumptions(StateConflict):
-    """A local pre-dispatch rejection; the affected evidence must be read again."""
-
-    def __init__(self, keys: list[str], details: list[JsonObject] | None = None):
-        super().__init__("STALE_ASSUMPTIONS")
-        self.keys = sorted(keys)
-        self.details = details or []
 
 
 class CivilizationState:
@@ -273,7 +263,7 @@ class CivilizationState:
         if self._meta(db, "paused", False):
             raise StateConflict("STATE_PAUSED")
         if job is not None:
-            self._validate(db, job, {})
+            self._validate(db, job)
         self._advance_turn(db, body.get("turn", body.get("context", {}).get("turn")))
         key = "observation:" + key
         prior = RecordStore(db).all(keys=[key]).get(key)
@@ -323,28 +313,6 @@ class CivilizationState:
                     db, game_turn if game_turn is not None else self._meta(db, "gameTurn")
                 ),
                 "records": records,
-                # Action freshness needs the dispatch boundary, not the bodies
-                # of every cached observation (nor a claim they were delivered).
-                "validationVersions": {
-                    key: version
-                    for key, version in db.execute(
-                        select(tables.heads).where(
-                            or_(
-                                tables.heads.c.key.in_(
-                                    {
-                                        "observation:turn",
-                                        "observation:economy",
-                                        "observation:research",
-                                        "observation:policy",
-                                    }
-                                ),
-                                tables.heads.c.key.startswith("observation:unit/"),
-                                tables.heads.c.key.startswith("observation:city/"),
-                                tables.heads.c.key.startswith("observation:diplomacy/"),
-                            )
-                        )
-                    )
-                },
                 "contributionIds": [key for key, r in records.items() if r["category"] == "contribution"],
                 "events": events,
                 "cursor": max(cursor, high),
@@ -627,7 +595,7 @@ class CivilizationState:
             "cityStates", []
         ):
             scopes["diplomacy/" + relation["civilizationId"]] = {"turn": body.get("turn"), "relation": relation}
-        self._validate(db, job, {})
+        self._validate(db, job)
         self._advance_turn(db, body.get("turn"))
         snapshot = load_snapshot(
             db, db.execute(select(tables.jobs.c.snapshot).where(tables.jobs.c.id == job)).scalar_one()
@@ -809,7 +777,7 @@ class CivilizationState:
     def select_startup_context(self, job: str, topics: set[str]) -> JsonObject:
         """Choose from the dispatch snapshot using the opening player-visible facts."""
         with self.transaction() as db:
-            self._validate(db, job, {})
+            self._validate(db, job)
             snapshot = load_snapshot(
                 db, db.execute(select(tables.jobs.c.snapshot).where(tables.jobs.c.id == job)).scalar_one()
             )
@@ -915,16 +883,12 @@ class CivilizationState:
                         max(snapshot["gameTurn"], self._meta(db, "lastCompletedCommunicationTurn", -1)),
                     )
 
-    def _validate(self, db, job, dependencies):
+    def _validate(self, db, job):
         if self._meta(db, "paused", False):
             raise StateConflict("STATE_PAUSED")
         row = db.execute(select(tables.jobs).where(tables.jobs.c.id == job)).mappings().fetchone()
         if row is None or row["status"] != "RUNNING" or row["epoch"] != self._meta(db, "epoch"):
             raise StateConflict("STALE_JOB")
-        current = RecordStore(db).all(keys=dependencies) if dependencies else {}
-        changed = [key for key, version in dependencies.items() if current.get(key, {}).get("version", 0) != version]
-        if changed:
-            raise StaleAssumptions(changed, conflict_details(db, job, changed, dependencies))
 
     @staticmethod
     def _check_run_failure(db):
@@ -940,10 +904,6 @@ class CivilizationState:
         """Explicit operator reconnect starts a new attempt; keep diagnostics and old calls."""
         with self.transaction() as db:
             self._set(db, "runFailure", None)
-
-    def conflict_recovery(self, keys, name, arguments):
-        with self.transaction() as db:
-            return recovery_reads(db, keys, name, arguments)
 
     def export_failure(self):
         failure = self.run_failure()
@@ -995,7 +955,7 @@ class CivilizationState:
         changes = validate(MemoryUpdate, {"changes": changes}).model_dump()["changes"]
         with self.transaction() as db:
             self._check_run_failure(db)
-            self._validate(db, job, {})
+            self._validate(db, job)
             if call_id is not None:
                 prior = db.execute(
                     select(tables.calls.c.result).where(tables.calls.c.job == job, tables.calls.c.id == call_id)
@@ -1020,7 +980,7 @@ class CivilizationState:
 
     def search_memory(self, job, arguments):
         with self.transaction() as db:
-            self._validate(db, job, {})
+            self._validate(db, job)
             snapshot = load_snapshot(
                 db, db.execute(select(tables.jobs.c.snapshot).where(tables.jobs.c.id == job)).scalar_one()
             )
@@ -1053,7 +1013,6 @@ class CivilizationState:
         job: str,
         transport: str,
         payload: JsonObject,
-        dependencies: JsonObject,
         call_id: str,
         intent: JsonObject | None = None,
         initiative_decisions: list[JsonObject] | None = None,
@@ -1062,7 +1021,7 @@ class CivilizationState:
         request_id = "r" + hashlib.sha256((job + ":" + call_id).encode()).hexdigest()[:24]
         with self.transaction() as db:
             self._check_run_failure(db)
-            self._validate(db, job, dependencies)
+            self._validate(db, job)
             previous = db.execute(select(tables.outbox).where(tables.outbox.c.id == request_id)).mappings().fetchone()
             if previous:
                 if previous["transport"] != transport or json.loads(previous["payload"]) != {
@@ -1083,13 +1042,15 @@ class CivilizationState:
             initiatives = []
             if initiative_decisions:
                 advice = snapshot.get("strategicAdvice")
-                if payload.get("kind") != "END_TURN" or not advice:
-                    raise ValueError("INITIATIVE_REVIEW_REQUIRED")
-                initiatives = [{**entry, "reviewTurn": advice["asOfTurn"]} for entry in initiative_decisions]
+                available = len(advice["review"]["diplomacy"]["initiatives"]) if advice else 0
+                for entry in initiative_decisions:
+                    if payload.get("kind") == "END_TURN" and advice and 1 <= entry["initiative"] <= available:
+                        initiatives.append({**entry, "reviewTurn": advice["asOfTurn"]})
+                    else:
+                        pinned.setdefault("unverifiedInitiatives", []).append(entry["initiative"])
             if intent is not None:
                 intent = validate(Intent, intent).model_dump()
-                # Intent is an audit annotation. Only command dependencies above
-                # participate in freshness/authority checks.
+                # Intent is an audit annotation; the host validates the action.
                 key = intent.get("strategy")
                 chosen = intent.get("decision")
                 if chosen:
@@ -1141,7 +1102,6 @@ class CivilizationState:
                     job=job,
                     transport=transport,
                     payload=encode(body),
-                    dependencies=encode(dependencies),
                     result=None,
                     decision=decision,
                 )
@@ -1152,7 +1112,6 @@ class CivilizationState:
                 "job": job,
                 "transport": transport,
                 "payload": encode(body),
-                "dependencies": encode(dependencies),
                 "result": None,
                 "decision": decision,
                 **intent_feedback(pinned),
@@ -1263,7 +1222,7 @@ class CivilizationState:
     def call_receipt(self, job: str, call_id: str):
         request_id = "r" + hashlib.sha256((job + ":" + call_id).encode()).hexdigest()[:24]
         with self.transaction() as db:
-            self._validate(db, job, {})
+            self._validate(db, job)
             row = db.execute(
                 select(tables.outbox.c.result).where(tables.outbox.c.id == request_id, tables.outbox.c.job == job)
             ).fetchone()
@@ -1356,7 +1315,7 @@ class CivilizationState:
         return counts
 
     def _call_record(self, db, job, id, name, arguments, result=None):
-        self._validate(db, job, {})
+        self._validate(db, job)
         prior = (
             db.execute(select(tables.calls).where(tables.calls.c.job == job, tables.calls.c.id == id))
             .mappings()
@@ -1375,7 +1334,6 @@ class CivilizationState:
             .prefix_with("OR IGNORE")
         )
         if result is not None:
-            result = record_conflicts(db, job, id, name, arguments, result)
             db.execute(
                 tables.calls.update()
                 .where(tables.calls.c.job == job, tables.calls.c.id == id)
@@ -1386,7 +1344,7 @@ class CivilizationState:
     def delivered_records(self, job, keys):
         """Copy the job's delivered versions into an adapter cache without another read."""
         with self.transaction() as db:
-            self._validate(db, job, {})
+            self._validate(db, job)
             snapshot = load_snapshot(
                 db, db.execute(select(tables.jobs.c.snapshot).where(tables.jobs.c.id == job)).scalar_one()
             )
@@ -1394,7 +1352,7 @@ class CivilizationState:
 
     def refresh_memory(self, job, keys, cursor=None, include_retired=False, startup=False):
         with self.transaction() as db:
-            self._validate(db, job, {})
+            self._validate(db, job)
             row = db.execute(select(tables.jobs.c.snapshot).where(tables.jobs.c.id == job)).one()
             snapshot = load_snapshot(db, row[0])
             if startup:
@@ -1447,7 +1405,7 @@ class CivilizationState:
             raise ValueError("INVALID_ARGUMENT")
         with self.transaction() as db:
             if job is not None:
-                self._validate(db, job, {})
+                self._validate(db, job)
             rows = db.execute(
                 select(tables.outbox.c.decision, tables.outbox.c.transport)
                 .select_from(tables.live_requests.join(tables.jobs, tables.outbox.c.job == tables.jobs.c.id))

@@ -480,9 +480,9 @@ class SchedulerServiceTest(unittest.TestCase):
         self.assertTrue(all(record["phase"] == "COMPLETED" for record in records))
         self.assertEqual(result.stdout.count("Settled and chose research."), 0)
         self.assertTrue(all(record["completionReason"] == "native_handoff" for record in records))
-        self.assertTrue(all(record["usageComplete"] for record in records))
+        self.assertTrue(all(record["usage"]["input_tokens"] == 10 for record in records))
         self.assertTrue(all("finalizationElapsedMs" in record for record in records))
-        self.assertEqual(0, sum(row["method"] == "turn/interrupt" for row in self.records()))
+        self.assertGreaterEqual(sum(row["method"] == "turn/interrupt" for row in self.records()), 1)
         calls = [row["params"] for row in self.records() if row["method"] == "test/tool"]
         greece_end = next(
             index
@@ -560,13 +560,17 @@ class SchedulerServiceTest(unittest.TestCase):
         self.assertEqual(len(starts), 9)
         self.assertEqual(2, sum("outputSchema" in r["params"] for r in starts))
         interruptions = [r for r in records if r["method"] == "turn/interrupt"]
-        self.assertEqual(len(interruptions), 1)
-        thread = interruptions[0]["params"]["threadId"]
+        thread = next(
+            r["params"]["threadId"]
+            for r in starts
+            if r["params"]["input"][0]["text"].startswith("The negotiation has finished.")
+        )
         self.assertEqual(sum(r["params"]["threadId"] == thread for r in starts), 2)
+        self.assertTrue(any(r["params"]["threadId"] == thread for r in interruptions))
         continuations = [r for r in records if r["method"] == "test/negotiation_result"]
         self.assertEqual(len(continuations), 1)
         self.assertEqual(continuations[0]["params"]["result"]["trade"]["version"], 2)
         opening = next(r for r in self.gameplay_records("Rome") if r["gameTurn"] == 0)
         self.assertEqual(opening["usage"]["input_tokens"], 20)
-        self.assertTrue(opening["usageComplete"])
+        self.assertTrue(opening["usageReported"])
         self.assertGreater(opening["negotiationWaitSeconds"], 0)

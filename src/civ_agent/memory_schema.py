@@ -2,7 +2,7 @@
 
 from sqlalchemy import Column, ForeignKey, Index, Integer, MetaData, Table, Text, and_, literal_column, select
 
-FORMAT_VERSION = 10
+FORMAT_VERSION = 11
 
 metadata = MetaData()
 meta = Table(
@@ -46,7 +46,6 @@ outbox = Table(
     Column("job", Text, nullable=False),
     Column("transport", Text, nullable=False),
     Column("payload", Text, nullable=False),
-    Column("dependencies", Text, nullable=False),
     Column("result", Text),
     Column("decision", Text, nullable=False),
 )

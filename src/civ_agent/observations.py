@@ -27,8 +27,6 @@ from civ_agent.construction_estimates import (
     queue_progress,
 )
 from civ_agent.entity_sections import (
-    CITY_COMMAND_SECTIONS,
-    UNIT_COMMAND_SECTIONS,
     CityDetails,
     EntityDetails,
     UnitDetails,
@@ -760,6 +758,7 @@ def project_detail(snapshot: JsonObject, query: DetailQuery) -> JsonObject:
 
 
 def required_detail(command: JsonObject) -> DetailQuery | None:
+    """Exact native previews remain required; routine detail reads are optional."""
     kind, target = command["kind"], command.get("target")
     if kind in {"REBASE_UNIT", "PARADROP", "AIR_SWEEP", "NUCLEAR_STRIKE"}:
         return DetailQuery(
@@ -777,36 +776,4 @@ def required_detail(command: JsonObject) -> DetailQuery | None:
             tool="player_inspect",
             arguments={"subject": "ROAD", "target": target, "destination": command["destination"]},
         )
-    if kind in {"DECLARE_WAR", "CITY_STATE_ACTION"}:
-        return DetailQuery(tool="player_details", arguments={"section": "diplomacy"})
-    if (
-        kind in {"ACKNOWLEDGE_ALERT", "RESPOND_FRIENDSHIP", "RESPOND_CITY_STATE_ALERT", "RESOLVE_CAPTURED_CITY"}
-        or target is None
-    ):
-        return None  # Full decision content is always in the overview.
-    if kind == "QUEUE_CONSTRUCTION":
-        return DetailQuery(tool="construction_details", arguments={"target": target, "names": [command["selection"]]})
-    unit = kind in UNIT_COMMAND_SECTIONS
-    section = (UNIT_COMMAND_SECTIONS if unit else CITY_COMMAND_SECTIONS).get(kind, "all")
-    return DetailQuery(
-        tool="unit_details" if unit else "city_details", arguments={"target": target, "sections": [section]}
-    )
-
-
-def detail_satisfies(read: DetailQuery, required: DetailQuery, command: JsonObject | None = None) -> bool:
-    if command and command["kind"] == "BUY_CONSTRUCTION" and read.tool == "construction_details":
-        return read.arguments.get("target") == command["target"] and command["selection"] in read.arguments.get(
-            "names", []
-        )
-    if required.tool == "construction_details" and read.arguments.get("target") == required.arguments["target"]:
-        sections = set(read.arguments.get("sections", ["all"]))
-        return (read.tool == "city_details" and ("all" in sections or {"production", "purchases"} <= sections)) or (
-            read.tool == "construction_details"
-            and set(required.arguments["names"]) <= set(read.arguments.get("names", []))
-        )
-    if read.tool == required.tool and read.tool in {"unit_details", "city_details"}:
-        sections = set(read.arguments.get("sections", ["all"]))
-        return read.arguments.get("target") == required.arguments.get("target") and (
-            "all" in sections or set(required.arguments.get("sections", ["all"])) <= sections
-        )
-    return read == required
+    return None

@@ -59,7 +59,7 @@ def add_overview_commands(value: JsonObject) -> None:
                                 "selection": option["name"],
                             },
                         },
-                        "instruction": "Read chat_send's definition and this option's consequences; add your own text and intent.",
+                        "instruction": "Read chat_send's definition and this option's consequences; add your own text and optional intent.",
                     }
     if value.get("canEndTurn") is True:
         value["endTurn"] = {

@@ -21,7 +21,7 @@ def tool_discovery_instructions(purpose: Literal["gameplay", "communication"]) -
         "decisions; reuse definitions already read. Skip the index for known names. To explore, print names only:\n"
         'text(ALL_TOOLS.filter(t => t.name.startsWith("mcp__civ__")).map(t => t.name));\n'
         "Keyword searches also return names only. Do not preload the catalogue.\n\n"
-        'For tools accepting intent, use {reason:"why this action"}; strategy is an optional historical memory ID. '
+        'For optional intent annotations, use {reason:"why this action"}; strategy is an optional historical memory ID. '
         "Intent records your reasoning. Follow memory_update's record and ownership rules. "
         "No memory write is needed when nothing useful changed. "
         "Follow error recovery.reads and instructions; stop if an action's outcome is uncertain. "

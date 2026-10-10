@@ -81,7 +81,7 @@ def test_receipt_survives_interruption_between_host_commit_and_mcp_response_cach
             await gateway.call(job, "player_turn", {}, "read")
             args = {"kind": "MOVE_UNIT", "target": "unit1", "destination": {"x": 1, "y": 0}}
             memory.call("job", "move", "player_command", args)
-            queued = memory.queue("job", "player_command", {**args, "epoch": "g1", "revision": "rev1"}, {}, "move")
+            queued = memory.queue("job", "player_command", {**args, "epoch": "g1", "revision": "rev1"}, "move")
             memory.receipt(queued["id"], await host.tool("player_command", json.loads(queued["payload"])))
             job.observation = None
             assert (await gateway.call(job, "player_command", args, "move"))["done"]

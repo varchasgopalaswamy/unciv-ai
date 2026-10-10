@@ -338,14 +338,14 @@ def test_successive_actions_use_updates_and_only_changed_inspections_expire(tmp_
                     ],
                 )["changes"][0]
                 assert assessment["accepted"] and assessment["warnings"]
-            missing = await gateway.call(job, "player_command", MOVE, "unread-move")
-            assert missing["error"] == "DETAIL_REQUIRED"
+            next_move = await gateway.call(job, "player_command", MOVE, "unread-move")
+            assert next_move["done"]
             second = await gateway.call(job, "player_command", {**MOVE, "target": "unit2"}, "other-move")
-            assert second["done"] and len(host.executed) == 2
+            assert second["done"] and len(host.executed) == 3
             latest = copy.deepcopy(job.delivered_overview)
             reads = host.reads
             assert await gateway.call(job, "player_command", MOVE, "move") == receipt
-            assert job.delivered_overview == latest and host.reads == reads and len(host.executed) == 2
+            assert job.delivered_overview == latest and host.reads == reads and len(host.executed) == 3
 
     asyncio.run(run())
 
@@ -643,7 +643,7 @@ def test_receipt_without_response_or_baseline_recovers_as_full_without_reexecuti
         async with session(tmp_path) as (gateway, job, host, memory):
             await gateway.call(job, "player_turn", {}, "start")
             memory.call(job.id, "move", "player_command", MOVE)
-            queued = memory.queue(job.id, "player_command", {**MOVE, "epoch": "g1", "revision": "rev1"}, {}, "move")
+            queued = memory.queue(job.id, "player_command", {**MOVE, "epoch": "g1", "revision": "rev1"}, "move")
             memory.receipt(queued["id"], await host.tool("player_command", json.loads(queued["payload"])))
             gateway.forget_observation(job)
             result = await gateway.call(job, "player_command", MOVE, "move")

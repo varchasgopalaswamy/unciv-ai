@@ -53,12 +53,12 @@ Attempts and paid usage survive rewind. Completion atomically saves advice and r
 - A lost action response is reconciled against its durable receipt first.
 - A failed strategic reviewer can retry within the shared review phase. Gameplay
   and communication wait until all reports are ready.
-- Repeated state conflicts, broken invariants, persistence failures and exhausted
+- Broken invariants, persistence failures and exhausted
   review retries stop for inspection; they are not automatic gameplay retry loops.
 - Operator pauses and budget limits stop work until explicit resume.
 
 This replaces historical round checkpoints and the manual round-rollback command.
-The memory store uses format 10 and scheduler state uses format 5. Older matches
+The memory store uses format 11 and scheduler state uses format 5. Older matches
 require their original code; there is no migration. Start a fresh match with this
 version. Native checkpoint behavior is unchanged.
 Replaying work spends additional tokens and time and may produce different choices.

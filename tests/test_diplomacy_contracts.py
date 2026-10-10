@@ -53,8 +53,12 @@ class ContractHost(Host):
                     "message": {
                         "message": f"m{len(self.writes):05d}",
                         "author": "Rome",
-                        "participants": ["Rome", args["to"]] if "to" in args else ["Rome", "Greece", "France"],
-                        "public": "to" not in args,
+                        "participants": sorted(["Rome", *args["recipients"]])
+                        if "recipients" in args
+                        else ["Rome", args["to"]]
+                        if "to" in args
+                        else ["Rome", "Greece", "France"],
+                        "public": "to" not in args and "recipients" not in args,
                         "text": args["text"],
                         "turn": 0,
                     }
@@ -89,7 +93,8 @@ async def opened(tmp_path, purpose="communication"):
 
 
 @pytest.mark.parametrize("decision", ["accept", "withdraw", "reconsider"])
-def test_commitment_templates_obey_native_schema_and_keep_intent_private(tmp_path, decision):
+@pytest.mark.parametrize("with_intent", [False, True])
+def test_commitment_templates_obey_native_schema_and_keep_intent_private(tmp_path, decision, with_intent):
     async def run():
         async with opened(tmp_path) as (gateway, job, host):
             if decision != "accept":
@@ -100,7 +105,9 @@ def test_commitment_templates_obey_native_schema_and_keep_intent_private(tmp_pat
             assert offer["proposalId"] == "pabc12" and "proposal" not in offer
             assert public_result(read) == read
             response = next(r for r in offer["responses"] if r["arguments"]["decision"] == decision)
-            args = {**response["arguments"], "intent": {"reason": "PRIVATE leverage assessment"}}
+            args = {**response["arguments"]}
+            if with_intent:
+                args["intent"] = {"reason": "PRIVATE leverage assessment"}
             if decision != "accept":
                 assert response["requiredFields"] == ["publicReason"]
                 args["publicReason"] = "Our circumstances changed."
@@ -110,7 +117,9 @@ def test_commitment_templates_obey_native_schema_and_keep_intent_private(tmp_pat
             assert sent["op"] == decision and sent["proposal"] == "pabc12" and sent["version"] == 1
             assert "reason" not in sent if decision == "accept" else sent["reason"] == args["publicReason"]
             assert "PRIVATE" not in json.dumps(sent) and "intent" not in sent
-            assert gateway.memory.summary(job=job.id)["actions"][-1]["reason"] == "PRIVATE leverage assessment"
+            assert gateway.memory.summary(job=job.id)["actions"][-1]["reason"] == (
+                "PRIVATE leverage assessment" if with_intent else ""
+            )
 
     asyncio.run(run())
 
@@ -199,14 +208,14 @@ def test_plain_chat_recipients_and_native_actions_are_distinct(tmp_path):
     asyncio.run(run())
 
 
-@pytest.mark.parametrize("target", ["Greece", None])
-def test_concurrent_replies_reconsider_only_unseen_messages_without_extra_reads(tmp_path, target):
+@pytest.mark.parametrize("address", [{"to": "Greece"}, {}, {"recipients": ["Greece", "France"]}])
+def test_concurrent_replies_reconsider_only_unseen_messages_without_extra_reads(tmp_path, address):
     async def run():
         async with opened(tmp_path) as (gateway, job, host):
             other = await gateway.open("other", "gameplay", "g1", host, {}, 0)
             await gateway.call(job, "chat_read", {}, "read")
             await gateway.call(other, "chat_read", {}, "read")
-            args = {"text": "We agree", **({"to": target} if target else {})}
+            args = {"text": "We agree", **address}
             first, second = await asyncio.gather(
                 gateway.call(job, "chat_send", args, "reply"), gateway.call(other, "chat_send", args, "reply")
             )
@@ -221,7 +230,7 @@ def test_concurrent_replies_reconsider_only_unseen_messages_without_extra_reads(
             current = await gateway.call(job, "chat_read", {}, "fresh-read")
             assert len(current["recentSentMessages"]) == 2
             assert "error" not in await gateway.call(job, "chat_send", {**args, "text": "Understood"}, "informed")
-            if target:
+            if address:
                 # A reply to Greece does not invalidate a France conversation.
                 assert "error" not in await gateway.call(
                     other, "chat_send", {"to": "France", "text": "Hello"}, "other-player"
@@ -230,7 +239,8 @@ def test_concurrent_replies_reconsider_only_unseen_messages_without_extra_reads(
     asyncio.run(run())
 
 
-def test_initiative_numbers_are_checked_against_delivered_report(tmp_path):
+@pytest.mark.parametrize("unknown", [2, 99])
+def test_unverified_initiatives_are_reported_without_blocking_end_turn(tmp_path, unknown):
     async def run():
         async with opened(tmp_path, "gameplay") as (gateway, job, host):
             await gateway.call(job, "player_turn", {}, "read")
@@ -238,7 +248,7 @@ def test_initiative_numbers_are_checked_against_delivered_report(tmp_path):
             absent = await gateway.call(
                 job, "player_command", {"kind": "END_TURN", "initiativeDecisions": [entry]}, "no-report"
             )
-            assert absent["error"] == "INVALID_INITIATIVE" and absent["availableInitiatives"] == []
+            assert absent["done"] and absent["intentFeedback"]["unverifiedInitiatives"] == [1]
             store = ReviewStore(gateway.memory)
             store.prepare("opening", {"turn": 0, "observation": {"turn": 0}}, {}, 60)
             store.complete("opening", assessment())
@@ -248,11 +258,22 @@ def test_initiative_numbers_are_checked_against_delivered_report(tmp_path):
             invalid = await gateway.call(
                 new,
                 "player_command",
-                {"kind": "END_TURN", "initiativeDecisions": [{**entry, "initiative": 2}]},
+                {"kind": "END_TURN", "initiativeDecisions": [{**entry, "initiative": unknown}]},
                 "unknown",
             )
-            assert invalid["error"] == "INVALID_INITIATIVE" and invalid["availableInitiatives"] == [1]
-            assert not host.executed
+            assert invalid["done"] and invalid["intentFeedback"]["unverifiedInitiatives"] == [unknown]
+            assert len(host.executed) == 2
+            assert not gateway.memory.summary(0)["actions"][-1].get("initiativeDecisions")
+            assert (
+                await gateway.call(
+                    new,
+                    "player_command",
+                    {"kind": "END_TURN", "initiativeDecisions": [{**entry, "initiative": unknown}]},
+                    "unknown",
+                )
+                == invalid
+            )
+            assert len(host.executed) == 2
 
     asyncio.run(run())
 

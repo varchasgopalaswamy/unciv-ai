@@ -135,7 +135,8 @@ ADVISOR_INSTRUCTIONS = (
     "and proposed terms. "
     "Human and agent players can negotiate in chat; built-in AI responds only to native diplomatic actions and trades.\n\n"
     "The supplied observations and read-only tools describe the frozen position. "
-    "Use tools.<name>(arguments) in functions.exec to inspect additional details; discover tool schemas as needed. "
+    "All tools available to this review are defined below. Call them directly with tools.<name>(arguments) in "
+    "functions.exec; no tool discovery is needed. "
     "Return one complete JSON report matching the supplied schema, preferably under 6000 characters."
 )
 
@@ -145,18 +146,12 @@ def advice_prompt(inputs, *, strategy_guide=False, civilization_guide=False):
     from civ_agent.startup_context import StartupPrompt, encoded, reference_sections, tool_definitions
     from civ_agent.strategy_guide import strategy_reference
 
-    core = tool_definitions(
-        [
-            tool
-            for tool in inputs["catalogue"]
-            if tool["name"] in {"research_details", "construction_details", "victory_progress", "map_region"}
-        ]
-    )
+    definitions = tool_definitions(inputs["catalogue"])
     reference = strategy_reference() if strategy_guide else ""
     civ_reference = civilization_reference(inputs["civilization"]) if civilization_guide else ""
     sections = reference_sections(reference, civ_reference)
     return StartupPrompt(
-        ADVISOR_INSTRUCTIONS + "\nRead tool definitions:\n" + encoded(core),
+        ADVISOR_INSTRUCTIONS + "\nRead tool definitions:\n" + encoded(definitions),
         ("\n\n".join(sections) + "\n\n" if sections else "")
         + (
             "Opening position before the first move, turn "

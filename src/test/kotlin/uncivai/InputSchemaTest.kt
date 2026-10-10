@@ -32,6 +32,10 @@ class InputSchemaTest {
             obj("op" to "read", "epoch" to "g1", "waitSeconds" to 26),
             obj("op" to "state", "epoch" to "g1", "waitSeconds" to 1),
             obj("op" to "send", "epoch" to "g1", "requestId" to "r1", "text" to sentinel, "to" to true),
+            obj("op" to "send", "epoch" to "g1", "requestId" to "r1", "text" to sentinel, "recipients" to emptyList<String>()),
+            obj("op" to "send", "epoch" to "g1", "requestId" to "r1", "text" to sentinel, "recipients" to listOf("Greece", "Greece")),
+            obj("op" to "send", "epoch" to "g1", "requestId" to "r1", "text" to sentinel, "recipients" to listOf("Greece"), "to" to "France"),
+            obj("op" to "send", "epoch" to "g1", "requestId" to "r1", "text" to sentinel, "recipients" to listOf("Greece"), "nativeAction" to obj("kind" to "DENOUNCE", "target" to "Greece", "revision" to "v1")),
             obj("op" to "send", "epoch" to "g1", "requestId" to "r1", "text" to " "),
             obj("op" to "send", "epoch" to "g1", "requestId" to "r1", "text" to sentinel.repeat(500)),
             obj("op" to "send", "epoch" to "g1", "requestId" to "r1", "text" to sentinel, "unknown" to sentinel),
@@ -53,6 +57,7 @@ class InputSchemaTest {
         val valid = listOf(
             obj("op" to "read", "epoch" to "g1", "cursor" to 0, "limit" to 100, "waitSeconds" to 25),
             obj("op" to "send", "epoch" to "g1", "requestId" to "r1", "text" to "Hello", "to" to "Greece"),
+            obj("op" to "send", "epoch" to "g1", "requestId" to "r1", "text" to "Hello", "recipients" to listOf("Greece", "France")),
             obj("op" to "trade_decide", "epoch" to "g1", "requestId" to "r2", "proposal" to "d1", "version" to 1, "decision" to "decline"),
             obj("op" to "job_release", "epoch" to "g1", "job" to "j1", "usage" to obj("input_tokens" to 2147483648L)),
         )

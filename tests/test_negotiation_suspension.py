@@ -142,10 +142,10 @@ class NegotiationSuspensionTests(AgentServiceTestCase):
         assert "mode" not in result["trade"]
         assert [row["op"] for row in host.writes] == ["trade_offer", "trade_decide"]
         await gateway.invoke(job, "player_command", {"kind": "END_TURN"}, "end")
-        await self.complete_model()
         status = await self.terminal()
         assert status["phase"] == "COMPLETED" and status["completionReason"] == "native_handoff"
-        assert status["usageComplete"] and status["negotiationWaitSeconds"] > 0
+        assert self.service.completion == "interrupted" and status["negotiationWaitSeconds"] > 0
+        assert [name for name, _ in self.models.calls].count("turn/interrupt") == 2
         assert not job.pending_calls and not job.negotiation_calls
         path = self.service.history.path(job.id) / "events.jsonl"
         events = [json.loads(line) for line in path.read_text().splitlines()]

@@ -267,7 +267,7 @@ def test_memory_heartbeat_and_lost_async_finalization_ack(monkeypatch):
     assert "start" not in calls and "finalize" not in calls
 
 
-@pytest.mark.parametrize("error", ["DURABLE_RECORD_FAILED", "REPEATED_STALE_ASSUMPTIONS", "STOP_UNCONFIRMED"])
+@pytest.mark.parametrize("error", ["DURABLE_RECORD_FAILED", "STATE_STORE_FAILED", "STOP_UNCONFIRMED"])
 def test_resume_does_not_acknowledge_internal_memory_failures(tmp_path, error):
     from civ_agent.turn_finalization import finish_turn
 

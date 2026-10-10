@@ -8,6 +8,11 @@ import java.util.concurrent.TimeUnit
 
 class CommunicationIntegrationTest {
     @Test
+    fun `private groups validate audiences preserve privacy and survive queued restart and rewind`() {
+        runProbe("uncivai.GroupChatProbe")
+    }
+
+    @Test
     fun `human review chat queues privately survives restart and delivers once after review`() {
         runProbe("uncivai.HumanChatReviewProbe")
     }

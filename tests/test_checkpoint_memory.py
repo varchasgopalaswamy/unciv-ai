@@ -175,7 +175,7 @@ def test_service_restore_preserves_history_and_rejects_a_waiting_old_job_write(t
 def test_restore_keeps_captured_memory_and_receipts_and_marks_unfinished_reflection(tmp_path, complete_after_capture):
     memory = setup(tmp_path)
     memory.call("game", "end", "player_command", {"kind": "END_TURN"})
-    request = memory.queue("game", "player_command", {"kind": "END_TURN"}, {}, "end")
+    request = memory.queue("game", "player_command", {"kind": "END_TURN"}, "end")
     memory.receipt(request["id"], {"kind": "END_TURN", "isYourTurn": False, "actionSummary": "Ended turn."})
     key = create(memory, {"type": "note", "text": "Committed before capture"})
     saved = tmp_path / "round.json"

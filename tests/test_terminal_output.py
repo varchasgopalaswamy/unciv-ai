@@ -186,7 +186,11 @@ def test_gateway_action_event_requires_a_receipt_and_does_not_repeat_replays(tmp
     from tests.test_agent_service import StartupHost
 
     class ReceiptHost(StartupHost):
+        reject_command = True
+
         async def tool(self, name, args):
+            if name == "player_command" and self.reject_command:
+                return {"error": "OPTION_UNAVAILABLE", "applied": False}
             result: JsonObject = await super().tool(name, args)
             if name == "player_turn" and self.executed:
                 result["turnReview"]["actions"] = [{"kind": "FOUND_CITY", "description": "Founded Rome at (1, 2)."}]
@@ -205,12 +209,12 @@ def test_gateway_action_event_requires_a_receipt_and_does_not_repeat_replays(tmp
         host.view["map"]["units"][0]["canFoundCity"] = True
         try:
             job = await gateway.open("job", "gameplay", "g1", host, {}, 0)
-            view = await gateway.call(job, "player_turn", {}, "view")
-            settlement = view["units"][0]["inspections"]["FOUND_CITY"]
+            await gateway.call(job, "player_turn", {}, "view")
             action = {"kind": "FOUND_CITY", "target": "unit1", "intent": {"reason": "Settle here"}}
-            # Missing detail must not generate a successful action message.
-            assert "error" in await gateway.call(job, "player_command", action, "rejected")
-            await gateway.call(job, settlement["tool"], settlement["arguments"], "settlement")
+            # A host rejection must not generate a successful action message.
+            rejected = await gateway.call(job, "player_command", action, "rejected")
+            assert rejected["error"] == "OPTION_UNAVAILABLE"
+            host.reject_command = False
             result = await gateway.call(job, "player_command", action, "accepted")
             assert "error" not in result
             assert result == await gateway.call(job, "player_command", action, "accepted")

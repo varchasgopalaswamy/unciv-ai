@@ -16,7 +16,7 @@ def parser(*, add_help=True):
     result = argparse.ArgumentParser(add_help=add_help)
     result.add_argument("civilization")
     result.add_argument("--state-dir", type=Path, required=True)
-    result.add_argument("--to", help="Private recipient; omit for public chat")
+    result.add_argument("--to", action="append", help="Private recipient; repeat for a group, omit for public chat")
     result.add_argument("--text")
     result.add_argument("--native-action", choices=("DENOUNCE", "ISSUE_DEMAND", "RESPOND_DIPLOMACY"))
     result.add_argument("--target", help="Civilization for a native action, or an owned diplomacy alert handle")
@@ -47,7 +47,14 @@ async def perform(args):
                 raise ValueError("--text is required")
             fields.update(op="send", text=args.text, mentions=args.mention)
             if args.to:
-                fields["to"] = args.to
+                if len(set(args.to)) != len(args.to) or name in args.to:
+                    raise ValueError("List each recipient once, excluding yourself")
+                if len(args.to) == 1:
+                    fields["to"] = args.to[0]
+                else:
+                    if getattr(args, "native_action", None):
+                        raise ValueError("Group messages cannot include native actions")
+                    fields["recipients"] = args.to
             if getattr(args, "native_action", None):
                 if not args.target:
                     raise ValueError("--target is required for native actions")

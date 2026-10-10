@@ -108,6 +108,28 @@ declines or withdraws them. The custom trade editor has been removed. Built-in A
 and city-state diplomacy keep their native queued controls. Public/private messages and social promises use the
 same player-bound communication API; no operator data is loaded into the panel.
 
+In Chat, **New group** opens recipient checkboxes and an explicit participant
+preview. **Open conversation** reuses any conversation with that exact participant
+set. Group labels list their participants; replies go to everyone listed. Incoming
+and queued group messages and local group drafts appear in the conversation list.
+Public chat remains a separate entry even if a private group includes everyone.
+History, unread status and drafts belong to the exact conversation. Group selection
+is specific to Chat; Trades, Promises and Agreements keep their individual-player
+or all-player selection.
+
+Repeat `--to` to send a private group message from the CLI. One `--to` remains a
+direct message; omitting it sends public chat:
+
+```sh
+civ-agent chat send Rome --state-dir /tmp/mixed-diplomacy \
+  --to Greece --to France --text 'Shall we discuss our borders?'
+```
+
+To reply to all, repeat `--to` for each received participant other than yourself.
+France would reply with `--to Greece --to Rome`. Recipient order does not matter.
+Changing the participant set opens a separate conversation without transferring
+earlier history. Group text cannot carry `--native-action`.
+
 The existing `civ-agent chat` and `civ-agent trade` commands remain useful for
 scripted scenarios. An explicit native action prints the current
 options/consequences and asks the human to confirm it:
