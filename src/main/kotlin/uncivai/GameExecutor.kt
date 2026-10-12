@@ -15,6 +15,7 @@ import uncivai.player.gameFinished
 import uncivai.player.observation
 import java.nio.file.Path
 import java.security.SecureRandom
+import java.util.concurrent.CompletableFuture
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
@@ -117,49 +118,100 @@ class GameExecutor internal constructor(
         communicationState.observedMajorWars.addAll(current)
         communicationState.observedWarTurn = game.turns
     }
-    private var closed = false
+
+    @Volatile private var closed = false
     private var paused = false
     internal var scheduled = false
     internal var handoff = 0L
     internal var scheduler: OperatorControl? = null
     private var checkpointStore: CheckpointStore? = null
     internal val durableRecovery get() = checkpointStore != null
+    private val accountingWaits = ThreadLocal<MutableList<CompletableFuture<Unit>>>()
+
+    @Volatile internal var currentOperation: Pair<String, Long>? = null
+        private set
+    internal val isClosed get() = closed
 
     @Volatile
     internal var mutationFailure: Throwable? = null
         private set
 
+    private fun <T> accountingBarrier(block: () -> T): T {
+        if (accountingWaits.get() != null) return block()
+        val waits = mutableListOf<CompletableFuture<Unit>>()
+        accountingWaits.set(waits)
+        try {
+            return block()
+        } finally {
+            accountingWaits.remove()
+            // Enqueue under the game lock; wait outside it. The single writer preserves order.
+            try {
+                waits.forEach { it.join() }
+            } catch (failure: Exception) {
+                haltAfterMutation(failure)
+            }
+        }
+    }
+
     internal fun <T> accessGame(block: (GameInfo) -> T): T = dispatch.call {
-        synchronized(lifecycleLock) {
-            checkAvailable()
-            val outermost = !Thread.holdsLock(game)
-            synchronized(game) {
-                if (outermost) {
-                    scheduler?.expireIfNeeded()
-                    communication.trades.expireIfNeeded()
-                    val nativeChanged = communication.trades.nativeBridge.synchronize(game)
-                    if (communication.agreements.synchronize(game) || nativeChanged) commitCheckpoint()
+        accountingBarrier {
+            val started = System.nanoTime()
+            synchronized(lifecycleLock) {
+                checkAvailable()
+                val outermost = !Thread.holdsLock(game)
+                synchronized(game) {
+                    if (outermost) {
+                        HostTimings.record("game.lock_wait", System.nanoTime() - started)
+                        currentOperation = "game" to System.nanoTime()
+                    }
+                    try {
+                        if (outermost) {
+                            scheduler?.expireIfNeeded()
+                            communication.trades.expireIfNeeded()
+                            val nativeChanged = communication.trades.nativeBridge.synchronize(game)
+                            if (communication.agreements.synchronize(game) || nativeChanged) commitCheckpoint()
+                        }
+                        block(game)
+                    } finally {
+                        if (outermost) {
+                            currentOperation?.let { HostTimings.record("game.execute", System.nanoTime() - it.second) }
+                            currentOperation = null
+                        }
+                    }
                 }
-                block(game)
             }
         }
     }
 
     /** Operator diagnostics remain available after an uncertain mutation; player queries do not. */
     internal fun <T> accessOperatorGame(block: (GameInfo) -> T): T = dispatch.call {
-        synchronized(lifecycleLock) {
-            if (closed || !isAvailable()) throw RuntimeClosedException()
-            val outermost = !Thread.holdsLock(game)
-            synchronized(game) {
-                if (outermost) {
-                    scheduler?.expireIfNeeded()
-                    if (mutationFailure == null) {
-                        communication.trades.expireIfNeeded()
-                        val nativeChanged = communication.trades.nativeBridge.synchronize(game)
-                        if (communication.agreements.synchronize(game) || nativeChanged) commitCheckpoint()
+        accountingBarrier {
+            val started = System.nanoTime()
+            synchronized(lifecycleLock) {
+                if (closed || !isAvailable()) throw RuntimeClosedException()
+                val outermost = !Thread.holdsLock(game)
+                synchronized(game) {
+                    if (outermost) {
+                        HostTimings.record("game.lock_wait", System.nanoTime() - started)
+                        currentOperation = "game" to System.nanoTime()
+                    }
+                    try {
+                        if (outermost) {
+                            scheduler?.expireIfNeeded()
+                            if (mutationFailure == null) {
+                                communication.trades.expireIfNeeded()
+                                val nativeChanged = communication.trades.nativeBridge.synchronize(game)
+                                if (communication.agreements.synchronize(game) || nativeChanged) commitCheckpoint()
+                            }
+                        }
+                        block(game)
+                    } finally {
+                        if (outermost) {
+                            currentOperation?.let { HostTimings.record("game.execute", System.nanoTime() - it.second) }
+                            currentOperation = null
+                        }
                     }
                 }
-                block(game)
             }
         }
     }
@@ -192,7 +244,9 @@ class GameExecutor internal constructor(
             synchronizeWarDeclarations()
             store.writeInitial(CheckpointStore.capture(game, epoch, paused, turnSessions, handoff, scheduled, communication = communicationState))
             checkpointStore = store
-            telemetry.publish(game, store.path)
+            telemetry.initialize(store)
+            commitAccounting(includeGame = true)
+            telemetry.publishDiplomacy()
             TradeCycleScenarioSetup.recordEvidence(game, communicationState, store.path.parent)
         } catch (failure: Throwable) {
             store.close()
@@ -206,12 +260,15 @@ class GameExecutor internal constructor(
             communication.agreements.synchronize(game)
             synchronizeWarDeclarations()
             telemetry.synchronize(game)
-            checkpointStore?.write(CheckpointStore.capture(game, epoch, paused, turnSessions, handoff, scheduled, communicationState, communicationPaused))
+            val batch = checkpointStore?.accounting?.let { ledger -> telemetry.accountingBatch(game, includeGame = true)?.also(ledger::stage) }
+            checkpointStore?.write(HostTimings.measure("checkpoint.game_capture") { CheckpointStore.capture(game, epoch, paused, turnSessions, handoff, scheduled, communicationState, communicationPaused) })
+            if (batch != null) submitAccounting(batch)
             turnSessions.values.forEach { it.checkpointRevision = it.revision }
             communicationChanges.committed(communicationState)
             onCommitted()
+            scheduler?.publishStatus(game)
             checkpointStore?.let {
-                telemetry.publish(game, it.path)
+                telemetry.publishDiplomacy()
                 TradeCycleScenarioSetup.recordEvidence(game, communicationState, it.path.parent)
             }
         } catch (failure: Throwable) {
@@ -219,10 +276,26 @@ class GameExecutor internal constructor(
         }
     }
 
+    internal fun commitAccounting(includeGame: Boolean = false) {
+        try {
+            telemetry.synchronize(game)
+            if (checkpointStore != null) telemetry.accountingBatch(game, includeGame)?.let(::submitAccounting)
+        } catch (failure: Throwable) {
+            haltAfterMutation(failure)
+        }
+    }
+
+    private fun submitAccounting(batch: AccountingBatch) {
+        val wait = checkNotNull(checkpointStore?.accounting).submit(batch)
+        val waits = accountingWaits.get()
+        if (waits != null) waits.add(wait) else wait.join()
+    }
+
     internal fun restore(checkpoint: GameCheckpoint, store: CheckpointStore) = accessGame {
         check(checkpointStore == null && turnSessions.isEmpty()) { "Restore before binding players" }
         epoch = checkpoint.epoch
         communicationState = checkpoint.communication
+        telemetry.initialize(store)
         val pendingTelemetry = communicationState.telemetry.pendingCalls.isNotEmpty()
         telemetry.restored()
         communicationState.trades.activeProposal?.let {
@@ -235,12 +308,13 @@ class GameExecutor internal constructor(
         check(handoff >= 0) { "Invalid handoff counter" }
         restorePlayers(checkpoint.players, checkpoint.gameJson)
         checkpointStore = store
-        if (scheduled || pendingTelemetry) commitCheckpoint() else telemetry.publish(game, store.path)
+        if (scheduled || pendingTelemetry) commitCheckpoint() else commitAccounting(includeGame = true)
+        telemetry.publishDiplomacy()
     }
 
     internal fun turnSnapshot(): GameCheckpoint = accessGame {
         check(paused && communicationPaused && scheduled)
-        val captured = CheckpointStore.capture(game, epoch, true, turnSessions, handoff, true, communication = communicationState, communicationPaused = true)
+        val captured = CheckpointStore.capture(game, epoch, true, turnSessions, handoff, true, communication = communicationState.withoutAccounting(), communicationPaused = true)
         kotlinx.serialization.json.Json.decodeFromString<GameCheckpoint>(kotlinx.serialization.json.Json.encodeToString(captured))
     }
 
@@ -270,6 +344,8 @@ class GameExecutor internal constructor(
                 revokedCredentials = (accounting.revokedCredentials + accounting.playerCredentials.keys + configuredCredentials).toMutableSet(),
                 playerCredentials = mutableMapOf(),
             )
+            communicationState.jobs.keys.forEach(telemetry::changed)
+            telemetry.restored()
             tradeDeadline?.cancel(false)
             communicationState.trades.activeProposal?.let {
                 scheduleTradeDeadline(communicationState.trades.proposals.getValue(it).last().deadlineMillis)
@@ -343,9 +419,10 @@ class GameExecutor internal constructor(
                 closed = true
                 communicationChanges.invalidate()
                 tradeDeadlines.shutdownNow()
-                checkpointStore?.close()
             }
         }
+        checkpointStore?.close()
+        telemetry.close()
     }
 
     private fun checkAvailable() {

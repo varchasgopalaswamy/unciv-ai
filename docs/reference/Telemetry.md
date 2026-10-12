@@ -7,8 +7,12 @@ This is the accounting contract; historical measurements are in the
 
 ## Storage and accounting
 
-The game server's checkpoint owns durable telemetry. The host publishes changed
-rows in the operator's `runner/monitoring.sqlite3`:
+The host owns durable accounting in `<checkpoint>.accounting.sqlite3`. Game
+checkpoints retain a small accounting outbox so a crash cannot separate a committed
+turn boundary from its accounting. Reports and permit renewals update database
+rows without rewriting the game. See [host accounting](../architecture/Host-accounting.md).
+The host asynchronously publishes changed rows in the operator's
+`runner/monitoring.sqlite3`:
 
 - `turns`: one record per scheduled civilization turn, identified by native game
   ID, recovery epoch and handoff. Includes activation IDs, tokens, API counts,

@@ -8,6 +8,7 @@ import com.unciv.logic.city.CityStats
 import com.unciv.logic.civilization.Civilization
 import com.unciv.models.ruleset.Building
 import com.unciv.models.ruleset.MilestoneType
+import com.unciv.models.ruleset.PerpetualConstruction
 import com.unciv.models.stats.Stat
 import com.unciv.models.stats.Stats
 import com.unciv.models.translations.tr
@@ -43,6 +44,16 @@ data class BuildingCompletionEffect(
     val greatPersonPoints: Map<String, Int>,
     val growth: ConstructionGrowthChange,
     val oneTime: ConstructionGrants? = null,
+    val following: Map<String, ConstructionYieldChange> = emptyMap(),
+    val empire: ConstructionEmpireChange? = null,
+)
+
+@Serializable
+data class ConstructionEmpireChange(
+    val yields: ConstructionYieldChange,
+    val happinessBefore: Int,
+    val happinessAfter: Int,
+    val foodPerTurnByCity: Map<String, ConstructionGrowthChange>,
 )
 
 @Serializable
@@ -66,6 +77,7 @@ data class ConstructionEstimate(
     val queueUnavailableReasons: List<String>,
     val whileBuilding: ConstructionYieldChange,
     val completion: BuildingCompletionEffect?,
+    val buildUnavailableReasons: List<String> = emptyList(),
 )
 
 /** City-screen production time assuming this item starts now, not after earlier
@@ -166,6 +178,12 @@ internal class ConstructionEstimator(private val player: Civilization) {
                             .distinct().sorted().toList(),
                     ),
                     whileBuilding = difference(before, totals(during)),
+                    buildUnavailableReasons = Collections.unmodifiableList(
+                        (
+                            construction.getRejectionReasons(queue).map { if (it.shouldShow) it.errorMessage.tr() else "Construction requirements are not met" } +
+                                if (city.isPuppet) listOf("Puppet cities control their own production") else emptyList()
+                            ).distinct().sorted().toList(),
+                    ),
                     completion = (construction as? Building)?.takeUnless { queue.isBuilt(it.name) }?.let { building ->
                         val compared = preview.compare(city, building)
                         val sources = (compared.before.sources.keys + compared.after.sources.keys).sorted().associateWith { source ->
@@ -194,6 +212,26 @@ internal class ConstructionEstimator(private val player: Civilization) {
                                     freeze(grants.buildings.mapKeys { cityName(it.key) }.mapValues { Collections.unmodifiableList(it.value.toList()) }),
                                 )
                             },
+                            following = freeze(
+                                PerpetualConstruction.perpetualConstructionsMap.values.filter {
+                                    it is PerpetualConstruction.StatConversion && it.isBuildable(queue) && productionAllowed(player, it.name)
+                                }.associate { following ->
+                                    val scenario = preview.compare(city, building, following)
+                                    following.name to difference(scenario.before.total, scenario.after.total, includeCoreZeroes = true)
+                                },
+                            ),
+                            empire = ConstructionEmpireChange(
+                                difference(compared.empireBefore.total, compared.empireAfter.total, includeCoreZeroes = true),
+                                compared.empireBefore.happiness,
+                                compared.empireAfter.happiness,
+                                freeze(
+                                    player.cities.associate { owned ->
+                                        val old = compared.empireBefore.cities.getValue(owned.id)
+                                        val new = compared.empireAfter.cities.getValue(owned.id)
+                                        owned.name to ConstructionGrowthChange(old.foodPerTurn, new.foodPerTurn, old.turnsToGrowth, new.turnsToGrowth, old.turnsToStarvation, new.turnsToStarvation)
+                                    },
+                                ),
+                            ),
                         )
                     },
                 )

@@ -4,6 +4,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
@@ -26,7 +27,7 @@ internal class CommunicationChanges {
         val current = state.streams.mapValues { it.value.size }
         val negotiationChanged = negotiation != state.trades.activeProposal
         for ((civilization, signal) in signals) {
-            if (negotiationChanged || current[civilization] != streams[civilization]) signal.value++
+            if (negotiationChanged || current[civilization] != streams[civilization]) signal.update { it + 1 }
         }
         streams = current
         negotiation = state.trades.activeProposal
@@ -34,7 +35,7 @@ internal class CommunicationChanges {
 
     /** Availability/credential changes and recovery force reauthorization on the next read. */
     fun invalidate() {
-        signals.values.forEach { it.value++ }
+        signals.values.forEach { signal -> signal.update { it + 1 } }
     }
 }
 

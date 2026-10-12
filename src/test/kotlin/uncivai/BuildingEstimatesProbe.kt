@@ -11,6 +11,7 @@ import kotlin.math.abs
 object BuildingEstimatesProbe {
     fun saved(root: Path, fixtures: Path) = HeadlessRuntime.load(fixtures.resolve("strategy_positions/slow-economy.json"), root.resolve("game")).use { runtime ->
         val player = runtime.game.getCivilization("France")
+        uncivai.player.enforceProductionPolicy(player)
         val before = json().toJson(runtime.game)
         val session = PlayerHost(runtime).bindPlayer("France")
         val start = System.nanoTime()
@@ -61,7 +62,7 @@ object BuildingEstimatesProbe {
             check(estimate.queueUnavailableReasons.isNotEmpty())
             check(name !in first.constructionOptions)
         }
-        for (tech in listOf("Pottery", "Writing", "Philosophy", "Currency", "Metal Casting", "Education")) {
+        for (tech in listOf("Pottery", "Writing", "Philosophy", "Currency", "Metal Casting", "Education", "Future Tech")) {
             player.tech.addTechnology(tech, false)
         }
         city.population.setPopulation(6)
@@ -79,6 +80,9 @@ object BuildingEstimatesProbe {
         check(effect.yields.change.getValue("Science") == "3")
         check(effect.maintenanceChange == "1" && effect.yields.change.getValue("Gold") == "-1")
         check(library.whileBuilding.change.getValue("Science").toFloat() < 0)
+        check(effect.following.keys == setOf("Science", "Gold"))
+        check(effect.following.getValue("Science").after.getValue("Science").toFloat() > effect.yields.after.getValue("Science").toFloat())
+        check(effect.empire!!.foodPerTurnByCity.keys == setOf(city.name))
         check(library.production.turnsIfStartedNow == city.cityConstructions.turnsToConstruction("Library"))
         check(estimates.getValue("University").queueUnavailableReasons.isNotEmpty())
         check(estimates.getValue("University").completion!!.specialistSlots.getValue("Scientist") == 2)

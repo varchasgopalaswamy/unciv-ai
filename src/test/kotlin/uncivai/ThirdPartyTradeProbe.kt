@@ -112,7 +112,7 @@ object ThirdPartyTradeProbe {
                 api.reject(token, TurnCommandRequest("stale-war", before.epoch, before.revision, TurnCommandKind.END_TURN).reviewedFor(before), "STALE_REVISION")
                 val france = api.turn(api.playerToken("France"))
                 check(france.alerts.any { it.kind == "WarDeclaration" && it.content != null })
-                Files.copy(checkpoint, interrupted)
+                copyCheckpoint(checkpoint, interrupted)
                 api.finishTurn(token)
                 repeat(3) { api.finishTurn(checkNotNull(api.activate().playerToken)) }
             }

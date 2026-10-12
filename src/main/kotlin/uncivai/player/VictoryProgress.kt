@@ -37,6 +37,7 @@ data class VictoryProgress(
     val rankings: VictoryRankings?,
     val charts: VictoryCharts?,
     val demographics: VictoryDemographics?,
+    val milestoneBasis: String = "Current and nextMilestones identify the next unmet victory requirement, not a project under construction or an estimated finish. Completed predicates use native victory-screen information; message claims and directly visible construction are separate evidence.",
 )
 
 /** Pure milestone predicates and text shared with the victory screen; no UI actors or hidden rival details. */

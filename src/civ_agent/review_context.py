@@ -200,7 +200,7 @@ def upcoming_events(snapshot: JsonObject, social: JsonObject) -> JsonObject:
         active = next((c for c in development.get("constructions", []) if c["index"] == 0), None)
         if active and not active["perpetual"] and active["name"] not in wonders and not development.get("inResistance"):
             estimate = city.get("constructionEstimates", {}).get(active["name"], {})
-            if not estimate.get("queueUnavailableReasons"):
+            if not estimate.get("buildUnavailableReasons", estimate.get("queueUnavailableReasons")):
                 completion = estimate.get("completion") or {}
                 benefits = {
                     key: value
@@ -214,6 +214,7 @@ def upcoming_events(snapshot: JsonObject, social: JsonObject) -> JsonObject:
                     name=active["name"],
                     yieldChange=benefits,
                     maintenanceChange=completion.get("maintenanceChange"),
+                    empireEffectIfCompletedNow=completion.get("empire"),
                 )
 
     # Each native trade term has its own remaining duration; the agreement maximum

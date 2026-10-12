@@ -129,6 +129,7 @@ data class PlayerTurnSnapshot(
     val rules: GameRules,
     val civilizationProfile: CivilizationProfile,
     val constructionCatalogue: List<String>,
+    val productionPolicy: ProductionPolicy? = null,
     val turnControls: TurnControls = TurnControls(),
     val negotiation: kotlinx.serialization.json.JsonObject = uncivai.obj("active" to false),
     val turnReview: TurnReview? = null,

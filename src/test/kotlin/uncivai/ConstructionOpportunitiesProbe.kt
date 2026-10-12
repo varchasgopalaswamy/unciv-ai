@@ -7,6 +7,10 @@ import com.unciv.logic.civilization.PlayerOperations
 import com.unciv.logic.map.HexCoord
 import com.unciv.models.stats.Stat
 import uncivai.player.PlayerHost
+import uncivai.player.PlayerSessionException
+import uncivai.player.PlayerSessionFailure
+import uncivai.player.TurnCommandKind
+import uncivai.player.TurnCommandRequest
 import uncivai.player.observeCityDevelopment
 import uncivai.player.observeProductionConversions
 import java.nio.file.Path
@@ -19,7 +23,7 @@ object ConstructionOpportunitiesProbe {
         val city = player.cities.single()
         val operations = PlayerOperations(player)
         check(observeProductionConversions(city, operations.queueableConstructions(city)).isEmpty())
-        for (tech in listOf("Writing", "Philosophy", "Education", "Currency")) player.tech.addTechnology(tech, false)
+        for (tech in listOf("Writing", "Philosophy", "Education", "Currency", "Future Tech")) player.tech.addTechnology(tech, false)
         city.population.setPopulation(6)
         for (building in listOf("Library", "University", "National College", "Workshop", "Market")) city.cityConstructions.addBuilding(building)
         city.cityConstructions.constructionQueue = arrayListOf("Settler")
@@ -70,6 +74,39 @@ object ConstructionOpportunitiesProbe {
         CityCombatant(city.getCenterTile().getCity()!!).takeDamage(10, null)
         check(city.health == health - 10) { "City combat damaged a detached preview instead of the real city" }
         check(turn.cities.single().productionConversions.getValue("Science") == projected.getValue("Science"))
+    }
+
+    fun productionPolicy(root: Path) = SettlementPreviewProbe.fixture(root.resolve("initial")).use { runtime ->
+        val player = runtime.game.getCivilization("Rome")
+        val city = player.cities.single()
+        for (tech in listOf("Education", "Currency")) player.tech.addTechnology(tech, false)
+        city.cityConstructions.constructionQueue = arrayListOf("Science", "Library")
+        city.cityConstructions.inProgressConstructions["Library"] = 26
+        city.cityStats.update()
+        val session = PlayerHost(runtime).bindPlayer("Rome")
+        val turn = session.turn()
+        check(turn.productionPolicy!!.conversionUnlockEra == "Future era")
+        check(turn.productionPolicy.blockedConversions == listOf("Gold", "Science", "Culture"))
+        check(city.cityConstructions.constructionQueue == listOf("Library"))
+        check(city.cityConstructions.getWorkDone("Library") == 26)
+        check(turn.cities.single().constructionOptions.none { it in turn.productionPolicy.blockedConversions })
+        check(turn.cities.single().productionConversions.isEmpty())
+        check(turn.cities.single().constructionEstimates.values.all { it.completion?.following.isNullOrEmpty() })
+        for (name in turn.productionPolicy.blockedConversions) {
+            val failure = runCatching { session.execute(TurnCommandRequest("blocked-$name", turn.epoch, turn.revision, TurnCommandKind.QUEUE_CONSTRUCTION, turn.cities.single().handle, name)) }.exceptionOrNull()
+            check(failure is PlayerSessionException && failure.reason == PlayerSessionFailure.OPTION_UNAVAILABLE)
+        }
+        // Reconcile an automatic/legacy choice even in a puppet city.
+        city.isPuppet = true
+        city.cityConstructions.constructionQueue = arrayListOf("Gold")
+        check(session.turn().cities.single().constructionQueue == listOf("Nothing"))
+        city.isPuppet = false
+        player.tech.addTechnology("Future Tech", false)
+        val unlocked = session.turn()
+        check(unlocked.productionPolicy!!.blockedConversions.isEmpty())
+        check(unlocked.cities.single().constructionOptions.containsAll(listOf("Science", "Gold")))
+        session.execute(TurnCommandRequest("allowed", unlocked.epoch, unlocked.revision, TurnCommandKind.QUEUE_CONSTRUCTION, unlocked.cities.single().handle, "Science"))
+        check(session.turn().cities.single().constructionQueue == listOf("Science"))
     }
 
     fun wonders(root: Path) = SettlementPreviewProbe.fixture(root.resolve("initial")).use { runtime ->

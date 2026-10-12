@@ -52,8 +52,8 @@ def load_checkpoint(path):
         checkpoint = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(checkpoint, dict):
             raise ValueError()
-        if type(checkpoint.get("formatVersion")) is not int or checkpoint["formatVersion"] != 8:
-            raise InspectionError("Unsupported checkpoint format; expected formatVersion 8.")
+        if type(checkpoint.get("formatVersion")) is not int or checkpoint["formatVersion"] not in {8, 9}:
+            raise InspectionError("Unsupported checkpoint format; expected formatVersion 8 or 9.")
         if not isinstance(checkpoint.get("gameJson"), str):
             raise ValueError()
         game = json.loads(checkpoint["gameJson"])

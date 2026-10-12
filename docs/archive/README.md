@@ -6,6 +6,9 @@ for current behavior.
 
 ## Reports
 
+- [Host bookkeeping reliability — October 12, 2026](reports/Host-bookkeeping-reliability-2026-10-12.md): timeout diagnosis, incremental accounting, independent health checks and copied-game replay results.
+- [Luna gameplay audit — October 11, 2026](reports/Luna-attempt-1-1-gameplay-audit-2026-10-11.md): updated four-game assessment, development gaps, recovered plans, repeated scouting, conversion and operational stops.
+- [Luna gameplay audit — October 10, 2026](reports/Luna-attempt-1-1-gameplay-audit-2026-10-10.md): earlier four-game baseline and the evidence behind the five gameplay feedback fixes.
 - [Decision-process refactor — October 8, 2026](reports/Decision-process-refactor-2026-10-08.md): implementation, preserved baseline, paired trials, interface findings and acceptance gates.
 - [Benchmark agent play audit — October 7, 2026](reports/Benchmark-agent-play-audit-2026-10-07.md): model/native gaps and the baseline for the decision-process refactor.
 - [Benchmark agent play audit — October 6, 2026](reports/Benchmark-agent-play-audit-2026-10-06.md): four-game comparison with the built-in controls, recurring conversion failures, proposed review changes, and checkpoint validation.

@@ -91,7 +91,7 @@ class GameLaunchIntegrationTest {
             launch(root, "create", listOf("--new-game", "--checkpoint", checkpoint.toString(), "--scenario", "trade-cycle"), 0)
             val original = Files.readString(checkpoint)
             val saved = Json.parseToJsonElement(original).jsonObject
-            assertEquals("8", saved.getValue("formatVersion").jsonPrimitive.content)
+            assertEquals("9", saved.getValue("formatVersion").jsonPrimitive.content)
             val game = Json.parseToJsonElement(saved.getValue("gameJson").jsonPrimitive.content).jsonObject
             val map = game.getValue("tileMap").jsonObject
             val parameters = map.getValue("mapParameters").jsonObject
@@ -107,6 +107,7 @@ class GameLaunchIntegrationTest {
             val otherMap = JsonObject(map + ("mapParameters" to otherParameters))
             val otherGame = JsonObject(game + ("tileMap" to otherMap))
             val other = root.resolve("other.json")
+            copyCheckpoint(checkpoint, other)
             val otherSaved = JsonObject(saved + ("gameJson" to JsonPrimitive(otherGame.toString())))
             Files.writeString(other, otherSaved.toString())
             launch(root, "mismatch", listOf("--resume-checkpoint", other.toString(), "--scenario", "trade-cycle"), 1)
@@ -134,9 +135,9 @@ class GameLaunchIntegrationTest {
             assertEquals(original, Files.readString(checkpoint))
             launch(root, "resume-war", listOf("--resume-checkpoint", checkpoint.toString(), "--scenario", "war-paid"), 0)
             // A valid scheduled restart intentionally persists the paused state.
-            val expected = communicationJson.decodeFromString<GameCheckpoint>(original).copy(paused = true)
-            expected.communication.telemetry.turns.values.filter { it.endedAtMs == null }.forEach { it.timingComplete = false }
-            assertEquals(communicationJson.encodeToJsonElement(GameCheckpoint.serializer(), expected), Json.parseToJsonElement(Files.readString(checkpoint)))
+            val expected = communicationJson.decodeFromString<GameCheckpoint>(original).copy(paused = true, accountingOutbox = emptyList())
+            val actual = communicationJson.decodeFromString<GameCheckpoint>(Files.readString(checkpoint)).copy(accountingOutbox = emptyList())
+            assertEquals(expected, actual)
         } finally {
             deleteTreeWithoutFollowingLinks(root)
         }

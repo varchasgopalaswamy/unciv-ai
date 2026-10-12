@@ -1,6 +1,7 @@
 """Control failures identify the operation and transport cause without exposing secrets."""
 
 import io
+import json
 import ssl
 import unittest
 import urllib.error
@@ -43,7 +44,52 @@ class ControlDiagnosticsTest(unittest.TestCase):
                 self.assertIn(expected, str(caught.exception))
                 self.assertNotIn(self.secret, str(caught.exception))
                 self.assertNotIn("private-", str(caught.exception))
-                endpoint.opener.open.assert_called_once()  # Diagnostics must not retry mutations.
+                self.assertEqual(endpoint.opener.open.call_count, 2 if operation == "status" else 1)
+
+    def test_control_timeout_is_fifteen_seconds_and_mutations_are_never_retried(self):
+        for cls in (JsonEndpoint, Operator):
+            endpoint = cls(self.url, self.secret, None)
+            endpoint.opener = Mock()
+            endpoint.opener.open.side_effect = TimeoutError()
+            with self.assertRaises(OperatorError):
+                endpoint.call("activate")
+            endpoint.opener.open.assert_called_once()
+            self.assertEqual(endpoint.opener.open.call_args.kwargs["timeout"], 15)
+
+    def test_status_retries_a_lost_response_once(self):
+        endpoint = Operator(self.url, self.secret, None)
+        endpoint.opener = Mock()
+        response = {"status": {"epoch": "e", "serverInstance": "s", "phase": "ACTIVE", "turn": 1, "handoff": 3}}
+        endpoint.opener.open.side_effect = [TimeoutError(), io.BytesIO(json.dumps(response).encode())]
+        self.assertEqual(endpoint.call("status"), response)
+        self.assertEqual(endpoint.opener.open.call_count, 2)
+
+    def test_retry_uses_only_remaining_confirmed_lease_time(self):
+        endpoint = Operator(self.url, self.secret, None)
+        endpoint._lease_deadline = 130.0
+        endpoint.opener = Mock()
+        clock = [100.0]
+
+        def timeout(request, *, timeout):
+            clock[0] += timeout
+            raise TimeoutError()
+
+        endpoint.opener.open.side_effect = timeout
+        with patch("civ_agent.scheduler.time.monotonic", side_effect=lambda: clock[0]):
+            with self.assertRaises(OperatorError):
+                endpoint.call("heartbeat", leaseId="lease")
+        self.assertEqual([call.kwargs["timeout"] for call in endpoint.opener.open.call_args_list], [15, 10])
+        self.assertEqual(clock[0], 125.0)
+
+    def test_no_retry_after_lease_margin_is_reached(self):
+        endpoint = Operator(self.url, self.secret, None)
+        endpoint._lease_deadline = 120.0
+        endpoint.opener = Mock()
+        endpoint.opener.open.side_effect = TimeoutError()
+        with patch("civ_agent.scheduler.time.monotonic", side_effect=[100.0, 115.0]):
+            with self.assertRaises(OperatorError):
+                endpoint.call("heartbeat", leaseId="lease")
+        endpoint.opener.open.assert_called_once()
 
     def test_invalid_json_identifies_operation_without_echoing_response(self):
         endpoint = JsonEndpoint(self.url, self.secret, None)

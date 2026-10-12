@@ -210,7 +210,7 @@ object TradeCycleProbe {
                 check(runtime.game.currentPlayer == "Rome" && runtime.executor.handoff == handoff)
                 val phase = api.turn(token).scenario!!.phase
                 check(phase == if (step == Step.entries.last()) "TRADES_ENACTED" else "CONTINUE_TURN") { phase }
-                Files.copy(checkpoint, root.resolve("${step.name.lowercase()}.json"))
+                copyCheckpoint(checkpoint, root.resolve("${step.name.lowercase()}.json"))
                 finishRound()
             }
             // Two further complete rounds, native treaty ticking, then exact acceptance replay.
@@ -221,12 +221,12 @@ object TradeCycleProbe {
             check(money() == before)
             check(api.turn(token).scenario!!.phase == "TRADES_ENACTED")
             check(runtime.game.getCivilization("Rome").getDiplomacyManager("Greece")!!.hasFlag(DiplomacyFlags.ResearchAgreement))
-            Files.copy(checkpoint, root.resolve("verified-final.json"))
+            copyCheckpoint(checkpoint, root.resolve("verified-final.json"))
             // Restore on a separate copy so the operator can still inspect the completed exercise.
             api.close()
             runtime.close()
             val rollback = root.resolve("rollback.json")
-            Files.copy(checkpoint, rollback)
+            copyCheckpoint(checkpoint, rollback)
             HeadlessRuntime.loadCheckpoint(rollback, root.resolve("rollback-data")).use { restored ->
                 restored.executor.pause()
                 restored.executor.communicationPaused = true

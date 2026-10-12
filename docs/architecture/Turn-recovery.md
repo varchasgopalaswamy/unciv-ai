@@ -58,9 +58,12 @@ Attempts and paid usage survive rewind. Completion atomically saves advice and r
 - Operator pauses and budget limits stop work until explicit resume.
 
 This replaces historical round checkpoints and the manual round-rollback command.
-The memory store uses format 11 and scheduler state uses format 5. Older matches
-require their original code; there is no migration. Start a fresh match with this
-version. Native checkpoint behavior is unchanged.
+The memory store uses format 11 and scheduler state uses format 5. Matches using
+older memory or scheduler formats require their original code; those formats have
+no migration. Native checkpoint format 9 separates accounting from the game save;
+format 8 checkpoints are imported on load with an original-file backup. The game
+checkpoint and its accounting database must stay together. See
+[host accounting](Host-accounting.md) for migration and crash recovery.
 Replaying work spends additional tokens and time and may produce different choices.
 Human players cannot forget messages already delivered before a rewind.
 

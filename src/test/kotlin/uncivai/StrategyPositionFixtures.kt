@@ -27,7 +27,7 @@ object StrategyPositionFixtures {
             require(!Files.exists(root)) { "Use a fresh output directory: $root" }
             Files.createDirectories(root)
             val checkpoint = root.resolve("exploration.json")
-            Files.copy(Path.of(source), checkpoint)
+            copyCheckpoint(Path.of(source), checkpoint)
             HeadlessRuntime.loadCheckpoint(checkpoint, root.resolve("runtime")).use { runtime ->
                 val game = runtime.game
                 val before = com.unciv.json.json().toJson(game)

@@ -159,7 +159,8 @@ object NotificationsProbe {
             }
             GameExecutor(loaded).use { executor ->
                 CheckpointStore(root.resolve("load-$mode.json")).use { store ->
-                    val result = runCatching { executor.restore(checkpoint, store) }
+                    store.writeInitial(checkpoint)
+                    val result = runCatching { executor.restore(store.read(), store) }
                     if (mode != "append") {
                         check(result.isFailure) { "Accepted $mode notification state" }
                     } else {

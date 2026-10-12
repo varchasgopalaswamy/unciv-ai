@@ -16,11 +16,14 @@ import java.sql.DriverManager
 
 /** Real HTTPS calls, ordinary native AI turns, and telemetry after a checkpoint restart. */
 object TelemetryProbe {
-    private fun monitoring(root: Path, collection: String): List<JsonObject> = DriverManager.getConnection("jdbc:sqlite:${root.resolve("runner/monitoring.sqlite3")}").use { db ->
-        db.prepareStatement("SELECT payload FROM monitor_records WHERE collection=? ORDER BY revision").use { statement ->
-            statement.setString(1, collection)
-            statement.executeQuery().use { rows ->
-                buildList { while (rows.next()) add(Json.parseToJsonElement(rows.getString(1)).jsonObject) }
+    private fun monitoring(runtime: HeadlessRuntime, root: Path, collection: String): List<JsonObject> {
+        runtime.executor.telemetry.flushMonitoring()
+        return DriverManager.getConnection("jdbc:sqlite:${root.resolve("runner/monitoring.sqlite3")}").use { db ->
+            db.prepareStatement("SELECT payload FROM monitor_records WHERE collection=? ORDER BY revision").use { statement ->
+                statement.setString(1, collection)
+                statement.executeQuery().use { rows ->
+                    buildList { while (rows.next()) add(Json.parseToJsonElement(rows.getString(1)).jsonObject) }
+                }
             }
         }
     }
@@ -69,14 +72,14 @@ object TelemetryProbe {
                     api.communicate(credential, obj("op" to "job_release", "epoch" to originalEpoch, "job" to job))
                     val metrics = runtime.executor.communicationState.telemetry.turns.getValue("$originalEpoch/${activation.status.handoff}")
                     check(metrics.endedAtMs != null && metrics.activeMs >= 0 && metrics.civilization == civilization)
-                    val savedJob = monitoring(root, "jobs").single { it.getValue("jobId").jsonPrimitive.content == job }
+                    val savedJob = monitoring(runtime, root, "jobs").single { it.getValue("jobId").jsonPrimitive.content == job }
                     check(savedJob.getValue("job").jsonObject.getValue("telemetry").jsonObject.getValue("provider").jsonPrimitive.content == provider)
                 }
                 check(api.status().turn == 1 && api.status().activeCivilization == "Rome")
                 check(runtime.game.getCivilization("Egypt").cities.isNotEmpty()) { "Native AI did not take its ordinary turn" }
                 val status = api.status()
                 check(status.modelUsage["input_tokens"] == 300L && status.modelUsage["output_tokens"] == 90L)
-                val turns = monitoring(root, "turns")
+                val turns = monitoring(runtime, root, "turns")
                 check(turns.size == 3 && turns.all { it.getValue("usage").jsonObject.getValue("total_tokens").jsonPrimitive.long == 130L })
                 check(turns.all { it.getValue("accountingComplete").jsonPrimitive.boolean })
                 check(turns.all { it.getValue("modelRequests").jsonPrimitive.long == 4L })
@@ -117,7 +120,7 @@ object TelemetryProbe {
             val reviewReport = finalReport.copy(apiCalls = emptyMap(), gameplayElapsedMs = 0, finalizationElapsedMs = 60, memoryEdits = MemoryEditCounts())
             roman.communication(obj("op" to "job_report", "epoch" to runtime.epoch, "job" to "review-retry", "usage" to ModelUsage(50, 5, 10, 0).recordJson(), "telemetry" to reviewReport.recordJson()))
             roman.communication(obj("op" to "job_release", "epoch" to runtime.epoch, "job" to "review-retry"))
-            val romanTurn = monitoring(root, "turns").single { it.getValue("turn").jsonObject.getValue("civilization").jsonPrimitive.content == "Rome" }
+            val romanTurn = monitoring(runtime, root, "turns").single { it.getValue("turn").jsonObject.getValue("civilization").jsonPrimitive.content == "Rome" }
             check(romanTurn.getValue("usage").jsonObject.getValue("total_tokens").jsonPrimitive.long == 190L)
             runtime.executor.accessGame { game ->
                 game.getCivilization("France").units.getCivUnits().toList().forEach { it.destroy() }
@@ -125,7 +128,7 @@ object TelemetryProbe {
                 game.victoryData = VictoryData(game.getCivilization("Egypt"), "Scientific", game.turns)
                 runtime.executor.commitCheckpoint()
             }
-            val result = monitoring(root, "state").single { "result" in it }
+            val result = monitoring(runtime, root, "state").single { "result" in it }
             check(result.getValue("status").jsonPrimitive.content == "completed")
             check(result.getValue("result").jsonObject.getValue("winner").jsonPrimitive.content == "Egypt")
             val scores = result.getValue("scores").jsonArray.map { it.jsonObject }.associateBy { it.getValue("civilization").jsonPrimitive.content }
@@ -144,8 +147,8 @@ object TelemetryProbe {
                 db.createStatement().use { it.executeUpdate("UPDATE monitor_records SET payload='{}' WHERE collection='state' AND key='result'") }
             }
         }
-        HeadlessRuntime.loadCheckpoint(checkpoint, root.resolve("final-restart")).use {
-            val result = monitoring(root, "state").single { "result" in it }
+        HeadlessRuntime.loadCheckpoint(checkpoint, root.resolve("final-restart")).use { runtime ->
+            val result = monitoring(runtime, root, "state").single { "result" in it }
             check(result.getValue("result").jsonObject.getValue("winner").jsonPrimitive.content == "Egypt")
             check(result.getValue("usage").jsonObject.getValue("total_tokens").jsonPrimitive.long == 450L)
             check(result.getValue("memoryEdits").jsonObject.getValue("rejected").jsonPrimitive.long == 3L)

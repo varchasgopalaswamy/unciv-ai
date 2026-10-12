@@ -204,7 +204,7 @@ private fun Application.configurePlayerMcp(
                 }
                 if (match == null && operator != null) {
                     // Resolve authority for every request, including long-lived communication grants.
-                    val session = operator.control.activationSession(presentedToken)
+                    val session = withContext(playerWork) { operator.control.activationSession(presentedToken) }
                     if (session != null) {
                         match = AuthenticatedPlayer(presentedHash, session)
                     }
@@ -261,7 +261,11 @@ private fun Application.configurePlayerMcp(
                     if (bytes.size > 33_554_432) throw OperatorFailure("INVALID_ARGUMENT")
                     val text = bytes.decodeToString()
                     val request = OperatorControl.json.decodeFromString<OperatorRequest>(text)
-                    val response = operator.control.handle(request)
+                    val response = if (request.op in setOf("status", "heartbeat")) {
+                        operator.control.handle(request)
+                    } else {
+                        withContext(playerWork) { operator.control.handle(request) }
+                    }
                     call.respondText(OperatorControl.json.encodeToString(response), ContentType.Application.Json)
                 } catch (_: SerializationException) {
                     call.respondText("{\"error\":\"INVALID_ARGUMENT\"}", ContentType.Application.Json, HttpStatusCode.BadRequest)

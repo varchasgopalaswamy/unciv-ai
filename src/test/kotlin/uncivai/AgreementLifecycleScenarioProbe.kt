@@ -23,7 +23,7 @@ object AgreementLifecycleScenarioProbe {
         var runtime = HeadlessRuntime.createAgreementLifecycleExercise(root.resolve("data"))
         try {
             runtime.executor.enableCheckpoints(checkpoint)
-            Files.copy(checkpoint, root.resolve("initial.json"))
+            copyCheckpoint(checkpoint, root.resolve("initial.json"))
             val initialEpoch = runtime.epoch
             var acceptRequest: JsonObject? = null
             var accepted: JsonObject? = null
@@ -64,7 +64,7 @@ object AgreementLifecycleScenarioProbe {
                 }
                 check(call(api, "France", "state").getValue("context") == franceBefore)
                 check(runtime.executor.communicationState.streams["France"].orEmpty().none { it.kind == "trade" || it.body.toString().contains(proposalId) })
-                Files.copy(checkpoint, root.resolve("negotiated.json"))
+                copyCheckpoint(checkpoint, root.resolve("negotiated.json"))
                 for (civ in listOf("Rome", "Greece", "France")) {
                     check(runtime.game.currentPlayer == civ)
                     val activeToken = if (civ == "Rome") firstToken else checkNotNull(api.activate().playerToken)
@@ -76,7 +76,7 @@ object AgreementLifecycleScenarioProbe {
                     check(event.body.getValue("reason").jsonPrimitive.content == "EXPIRED")
                     check(event.wake) { "Shared agreement endings still wake their participants" }
                 }
-                Files.copy(checkpoint, root.resolve("round-001.json"))
+                copyCheckpoint(checkpoint, root.resolve("round-001.json"))
                 firstRoundLedger = runtime.executor.communicationState.recordJson()
             }
             runtime.close()
@@ -113,7 +113,7 @@ object AgreementLifecycleScenarioProbe {
                 check(runtime.executor.communicationState.trades.proposals.size == 1)
                 check(runtime.executor.communicationState.streams["France"].orEmpty().none { it.kind == "trade" || it.body.toString().contains(proposalId) })
                 check(runtime.executor.communicationState.streams.values.flatten().count { it.kind == "agreement" } == 4)
-                Files.copy(checkpoint, root.resolve("round-003.json"))
+                copyCheckpoint(checkpoint, root.resolve("round-003.json"))
             }
             Files.writeString(root.resolve("COMPLETE"), "Native expiry, negotiated resource trade, restart, legal French raid and native resource interruption passed.\n")
         } finally {

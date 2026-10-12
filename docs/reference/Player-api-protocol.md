@@ -209,6 +209,19 @@ Every successful command receipt also contains `actionSummary`, the same factual
 description used by the review. Command acceptance does not guarantee the
 requested attack or destination was reached: the summary uses observed results.
 
+The operator-requested `productionPolicy` restricts Gold, Science and Culture
+production conversion until the ruleset's final era (Future in bundled Vanilla).
+It applies to API-controlled civilizations, including their saved and automated
+queues; ordinary construction progress is preserved. Blocked conversions are
+removed from available choices and explicit queue requests are rejected. Reaching
+the final era lifts this policy restriction; native prerequisites still apply.
+This restricts production conversion, not ordinary yields or spending.
+
+The civilization service additionally assembles factual progress and conversation
+context from permitted observations and receipts. See
+[gameplay feedback](Gameplay-feedback.md) for the history window,
+refresh timing, preview assumptions and investment accounting.
+
 `END_TURN` checks shared engine picker requirements and additional unimplemented
 alerts/trades, then requires a current review acknowledgment. Fetch and read
 `player_turn`, reconsider any unused movement, and send `reviewId=turnReview.id`.

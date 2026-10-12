@@ -45,6 +45,7 @@ Run shell examples from the repository root unless a page says otherwise.
 | [Private notebook](architecture/Structured-memory.md) | Writer ownership, contributions, advisory notices, provenance and recovery |
 | [Background turn memory](architecture/Background-turn-memory.md) | Handoff, concurrent reflection, finalization and checkpoints |
 | [Database access](architecture/Database-access.md) | SQLAlchemy/SQLite ownership and transactions |
+| [Host accounting and responsiveness](architecture/Host-accounting.md) | Incremental accounting, crash recovery, health checks and timing diagnostics |
 
 The [decision-process refactor](architecture/Decision-process-refactor.md)
 connects factual comparisons, player choices and observed outcomes. Its first
@@ -60,6 +61,7 @@ retain staged acceptance gates for stronger play.
 - [Telemetry](reference/Telemetry.md)
 - [Compact observations](reference/Compact-observations.md)
 - [Tactical and strategic review](reference/Tactical-review.md)
+- [Gameplay feedback](reference/Gameplay-feedback.md): factual history, conversation context, investment comparisons and final-era conversion policy
 
 ### Cities, units and victories
 

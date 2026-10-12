@@ -310,6 +310,7 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
             player.units.getCivUnits().singleOrNull { it.id == unitId && it.civ === player && !it.isDestroyed }
                 ?: fail(PlayerSessionFailure.UNIT_UNAVAILABLE)
         }
+        if (request.kind == TurnCommandKind.QUEUE_CONSTRUCTION && !productionAllowed(player, request.selection!!)) fail(PlayerSessionFailure.OPTION_UNAVAILABLE)
         if (request.kind == TurnCommandKind.GIFT_UNIT) {
             if (before.map.units.single { it.handle == request.target }.gift?.action?.available != true) fail(PlayerSessionFailure.OPTION_UNAVAILABLE)
             if (state.observedRevision != before.revision) fail(PlayerSessionFailure.OBSERVATION_REQUIRED)
@@ -636,6 +637,7 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
                 TurnCommandKind.DECLARE_WAR -> if (partner!!.isCityState) PlayerCityStateOperations(player).tryAct(partner, "declareWar") else PlayerDiplomacyOperations(player).tryDeclareWar(partner)
 
                 TurnCommandKind.END_TURN -> {
+                    enforceProductionPolicy(player)
                     state.previousTurnReview = CompletedTurnReview(
                         before.turn,
                         immutable(state.reviewActions),
@@ -718,6 +720,9 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
     }
 
     private fun snapshot(game: GameInfo, player: Civilization, state: TurnSessionState): PlayerTurnSnapshot {
+        // Reconcile saved or automated queues with the operator's production policy.
+        // This also runs after commands, before a receipt exposes refreshed yields.
+        if (enforceProductionPolicy(player)) state.invalidate()
         val operations = PlayerOperations(player)
         val captures = PlayerCaptureOperations(player)
         val pending = PlayerTurnRequirements.pending(player).map { kind ->
@@ -795,13 +800,14 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
         captureBarbarianSightings(player, state, player.viewableTiles)
         state.constructionSelections.keys.retainAll(player.cities.map { it.id }.toSet())
         val map = observeMap(player, state, canAct = ordinaryActions)
-        val constructions = player.cities.associate { it.id to immutable(operations.queueableConstructions(it).sorted()) }
+        val constructions = player.cities.associate { it.id to immutable(operations.queueableConstructions(it).filter { name -> productionAllowed(player, name) }.sorted()) }
         val constructionEstimates = state.constructionEstimates.observe(player)
         val fingerprint = PlayerTurnSnapshot(
             epoch = runtime.epoch,
             revision = "",
             turn = game.turns,
             phase = phase,
+            productionPolicy = productionPolicy(player),
             constructionCatalogue = immutable((game.ruleset.buildings.keys + game.ruleset.units.keys + PerpetualConstruction.perpetualConstructionsMap.keys).sorted()),
             canEndTurn = ordinaryActions && pending.isEmpty(),
             turnControls = TurnControls(

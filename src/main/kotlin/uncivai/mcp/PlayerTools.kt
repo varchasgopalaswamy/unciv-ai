@@ -9,6 +9,9 @@ import io.modelcontextprotocol.kotlin.sdk.types.TextContent
 import io.modelcontextprotocol.kotlin.sdk.types.ToolAnnotations
 import io.modelcontextprotocol.kotlin.sdk.types.ToolSchema
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
@@ -317,17 +320,19 @@ private fun errorResult(code: String, message: String, failure: PlayerSessionExc
 private class InvalidToolArgumentsException : IllegalArgumentException()
 
 /** Count at the authenticated MCP boundary, including rejected calls and uncertain cancellations. */
-private suspend inline fun measuredPlayerResult(session: PlayerSession, name: String, arguments: JsonObject?, operation: () -> String): CallToolResult {
+internal val playerWork = Dispatchers.IO.limitedParallelism(16)
+
+private suspend fun measuredPlayerResult(session: PlayerSession, name: String, arguments: JsonObject?, operation: suspend () -> String): CallToolResult = withContext(playerWork) {
     var id: String? = null
     var outcome = "incomplete"
     try {
-        return playerResult {
+        playerResult {
             id = (session as? PlayerApiAccounting)?.beginApiCall(name, arguments)
             val body = operation()
             outcome = if ((runCatching { Json.parseToJsonElement(body) }.getOrNull() as? JsonObject)?.containsKey("error") == true) "error" else "success"
             body
         }.also { if (it.isError == true) outcome = "error" }
     } finally {
-        id?.let { (session as? PlayerApiAccounting)?.finishApiCall(it, outcome) }
+        withContext(NonCancellable) { id?.let { (session as? PlayerApiAccounting)?.finishApiCall(it, outcome) } }
     }
 }

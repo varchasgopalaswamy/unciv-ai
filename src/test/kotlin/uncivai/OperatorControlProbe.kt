@@ -84,6 +84,9 @@ object OperatorControlProbe {
                 check(next.handoff == 2L && next.activeCivilization == "Rome" && next.turn == 1)
                 revokedToken = checkNotNull(operator(activationRequest(lease, next)).playerToken)
                 clock += OperatorControl.LEASE_MILLIS + 1
+                // Expiry must be enforced by the fast path itself, before any game access.
+                check(operator(OperatorRequest("status")).status.leaseId == null)
+                expectOperator("LEASE_LOST", OperatorRequest("heartbeat", lease))
                 check(raw("/mcp", rpc("player_turn", JsonObject(emptyMap())), revokedToken).statusCode() == 401)
                 val expired = operator(OperatorRequest("status")).status
                 check(expired.phase == "PAUSED" && expired.leaseId == null && expired.scheduled)

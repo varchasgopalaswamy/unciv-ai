@@ -297,7 +297,7 @@ internal class Communication(private val runtime: GameExecutor) {
             fail()
         }
         runtime.telemetry.changed(id)
-        runtime.commitCheckpoint()
+        runtime.commitAccounting()
         return obj("granted" to true)
     }
 

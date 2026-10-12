@@ -87,6 +87,24 @@ tasks.test {
         .withPathSensitivity(PathSensitivity.RELATIVE)
 }
 
+tasks.register<JavaExec>("verifyHostReliability") {
+    group = "verification"
+    description = "Exercises concurrent accounting and health checks on a fresh game or a copy of a checkpoint."
+    dependsOn(tasks.testClasses)
+    classpath = sourceSets.test.get().runtimeClasspath
+    mainClass = "uncivai.HostReliabilityProbe"
+    workingDir = uncivAssets
+    systemProperty("uncivai.assetsDir", uncivAssets.absolutePath)
+    systemProperty("java.awt.headless", "true")
+    maxHeapSize = "1g"
+    doFirst {
+        val output = providers.gradleProperty("reliabilityDir")
+        require(output.isPresent) { "verifyHostReliability requires -PreliabilityDir=<new absolute directory>" }
+        args(output.get())
+        providers.gradleProperty("reliabilityCheckpoint").orNull?.let { args(it) }
+    }
+}
+
 tasks.withType<JavaExec>().configureEach {
     workingDir = uncivAssets
     systemProperty("java.awt.headless", "true")

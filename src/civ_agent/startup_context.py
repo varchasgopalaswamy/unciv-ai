@@ -88,7 +88,12 @@ def memory_topics(reads: JsonObject, advice: JsonObject | None = None) -> set[st
     for record in social.get("offers", []) + social.get("trades", []) + social.get("agreements", []):
         add(record.get("proposalId"), record.get("agreement"), record.get("partner"), record.get("author"))
         add(*record.get("participants", []))
-    for event in social.get("messages", []):
+    events = social.get("messages", []) + [
+        {"body": message}
+        for thread in (social.get("conversationContext") or {}).get("threads", [])
+        for message in thread["messages"]
+    ]
+    for event in events:
         record = event.get("body", {})
         add(record.get("author"), record.get("from"), record.get("to"), record.get("partner"))
         add(*record.get("participants", []))

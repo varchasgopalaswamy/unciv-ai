@@ -66,6 +66,7 @@ object OpeningReviewProbe {
                 api.communicate(credential, obj("op" to "job_release", "epoch" to epoch, "job" to job, "usage" to ModelUsage(10, 0, 1, 0).recordJson(), "telemetry" to report.recordJson()))
             }
             check(api.status().turn == 1)
+            runtime.executor.telemetry.flushMonitoring()
             val rows = DriverManager.getConnection("jdbc:sqlite:${root.resolve("runner/monitoring.sqlite3")}").use { db ->
                 db.prepareStatement("SELECT payload FROM monitor_records WHERE collection='turns'").use { statement ->
                     statement.executeQuery().use { results -> buildList { while (results.next()) add(Json.parseToJsonElement(results.getString(1)).jsonObject) } }

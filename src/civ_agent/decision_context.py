@@ -3,6 +3,7 @@
 import copy
 from collections import Counter
 
+from civ_agent.progress_history import investment_accounting
 from civ_agent.protocol import JsonObject
 from civ_agent.review_context import development_changes, review_position
 
@@ -75,7 +76,9 @@ def choice_versions(records: list[JsonObject], since_turn: int) -> list[JsonObje
     return sorted(choices, key=lambda choice: choice["state"] != "active")
 
 
-def decision_feedback(choices: list[JsonObject], snapshot: JsonObject, actions: list[JsonObject]) -> JsonObject:
+def decision_feedback(
+    choices: list[JsonObject], snapshot: JsonObject, actions: list[JsonObject], progress: JsonObject | None = None
+) -> JsonObject:
     """Use own records and a permitted snapshot; unknown outcomes stay unknown."""
     now = review_position(snapshot)
     feedback = []
@@ -106,6 +109,7 @@ def decision_feedback(choices: list[JsonObject], snapshot: JsonObject, actions: 
                 for action in matching[-MAX_ACTIONS:]
             ],
             "actionCounts": dict(Counter(action["commandStatus"] for action in matching)),
+            "investment": investment_accounting(matching),
             "omittedEarlierActions": max(0, len(matching) - MAX_ACTIONS),
             "currentCities": {
                 handle: city
@@ -113,6 +117,28 @@ def decision_feedback(choices: list[JsonObject], snapshot: JsonObject, actions: 
                 if subjects & {handle.casefold(), city["name"].casefold()}
             },
         }
+        if progress:
+            targets = subjects | {(a.get("command", {}).get("target") or "").casefold() for a in matching}
+            row["recentSubjectProgress"] = {
+                "fromTurn": progress["fromTurn"],
+                "toTurn": progress["toTurn"],
+                "units": [
+                    u
+                    for u in progress.get("units", [])
+                    if u["unit"].casefold() in targets or u["name"].casefold() in targets
+                ],
+                "cities": [
+                    c
+                    for c in progress.get("cities", [])
+                    if c["city"].casefold() in targets or c["name"].casefold() in targets
+                ],
+                "changedFacts": [f for f in progress.get("changedFacts", []) if f["subject"].casefold() in targets],
+            }
+            row["currentUnits"] = [
+                {key: unit.get(key) for key in ("handle", "name", "position", "military", "health")}
+                for unit in snapshot.get("map", {}).get("units", [])
+                if unit["handle"].casefold() in targets or unit["name"].casefold() in targets
+            ]
         if before and before["turn"] < now["turn"]:
             row["observedChanges"] = development_changes(before, now)
         else:

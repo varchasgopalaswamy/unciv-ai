@@ -104,13 +104,38 @@ internal class Telemetry(private val runtime: GameExecutor) {
     private val callNanos = mutableMapOf<String, Long>()
     private var monitoringDirty = true
     private val diplomacy = DiplomacyMonitoring(runtime)
-    private var rebuild = true
     private val dirtyTurns = mutableSetOf<String>()
     private val dirtyJobs = mutableSetOf<String>()
     private val dirtyWindows = mutableSetOf<String>()
     private var lastPaused: Boolean? = null
-    internal var monitoringError: String? = null
+    private val dirtyPending = mutableSetOf<String>()
+    private var lastMetadata: JsonObject? = null
+    private var publisher: AccountingMonitoring? = null
+    private val reportedUsage = mutableMapOf<String, ModelUsage?>()
+    private val usageTotals = mutableMapOf("input_tokens" to 0L, "cached_input_tokens" to 0L, "output_tokens" to 0L, "reasoning_output_tokens" to 0L)
+
+    @Volatile internal var usageSnapshot: Map<String, Long> = emptyMap()
         private set
+
+    @Volatile internal var invocationsSnapshot: Long = 0
+        private set
+    internal val monitoringError get() = publisher?.error
+
+    fun initialize(store: CheckpointStore) {
+        publisher = AccountingMonitoring(store.path.parent.resolve("runner/monitoring.sqlite3"))
+        val ledger = checkNotNull(store.accounting)
+        ledger.onCommitted = { publisher!!.enqueue(it) }
+        publisher!!.enqueue(ledger.rows())
+        runtime.communicationState.jobs.keys.forEach(::updateUsage)
+        invocationsSnapshot = runtime.communicationState.invocations
+    }
+
+    private fun updateUsage(id: String) {
+        val next = runtime.communicationState.jobs[id]?.usage
+        val prior = reportedUsage.put(id, next)
+        usageTotals.keys.forEach { key -> usageTotals[key] = usageTotals.getValue(key) + (next?.tokens(key) ?: 0) - (prior?.tokens(key) ?: 0) }
+        usageSnapshot = usageTotals.toMap()
+    }
 
     fun communicationChanged() {
         monitoringDirty = true
@@ -119,6 +144,8 @@ internal class Telemetry(private val runtime: GameExecutor) {
     private fun key() = "${runtime.epoch}/${runtime.handoff}"
 
     fun changed(jobId: String) {
+        updateUsage(jobId)
+        invocationsSnapshot = runtime.communicationState.invocations
         monitoringDirty = true
         dirtyJobs.add(jobId)
         runtime.communicationState.jobs[jobId]?.let { job ->
@@ -150,10 +177,14 @@ internal class Telemetry(private val runtime: GameExecutor) {
 
     fun restored() {
         monitoringDirty = true
-        rebuild = true
         activeKey = null
-        state.turns.values.filter { it.endedAtMs == null }.forEach { it.timingComplete = false }
+        state.turns.filterValues { it.endedAtMs == null }.forEach { (id, turn) ->
+            turn.timingComplete = false
+            dirtyTurns.add(id)
+        }
+        dirtyPending.addAll(state.pendingCalls.keys)
         for (pending in state.pendingCalls.values) {
+            dirtyWindows.add(pending.window)
             for (name in pending.keys) state.windows.getValue(pending.window).actors.getValue(pending.civilization).getValue(name).incomplete++
         }
         state.pendingCalls.clear()
@@ -224,7 +255,8 @@ internal class Telemetry(private val runtime: GameExecutor) {
         val id = UUID.randomUUID().toString()
         state.pendingCalls[id] = PendingApiCall(key(), civilization, names, replay)
         callNanos[id] = System.nanoTime()
-        runtime.commitCheckpoint()
+        dirtyPending.add(id)
+        runtime.commitAccounting()
         id
     }
 
@@ -248,7 +280,8 @@ internal class Telemetry(private val runtime: GameExecutor) {
             }
             counts.elapsedMs += elapsed.coerceAtLeast(0)
         }
-        if (runtime.mutationFailure == null) runtime.commitCheckpoint()
+        dirtyPending.add(id)
+        if (runtime.mutationFailure == null) runtime.commitAccounting()
     }
 
     private fun scores(game: GameInfo) = game.civilizations.filter { it.isMajorCiv() }.map { player ->
@@ -268,130 +301,61 @@ internal class Telemetry(private val runtime: GameExecutor) {
         )
     }
 
-    private fun usage(jobs: Collection<CommunicationJob>): JsonObject {
-        val keys = listOf("input_tokens", "cached_input_tokens", "output_tokens", "reasoning_output_tokens")
-        val totals = keys.associateWith { name -> jobs.sumOf { it.usage?.tokens(name) ?: 0L } }
-        return obj(*totals.map { it.key to it.value }.toTypedArray(), "total_tokens" to (totals.getValue("input_tokens") + totals.getValue("output_tokens")), "complete" to jobs.all { it.telemetry?.usageComplete == true })
-    }
-
-    private fun aggregateCalls(groups: Collection<Map<String, ApiCounts>>): JsonObject {
-        val totals = linkedMapOf<String, ApiCounts>()
-        groups.forEach { group ->
-            group.forEach { (name, count) ->
-                val total = totals.getOrPut(name) { ApiCounts() }
-                total.calls += count.calls
-                total.succeeded += count.succeeded
-                total.errors += count.errors
-                total.replayed += count.replayed
-                total.incomplete += count.incomplete
-                total.elapsedMs += count.elapsedMs
-            }
-        }
-        return JsonObject(totals.mapValues { it.value.recordJson() })
-    }
-
-    private fun aggregateMemoryEdits(groups: Collection<MemoryEditCounts?>): JsonObject? {
-        val measured = groups.filterNotNull()
-        if (measured.isEmpty()) return null
-        val reasons = linkedMapOf<String, Long>()
-        measured.forEach { count -> count.rejectionReasons.forEach { (reason, value) -> reasons[reason] = (reasons[reason] ?: 0) + value } }
-        return MemoryEditCounts(
-            batches = measured.sumOf { it.batches },
-            accepted = measured.sumOf { it.accepted },
-            rejected = measured.sumOf { it.rejected },
-            rejectedBatches = measured.sumOf { it.rejectedBatches },
-            rejectionReasons = reasons,
-            complete = groups.all { it?.complete == true },
-        ).recordJson()
-    }
-
-    /** Publish only changed rows after checkpoint commit; a restart can rebuild them. */
-    fun publish(game: GameInfo, checkpoint: Path) {
-        if (!monitoringDirty && monitoringError == null && !diplomacy.epochChanged) return
-        try {
-            val store = MonitoringStore(checkpoint.parent.resolve("runner/monitoring.sqlite3"))
-            val updates = mutableListOf<MonitoringStore.Record>()
-            val diplomaticChanges = diplomacy.collect()
-            updates.addAll(diplomaticChanges.records)
-            val jobs = runtime.communicationState.jobs
-            val turns = state.turns.filterKeys { rebuild || it in dirtyTurns }.map { (id, turn) ->
-                val attempts = jobs.filter { (_, job) -> belongsToTurn(job, turn) }
-                val elapsed = turn.endedAtMs?.let { (it - turn.startedAtMs).coerceAtLeast(0) }
-                val human = turn.civilization in runtime.communicationState.humanPlayers
-                obj(
-                    "schemaVersion" to 1, "matchId" to game.gameId, "turnId" to id, "turn" to turn.recordJson(),
-                    "controller" to if (human) "HUMAN" else "AGENT",
-                    "usage" to usage(attempts.values), "jobs" to attempts.keys.toList(), "attempts" to turn.activationIds.size,
-                    "modelRequests" to attempts.values.sumOf { it.telemetry?.modelRequests ?: 0 },
-                    "accountingComplete" to (turn.endedAtMs != null && (human || turn.activationIds.all { activation -> attempts.containsKey(activation) }) && attempts.values.all { it.telemetry?.usageComplete == true }),
-                    "agentCalls" to aggregateCalls(attempts.values.map { it.telemetry?.apiCalls.orEmpty() }),
-                    "memoryEdits" to aggregateMemoryEdits(attempts.values.map { it.telemetry?.memoryEdits }),
-                    "hostCalls" to aggregateCalls(listOf(state.windows[id]?.actors?.get(turn.civilization).orEmpty())),
-                    "elapsedMs" to elapsed, "inactiveOrRecoveryMs" to elapsed?.let { (it - turn.activeMs).coerceAtLeast(0) },
-                    "jobElapsedMs" to attempts.values.sumOf { it.telemetry?.elapsedMs ?: 0 },
-                    "gameplayElapsedMs" to attempts.values.mapNotNull { it.telemetry?.gameplayElapsedMs }.takeIf { it.isNotEmpty() }?.sum(),
-                    "finalizationElapsedMs" to attempts.values.mapNotNull { it.telemetry?.finalizationElapsedMs }.takeIf { it.isNotEmpty() }?.sum(),
-                    "negotiationWaitMs" to attempts.values.sumOf { it.telemetry?.negotiationWaitMs ?: 0 },
-                )
-            }
-            turns.forEach { value ->
-                val id = (value.getValue("turnId") as JsonPrimitive).content
-                val turn = state.turns.getValue(id)
-                updates.add(MonitoringStore.Record("turns", id, value, turn.epoch, turn.civilization, turn.gameTurn))
-            }
-            jobs.filterKeys { rebuild || it in dirtyJobs }.forEach { (id, job) ->
-                updates.add(MonitoringStore.Record("jobs", id, obj("schemaVersion" to 1, "matchId" to game.gameId, "jobId" to id, "job" to job.recordJson()), job.epoch, job.civilization, job.gameTurn))
-            }
-            state.windows.filterKeys { rebuild || it in dirtyWindows }.forEach { (id, window) ->
-                updates.add(MonitoringStore.Record("host-api", id, window.recordJson(), window.epoch, window.activeCivilization, window.gameTurn))
-            }
-            val result = obj(
-                "schemaVersion" to 1, "matchId" to game.gameId, "epoch" to runtime.epoch,
-                "status" to if (state.result != null) {
-                    "completed"
-                } else if (runtime.isPaused()) {
-                    "incomplete"
-                } else {
-                    "running"
-                },
-                "result" to state.result?.recordJson(), "scores" to (state.result?.scores ?: scores(game)).map { it.recordJson() },
-                "usage" to usage(jobs.values), "modelJobs" to jobs.size,
-                "modelRequests" to jobs.values.sumOf { it.telemetry?.modelRequests ?: 0 },
-                "agentCalls" to aggregateCalls(jobs.values.map { it.telemetry?.apiCalls.orEmpty() }),
-                "memoryEdits" to aggregateMemoryEdits(jobs.values.map { it.telemetry?.memoryEdits }),
-                "hostCalls" to aggregateCalls(state.windows.values.flatMap { it.actors.values }),
-                "players" to game.civilizations.filter { it.isMajorCiv() }.map { player ->
-                    val owned = jobs.values.filter { it.civilization == player.civID }
+    /** Freeze only changed records while holding the executor; the writer consumes immutable JSON. */
+    fun accountingBatch(game: GameInfo, includeGame: Boolean): AccountingBatch? {
+        val rows = mutableListOf<AccountingRow>()
+        val metadata = runtime.communicationState.accountingMetadata().recordJson()
+        if (metadata != lastMetadata) rows.add(AccountingRow("meta", "accounting", metadata))
+        dirtyJobs.forEach { id -> runtime.communicationState.jobs[id]?.let { rows.add(AccountingRow("jobs", id, it.recordJson())) } }
+        dirtyTurns.forEach { id -> state.turns[id]?.let { rows.add(AccountingRow("turns", id, it.recordJson())) } }
+        dirtyWindows.forEach { id -> state.windows[id]?.let { rows.add(AccountingRow("windows", id, it.recordJson())) } }
+        dirtyPending.forEach { id -> rows.add(AccountingRow("pending", id, state.pendingCalls[id]?.recordJson())) }
+        if (includeGame) {
+            rows.add(
+                AccountingRow(
+                    "meta",
+                    "game",
                     obj(
-                        "civilization" to player.civID, "usage" to usage(owned), "modelJobs" to owned.size,
-                        "modelRequests" to owned.sumOf { it.telemetry?.modelRequests ?: 0 },
-                        "gameplayUsage" to usage(owned.filter { it.purpose == "gameplay" }), "reviewUsage" to usage(owned.filter { it.purpose == "review" }), "chatUsage" to usage(owned.filter { it.purpose == "communication" }),
-                        "agentCalls" to aggregateCalls(owned.map { it.telemetry?.apiCalls.orEmpty() }),
-                        "memoryEdits" to aggregateMemoryEdits(owned.map { it.telemetry?.memoryEdits }),
-                        "hostCalls" to aggregateCalls(state.windows.values.mapNotNull { it.actors[player.civID] }),
-                        "activeMs" to state.turns.values.filter { it.civilization == player.civID }.sumOf { it.activeMs },
-                        "jobElapsedMs" to owned.sumOf { it.telemetry?.elapsedMs ?: 0 },
-                    )
-                },
-                "startedAtMs" to state.startedAtMs, "elapsedMs" to ((state.result?.recordedAtMs ?: System.currentTimeMillis()) - state.startedAtMs).coerceAtLeast(0),
-                "hostRevision" to state.hostRevision, "engineRevision" to state.engineRevision,
-                "seed" to game.tileMap.mapParameters.seed, "ruleset" to game.gameParameters.baseRuleset,
-                "speed" to game.gameParameters.speed, "difficulty" to game.gameParameters.difficulty,
-                "victoryTypes" to game.gameParameters.victoryTypes, "maxTurns" to game.gameParameters.maxTurns,
+                        "schemaVersion" to 1, "matchId" to game.gameId, "epoch" to runtime.epoch,
+                        "status" to if (state.result != null) {
+                            "completed"
+                        } else if (runtime.isPaused()) {
+                            "incomplete"
+                        } else {
+                            "running"
+                        },
+                        "result" to state.result?.recordJson(), "scores" to (state.result?.scores ?: scores(game)).map { it.recordJson() },
+                        "humanPlayers" to runtime.communicationState.humanPlayers.toList(),
+                        "startedAtMs" to state.startedAtMs, "elapsedMs" to ((state.result?.recordedAtMs ?: System.currentTimeMillis()) - state.startedAtMs).coerceAtLeast(0),
+                        "hostRevision" to state.hostRevision, "engineRevision" to state.engineRevision,
+                        "seed" to game.tileMap.mapParameters.seed, "ruleset" to game.gameParameters.baseRuleset,
+                        "speed" to game.gameParameters.speed, "difficulty" to game.gameParameters.difficulty,
+                        "victoryTypes" to game.gameParameters.victoryTypes, "maxTurns" to game.gameParameters.maxTurns,
+                    ),
+                ),
             )
-            updates.add(MonitoringStore.Record("state", "result", result, runtime.epoch))
-            store.write(updates)
-            diplomacy.committed(diplomaticChanges)
-            rebuild = false
-            dirtyTurns.clear()
-            dirtyJobs.clear()
-            dirtyWindows.clear()
-            monitoringError = null
-            monitoringDirty = false
-        } catch (failure: Exception) {
-            // Monitoring failure cannot undo a committed command. Dirty rows remain
-            // queued, and a restart rebuilds them from the authoritative checkpoint.
-            monitoringError = failure.javaClass.simpleName
         }
+        lastMetadata = metadata
+        dirtyJobs.clear()
+        dirtyTurns.clear()
+        dirtyWindows.clear()
+        dirtyPending.clear()
+        return rows.takeIf { it.isNotEmpty() }?.let { AccountingBatch(rows = it) }
+    }
+
+    /** Queued copies survive a slow/failed dashboard write; restart rebuilds this projection. */
+    fun publishDiplomacy() {
+        if (!monitoringDirty && !diplomacy.epochChanged) return
+        val batch = diplomacy.collect()
+        publisher?.enqueueMonitoring(batch.records)
+        diplomacy.committed(batch)
+        monitoringDirty = false
+    }
+
+    fun flushMonitoring() {
+        publisher?.flush()
+    }
+    fun close() {
+        publisher?.close()
     }
 }

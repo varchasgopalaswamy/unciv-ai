@@ -158,7 +158,7 @@ object BilateralTradeProbe {
                 check(api.turn(api.playerToken("Greece")).cities.any { it.name == "Antium" })
                 check(calls.options()["activeAgreements"]!!.toString().contains(cityOffer["name"]!!.jsonPrimitive.content))
                 check(api.communicate(api.playerToken("Greece"), request) == accepted)
-                Files.copy(checkpoint, interrupted)
+                copyCheckpoint(checkpoint, interrupted)
                 api.finishTurn(active)
                 api.finishTurn(checkNotNull(api.activate().playerToken))
             }

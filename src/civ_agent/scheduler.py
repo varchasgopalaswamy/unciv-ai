@@ -10,6 +10,7 @@ import ssl
 import stat
 import sys
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -128,7 +129,7 @@ def secure_url(value):
 class JsonEndpoint:
     endpoint_role = "control endpoint"
 
-    def __init__(self, url, token, ca_file, timeout=5):
+    def __init__(self, url, token, ca_file, timeout=15):
         self.url, self.token, self.timeout = secure_url(url), token, timeout
         self.context = ssl.create_default_context(cafile=str(ca_file) if ca_file else None)
         # Direct connections keep operator/service credentials out of HTTP proxies.
@@ -138,7 +139,7 @@ class JsonEndpoint:
             NoRedirect(),
         )
 
-    def call(self, operation, **fields):
+    def call(self, operation, *, _timeout=None, **fields):
         operation_name = (
             operation
             if isinstance(operation, str) and re.fullmatch(r"[a-z_]{1,40}", operation)
@@ -176,6 +177,8 @@ class JsonEndpoint:
                 and fields.get("stage") == "start"
                 else self.timeout
             )
+            if _timeout is not None:
+                timeout = min(timeout, _timeout)
             with self.opener.open(request, timeout=timeout) as response:
                 body = response.read(maximum + 1)
             value = json.loads(body)
@@ -214,13 +217,36 @@ class JsonEndpoint:
 class Operator(JsonEndpoint):
     endpoint_role = "host operator"
 
-    def __init__(self, host_url, token, ca_file, timeout=5):
+    def __init__(self, host_url, token, ca_file, timeout=15):
         self.host_url = secure_url(host_url)
         super().__init__(self.host_url + "/operator", token, ca_file, timeout)
+        self._lease_lock = threading.Lock()
+        self._lease_deadline = None
+        self._server_instance = None
 
     def call(self, operation, **fields):
-        value = super().call(operation, **fields)
+        began = time.monotonic()
+        with self._lease_lock:
+            lease_deadline = self._lease_deadline
+        deadline = min(began + 2 * self.timeout, lease_deadline - 5) if lease_deadline else began + 2 * self.timeout
+        value = None
+        for attempt in range(2):
+            try:
+                value = super().call(
+                    operation, _timeout=None if attempt == 0 else deadline - time.monotonic(), **fields
+                )
+                break
+            except OperatorError as error:
+                if (
+                    attempt
+                    or operation not in {"status", "heartbeat"}
+                    or error.code != "TRANSPORT_TIMEOUT"
+                    or deadline - time.monotonic() < 0.1
+                ):
+                    raise
         try:
+            if not isinstance(value, dict):
+                raise ValueError()
             status = value["status"]
             if not isinstance(status, dict):
                 raise ValueError()
@@ -234,6 +260,16 @@ class Operator(JsonEndpoint):
             war_turn = status.get("warDeclarationTurn")
             if war_turn is not None and (type(war_turn) is not int or war_turn < 0):
                 raise ValueError()
+            with self._lease_lock:
+                if self._server_instance is not None and self._server_instance != status["serverInstance"]:
+                    self._lease_deadline = None
+                self._server_instance = status["serverInstance"]
+                remaining = status.get("leaseExpiresInMs")
+                if operation in {"acquire", "heartbeat"} and status.get("leaseId") == fields.get("leaseId"):
+                    if type(remaining) is int and remaining > 0:
+                        self._lease_deadline = began + remaining / 1000
+                elif not status.get("leaseId"):
+                    self._lease_deadline = None
             return value
         except (ValueError, KeyError, TypeError):
             raise OperatorError("Invalid operator response; stopped for inspection.") from None

@@ -35,6 +35,7 @@ object ObservationOpportunitiesProbe {
                 "settler-progress" -> settlerProgress(root)
                 "military" -> military(root)
                 "production-conversion" -> ConstructionOpportunitiesProbe.conversion(root)
+                "production-policy" -> ConstructionOpportunitiesProbe.productionPolicy(root)
                 "wonders" -> ConstructionOpportunitiesProbe.wonders(root)
                 else -> error("Unknown fixture")
             }

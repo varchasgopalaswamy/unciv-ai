@@ -235,6 +235,7 @@ def test_chat_batches_and_replies_while_planning_job_is_held(
 ):
     async def run():
         monkeypatch.setattr("civ_agent.chat_runtime.COMMUNICATION_BATCH_SECONDS", 0.05)
+        monkeypatch.setattr("civ_agent.agent_service.JOB_PERMIT_RENEW_INTERVAL", 0.05)
         model = "test/model" if provider == "openrouter" else "test-model"
         priority = fast and provider == "openai"
         civilization = "France" if civilization_guide else "Rome"
@@ -301,7 +302,9 @@ def test_chat_batches_and_replies_while_planning_job_is_held(
             host.permit_gameplay = True
             await asyncio.wait_for(jobs.planning_started.wait(), 2)
             await service.heartbeat("planning")
-            assert host.gameplay_heartbeats == 1
+            async with asyncio.timeout(2):
+                while host.gameplay_heartbeats == 0:
+                    await asyncio.sleep(0.01)
             await service.review_phase({"epoch": "g1", "gameTurn": 0, "stage": "hold"})
             host.post("Can we discuss peace?")
             host.post("I can offer a luxury.")
@@ -349,7 +352,7 @@ def test_chat_batches_and_replies_while_planning_job_is_held(
             await asyncio.sleep(0.15)
             assert jobs.purposes == ["gameplay", "communication"]
             host.expire_gameplay = True
-            await service.heartbeat("planning")
+            # Permit failure stops gameplay independently of scheduler HTTP health checks.
             assert service.active_task is not None
             await asyncio.wait_for(service.active_task, 2)
             assert service.status()["error"] == "JOB_PERMIT_EXPIRED"

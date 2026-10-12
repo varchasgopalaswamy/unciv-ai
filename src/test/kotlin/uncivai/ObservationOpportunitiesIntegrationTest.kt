@@ -47,6 +47,8 @@ class ObservationOpportunitiesIntegrationTest {
 
     @Test fun `production conversion previews match native output without changing queues`() = run("production-conversion")
 
+    @Test fun `agent conversions unlock only in the final era including saved and automated queues`() = run("production-policy")
+
     @Test fun `unbuilt wonders expose benefits and city requirements without rival progress`() = run("wonders")
 
     @Test fun `city building estimates match native completion and remain pure through HTTPS`() = run("building-estimates")

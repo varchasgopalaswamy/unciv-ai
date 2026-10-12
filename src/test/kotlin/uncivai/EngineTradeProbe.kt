@@ -18,14 +18,17 @@ import java.sql.DriverManager
 
 /** Player writes go through HTTPS; assertions inspect actual engine balances, supplies and trades. */
 object EngineTradeProbe {
-    private fun diplomacy(root: Path, collection: String = "diplomacy"): List<JsonObject> = DriverManager.getConnection("jdbc:sqlite:${root.resolve("runner/monitoring.sqlite3")}").use { db ->
-        db.prepareStatement("SELECT payload FROM monitor_records WHERE collection=? ORDER BY revision").use { query ->
-            query.setString(1, collection)
-            query.executeQuery().use { rows -> buildList { while (rows.next()) add(Json.parseToJsonElement(rows.getString(1)).jsonObject) } }
+    private fun diplomacy(runtime: HeadlessRuntime, root: Path, collection: String = "diplomacy"): List<JsonObject> {
+        runtime.executor.telemetry.flushMonitoring()
+        return DriverManager.getConnection("jdbc:sqlite:${root.resolve("runner/monitoring.sqlite3")}").use { db ->
+            db.prepareStatement("SELECT payload FROM monitor_records WHERE collection=? ORDER BY revision").use { query ->
+                query.setString(1, collection)
+                query.executeQuery().use { rows -> buildList { while (rows.next()) add(Json.parseToJsonElement(rows.getString(1)).jsonObject) } }
+            }
         }
     }
 
-    private fun negotiation(root: Path) = diplomacy(root, "state").single { "activeNegotiation" in it }.getValue("activeNegotiation")
+    private fun negotiation(runtime: HeadlessRuntime, root: Path) = diplomacy(runtime, root, "state").single { "activeNegotiation" in it }.getValue("activeNegotiation")
 
     @JvmStatic
     fun main(args: Array<String>) {
@@ -65,14 +68,14 @@ object EngineTradeProbe {
                 var sequence = 0
                 fun command(civ: String, op: String, vararg fields: Pair<String, Any?>): JsonObject = api.communicate(api.playerToken(civ), obj("op" to op, "epoch" to epoch, "requestId" to "trade${++sequence}", *fields))
                 command("Rome", "send", "to" to "Greece", "text" to "Would you trade gold for Silk?")
-                check(diplomacy(root).count { it["kind"]?.jsonPrimitive?.content == "message" } == 1) { "Recipient copies must not duplicate the conversation" }
+                check(diplomacy(runtime, root).count { it["kind"]?.jsonPrimitive?.content == "message" } == 1) { "Recipient copies must not duplicate the conversation" }
                 val promise = command("Rome", "offer", "participants" to listOf("Rome", "Greece"), "kind" to "other", "terms" to "Discuss trades before expanding", "conditions" to "When practical")["offer"]!!.jsonObject
                 for (decision in listOf("accept", "reconsider", "withdraw", "reconsider", "reconsider")) {
                     val reason = if (decision != "accept") arrayOf<Pair<String, Any?>>("reason" to "Reviewing these terms") else emptyArray()
                     val receipt = command("Greece", decision, "proposal" to promise["proposal"], "version" to 1, *reason)
                     check("error" !in receipt) { receipt }
                 }
-                val decisions = diplomacy(root).filter { it["kind"]?.jsonPrimitive?.content == "consent" }.map { it.getValue("body").jsonObject }.filter { it["author"]?.jsonPrimitive?.content == "Greece" }
+                val decisions = diplomacy(runtime, root).filter { it["kind"]?.jsonPrimitive?.content == "consent" }.map { it.getValue("body").jsonObject }.filter { it["author"]?.jsonPrimitive?.content == "Greece" }
                 check(decisions.map { it.getValue("decision").jsonPrimitive.content } == listOf("accept", "reconsider", "withdraw", "reconsider")) { "Repeated decisions must survive without duplicating idempotent retries: $decisions" }
                 fun read(civ: String, proposal: String) = api.communicate(api.playerToken(civ), obj("op" to "trade_read", "epoch" to epoch, "proposal" to proposal)).getValue("trade").jsonObject
                 val options = api.communicate(api.playerToken("Rome"), obj("op" to "trade_options", "epoch" to epoch, "partner" to "Greece"))
@@ -108,13 +111,13 @@ object EngineTradeProbe {
                 val recipientView = read("Greece", id)
                 check(recipientView["declineAvailable"]!!.jsonPrimitive.boolean)
                 check(!recipientView["withdrawAvailable"]!!.jsonPrimitive.boolean)
-                check(negotiation(root).jsonObject["partner"]!!.jsonPrimitive.content == "Greece")
+                check(negotiation(runtime, root).jsonObject["partner"]!!.jsonPrimitive.content == "Greece")
                 check(rome.getDiplomacyManager(greece)!!.trades.isEmpty())
                 val counter = command("Greece", "trade_offer", "proposal" to id, "version" to 1, "partner" to "Rome", "give" to listOf(gpt, gold), "receive" to listOf(silk))["trade"]!!.jsonObject
                 check(counter["version"]!!.jsonPrimitive.int == 2)
                 check(counter["proposal"] == initial["proposal"])
-                check(negotiation(root).jsonObject["partner"]!!.jsonPrimitive.content == "Rome")
-                val reported = diplomacy(root).filter { it["kind"]?.jsonPrimitive?.content == "trade" }.map { it.getValue("body").jsonObject }
+                check(negotiation(runtime, root).jsonObject["partner"]!!.jsonPrimitive.content == "Rome")
+                val reported = diplomacy(runtime, root).filter { it["kind"]?.jsonPrimitive?.content == "trade" }.map { it.getValue("body").jsonObject }
                 check(reported.map { it["version"]!!.jsonPrimitive.int to it["status"]!!.jsonPrimitive.content } == listOf(1 to "PENDING", 1 to "SUPERSEDED", 2 to "PENDING"))
                 check(read("Rome", id)["clauses"] == read("Greece", id)["clauses"])
                 val stale = command("Greece", "trade_decide", "proposal" to id, "version" to 1, "decision" to "accept")
@@ -123,8 +126,8 @@ object EngineTradeProbe {
                 acceptedRequest = obj("op" to "trade_decide", "epoch" to epoch, "requestId" to "accept-counter", "proposal" to id, "version" to 2, "decision" to "accept")
                 acceptedReceipt = api.communicate(api.playerToken("Rome"), acceptedRequest)
                 check(acceptedReceipt["trade"]!!.jsonObject["status"]!!.jsonPrimitive.content == "ENACTED")
-                check(negotiation(root) == JsonNull)
-                check(diplomacy(root).any { it.getValue("body").jsonObject["status"]?.jsonPrimitive?.content == "ENACTED" })
+                check(negotiation(runtime, root) == JsonNull)
+                check(diplomacy(runtime, root).any { it.getValue("body").jsonObject["status"]?.jsonPrimitive?.content == "ENACTED" })
                 check(runtime.executor.handoff == handoff && runtime.game.currentPlayer == "Rome")
                 check(rome.gold == beforeGold.first + 20 && greece.gold == beforeGold.second - 20)
                 check(rome.getCivResourcesByName()["Silk"] == beforeSilk - 1)
@@ -166,7 +169,7 @@ object EngineTradeProbe {
                 val expired = offer(listOf(iron), listOf(gold))
                 runtime.executor.clockMillis = { expired["deadlineMillis"]!!.jsonPrimitive.content.toLong() }
                 check(decide(expired, "accept")["error"] != null)
-                check(diplomacy(root).any { it.getValue("body").jsonObject["status"]?.jsonPrimitive?.content == "EXPIRED" })
+                check(diplomacy(runtime, root).any { it.getValue("body").jsonObject["status"]?.jsonPrimitive?.content == "EXPIRED" })
                 runtime.executor.clockMillis = System::currentTimeMillis
                 api.finishTurn(active)
                 val next = checkNotNull(api.activate().playerToken)
@@ -181,12 +184,12 @@ object EngineTradeProbe {
                 pending = offer(listOf(iron), listOf(gold))
                 savedGold = rome.gold
                 runtime.executor.commitCheckpoint()
-                savedDiplomacy = diplomacy(root)
+                savedDiplomacy = diplomacy(runtime, root)
                 Files.writeString(root.resolve("verified.json"), obj("canonicalCounteroffer" to counter, "enacted" to acceptedReceipt, "handoffs" to runtime.executor.handoff).toString())
             }
         }
         HeadlessRuntime.loadCheckpoint(checkpoint, root.resolve("restart")).use { runtime ->
-            check(diplomacy(root) == savedDiplomacy) { "Restart duplicated or rewrote diplomatic history" }
+            check(diplomacy(runtime, root) == savedDiplomacy) { "Restart duplicated or rewrote diplomatic history" }
             val rome = runtime.game.getCivilization("Rome")
             val greece = runtime.game.getCivilization("Greece")
             val sessions = listOf("Rome", "Greece").associateWith { PlayerHost(runtime).bindPlayer(it) }
@@ -202,10 +205,10 @@ object EngineTradeProbe {
             runtime.executor.pause()
             runtime.executor.communicationPaused = true
             runtime.executor.restoreTurn(restorePoint!!, "restored-trade-epoch")
-            val restoredDiplomacy = diplomacy(root).filter { it.getValue("epoch").jsonPrimitive.content == "restored-trade-epoch" }
+            val restoredDiplomacy = diplomacy(runtime, root).filter { it.getValue("epoch").jsonPrimitive.content == "restored-trade-epoch" }
             check(restoredDiplomacy.isNotEmpty())
             check(restoredDiplomacy.none { it.getValue("body").jsonObject["proposal"] == proposal["proposal"] }) { "Abandoned trade leaked into the restored timeline" }
-            check(negotiation(root) == JsonNull)
+            check(negotiation(runtime, root) == JsonNull)
             check(runtime.executor.communicationState.trades == restorePoint.communication.trades)
             runtime.executor.accessGame { game ->
                 check(game.getCivilization("Rome").getDiplomacyManager("Greece")!!.trades.size == 1)

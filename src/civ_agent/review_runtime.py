@@ -208,11 +208,17 @@ class ReviewRuntime:
             cursor = page["nextCursor"]
         messages = list({event["id"]: event for event in messages}.values())[-50:]
         reads["chat_read"] = {**social, "messages": messages}
+        conversations = await service.io.call(
+            service.memory.conversation_context, [e["body"] for e in messages if e["kind"] == "message"]
+        )
+        conversations.pop("_evidenceKeys")
+        reads["chat_read"]["conversationContext"] = conversations
         position = review_position(snapshot)
         previous = await service.io.call(self.store.last_position)
         reads["player_turn"]["developmentSincePreviousReview"] = development_changes(previous, position)
         reads["player_turn"]["upcomingEvents"] = upcoming_events(snapshot, social)
         reads["player_turn"]["decisionFeedback"] = await service.io.call(service.memory.decision_feedback, snapshot)
+        reads["player_turn"]["recentProgress"] = await service.io.call(service.memory.progress_feedback, snapshot)
         catalogue = [tool for tool in tools if tool["name"] in REVIEW_READ_TOOLS]
         for tool in catalogue:
             if tool["name"] == "player_turn":

@@ -1,6 +1,6 @@
 # Database access with SQLAlchemy Core
 
-The memory, accounting and Python monitoring stores use SQLAlchemy Core with SQLite. Core defines
+The Python memory, accounting and monitoring stores use SQLAlchemy Core with SQLite. Core defines
 tables and composes parameterized statements; the domain code still explicitly
 controls memory revisions, receipts, visibility and recovery. There are no ORM
 sessions or additional database services.
@@ -21,6 +21,10 @@ sessions or additional database services.
 - [sqlite_database.py](../../src/civ_agent/sqlite_database.py) owns connection and
   transaction setup. The existing `ServiceIO` worker runs synchronous database
   work outside the HTTPS event loop.
+
+The Kotlin host uses its own ordered JDBC accounting writer. Its native checkpoint
+outbox, health checks and background publication are described in
+[host accounting](Host-accounting.md).
 
 The read-only scenario verifier and live-run analysis tools retain their
 independent `sqlite3` readers. They inspect stored records without depending on
@@ -63,7 +67,8 @@ A late read from another job's older snapshot cannot conceal a newer change.
 Immutable history, delivered evidence, command-state validation and rollback
 retain their transaction boundaries.
 
-Heartbeats renew the native lease without joining the database/history queue.
+Service heartbeats acknowledge liveness without waiting on the host. A separate
+task renews the native job permit without joining the database/history queue.
 Periodic accounting and telemetry use the background accounting task and retain durable
 unsent reports. `service_io_slow` diagnostics separate queue and work milliseconds
 and name the operation without recording its arguments or private contents.

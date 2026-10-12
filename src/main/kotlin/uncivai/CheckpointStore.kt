@@ -27,7 +27,7 @@ import java.nio.file.StandardOpenOption
 /** Trusted full-state artifact. Never serve this file through a player endpoint. */
 @Serializable
 internal data class GameCheckpoint(
-    val formatVersion: Int = 8,
+    val formatVersion: Int = 9,
     val epoch: String,
     val paused: Boolean,
     val gameJson: String,
@@ -36,6 +36,8 @@ internal data class GameCheckpoint(
     val scheduled: Boolean = false,
     val communication: CommunicationState = CommunicationState(),
     val communicationPaused: Boolean = false,
+    val accountingId: String? = null,
+    val accountingOutbox: List<AccountingBatch> = emptyList(),
 )
 
 @Serializable
@@ -70,27 +72,39 @@ internal class CheckpointStore(
 ) : AutoCloseable {
     private var lockChannel: FileChannel? = null
     private var lock: FileLock? = null
+    internal var accounting: HostAccountingStore? = null
+        private set
+    internal val accountingPath get() = path.resolveSibling("${path.fileName}.accounting.sqlite3")
+    internal var writes = 0L
+        private set
+    internal var bytesWritten = 0L
+        private set
     init {
         require(path.isAbsolute) { "Checkpoint path must be absolute" }
     }
 
     fun write(checkpoint: GameCheckpoint) {
         acquire()
+        val ledger = checkNotNull(accounting) { "Initialize accounting before writing a checkpoint" }
+        ledger.checkHealthy()
         val parent = path.parent
         Files.createDirectories(parent)
         val temporary = Files.createTempFile(parent, ".checkpoint-", ".tmp")
         try {
-            val bytes = checkpointJson.encodeToString(checkpoint).toByteArray(Charsets.UTF_8)
+            val persisted = checkpoint.copy(formatVersion = 9, communication = checkpoint.communication.withoutAccounting(), accountingId = ledger.id, accountingOutbox = ledger.outbox())
+            val bytes = HostTimings.measure("checkpoint.serialize") { checkpointJson.encodeToString(persisted).toByteArray(Charsets.UTF_8) }
             FileChannel.open(temporary, StandardOpenOption.WRITE).use { channel ->
                 val buffer = ByteBuffer.wrap(bytes)
                 while (buffer.hasRemaining()) channel.write(buffer)
-                channel.force(true)
+                HostTimings.measure("checkpoint.fsync") { channel.force(true) }
             }
             beforeReplace()
             // Deliberately no non-atomic fallback: a torn checkpoint is not recovery.
             Files.move(temporary, path, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
             FileChannel.open(parent, StandardOpenOption.READ).use { it.force(true) }
             afterReplace()
+            writes++
+            bytesWritten += bytes.size
         } finally {
             Files.deleteIfExists(temporary)
         }
@@ -99,16 +113,40 @@ internal class CheckpointStore(
     fun writeInitial(checkpoint: GameCheckpoint) {
         acquire()
         require(!Files.exists(path)) { "Checkpoint already exists; resume it explicitly" }
+        require(!Files.exists(accountingPath)) { "Accounting already exists; use a fresh checkpoint path" }
+        initializeAccounting(checkpoint.communication, "initial")
         write(checkpoint)
     }
 
     fun read(): GameCheckpoint {
         acquire()
         val document = checkpointJson.parseToJsonElement(Files.readString(path))
-        require(document.jsonObject["formatVersion"]?.jsonPrimitive?.intOrNull == 8) { "Unsupported checkpoint version; start a new game" }
+        val version = document.jsonObject["formatVersion"]?.jsonPrimitive?.intOrNull
+        require(version in setOf(8, 9)) { "Unsupported checkpoint version; start a new game" }
         val saved = checkpointJson.decodeFromJsonElement<GameCheckpoint>(document)
         require(saved.epoch.isNotEmpty()) { "Invalid checkpoint epoch" }
-        return saved
+        if (version == 8) {
+            val backup = path.resolveSibling("${path.fileName}.v8.json")
+            if (!Files.exists(backup)) {
+                Files.copy(path, backup)
+                FileChannel.open(backup, StandardOpenOption.WRITE).use { it.force(true) }
+            }
+            val digest = java.security.MessageDigest.getInstance("SHA-256").digest(Files.readAllBytes(path)).joinToString("") { "%02x".format(it) }
+            initializeAccounting(saved.communication, digest)
+            write(saved)
+        } else {
+            require(saved.accountingId != null && Files.isRegularFile(accountingPath)) { "Checkpoint accounting database is missing" }
+            val ledger = accounting ?: HostAccountingStore(accountingPath)
+            accounting = ledger
+            require(saved.accountingId == ledger.id) { "Checkpoint and accounting database do not match" }
+            saved.accountingOutbox.forEach { ledger.submit(it).join() }
+        }
+        return saved.copy(formatVersion = 9, communication = checkNotNull(accounting).restore(saved.communication), accountingId = accounting!!.id, accountingOutbox = emptyList())
+    }
+
+    private fun initializeAccounting(state: CommunicationState, sourceId: String) {
+        if (accounting == null) accounting = HostAccountingStore(accountingPath)
+        accounting!!.importLegacy(state, sourceId)
     }
 
     private fun acquire() {
@@ -129,6 +167,8 @@ internal class CheckpointStore(
     }
 
     override fun close() {
+        accounting?.close()
+        accounting = null
         lockChannel?.close()
         lockChannel = null
         lock = null
@@ -171,3 +211,9 @@ internal class CheckpointStore(
         )
     }
 }
+
+internal fun CommunicationState.withoutAccounting() = copy(
+    telemetry = TelemetryState(startedAtMs = 0, hostRevision = "", engineRevision = ""),
+    jobs = mutableMapOf(),
+    invocations = 0,
+)

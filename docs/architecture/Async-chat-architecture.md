@@ -51,17 +51,23 @@ flowchart TB
         Game["Unciv game state"]
         Ledger["Communication state<br/>Statements and offers<br/>Explicit consent<br/>Confirmed engine outcomes"]
         Checkpoint[("Atomic host checkpoint<br/>Native game, shared ledger and command receipts")]
+        Accounting[("Durable accounting database<br/>Job permits, reports and API counters")]
+        Health["Committed status snapshot<br/>Atomic operator lease"]
 
-        OperatorAPI --> Executor
+        OperatorAPI -->|"State-changing operations"| Executor
+        OperatorAPI <-->|"Status and heartbeat"| Health
         PlayerAPI --> Executor
         Executor <--> Game
         Executor <--> Ledger
         Executor --> Checkpoint
+        Executor -->|"Ordered incremental writes"| Accounting
+        Executor -->|"After native commit"| Health
     end
 
     Scheduler <-->|"HTTPS control and status"| Control
     Journal -->|"Authenticated event pages"| Scheduler
-    Executor -->|"Changed telemetry rows after checkpoint"| Monitoring
+    Accounting -->|"Background publication"| Monitoring
+    Checkpoint -->|"Committed game and diplomacy projection"| Monitoring
     Scheduler <-->|"HTTPS authority and budgets"| OperatorAPI
     Gateway <-->|"HTTPS observations, commands and receipts"| PlayerAPI
     Chat <-->|"HTTPS event long polling and job permits"| PlayerAPI

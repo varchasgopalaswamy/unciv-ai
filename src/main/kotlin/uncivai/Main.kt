@@ -62,15 +62,29 @@ private fun launchHost(options: CliOptions) {
                 "Checkpoint is not the ${options.scenario} scenario. Choose a fresh --state-dir."
             }
             runtime.executor.accessGame {
+                var changed = false
                 if (players != null) {
                     val humans = players.filter { it.controller == "HUMAN" }.map { it.civilizationId }.toSet()
                     require(options.resumeCheckpoint == null || humans == runtime.executor.communicationState.humanPlayers) { "Player controller assignments differ from the checkpoint." }
-                    runtime.executor.communicationState.humanPlayers.clear()
-                    runtime.executor.communicationState.humanPlayers.addAll(humans)
+                    if (humans != runtime.executor.communicationState.humanPlayers) {
+                        runtime.executor.communicationState.humanPlayers.clear()
+                        runtime.executor.communicationState.humanPlayers.addAll(humans)
+                        changed = true
+                    }
                 }
-                options.tradeCounteroffers?.let { runtime.executor.communicationState.trades.counterofferLimit = it }
-                options.tradeTimeoutSeconds?.let { runtime.executor.communicationState.trades.timeoutSeconds = it }
-                runtime.executor.commitCheckpoint()
+                options.tradeCounteroffers?.let {
+                    if (runtime.executor.communicationState.trades.counterofferLimit != it) {
+                        runtime.executor.communicationState.trades.counterofferLimit = it
+                        changed = true
+                    }
+                }
+                options.tradeTimeoutSeconds?.let {
+                    if (runtime.executor.communicationState.trades.timeoutSeconds != it) {
+                        runtime.executor.communicationState.trades.timeoutSeconds = it
+                        changed = true
+                    }
+                }
+                if (changed) runtime.executor.commitCheckpoint()
             }
             options.checkpoint?.let { runtime.executor.enableCheckpoints(it) }
             println("Scenario: ${runtime.game.tileMap.mapParameters.name.ifEmpty { "Ordinary game" }}")

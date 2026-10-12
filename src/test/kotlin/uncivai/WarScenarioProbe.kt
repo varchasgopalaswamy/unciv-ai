@@ -60,7 +60,7 @@ object WarScenarioProbe {
                     check(money() == listOf(470, 530, 500) && wars() == listOf(true, true))
                 }
                 check(runtime.game.currentPlayer == "Rome" && runtime.executor.handoff == initialHandoff)
-                Files.copy(checkpoint, directory.resolve("first-settlement.json"))
+                copyCheckpoint(checkpoint, directory.resolve("first-settlement.json"))
                 // France's stream has pairwise outcomes, never the private proposal or its price.
                 val id = pending.getValue("proposal").toString()
                 check(runtime.executor.communicationState.streams["France"].orEmpty().none { it.kind == "trade" || it.body.toString().contains(id) })
@@ -91,7 +91,7 @@ object WarScenarioProbe {
                     }
                 }
                 check(context("Rome")!!.phase == "CONTINUE")
-                Files.copy(checkpoint, directory.resolve("settled.json"))
+                copyCheckpoint(checkpoint, directory.resolve("settled.json"))
             } finally {
                 runtime.close()
             }

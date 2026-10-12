@@ -321,3 +321,46 @@ def test_happiness_is_a_level_not_an_accumulating_yield():
     assert "Happiness" not in result["continueCurrent"]
     assert "Happiness" not in result["build"]["yieldDifferenceOverHorizon"]
     assert "Happiness" not in result["purchase"]["yieldDifferenceOverHorizon"]
+
+
+def test_followup_conversion_uses_native_rates_and_retains_unfinished_assets():
+    native = estimate(turns=5)
+    native["completion"]["following"] = {
+        "Science": {"before": {"Science": "11"}, "after": {"Science": "15"}, "change": {"Science": "4"}}
+    }
+    result = investment_comparison(native, {"available": True, "goldCost": 200}, 10)
+    scenario = result["following"]["Science"]
+    assert scenario["continueCurrent"] == {"Science": 110}
+    assert scenario["build"]["yieldDifferenceOverHorizon"] == {"Science": 15}  # -1*5 + 4*5
+    assert scenario["purchase"]["yieldDifferenceOverHorizon"] == {"Science": 40}
+    early = investment_comparison(native, None, 3)["build"]["endOfHorizon"]
+    assert not early["completed"] and early["storedProduction"] == 40
+    assert early["turnsRemainingAtCurrentRate"] == 2
+    assert result["build"]["endOfHorizon"]["completed"]
+
+
+def test_existing_queue_entry_can_resume_even_when_another_copy_cannot_be_appended():
+    native = estimate()
+    native.update(
+        queueUnavailableReasons=["Cannot add this item to the current construction queue"], buildUnavailableReasons=[]
+    )
+    progress = [{"index": 1, "moveToIndices": [0], "name": "Library"}]
+    result = investment_comparison(native, None, 10, progress=progress, can_queue=False)
+    assert result["build"]["available"] and not result["queueOptions"]["canAppend"]
+    assert result["queueOptions"]["buildNow"] == {"kind": "MOVE_CONSTRUCTION", "index": 1, "toIndex": 0}
+    current = investment_comparison(native, None, 10, progress=[{"index": 0}], can_queue=False)
+    assert current["build"]["available"] and current["queueOptions"]["buildNow"]["kind"] == "CONTINUE"
+    native["buildUnavailableReasons"] = ["Requires Education"]
+    assert not investment_comparison(native, None, 10, progress=progress, can_queue=False)["build"]["available"]
+
+
+def test_named_blocked_conversion_explains_operator_era_restriction():
+    view = snapshot().view
+    view["constructionCatalogue"].append("Science")
+    view["productionPolicy"] = {
+        "blockedConversions": ["Gold", "Science", "Culture"],
+        "conversionUnlockEra": "Future era",
+    }
+    row = project_detail(view, query(["Science"]))["data"]["constructions"][0]
+    assert not row["canQueue"] and "command" not in row
+    assert row["queueUnavailableReasons"] == ["Production conversion is disabled until Future era"]

@@ -17,6 +17,7 @@ from sqlalchemy import bindparam, func, insert, inspect, or_, select
 
 from civ_agent import memory_schema as tables
 from civ_agent.agreement_memory import affected_subjects, lifecycle_terms
+from civ_agent.conversation_context import conversation_context
 from civ_agent.decision_context import choice_versions, decision_feedback, intent_feedback
 from civ_agent.memory_exports import export_files, notebook_files
 from civ_agent.memory_history import action_record, action_text, build_summary
@@ -31,6 +32,7 @@ from civ_agent.memory_snapshots import dump_snapshot, expand, job_states, load_s
 from civ_agent.memory_store import EvidenceRequired, RecordStore, encode, expired_at, select_context, semantic
 from civ_agent.notebook import Notebook
 from civ_agent.observations import DetailQuery, detail_fingerprint, native_observation, project_detail
+from civ_agent.progress_history import HISTORY_TURNS, advance_history, progress_context
 from civ_agent.protocol import JsonObject
 from civ_agent.review_store import latest_advice
 from civ_agent.schemas import validate
@@ -455,6 +457,44 @@ class CivilizationState:
         with self.transaction() as db:
             return self._decision_feedback(db, body)
 
+    def progress_feedback(self, body: JsonObject):
+        with self.transaction() as db:
+            return self._progress_feedback(db, body)
+
+    def _progress_feedback(self, db, body: JsonObject):
+        history = advance_history(self._meta(db, "progressHistory", []), body)
+        return progress_context(history, self._action_facts(db, history[0]["turn"], body["turn"]))
+
+    def _action_facts(self, db, first: int, last: int):
+        query = (
+            select(tables.records.c.key, tables.records.c.body, tables.outbox.c.transport)
+            .select_from(tables.current_records.join(tables.outbox, tables.outbox.c.decision == tables.records.c.key))
+            .join(tables.outgoing, tables.outgoing.c.id == tables.outbox.c.id)
+            .where(
+                tables.records.c.category == "decision",
+                func.json_extract(tables.records.c.body, "$.turn") >= first,
+                func.json_extract(tables.records.c.body, "$.turn") <= last,
+            )
+            .order_by(tables.request_order)
+        )
+        actions = []
+        for row in db.execute(query).mappings():
+            saved = json.loads(row["body"])
+            actions.append(
+                {
+                    "turn": saved["turn"],
+                    "commandStatus": saved["outcome"],
+                    "action": action_text(
+                        saved["command"], saved.get("receipt"), saved.get("settlement"), transport=row["transport"]
+                    ),
+                    "command": saved["command"],
+                    "receipt": row["key"],
+                    "economy": (saved.get("receipt") or {}).get("economy"),
+                    "_pinned": saved.get("_pinned", {}),
+                }
+            )
+        return actions
+
     def _decision_feedback(self, db, body: JsonObject):
         history = (
             select(tables.records.c.key, tables.records.c.version)
@@ -477,40 +517,14 @@ class CivilizationState:
         rows = db.execute(query).mappings().all()
         since = db.scalar(select(func.max(tables.reviews.c.turn)).where(tables.reviews.c.status == "COMPLETED"))
         choices = choice_versions([{**row, "body": json.loads(row["body"])} for row in rows[:256]], since or 0)
-        actions = []
-        if choices:
-            first = min(
-                (c["baseline"]["authoredTurn"] for c in choices if c["baseline"].get("authoredTurn") is not None),
-                default=body["turn"],
-            )
-            query = (
-                select(tables.records.c.key, tables.records.c.body, tables.outbox.c.transport)
-                .select_from(
-                    tables.current_records.join(tables.outbox, tables.outbox.c.decision == tables.records.c.key)
-                )
-                .join(tables.outgoing, tables.outgoing.c.id == tables.outbox.c.id)
-                .where(
-                    tables.records.c.category == "decision",
-                    func.json_extract(tables.records.c.body, "$.turn") >= first,
-                    func.json_extract(tables.records.c.body, "$.turn") <= body["turn"],
-                    func.json_extract(tables.records.c.body, "$._pinned.decision").is_not(None),
-                )
-                .order_by(tables.request_order)
-            )
-            for row in db.execute(query).mappings():
-                saved = json.loads(row["body"])
-                actions.append(
-                    {
-                        "turn": saved["turn"],
-                        "commandStatus": saved["outcome"],
-                        "action": action_text(
-                            saved["command"], saved.get("receipt"), saved.get("settlement"), transport=row["transport"]
-                        ),
-                        "receipt": row["key"],
-                        "_pinned": saved.get("_pinned", {}),
-                    }
-                )
-        result = decision_feedback(choices, body, actions)
+        first = min(
+            (c["baseline"]["authoredTurn"] for c in choices if c["baseline"].get("authoredTurn") is not None),
+            default=body["turn"],
+        )
+        actions = self._action_facts(db, min(first, body["turn"] - HISTORY_TURNS), body["turn"])
+        history = advance_history(self._meta(db, "progressHistory", []), body)
+        progress = progress_context(history, [a for a in actions if a["turn"] >= history[0]["turn"]])
+        result = decision_feedback(choices, body, actions, progress)
         result["earlierStrategyRevisionsOmitted"] = len(rows) > 256
         return result
 
@@ -572,6 +586,20 @@ class CivilizationState:
 
     def _observe_player(self, db, body: JsonObject, job: str, compact: JsonObject | None):
         """Independent evidence versions; the host still validates the full view too."""
+        self._validate(db, job)
+        if compact is not None:
+            history = advance_history(self._meta(db, "progressHistory", []), body)
+            self._set(db, "progressHistory", history)
+            opening = self._meta(db, "openingProgress")
+            if opening is None or opening["toTurn"] != body["turn"]:
+                opening = progress_context(history, self._action_facts(db, history[0]["turn"], body["turn"]))
+                opening["asOf"] = (
+                    "First delivered overview this turn. Current-turn changes appear in receipts and live state; strategic reviews recompute progress."
+                )
+                self._set(db, "openingProgress", opening)
+            # Historical context stays stable within a turn. Otherwise every
+            # receipt resends unrelated units, cities and prior-turn evidence.
+            compact["recentProgress"] = opening
         body = native_observation(body)
         compact = native_observation(compact)
         scopes = {
@@ -1399,6 +1427,10 @@ class CivilizationState:
                 )
             rows = db.execute(query.order_by(tables.events.c.id.desc()).limit(21)).all()
             return {"events": [json.loads(row[0]) for row in reversed(rows[:20])], "hasMore": len(rows) > 20}
+
+    def conversation_context(self, seeds=()):
+        with self.transaction() as db:
+            return conversation_context(db, self.civilization, seeds)
 
     def history(self, game_turn: int, offset: int = 0, *, job: str | None = None):
         if type(game_turn) is not int or game_turn < 0 or type(offset) is not int or offset < 0:

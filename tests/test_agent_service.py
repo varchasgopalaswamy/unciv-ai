@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import hashlib
 import json
 import tempfile
@@ -317,14 +318,21 @@ class AgentServiceTests(AgentServiceTestCase):
         self.assertTrue(self.factory.instances[-1].closed)
         self.service.chat.running = False
 
-    async def test_heartbeat_renews_native_lease_while_database_worker_is_busy(self):
-        from unittest.mock import AsyncMock
+    async def test_heartbeat_responds_while_database_and_native_renewal_are_busy(self):
+        from unittest.mock import AsyncMock, patch
 
         service = self.service
         service.records["busy"] = {"activationId": "busy", "phase": "STARTING"}
         service.active_id = service.gameplay_permit = "busy"
         service.chat.running = True
-        service.chat.social = AsyncMock(return_value={"granted": True})
+        renewing, finish_renewal = asyncio.Event(), asyncio.Event()
+
+        async def slow_renewal(*args, **kwargs):
+            renewing.set()
+            await finish_renewal.wait()
+            return {"granted": True}
+
+        service.chat.social = AsyncMock(side_effect=slow_renewal)
         entered, release = threading.Event(), threading.Event()
 
         def slow_database():
@@ -332,15 +340,22 @@ class AgentServiceTests(AgentServiceTestCase):
             assert release.wait(5)
 
         work = asyncio.create_task(service.io.call(slow_database))
+        with patch("civ_agent.agent_service.JOB_PERMIT_RENEW_INTERVAL", 0.01):
+            renewal = asyncio.create_task(service.renew_gameplay_permit("busy"))
+            await asyncio.wait_for(renewing.wait(), 1)
         try:
             self.assertTrue(await asyncio.to_thread(entered.wait, 2))
             status = await asyncio.wait_for(service.heartbeat("busy"), 0.5)
             self.assertEqual(status["phase"], "STARTING")
             service.chat.social.assert_awaited_once_with("job_heartbeat", job="busy")
             self.assertFalse(work.done())
+            self.assertFalse(renewal.done())
         finally:
             release.set()
             await work
+            renewal.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await renewal
             service.chat.running = False
             service.active_id = None
 

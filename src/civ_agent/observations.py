@@ -210,11 +210,13 @@ class TurnOverview(BoundaryModel):
     tacticalReview: JsonObject = Field(default_factory=dict)
     strategyReview: JsonObject = Field(default_factory=dict)
     decisionFeedback: JsonObject | None = None
+    recentProgress: JsonObject | None = None
     pending: list[JsonObject] = Field(default_factory=list)
     alerts: list[JsonObject] = Field(default_factory=list)
     notifications: list[PlayerNotification] = Field(default_factory=list)
     combatReports: list[JsonObject] = Field(default_factory=list)
     rules: JsonObject = Field(default_factory=dict)
+    productionPolicy: JsonObject | None = None
     civilizationProfile: JsonObject | None = None
     scenario: JsonObject | None = None
     result: JsonObject | None = None
@@ -640,6 +642,9 @@ def project_detail(snapshot: JsonObject, query: DetailQuery) -> JsonObject:
                 available = not unknown
 
                 def queue_reasons(n):
+                    policy = snapshot.get("productionPolicy") or {}
+                    if n in policy.get("blockedConversions", []):
+                        return ["Production conversion is disabled until " + policy["conversionUnlockEra"]]
                     if n in options:
                         return []
                     reasons = list(estimates.get(n, {}).get("queueUnavailableReasons", []))
@@ -683,6 +688,8 @@ def project_detail(snapshot: JsonObject, query: DetailQuery) -> JsonObject:
                                         {**estimates[n], "queueUnavailableReasons": queue_reasons(n)},
                                         purchases.get(n),
                                         args["horizonTurns"],
+                                        progress=[p for p in progress if p["name"] == n],
+                                        can_queue=n in options,
                                     )
                                 }
                                 if n in estimates and args.get("horizonTurns") is not None

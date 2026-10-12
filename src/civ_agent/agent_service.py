@@ -62,6 +62,7 @@ from civ_agent.turn_archive import TurnArchive
 
 TERMINAL = {"COMPLETED", "INTERRUPTED", "FAILED"}
 TELEMETRY_SAMPLE_INTERVAL = 2.0
+JOB_PERMIT_RENEW_INTERVAL = 5.0
 MODEL_INTERRUPT_TIMEOUT = 30.0
 USAGE_KEYS = {
     "input_tokens": "inputTokens",
@@ -904,19 +905,29 @@ class AgentService:
         status = self.status(activation_id)
         if activation_id == self.active_id and status["phase"] not in TERMINAL:
             self.last_heartbeat = time.monotonic()
-            if self.chat.running and self.gameplay_permit == activation_id:
-                # Lease renewal must not queue behind database/history work.
-                # Periodic accounting is flushed by the background accounting task.
-                grant = await self.chat.social("job_heartbeat", job=activation_id)
-                if not grant["granted"]:
-                    self.failure = "JOB_PERMIT_EXPIRED"
-                    self.stop_event.set()
-                    for job in self.gateway.jobs.values():
-                        if job.id == activation_id:
-                            job.closed = True
-                    if self.active_task is not None:
-                        self.active_task.cancel()
         return status
+
+    async def renew_gameplay_permit(self, activation_id):
+        """The host's 90-second permit has its own lifetime, independent of HTTP health checks."""
+        while True:
+            await asyncio.sleep(JOB_PERMIT_RENEW_INTERVAL)
+            if not self.chat.running or self.gameplay_permit != activation_id:
+                continue
+            try:
+                async with asyncio.timeout(30):
+                    grant = await self.chat.social("job_heartbeat", job=activation_id)
+                if grant.get("granted") is not True:
+                    raise ServiceError("JOB_PERMIT_EXPIRED", 503)
+            except (OSError, ValueError, TimeoutError, aiohttp.ClientError, ServiceError) as error:
+                self.failure = "JOB_PERMIT_EXPIRED"
+                self.diagnostics.emit("job_permit_failed", error=error, activationId=activation_id)
+                self.stop_event.set()
+                for job in self.gateway.jobs.values():
+                    if job.id == activation_id:
+                        job.closed = True
+                if self.active_task is not None:
+                    self.active_task.cancel()
+                return
 
     async def interrupt(self, activation_id):
         status = self.status(activation_id)
@@ -1308,6 +1319,7 @@ class AgentService:
                 owner.cancel()
 
         reporter = asyncio.create_task(report_accounting())
+        permit_renewer = asyncio.create_task(self.renew_gameplay_permit(record["activationId"]))
         self.run_started.set()
         try:
             # Preserve resolved settings across new app-server processes even when
@@ -1386,6 +1398,9 @@ class AgentService:
             reporter.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await reporter
+            permit_renewer.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await permit_renewer
             try:
                 if self.process is not None:
                     await self.process.close()
