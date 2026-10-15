@@ -127,7 +127,7 @@ def test_late_answers_reject_changed_source_objective_or_completed_baseline(memo
     assert not review_current(memory, evidence)
 
 
-def test_old_fingerprint_does_not_invent_prior_facts(memory):
+def test_missing_current_baseline_declines_early_review_until_completed_review(memory):
     with memory.transaction() as db:
         db.execute(
             tables.reviews.insert().values(
@@ -136,14 +136,13 @@ def test_old_fingerprint_does_not_invent_prior_facts(memory):
         )
         memory._set(db, "advisories", {"reviewBaseline": bounded_facts(position())["fullFingerprint"]})
     observe(memory, changed_position())
-    evidence = review_input(memory, 3, DecisionsSettings(), 10)
-    assert evidence is not None
-    baseline = evidence["earlyReview"]["baseline"]
-    assert not baseline["available"] and "facts" not in baseline
-    assert evidence["earlyReview"]["deltas"] == {"baselineAvailable": False, "comparisonComplete": False, "fields": []}
-    assert review_current(memory, evidence)
-    observe(memory, position(3))
     assert review_input(memory, 3, DecisionsSettings(), 10) is None
+    complete(memory, "current-review", 3, position(3))
+    observe(memory, changed_position(6))
+    evidence = review_input(memory, 6, DecisionsSettings(), 12)
+    assert evidence is not None
+    assert evidence["earlyReview"]["baseline"]["reviewTurn"] == 3
+    assert evidence["earlyReview"]["baseline"]["available"] is True
 
 
 def test_stable_facts_ignore_routine_turn_and_record_churn_but_schedule_changes_invalidate(memory):

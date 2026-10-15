@@ -8,7 +8,7 @@ from aiohttp import web
 from civ_agent.container_supervisor import authorize_agent
 from civ_agent.decisions_broker import DecisionsBroker, RoutingClient
 from civ_agent.decisions_policy import DecisionsSettings
-from civ_agent.diplomacy_decisions import CANDIDATE_POLICY_VERSION, DecisionsClient, request_body
+from civ_agent.diplomacy_decisions import POLICY_VERSION, DecisionsClient, request_body
 from civ_agent.diplomacy_routing import DiplomacyRouting
 from civ_agent.diplomacy_store import build_routing_bundle
 from civ_agent.tls import private_directory
@@ -19,7 +19,7 @@ from tests.test_diplomacy_contracts import opened
 def settings():
     return DecisionsSettings(
         decisions_enabled=True,
-        decisions_routing_policy=CANDIDATE_POLICY_VERSION,
+        decisions_routing_policy=POLICY_VERSION,
         decisions_min_confidence=0.01,
         decisions_incoming_batch_confidence=0.93,
         decisions_incoming_suppress_confidence=0.97,
@@ -47,14 +47,14 @@ def incoming(text):
     )
 
 
-def test_candidate_raw_choices_and_independent_thresholds_survive_real_service_boundaries(tmp_path):
+def test_current_raw_questions_and_independent_thresholds_survive_real_service_boundaries(tmp_path):
     async def run():
         requests = []
         answers = {
-            "immediate": ("respond_now", 0.4),
-            "uncertain batch": ("batch", 0.88),
-            "confident batch": ("batch", 0.94),
-            "uncertain suppression": ("no_separate_response", 0.96),
+            "immediate": ("needed", 0.4, "now", 0.4),
+            "uncertain batch": ("needed", 0.99, "can_wait", 0.88),
+            "confident batch": ("needed", 0.99, "can_wait", 0.94),
+            "uncertain suppression": ("not_needed", 0.96, "can_wait", 0.94),
         }
 
         async def provider(request):
@@ -62,24 +62,24 @@ def test_candidate_raw_choices_and_independent_thresholds_survive_real_service_b
             requests.append(body)
             assert request.headers["Authorization"] == "Bearer local-test-provider-key"
             bundle = json.loads(body["input"])
-            assert body == request_body("incoming", bundle, policy_version=CANDIDATE_POLICY_VERSION)
+            assert body == request_body("incoming", bundle)
             assert bundle["schemaVersion"] == 2 and bundle["player"] == "Rome"
-            choice, confidence = answers[bundle["pending"][0]["text"]]
-            probabilities = [
-                {"value": "respond_now", "probability": 0.3},
-                {"value": "batch", "probability": 0.5},
-                {"value": "no_separate_response", "probability": 0.2},
-            ]
+            needed, needed_confidence, timing, timing_confidence = answers[bundle["pending"][0]["text"]]
             return web.json_response(
                 {
                     "answers": [
                         {
-                            "name": "delivery",
+                            "name": "response_needed",
                             "type": "choice",
-                            "choice": choice,
-                            "confidence": confidence,
-                            "probabilities": probabilities,
-                        }
+                            "choice": needed,
+                            "confidence": needed_confidence,
+                        },
+                        {
+                            "name": "response_timing",
+                            "type": "choice",
+                            "choice": timing,
+                            "confidence": timing_confidence,
+                        },
                     ],
                     "usage": {"input_tokens": 90},
                 }
@@ -110,27 +110,19 @@ def test_candidate_raw_choices_and_independent_thresholds_survive_real_service_b
                     assert uncertain["choice"] == "respond_now" and uncertain["rawChoice"] == "batch"
                     assert uncertain["fallback"] == "low_confidence" and uncertain["overridden"] is True
                     assert uncertain["appliedThreshold"] == 0.93
-                    assert uncertain["rawAnswer"]["choice"] == "batch"
-                    assert (
-                        uncertain["probabilities"]
-                        == uncertain["rawAnswer"]["probabilities"]
-                        == [
-                            {"value": "respond_now", "probability": 0.3},
-                            {"value": "batch", "probability": 0.5},
-                            {"value": "no_separate_response", "probability": 0.2},
-                        ]
-                    )
+                    assert uncertain["rawAnswers"][1]["choice"] == "can_wait"
                     confident = await router.classify("incoming", incoming("confident batch"))
                     assert confident["choice"] == "batch" and confident["fallback"] is None
                     assert confident["appliedThreshold"] == 0.93
                     suppressed = await router.classify("incoming", incoming("uncertain suppression"))
-                    assert suppressed["choice"] == "respond_now" and suppressed["rawChoice"] == "no_separate_response"
-                    assert suppressed["appliedThreshold"] == 0.97
+                    assert suppressed["choice"] == "batch" and suppressed["rawChoice"] == "no_separate_response"
+                    assert suppressed["questionBasis"] == "response_timing" and suppressed["confidence"] == 0.94
+                    assert suppressed["rawChoiceConfidence"] == 0.96
+                    assert suppressed["thresholds"]["no_separate_response"] == 0.97
                     assert all(
-                        result["policyVersion"] == CANDIDATE_POLICY_VERSION
+                        result["policyVersion"] == POLICY_VERSION
                         for result in (immediate, uncertain, confident, suppressed)
                     )
-                    # Raw metadata cannot authorize an effective action at the runtime boundary.
                     forged = router.validate_decision("incoming", {**uncertain, "choice": "batch"})
                     assert forged["choice"] == "respond_now" and forged["appliedThreshold"] == 0.93
                     assert len(requests) == 4
@@ -149,21 +141,12 @@ def test_outgoing_canary_keeps_delivery_immediate_when_advisory_confidence_is_lo
             requests.append(body)
             bundle = json.loads(body["input"])
             assert bundle["direction"] == "outgoing" and bundle["proposedMessage"]["text"] == "A useful ordinary update"
-            assert body == request_body("outgoing", bundle, policy_version=CANDIDATE_POLICY_VERSION)
+            assert body == request_body("outgoing", bundle, policy_version=POLICY_VERSION)
             return web.json_response(
                 {
                     "answers": [
-                        {
-                            "name": "delivery",
-                            "type": "choice",
-                            "choice": "batch",
-                            "confidence": 0.92,
-                            "probabilities": [
-                                {"value": "send_now", "probability": 0.07},
-                                {"value": "batch", "probability": 0.92},
-                                {"value": "omit", "probability": 0.01},
-                            ],
-                        }
+                        {"name": "delivery_needed", "type": "choice", "choice": "needed", "confidence": 0.92},
+                        {"name": "delivery_timing", "type": "choice", "choice": "can_wait", "confidence": 0.92},
                     ],
                     "usage": {"input_tokens": 70},
                 }

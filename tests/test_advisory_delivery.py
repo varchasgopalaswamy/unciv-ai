@@ -35,8 +35,8 @@ def sample():
                 {
                     "city": city["city"],
                     "basis": city["basis"],
-                    "focus": {"choice": "focus0"},
-                    "construction": {"choice": "keep"},
+                    "focus": {"choice": "focus0", "change": {"choice": "change"}},
+                    "construction": {"choice": "keep", "change": {"choice": "keep"}},
                 }
             ],
         },
@@ -53,11 +53,12 @@ def test_exact_exposure_is_recorded_without_claiming_read_adoption_or_action():
     before = copy.deepcopy((evidence, result, basis, memory))
     finished = finish_delivery(basis, memory)
     rows = by_name(finished)
-    assert sum(row["status"] == "delivered" for row in finished) == 6
+    assert sum(row["status"] == "delivered" for row in finished) == 7
     assert rows["retrieval_include:0"]["exposure"] == "context"
     assert rows["preservation:0"]["exposure"] == rows["beliefs:0"]["exposure"] == "notice"
-    assert rows["city_construction:0"]["choice"] == "keep"
-    assert rows["city_construction:0"]["exposure"] == "advice"
+    assert rows["city_construction_change:0"]["choice"] == "keep"
+    assert rows["city_construction_change:0"]["exposure"] == "advice"
+    assert rows["city_construction:0"]["status"] == "no_notice"
     assert rows["early_review"]["status"] == "not_selected"
     assert (evidence, result, basis, memory) == before
     assert finish_delivery(finished, memory) == finished
@@ -81,7 +82,8 @@ def test_version_mismatch_is_stale_and_absent_selection_is_not_inferred_delivery
     memory["advisories"]["cityRecommendations"][0]["basis"] = {"revision": "different"}
     rows = by_name(finish_delivery(basis, memory))
     assert rows["retrieval_include:0"]["status"] == rows["beliefs:0"]["status"] == "stale"
-    assert rows["city_focus:0"]["status"] == rows["city_construction:0"]["status"] == "stale"
+    assert rows["city_focus:0"]["status"] == rows["city_construction_change:0"]["status"] == "stale"
+    assert rows["city_construction:0"]["status"] == "no_notice"
 
 
 def test_negative_accepted_answers_and_rejections_do_not_become_positive_notices():

@@ -5,9 +5,12 @@ from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock
 
 import aiohttp
+import pytest
 from aiohttp import web
 
 from civ_agent.decisions_broker import DecisionsBroker, RoutingClient
+from civ_agent.decisions_ledger import accounts, canonical
+from civ_agent.decisions_policy import DecisionsSettings
 from civ_agent.diplomacy_decisions import DecisionsClient, parse_answer
 from civ_agent.tls import write_private_json
 
@@ -36,7 +39,10 @@ def test_client_request_no_retry_and_temporary_circuit():
                 raise web.HTTPServiceUnavailable()
             return web.json_response(
                 {
-                    "answers": [{"name": "delivery", "type": "choice", "choice": "batch", "confidence": 0.99}],
+                    "answers": [
+                        {"name": "delivery_needed", "type": "choice", "choice": "needed", "confidence": 0.99},
+                        {"name": "delivery_timing", "type": "choice", "choice": "can_wait", "confidence": 0.99},
+                    ],
                     "usage": {"input_tokens": 15, "output_tokens": 1},
                 }
             )
@@ -65,8 +71,9 @@ def test_broker_auth_schema_and_single_inflight_per_credential(tmp_path):
         write_private_json(tmp_path / "decisions-clients.json", {"seat": hashlib.sha256(b"routing-token").hexdigest()})
         active, peak = 0, 0
 
-        async def classify(direction, bundle):
+        async def classify(direction, bundle, **options):
             nonlocal active, peak
+            assert options["policy_version"] == "diplomacy-routing-v4"
             active += 1
             peak = max(active, peak)
             await asyncio.sleep(0.02)
@@ -76,6 +83,7 @@ def test_broker_auth_schema_and_single_inflight_per_credential(tmp_path):
         client = AsyncMock()
         client.classify.side_effect = classify
         broker = DecisionsBroker(tmp_path, client)
+        broker.ledger.register("seat", "game", "Rome", DecisionsSettings(decisions_enabled=True).model_dump())
         async with server(broker.application()) as url, aiohttp.ClientSession() as session:
             body = {"direction": "outgoing", "bundle": {"text": "private claim"}}
             for token in (None, "Bearer ", "Bearer provider-token", "routing-token"):
@@ -141,13 +149,16 @@ def test_authenticated_unix_client_preserves_bundle_and_reconnects_after_restart
                     "lastFailure": None,
                 }
 
-            async def classify(self, direction, supplied):
+            async def classify(self, direction, supplied, **options):
+                assert options["policy_version"] == "diplomacy-routing-v4"
                 calls.append((direction, supplied))
                 return {"choice": "batch", "confidence": 0.99}
 
         upstream = Upstream()
         for _ in range(2):
-            async with server(DecisionsBroker(tmp_path, upstream).application(), socket=socket):
+            broker = DecisionsBroker(tmp_path, upstream)
+            broker.ledger.register("Rome", "game", "Rome", DecisionsSettings(decisions_enabled=True).model_dump())
+            async with server(broker.application(), socket=socket):
                 assert (await routing.health())["status"] == "ready"
                 before = len(calls)
                 assert (await rejected.health())["reason"] == "broker_access_denied"
@@ -159,5 +170,32 @@ def test_authenticated_unix_client_preserves_bundle_and_reconnects_after_restart
                 assert calls[-1] == ("outgoing", bundle)
             assert (await routing.health())["reason"] == "broker_unavailable"
         assert calls == [("outgoing", bundle)] * 2
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("account", ["unregistered", "disabled", "old_policy", "incomplete"])
+def test_classify_requires_registered_enabled_current_account_without_default_policy(tmp_path, account):
+    async def run():
+        write_private_json(tmp_path / "decisions-clients.json", {"seat": hashlib.sha256(b"routing-token").hexdigest()})
+        client = AsyncMock()
+        broker = DecisionsBroker(tmp_path, client)
+        if account != "unregistered":
+            settings = DecisionsSettings(decisions_enabled=account != "disabled").model_dump()
+            broker.ledger.register("seat", "game", "Rome", settings)
+            if account == "old_policy":
+                settings["decisions_routing_policy"] = "diplomacy-routing-v1"
+            if account == "incomplete":
+                del settings["decisions_incoming_batch_confidence"]
+            with broker.ledger.engine.begin() as db:
+                db.execute(accounts.update().where(accounts.c.principal == "seat").values(settings=canonical(settings)))
+        async with server(broker.application()) as url, aiohttp.ClientSession() as session:
+            async with session.post(
+                url + "/classify",
+                headers={"Authorization": "Bearer routing-token"},
+                json={"direction": "incoming", "bundle": {"text": "private claim"}},
+            ) as response:
+                assert response.status == 403
+            client.classify.assert_not_awaited()
 
     asyncio.run(run())

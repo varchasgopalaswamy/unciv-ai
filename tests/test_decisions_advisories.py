@@ -25,6 +25,7 @@ from civ_agent.game_config import GameConfig, load_config
 from civ_agent.memory_snapshots import load_snapshot
 from civ_agent.memory_store import RecordStore
 from civ_agent.proposal_gateway import ProposalGateway
+from civ_agent.review_store import ReviewStore
 from civ_agent.service_io import ServiceIO
 from civ_agent.startup_context import prepare_startup, startup_prompt
 from tests.memory_helpers import stored_records
@@ -158,12 +159,12 @@ def test_defaults_validation_retired_flags_and_service_container_arguments(tmp_p
     for value in (-1, float("nan"), float("inf")):
         with pytest.raises(ValidationError):
             GameConfig(agents={"additional_decisions_budget_usd": value})
-    with pytest.raises(ValueError, match="retired"):
+    with pytest.raises(ValidationError, match="Extra inputs"):
         GameConfig(agents={"diplomacy_routing_enabled": False})
     for parser, args in ((game.parser(), []), (agent_server.parser(), ["Rome"])):
         with pytest.raises(SystemExit):
             parser.parse_args([*args, "--diplomacy-routing-enabled"])
-        assert "retired" in capsys.readouterr().err
+        assert "unrecognized arguments" in capsys.readouterr().err
     for retired in ("decisions_native_candidate_limit", "decisions_gameplay_group_limit"):
         with pytest.raises(ValidationError):
             GameConfig(agents={retired: 4})
@@ -413,21 +414,12 @@ def test_material_signatures_ignore_routine_counters():
 def test_early_review_uses_recorded_changes_cooldowns_and_no_full_capture(tmp_path):
     async def run():
         async with setup(tmp_path) as (memory, gateway, _, classifier):
+            opening = {"turn": 0, "cities": []}
+            reviews = ReviewStore(memory)
+            reviews.prepare("opening", {"turn": 0, "observation": opening}, {}, 60)
+            reviews.complete("opening", {})
             with memory.transaction() as db:
-                db.execute(
-                    tables.reviews.insert().values(
-                        job="opening",
-                        turn=0,
-                        status="COMPLETED",
-                        attempts=1,
-                        inputs=None,
-                        settings="{}",
-                        timeout=60,
-                        advice="{}",
-                    )
-                )
                 RecordStore(db).write("observation:overview", "observation", {"turn": 3, "cities": [{"handle": "new"}]})
-                memory._set(db, "advisories", {"reviewBaseline": fingerprint(material_facts({"cities": []}))})
             runtime = gateway.advisories
             assert runtime is not None
             assert not (await runtime.triage(2, scheduled_soon=False, next_review_turn=20))["earlyReview"]
@@ -448,19 +440,11 @@ def test_early_review_uses_recorded_changes_cooldowns_and_no_full_capture(tmp_pa
 def test_early_review_rejects_stale_recorded_evidence(tmp_path):
     async def run():
         async with setup(tmp_path) as (memory, gateway, _, classifier):
+            opening = {"turn": 0, "cities": []}
+            reviews = ReviewStore(memory)
+            reviews.prepare("opening", {"turn": 0, "observation": opening}, {}, 60)
+            reviews.complete("opening", {})
             with memory.transaction() as db:
-                db.execute(
-                    tables.reviews.insert().values(
-                        job="opening",
-                        turn=0,
-                        status="COMPLETED",
-                        attempts=1,
-                        inputs=None,
-                        settings="{}",
-                        timeout=60,
-                        advice="{}",
-                    )
-                )
                 RecordStore(db).write("observation:overview", "observation", {"turn": 3, "cities": [{"handle": "new"}]})
             original = classifier.batch
 

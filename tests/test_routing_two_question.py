@@ -11,8 +11,7 @@ from types import SimpleNamespace
 import pytest
 
 from civ_agent.diplomacy_decisions import (
-    CANDIDATE_POLICY_VERSION,
-    TWO_QUESTION_POLICY_VERSION,
+    POLICY_VERSION,
     parse_answer,
     request_body,
 )
@@ -30,12 +29,12 @@ def response(needed="needed", need_confidence=0.95, timing="can_wait", timing_co
 
 
 def parse(value, **options):
-    return parse_answer("incoming", value, policy_version=TWO_QUESTION_POLICY_VERSION, **options)
+    return parse_answer("incoming", value, policy_version=POLICY_VERSION, **options)
 
 
-def test_incoming_question_contract_and_outgoing_prompt_remains_exactly_v2():
+def test_current_policy_uses_two_independent_questions_in_each_direction():
     bundle = {"player": "Rome", "direction": "incoming", "pending": [{"text": "Untrusted player wording"}]}
-    incoming: JsonObject = request_body("incoming", bundle, policy_version=TWO_QUESTION_POLICY_VERSION)
+    incoming: JsonObject = request_body("incoming", bundle, policy_version=POLICY_VERSION)
     questions = {question["name"]: question for question in incoming["questions"]}
     assert set(questions) == {"response_needed", "response_timing"}
     assert {row["value"] for row in questions["response_needed"]["choices"]} == {"needed", "not_needed"}
@@ -43,15 +42,15 @@ def test_incoming_question_contract_and_outgoing_prompt_remains_exactly_v2():
     assert all(question["type"] == "choice" for question in questions.values())
     assert json.loads(incoming["input"]) == bundle
     outgoing = {"player": "Rome", "direction": "outgoing", "proposedMessage": {"text": "Original draft"}}
-    assert request_body("outgoing", outgoing, policy_version=TWO_QUESTION_POLICY_VERSION) == request_body(
-        "outgoing", outgoing, policy_version=CANDIDATE_POLICY_VERSION
-    )
+    outgoing_body = request_body("outgoing", outgoing)
+    assert [question["name"] for question in outgoing_body["questions"]] == ["delivery_needed", "delivery_timing"]
+    assert json.loads(outgoing_body["input"]) == outgoing
 
 
 def test_response_needed_prompt_distinguishes_attention_from_a_literal_reply():
     # A fresh urgent FYI can need attention even if its author says no reply is
     # necessary. A reply-only question would incorrectly suppress that warning.
-    body: JsonObject = request_body("incoming", {}, policy_version=TWO_QUESTION_POLICY_VERSION)
+    body: JsonObject = request_body("incoming", {}, policy_version=POLICY_VERSION)
     needed = next(question for question in body["questions"] if question["name"] == "response_needed")
     text = (needed["instructions"] + " " + " ".join(row["description"] for row in needed["choices"])).casefold()
     assert "attention" in text
@@ -195,26 +194,40 @@ def test_both_named_questions_are_unique_and_complete(shape):
     assert result["choice"] == "respond_now" and result["fallback"] == "malformed"
 
 
-def test_outgoing_single_question_answer_retains_v2_interpretation():
+def test_outgoing_single_question_answer_is_rejected():
     envelope = {"answers": [{"name": "delivery", "type": "choice", "choice": "batch", "confidence": 0.95}]}
-    assert parse_answer("outgoing", envelope, policy_version=TWO_QUESTION_POLICY_VERSION) == parse_answer(
-        "outgoing", envelope, policy_version=CANDIDATE_POLICY_VERSION
-    )
+    result = parse_answer("outgoing", envelope)
+    assert result["choice"] == "send_now" and result["fallback"] == "malformed"
 
 
-def test_runtime_rechecks_effective_confidence_and_candidate_policy_without_trusting_raw_answers():
+def test_runtime_rechecks_effective_confidence_and_current_policy_without_trusting_raw_answers():
     router = object.__new__(DiplomacyRouting)
     router.settings = SimpleNamespace(
-        decisions_routing_policy=TWO_QUESTION_POLICY_VERSION,
+        decisions_routing_policy=POLICY_VERSION,
         decisions_incoming_batch_confidence=0.9,
         decisions_incoming_suppress_confidence=0.9,
     )
-    result = {**parse(response("not_needed", 0.4, "can_wait", 0.95)), "policyVersion": TWO_QUESTION_POLICY_VERSION}
+    result = {**parse(response("not_needed", 0.4, "can_wait", 0.95)), "policyVersion": POLICY_VERSION}
     assert router.validate_decision("incoming", result)["choice"] == "batch"
     forged = router.validate_decision("incoming", {**result, "confidence": 0.01})
     assert forged["choice"] == "respond_now" and forged["fallback"] == "low_confidence"
-    wrong = router.validate_decision("incoming", {**result, "policyVersion": CANDIDATE_POLICY_VERSION})
+    wrong = router.validate_decision("incoming", {**result, "policyVersion": "diplomacy-routing-v2"})
     assert wrong["choice"] == "respond_now" and wrong["fallback"] == "routing_policy_mismatch"
+
+
+@pytest.mark.parametrize("policy", [None, "diplomacy-routing-v1", "diplomacy-routing-v2"])
+def test_runtime_rejects_missing_or_removed_policy_metadata(policy):
+    router = object.__new__(DiplomacyRouting)
+    router.settings = SimpleNamespace(
+        decisions_routing_policy=POLICY_VERSION,
+        decisions_incoming_batch_confidence=0.9,
+        decisions_incoming_suppress_confidence=0.9,
+    )
+    result = parse(response("not_needed", 0.99, "can_wait", 0.99))
+    if policy is not None:
+        result["policyVersion"] = policy
+    guarded = router.validate_decision("incoming", result)
+    assert guarded["choice"] == "respond_now" and guarded["fallback"] == "routing_policy_mismatch"
 
 
 @pytest.mark.parametrize(
@@ -229,13 +242,13 @@ def test_runtime_cannot_repurpose_one_questions_confidence_for_the_other_action(
 ):
     router = object.__new__(DiplomacyRouting)
     router.settings = SimpleNamespace(
-        decisions_routing_policy=TWO_QUESTION_POLICY_VERSION,
+        decisions_routing_policy=POLICY_VERSION,
         decisions_incoming_batch_confidence=0.9,
         decisions_incoming_suppress_confidence=0.9,
     )
     result = {
         **parse(response("not_needed", need_confidence, "can_wait", timing_confidence)),
-        "policyVersion": TWO_QUESTION_POLICY_VERSION,
+        "policyVersion": POLICY_VERSION,
     }
     assert result["choice"] == original_choice and result["confidence"] == 0.95
     assert router.validate_decision("incoming", result)["choice"] == original_choice
@@ -246,14 +259,14 @@ def test_runtime_cannot_repurpose_one_questions_confidence_for_the_other_action(
 def test_raw_two_question_metadata_cannot_upgrade_an_effective_immediate_result():
     router = object.__new__(DiplomacyRouting)
     router.settings = SimpleNamespace(
-        decisions_routing_policy=TWO_QUESTION_POLICY_VERSION,
+        decisions_routing_policy=POLICY_VERSION,
         decisions_incoming_batch_confidence=0.9,
         decisions_incoming_suppress_confidence=0.9,
     )
     confident_batch = parse(response("needed", 0.95, "can_wait", 0.95))
     immediate = {
         **confident_batch,
-        "policyVersion": TWO_QUESTION_POLICY_VERSION,
+        "policyVersion": POLICY_VERSION,
         "choice": "respond_now",
         "fallback": "routing_deadline",
     }

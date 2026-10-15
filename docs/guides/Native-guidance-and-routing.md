@@ -1,7 +1,7 @@
 # Native guidance and Decisions advisories
 
-These capabilities are opt-in for **new games**. Do not change flags on active
-benchmarks. Example matched configurations are in [examples/native-routing](../../examples/native-routing).
+`decisions_enabled` controls whether Decisions is used. When enabled, it runs the
+current implementation only. Example matched configurations are in [examples/native-routing](../../examples/native-routing).
 Their seeds, assignments, models, reasoning settings and limits match; only
 `agents.native_advice_enabled` and `agents.decisions_enabled` differ.
 The Decisions switch controls diplomacy routing, memory ranking, preservation
@@ -25,9 +25,9 @@ services receive only its local socket and their own broker credential, distinct
 from the provider-login credential. The OpenAI API key is not mounted into player
 containers. Local agent-service development uses `CIV_DECISIONS_SOCKET` and
 `CIV_DECISIONS_TOKEN_FILE` to identify this broker; neither variable holds an API
-key. The classifier is `gpt-6-luna`. The default policy remains
-`diplomacy-routing-v1`; the revised `diplomacy-routing-v2` policy is an explicit
-candidate for new trials, pending the evaluation gates below.
+key. The classifier is `gpt-6-luna`. The only supported routing policy is
+`diplomacy-routing-v4`; enabling Decisions selects it automatically. Older
+routing policies, account settings and response schemas are rejected.
 
 Use the ordinary [game launch workflow](Full-vanilla-run.md) with the selected
 example. Effective flags, guide version, classifier model and policy version are
@@ -39,8 +39,8 @@ changes, so publication is not required for a local trial.
 
 The broker authenticates a free local health check before agents start and verifies
 its protocol, model and policy version. A running broker from another runtime image
-rejects the new launch; stop its affected games before replacing it, or select
-another auth directory. The preflight does not call the provider. Its upstream
+rejects the new launch. Rebuild the current runtime image and use
+`civ-agent auth restart` to replace the broker. The preflight does not call the provider. Its upstream
 access is `unchecked` until an actual classification succeeds or fails.
 
 The current Decisions backend uses Platform API-key authentication and separate
@@ -114,9 +114,10 @@ is optional; rejecting all advice requires no override, and other native-legal
 actions remain available. Decisions outages or budget exhaustion affect Decisions
 advisories; native advice remains available independently.
 
-At eligible gameplay startup, up to four owned cities each get a population-focus
-question and a construction question in the same budgeted memory/advisory batch.
-Each answer has its own confidence and keep/defer alternatives. Focus alternatives
+At eligible gameplay startup, up to four owned cities each get independent change
+and alternative questions for focus and construction in the same budgeted batch.
+Changing requires an accepted change answer and an accepted alternative; a
+confident no-change answer keeps the current assignments or queue. Focus alternatives
 use native allocations on detached copies, available explicitly through
 `player_inspect(subject="CITY_FOCUS", target=city_handle)`. Construction options
 retain native costs, effects, progress and commands; queue append and reorder are
@@ -132,8 +133,8 @@ belief notices appear only at normal activations. The player decides what to
 read and save; explicit notebook edits keep their existing behavior. An early
 review requires meaningful recorded evidence, sufficient confidence, three rounds
 since any review, and ten since the last early review. Scheduled reviews due now
-or next round suppress it. Early reviews use the existing shared barrier, retain
-periodic anchors, and do not send private player rationales to the reviewer.
+or next round suppress it. Early reviews use the existing shared barrier and
+reset each reviewed player's periodic anchor. Private player rationales are not sent to the reviewer.
 Recommendations with overlapping subject, treasury, target or destination are
 alternatives, not a sequence. An action invalidates the old position.
 
@@ -181,9 +182,9 @@ durable request identity and receipt reconciliation. Restart retains deadlines;
 rewind retains only reachable decisions and queues. Pauses can exceed a queue's
 wall-clock deadline: delivery resumes only after the existing barrier permits it.
 
-## Advisory policy v3
+## Advisory policy v4
 
-`player-advisories-v3` covers memory selection, preservation, belief notices,
+`player-advisories-v4` covers memory selection, preservation, belief notices,
 early-review triage and city recommendations. It is separate from the diplomacy
 routing policy described below. Each request identifies `player`; broker identity
 must agree with that perspective. Attributed sources retain the exact text,
@@ -238,8 +239,9 @@ fields and truncated rosters instead of asserting loss or contradiction.
 Completed strategic reviews atomically retain a bounded material-facts baseline,
 its full fingerprint, schema and source identity. Early triage compares that
 baseline with current recorded facts, explicit deltas, existing `recentProgress`
-and attributed new statements. Unavailable baselines and incomplete comparisons
-remain explicit. The scheduler supplies authoritative `nextReviewTurn` in
+and attributed new statements. Early triage requires a valid committed baseline;
+missing, invalid or hash-only baselines do not trigger classification. Incomplete
+comparisons remain explicit. The scheduler supplies authoritative `nextReviewTurn` in
 completed-round units; `sourceTurn`, `completedTurn` and `boundaryTurn` distinguish
 observation age from the upcoming round boundary. The single binary question asks
 whether an additional review is worth its cost before the scheduled review.
@@ -274,7 +276,7 @@ the allowance.
 
 ## Routing prompt and confidence controls
 
-The candidate `diplomacy-routing-v2` policy separates timing from usefulness.
+The current `diplomacy-routing-v4` policy separates timing from usefulness.
 Immediate attention or delivery requires evidence that waiting within the
 remaining delay budget could miss an imminent action, deadline or interaction
 opportunity. Useful new facts, questions and changed terms can be batched when
@@ -292,12 +294,11 @@ An outgoing draft with status `omitted` or `classifying` is not evidence that it
 contents have been delivered or will be sent; a matching `queued` draft has a
 scheduled delivery. Protected bypasses and deadlines remain application rules.
 
-Select the candidate only in a new trial configuration:
+Enable the current implementation with:
 
 ```toml
 [agents]
 decisions_enabled = true
-decisions_routing_policy = "diplomacy-routing-v2"
 decisions_incoming_batch_confidence = 0.90
 decisions_incoming_suppress_confidence = 0.90
 decisions_outgoing_batch_confidence = 0.90
@@ -306,24 +307,23 @@ decisions_outgoing_omit_confidence = 0.90
 
 These four confidence controls govern routing alone. Keep
 `decisions_min_confidence` at its advisory setting; lowering it also affects
-city, memory and review advice. Older saved settings without an explicit routing
-policy preserve their previous effective routing thresholds. An immediate model
+city, memory and review advice. Routing thresholds have their own explicit
+defaults and are never inferred from older settings. An immediate model
 choice needs no confidence override; low confidence and an actual override from
 batch/suppression to immediate handling are recorded separately. Original choice,
 confidence, validated probability vector, effective choice, threshold and policy
 version are retained without message text in accounting. Provider refusals and
 malformed probabilities must not be interpreted as calibrated certainty.
 
-Routing settings are registered immutably with the trusted broker. A candidate
-game needs compatible broker and runtime code in a new trial environment;
-the isolated comparison command below does not upgrade a running broker.
-Keep existing games on their pinned services. A mismatched routing-policy
-version fails open to immediate handling and is recorded as such.
+Routing settings are registered immutably with the trusted broker. Broker and
+player runtimes must report the current routing policy, advisory policy and
+protocol. There are no older execution paths or settings migrations. Unsupported
+versions fail startup validation; a mismatched in-flight result is discarded and
+reported. Build the current image and use `civ-agent auth restart` to replace
+shared services. The isolated evaluation command below does not upgrade them.
 
-## Evaluation and remaining rollout gate
-
-`diplomacy-routing-v3` changes incoming routing to two independent binary-choice
-questions in the same Decisions request:
+`diplomacy-routing-v4` uses two independent binary-choice questions in each
+Decisions request. Incoming questions are:
 
 1. `response_needed`: "Do we need to respond to this communication?" Response
    includes reviewing and potentially acting on consequential information, even
@@ -341,33 +341,72 @@ Other results receive immediate attention. Both questions must be valid;
 refusal, incomplete or malformed answers fail open. Existing protection and
 deadline bypasses still apply. All thresholds remain 0.90 by default.
 
-Select this policy with `decisions_routing_policy = "diplomacy-routing-v3"` in a
-new trial configuration. Outgoing requests and parsing are identical to v2.
-Incoming records retain both named `rawAnswers` with their own confidence and
+This policy is the default and the only accepted `decisions_routing_policy` value.
+Outgoing questions are `delivery_needed` (whether this original draft needs delivery
+to this exact audience) and `delivery_timing` (assuming delivery is needed, whether
+delivery can wait until the end of the full remaining window). An authored
+deadline is attributed timing evidence even if it could be a bluff; it does not
+become a binding gameplay rule or an instruction to the classifier. Relative
+deadlines follow their stated drafting, receipt or future-event anchor; quoted
+expired deadlines do not restart. Confidently unnecessary drafts can be
+omitted. Otherwise a confident safe-delay answer batches the draft even when
+delivery necessity is uncertain; other outcomes send immediately.
+The timing question compares delivery after the full delay with the deadline:
+a deadline farther away does not by itself require immediate delivery. Supplied
+lead times count as evidence; unknown recipient response time is not invented.
+Records retain both named `rawAnswers` with their own confidence and
 binary probabilities. They do not invent a three-way probability distribution.
 `questionBasis` identifies the question supporting the effective action;
 `confidence` belongs to that question, while `rawChoiceConfidence` belongs to
 the unthresholded projected disposition. The runtime independently checks that
 the effective non-immediate action uses the corresponding question evidence.
 Status and replay report each question separately, including unknown answers.
+Returned confidence and choice probabilities are distinct measures; thresholds
+are action-specific controls, not an empirical accuracy guarantee.
 
-To compare v3 with the same frozen 185-case benchmark, reuse verified identical
-outgoing requests and make only 96 new incoming requests:
+The oldest message's deadline decides when to wake. Once a communication job is
+awake, it can combine younger classified batch messages rather than leave them
+for another activation. Gameplay can acknowledge successfully handled message IDs
+with `chat_read(handledMessages=[...])`; only IDs delivered to that job can be
+acknowledged, and a failed job does not complete them. Merely showing a message
+in context does not establish that it was handled.
+
+## Evaluation evidence
+
+The October 15 v4 implementation replay evaluated all 185 existing cases for
+$0.0236295 without provider failures. Its initial outgoing prompt matched labels
+on 80/89 cases with 3 fallbacks, compared with 47/89 and 41 fallbacks under the
+earlier outgoing policy on the same inputs. It also incorrectly delayed two
+authored deadline cases at high confidence. Incoming matched 86/96 cases.
+
+Those failures informed three prompt variants evaluated on the same 17
+development regressions, including new contrasting deadlines and receipt-relative
+clocks. The retained symmetric timing prompt matched 11/17 labels: no harmful
+deferrals or omissions, six unnecessary immediate sends and four low-confidence
+fallbacks. A shorter variant reintroduced two harmful deferrals and was discarded.
+The retained prompt has not been rerun on all 185 cases. These development results
+do not establish independent holdout accuracy, production fallback rates, token
+savings or time savings. Total spending across the four journals was $0.0293907.
+The private local validation manifest is
+`build/current-games-evaluation-20261015/decisions/fix-validation.json`.
+
+Run a current-policy trial on the frozen 185-case benchmark with:
 
 ```sh
 uv run --no-sync python scripts/trial_diplomacy_routing.py \
-  --trial-dir build/routing-two-question-trial-20261015 \
+  --trial-dir build/routing-current-trial \
   --fixtures build/routing-prompt-trial-20261015/fixture.json \
-  --reuse-trial build/routing-prompt-trial-20261015 \
-  --policies two-question --max-calls 96 --budget-usd 0.05 \
+  --max-calls 185 --budget-usd 0.05 \
   --key-file AUTH_DIR/decisions.key
 ```
 
-Reuse checks the exact frozen fixture bytes, model and outgoing request bodies
-before dispatch. The 89 cached outgoing results, including two earlier timeouts,
-remain explicitly identified as reused; they do not count as new calls or spend.
-The old journals, labels and game-separated splits remain unchanged. This is a
-further comparison on an already examined benchmark, not a fresh blind holdout.
+The current tool dispatches v4 only. Reusing a current trial requires exact
+fixture bytes, model, policy and request bodies; old policy journals cannot be
+reused or relabeled. Historical comparison reports remain records of the earlier
+experiments. The reported study below reused 89 identical outgoing v2 responses
+and made 96 new incoming v3 requests. Its journals, labels and game-separated
+splits remain unchanged. This was a further comparison on an already examined
+benchmark, not a fresh blind holdout.
 
 The v3 run completed all 96 new requests without provider failures, using
 145,780 input tokens ($0.014578 at the pinned local rate). The previous journal
@@ -412,14 +451,15 @@ results, including two old timeouts, were reused rather than measured again.
 The [v3 comparison report](../../build/routing-two-question-trial-20261015/comparison-report.json),
 [provenance verification](../../build/routing-two-question-trial-20261015/independent-comparison.json)
 and [prior-holdout review](../../build/routing-two-question-trial-20261015/independent-prior-holdout-audit.json)
-record the evidence and limitations. V3 remains opt-in, with existing defaults,
-saved games and auth services unchanged. Matched new-game evaluation remains
-the next behavioral validation step.
+record the evidence and limitations. This is historical v3 evidence; the current
+v4 contract has not yet had a paid quality trial.
+Matched gameplay evaluation is still needed to measure token/time savings and
+gameplay effects; the static comparison does not establish those outcomes.
 
-The current [advisory v3 fixture](../../tests/fixtures/decisions-advisory-replay.json)
+The current [advisory v4 fixture](../../tests/fixtures/decisions-advisory-replay.json)
 contains 19 assistant-authored cases with explicit provenance and grouped
 calibration/holdout labels. It covers the six advisory tasks and constructed
-parser cases; related variants are not independent gameplay observations. V3 has
+parser cases; related variants are not independent gameplay observations. V4 has
 been checked with authored inputs and fake responses, without a new paid quality
 trial. These checks establish neither classifier accuracy in games nor token,
 latency or gameplay improvements. Validate the fixture and replay harness offline:
@@ -433,7 +473,7 @@ Without responses, replay reports unobserved questions rather than manufacturing
 answers. Supply `--responses PATH` only for version-matched saved results with
 verified request, input and prompt identities. `--calibrate` describes calibration
 cases only and does not select a threshold. Historical response captures do not
-become v3 evidence by changing a version string.
+become current evidence by changing a version string.
 
 Live replay requires `--live-broker` with the authenticated local broker environment
 and uses that player's existing allowance.
@@ -562,7 +602,8 @@ These are classifier costs, not total player tokens or time per turn. The
 private [comparison report](../../build/routing-real-cases-20261015/comparison-report.json)
 and [independent error review](../../build/routing-prompt-trial-20261015/candidate-error-review.json)
 retain the evidence. No prompts, thresholds or labels were changed after
-viewing outcomes. The candidate remains opt-in pending matched new games.
+viewing outcomes. These are historical v1/v2 results; neither policy remains an
+available runtime option.
 
 Two additional live requests passed an isolated Unix broker → runtime routing →
 text-free accounting canary, preserving raw choice, confidence, probabilities
@@ -597,7 +638,7 @@ response mapping for later offline replay. Results that retained only an effecti
 fallback choice cannot reconstruct the discarded model choice and are marked
 unavailable for raw-choice analysis.
 
-For an isolated comparison of both prompts on the same frozen corpus, the
+For an isolated evaluation of the current prompt on a frozen corpus, the
 trusted trial process calls the provider with its own durable request journal
 and spending reservations:
 
@@ -608,9 +649,9 @@ uv run python scripts/trial_diplomacy_routing.py \
 ```
 
 This command makes paid calls. The defaults impose a local estimated $0.10
-ceiling and at most 400 requests across both policies; they do not guarantee a
-complete comparison or a billing ceiling. The 168 nonprotected pilot cases require
-336 requests for a full two-policy comparison. Reusing the trial directory keeps
+ceiling and at most 400 current-policy requests; they do not guarantee a
+complete evaluation or a billing ceiling. The 168 nonprotected pilot cases require
+168 requests. Reusing the trial directory keeps
 its identity, frozen fixture, responses, spend and unresolved reservations;
 resuming does not refill the allowance. Player message text stays in private
 trial artifacts, outside text-free accounting and shell summaries.
@@ -625,14 +666,15 @@ the scenario/thread level; related variants do not multiply the independent
 sample size. A clean synthetic replay cannot establish an acceptable live error
 rate or token savings.
 
-Before production adoption, validate the broker and service path with protected
+Validate the current broker and service path with protected
 bypasses, deadlines, player overrides and recovery. Run an isolated canary, then
 matched **new** games with the same seeds, assignments, models and runtime,
 varying routing alone. Require no bypass/delivery regressions, acceptable
 held-out routing errors with uncertainty reported, and reduced unnecessary
 activations and total tokens/time per completed player-turn including classifier
-overhead. Leave active saved games and the default policy unchanged until these
-gates are met.
+overhead. These measurements assess the current implementation; they do not
+select or preserve an older default policy. Existing historical evidence does
+not substitute for a matched gameplay measurement.
 
 Classifier latency/usage/fallbacks are separate from player activations in
 `telemetry/accounting.sqlite3` (`classifier_calls`). These accounting records

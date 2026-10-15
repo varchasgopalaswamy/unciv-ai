@@ -32,8 +32,8 @@ def test_replay_requires_real_answers_and_reports_current_labeled_scope(capsys):
     assert missing["missing"] == 19 and missing["completed"] == missing["labeledAnswers"] == 0
     responses = {case["id"]: captured(case) for case in cases}
     result = report(cases, responses)
-    assert result["labelMatches"] == result["labeledAnswers"] == 32
-    assert result["rawLabelMatches"] == result["rawLabeledAnswers"] == 32
+    assert result["labelMatches"] == result["labeledAnswers"] == 42
+    assert result["rawLabelMatches"] == result["rawLabeledAnswers"] == 42
     assert result["usage"]["input_tokens"] == 1900
     assert result["estimatedValidatedInputCostUsd"] == pytest.approx(0.00019)
     assert "gameplay strength" in result["scope"]

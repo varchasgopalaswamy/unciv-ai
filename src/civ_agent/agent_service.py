@@ -64,6 +64,9 @@ TERMINAL = {"COMPLETED", "INTERRUPTED", "FAILED"}
 TELEMETRY_SAMPLE_INTERVAL = 2.0
 JOB_PERMIT_RENEW_INTERVAL = 5.0
 MODEL_INTERRUPT_TIMEOUT = 30.0
+CODEX_NOTIFICATION_BYTES = 16 * 1024 * 1024
+CODEX_NOTIFICATION_COUNT = 4096
+CODEX_NOTIFICATION_FLUSH_SECONDS = 30.0
 USAGE_KEYS = {
     "input_tokens": "inputTokens",
     "cached_input_tokens": "cachedInputTokens",
@@ -103,6 +106,16 @@ class CodexProcess:
         self.socket: aiohttp.ClientWebSocketResponse | None = None
         self.reader_task: asyncio.Task[None] | None = None
         self.runtime_task: asyncio.Task[None] | None = None
+        self.notification_task: asyncio.Task[None] | None = None
+        self.transport_failure_task: asyncio.Task[None] | None = None
+        self.auth_task: asyncio.Task[None] | None = None
+        self.notifications: asyncio.Queue[tuple[str, JsonObject, int, float] | None] = asyncio.Queue()
+        self.notification_bytes = self.notification_count = 0
+        self.notification_peak_bytes = self.notification_peak_count = 0
+        self.notification_delivered = self.notification_failures = 0
+        self.notification_lag = self.notification_duration = 0.0
+        self.notifications_ended = False
+        self.transport_error: str | None = None
         self.model_status = ModelStatus()
         self.closing = False
         self.temporary: tempfile.TemporaryDirectory[str] | None = None
@@ -183,6 +196,8 @@ class CodexProcess:
 
     async def request(self, method: str, parameters: JsonObject) -> JsonObject:
         assert self.socket is not None
+        if self.transport_error is not None or self.notifications_ended:
+            raise ServiceError(self.transport_error or "CODEX_DISCONNECTED", 502)
         self.sequence += 1
         request_id = self.sequence
         future: asyncio.Future[JsonObject] = asyncio.get_running_loop().create_future()
@@ -199,7 +214,104 @@ class CodexProcess:
 
     async def _model_notice(self, notice: JsonObject | None) -> None:
         if notice is not None and not self.closing:
-            await self.notification("service/modelStatus", notice)
+            self._queue_notification("service/modelStatus", notice)
+
+    def _transport_failed(self, reason: str) -> None:
+        if self.transport_error is None:
+            self.transport_error = reason
+            # Failure control bypasses the blocked data callback. The caller
+            # stops inference, then close() still flushes accepted events.
+            self.transport_failure_task = asyncio.create_task(self._report_transport_failure())
+        for future in list(self.pending.values()):
+            if not future.done():
+                future.set_exception(ServiceError(self.transport_error, 502))
+        if self.reader_task is not None and self.reader_task is not asyncio.current_task():
+            self.reader_task.cancel()
+
+    async def _report_transport_failure(self) -> None:
+        with contextlib.suppress(Exception):
+            await self.notification("service/transportFailure", {"reason": self.transport_error})
+
+    def _queue_notification(self, method: str, params: JsonObject) -> bool:
+        """Never make socket reads wait for history/accounting writes.
+
+        Count the in-flight callback too. Overflow is an explicit transport
+        failure, rather than dropping a usage, tool or completion event.
+        """
+        if self.transport_error is not None or self.notifications_ended:
+            return False
+        size = len(json.dumps(params, ensure_ascii=False).encode("utf-8")) + len(method) + 64
+        if (
+            self.notification_bytes + size > CODEX_NOTIFICATION_BYTES
+            or self.notification_count >= CODEX_NOTIFICATION_COUNT
+        ):
+            self._transport_failed("CODEX_NOTIFICATION_OVERFLOW")
+            return False
+        self.notification_bytes += size
+        self.notification_count += 1
+        self.notification_peak_bytes = max(self.notification_peak_bytes, self.notification_bytes)
+        self.notification_peak_count = max(self.notification_peak_count, self.notification_count)
+        self.notifications.put_nowait((method, params, size, time.monotonic()))
+        if self.notification_task is None:
+            self.notification_task = asyncio.create_task(self._deliver_notifications())
+        return True
+
+    def _end_notifications(self) -> None:
+        if not self.notifications_ended:
+            self.notifications_ended = True
+            self.notifications.put_nowait(None)
+            if self.notification_task is None:
+                self.notification_task = asyncio.create_task(self._deliver_notifications())
+
+    async def _deliver_notifications(self) -> None:
+        while (item := await self.notifications.get()) is not None:
+            method, params, size, queued = item
+            started = time.monotonic()
+            self.notification_lag = max(self.notification_lag, started - queued)
+            try:
+                await self.notification(method, params)
+                self.notification_delivered += 1
+            except Exception:
+                # Stop inference, but still attempt the other accepted events.
+                # A callback failure must never look like successful completion.
+                self.notification_failures += 1
+                self._transport_failed("CODEX_NOTIFICATION_FAILED")
+            finally:
+                self.notification_duration = max(self.notification_duration, time.monotonic() - started)
+                self.notification_bytes -= size
+                self.notification_count -= 1
+        metrics: JsonObject = {
+            "peakQueuedBytes": self.notification_peak_bytes,
+            "peakQueuedNotifications": self.notification_peak_count,
+            "deliveredNotifications": self.notification_delivered,
+            "failedNotifications": self.notification_failures,
+            "maxQueueLagMs": round(self.notification_lag * 1000),
+            "maxCallbackMs": round(self.notification_duration * 1000),
+        }
+        if self.transport_error is not None:
+            metrics["reason"] = self.transport_error
+        try:
+            await self.notification("service/transportStatus", metrics)
+        finally:
+            await self.notification(
+                "service/disconnected", {"reason": self.transport_error} if self.transport_error else {}
+            )
+
+    async def _refresh_auth(self, request_id, previous) -> None:
+        assert self.socket is not None and self.auth_client is not None
+        try:
+            tokens = await self.auth_client.fetch(refresh=True)
+            if previous is not None and previous != tokens["chatgptAccountId"]:
+                raise RuntimeError("Benchmark account changed")
+            await self.socket.send_json({"id": request_id, "result": tokens})
+        except (OSError, ValueError, RuntimeError, TimeoutError, aiohttp.ClientError):
+            try:
+                await self.socket.send_json(
+                    {"id": request_id, "error": {"code": -32000, "message": "Benchmark login unavailable"}}
+                )
+            except (OSError, RuntimeError, aiohttp.ClientError):
+                self._transport_failed("CODEX_DISCONNECTED")
+            self._queue_notification("service/authRequired", {})
 
     async def _runtime(self) -> None:
         assert self.process is not None and self.process.stderr is not None
@@ -223,23 +335,24 @@ class CodexProcess:
                 if frame.type != aiohttp.WSMsgType.TEXT:
                     continue
                 message = json.loads(frame.data)
+                if not isinstance(message, dict):
+                    raise ValueError("Invalid Codex message")
                 if "method" in message:
                     if "id" in message:
                         if message["method"] == "account/chatgptAuthTokens/refresh" and self.auth_client is not None:
-                            try:
-                                tokens = await self.auth_client.fetch(refresh=True)
-                                previous = message.get("params", {}).get("previousAccountId")
-                                if previous is not None and previous != tokens["chatgptAccountId"]:
-                                    raise RuntimeError("Benchmark account changed")
-                                await self.socket.send_json({"id": message["id"], "result": tokens})
-                            except (OSError, ValueError, RuntimeError, TimeoutError, aiohttp.ClientError):
+                            if self.auth_task is not None and not self.auth_task.done():
                                 await self.socket.send_json(
                                     {
                                         "id": message["id"],
-                                        "error": {"code": -32000, "message": "Benchmark login unavailable"},
+                                        "error": {"code": -32000, "message": "Benchmark login refresh pending"},
                                     }
                                 )
-                                await self.notification("service/authRequired", {})
+                            else:
+                                self.auth_task = asyncio.create_task(
+                                    self._refresh_auth(
+                                        message["id"], message.get("params", {}).get("previousAccountId")
+                                    )
+                                )
                             continue
                         # No unattended approvals, user input, or external token requests.
                         await self.socket.send_json(
@@ -251,22 +364,29 @@ class CodexProcess:
                                 },
                             }
                         )
-                        await self.notification("service/approvalRequired", {})
+                        if not self._queue_notification("service/approvalRequired", {}):
+                            break
                     else:
                         notice = self.model_status.observe(message["method"], message.get("params", {}))
                         await self._model_notice(notice)
+                        if self.transport_error is not None:
+                            break
                         if message["method"] in {"error", "warning"}:
                             # The normalized notice replaces arbitrary provider text.
                             continue
-                        await self.notification(message["method"], message.get("params", {}))
+                        if not self._queue_notification(message["method"], message.get("params", {})):
+                            break
                 else:
-                    future = self.pending.get(message.get("id"))
+                    response_id = message.get("id")
+                    if not isinstance(response_id, int):
+                        continue
+                    future = self.pending.get(response_id)
                     if future is not None and not future.done():
                         if "error" in message:
                             future.set_exception(ServiceError("CODEX_REQUEST_FAILED", 502))
                         else:
                             result = message.get("result", {})
-                            method, params = self.requests.get(message.get("id"), (None, {}))
+                            method, params = self.requests.get(response_id, (None, {}))
                             if method == "turn/start" and identifier(result.get("turn", {}).get("id")):
                                 # Bind before consuming following frames, which can
                                 # arrive before request()'s caller resumes.
@@ -277,8 +397,8 @@ class CodexProcess:
         finally:
             for future in list(self.pending.values()):
                 if not future.done():
-                    future.set_exception(ServiceError("CODEX_DISCONNECTED", 502))
-            await self.notification("service/disconnected", {})
+                    future.set_exception(ServiceError(self.transport_error or "CODEX_DISCONNECTED", 502))
+            self._end_notifications()
 
     async def close(self) -> None:
         self.closing = True
@@ -299,10 +419,26 @@ class CodexProcess:
             self.runtime_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self.runtime_task
+        if self.auth_task is not None:
+            self.auth_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self.auth_task
         if self.reader_task is not None:
             self.reader_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self.reader_task
+        self._end_notifications()
+        # Preserve already received usage/tool/lifecycle events before the
+        # caller publishes a terminal record. Keep timed-out workers owned by
+        # this process so a later close can finish the flush safely.
+        try:
+            async with asyncio.timeout(CODEX_NOTIFICATION_FLUSH_SECONDS):
+                if self.transport_failure_task is not None:
+                    await asyncio.shield(self.transport_failure_task)
+                if self.notification_task is not None:
+                    await asyncio.shield(self.notification_task)
+        except TimeoutError:
+            raise ServiceError("CODEX_NOTIFICATION_FLUSH_TIMEOUT", 503) from None
         if self.socket is not None:
             await self.socket.close()
         if self.session is not None:
@@ -1006,6 +1142,18 @@ class AgentService:
         record = self.records[self.active_id]
         model_record = record
         thread_id = model_record.get("threadId")
+        if method == "service/transportFailure":
+            if params.get("reason") in {
+                "CODEX_NOTIFICATION_OVERFLOW",
+                "CODEX_NOTIFICATION_FAILED",
+                "CODEX_DISCONNECTED",
+            }:
+                self.failure = self.failure or params["reason"]
+                self.stop_event.set()
+            return
+        if method == "service/transportStatus":
+            self.diagnostics.emit("codex_transport", activationId=self.active_id, **params)
+            return
         try:
             if method in HISTORY_METHODS:
                 await self.io.call(self.history.notify, self.active_id, thread_id, method, params)
@@ -1030,6 +1178,10 @@ class AgentService:
             self.failure = "BENCHMARK_LOGIN_UNAVAILABLE"
             self.stop_event.set()
         elif method == "service/disconnected":
+            if params.get("reason") in {"CODEX_NOTIFICATION_OVERFLOW", "CODEX_NOTIFICATION_FAILED"}:
+                self.failure = self.failure or params["reason"]
+                self.stop_event.set()
+                return
             if (
                 (self.completion is None or record.get("negotiationWait"))
                 and not self.stopping
@@ -1507,6 +1659,11 @@ class AgentService:
     async def close(self):
         if self.active_task is not None and not self.active_task.done():
             await self.interrupt(self.active_id)
+        if self.process is not None:
+            # A failed activation can retain a stopped process whose accepted
+            # notifications have not flushed yet. Never close their I/O below.
+            await self.process.close()
+            self.process = None
         for task in self.finalization_tasks.values():
             await asyncio.shield(task)
         await self.chat.close()

@@ -24,7 +24,9 @@ def test_production_shaped_labels_cover_all_tasks_and_observed_information_limit
         "beliefs",
         "early_review",
         "city_focus",
+        "city_focus_change",
         "city_construction",
+        "city_construction_change",
     } == {name.split(":")[0] for case in fixture for name in case["labels"]}
     assert {"calibration", "holdout"} == {case["split"] for case in fixture}
     assert all(
@@ -65,13 +67,13 @@ def test_mixed_good_weak_refused_malformed_and_missing_answers_keep_true_statuse
     response = {**request_metadata(body, case["evidence"]), **parse_answers(body, {"answers": provider}, 0.90)}
     result = report([case], {case["id"]: response})
     assert result["questions"]["statuses"] == {
-        "accepted": 3,
+        "accepted": 5,
         "low_confidence": 1,
         "refusal": 1,
         "malformed": 1,
         "missing": 1,
     }
-    assert result["labelMatches"] == 3 and result["rawLabelMatches"] == 4
+    assert result["labelMatches"] == 5 and result["rawLabelMatches"] == 6
     assert result["byTask"]["retrieval"]["fixtureQuestions"] == 2
     assert result["byQuestionType"]["retrieval_include"]["confidence"]["median"] == 0.2
     assert result["delivery"]["deliveredQuestions"] == 0

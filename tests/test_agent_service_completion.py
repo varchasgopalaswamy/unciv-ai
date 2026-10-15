@@ -4,8 +4,9 @@ import asyncio
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import AsyncMock, Mock
 
-from civ_agent.agent_service import AgentService
+from civ_agent.agent_service import AgentService, ServiceError
 from tests.test_agent_service import FakeCodex, FakeFactory
 
 
@@ -162,6 +163,37 @@ class CompletionCorrelationTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.wait_for(asyncio.shield(self.service.active_task), 2)
         self.assertEqual("COMPLETED", self.service.status()["phase"])
         self.assertEqual(35, self.service.status()["usage"]["input_tokens"])
+
+    async def test_transport_failure_cannot_publish_completed_turn_as_success(self):
+        self.factory.complete = False
+        await self.service.start(self.payload())
+        await self.wait_running()
+        await self.service._notification(
+            "turn/completed", {"threadId": "thread-one", "turn": {"id": "turn-1", "status": "completed"}}
+        )
+        await self.service._notification("service/transportFailure", {"reason": "CODEX_NOTIFICATION_OVERFLOW"})
+        assert self.service.active_task is not None
+        await asyncio.wait_for(asyncio.shield(self.service.active_task), 2)
+        self.assertEqual("FAILED", self.service.status()["phase"])
+        self.assertEqual("CODEX_NOTIFICATION_OVERFLOW", self.service.status()["error"])
+
+    async def test_close_retries_retained_process_before_closing_notification_io(self):
+        process = Mock()
+        process.close = AsyncMock(side_effect=[ServiceError("CODEX_NOTIFICATION_FLUSH_TIMEOUT", 503), None])
+        self.service.process = process
+        self.service.records["failed"] = {"phase": "RUNNING", "error": "STOP_UNCONFIRMED"}
+        self.service.active_task = asyncio.create_task(asyncio.sleep(0))
+        await self.service.active_task
+        with self.assertRaisesRegex(ServiceError, "^CODEX_NOTIFICATION_FLUSH_TIMEOUT$"):
+            await self.service.close()
+        self.assertIs(self.service.process, process)
+        self.assertFalse(self.service.io.closed)
+        self.assertFalse(self.service.diagnostics.closed)
+        await self.service.close()
+        self.assertIsNone(self.service.process)
+        self.assertTrue(self.service.io.closed)
+        self.assertEqual(2, process.close.await_count)
+        self.assertEqual("STOP_UNCONFIRMED", self.service.records["failed"]["error"])
 
     async def test_foreign_turn_usage_is_excluded_and_current_multi_request_usage_accumulates(self):
         self.factory.complete = False

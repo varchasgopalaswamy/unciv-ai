@@ -130,6 +130,90 @@ def validate_routing_credentials(config, auth_root):
         read_decisions_key(key)
 
 
+def _decisions_preflight_error(context, health):
+    from civ_agent.decisions_broker import health_failure, version_contract
+
+    reason = health.get("reason")
+    if reason not in {
+        "broker_version_mismatch",
+        "invalid_health_contract",
+        "broker_timeout",
+        "broker_access_denied",
+        "broker_rate_limited",
+        "broker_http_error",
+        "broker_unavailable",
+    }:
+        reason = "invalid_health_contract"
+    message = f"{context}: {reason}"
+    mismatches = health.get("versionMismatches")
+    if isinstance(mismatches, dict):
+        # Revalidate even internal diagnostics before including values in an error.
+        actual = {
+            field: mismatch.get("actual")
+            for field, mismatch in mismatches.items()
+            if field in version_contract() and isinstance(mismatch, dict)
+        }
+        safe = health_failure(actual).get("versionMismatches", {})
+        details = [
+            f"{field} expected {mismatch['expected']}, found "
+            f"{mismatch['actual'] if mismatch['actual'] is not None else 'invalid or missing'}"
+            for field, mismatch in safe.items()
+        ]
+        if details:
+            message += "; " + "; ".join(details)
+    if health.get("status") == "incompatible":
+        message += ". Run 'civ-agent image build', then 'civ-agent auth restart'."
+    return ContainerError(message)
+
+
+def _check_decisions_image(image):
+    """Read only the selected image's protocol constants, without credentials or networking."""
+    from civ_agent.decisions_broker import health_failure, version_contract
+
+    script = (
+        "import json; "
+        "from civ_agent.decisions_broker import BROKER_PROTOCOL_VERSION; "
+        "from civ_agent.diplomacy_decisions import MODEL, POLICY_VERSION; "
+        "from civ_agent.decisions_tasks import TASK_VERSION; "
+        "from civ_agent.decisions_ledger import RATE_VERSION; "
+        "print(json.dumps(dict(protocolVersion=BROKER_PROTOCOL_VERSION,classifierModel=MODEL,"
+        "routingPolicyVersion=POLICY_VERSION,advisoryPolicyVersion=TASK_VERSION,accountingRateVersion=RATE_VERSION)))"
+    )
+    try:
+        result = podman(
+            "run",
+            "--rm",
+            "--pull=never",
+            "--network=none",
+            "--read-only",
+            "--cap-drop=all",
+            "--security-opt=no-new-privileges",
+            "--entrypoint",
+            "/opt/app/.venv/bin/python",
+            image,
+            "-B",
+            "-c",
+            script,
+            timeout=15,
+            check=False,
+        )
+        if result.returncode != 0 or len(result.stdout) > 8192:
+            raise ValueError("Unusable image contract")
+        actual = json.loads(result.stdout)
+    except (ContainerError, OSError, ValueError, subprocess.TimeoutExpired):
+        raise ContainerError(
+            "Could not inspect the selected runtime image's Decisions protocol. "
+            "Run 'civ-agent image build', then 'civ-agent auth restart'."
+        ) from None
+    expected = version_contract()
+    if (
+        not isinstance(actual, dict)
+        or set(actual) != set(expected)
+        or any(actual[field] != value or type(actual[field]) is not type(value) for field, value in expected.items())
+    ):
+        raise _decisions_preflight_error("Selected runtime image is incompatible", health_failure(actual))
+
+
 def ensure_decisions(root, image, *, restart=False):
     private_directory(root / "decisions-ipc")
     with locked(root / ".decisions-launch.lock", wait=True):
@@ -143,7 +227,7 @@ def ensure_decisions(root, image, *, restart=False):
         if current and current["State"]["Running"] and current.get("Image") != image:
             raise ContainerError(
                 "The shared Decisions broker uses a different runtime image. "
-                "Stop its affected games before replacing that broker, or select a separate auth directory."
+                "Rebuild with 'civ-agent image build' and replace it with 'civ-agent auth restart'."
             )
         if not current or not current["State"]["Running"]:
             if current:
@@ -163,7 +247,7 @@ def ensure_decisions(root, image, *, restart=False):
         authorize_agent(root, "operator", "health", root / "operator", decisions=True)
         health = routing_broker_health(root, timeout=5)
         if health["status"] != "ready":
-            raise ContainerError(f"Decisions broker preflight failed: {health.get('reason', health['status'])}")
+            raise _decisions_preflight_error("Decisions broker preflight failed", health)
         report = {**health, "checkedAtMs": int(time.time() * 1000), "image": image}
         write_private_json(root / "decisions-preflight.json", report)
         return report
@@ -190,6 +274,8 @@ def restart_brokers(root, image):
     for directory, configured in (("ipc", auth), ("decisions-ipc", decisions)):
         if configured:
             private_directory(root / directory)
+    if decisions:
+        _check_decisions_image(image)
     result: JsonObject = {
         "auth_directory": str(root),
         "image": image,

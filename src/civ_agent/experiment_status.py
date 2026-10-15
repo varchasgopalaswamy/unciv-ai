@@ -12,7 +12,13 @@ from sqlalchemy.exc import SQLAlchemyError
 from civ_agent import memory_schema as memory
 from civ_agent.decisions_ledger import RATE_VERSION, accounts, requests
 from civ_agent.decisions_policy import decisions_values
-from civ_agent.diplomacy_decisions import BATCH_SECONDS, CHOICES, TWO_QUESTION_CHOICES, two_question_answers
+from civ_agent.diplomacy_decisions import (
+    BATCH_SECONDS,
+    CHOICES,
+    POLICY_VERSION,
+    QUESTION_CHOICES,
+    two_question_answers,
+)
 from civ_agent.experiment_metrics import summarize_records
 from civ_agent.monitoring import read_database
 from civ_agent.protocol import JsonObject
@@ -125,6 +131,8 @@ def _routing_sample(reports) -> JsonObject:
                 counts[report[key]] += 1
     return {
         "calls": len(reports),
+        "currentPolicyVersion": POLICY_VERSION,
+        "policyMismatch": sum(report.get("policyVersion") != POLICY_VERSION for report in reports),
         "rawDispositions": dict(raw),
         "rawDispositionUnknown": len(reports) - sum(raw.values()),
         "effectiveDispositions": dict(effective),
@@ -172,9 +180,11 @@ def _confidence_summary(values):
 
 
 def _question_summaries(reports):
-    questions = {name: [] for name in TWO_QUESTION_CHOICES}
+    questions = {name: [] for choices in QUESTION_CHOICES.values() for name in choices}
     for report in reports:
-        for answer in two_question_answers(report.get("rawAnswers")) or []:
+        if report.get("direction") not in QUESTION_CHOICES or report.get("policyVersion") != POLICY_VERSION:
+            continue
+        for answer in two_question_answers(report.get("rawAnswers"), report["direction"]) or []:
             questions[answer["name"]].append(answer)
     return {
         name: {

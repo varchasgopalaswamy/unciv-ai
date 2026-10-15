@@ -3,32 +3,47 @@ import json
 import pytest
 from sqlalchemy import select
 
-from civ_agent.diplomacy_decisions import TWO_QUESTION_POLICY_VERSION, parse_answer
+from civ_agent.diplomacy_decisions import POLICY_VERSION, parse_answer
 from civ_agent.experiment_status import classifier_status, routing_classifier_summary
 from civ_agent.protocol import JsonObject
-from civ_agent.telemetry import JobAccounting, classifier_calls
+from civ_agent.telemetry import JobAccounting, classifier_calls, classifier_metadata
 from tests.test_routing_two_questions import binary_answer
 
 
 def answer(direction, choice, confidence) -> JsonObject:
-    return parse_answer(
-        direction,
-        {"answers": [{"name": "delivery", "type": "choice", "choice": choice, "confidence": confidence}]},
+    raw = (
+        [
+            binary_answer(
+                "response_needed", "not_needed" if choice == "no_separate_response" else "needed", confidence
+            ),
+            binary_answer("response_timing", "now" if choice == "respond_now" else "can_wait", confidence),
+        ]
+        if direction == "incoming"
+        else [
+            binary_answer("delivery_needed", "not_needed" if choice == "omit" else "needed", confidence),
+            binary_answer("delivery_timing", "now" if choice == "send_now" else "can_wait", confidence),
+        ]
     )
+    result = parse_answer(
+        direction,
+        {"answers": raw},
+        policy_version=POLICY_VERSION,
+    )
+    return {**result, "policyVersion": POLICY_VERSION}
 
 
 def test_routing_evidence_survives_database_reopen_without_provider_or_player_text(tmp_path):
     probabilities = [
-        {"value": "respond_now", "probability": 0.1, "text": "PRIVATE TEXT"},
+        {"value": "send_now", "probability": 0.1, "text": "PRIVATE TEXT"},
         {"value": "batch", "probability": 0.8},
-        {"value": "no_separate_response", "probability": 0.1},
+        {"value": "omit", "probability": 0.1},
     ]
-    result = answer("incoming", "batch", 0.72)
+    result = answer("outgoing", "batch", 0.72)
     result.update(
         model="gpt-6-luna",
-        policyVersion="diplomacy-routing-v2",
+        policyVersion=POLICY_VERSION,
         probabilities=probabilities,
-        thresholds={"batch": 0.9, "no_separate_response": 0.98, "PRIVATE TEXT": 0.1},
+        thresholds={"batch": 0.9, "omit": 0.98, "PRIVATE TEXT": 0.1},
         inputHash="a" * 64,
         promptHash="b" * 64,
         contextSchemaVersion=2,
@@ -51,9 +66,9 @@ def test_routing_evidence_survives_database_reopen_without_provider_or_player_te
             "input": "PRIVATE TEXT",
         },
     )
-    result["rawAnswer"].update(text="PRIVATE TEXT", probabilities=probabilities, evidence={"text": "PRIVATE TEXT"})
+    result["rawAnswers"][1].update(text="PRIVATE TEXT", evidence={"text": "PRIVATE TEXT"})
     accounting = JobAccounting(tmp_path)
-    accounting.classifier("incoming", result)
+    accounting.classifier("outgoing", result)
     accounting.engine.dispose()
     reopened = JobAccounting(tmp_path)
     try:
@@ -61,20 +76,15 @@ def test_routing_evidence_survives_database_reopen_without_provider_or_player_te
             payload = db.scalar(select(classifier_calls.c.payload))
         assert "PRIVATE TEXT" not in payload
         report = reopened.classifier_reports()[0]
-        assert report["choice"] == "respond_now" and report["rawChoice"] == "batch"
+        assert report["choice"] == "send_now" and report["rawChoice"] == "batch"
         assert report["confidence"] == 0.72 and report["appliedThreshold"] == 0.9
         assert report["overridden"] is True and report["lowConfidence"] is True
-        assert report["thresholds"] == {"batch": 0.9, "no_separate_response": 0.98}
+        assert report["thresholds"] == {"batch": 0.9, "omit": 0.98}
         assert report["inputHash"] == "a" * 64 and report["promptHash"] == "b" * 64
         assert report["contextSchemaVersion"] == 2
-        assert report["rawAnswer"] == {
-            "name": "delivery",
-            "type": "choice",
-            "choice": "batch",
-            "confidence": 0.72,
-            "probabilities": [{"value": item["value"], "probability": item["probability"]} for item in probabilities],
-        }
-        assert report["probabilities"] == report["rawAnswer"]["probabilities"]
+        assert [row["name"] for row in report["rawAnswers"]] == ["delivery_needed", "delivery_timing"]
+        assert report["rawAnswers"][1]["confidence"] == 0.72
+        assert report["probabilities"] is None and "rawAnswer" not in report
         assert report["usage"] == {
             "input_tokens": 100,
             "total_tokens": 100,
@@ -165,7 +175,7 @@ def test_malformed_routing_metadata_never_copies_arbitrary_nested_text(tmp_path)
         )
         report = accounting.classifier_reports()[0]
         assert "PRIVATE TEXT" not in json.dumps(report)
-        assert not {"confidence", "rawChoice", "rawAnswer", "probabilities", "overridden", "inputHash"} & report.keys()
+        assert not {"confidence", "rawChoice", "rawAnswer", "overridden", "inputHash"} & report.keys()
         routing = classifier_status(accounting.path)["routing"]
         assert routing["confidence"]["unknown"] == 1 and routing["overrideUnknown"] == 1
     finally:
@@ -197,8 +207,8 @@ def test_confidence_bins_use_explicit_boundaries_and_empty_samples_stay_unknown(
 
 def test_two_question_accounting_keeps_intent_and_action_confidence_separate_after_reopen(tmp_path):
     raw = [binary_answer("response_needed", "not_needed", 0.4), binary_answer("response_timing", "can_wait", 0.95)]
-    result = parse_answer("incoming", {"answers": raw}, policy_version=TWO_QUESTION_POLICY_VERSION)
-    result["policyVersion"] = TWO_QUESTION_POLICY_VERSION
+    result = parse_answer("incoming", {"answers": raw}, policy_version=POLICY_VERSION)
+    result["policyVersion"] = POLICY_VERSION
     for question in result["rawAnswers"]:
         question["providerText"] = "PRIVATE TEXT"
         question["probabilities"][0]["providerText"] = "PRIVATE TEXT"
@@ -210,7 +220,21 @@ def test_two_question_accounting_keeps_intent_and_action_confidence_separate_aft
     ]
     accounting = JobAccounting(tmp_path)
     accounting.classifier("incoming", result)
-    accounting.classifier("incoming", {**answer("incoming", "batch", 0.99), "policyVersion": "diplomacy-routing-v2"})
+    with accounting.connect() as db:
+        db.execute(
+            classifier_calls.insert().values(
+                id="archived-v2",
+                payload=json.dumps(
+                    {
+                        "atMs": 1,
+                        "direction": "incoming",
+                        "choice": "batch",
+                        "confidence": 0.99,
+                        "policyVersion": "diplomacy-routing-v2",
+                    }
+                ),
+            )
+        )
     accounting.engine.dispose()
     reopened = JobAccounting(tmp_path)
     try:
@@ -223,7 +247,7 @@ def test_two_question_accounting_keeps_intent_and_action_confidence_separate_aft
         assert "PRIVATE TEXT" not in json.dumps(reopened.classifier_reports())
         routing = classifier_status(reopened.path)["routing"]
         assert routing["questionBasis"] == {"response_timing": 1}
-        assert routing["confidenceByPolicy"][TWO_QUESTION_POLICY_VERSION]["mean"] == 0.95
+        assert routing["confidenceByPolicy"][POLICY_VERSION]["mean"] == 0.95
         assert routing["confidenceByPolicy"]["diplomacy-routing-v2"]["mean"] == 0.99
         assert routing["perQuestion"]["response_needed"]["choices"] == {"not_needed": 1}
         assert routing["perQuestion"]["response_needed"]["confidence"]["mean"] == 0.4
@@ -231,6 +255,7 @@ def test_two_question_accounting_keeps_intent_and_action_confidence_separate_aft
         assert routing["perQuestion"]["response_timing"]["confidence"]["mean"] == 0.95
         assert routing["rawChoiceConfidence"]["known"] == 1 and routing["rawChoiceConfidence"]["unknown"] == 1
         assert routing["genuineOverrides"] == 1
+        assert routing["policyMismatch"] == 1
     finally:
         reopened.engine.dispose()
 
@@ -249,7 +274,7 @@ def test_two_question_accounting_rejects_malformed_or_unknown_answer_shapes(tmp_
         accounting.classifier(
             "incoming",
             {
-                "policyVersion": TWO_QUESTION_POLICY_VERSION,
+                "policyVersion": POLICY_VERSION,
                 "rawAnswers": raw,
                 "questionBasis": "PRIVATE TEXT",
                 "rawChoiceConfidence": "PRIVATE TEXT",
@@ -269,7 +294,7 @@ def test_two_question_refusal_accounting_never_retains_provider_reason(tmp_path)
         accounting.classifier(
             "incoming",
             {
-                "policyVersion": TWO_QUESTION_POLICY_VERSION,
+                "policyVersion": POLICY_VERSION,
                 "fallback": "refusal",
                 "rawAnswers": [
                     {"name": "response_needed", "type": "refusal", "reason": "PRIVATE TEXT"},
@@ -286,3 +311,21 @@ def test_two_question_refusal_accounting_never_retains_provider_reason(tmp_path)
         assert status["response_timing"]["confidence"]["known"] == 1
     finally:
         accounting.engine.dispose()
+
+
+@pytest.mark.parametrize("policy", [None, "diplomacy-routing-v1", "diplomacy-routing-v2", POLICY_VERSION])
+def test_incoming_telemetry_never_adapts_single_delivery_answer(policy):
+    result = classifier_metadata(
+        "incoming",
+        {
+            "policyVersion": policy,
+            "rawAnswer": {"name": "delivery", "type": "choice", "choice": "batch", "confidence": 0.99},
+            "probabilities": [
+                {"value": "respond_now", "probability": 0.01},
+                {"value": "batch", "probability": 0.98},
+                {"value": "no_separate_response", "probability": 0.01},
+            ],
+        },
+    )
+    assert "rawAnswer" not in result and "rawAnswers" not in result
+    assert result["probabilities"] is None

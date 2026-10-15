@@ -23,9 +23,11 @@ choices, policy versions, confidence threshold, limits and prices. Clients send
 frozen memory/review/city evidence to `/batch`; unknown top-level controls and
 arbitrary gameplay tasks are rejected. Every request identifies its player, which
 must match the authenticated principal. The task policy is
-`player-advisories-v3`, broker protocol 3; it is separate from the diplomacy
-routing policy. Health checks authenticate and check local compatibility without
-calling the provider. Broker and player runtimes must use compatible versions.
+`player-advisories-v4`, broker protocol 3; routing uses `diplomacy-routing-v4`.
+These are the only supported versions. Enabling Decisions selects the current
+implementation; old policies, response adapters and settings migrations are
+absent. Health checks authenticate and validate exact current versions without
+calling the provider. A stale image is rejected with a rebuild instruction.
 
 The operator registers each immutable container game ID and assigned player
 against a broker principal. Credential rotation updates its token hash without
@@ -64,7 +66,7 @@ question-prompt hashes, submitted question names and typed answer diagnostics.
 Original evidence remains in the trusted ledger rather than being copied into
 player replies or telemetry. The runtime verifies request, model, policy, input,
 prompt and question identities and reparses diagnostics before using an answer.
-Historical captures from an older policy cannot be treated as v3 results.
+Historical captures from an older policy cannot be treated as current results.
 
 Each submitted question has a `questionResults` row with status `accepted`,
 `low_confidence`, `refusal`, `missing` or `malformed`. Sanitized typed choices and
@@ -84,8 +86,8 @@ bound of eight, with omission counts; explicit reads can retrieve the remainder.
 Native reads and gameplay commands never initiate Decisions classification.
 
 Independent tasks share one eligible startup batch: optional-memory inclusion
-and priority, statement preservation, belief reconsideration and two questions
-per captured city (population focus and construction). Each task sees
+and priority, statement preservation, belief reconsideration and four questions
+per captured city (whether to change focus/construction and which alternative). Each task sees
 frozen inputs and does not depend on another task's result. Internal classifier
 access never counts as delivering a memory or exposing gameplay advice.
 
@@ -119,11 +121,14 @@ Acceptance, exposure, model adoption and gameplay effects are separate outcomes.
 ## City choices
 
 At eligible gameplay startup with native `phase="ACTIVE"`, the service captures
-up to four manageable owned cities, prioritizing empty queues. Each has one focus
-question and one construction question. Both use the same pinned
+up to four manageable owned cities, prioritizing empty queues. Each has an independent
+change question and hypothetical alternative question for focus and construction. They use the same pinned
 player/epoch/revision/turn, shared empire facts,
 and saved objectives. They have independent confidence/fallback handling and do
-not assume the other's answer. The gameplay model coordinates the recommendations
+not assume the other's answer. A recommendation to change requires both an accepted
+change decision and an accepted alternative; a confident no-change answer retains
+the current assignments or queue. Adopted player decisions are distinguished from
+the latest optional review. The gameplay model coordinates the recommendations
 and recomputes construction estimates after changing focus. Keep and defer are
 explicit alternatives; no recommendation is executed automatically. An active
 position can remain eligible when mandatory choices make `canEndTurn=false`;
@@ -142,7 +147,11 @@ queue/production choices with native commands, costs, retained work, prerequisit
 resource requirements and completion effects. A bounded shortlist uses newly
 available choices and objective/name relevance. Counts explicitly report omitted
 cities, constructions and focuses (at most 16 captured focus alternatives).
-Shared byte/question limits remove whole city pairs and their unneeded rule text
+Append and reorder alternatives identify their exact native operation and queue
+entry. Append production excludes work belonging to an already queued copy;
+start-now time is distinguished from unknown delay behind earlier entries.
+Reordering follows native construction-name storage rules. Shared byte/question
+limits remove whole city groups and their unneeded rule text
 when needed. The player's ordinary menus and inspections remain available.
 
 Internal previews and projections do not register explicit detail reads or native
@@ -202,6 +211,15 @@ rosters; absence or truncation is not proof of contradiction. Accepted `skip` an
 
 ## Early reviews
 
+Full strategic reports receive a compact named-fact catalogue from their frozen
+player-visible inputs. Population and partial map sightings never establish a
+foreign empire's total city count. Reports must state material assumptions with
+exact fact IDs and values; interpretations remain inferred or unknown. Referenced
+values are checked before publication. Assumption sources such as `review:20:1`
+can be retained in adopted strategy, preserving dated evidence without certifying
+the player's inference. Planning guidance traces investments through completion,
+travel, prerequisites and the first useful action, including civilian exposure.
+
 Before selecting participants, the scheduler requests triage only for players
 with Decisions enabled and no scheduled review due now or next round. Triage
 uses previously recorded permitted material facts and saved reconsideration
@@ -209,9 +227,10 @@ criteria, without opening a player connection or capturing a full review.
 Each completed strategic review atomically commits a bounded material-facts
 baseline, full fingerprint, schema and source identity alongside its report.
 Triage compares that baseline with current recorded facts, explicit deltas,
-`recentProgress` and relevant attributed statements. An old hash alone cannot
-reconstruct historical facts; unavailable baselines and incomplete comparisons
-remain explicit.
+`recentProgress` and relevant attributed statements. Triage requires the valid
+committed baseline; missing, invalid or hash-only baselines cause no request.
+A regular completed review supplies the baseline. Incomplete comparisons remain
+explicit.
 
 The scheduler supplies authoritative `nextReviewTurn` in completed-round units.
 `sourceTurn`, `completedTurn` and `boundaryTurn` distinguish observation age from
@@ -233,8 +252,9 @@ acknowledgments are deduplicated by original request and turn.
 Accepted requests join the same communication-draining hold, host barrier,
 parallel review and release workflow. Persisted participant metadata lets an
 interrupted barrier resume without reclassification. Overlapping periodic and
-early reviews coalesce. Early-only participants do not reset periodic anchors;
-existing periodic and mandatory war triggers retain their behavior. Private
+early reviews coalesce. Every completed participant review resets its periodic
+anchor, avoiding another interval review shortly after an early one. Mandatory
+war triggers retain their behavior. Private
 criteria go to triage only, never to the independent strategic reviewer.
 
 ## Validation and operations
@@ -246,12 +266,12 @@ diplomacy classifier usage and full review usage.
 The broker ledger is the spending authority; checkpoint metadata is diagnostic.
 
 The labeled [advisory replay fixture](../../tests/fixtures/decisions-advisory-replay.json)
-has 19 provenance-labeled cases and 32 questions across the six advisory tasks.
+contains provenance-labeled cases across the six advisory tasks.
 These are provisional assistant-authored judgments over synthetic evidence using
 current production schemas, including negative, missing-coverage and boundary
 cases. One explicitly labeled schema/parser stress case combines startup and
 review fields that runtime emits separately. Historical fixtures and captured
-responses remain historical artifacts; they cannot be relabeled as current v3
+responses remain historical artifacts; they cannot be relabeled as current
 quality evidence.
 
 Replay checks policy, input, prompt, model and request identity, then reports raw
@@ -259,7 +279,7 @@ choices, accepted answers and observed delivery separately. Confidence/status
 denominators remain per question and task. Threshold sweeps use calibration
 cases only and do not select a threshold automatically; holdout results stay
 separate. Offline replay with no responses reports missing data, not accuracy.
-The current implementation has no paid v3 advisory-quality comparison or gameplay
+The current implementation has no paid current-policy advisory-quality comparison or gameplay
 benefit evidence. Synthetic classifier-response tests validate contracts and
 accounting, rather than stronger play.
 

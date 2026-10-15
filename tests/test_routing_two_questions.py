@@ -10,9 +10,9 @@ from civ_agent.container_supervisor import authorize_agent
 from civ_agent.decisions_broker import DecisionsBroker, RoutingClient
 from civ_agent.decisions_policy import DecisionsSettings, add_decisions_arguments, decisions_values
 from civ_agent.diplomacy_decisions import (
-    CANDIDATE_POLICY_VERSION,
+    OUTGOING_QUESTION_CHOICES,
+    POLICY_VERSION,
     TWO_QUESTION_CHOICES,
-    TWO_QUESTION_POLICY_VERSION,
     DecisionsClient,
     request_body,
 )
@@ -36,21 +36,22 @@ def binary_answer(name, choice, confidence):
         "confidence": confidence,
         "probabilities": [
             {"value": value, "probability": probability if value == choice else 1 - probability}
-            for value in TWO_QUESTION_CHOICES[name]
+            for value in {**TWO_QUESTION_CHOICES, **OUTGOING_QUESTION_CHOICES}[name]
         ],
     }
 
 
-def test_two_question_policy_is_opt_in_and_settings_and_cli_preserve_it():
-    assert DecisionsSettings().decisions_routing_policy == "diplomacy-routing-v1"
+def test_current_policy_is_default_and_settings_and_cli_preserve_it():
+    assert DecisionsSettings().decisions_routing_policy == POLICY_VERSION
+    assert DecisionsSettings().decisions_enabled is False
     parser = argparse.ArgumentParser()
     add_decisions_arguments(parser)
-    arguments = parser.parse_args(["--decisions-routing-policy", TWO_QUESTION_POLICY_VERSION])
+    arguments = parser.parse_args(["--decisions-routing-policy", POLICY_VERSION])
     settings = DecisionsSettings.model_validate(decisions_values(arguments))
-    assert settings.decisions_routing_policy == TWO_QUESTION_POLICY_VERSION
+    assert settings.decisions_routing_policy == POLICY_VERSION
     assert settings.decisions_incoming_batch_confidence == settings.decisions_incoming_suppress_confidence == 0.9
     config = GameConfig(agents=settings.model_dump()).resolved()
-    assert config.agents.decisions_routing_policy == TWO_QUESTION_POLICY_VERSION
+    assert config.agents.decisions_routing_policy == POLICY_VERSION
     assert config.agents.decisions_min_confidence == 0.9
 
 
@@ -69,7 +70,7 @@ def test_two_question_provider_broker_runtime_preserves_binary_evidence_and_batc
             requests.append(body)
             assert request.headers["Authorization"] == "Bearer local-two-question-test-key"
             bundle = json.loads(body["input"])
-            assert body == request_body(bundle["direction"], bundle, policy_version=TWO_QUESTION_POLICY_VERSION)
+            assert body == request_body(bundle["direction"], bundle, policy_version=POLICY_VERSION)
             if bundle["direction"] == "incoming":
                 assert [question["name"] for question in body["questions"]] == list(TWO_QUESTION_CHOICES)
                 needed, needed_confidence, timing, timing_confidence = decisions[bundle["pending"][0]["text"]]
@@ -78,8 +79,11 @@ def test_two_question_provider_broker_runtime_preserves_binary_evidence_and_batc
                     binary_answer("response_timing", timing, timing_confidence),
                 ]
             else:
-                assert body == request_body("outgoing", bundle, policy_version=CANDIDATE_POLICY_VERSION)
-                answers = [{"name": "delivery", "type": "choice", "choice": "batch", "confidence": 0.95}]
+                assert body == request_body("outgoing", bundle, policy_version=POLICY_VERSION)
+                answers = [
+                    binary_answer("delivery_needed", "needed", 0.95),
+                    binary_answer("delivery_timing", "can_wait", 0.95),
+                ]
             for answer in answers:
                 answer["providerText"] = "PRIVATE PROVIDER TEXT"
             return web.json_response({"answers": answers, "usage": {"input_tokens": 90}})
@@ -87,7 +91,7 @@ def test_two_question_provider_broker_runtime_preserves_binary_evidence_and_batc
         app = web.Application()
         app.router.add_post("/v1/decisions", provider)
         auth, seat = private_directory(tmp_path / "auth"), private_directory(tmp_path / "seat")
-        settings = DecisionsSettings(decisions_enabled=True, decisions_routing_policy=TWO_QUESTION_POLICY_VERSION)
+        settings = DecisionsSettings(decisions_enabled=True, decisions_routing_policy=POLICY_VERSION)
         authorize_agent(
             auth, "isolated-two-question-test", 0, seat, decisions=True, settings=settings.model_dump(), player="Rome"
         )
@@ -141,7 +145,7 @@ def test_two_question_provider_broker_runtime_preserves_binary_evidence_and_batc
                         assert ready_ids(gateway.memory, db, now=129.0) == []
                         assert ready_ids(gateway.memory, db, now=130.0) == [1]
 
-                    # Outgoing v3 uses the unchanged v2 rubric and delivery path.
+                    # Outgoing independently judges delivery usefulness and timing.
                     original = host.tool
                     receipts = {}
 

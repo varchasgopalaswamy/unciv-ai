@@ -16,7 +16,92 @@ LIMITATIONS = [
     "Focus and construction are independent recommendations over the same captured state; neither assumes the other was applied.",
     "The gameplay agent coordinates empire needs and can accept, change or reject either choice without an override.",
     "Read the selected option's normal inspection before acting. Queue commands append; reordering is a separate native operation.",
+    "Keep continues the exact existing queue without adding a copy. Append schedules a new item using native queue insertion; it never means continue an existing copy. Native insertion can replace idle or place a build before a trailing conversion.",
+    "For a queue move, previousQueueProduction describes that entry before the move and production describes starting it first. Native stored work belongs to the first queued copy of its name after reordering.",
+    "Focuses are persistent allocation policies. Equal immediate yields do not establish equal allocations after growth or other changes.",
 ]
+
+
+def adopted_decisions(objectives):
+    return [
+        {
+            "source": {k: source[k] for k in ("key", "version")},
+            **{
+                k: copy.deepcopy(decision[k])
+                for k in ("id", "objective", "investment", "reconsiderWhen", "subjects")
+                if k in decision
+            },
+        }
+        for source in objectives
+        for decision in source.get("record", {}).get("decisions", [])
+    ]
+
+
+def construction_options(city, production, details):
+    """Bind one legal operation and its own native work to each alternative."""
+    estimates = city.get("constructionEstimates", {})
+    rows: list[JsonObject] = []
+    by_name = {option["name"]: option for option in details}
+    for progress in production.get("data", {}).get("entity", {}).get("development", {}).get("constructions", []):
+        command = next((c for c in progress.get("moveCommands", []) if c["toIndex"] == 0), None)
+        if command is None or progress["name"] not in by_name:
+            continue
+        estimate = estimates.get(progress["name"])
+        if estimate is None:
+            continue
+        native = construction_estimate(estimate)
+        # Native work is stored by construction name. Moving a later copy
+        # ahead of its siblings makes it the first copy and gives it that work.
+        native["production"] = copy.deepcopy(estimate["production"])
+        rows.append(
+            {
+                "id": f"move:{progress['index']}",
+                "native": {
+                    **native,
+                    "name": progress["name"],
+                    "command": copy.deepcopy(command),
+                    "queueOperation": "move_to_front",
+                    "queueIndex": progress["index"],
+                    "previousQueueProduction": copy.deepcopy(progress["production"]),
+                    "queueDelayTurns": 0,
+                    **{
+                        k: copy.deepcopy(estimate[k])
+                        for k in ("requiredTechnologies", "resourceRequirements")
+                        if k in estimate
+                    },
+                },
+            }
+        )
+    for name, option in by_name.items():
+        command = option.get("command")
+        estimate = estimates.get(name)
+        if command is None or estimate is None:
+            continue
+        native = construction_estimate(estimate)
+        native["production"] = copy.deepcopy(estimate["appendProduction"])
+        rows.append(
+            {
+                "id": f"append:{name}",
+                "native": {
+                    **native,
+                    "name": name,
+                    "command": copy.deepcopy(command),
+                    "queueOperation": "append",
+                    "existingQueue": copy.deepcopy(city.get("constructionQueue", [])),
+                    "additionalCopy": name in city.get("constructionQueue", []),
+                    "queueDelayTurns": None if city.get("constructionQueue") else 0,
+                    "completionAfterQueueTurns": None,
+                    **{
+                        k: copy.deepcopy(estimate[k])
+                        for k in ("requiredTechnologies", "resourceRequirements")
+                        if k in estimate
+                    },
+                },
+            }
+        )
+    name_order = {name: index for index, name in enumerate(by_name)}
+    rows.sort(key=lambda row: (name_order[row["native"]["name"]], row["native"]["queueOperation"] == "append"))
+    return rows[:CONSTRUCTION_LIMIT], len(rows)
 
 
 def basis(gateway, job):
@@ -31,6 +116,55 @@ def basis(gateway, job):
 
 def current(gateway, job, captured):
     return captured == basis(gateway, job)
+
+
+def change_key(job, objectives):
+    """Observe decision changes without treating routine stored work as news."""
+    observation = job.observation or {}
+    return fingerprint(
+        {
+            "objectives": objectives,
+            "reviewAdvice": job.memory.get("strategicAdvice"),
+            "cities": [
+                {
+                    **{k: city.get(k) for k in ("handle", "puppet", "constructionQueue", "constructionOptions")},
+                    "constructionChoice": {
+                        k: (city.get("constructionChoice") or {}).get(k)
+                        for k in ("name", "chosenTurn", "availableSinceChoice")
+                    },
+                    "development": {
+                        k: city.get("development", {}).get(k)
+                        for k in (
+                            "population",
+                            "focus",
+                            "avoidGrowth",
+                            "foodPerTurn",
+                            "starving",
+                            "inResistance",
+                            "tiles",
+                        )
+                    },
+                    "management": {
+                        "manualSpecialists": (city.get("management") or {}).get("manualSpecialists"),
+                        "focusOptions": [
+                            {"name": option.get("name"), "available": option.get("action", {}).get("available")}
+                            for option in (city.get("management") or {}).get("focusOptions", [])
+                        ],
+                    },
+                }
+                for city in observation.get("cities", [])
+            ],
+            "economy": {
+                k: observation.get("economy", {}).get(k)
+                for k in ("happiness", "goldPerTurn", "unitMaintenance", "resources")
+            },
+            "units": [
+                {k: unit.get(k) for k in ("handle", "name", "military")}
+                for unit in observation.get("map", {}).get("units", [])
+            ],
+            "visibleHostiles": (observation.get("tacticalReview") or {}).get("visibleHostiles", []),
+        }
+    )
 
 
 async def internal_read(gateway, job, name, arguments):
@@ -76,7 +210,8 @@ async def capture(gateway, job, objectives) -> tuple[list[JsonObject], JsonObjec
         ],
         "researchQueue": copy.deepcopy(observation.get("researchQueue", [])),
         "visibleHostiles": copy.deepcopy((observation.get("tacticalReview") or {}).get("visibleHostiles", [])),
-        "strategy": copy.deepcopy(job.memory.get("strategicAdvice")),
+        "reviewAdvice": copy.deepcopy(job.memory.get("strategicAdvice")),
+        "adoptedDecisions": adopted_decisions(objectives),
     }
     context["economy"]["resources"] = [
         {k: r.get(k) for k in ("name", "available", "used", "imported", "exported")}
@@ -86,7 +221,7 @@ async def capture(gateway, job, objectives) -> tuple[list[JsonObject], JsonObjec
     context["units"] = [
         {k: u.get(k) for k in ("handle", "name", "military")} for u in observation.get("map", {}).get("units", [])
     ]
-    words = set(re.findall(r"\w{3,}", str([objectives, context["strategy"]]).casefold()))
+    words = set(re.findall(r"\w{3,}", str([objectives, context["reviewAdvice"]]).casefold()))
     cities = []
     failures = 0
     for city in selected:
@@ -136,50 +271,25 @@ async def capture(gateway, job, objectives) -> tuple[list[JsonObject], JsonObjec
             observation,
             DetailQuery(tool="city_details", arguments={"target": city["handle"], "sections": ["production"]}),
         )
-        moves = {
-            p["name"]: next(command for command in p["moveCommands"] if command["toIndex"] == 0)
+        move_names = {
+            p["name"]
             for p in production.get("data", {}).get("entity", {}).get("development", {}).get("constructions", [])
             if any(command["toIndex"] == 0 for command in p.get("moveCommands", []))
         }
-        all_names = set(city.get("constructionOptions", [])) | moves.keys()
+        all_names = set(city.get("constructionOptions", [])) | move_names
         names = list(all_names)
         available_since = (city.get("constructionChoice") or {}).get("availableSinceChoice", [])
         names.sort(key=lambda n: (n not in available_since, -len(words & set(re.findall(r"\w{3,}", n.casefold()))), n))
         names = names[:CONSTRUCTION_LIMIT]
-        constructions = []
+        constructions, total_constructions = [], 0
         if names:
             details = project_detail(
                 observation,
                 DetailQuery(tool="construction_details", arguments={"target": city["handle"], "names": names}),
             )
-            for option in details.get("data", {}).get("constructions", []):
-                command = moves.get(option["name"]) or option.get("command")
-                if command is None:
-                    continue
-                estimate = city.get("constructionEstimates", {}).get(option["name"])
-                if estimate is None:
-                    continue
-                constructions.append(
-                    {
-                        "id": f"construction{len(constructions)}",
-                        "native": {
-                            "name": option["name"],
-                            "command": copy.deepcopy(command),
-                            "queueOperation": "move_to_front" if command["kind"] == "MOVE_CONSTRUCTION" else "append",
-                            **construction_estimate(estimate),
-                            **{
-                                k: copy.deepcopy(option[k])
-                                for k in ("queueUnavailableReasons", "progress")
-                                if k in option
-                            },
-                            **{
-                                k: copy.deepcopy(estimate[k])
-                                for k in ("requiredTechnologies", "resourceRequirements")
-                                if k in estimate
-                            },
-                        },
-                    }
-                )
+            constructions, total_constructions = construction_options(
+                city, production, details.get("data", {}).get("constructions", [])
+            )
         development = city.get("development", {})
         facts = {
             k: copy.deepcopy(development[k])
@@ -198,6 +308,11 @@ async def capture(gateway, job, objectives) -> tuple[list[JsonObject], JsonObjec
         facts.update(
             queue=copy.deepcopy(city.get("constructionQueue", [])),
             manualSpecialists=(city.get("management") or {}).get("manualSpecialists"),
+            adoptedDecisions=[
+                decision
+                for decision in context["adoptedDecisions"]
+                if {city["handle"], city["name"]} & set(decision.get("subjects", []))
+            ],
         )
         head = next(iter(city.get("constructionQueue", [])), None)
         if head in city.get("constructionEstimates", {}):
@@ -213,7 +328,8 @@ async def capture(gateway, job, objectives) -> tuple[list[JsonObject], JsonObjec
                 ],
                 "constructions": constructions,
                 "omittedFocuses": max(0, len(legal) - min(len(focuses), FOCUS_LIMIT)),
-                "omittedConstructions": max(0, len(all_names) - len(constructions)),
+                "omittedConstructions": max(0, len(all_names) - len(names))
+                + max(0, total_constructions - len(constructions)),
                 "limitations": [*data.get("limitations", []), ESTIMATE_BASIS, *LIMITATIONS],
             }
         )
@@ -283,14 +399,32 @@ def recommendations(gateway, job, cities, result, context=None):
             ("focus", "city_focus", "focuses"),
             ("construction", "city_construction", "constructions"),
         ):
+            change = answers.get(f"{prefix}_change:{index}")
+            if not change:
+                continue
+            if change["choice"] == "keep":
+                row[field] = {
+                    "source": "decisions",
+                    "choice": change["choice"],
+                    "confidence": change["confidence"],
+                    "change": copy.deepcopy(change),
+                }
+                continue
+            if change["choice"] != "change":
+                continue
             answer = answers.get(f"{prefix}:{index}")
             if not answer:
                 continue
             selected = answer["choice"]
             option = next((o for o in city[candidates] if o["id"] == selected), None)
-            if option is None and selected not in {"keep", "defer"}:
+            if option is None and selected != "defer":
                 continue
-            row[field] = {"source": "decisions", "choice": selected, "confidence": answer["confidence"]}
+            row[field] = {
+                "source": "decisions",
+                "choice": selected,
+                "confidence": min(change["confidence"], answer["confidence"]),
+                "change": copy.deepcopy(change),
+            }
             if option:
                 row[field]["native"] = copy.deepcopy(option["native"])
                 if field == "construction":

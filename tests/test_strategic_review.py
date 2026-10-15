@@ -27,6 +27,13 @@ def assessment(victories=VICTORIES) -> JsonObject:
         "review": {
             "horizonTurns": 10,
             "outcomeAssessment": "No prior chosen investment is available.",
+            "materialAssumptions": [
+                {
+                    "assessment": "Whether factories repay their cost before Greece finishes remains unknown.",
+                    "status": "unknown",
+                    "facts": [],
+                }
+            ],
             "plans": [
                 {
                     "name": "Expand production",

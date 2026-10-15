@@ -113,6 +113,21 @@ class RecordStore:
         evidence: list[JsonObject] = []
         missing = []
         for source in sources:
+            advice = snapshot.get("strategicAdvice")
+            if advice:
+                assumption = next(
+                    (a for a in advice["review"]["materialAssumptions"] if a.get("source") == source), None
+                )
+                if assumption is not None:
+                    evidence.append(
+                        {
+                            "key": source,
+                            "category": "review_assumption",
+                            "reviewTurn": advice["asOfTurn"],
+                            "assessment": assumption,
+                        }
+                    )
+                    continue
             if source in snapshot.get("historicalEvidence", {}):
                 evidence.append({**snapshot["historicalEvidence"][source], "historical": True})
                 continue

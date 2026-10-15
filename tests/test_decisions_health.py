@@ -8,7 +8,8 @@ import pytest
 from aiohttp import web
 
 from civ_agent.decisions_broker import BROKER_PROTOCOL_VERSION, DecisionsBroker, RoutingClient
-from civ_agent.decisions_ledger import RATE_VERSION
+from civ_agent.decisions_ledger import RATE_VERSION, DecisionsLedger
+from civ_agent.decisions_policy import DecisionsSettings
 from civ_agent.decisions_tasks import TASK_VERSION
 from civ_agent.diplomacy_decisions import MODEL, POLICY_VERSION, DecisionsClient
 from civ_agent.tls import write_private_json
@@ -56,6 +57,9 @@ def test_health_is_authenticated_free_and_reports_failure_circuit_recovery(tmp_p
         provider_app.router.add_post("/decisions", provider)
         write_private_json(tmp_path / "decisions-clients.json", {"seat": hashlib.sha256(b"player-secret").hexdigest()})
         write_private_json(tmp_path / "credential.json", {"token": "player-secret"})
+        DecisionsLedger(tmp_path).register(
+            "seat", "game", "Rome", DecisionsSettings(decisions_enabled=True).model_dump()
+        )
         socket = tmp_path / "broker.sock"
         async with serve(provider_app) as upstream:
             decisions = DecisionsClient("forbidden-api-key", endpoint=upstream + "/decisions", clock=lambda: clock[0])
@@ -117,10 +121,6 @@ def test_provider_http_failures_have_safe_distinct_diagnostics(status, kind):
 @pytest.mark.parametrize(
     "body",
     [
-        {**health_body(), "protocolVersion": BROKER_PROTOCOL_VERSION + 1},
-        {**health_body(), "protocolVersion": True},
-        {**health_body(), "classifierModel": "unexpected-model"},
-        {**health_body(), "routingPolicyVersion": "unexpected-policy"},
         {**health_body(), "upstreamStatus": "verified"},
         {**health_body(), "circuit": {"state": "closed", "consecutiveFailures": 0, "retryAfterSeconds": float("nan")}},
         {**health_body(), "lastFailure": {"kind": "transport", "message": "private text"}},
@@ -141,8 +141,51 @@ def test_routing_client_rejects_incompatible_health_without_exposing_body(tmp_pa
         socket = tmp_path / "broker.sock"
         async with serve(app, socket=socket):
             routing = RoutingClient(socket, tmp_path / "credential.json")
-            assert await routing.health() == {"status": "incompatible", "reason": "invalid_health_contract"}
-            assert routing.last_health == {"status": "incompatible", "reason": "invalid_health_contract"}
+            expected = {
+                "status": "incompatible",
+                "reason": "invalid_health_contract",
+                "action": "rebuild_runtime_image",
+            }
+            assert await routing.health() == expected
+            assert routing.last_health == expected
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    ("field", "actual", "safe_actual"),
+    [
+        ("protocolVersion", 2, 2),
+        ("protocolVersion", True, None),
+        ("routingPolicyVersion", "diplomacy-routing-v1", "diplomacy-routing-v1"),
+        ("advisoryPolicyVersion", "player-advisories-v2", "player-advisories-v2"),
+        ("classifierModel", "secret-provider-key", None),
+        ("accountingRateVersion", {"secret": "private player text"}, None),
+    ],
+)
+def test_health_version_mismatches_are_specific_bounded_and_never_echo_arbitrary_values(
+    tmp_path, field, actual, safe_actual
+):
+    async def run():
+        write_private_json(tmp_path / "credential.json", {"token": "routing-token"})
+
+        async def health(_):
+            return web.json_response({**health_body(), field: actual})
+
+        app = web.Application()
+        app.router.add_get("/health", health)
+        socket = tmp_path / "broker.sock"
+        async with serve(app, socket=socket):
+            routing = RoutingClient(socket, tmp_path / "credential.json")
+            expected = {
+                "status": "incompatible",
+                "reason": "broker_version_mismatch",
+                "action": "rebuild_runtime_image",
+                "versionMismatches": {field: {"expected": health_body()[field], "actual": safe_actual}},
+            }
+            assert await routing.health() == expected
+            assert routing.last_health == expected
+            assert "secret" not in json.dumps(expected) and "private" not in json.dumps(expected)
 
     asyncio.run(run())
 
@@ -172,7 +215,11 @@ def test_routing_health_access_outage_malformed_and_timeout_are_bounded(tmp_path
                 "reason": "broker_access_denied",
                 "httpStatus": 401,
             }
-            assert await routing.health(timeout=0.02) == {"status": "incompatible", "reason": "invalid_health_contract"}
+            assert await routing.health(timeout=0.02) == {
+                "status": "incompatible",
+                "reason": "invalid_health_contract",
+                "action": "rebuild_runtime_image",
+            }
             assert await routing.health(timeout=0.02) == {"status": "unavailable", "reason": "broker_timeout"}
 
     asyncio.run(run())

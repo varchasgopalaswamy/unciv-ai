@@ -1,9 +1,10 @@
 import asyncio
+import hashlib
 import json
 
 import pytest
 
-from civ_agent.agent_service import AgentService
+from civ_agent.agent_service import AgentService, ServiceError
 from civ_agent.civilization_guide import civilization_reference
 from civ_agent.strategy_guide import strategy_reference
 from tests.test_agent_service import StartupHost
@@ -224,6 +225,113 @@ class Jobs:
                     await self.task
 
         return Process()
+
+
+def test_transport_failure_during_close_cannot_finalize_communication_as_completed(tmp_path, monkeypatch):
+    async def run():
+        host = MailboxHost()
+        monkeypatch.setattr("civ_agent.chat_runtime.HostConnection", lambda *args, **kwargs: host)
+        jobs = Jobs()
+
+        def process_factory(executable, workspace, url, ca, notification):
+            process = jobs(executable, workspace, url, ca, notification)
+            close = process.close
+
+            async def fail_during_flush():
+                await close()
+                await notification("service/transportFailure", {"reason": "CODEX_NOTIFICATION_OVERFLOW"})
+                await notification("service/transportStatus", {"peakQueuedNotifications": 4096})
+
+            process.close = fail_during_flush
+            return process
+
+        service = AgentService(
+            "Rome",
+            tmp_path / "Rome",
+            tmp_path / "private",
+            "S" * 43,
+            "https://localhost:8765/mcp",
+            None,
+            process_factory=process_factory,
+            connection_factory=lambda *args, **kwargs: StartupHost(jobs),
+        )
+        jobs.service = service
+        try:
+            await service.chat.connect(
+                {"epoch": "g1", "playerToken": "P" * 43, "model": None, "reasoningEffort": None, "timeoutSeconds": 10}
+            )
+            await service.review_phase({"epoch": "g1", "gameTurn": 0, "stage": "release"})
+            await service.chat.compute("chat-transport")
+            record_file = service.state_dir / "chat-jobs" / (hashlib.sha256(b"chat-transport").hexdigest() + ".json")
+            record = json.loads(record_file.read_text())
+            assert record["phase"] == "FAILED"
+            assert record["error"] == record["transportError"] == "CODEX_NOTIFICATION_OVERFLOW"
+            assert not service.gateway.jobs
+        finally:
+            await service.close()
+        assert '"event": "codex_transport"' in service.diagnostics.path.read_text()
+
+    asyncio.run(run())
+
+
+def test_unconfirmed_chat_flush_retains_process_and_io_until_a_later_close_succeeds(tmp_path, monkeypatch):
+    async def run():
+        host = MailboxHost()
+        monkeypatch.setattr("civ_agent.chat_runtime.HostConnection", lambda *args, **kwargs: host)
+        jobs = Jobs()
+        close_calls = 0
+
+        def process_factory(executable, workspace, url, ca, notification):
+            process = jobs(executable, workspace, url, ca, notification)
+            close = process.close
+
+            async def delayed_flush():
+                nonlocal close_calls
+                close_calls += 1
+                await close()
+                if close_calls <= 2:
+                    raise ServiceError("CODEX_NOTIFICATION_FLUSH_TIMEOUT", 503)
+
+            process.close = delayed_flush
+            return process
+
+        service = AgentService(
+            "Rome",
+            tmp_path / "Rome",
+            tmp_path / "private",
+            "S" * 43,
+            "https://localhost:8765/mcp",
+            None,
+            process_factory=process_factory,
+            connection_factory=lambda *args, **kwargs: StartupHost(jobs),
+        )
+        jobs.service = service
+        try:
+            await service.chat.connect(
+                {"epoch": "g1", "playerToken": "P" * 43, "model": None, "reasoningEffort": None, "timeoutSeconds": 10}
+            )
+            await service.review_phase({"epoch": "g1", "gameTurn": 0, "stage": "release"})
+            with pytest.raises(ServiceError, match="^CODEX_NOTIFICATION_FLUSH_TIMEOUT$"):
+                await service.chat.compute("unconfirmed-chat")
+            assert close_calls == 1
+            assert "unconfirmed-chat" in service.chat.jobs
+            assert service.chat.job_records["unconfirmed-chat"][0]["error"] == "STOP_UNCONFIRMED"
+            with pytest.raises(ServiceError, match="^CODEX_NOTIFICATION_FLUSH_TIMEOUT$"):
+                await service.close()
+            assert close_calls == 2
+            assert not service.io.closed and not service.diagnostics.closed
+            assert "unconfirmed-chat" in service.chat.jobs
+            await service.close()
+            assert close_calls == 3
+            assert not service.chat.jobs and not service.chat.job_records and not service.gateway.jobs
+            assert service.io.closed
+            record_file = service.state_dir / "chat-jobs" / (hashlib.sha256(b"unconfirmed-chat").hexdigest() + ".json")
+            record = json.loads(record_file.read_text())
+            assert record["phase"] == "FAILED" and record["error"] == "STOP_UNCONFIRMED"
+        finally:
+            await service.close()
+
+    asyncio.run(run())
 
 
 @pytest.mark.parametrize("strategy_guide", [False, True])

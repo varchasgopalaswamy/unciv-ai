@@ -9,7 +9,7 @@ from civ_agent.round_review import review_round
 
 
 @pytest.mark.parametrize("resume", [False, True])
-def test_early_review_shares_barrier_preserves_periodic_anchor_and_suppresses_duplicates(monkeypatch, resume):
+def test_early_review_shares_barrier_resets_anchor_and_suppresses_duplicates(monkeypatch, resume):
     status = {
         "epoch": "g1",
         "serverInstance": "host",
@@ -62,7 +62,7 @@ def test_early_review_shares_barrier_preserves_periodic_anchor_and_suppresses_du
         scheduler.state["reviewPhase"] = {"gameTurn": 5, "earlyCivilizations": ["Rome"]}
     monkeypatch.setattr("civ_agent.round_review.time.sleep", lambda _: None)
     assert review_round(scheduler, status)
-    assert scheduler.state["reviewAnchors"] == {"Rome": 0, "Greece": 4}
+    assert scheduler.state["reviewAnchors"] == {"Rome": 4, "Greece": 4}
     assert [name for name, op, fields in calls if op == "review_phase" and fields["stage"] == "start"] == [
         "Greece",
         "Rome",

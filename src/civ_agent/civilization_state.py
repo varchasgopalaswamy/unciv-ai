@@ -14,7 +14,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import bindparam, func, insert, inspect, or_, select
+from sqlalchemy import bindparam, case, func, insert, inspect, or_, select
 
 from civ_agent import memory_schema as tables
 from civ_agent.agreement_memory import affected_subjects, lifecycle_terms
@@ -307,9 +307,11 @@ class CivilizationState:
             cursor = self._meta(db, "handled:" + purpose, 0)
             query = select(tables.events.c.id, tables.events.c.body).select_from(tables.events.join(tables.inbox))
             if purpose == "communication" and self.routing_enabled:
-                from civ_agent.diplomacy_store import ready_ids
+                from civ_agent.diplomacy_store import attention_ids, ready_ids
 
-                query = query.where(tables.events.c.id.in_(ready_ids(self, db)))
+                query = query.where(tables.events.c.id.in_(attention_ids(self, db))).order_by(
+                    case((tables.events.c.id.in_(ready_ids(self, db)), 0), else_=1)
+                )
             else:
                 query = query.where(tables.events.c.id > cursor)
             if purpose == "communication":
@@ -924,10 +926,17 @@ class CivilizationState:
                 .values(status="COMPLETED" if completed else "INTERRUPTED")
             )
             snapshot = json.loads(row["snapshot"])
-            if self.routing_enabled and row["purpose"] == "communication":
+            if self.routing_enabled and (row["purpose"] == "communication" or completed):
                 from civ_agent.diplomacy_store import delivered
 
-                delivered(self, db, snapshot.get("routingEventIds", []), completed=completed)
+                delivered(
+                    self,
+                    db,
+                    snapshot.get("routingEventIds", [])
+                    if row["purpose"] == "communication"
+                    else snapshot.get("handledRoutingEventIds", []),
+                    completed=completed,
+                )
             if completed:
                 key = "handled:" + row["purpose"]
                 self._set(db, key, max(snapshot["cursor"], self._meta(db, key, 0)))
@@ -1442,6 +1451,32 @@ class CivilizationState:
                 snapshot["cursor"] = max(snapshot["cursor"], cursor)
             db.execute(tables.jobs.update().where(tables.jobs.c.id == job).values(snapshot=dump_snapshot(db, snapshot)))
             return chosen
+
+    def acknowledge_messages(self, job, messages):
+        """Gameplay explicitly handles delivered messages; settle only at successful finish."""
+        with self.transaction() as db:
+            self._validate(db, job)
+            row = db.execute(select(tables.jobs).where(tables.jobs.c.id == job)).mappings().one()
+            if row["purpose"] != "gameplay" or not self.routing_enabled:
+                raise StateConflict("MESSAGE_ACKNOWLEDGEMENT_GAMEPLAY_ONLY")
+            snapshot = load_snapshot(db, row["snapshot"])
+            available = {
+                record["body"]["body"]["message"]: row["epoch"] + ":" + str(record["body"]["id"])
+                for key, record in snapshot["records"].items()
+                if key.startswith("event:")
+                and key in snapshot.get("delivered", {})
+                and record["body"].get("kind") == "message"
+                and record["body"].get("body", {}).get("message")
+            }
+            if any(message not in available for message in messages):
+                raise StateConflict("MESSAGES_NOT_DELIVERED_TO_JOB")
+            ids = db.scalars(
+                select(tables.events.c.id).where(
+                    tables.events.c.source.in_([available[message] for message in messages])
+                )
+            ).all()
+            snapshot["handledRoutingEventIds"] = sorted(set(snapshot.get("handledRoutingEventIds", [])) | set(ids))
+            db.execute(tables.jobs.update().where(tables.jobs.c.id == job).values(snapshot=dump_snapshot(db, snapshot)))
 
     def chat_history(self, participant=None, query=""):
         if (

@@ -444,6 +444,8 @@ class ProposalGateway:
                     ).model_json_schema(),
                 }
             )
+            if name == "chat_read" and not (routing_enabled and purpose == "gameplay"):
+                tools[-1]["inputSchema"]["properties"].pop("handledMessages", None)
             if name in TOOL_OUTPUT_MODELS:
                 tools[-1]["outputSchema"] = TOOL_OUTPUT_MODELS[name].model_json_schema()
 
@@ -502,7 +504,12 @@ class ProposalGateway:
         )
         add(
             "chat_read",
-            "Read new messages, current social promises with their versions, pending trade IDs and active agreement summaries. conversationContext supplies bounded exact-audience excerpts, including confirmed sends, with source IDs and turns. Interpret replies alongside your private notes; use chat_history for older evidence. An effective older promise can coexist with a proposed revision; they are distinct versions. includeContext=true adds scenario, rules, economy and known diplomacy when you lack a turn overview. includeHistory=true includes the retained ledger; prefer chat_history, trade_read or agreement_read for selected older records. Inspect binding terms with trade_read before deciding. Social consent has no native game effect; interpret ambiguous promises freely.",
+            "Read new messages, current social promises with their versions, pending trade IDs and active agreement summaries. conversationContext supplies bounded exact-audience excerpts, including confirmed sends, with source IDs and turns. Interpret replies alongside your private notes; use chat_history for older evidence. An effective older promise can coexist with a proposed revision; they are distinct versions. includeContext=true adds scenario, rules, economy and known diplomacy when you lack a turn overview. includeHistory=true includes the retained ledger; prefer chat_history, trade_read or agreement_read for selected older records. Inspect binding terms with trade_read before deciding. Social consent has no native game effect; interpret ambiguous promises freely."
+            + (
+                " handledMessages may list message IDs already read and fully considered, including any needed response or action. Successful gameplay completion then avoids separate attention for those messages; merely reading them does not."
+                if routing_enabled and purpose == "gameplay"
+                else ""
+            ),
         )
         add(
             "chat_history",
@@ -1016,6 +1023,8 @@ class ProposalGateway:
 
     async def chat_read(self, job: JobAccess, arguments: JsonObject) -> JsonObject:
         # Mark only messages actually returned; concurrent sends stay unseen.
+        if arguments.get("handledMessages"):
+            await self.io.call(self.memory.acknowledge_messages, job.id, arguments["handledMessages"])
         social = await self.read_social(
             job,
             include_context=arguments.get("includeContext", False),

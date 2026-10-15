@@ -3,7 +3,44 @@ import json
 from pathlib import Path
 from unittest.mock import AsyncMock
 
+import pytest
+
+from civ_agent.diplomacy_decisions import POLICY_VERSION
 from civ_agent.diplomacy_replay import collect, evaluate
+
+
+def envelope(direction, choice, confidence=0.99):
+    if direction == "incoming":
+        answers = [
+            {
+                "name": "response_needed",
+                "type": "choice",
+                "choice": "not_needed" if choice == "no_separate_response" else "needed",
+                "confidence": confidence,
+            },
+            {
+                "name": "response_timing",
+                "type": "choice",
+                "choice": "now" if choice == "respond_now" else "can_wait",
+                "confidence": confidence,
+            },
+        ]
+    else:
+        answers = [
+            {
+                "name": "delivery_needed",
+                "type": "choice",
+                "choice": "not_needed" if choice == "omit" else "needed",
+                "confidence": confidence,
+            },
+            {
+                "name": "delivery_timing",
+                "type": "choice",
+                "choice": "now" if choice == "send_now" else "can_wait",
+                "confidence": confidence,
+            },
+        ]
+    return {"answers": answers, "policyVersion": POLICY_VERSION}
 
 
 def cases():
@@ -30,17 +67,11 @@ def test_labeled_replay_covers_audit_cases_without_future_or_other_audience():
         for message in case["bundle"]["recentExchanges"]:
             assert message["participants"] == selected["participants"]
             assert message["turn"] <= selected["turn"] and message["message"] != selected["message"]
-    responses = {
-        case["id"]: {
-            "answers": [{"name": "delivery", "type": "choice", "choice": case["expected"][0], "confidence": 0.95}]
-        }
-        for case in fixture
-    }
+    responses = {case["id"]: envelope(case["direction"], case["expected"][0], 0.95) for case in fixture}
     scored = evaluate(fixture, responses)
     assert scored["accepted"] == len(fixture) and scored["actionableDeferred"] == 0
     # This tests the replay harness with oracle responses, not the live model.
-    bad = {"answers": [{"name": "delivery", "type": "choice", "choice": "no_separate_response", "confidence": 0.99}]}
-    responses["mcygkx"] = bad
+    responses["mcygkx"] = envelope("incoming", "no_separate_response")
     assert evaluate(fixture, responses)["actionableDeferred"] == 1
     assert evaluate(fixture, {})["missing"] == len(fixture) - 1
 
@@ -48,7 +79,7 @@ def test_labeled_replay_covers_audit_cases_without_future_or_other_audience():
 def test_replay_never_sends_protected_traffic_to_broker():
     async def run():
         client = AsyncMock()
-        client.classify.return_value = {"choice": "respond_now", "confidence": 1}
+        client.classify.return_value = {"choice": "respond_now", "confidence": 1, "policyVersion": POLICY_VERSION}
         result = await collect(cases(), client)
         assert "mpvwks" not in result
         assert client.classify.await_count == len(cases()) - 1
@@ -58,28 +89,23 @@ def test_replay_never_sends_protected_traffic_to_broker():
 
 def test_collect_preserves_original_low_confidence_choice_and_probabilities():
     async def run():
-        raw = {
-            "name": "delivery",
-            "type": "choice",
-            "choice": "batch",
-            "confidence": 0.72,
-            "probabilities": [
-                {"value": "respond_now", "probability": 0.2},
-                {"value": "batch", "probability": 0.72},
-                {"value": "no_separate_response", "probability": 0.08},
-            ],
-        }
+        raw = envelope("incoming", "batch", 0.72)["answers"]
+        raw[1]["probabilities"] = [
+            {"value": "now", "probability": 0.28},
+            {"value": "can_wait", "probability": 0.72},
+        ]
         client = AsyncMock()
         client.classify.return_value = {
             "choice": "respond_now",
             "confidence": 0.72,
             "fallback": "low_confidence",
-            "rawAnswer": raw,
+            "rawAnswers": raw,
+            "policyVersion": POLICY_VERSION,
             "usage": {"input_tokens": 50},
             "latencyMs": 21,
         }
         result = await collect([cases()[1]], client)
-        assert result[cases()[1]["id"]]["answers"] == [raw]
+        assert result[cases()[1]["id"]]["answers"] == raw
         assert result[cases()[1]["id"]]["fallback"] is None
         return result
 
@@ -90,16 +116,38 @@ def test_collect_preserves_original_low_confidence_choice_and_probabilities():
     assert lower["accepted"] == 1 and lower["rawAccepted"] == 1
 
 
-def test_collect_marks_old_filtered_outputs_unavailable_instead_of_fabricating_raw_answer():
+def test_collect_marks_missing_original_answers_unavailable_instead_of_fabricating_them():
     async def run():
         client = AsyncMock()
-        client.classify.return_value = {"choice": "respond_now", "confidence": 0.67, "fallback": "low_confidence"}
+        client.classify.return_value = {
+            "choice": "respond_now",
+            "confidence": 0.67,
+            "fallback": "low_confidence",
+            "policyVersion": POLICY_VERSION,
+        }
         return await collect([cases()[1]], client)
 
     captured = asyncio.run(run())
     assert captured[cases()[1]["id"]]["rawUnavailable"] is True
     assert captured[cases()[1]["id"]]["answers"] == []
     assert evaluate([cases()[1]], captured)["missing"] == 1
+
+
+@pytest.mark.parametrize("policy", [None, "diplomacy-routing-v1", "diplomacy-routing-v2"])
+def test_replay_requires_explicit_current_policy_for_scoring_and_collection(policy):
+    case = cases()[1]
+    response = {**envelope("incoming", "batch"), "policyVersion": policy}
+    scored = evaluate([case], {case["id"]: response})
+    assert scored["evaluated"] == 0
+    assert scored["cases"][0]["reason"] == "policy_version_mismatch"
+
+    async def run():
+        client = AsyncMock()
+        client.classify.return_value = {"rawAnswers": response["answers"], "policyVersion": policy}
+        with pytest.raises(ValueError, match="current routing policy"):
+            await collect([case], client)
+
+    asyncio.run(run())
 
 
 def test_replay_reports_ambiguous_labels_errors_usage_and_confidence_separately():
@@ -122,16 +170,16 @@ def test_replay_reports_ambiguous_labels_errors_usage_and_confidence_separately(
     ]
     responses = {
         "urgent": {
-            "answers": [{"name": "delivery", "type": "choice", "choice": "batch", "confidence": 0.99}],
+            **envelope("incoming", "batch"),
             "usage": {"input_tokens": 40},
             "latencyMs": 10,
         },
         "flexible": {
-            "answers": [{"name": "delivery", "type": "choice", "choice": "omit", "confidence": 0.97}],
+            **envelope("outgoing", "omit", 0.97),
             "usage": {"input_tokens": 30},
             "latencyMs": 20,
         },
-        "duplicate": {"answers": [{"name": "delivery", "type": "choice", "choice": "respond_now", "confidence": 0.6}]},
+        "duplicate": envelope("incoming", "respond_now", 0.6),
     }
     report = evaluate(fixture, responses)
     assert report["harmfulDeferred"] == report["harmfulOmitted"] == report["unnecessaryImmediate"] == 1
@@ -150,10 +198,7 @@ def test_threshold_sweep_uses_only_calibration_cases_and_never_selects_automatic
         {"id": "cal", "label": "normal", "direction": "incoming", "expected": ["batch"], "split": "calibration"},
         {"id": "held", "label": "urgent", "direction": "incoming", "expected": ["respond_now"], "split": "holdout"},
     ]
-    responses = {
-        case["id"]: {"answers": [{"name": "delivery", "type": "choice", "choice": "batch", "confidence": 0.8}]}
-        for case in fixture
-    }
+    responses = {case["id"]: envelope("incoming", "batch", 0.8) for case in fixture}
     report = calibrate(fixture, responses, batch_thresholds=(0.7,), suppression_thresholds=(0.99,))
     assert report["selectedThresholds"] is None
     assert report["candidates"][0]["evaluation"]["accepted"] == 1
@@ -189,16 +234,7 @@ def test_repeated_scenario_variants_do_not_dominate_group_accuracy():
         for index, group in enumerate(["many-variants"] * 9 + ["one-case"])
     ]
     responses = {
-        case["id"]: {
-            "answers": [
-                {
-                    "name": "delivery",
-                    "type": "choice",
-                    "choice": "batch" if case["group"] == "many-variants" else "no_separate_response",
-                    "confidence": 0.99,
-                }
-            ]
-        }
+        case["id"]: envelope("incoming", "batch" if case["group"] == "many-variants" else "no_separate_response")
         for case in fixture
     }
     report = evaluate(fixture, responses)
@@ -212,8 +248,6 @@ def test_repeated_scenario_variants_do_not_dominate_group_accuracy():
 
 
 def test_two_question_collection_preserves_both_original_answers_and_policy():
-    from civ_agent.diplomacy_decisions import TWO_QUESTION_POLICY_VERSION
-
     raw = [
         {
             "name": "response_needed",
@@ -239,13 +273,13 @@ def test_two_question_collection_preserves_both_original_answers_and_policy():
             "fallback": None,
             "rawChoice": "batch",
             "rawAnswers": raw,
-            "policyVersion": TWO_QUESTION_POLICY_VERSION,
+            "policyVersion": POLICY_VERSION,
         }
         return await collect([cases()[1]], client)
 
     captured = asyncio.run(run())
     envelope = captured[cases()[1]["id"]]
-    assert envelope["answers"] == raw and envelope["policyVersion"] == TWO_QUESTION_POLICY_VERSION
+    assert envelope["answers"] == raw and envelope["policyVersion"] == POLICY_VERSION
     assert "rawAnswer" not in envelope and "probabilities" not in envelope
     report = evaluate([{**cases()[1], "expected": ["batch"]}], captured)
     assert report["rawAccepted"] == report["accepted"] == 1
@@ -254,28 +288,22 @@ def test_two_question_collection_preserves_both_original_answers_and_policy():
 
 
 def test_two_question_replay_rejects_missing_duplicate_and_old_single_delivery_answers():
-    from civ_agent.diplomacy_decisions import TWO_QUESTION_POLICY_VERSION
-
     needed = {"name": "response_needed", "type": "choice", "choice": "needed", "confidence": 0.99}
     wrong = {"name": "delivery", "type": "choice", "choice": "batch", "confidence": 0.99}
     for answers in ([needed], [needed, needed], [wrong]):
-        result = evaluate(
-            [cases()[1]], {cases()[1]["id"]: {"answers": answers, "policyVersion": TWO_QUESTION_POLICY_VERSION}}
-        )
+        result = evaluate([cases()[1]], {cases()[1]["id"]: {"answers": answers, "policyVersion": POLICY_VERSION}})
         decision = result["cases"][0]["decision"]
         assert decision["choice"] == "respond_now" and decision["fallback"] == "malformed"
         assert result["rawAvailable"] == 0
 
 
 def test_two_question_low_confidence_suppression_can_fall_back_to_supported_batch():
-    from civ_agent.diplomacy_decisions import TWO_QUESTION_POLICY_VERSION
-
     answers = [
         {"name": "response_needed", "type": "choice", "choice": "not_needed", "confidence": 0.4},
         {"name": "response_timing", "type": "choice", "choice": "can_wait", "confidence": 0.98},
     ]
     case = {**cases()[1], "expected": ["batch"]}
-    report = evaluate([case], {case["id"]: {"answers": answers, "policyVersion": TWO_QUESTION_POLICY_VERSION}})
+    report = evaluate([case], {case["id"]: {"answers": answers, "policyVersion": POLICY_VERSION}})
     decision = report["cases"][0]["decision"]
     assert decision["choice"] == "batch" and decision["rawChoice"] == "no_separate_response"
     assert decision["confidence"] == 0.98 and decision["rawChoiceConfidence"] == 0.4
@@ -284,13 +312,11 @@ def test_two_question_low_confidence_suppression_can_fall_back_to_supported_batc
 
 
 def test_two_question_summary_separates_confidence_probabilities_refusals_and_missing():
-    from civ_agent.diplomacy_decisions import TWO_QUESTION_POLICY_VERSION
-
     case = cases()[1]
     fixture = [{**case, "id": name, "expected": ["batch", "respond_now"]} for name in ("valid", "refused", "timeout")]
     responses = {
         "valid": {
-            "policyVersion": TWO_QUESTION_POLICY_VERSION,
+            "policyVersion": POLICY_VERSION,
             "answers": [
                 {
                     "name": "response_needed",
@@ -315,13 +341,13 @@ def test_two_question_summary_separates_confidence_probabilities_refusals_and_mi
             ],
         },
         "refused": {
-            "policyVersion": TWO_QUESTION_POLICY_VERSION,
+            "policyVersion": POLICY_VERSION,
             "answers": [
                 {"name": "response_needed", "type": "refusal"},
                 {"name": "response_timing", "type": "choice", "choice": "now", "confidence": 0.99},
             ],
         },
-        "timeout": {"policyVersion": TWO_QUESTION_POLICY_VERSION, "answers": [], "fallback": "timeout"},
+        "timeout": {"policyVersion": POLICY_VERSION, "answers": [], "fallback": "timeout"},
     }
     report = evaluate(fixture, responses)
     questions = report["questionSummary"]

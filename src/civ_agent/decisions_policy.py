@@ -3,14 +3,7 @@
 import argparse
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
-
-ROUTING_CONFIDENCE_FIELDS = (
-    "decisions_incoming_batch_confidence",
-    "decisions_incoming_suppress_confidence",
-    "decisions_outgoing_batch_confidence",
-    "decisions_outgoing_omit_confidence",
-)
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class DecisionsSettings(BaseModel):
@@ -19,9 +12,7 @@ class DecisionsSettings(BaseModel):
     decisions_enabled: bool = False
     additional_decisions_budget_usd: Annotated[float, Field(ge=0, le=1000)] = 0.10
     decisions_min_confidence: Annotated[float, Field(ge=0, le=1)] = 0.90
-    decisions_routing_policy: Literal["diplomacy-routing-v1", "diplomacy-routing-v2", "diplomacy-routing-v3"] = (
-        "diplomacy-routing-v1"
-    )
+    decisions_routing_policy: Literal["diplomacy-routing-v4"] = "diplomacy-routing-v4"
     decisions_incoming_batch_confidence: Annotated[float, Field(ge=0, le=1)] = 0.90
     decisions_incoming_suppress_confidence: Annotated[float, Field(ge=0, le=1)] = 0.90
     decisions_outgoing_batch_confidence: Annotated[float, Field(ge=0, le=1)] = 0.90
@@ -37,36 +28,11 @@ class DecisionsSettings(BaseModel):
     early_review_min_gap_between_early_turns: Annotated[int, Field(ge=10)] = 10
     memory_context_chars: Annotated[int, Field(ge=1000)] = 12000
 
-    @model_validator(mode="before")
-    @classmethod
-    def reject_retired(cls, value):
-        if isinstance(value, dict) and "diplomacy_routing_enabled" in value:
-            raise ValueError("diplomacy_routing_enabled is retired; explicitly choose decisions_enabled instead")
-        if isinstance(value, dict) and "decisions_routing_policy" not in value and "decisions_min_confidence" in value:
-            # Older saved settings used one threshold for everything. Preserve
-            # their effective routing policy when adding the separate controls.
-            value = dict(value)
-            for name in ROUTING_CONFIDENCE_FIELDS:
-                value.setdefault(name, value["decisions_min_confidence"])
-        return value
-
 
 DECISIONS_FIELDS = tuple(DecisionsSettings.model_fields)
 
 
-class RetiredDecisionsFlag(argparse.Action):
-    def __call__(self, parser, namespace, values, option_string=None):
-        parser.error(f"{option_string} is retired; explicitly choose --decisions-enabled or --no-decisions-enabled")
-
-
 def add_decisions_arguments(parser, *, defaults=True, include_memory=True):
-    parser.add_argument(
-        "--diplomacy-routing-enabled",
-        "--no-diplomacy-routing-enabled",
-        action=RetiredDecisionsFlag,
-        nargs=0,
-        help=argparse.SUPPRESS,
-    )
     for name, field in DecisionsSettings.model_fields.items():
         if name == "memory_context_chars" and not include_memory:
             continue
@@ -76,7 +42,7 @@ def add_decisions_arguments(parser, *, defaults=True, include_memory=True):
         else:
             options["type"] = type(field.default)
         if name == "decisions_routing_policy":
-            options["choices"] = ("diplomacy-routing-v1", "diplomacy-routing-v2", "diplomacy-routing-v3")
+            options["choices"] = ("diplomacy-routing-v4",)
         parser.add_argument("--" + name.replace("_", "-"), **options)
 
 

@@ -66,7 +66,10 @@ async def published(service, advice):
         while service.reviews.store.pending() is not None or service.reviews.active:
             assert service.reviews.failure is None, service.reviews.failure
             await asyncio.sleep(0.01)
-    assert service.memory.snapshot("gameplay", 0)["strategicAdvice"] == {"asOfTurn": 0, **advice}
+    expected = json.loads(json.dumps({"asOfTurn": 0, **advice}))
+    for index, assumption in enumerate(expected["review"]["materialAssumptions"], 1):
+        assumption["source"] = f"review:0:{index}"
+    assert service.memory.snapshot("gameplay", 0)["strategicAdvice"] == expected
     record = next(row for row in service.records.values() if row.get("purpose") == "review")
     assert record["phase"] == "COMPLETED"
 
@@ -80,6 +83,26 @@ async def rejected(service, error):
     assert pending is not None and pending["inputs"] and pending["attempts"] == 1
     assert error in pending["error"]
     assert service.memory.snapshot("gameplay", 0)["strategicAdvice"] is None
+
+
+def test_transport_failure_during_close_cannot_publish_completed_report(tmp_path, monkeypatch):
+    close = ReviewCodex.close
+
+    async def fail_close(process):
+        await process.notification("service/transportFailure", {"reason": "CODEX_NOTIFICATION_OVERFLOW"})
+        await close(process)
+
+    monkeypatch.setattr(ReviewCodex, "close", fail_close)
+
+    async def run():
+        async with reviewing(tmp_path) as (service, process):
+            await message(process, json.dumps(assessment()))
+            await complete(process)
+            await rejected(service, "REVIEW_PROCESS_FAILED")
+            record = next(row for row in service.records.values() if row.get("purpose") == "review")
+            assert record["transportError"] == "CODEX_NOTIFICATION_OVERFLOW"
+
+    asyncio.run(run())
 
 
 @pytest.mark.parametrize("phase", [MISSING_PHASE, None, "final_answer"], ids=["omitted", "null", "final"])

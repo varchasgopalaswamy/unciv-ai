@@ -124,13 +124,7 @@ class DecisionsLedger:
                 raise ValueError("Decisions immutable game/player account conflict: cannot change principal")
             prior = db.execute(select(accounts).where(accounts.c.principal == principal)).mappings().first()
             if prior is not None:
-                # Additive settings with unchanged defaults must not invalidate
-                # an existing accounting identity or reset its spending.
-                normalized = dict(prior)
-                normalized["settings"] = canonical(
-                    DecisionsSettings.model_validate_json(prior["settings"]).model_dump()
-                )
-                if normalized != saved:
+                if dict(prior) != saved:
                     raise ValueError("Decisions immutable account or policy conflict")
             if prior is None:
                 db.execute(insert(accounts).values(**saved))
@@ -140,7 +134,10 @@ class DecisionsLedger:
             value = db.scalar(select(accounts.c.settings).where(accounts.c.principal == principal))
             if value is None:
                 raise ValueError("Decisions account not registered by operator")
-            return DecisionsSettings.model_validate_json(value)
+            saved = json.loads(value)
+            if not isinstance(saved, dict) or set(saved) != set(DecisionsSettings.model_fields):
+                raise ValueError("Current Decisions account settings are required")
+            return DecisionsSettings.model_validate(saved)
 
     def player(self, principal):
         with self.engine.begin() as db:

@@ -108,3 +108,32 @@ def test_pending_receipt_survives_restart_and_cannot_dispatch_again(tmp_path):
             upstream.evaluate.assert_not_awaited()
 
     asyncio.run(run())
+
+
+def test_incompatible_receipt_is_not_reconstructed_or_dispatched_and_keeps_reservation(tmp_path):
+    async def run():
+        settings, ledger = registered(tmp_path)
+        supplied = evidence()
+        body = request_body(supplied, settings)
+        metadata = request_metadata(body, supplied)
+        assert ledger.reserve("seat", metadata["requestId"], metadata["inputHash"], body) is None
+        before = ledger.status("seat")
+        upstream = AsyncMock()
+        broker = DecisionsBroker(tmp_path, upstream)
+        async with server(broker.application()) as url, aiohttp.ClientSession() as session:
+            headers = {"Authorization": "Bearer secret"}
+            async with session.post(
+                url + "/batch", headers=headers, json={"requestId": request_id(supplied), "evidence": supplied}
+            ) as response:
+                assert response.status == 409
+            async with session.get(url + "/batch/" + request_id(supplied), headers=headers) as response:
+                assert response.status == 409
+        assert ledger.status("seat") == before
+        assert ledger.lookup("seat", metadata["requestId"]) == {
+            "answers": [],
+            "fallback": "completion_unknown",
+            "requestId": metadata["requestId"],
+        }
+        upstream.evaluate.assert_not_awaited()
+
+    asyncio.run(run())

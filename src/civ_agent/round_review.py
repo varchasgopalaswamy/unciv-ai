@@ -179,7 +179,7 @@ def review_round(scheduler, status):
         time.sleep(0.25)
 
     scheduler.state["reviewedBoundary"] = boundary
-    for name in periodic:
+    for name in participants:
         anchors[name] = turn
     if forced:
         scheduler.state["reviewedWarTurn"] = war_turn

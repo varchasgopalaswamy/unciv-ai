@@ -24,7 +24,11 @@ MEMORY_TYPES = BRIEF_TYPES | {"belief", "note"}
 
 class Assumption(BoundaryModel):
     text: Text
-    source: str = Field(default="", max_length=160)
+    source: str = Field(
+        default="",
+        max_length=160,
+        description="Optional delivered evidence ID or the review:<turn>:<number> source of an adopted review assumption. Its interpretation remains inferred or unknown.",
+    )
 
 
 class Content(BoundaryModel):
@@ -242,12 +246,18 @@ class Intent(BoundaryModel):
 
 def public_record(key, record):
     body = {k: v for k, v in record["body"].items() if not k.startswith("_") and k != "basis"}
+    review_evidence = [
+        {**ref["assessment"], "source": ref["key"], "reviewTurn": ref["reviewTurn"]}
+        for ref in record["body"].get("_citations", {}).values()
+        if ref.get("category") == "review_assumption"
+    ]
     if record["category"] not in MEMORY_TYPES:
         body = model_view(body)
     return {
         "id": key,
         "type": record["category"],
         **(body if record["category"] in MEMORY_TYPES | {"decision"} else {"body": body}),
+        **({"reviewEvidence": review_evidence} if review_evidence else {}),
         **(
             {"reviewSources": sorted({ref["key"] for ref in record["body"]["_review"]})}
             if record["category"] in MEMORY_TYPES and record["body"].get("_review")
@@ -272,6 +282,7 @@ class RecordMetadata(BoundaryModel):
     evidence: str | None = None
     historical: bool = False
     unverifiedSources: list[str] = Field(default_factory=list)
+    reviewEvidence: Annotated[list[JsonObject], Field(max_length=20)] = Field(default_factory=list)
 
 
 class StoredStrategy(Strategy, RecordMetadata):

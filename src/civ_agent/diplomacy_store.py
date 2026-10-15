@@ -9,7 +9,8 @@ from sqlalchemy import func, insert, select
 from civ_agent import memory_schema as tables
 from civ_agent.civilization_state import COMMUNICATION_EVENTS, StateConflict
 from civ_agent.conversation_context import audience, conversation_context
-from civ_agent.diplomacy_decisions import BATCH_SECONDS, POLICY_VERSION
+from civ_agent.decisions_ledger import canonical
+from civ_agent.diplomacy_decisions import BATCH_SECONDS, POLICY_VERSION, request_body
 from civ_agent.memory_store import RecordStore, encode
 
 EVENTS_KEY = "routing:events"
@@ -77,6 +78,15 @@ def ready_ids(memory, db, *, now=None):
     ]
 
 
+def attention_ids(memory, db):
+    """An existing activation can handle younger safe-to-batch messages early."""
+    return [
+        int(key)
+        for key, value in event_states(memory, db).items()
+        if not value.get("completed") and not value.get("attempted") and value.get("choice") in {"respond_now", "batch"}
+    ]
+
+
 def delivered(memory, db, ids, *, completed=False):
     states = event_states(memory, db)
     for id in ids:
@@ -94,6 +104,27 @@ class DiplomacyStore:
             raise StateConflict("STALE_EPOCH")
         if self.memory._meta(db, "paused", False):
             raise StateConflict("STATE_PAUSED")
+
+    def capture_input(self, direction, bundle):
+        """Keep exact already-permitted evidence privately, never in model context."""
+        body = request_body(direction, bundle)
+        digest = hashlib.sha256(canonical(bundle).encode()).hexdigest()
+        prompt_hash = hashlib.sha256(canonical(body["questions"]).encode()).hexdigest()
+        key = "routing-input:" + hashlib.sha256(canonical(body).encode()).hexdigest()
+        with self.memory.transaction() as db:
+            store = RecordStore(db)
+            if not store.all(keys=[key]):
+                store.write(
+                    key,
+                    "routing_input",
+                    {
+                        "policyVersion": POLICY_VERSION,
+                        "direction": direction,
+                        "inputHash": digest,
+                        "promptHash": prompt_hash,
+                        "request": body,
+                    },
+                )
 
     def incoming(self):
         with self.memory.transaction() as db:

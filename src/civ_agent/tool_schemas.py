@@ -108,6 +108,9 @@ class ChatHistory(BoundaryModel):
 
 
 class ChatRead(BoundaryModel):
+    handledMessages: Annotated[list[Annotated[str, Field(min_length=1)]], Field(max_length=50)] = Field(
+        default_factory=list
+    )
     includeContext: bool = False
     includeHistory: bool = False
 

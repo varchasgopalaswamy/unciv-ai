@@ -15,9 +15,8 @@ from sqlalchemy import REAL, Column, Integer, MetaData, Table, Text, insert, sel
 
 from civ_agent.diplomacy_decisions import (
     CHOICES,
-    TWO_QUESTION_CHOICES,
-    TWO_QUESTION_POLICY_VERSION,
-    probability_vector,
+    POLICY_VERSION,
+    QUESTION_CHOICES,
     two_question_answers,
 )
 from civ_agent.protocol import JsonObject
@@ -305,38 +304,21 @@ def classifier_metadata(direction, result) -> JsonObject:
             for key, value in result["thresholds"].items()
             if key in CHOICES[direction] and _probability(value)
         }
-    if direction == "incoming" and result.get("policyVersion") == TWO_QUESTION_POLICY_VERSION:
-        raw = two_question_answers(result.get("rawAnswers"))
-        if raw is not None:
-            report["rawAnswers"] = raw
-        if isinstance(result.get("questionBasis"), str) and result["questionBasis"] in TWO_QUESTION_CHOICES:
-            report["questionBasis"] = result["questionBasis"]
-        # No three-way distribution was requested for this policy. Never copy
-        # one from diagnostic metadata or invent it from the binary answers.
-        report["probabilities"] = None
-        return report
-    probabilities = probability_vector(direction, result.get("probabilities"))
-    if probabilities is not None:
-        report["probabilities"] = probabilities
-    raw = result.get("rawAnswer")
-    if isinstance(raw, dict) and raw.get("name") == "delivery":
-        if raw.get("type") == "refusal":
-            report["rawAnswer"] = {"name": "delivery", "type": "refusal"}
-        elif (
-            raw.get("type") == "choice"
-            and isinstance(raw.get("choice"), str)
-            and raw["choice"] in CHOICES[direction]
-            and _probability(raw.get("confidence"))
-        ):
-            report["rawAnswer"] = {
-                "name": "delivery",
-                "type": "choice",
-                "choice": raw["choice"],
-                "confidence": raw["confidence"],
-            }
-            probabilities = probability_vector(direction, raw.get("probabilities"))
-            if probabilities is not None:
-                report["rawAnswer"]["probabilities"] = probabilities
+    raw = (
+        two_question_answers(result.get("rawAnswers"), direction)
+        if result.get("policyVersion") == POLICY_VERSION
+        else None
+    )
+    if raw is not None:
+        report["rawAnswers"] = raw
+    if (
+        raw is not None
+        and isinstance(result.get("questionBasis"), str)
+        and result["questionBasis"] in QUESTION_CHOICES[direction]
+    ):
+        report["questionBasis"] = result["questionBasis"]
+    # Independent binary questions have no joint three-way probability vector.
+    report["probabilities"] = None
     return report
 
 

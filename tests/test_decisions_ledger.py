@@ -3,6 +3,7 @@
 import asyncio
 import copy
 import hashlib
+import json
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from unittest.mock import AsyncMock
 
@@ -13,7 +14,7 @@ from civ_agent.civilization_state import CivilizationState
 from civ_agent.commands import game
 from civ_agent.container_supervisor import authorize_agent
 from civ_agent.decisions_broker import DecisionsBroker, RoutingClient
-from civ_agent.decisions_ledger import DecisionsLedger, estimate_tokens, fingerprint
+from civ_agent.decisions_ledger import DecisionsLedger, accounts, canonical, estimate_tokens, fingerprint
 from civ_agent.decisions_policy import DecisionsSettings
 from civ_agent.decisions_tasks import TASK_VERSION, parse_answers, request_body, request_id
 from civ_agent.game_config import GameConfig
@@ -123,6 +124,26 @@ def test_pinned_authority_rejects_missing_or_replaced_ledger(tmp_path):
     with pytest.raises(ValueError, match="missing"):
         DecisionsLedger(tmp_path / "second")
     first.engine.dispose()
+
+
+def test_incomplete_account_settings_are_rejected_without_normalizing_or_resetting_spending(tmp_path):
+    settings = DecisionsSettings(decisions_enabled=True).model_dump()
+    ledger = DecisionsLedger(tmp_path)
+    ledger.register("seat", "game", "Rome", settings)
+    body = request_body(evidence(), DecisionsSettings.model_validate(settings))
+    assert ledger.reserve("seat", "lost", "input", body) is None
+    before = ledger.status("seat")
+    old = {k: v for k, v in settings.items() if k != "decisions_incoming_batch_confidence"}
+    with ledger.engine.begin() as db:
+        db.execute(accounts.update().where(accounts.c.principal == "seat").values(settings=canonical(old)))
+    with pytest.raises(ValueError, match="Current Decisions account settings"):
+        ledger.settings("seat")
+    with pytest.raises(ValueError, match="immutable account or policy conflict"):
+        ledger.register("seat", "game", "Rome", settings)
+    assert ledger.status("seat") == before
+    with ledger.engine.begin() as db:
+        saved = db.execute(accounts.select().where(accounts.c.principal == "seat")).mappings().one()
+    assert json.loads(saved["settings"]) == old
 
 
 def test_rewind_cannot_replenish_budget_and_resume_cannot_replace_accounting_authority(tmp_path):

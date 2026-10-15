@@ -1,4 +1,4 @@
-"""Bounded paid comparison of frozen routing inputs, isolated from running games.
+"""Bounded current-policy routing evaluation, isolated from running games.
 
 The key is read only in this process. A durable reservation precedes each API
 call; an interrupted request is never dispatched again. Reuse the same trial
@@ -18,22 +18,14 @@ from pathlib import Path
 from civ_agent.decisions_broker import read_decisions_key
 from civ_agent.decisions_ledger import NANODOLLARS_PER_INPUT_TOKEN, RATE_VERSION, estimate_tokens, fingerprint
 from civ_agent.diplomacy_decisions import (
-    CANDIDATE_POLICY_VERSION,
     MODEL,
     POLICY_VERSION,
-    TWO_QUESTION_POLICY_VERSION,
     DecisionsClient,
     request_body,
 )
 from civ_agent.diplomacy_replay import evaluate, load_fixture
 from civ_agent.protocol import JsonObject
 from civ_agent.tls import private_directory, regular_file, write_private, write_private_json
-
-POLICIES = {
-    "legacy": POLICY_VERSION,
-    "candidate": CANDIDATE_POLICY_VERSION,
-    "two-question": TWO_QUESTION_POLICY_VERSION,
-}
 
 
 def reuse_snapshot(root, fixture, fixture_bytes):
@@ -47,51 +39,53 @@ def reuse_snapshot(root, fixture, fixture_bytes):
     journal_bytes = (root / "trial.json").read_bytes()
     journal = json.loads(journal_bytes)
     configuration = journal.get("configuration", {})
-    if configuration.get("model") != MODEL or configuration.get("fixtureHash") != fingerprint(fixture):
-        raise ValueError("Reusable trial model or fixture does not match")
+    if (
+        configuration.get("version") != 2
+        or configuration.get("policyVersion") != POLICY_VERSION
+        or configuration.get("model") != MODEL
+        or configuration.get("fixtureHash") != fingerprint(fixture)
+    ):
+        raise ValueError("Reusable trial policy, model or fixture does not match the current protocol")
     return {
         "source": {
             "trialDirectory": str(root),
             "journalSha256": hashlib.sha256(journal_bytes).hexdigest(),
             "fixtureSha256": hashlib.sha256(frozen).hexdigest(),
-            "sourcePolicyVersion": CANDIDATE_POLICY_VERSION,
+            "sourcePolicyVersion": POLICY_VERSION,
         },
         "requests": journal.get("requests", {}),
     }
 
 
-def reusable_outgoing(snapshot, case, body):
-    if case["direction"] != "outgoing":
-        return None
-    expected = request_body("outgoing", case["bundle"], policy_version=CANDIDATE_POLICY_VERSION)
+def reusable_response(snapshot, case, body):
+    expected = request_body(case["direction"], case["bundle"])
     if expected != body:
-        raise ValueError("Outgoing request changed; prior classifier responses cannot be reused")
-    identifier = fingerprint({"case": case, "policy": CANDIDATE_POLICY_VERSION, "model": MODEL, "request": expected})
+        raise ValueError("Routing request changed; prior classifier responses cannot be reused")
+    identifier = fingerprint({"case": case, "policy": POLICY_VERSION, "model": MODEL, "request": expected})
     row = snapshot["requests"].get(identifier)
     if (
         not isinstance(row, dict)
         or row.get("caseId") != case["id"]
         or row.get("caseHash") != fingerprint(case)
         or row.get("model") != MODEL
-        or row.get("policyVersion") != CANDIDATE_POLICY_VERSION
+        or row.get("policyVersion") != POLICY_VERSION
         or row.get("request") != body
         or not isinstance(row.get("response"), dict)
+        or row["response"].get("policyVersion") != POLICY_VERSION
     ):
-        raise ValueError("Prior trial has no completed exact outgoing request for this case")
+        raise ValueError("Prior trial has no completed exact current routing request for this case")
     return {"response": row["response"], "provenance": {**snapshot["source"], "sourceRequestId": identifier}}
 
 
 class TrialStore:
     """An isolated write-before-dispatch journal, never a production game account."""
 
-    def __init__(self, root, fixture, *, max_calls, budget_usd, policies, reuse_source=None, fixture_bytes=None):
+    def __init__(self, root, fixture, *, max_calls, budget_usd, reuse_source=None, fixture_bytes=None):
         if type(max_calls) is not int or max_calls < 0:
             raise ValueError("max_calls must be a nonnegative integer")
         budget = Decimal(str(budget_usd))
         if not budget.is_finite() or budget < 0:
             raise ValueError("budget_usd must be finite and nonnegative")
-        if not policies or any(policy not in POLICIES.values() for policy in policies):
-            raise ValueError("Unknown routing trial policy")
         if reuse_source is not None and not isinstance(fixture_bytes, bytes):
             raise ValueError("Reuse requires frozen fixture bytes")
         self.root = private_directory(root)
@@ -105,18 +99,14 @@ class TrialStore:
             self.lock = None
             raise ValueError("This routing trial already has a running process") from None
         configuration = {
-            "version": 1,
+            "version": 2,
             "fixtureHash": fingerprint(fixture),
             "maxCalls": max_calls,
             "budgetNanodollars": int(budget * 1_000_000_000),
-            "policies": list(policies),
+            "policyVersion": POLICY_VERSION,
             "model": MODEL,
             "promptHashes": {
-                policy: {
-                    direction: fingerprint(request_body(direction, {}, policy_version=policy))
-                    for direction in ("incoming", "outgoing")
-                }
-                for policy in policies
+                direction: fingerprint(request_body(direction, {})) for direction in ("incoming", "outgoing")
             },
             "rateVersion": RATE_VERSION,
         }
@@ -175,12 +165,12 @@ class TrialStore:
             "limitKind": "local_estimated_spending_ceiling",
         }
 
-    def reuse(self, case, policy, body, saved):
-        identifier = fingerprint({"case": case, "policy": policy, "model": MODEL, "request": body})
+    def reuse(self, case, body, saved):
+        identifier = fingerprint({"case": case, "policy": POLICY_VERSION, "model": MODEL, "request": body})
         row = {
             "caseId": case["id"],
             "caseHash": fingerprint(case),
-            "policyVersion": policy,
+            "policyVersion": POLICY_VERSION,
             "model": MODEL,
             "request": body,
             **saved,
@@ -194,8 +184,8 @@ class TrialStore:
             self._save()
         return row["response"]
 
-    def reserve(self, case, policy, body):
-        identifier = fingerprint({"case": case, "policy": policy, "model": MODEL, "request": body})
+    def reserve(self, case, body):
+        identifier = fingerprint({"case": case, "policy": POLICY_VERSION, "model": MODEL, "request": body})
         prior = self.state["requests"].get(identifier)
         if prior is not None:
             return (
@@ -215,7 +205,7 @@ class TrialStore:
         self.state["requests"][identifier] = {
             "caseId": case["id"],
             "caseHash": fingerprint(case),
-            "policyVersion": policy,
+            "policyVersion": POLICY_VERSION,
             "model": MODEL,
             "request": body,
             "reservedNanodollars": reservation,
@@ -245,69 +235,55 @@ async def trial(
     *,
     max_calls=400,
     budget_usd=0.10,
-    policies=("legacy", "candidate"),
     client=None,
     reuse_trial=None,
 ):
     fixture = load_fixture(fixtures)
-    if any(policy not in POLICIES for policy in policies) or len(set(policies)) != len(policies):
-        raise ValueError("Select distinct legacy, candidate and/or two-question routing policies")
-    versions = [POLICIES[policy] for policy in policies]
     reuse = reuse_snapshot(reuse_trial, fixture, Path(fixtures).read_bytes()) if reuse_trial is not None else None
-    if reuse is not None and policies != ("two-question",):
-        raise ValueError("Prior outgoing reuse is supported only for the two-question comparison")
     cached = {}
     if reuse is not None:
         # Validate every reuse entry before making any new paid request.
         for case in fixture["cases"]:
-            if case.get("protected") or case["direction"] != "outgoing":
+            if case.get("protected"):
                 continue
-            body = request_body("outgoing", case["bundle"], policy_version=TWO_QUESTION_POLICY_VERSION)
-            cached[case["id"]] = reusable_outgoing(reuse, case, body)
+            body = request_body(case["direction"], case["bundle"])
+            cached[case["id"]] = reusable_response(reuse, case, body)
     store = TrialStore(
         root,
         fixture,
         max_calls=max_calls,
         budget_usd=budget_usd,
-        policies=versions,
         reuse_source=reuse["source"] if reuse is not None else None,
         fixture_bytes=Path(fixtures).read_bytes() if reuse is not None else None,
     )
     try:
         if client is None:
             client = DecisionsClient(read_decisions_key(key_file))
-        responses = {policy: {} for policy in policies}
-        # Alternate which prompt goes first on each identical frozen input.
-        for index, case in enumerate(fixture["cases"]):
+        responses = {}
+        for case in fixture["cases"]:
             if case.get("protected"):
                 continue
-            order = list(zip(policies, versions, strict=True))
-            for name, version in order if index % 2 == 0 else reversed(order):
-                body = request_body(case["direction"], case["bundle"], policy_version=version)
-                if case["id"] in cached:
-                    responses[name][case["id"]] = store.reuse(case, version, body, cached[case["id"]])
-                    continue
-                identifier, response, dispatch = store.reserve(case, version, body)
-                if dispatch:
-                    response = await client.evaluate(body)
-                    response = {**response, "policyVersion": version, "model": body["model"]}
-                    store.complete(identifier, response)
-                responses[name][case["id"]] = response
+            body = request_body(case["direction"], case["bundle"])
+            if case["id"] in cached:
+                responses[case["id"]] = store.reuse(case, body, cached[case["id"]])
+                continue
+            identifier, response, dispatch = store.reserve(case, body)
+            if dispatch:
+                response = await client.evaluate(body)
+                response = {**response, "policyVersion": POLICY_VERSION, "model": body["model"]}
+                store.complete(identifier, response)
+            if not isinstance(response, dict):
+                raise ValueError("Routing trial response envelope is unavailable")
+            responses[case["id"]] = {**response, "policyVersion": POLICY_VERSION}
         summary = {
             "configuration": store.state["configuration"],
             "accounting": store.status(),
             "comparisonThreshold": 0.90,
-            "policies": {
-                name: {
-                    "policyVersion": version,
-                    "evaluation": evaluate(fixture["cases"], responses[name], threshold=0.90),
-                }
-                for name, version in zip(policies, versions, strict=True)
-            },
+            "policyVersion": POLICY_VERSION,
+            "evaluation": evaluate(fixture["cases"], responses, threshold=0.90),
             "limitations": "Frozen-input classifier trial only. No gameplay treatment, ledger reset, threshold selection, or benchmark savings claim. Labels are provisional and source provenance is reported separately.",
         }
-        for name, response in responses.items():
-            write_private_json(store.root / (name + "-responses.json"), response)
+        write_private_json(store.root / "responses.json", responses)
         write_private_json(store.root / "summary.json", summary)
         return summary
     finally:
@@ -321,9 +297,8 @@ def main():
     parser.add_argument("--fixtures", type=Path, default=Path("tests/fixtures/diplomacy-routing-calibration.json"))
     parser.add_argument("--max-calls", type=int, default=400)
     parser.add_argument("--budget-usd", type=float, default=0.10)
-    parser.add_argument("--policies", default="legacy,candidate")
     parser.add_argument(
-        "--reuse-trial", type=Path, help="Reuse verified unchanged v2 outgoing responses from this private frozen trial"
+        "--reuse-trial", type=Path, help="Reuse exact current-policy responses from this private frozen trial"
     )
     args = parser.parse_args()
     if not math.isfinite(args.budget_usd):
@@ -335,7 +310,6 @@ def main():
             args.fixtures,
             max_calls=args.max_calls,
             budget_usd=args.budget_usd,
-            policies=tuple(args.policies.split(",")),
             reuse_trial=args.reuse_trial,
         )
     )
@@ -345,10 +319,8 @@ def main():
             {
                 "accounting": result["accounting"],
                 "comparisonThreshold": result["comparisonThreshold"],
-                "policies": {
-                    name: {key: value for key, value in row["evaluation"].items() if key not in {"cases"}}
-                    for name, row in result["policies"].items()
-                },
+                "policyVersion": result["policyVersion"],
+                "evaluation": {key: value for key, value in result["evaluation"].items() if key != "cases"},
             },
             indent=2,
         )

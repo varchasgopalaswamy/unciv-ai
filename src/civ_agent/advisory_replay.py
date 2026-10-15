@@ -20,7 +20,7 @@ IDENTITY_FIELDS = ("requestId", "model", "policyVersion", "inputHash", "promptHa
 
 def load_cases(path):
     fixture = json.loads(Path(path).read_text())
-    if fixture.get("version") != 3 or fixture.get("policyVersion") != TASK_VERSION:
+    if fixture.get("version") != 4 or fixture.get("policyVersion") != TASK_VERSION:
         raise ValueError(
             "Replay requires the current versioned advisory fixture; historical captures are not current evidence"
         )

@@ -38,6 +38,7 @@ class ChatRuntime:
         self.timeout = 300
         self.pending = asyncio.Event()
         self.jobs = {}
+        self.job_records = {}
         self.error = None
         self.subscription = {
             "status": "DISCONNECTED",
@@ -288,6 +289,20 @@ class ChatRuntime:
 
         async def notification(method, params):
             nonlocal final, completed
+            if method == "service/transportStatus":
+                service.diagnostics.emit("codex_transport", activationId=id, purpose="communication", **params)
+                return
+            if method == "service/transportFailure":
+                if params.get("reason") in {
+                    "CODEX_NOTIFICATION_OVERFLOW",
+                    "CODEX_NOTIFICATION_FAILED",
+                    "CODEX_DISCONNECTED",
+                }:
+                    record["transportError"] = params["reason"]
+                    record["error"] = record.get("error") or params["reason"]
+                    completed = False
+                    done.set()
+                return
             if method in HISTORY_METHODS:
                 await service.io.call(service.history.notify, id, record["threadId"], method, params)
             if method == "service/modelStatus" and params.get("threadId") == record["threadId"]:
@@ -321,6 +336,7 @@ class ChatRuntime:
             service.executable, workspace, service.gateway_url, service.gateway_ca_file, notification
         )
         self.jobs[id] = (job, process)
+        self.job_records[id] = (record, record_file)
         prompt = f"Pursue {service.civilization}'s diplomatic objectives in light of newly received communication."
 
         owner = asyncio.current_task()
@@ -422,23 +438,38 @@ class ChatRuntime:
                 record["error"] = service.gateway.run_failure["error"]
                 record["runFailure"] = service.health()["runFailure"]
             job.closed = True
-            await process.close()
-            trace_complete = await service.io.call(reconcile_provider_usage, record, service.provider_usage)
-            await service.gateway.close(job, completed)
-            record["phase"] = "FAILED" if record.get("error") else "COMPLETED" if completed else "INTERRUPTED"
             record["summary"] = final[:2400]
-            record["usageComplete"] = trace_complete or (completed and record.get("usageReported", False))
-            await service.io.call(service.accounting.sample, record, job.waiting_seconds())
-            await service.io.call(service.history.lifecycle, record)
-            await service.io.call(
-                write_private_json,
-                record_file,
-                record,
-            )
-            with contextlib.suppress(OSError, ValueError, TimeoutError, aiohttp.ClientError):
-                await service.flush_telemetry()
-                await self.social("job_release", job=id, usage=record["usage"])
-            self.jobs.pop(id, None)
+            try:
+                await process.close()
+            except BaseException:
+                # Retain ownership for close() to retry. In particular, do not
+                # finish the gateway job or shut down I/O under live callbacks.
+                record["error"] = "STOP_UNCONFIRMED"
+                self.error = "STOP_UNCONFIRMED"
+                raise
+            if record.get("transportError"):
+                # close() drains accepted notifications; a completion followed
+                # by transport failure during that drain is still a failed job.
+                completed = False
+            record["summary"] = final[:2400]
+            await self.finalize(id, completed)
+
+    async def finalize(self, id, completed):
+        service = self.service
+        job, _ = self.jobs[id]
+        record, record_file = self.job_records[id]
+        trace_complete = await service.io.call(reconcile_provider_usage, record, service.provider_usage)
+        await service.gateway.close(job, completed)
+        record["phase"] = "FAILED" if record.get("error") else "COMPLETED" if completed else "INTERRUPTED"
+        record["usageComplete"] = trace_complete or (completed and record.get("usageReported", False))
+        await service.io.call(service.accounting.sample, record, job.waiting_seconds())
+        await service.io.call(service.history.lifecycle, record)
+        await service.io.call(write_private_json, record_file, record)
+        with contextlib.suppress(OSError, ValueError, TimeoutError, aiohttp.ClientError):
+            await service.flush_telemetry()
+            await self.social("job_release", job=id, usage=record["usage"])
+        self.jobs.pop(id, None)
+        self.job_records.pop(id, None)
 
     async def close(self):
         await self.service.reviews.close()
@@ -449,10 +480,21 @@ class ChatRuntime:
         for task in (self.listener, self.worker, self.routing_worker, self.routing_task):
             if task is not None:
                 task.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
+                try:
                     await task
+                except asyncio.CancelledError:
+                    pass
+                except Exception:
+                    if not self.jobs:
+                        raise
+                    self.error = self.error or "COMMUNICATION_JOB_FAILED"
         self.listener = self.worker = None
         self.routing_worker = self.routing_task = None
+        for id, (_, process) in list(self.jobs.items()):
+            await process.close()
+            record, _ = self.job_records[id]
+            record["error"] = record.get("error") or "COMMUNICATION_JOB_FAILED"
+            await self.finalize(id, False)
         if self.connection is not None:
             with contextlib.suppress(OSError, ValueError, TimeoutError, aiohttp.ClientError):
                 await self.service.flush_telemetry()

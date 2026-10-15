@@ -5,6 +5,7 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import time
 from pathlib import Path
 from typing import Any
@@ -32,6 +33,47 @@ _PROVIDER_ERROR_KINDS = {
     "timeout",
     "response_invalid",
 }
+_HEALTH_VERSIONS = {
+    "protocolVersion": BROKER_PROTOCOL_VERSION,
+    "classifierModel": MODEL,
+    "routingPolicyVersion": POLICY_VERSION,
+    "advisoryPolicyVersion": TASK_VERSION,
+    "accountingRateVersion": RATE_VERSION,
+}
+_VERSION_PATTERNS = {
+    "classifierModel": r"gpt-[1-9][0-9]{0,2}(?:\.[0-9]{1,2})?-(?:luna|sol|terra)",
+    "routingPolicyVersion": r"diplomacy-routing-v[1-9][0-9]{0,2}",
+    "advisoryPolicyVersion": r"player-advisories-v[1-9][0-9]{0,2}",
+    "accountingRateVersion": r"decisions-standard-[0-9]{4}-[0-9]{2}-[0-9]{2}-v[1-9][0-9]{0,2}",
+}
+
+
+def version_contract():
+    return dict(_HEALTH_VERSIONS)
+
+
+def health_failure(body):
+    """Return version diagnostics without reflecting an untrusted health body."""
+    mismatches = {}
+    if isinstance(body, dict):
+        for field, expected in _HEALTH_VERSIONS.items():
+            if field not in body or body[field] == expected and type(body[field]) is type(expected):
+                continue
+            actual = body[field]
+            safe = (
+                type(actual) is int and 0 <= actual <= 999
+                if field == "protocolVersion"
+                else isinstance(actual, str) and re.fullmatch(_VERSION_PATTERNS[field], actual) is not None
+            )
+            mismatches[field] = {"expected": expected, "actual": actual if safe else None}
+    result: JsonObject = {
+        "status": "incompatible",
+        "reason": "broker_version_mismatch" if mismatches else "invalid_health_contract",
+        "action": "rebuild_runtime_image",
+    }
+    if mismatches:
+        result["versionMismatches"] = mismatches
+    return result
 
 
 def _valid_health(body):
@@ -145,16 +187,14 @@ class DecisionsBroker:
             try:
                 policy = self.ledger.settings(digest)
             except ValueError:
-                policy = None
-            options = (
-                {
-                    "timeout": policy.decisions_timeout_seconds,
-                    "thresholds": routing_thresholds(policy, body["direction"]),
-                    "policy_version": policy.decisions_routing_policy,
-                }
-                if policy is not None
-                else {}
-            )
+                raise web.HTTPForbidden(text="Current Decisions account settings are required") from None
+            if not policy.decisions_enabled:
+                raise web.HTTPForbidden(text="Decisions is disabled for this account")
+            options = {
+                "timeout": policy.decisions_timeout_seconds,
+                "thresholds": routing_thresholds(policy, body["direction"]),
+                "policy_version": policy.decisions_routing_policy,
+            }
             return web.json_response(await self.client.classify(body["direction"], body["bundle"], **options))
 
     async def batch(self, request):
@@ -188,13 +228,6 @@ class DecisionsBroker:
                 principal, envelope["requestId"], metadata["inputHash"], body, pending_result=pending
             )
             if cached is not None:
-                if "questionResults" not in cached:
-                    cached = {
-                        **pending,
-                        **failed_answers(body, settings.decisions_min_confidence, cached["fallback"]),
-                    }
-                    if cached["fallback"] == "budget_exhausted":
-                        self.ledger.complete(principal, envelope["requestId"], cached)
                 return web.json_response(self._reply(principal, cached))
             # No provider retries. A cancelled/unknown call retains its reservation.
             raw = await self.client.evaluate(body, timeout=settings.decisions_timeout_seconds)
@@ -215,6 +248,12 @@ class DecisionsBroker:
             return web.json_response(self._reply(principal, result))
 
     def _reply(self, principal, result):
+        if result.get("fallback") != "not_submitted" and (
+            result.get("policyVersion") != TASK_VERSION
+            or result.get("model") != MODEL
+            or not isinstance(result.get("questionResults"), list)
+        ):
+            raise web.HTTPConflict(text="Incompatible Decisions receipt; its reservation remains retained")
         return {
             **{k: v for k, v in result.items() if k not in {"replayEvidence", "pending"}},
             "accounting": self.ledger.status(principal),
@@ -280,11 +319,7 @@ class RoutingClient:
                         body = await response.json()
                     except (ValueError, aiohttp.ContentTypeError):
                         body = None
-            result: dict[str, Any] = (
-                body
-                if isinstance(body, dict) and _valid_health(body)
-                else {"status": "incompatible", "reason": "invalid_health_contract"}
-            )
+            result: dict[str, Any] = body if isinstance(body, dict) and _valid_health(body) else health_failure(body)
         except TimeoutError:
             result = {"status": "unavailable", "reason": "broker_timeout"}
         except aiohttp.ClientResponseError as error:

@@ -43,7 +43,9 @@ image with:
 This restarts configured services, retains credentials and the Decisions spending
 ledger, and verifies Decisions readiness without a paid API request. Use
 `--auth-dir PATH` for another auth directory or `--image IMAGE` for another runtime
-image. Run `civ-agent image build` first to include source changes. Stop affected
+image. The command checks the image's current Decisions protocol before stopping
+either service; stale images fail with a rebuild instruction. Run
+`civ-agent image build` first to include source changes. Stop affected
 games before upgrading their shared services; saved games retain their pinned
 runtime images.
 

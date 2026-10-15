@@ -213,6 +213,13 @@ async def main():
                     "review": {
                         "horizonTurns": 5,
                         "outcomeAssessment": "No previous choices at opening.",
+                        "materialAssumptions": [
+                            {
+                                "assessment": "The timing of rival development remains uncertain.",
+                                "status": "unknown",
+                                "facts": [],
+                            }
+                        ],
                         "plans": [
                             {
                                 "name": "Explore",

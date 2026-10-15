@@ -9,7 +9,7 @@ from civ_agent.telemetry import JobAccounting
 def delivery():
     return {
         "requestId": "a" * 64,
-        "policyVersion": "player-advisories-v3",
+        "policyVersion": "player-advisories-v4",
         "usage": {"input_tokens": 9000},
         "latencyMs": 9000,
         "deliveryResults": [
@@ -33,7 +33,7 @@ def test_delivery_after_uncertain_batch_preserves_call_count_failure_usage_and_l
             "advisory_batch",
             {
                 "requestId": "a" * 64,
-                "policyVersion": "player-advisories-v3",
+                "policyVersion": "player-advisories-v4",
                 "model": "gpt-6-luna",
                 "fallback": "low_confidence",
                 "usage": {"input_tokens": 100},

@@ -177,19 +177,29 @@ class AdvisoryRuntime:
             for field in ("retrieval", "preservation", "beliefs", "newEvidence"):
                 evidence[field] = []
         active_gameplay = job.purpose == "gameplay" and (job.observation or {}).get("phase") == "ACTIVE"
-        city_eligible = active_gameplay and turn - state.get("cityAttemptTurn", -gap) >= gap
+        city_trigger = city_decisions.change_key(job, evidence["objectives"]) if active_gameplay else None
+        city_changed = city_trigger != state.get("cityTrigger")
+        unresolved_city = state.get("cityResult", {}).get("fallback") in {
+            "broker_unavailable",
+            "malformed_broker_output",
+            "completion_unknown",
+        }
+        city_retry = (state.get("cityCaptureUnavailable", False) or unresolved_city) and turn - state.get(
+            "cityAttemptTurn", -gap
+        ) >= gap
+        city_eligible = active_gameplay and (city_changed or city_retry)
         cities, city_context = [], {}
         reason = (
             "not_active_gameplay"
             if not active_gameplay
             else "disabled_budget"
             if self.settings.additional_decisions_budget_usd == 0
-            else "cooldown"
+            else "unchanged_city_decision"
         )
         capture_status: JsonObject = {"capturedCities": 0, "reason": reason}
         city_result: JsonObject = {"answers": []}
         if city_eligible and self.settings.additional_decisions_budget_usd > 0:
-            await self.save(cityAttemptTurn=turn)
+            await self.save(cityAttemptTurn=turn, cityTrigger=city_trigger)
             try:
                 async with asyncio.timeout(self.settings.decisions_timeout_seconds):
                     cities, city_context, capture_status = await city_decisions.capture(
@@ -197,6 +207,11 @@ class AdvisoryRuntime:
                     )
             except (TimeoutError, OSError, ValueError, aiohttp.ClientError):
                 capture_status = {"capturedCities": 0, "reason": "native_capture_unavailable"}
+            await self.save(
+                cityCaptureUnavailable=capture_status.get("reason")
+                in {"native_capture_unavailable", "stale_native_input"}
+                or capture_status.get("unavailableCities", 0) > 0
+            )
         city_key = city_decisions.semantic_key(cities, city_context, evidence["objectives"]) if cities else None
         if cities:
             evidence.update(cities=cities.copy(), cityContext=city_context)

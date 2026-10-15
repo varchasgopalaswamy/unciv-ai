@@ -155,6 +155,9 @@ ESTIMATE_BASIS = (
     "unlocks; their hypothetical build times exclude time to satisfy those prerequisites."
     " Queue progress supplies production for individual queued copies. In named construction reads, "
     "a progress row includes production only when it differs from the entry's production estimate."
+    " appendProduction is a separate native estimate for appending a new copy: it excludes work invested "
+    "in an already queued copy. Its start-now estimate uses current overflow and excludes queue delay; "
+    "it is not the completion time of an item waiting behind the current queue."
 )
 
 

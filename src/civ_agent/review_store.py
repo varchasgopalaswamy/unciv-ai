@@ -147,4 +147,9 @@ def latest_advice(db, turn):
         .mappings()
         .first()
     )
-    return {"asOfTurn": row["turn"], **json.loads(row["advice"])} if row else None
+    if row is None:
+        return None
+    advice = {"asOfTurn": row["turn"], **json.loads(row["advice"])}
+    for index, assumption in enumerate(advice["review"]["materialAssumptions"], 1):
+        assumption["source"] = f"review:{row['turn']}:{index}"
+    return advice

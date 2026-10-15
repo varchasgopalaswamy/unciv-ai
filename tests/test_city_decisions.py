@@ -8,7 +8,7 @@ import pytest
 from sqlalchemy import select
 
 from civ_agent import memory_schema as tables
-from civ_agent.city_decisions import capture, recommendations, semantic_key
+from civ_agent.city_decisions import capture, change_key, recommendations, semantic_key
 from civ_agent.decisions_tasks import (
     CITY_LIMIT,
     TASK_VERSION,
@@ -56,6 +56,7 @@ def add_cities(host, count=2):
         constructionEstimates={
             name: {
                 "production": {"cost": 40, "stored": 0, "overflow": 0, "perTurn": 4, "turnsIfStartedNow": 10},
+                "appendProduction": {"cost": 40, "stored": 0, "overflow": 0, "perTurn": 4, "turnsIfStartedNow": 10},
                 "queueUnavailableReasons": [],
                 "whileBuilding": {"change": {}},
                 "completion": None,
@@ -119,6 +120,11 @@ def choose_candidates(classifier, host=None, *, focus_mode="success"):
             return result
         raw = copy.deepcopy(result.get("rawAnswers", result["answers"]))
         for answer in raw:
+            if (
+                answer["name"].startswith(("city_focus_change:", "city_construction_change:"))
+                and answer.get("type") == "choice"
+            ):
+                answer["choice"] = "change"
             if answer["name"].startswith("city_focus:") and answer.get("type") == "choice":
                 answer["choice"] = "focus1"
                 if focus_mode == "low":
@@ -126,7 +132,8 @@ def choose_candidates(classifier, host=None, *, focus_mode="success"):
                 elif focus_mode == "unknown":
                     answer["choice"] = "manufactured-focus"
             if answer["name"].startswith("city_construction:") and answer.get("type") == "choice":
-                answer["choice"] = "construction0"
+                index = int(answer["name"].split(":")[1])
+                answer["choice"] = evidence["cities"][index]["constructions"][0]["id"]
         if host is not None:
             host.revision = "changed-during-classification"
         body = request_body(evidence, classifier.settings)
@@ -197,7 +204,7 @@ def test_changed_native_source_during_preview_discards_captured_cities(tmp_path)
     asyncio.run(run())
 
 
-def test_two_city_questions_coalesce_with_memory_and_preserve_native_delivery(tmp_path):
+def test_city_change_and_alternative_questions_coalesce_with_memory_and_preserve_native_delivery(tmp_path):
     async def run():
         async with setup(tmp_path) as (memory, gateway, host, classifier):
             add_cities(host)
@@ -224,14 +231,19 @@ def test_two_city_questions_coalesce_with_memory_and_preserve_native_delivery(tm
             assert len(classifier.calls) == 1
             evidence = classifier.calls[0]
             questions = request_body(evidence, classifier.settings)["questions"]
-            assert [q["name"] for q in questions[:4]] == [
+            assert [q["name"] for q in questions[:8]] == [
+                "city_focus_change:0",
                 "city_focus:0",
+                "city_construction_change:0",
                 "city_construction:0",
+                "city_focus_change:1",
                 "city_focus:1",
+                "city_construction_change:1",
                 "city_construction:1",
             ]
             assert any(q["name"].startswith("preservation:") for q in questions)
             assert all("independent" in q["instructions"] for q in questions[:4])
+            assert all(len(q["choices"]) == 2 for q in questions if "_change:" in q["name"])
             rows = prepared["advisories"]["cityRecommendations"]
             assert len(rows) == 2
             assert rows[0]["focus"]["native"]["command"] == {
@@ -388,27 +400,27 @@ def test_city_request_replay_ignores_transport_binding_but_not_native_changes(tm
     asyncio.run(run())
 
 
-@pytest.mark.parametrize("question_limit", [1, 2, 3])
-def test_question_limit_omits_whole_city_pairs(tmp_path, question_limit):
+@pytest.mark.parametrize("question_limit", [1, 2, 3, 4, 7])
+def test_question_limit_omits_whole_city_question_groups(tmp_path, question_limit):
     async def run():
         async with setup(tmp_path, decisions_max_questions=question_limit) as (_, gateway, host, classifier):
             add_cities(host)
             choose_candidates(classifier)
             job = await gateway.open("job", "gameplay", "g1", host, {}, 0)
             prepared = await prepare_startup(gateway, job)
-            expected_cities = question_limit // 2
+            expected_cities = question_limit // 4
             assert len(prepared["advisories"]["cityRecommendations"]) == expected_cities
             assert prepared["advisories"]["cityAdviceStatus"]["omittedCities"] == 2 - expected_cities
             assert len(classifier.calls) == bool(expected_cities)
             if classifier.calls:
-                assert len(request_body(classifier.calls[0], classifier.settings)["questions"]) == 2 * expected_cities
+                assert len(request_body(classifier.calls[0], classifier.settings)["questions"]) == 4 * expected_cities
 
     asyncio.run(run())
 
 
 def test_byte_limit_omits_city_pair_and_its_unneeded_construction_rules(tmp_path):
     async def run():
-        async with setup(tmp_path, decisions_max_request_bytes=20000) as (_, gateway, host, classifier):
+        async with setup(tmp_path, decisions_max_request_bytes=25000) as (_, gateway, host, classifier):
             add_cities(host)
             host.view["cities"][0]["constructionOptions"] = ["Market"]
             host.view["cities"][1]["constructionOptions"] = ["Granary"]
@@ -430,7 +442,7 @@ def test_byte_limit_omits_city_pair_and_its_unneeded_construction_rules(tmp_path
             assert prepared["advisories"]["cityAdviceStatus"]["omittedCities"] == 1
             evidence = classifier.calls[0]
             assert [r["name"] for r in evidence["cityContext"]["constructionRules"]] == ["Market"]
-            assert len(request_body(evidence, classifier.settings)["questions"]) == 2
+            assert len(request_body(evidence, classifier.settings)["questions"]) == 4
 
     asyncio.run(run())
 
@@ -451,10 +463,13 @@ def test_stable_city_inputs_do_not_repeat_paid_calls_across_turns(tmp_path, mode
             second = await gateway.open("second", "gameplay", "g1", host, {}, 5)
             prepared = await prepare_startup(gateway, second)
             assert len(classifier.calls) == 1
+            assert prepared["advisories"]["cityRecommendations"] == []
             if mode == "success":
-                assert prepared["advisories"]["cityRecommendations"][0]["basis"]["revision"] == host.revision
+                assert len(host.__dict__["focus_reads"]) == 1
+                assert prepared["advisories"]["cityAdviceStatus"]["reason"] == "unchanged_city_decision"
             else:
-                assert prepared["advisories"]["cityRecommendations"] == []
+                assert len(host.__dict__["focus_reads"]) == 2
+                assert prepared["advisories"]["cityAdviceStatus"]["reused"]  # Receipt lookup, never a second paid call.
 
     asyncio.run(run())
 
@@ -475,7 +490,7 @@ def test_capture_limits_omissions_unknown_ids_and_broker_controls(tmp_path):
             )
             evidence = {"version": TASK_VERSION, "player": "Rome", "cities": cities, "cityContext": context}
             body = request_body(evidence, classifier.settings)
-            assert len(body["questions"]) == 2 * CITY_LIMIT
+            assert len(body["questions"]) == 4 * CITY_LIMIT
             for key in ("instructions", "model", "budgetExempt"):
                 with pytest.raises(ValueError):
                     request_body({**evidence, key: "injected"}, classifier.settings)
@@ -490,5 +505,200 @@ def test_capture_limits_omissions_unknown_ids_and_broker_controls(tmp_path):
             cities[0]["focuses"][0]["native"]["constructionTurns"] = 67
             assert semantic_key(cities, context, []) != original
             assert request_id(evidence) != request_id({**evidence, "cityContext": {}})
+
+    asyncio.run(run())
+
+
+def test_appending_extra_worker_cannot_reuse_invested_work_and_moves_bind_exact_entries(tmp_path):
+    async def run():
+        async with setup(tmp_path) as (_, gateway, host, _):
+            add_cities(host, 1)
+            city = host.view["cities"][0]
+            host.view["constructionCatalogue"].append("Worker")
+            city["constructionOptions"].append("Worker")
+            city["constructionQueue"] = ["Worker", "Warrior", "Worker"]
+            city["constructionEstimates"]["Worker"] = {
+                **copy.deepcopy(city["constructionEstimates"]["Warrior"]),
+                "production": {"cost": 70, "stored": 20, "overflow": 0, "perTurn": 5, "turnsIfStartedNow": 10},
+                "appendProduction": {"cost": 70, "stored": 0, "overflow": 0, "perTurn": 5, "turnsIfStartedNow": 14},
+            }
+            city["development"]["constructions"] = [
+                {
+                    "index": index,
+                    "name": name,
+                    "perpetual": False,
+                    "productionCost": 70 if name == "Worker" else 40,
+                    "productionStored": 20 if index == 0 else 0,
+                    "productionPerTurn": 5 if name == "Worker" else 4,
+                    "turns": 10 if index < 2 else 14,
+                    "canRemove": True,
+                    "moveToIndices": [i for i in range(3) if i != index],
+                }
+                for index, name in enumerate(city["constructionQueue"])
+            ]
+            job = await gateway.open("job", "gameplay", "g1", host, {}, 0)
+            await gateway.call(job, "player_turn", {}, "initial")
+            cities, _, _ = await capture(gateway, job, [])
+            choices = {option["id"]: option["native"] for option in cities[0]["constructions"]}
+            extra = choices["append:Worker"]
+            assert extra["additionalCopy"] and extra["queueOperation"] == "append"
+            assert extra["production"]["stored"] == 0 and extra["production"]["turnsIfStartedNow"] == 14
+            assert extra["queueDelayTurns"] is extra["completionAfterQueueTurns"] is None
+            assert cities[0]["facts"]["currentConstructionEstimate"]["production"]["stored"] == 20
+            later = choices["move:2"]
+            assert later["queueIndex"] == later["command"]["index"] == 2
+            assert later["previousQueueProduction"]["stored"] == 0
+            assert later["production"]["stored"] == 20  # The first copy after the native move owns stored work.
+            assert choices["move:1"]["command"]["index"] == 1
+            assert "move:0" not in choices  # Keep already continues the exact head.
+            host.view["cities"][0]["constructionOptions"].remove("Worker")
+            await gateway.close(job, True)
+            second = await gateway.open("blocked", "gameplay", "g1", host, {}, 0)
+            await gateway.call(second, "player_turn", {}, "next")
+            cities, _, _ = await capture(gateway, second, [])
+            assert not any(option["id"] == "append:Worker" for option in cities[0]["constructions"])
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    ("gate", "gate_confidence", "alternative_confidence", "expected"),
+    [
+        ("change", 0.99, 0.99, "focus1"),
+        ("change", 0.2, 0.99, None),
+        ("change", 0.99, 0.2, None),
+        ("keep", 0.99, 0.2, "keep"),
+        ("keep", 0.99, 0.99, "keep"),
+        ("keep", 0.2, 0.99, None),
+        ("defer", 0.99, 0.99, None),  # Not a value in the current binary gate.
+    ],
+)
+def test_city_change_gate_is_independent_and_both_answers_are_required_for_an_action(
+    tmp_path, gate, gate_confidence, alternative_confidence, expected
+):
+    async def run():
+        async with setup(tmp_path) as (_, gateway, host, classifier):
+            add_cities(host, 1)
+            job = await gateway.open("job", "gameplay", "g1", host, {}, 0)
+            await gateway.call(job, "player_turn", {}, "initial")
+            cities, context, _ = await capture(gateway, job, [])
+            body = request_body({"player": "Rome", "cities": cities, "cityContext": context}, classifier.settings)
+            result = parse_answers(
+                body,
+                {
+                    "answers": [
+                        {
+                            "name": "city_focus_change:0",
+                            "type": "choice",
+                            "choice": gate,
+                            "confidence": gate_confidence,
+                        },
+                        {
+                            "name": "city_focus:0",
+                            "type": "choice",
+                            "choice": "focus1",
+                            "confidence": alternative_confidence,
+                        },
+                    ]
+                },
+                0.9,
+            )
+            rows = recommendations(gateway, job, cities, result, context)
+            if expected is None:
+                assert rows == []
+            else:
+                assert rows[0]["focus"]["choice"] == expected
+                assert ("native" in rows[0]["focus"]) == (expected == "focus1")
+
+    asyncio.run(run())
+
+
+def test_city_trigger_ignores_routine_countdowns_but_tracks_growth_queue_and_adopted_goals():
+    job = SimpleNamespace(
+        observation={
+            "cities": [
+                {
+                    "handle": "city1",
+                    "constructionQueue": ["Worker"],
+                    "constructionChoice": {"name": "Worker", "chosenTurn": 3, "turnsObserved": 1},
+                    "development": {"population": 2, "foodStored": 4, "productionStored": 20, "turnsToGrowth": 4},
+                }
+            ]
+        },
+        memory={},
+    )
+    before = change_key(job, [])
+    city = job.observation["cities"][0]
+    city["constructionChoice"]["turnsObserved"] += 1
+    city["development"].update(foodStored=6, productionStored=25, turnsToGrowth=3)
+    assert change_key(job, []) == before
+    for field, value in (("population", 3), ("foodPerTurn", -2)):
+        changed = copy.deepcopy(job)
+        changed.observation["cities"][0]["development"][field] = value
+        assert change_key(changed, []) != before
+    city["constructionQueue"] = []
+    assert change_key(job, []) != before
+    assert change_key(job, [{"key": "role", "version": 1}]) != change_key(job, [])
+
+
+def test_meaningful_city_change_is_evaluated_before_normal_memory_cooldown(tmp_path):
+    async def run():
+        async with setup(tmp_path, decisions_startup_min_gap_turns=5) as (_, gateway, host, classifier):
+            add_cities(host, 1)
+            choose_candidates(classifier)
+            first = await gateway.open("first", "gameplay", "g1", host, {}, 0)
+            await prepare_startup(gateway, first)
+            await gateway.close(first, True)
+            host.record["gameTurn"] = 1
+            host.view["cities"][0]["development"]["population"] += 1
+            second = await gateway.open("growth", "gameplay", "g1", host, {}, 1)
+            await prepare_startup(gateway, second)
+            assert len(classifier.calls) == 2
+            assert len(host.__dict__["focus_reads"]) == 2
+
+    asyncio.run(run())
+
+
+def test_adopted_city_intent_is_distinct_from_optional_review_and_equal_yield_policies_remain_choices(tmp_path):
+    async def run():
+        async with setup(tmp_path) as (_, gateway, host, _):
+            add_cities(host, 1)
+            original = host.tool
+
+            async def tool(name, args):
+                result = await original(name, args)
+                if name == "player_inspect" and args.get("subject") == "CITY_FOCUS":
+                    for option in result["data"]["options"]:
+                        option["yields"] = {"Production": "4"}
+                return result
+
+            host.tool = tool
+            job = await gateway.open("job", "gameplay", "g1", host, {}, 0)
+            job.memory["strategicAdvice"] = {"assessment": "Consider a production plan"}
+            await gateway.call(job, "player_turn", {}, "initial")
+            objectives = [
+                {
+                    "key": "chosen",
+                    "version": 2,
+                    "record": {
+                        "decisions": [
+                            {
+                                "id": "capital-growth",
+                                "objective": "Grow capital",
+                                "investment": "Finish Granary",
+                                "reconsiderWhen": "Happiness becomes negative",
+                                "subjects": ["city1"],
+                            }
+                        ]
+                    },
+                }
+            ]
+            cities, context, _ = await capture(gateway, job, objectives)
+            assert context["reviewAdvice"] == job.memory["strategicAdvice"]
+            adopted = context["adoptedDecisions"][0]
+            assert adopted["source"] == {"key": "chosen", "version": 2}
+            assert adopted["objective"] == "Grow capital"
+            assert cities[0]["facts"]["adoptedDecisions"] == [adopted]
+            assert [option["native"]["name"] for option in cities[0]["focuses"]] == ["NoFocus", "ProductionFocus"]
 
     asyncio.run(run())

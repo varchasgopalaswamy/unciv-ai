@@ -12,6 +12,7 @@ import pytest
 from civ_agent import cli
 from civ_agent import container_supervisor as supervisor
 from civ_agent.commands import runtime
+from civ_agent.decisions_broker import version_contract
 from civ_agent.tls import private_directory, write_private, write_private_json
 
 
@@ -22,6 +23,10 @@ class FakePodman:
         self.calls = []
         self.held_locks = set()
         self.fail_stop = False
+        self.image_contract = version_contract()
+        self.probe_output = None
+        self.probe_returncode = 0
+        self.probe_timeout = False
 
     def existing(self, role, *, running=True, image="old-image"):
         name = supervisor.auth_name(self.root) + ("-decisions" if role == "decisions" else "")
@@ -48,6 +53,31 @@ class FakePodman:
     def __call__(self, *arguments, **options):
         self.calls.append((arguments, options))
         action = arguments[0]
+        if action == "run":
+            assert arguments[1:7] == (
+                "--rm",
+                "--pull=never",
+                "--network=none",
+                "--read-only",
+                "--cap-drop=all",
+                "--security-opt=no-new-privileges",
+            )
+            assert arguments[7:9] == ("--entrypoint", "/opt/app/.venv/bin/python")
+            assert arguments[10:12] == ("-B", "-c")
+            assert "BROKER_PROTOCOL_VERSION" in arguments[-1]
+            assert "TASK_VERSION" in arguments[-1]
+            assert not any(
+                "--mount" in argument or "--env" in argument or str(self.root) in argument for argument in arguments
+            )
+            assert options == {"timeout": 15, "check": False}
+            if self.probe_timeout:
+                raise subprocess.TimeoutExpired("podman", 15, stderr="secret image stderr")
+            return subprocess.CompletedProcess(
+                arguments,
+                self.probe_returncode,
+                stdout=json.dumps(self.image_contract) if self.probe_output is None else self.probe_output,
+                stderr="secret image stderr",
+            )
         if action in {"stop", "rm", "start"}:
             name = arguments[-1]
             role = "decisions" if name.endswith("-decisions") else "auth"
@@ -149,6 +179,9 @@ def test_restart_starts_configured_roles_and_skips_unconfigured_roles(fake_runti
             assert report[role] == {"status": "not_configured"}
     if "decisions" in roles:
         assert report["decisions"]["health"]["status"] == "ready"
+        assert fake.calls[0][0][0] == "run"
+    else:
+        assert all(args[0] != "run" for args, _ in fake.calls)
     assert [args[0] for args, _ in fake.calls].count("create") == len(roles)
 
 
@@ -254,3 +287,53 @@ def test_restart_cli_has_no_provider_option(tmp_path):
     with pytest.raises(SystemExit) as error:
         cli.main(["auth", "restart", "--auth-dir", str(tmp_path), "--provider", "openrouter"])
     assert error.value.code == 2
+
+
+@pytest.mark.parametrize(
+    ("field", "old_value"),
+    [
+        ("protocolVersion", 2),
+        ("routingPolicyVersion", "diplomacy-routing-v1"),
+        ("advisoryPolicyVersion", "player-advisories-v2"),
+    ],
+)
+def test_stale_selected_image_is_rejected_before_stopping_either_running_service(fake_runtime, field, old_value):
+    fake = fake_runtime
+    configure(fake.root, "auth", "decisions")
+    fake.existing("auth")
+    fake.existing("decisions")
+    fake.image_contract[field] = old_value
+    before = deepcopy(fake.containers)
+    files = {path: path.read_bytes() for path in fake.root.rglob("*") if path.is_file()}
+    with pytest.raises(supervisor.ContainerError) as error:
+        supervisor.restart_brokers(fake.root, "old-image")
+    message = str(error.value)
+    assert f"{field} expected {version_contract()[field]}, found {old_value}" in message
+    assert "civ-agent image build" in message
+    assert "civ-agent auth restart" in message
+    assert [args[0] for args, _ in fake.calls] == ["run"]
+    assert fake.containers == before
+    assert all(path.read_bytes() == content for path, content in files.items())
+
+
+@pytest.mark.parametrize("failure", ["stdout", "nonzero", "timeout", "unexpected_body"])
+def test_image_probe_failures_are_bounded_and_sanitized_before_restart(fake_runtime, failure):
+    fake = fake_runtime
+    configure(fake.root, "auth", "decisions")
+    fake.existing("auth")
+    fake.existing("decisions")
+    if failure == "stdout":
+        fake.probe_output = "private image stdout, secret provider key"
+    elif failure == "nonzero":
+        fake.probe_returncode = 1
+    elif failure == "timeout":
+        fake.probe_timeout = True
+    else:
+        fake.image_contract["classifierModel"] = {"secret": "private image body"}
+    with pytest.raises(supervisor.ContainerError) as error:
+        supervisor.restart_brokers(fake.root, "new-image")
+    message = str(error.value)
+    assert "civ-agent image build" in message
+    assert "private" not in message and "secret" not in message
+    assert all(row["State"]["Running"] for row in fake.containers.values())
+    assert [args[0] for args, _ in fake.calls] == ["run"]

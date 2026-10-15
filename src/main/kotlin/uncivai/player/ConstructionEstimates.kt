@@ -72,6 +72,7 @@ data class ConstructionGrowthChange(
 @Serializable
 data class ConstructionEstimate(
     val production: ConstructionProduction,
+    val appendProduction: ConstructionProduction,
     val requiredTechnologies: List<String> = emptyList(),
     val resourceRequirements: Map<String, Int> = emptyMap(),
     val queueUnavailableReasons: List<String>,
@@ -172,6 +173,16 @@ internal class ConstructionEstimator(private val player: Civilization) {
                         queue.productionOverflow,
                         rate,
                         constructionTurns(city, construction.name),
+                    ),
+                    // Appending a later copy cannot reuse work invested in a copy
+                    // already in the queue. This remains a native start-now
+                    // estimate, not a forecast of the intervening queue.
+                    appendProduction = ConstructionProduction(
+                        construction.getProductionCost(player, city),
+                        if (construction.name in queue.constructionQueue) 0 else queue.getWorkDone(construction.name),
+                        queue.productionOverflow,
+                        rate,
+                        constructionTurns(city, construction.name, construction.name !in queue.constructionQueue),
                     ),
                     requiredTechnologies = Collections.unmodifiableList(construction.requiredTechs().sorted().toList()),
                     resourceRequirements = freeze(construction.getResourceRequirementsPerTurn(city.state)),

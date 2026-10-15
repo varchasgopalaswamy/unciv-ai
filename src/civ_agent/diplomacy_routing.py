@@ -11,8 +11,8 @@ from civ_agent.decisions_policy import DecisionsSettings, routing_thresholds
 from civ_agent.diplomacy_decisions import (
     BATCH_SECONDS,
     CHOICES,
+    POLICY_VERSION,
     TIMEOUT_SECONDS,
-    TWO_QUESTION_POLICY_VERSION,
     fallback,
     parse_answer,
 )
@@ -40,6 +40,8 @@ class DiplomacyRouting:
 
     async def classify(self, direction, bundle):
         generation = self.generation
+        await self.gateway.io.call(self.store.capture_input, direction, bundle)
+        self.check_generation(generation)
         try:
             # Waiting behind another classification consumes the same budget;
             # concurrent sends must not accumulate five seconds each in a queue.
@@ -52,14 +54,14 @@ class DiplomacyRouting:
                 finally:
                     self.classifications.discard(task)
         except TimeoutError:
-            result = fallback(direction, "timeout")
+            result = {**fallback(direction, "timeout"), "policyVersion": POLICY_VERSION}
         except asyncio.CancelledError:
             if generation != self.generation:
                 raise StateConflict("ROUTING_INTERRUPTED") from None
             raise
         except (OSError, ValueError):
             self.check_generation(generation)
-            result = fallback(direction, "service_failure")
+            result = {**fallback(direction, "service_failure"), "policyVersion": POLICY_VERSION}
         self.check_generation(generation)
         result = self.validate_decision(direction, result)
         if self.gateway.accounting is not None:
@@ -75,9 +77,7 @@ class DiplomacyRouting:
         ):
             return fallback(direction, "malformed_broker_output")
         policy = result.get("policyVersion")
-        if (policy is not None and policy != self.settings.decisions_routing_policy) or (
-            policy is None and self.settings.decisions_routing_policy != "diplomacy-routing-v1"
-        ):
+        if policy != POLICY_VERSION:
             return {**result, **fallback(direction, "routing_policy_mismatch"), "overridden": True}
         thresholds = routing_thresholds(self.settings, direction)
         result = {**result, "thresholds": thresholds}
@@ -100,18 +100,17 @@ class DiplomacyRouting:
                     "lowConfidence": True,
                 }
             result["appliedThreshold"] = required
-            if direction == "incoming" and policy == TWO_QUESTION_POLICY_VERSION:
-                # The binary confidence must belong to the question granting
-                # this action. Raw evidence can restrict a requested action;
-                # it never upgrades a broker's immediate response to batching.
-                parsed = parse_answer(
-                    direction,
-                    {"answers": result.get("rawAnswers")},
-                    thresholds=thresholds,
-                    policy_version=TWO_QUESTION_POLICY_VERSION,
-                )
-                if any(result.get(key) != parsed.get(key) for key in ("choice", "confidence", "questionBasis")):
-                    return {**result, **fallback(direction, "malformed_broker_output"), "overridden": True}
+            # The binary confidence must belong to the question granting
+            # this action. Raw evidence can restrict a requested action;
+            # it never upgrades a broker's immediate response to batching.
+            parsed = parse_answer(
+                direction,
+                {"answers": result.get("rawAnswers")},
+                thresholds=thresholds,
+                policy_version=POLICY_VERSION,
+            )
+            if any(result.get(key) != parsed.get(key) for key in ("choice", "confidence", "questionBasis")):
+                return {**result, **fallback(direction, "malformed_broker_output"), "overridden": True}
         return result
 
     def protected(self, thread, social):
@@ -121,7 +120,7 @@ class DiplomacyRouting:
         if members & (self.human_players | set(social.get("humanPlayers", []))):
             return True
         if not social.get("routingMetadataAvailable", False):
-            return True  # Older hosts cannot establish that a negotiation is absent.
+            return True  # Missing metadata cannot establish that a negotiation is absent.
         members.discard(self.gateway.memory.civilization)
         for proposal in social.get("trades", []):
             participants = set(proposal.get("participants", [])) | {proposal.get("author"), proposal.get("partner")}

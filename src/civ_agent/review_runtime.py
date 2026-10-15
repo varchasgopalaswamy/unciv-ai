@@ -22,6 +22,7 @@ from civ_agent.strategic_review import (
     parse_advice,
     review_due,
     review_facts,
+    review_named_facts,
 )
 from civ_agent.telemetry import merge_model_usage
 from civ_agent.tls import private_directory
@@ -400,10 +401,20 @@ class ReviewRuntime:
 
         async def notification(method, params):
             nonlocal completed
+            if method == "service/transportStatus":
+                service.diagnostics.emit("codex_transport", activationId=id, **params)
+                return
+            if method == "service/transportFailure":
+                record["transportError"] = str(params.get("reason", "CODEX_TRANSPORT_FAILED"))[:200]
+                record["error"] = "REVIEW_PROCESS_FAILED"
+                done.set()
+                return
             if method in HISTORY_METHODS:
                 await service.io.call(service.history.notify, id, record["threadId"], method, params)
             if not closing and completed is None and method in {"service/disconnected", "service/approvalRequired"}:
                 record["error"] = "REVIEW_PROCESS_FAILED"
+                if method == "service/disconnected" and isinstance(params.get("reason"), str):
+                    record["transportError"] = params["reason"][:200]
                 done.set()
             if params.get("threadId") != record["threadId"]:
                 return
@@ -520,8 +531,10 @@ class ReviewRuntime:
                 progress.value["stage"] = "Validating"
                 await save()
                 answer = final_messages.get(expected, unphased_messages.get(expected, ""))
-                advice = parse_advice(answer, inputs["reads"]["player_turn"])
+                advice = parse_advice(answer, inputs["reads"]["player_turn"], facts=review_named_facts(inputs))
             await stop()
+            if record.get("transportError") or record.get("error"):
+                raise ValueError(record.get("error", "REVIEW_PROCESS_FAILED"))
             progress.value["stage"] = "Publishing"
             await save()
             # A checkpoint may capture pending work while a model is computing.

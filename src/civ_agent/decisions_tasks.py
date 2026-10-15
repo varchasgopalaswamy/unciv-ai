@@ -12,7 +12,7 @@ from civ_agent.decisions_ledger import canonical, fingerprint
 from civ_agent.diplomacy_decisions import MODEL
 from civ_agent.protocol import JsonObject
 
-TASK_VERSION = "player-advisories-v3"
+TASK_VERSION = "player-advisories-v4"
 CITY_LIMIT = 4
 CONSTRUCTION_LIMIT = 8
 FOCUS_LIMIT = 16
@@ -86,14 +86,14 @@ def request_body(evidence, settings):
             (
                 "focuses",
                 "city_focus",
-                "Choose a population focus for this city's current construction and saved role/objectives. "
+                "Choose a persistent population focus for this city's current construction and adopted role/objectives. "
                 "Compare native food, growth/starvation, yields, locks and specialist outcomes. "
                 "Keep preserves actual current assignments; reapplying a named focus may reallocate them. ",
             ),
             (
                 "constructions",
                 "city_construction",
-                "Choose a construction operation for this city's saved role/objectives and empire needs. "
+                "Choose a construction operation for this city's adopted role/objectives and empire needs. "
                 "Compare native costs, completion effects, prerequisites, queue operations, retained work and "
                 "limitations. Keep continues its current queue. Estimates use its current population and focus. ",
             ),
@@ -102,15 +102,43 @@ def request_body(evidence, settings):
             ids = [c["id"] for c in candidates]
             if len(set(ids)) != len(ids) or any(not i or i in {"keep", "defer"} for i in ids):
                 raise ValueError("Invalid city candidate IDs")
+            shared = (
+                f"Evaluate cities[{index}] using shared cityContext and objectives. "
+                "cityContext.adoptedDecisions and saved objectives record the player's chosen intent; "
+                "reviewAdvice is optional advice, not proof that the player adopted its preferred plan. "
+                "Each judgment is independent: do not assume an answer to another question. "
+                "The gameplay model coordinates cities and may reject advice. "
+            )
+            change_instruction = (
+                "Does current evidence justify changing this city's focus policy/assignments now, rather than keeping them? "
+                "Consider concrete growth, starvation, production or empire needs. Policies with equal immediate yields "
+                "can allocate future citizens differently; do not treat them as permanently equivalent. "
+                if field == "focuses"
+                else "Does current evidence justify a new construction queue operation now, rather than continuing its exact queue? "
+                "Append schedules a new construction; it does not mean continue an existing copy. Compare the value of extra production "
+                "against existing commitments. Start-now estimates exclude earlier queue delay. "
+            )
+            questions.append(
+                choice(
+                    f"{prefix}_change:{index}",
+                    shared + change_instruction + "Judge the need to change independently of which alternative wins. "
+                    "Keep means no established reason to change now, not a claim that the current plan is globally optimal. "
+                    "Report uncertainty through confidence; the application leaves uncertain judgments to the gameplay model.",
+                    {
+                        "change": "A concrete benefit justifies a change now.",
+                        "keep": "No established reason to change now; continue existing policy/assignments or the exact queue without an action.",
+                    },
+                )
+            )
             questions.append(
                 choice(
                     f"{prefix}:{index}",
-                    instruction + f"Evaluate cities[{index}] using the shared cityContext and objectives. "
-                    "This question is independent: do not assume any answer to the other city questions. "
-                    "The gameplay model coordinates cities and may reject either recommendation. "
-                    "Choose defer when evidence is insufficient. Return only a supplied candidate ID.",
+                    instruction
+                    + shared
+                    + "Assuming a change is warranted, which supplied alternative best serves the player's intent? "
+                    "This conditional comparison does not decide whether any change is needed. "
+                    "Choose defer when the alternatives cannot be distinguished reliably. Return only a supplied candidate ID.",
                     {
-                        "keep": "Keep the existing setting/queue without an action.",
                         "defer": "Leave this choice to the gameplay model.",
                     }
                     | {c["id"]: f"Native option cities[{index}].{field}[{n}]." for n, c in enumerate(candidates)},

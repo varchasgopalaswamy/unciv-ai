@@ -54,7 +54,11 @@ def test_broker_image_mismatch_preserves_existing_shared_process(tmp_path, monke
     "health",
     [
         {"status": "ready", "upstreamStatus": "unchecked"},
-        {"status": "incompatible", "reason": "protocol_version"},
+        {
+            "status": "incompatible",
+            "reason": "broker_version_mismatch",
+            "versionMismatches": {"protocolVersion": {"expected": 3, "actual": 2}},
+        },
         {"status": "unavailable", "reason": "broker_access_denied"},
     ],
 )
@@ -78,6 +82,9 @@ def test_ready_file_requires_authenticated_compatible_socket_preflight(tmp_path,
         assert report["image"] == "image" and report["upstreamStatus"] == "unchecked"
         assert json.loads((tmp_path / "decisions-preflight.json").read_text()) == report
     else:
-        with pytest.raises(supervisor.ContainerError, match=health["reason"]):
+        with pytest.raises(supervisor.ContainerError, match=health["reason"]) as error:
             supervisor.ensure_decisions(tmp_path, "image")
+        if health["status"] == "incompatible":
+            assert "protocolVersion expected 3, found 2" in str(error.value)
+            assert "civ-agent image build" in str(error.value)
         assert not (tmp_path / "decisions-preflight.json").exists()

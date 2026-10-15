@@ -42,8 +42,10 @@ def delivery_basis(evidence, result, cities=()):
                     row["includeChoice"] = answers.get(f"retrieval_include:{index}", {}).get("choice")
                 rows.append(row)
     for index, city in enumerate(cities or evidence.get("cities", [])):
-        for prefix in ("city_focus", "city_construction"):
+        for prefix in ("city_focus_change", "city_focus", "city_construction_change", "city_construction"):
             row = _binding(result, f"{prefix}:{index}", answers, statuses)
+            field = "city_focus" if prefix.startswith("city_focus") else "city_construction"
+            row["changeChoice"] = answers.get(f"{field}_change:{index}", {}).get("choice")
             row["objectives"] = copy.deepcopy(objectives)
             row.update(city=city["city"], cityIndex=index, cityBasis=copy.deepcopy(city["basis"]))
             row["dependencies"] = [ref for item in evidence.get("objectives", []) if (ref := _reference(item))]
@@ -120,13 +122,20 @@ def _finish(row, memory):
     elif prefix.startswith("city_"):
         if str(notices.get("cityAdviceStatus", {}).get("fallback", "")).startswith("stale"):
             return "stale", None
-        field = "focus" if prefix == "city_focus" else "construction"
+        if not prefix.endswith("_change") and row.get("changeChoice") == "keep":
+            return "no_notice", None
+        if not prefix.endswith("_change") and row.get("changeChoice") != "change":
+            return "not_selected", None
+        field = "focus" if prefix.startswith("city_focus") else "construction"
         for notice in notices.get("cityRecommendations", []):
             if notice.get("city") != row["city"]:
                 continue
             if notice.get("basis") != row["cityBasis"]:
                 return "stale", None
-            if notice.get(field, {}).get("choice") == choice:
+            delivered = notice.get(field, {})
+            if prefix.endswith("_change"):
+                delivered = delivered.get("change", {})
+            if delivered.get("choice") == choice:
                 return "delivered", "advice"
     elif prefix == "early_review":
         # Scheduling is a separate path. Count it only with explicit evidence.

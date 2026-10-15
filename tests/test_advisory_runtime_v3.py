@@ -121,7 +121,7 @@ def test_mixed_confidence_keeps_current_memory_and_construction_but_not_uncertai
             assert notices["preservationCandidates"]
             assert len(notices["cityRecommendations"]) == 1
             row = notices["cityRecommendations"][0]
-            assert "focus" not in row and row["construction"]["choice"] == "construction0"
+            assert "focus" not in row and row["construction"]["choice"] == "append:Granary"
             result = (await gateway.advisories.state())["cityResult"]
             outcomes = {row["name"]: row for row in result["questionResults"]}
             assert outcomes["city_focus:0"]["status"] == "low_confidence"
@@ -172,7 +172,7 @@ def test_new_active_objective_during_classification_discards_only_city_delivery(
     asyncio.run(run())
 
 
-def test_semantic_city_reuse_keeps_original_result_separate_from_new_memory_batch(tmp_path):
+def test_unchanged_city_inputs_keep_original_result_separate_from_new_memory_batch(tmp_path):
     async def run():
         async with setup(tmp_path, native_enabled=False) as (memory, gateway, host, classifier):
             assert gateway.advisories is not None
@@ -191,8 +191,8 @@ def test_semantic_city_reuse_keeps_original_result_separate_from_new_memory_batc
             notices = (await prepare_startup(gateway, second))["advisories"]
             assert len(classifier.calls) == 2 and not classifier.calls[1].get("cities")
             assert classifier.calls[1]["preservation"][0]["source"]["text"].endswith("report 2.")
-            assert notices["cityAdviceStatus"]["reused"]
-            assert notices["cityRecommendations"][0]["basis"]["revision"] == host.revision
+            assert notices["cityAdviceStatus"]["reason"] == "unchanged_city_decision"
+            assert notices["cityRecommendations"] == []
             assert len(notices["preservationCandidates"]) == 1
             assert (await gateway.advisories.state())["cityResult"] == old_result
 

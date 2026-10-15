@@ -1,6 +1,6 @@
 {
-  "version": 3,
-  "policyVersion": "player-advisories-v3",
+  "version": 4,
+  "policyVersion": "player-advisories-v4",
   "notes": "All labels are provisional assistant-authored scheduling/advisory judgments over explicit synthetic production-shaped evidence. No model calls or gameplay outcomes establish these labels. Historical v1 captured answers remain paired with the untouched v2 fixture artifact and are rejected by current replay identity checks.",
   "cases": [
     {
@@ -14,7 +14,7 @@
         "observedGameplay": false
       },
       "evidence": {
-        "version": "player-advisories-v3",
+        "version": "player-advisories-v4",
         "player": "Rome",
         "preservation": [
           {
@@ -97,7 +97,7 @@
         "observedGameplay": false
       },
       "evidence": {
-        "version": "player-advisories-v3",
+        "version": "player-advisories-v4",
         "player": "Rome",
         "preservation": [
           {
@@ -180,7 +180,7 @@
         "observedGameplay": false
       },
       "evidence": {
-        "version": "player-advisories-v3",
+        "version": "player-advisories-v4",
         "player": "Rome",
         "preservation": [
           {
@@ -263,7 +263,7 @@
         "observedGameplay": false
       },
       "evidence": {
-        "version": "player-advisories-v3",
+        "version": "player-advisories-v4",
         "player": "Rome",
         "topics": [
           "coast",
@@ -358,7 +358,7 @@
         "observedGameplay": false
       },
       "evidence": {
-        "version": "player-advisories-v3",
+        "version": "player-advisories-v4",
         "player": "Rome",
         "topics": [
           "coast",
@@ -453,7 +453,7 @@
         "observedGameplay": false
       },
       "evidence": {
-        "version": "player-advisories-v3",
+        "version": "player-advisories-v4",
         "player": "Rome",
         "topics": [
           "trade"
@@ -547,7 +547,7 @@
         "observedGameplay": false
       },
       "evidence": {
-        "version": "player-advisories-v3",
+        "version": "player-advisories-v4",
         "player": "Rome",
         "objectives": [
           {
@@ -724,7 +724,7 @@
         "observedGameplay": false
       },
       "evidence": {
-        "version": "player-advisories-v3",
+        "version": "player-advisories-v4",
         "player": "Rome",
         "beliefs": [
           {
@@ -828,7 +828,7 @@
         "observedGameplay": false
       },
       "evidence": {
-        "version": "player-advisories-v3",
+        "version": "player-advisories-v4",
         "player": "Rome",
         "beliefs": [
           {
@@ -1103,7 +1103,7 @@
         "observedGameplay": false
       },
       "evidence": {
-        "version": "player-advisories-v3",
+        "version": "player-advisories-v4",
         "player": "Rome",
         "objectives": [
           {
@@ -1320,7 +1320,7 @@
         "observedGameplay": false
       },
       "evidence": {
-        "version": "player-advisories-v3",
+        "version": "player-advisories-v4",
         "player": "Rome",
         "objectives": [
           {
@@ -1553,7 +1553,7 @@
         "observedGameplay": false
       },
       "evidence": {
-        "version": "player-advisories-v3",
+        "version": "player-advisories-v4",
         "player": "Rome",
         "objectives": [
           {
@@ -1697,7 +1697,7 @@
         "observedGameplay": false
       },
       "evidence": {
-        "version": "player-advisories-v3",
+        "version": "player-advisories-v4",
         "player": "Rome",
         "objectives": [
           {
@@ -4165,7 +4165,7 @@
         "observedGameplay": false
       },
       "evidence": {
-        "version": "player-advisories-v3",
+        "version": "player-advisories-v4",
         "player": "Rome",
         "objectives": [
           {
@@ -4382,7 +4382,7 @@
         "observedGameplay": false
       },
       "evidence": {
-        "version": "player-advisories-v3",
+        "version": "player-advisories-v4",
         "player": "Rome",
         "objectives": [
           {
@@ -4430,7 +4430,8 @@
                   "stat": "Production",
                   "amount": "4"
                 }
-              ]
+              ],
+              "adoptedDecisions": []
             },
             "focuses": [
               {
@@ -4465,7 +4466,7 @@
             ],
             "constructions": [
               {
-                "id": "construction0",
+                "id": "append:Worker",
                 "native": {
                   "name": "Worker",
                   "queueOperation": "append",
@@ -4494,7 +4495,13 @@
                     "change": {}
                   },
                   "requiredTechnologies": [],
-                  "resourceRequirements": {}
+                  "resourceRequirements": {},
+                  "existingQueue": [
+                    "Granary"
+                  ],
+                  "additionalCopy": false,
+                  "queueDelayTurns": null,
+                  "completionAfterQueueTurns": null
                 }
               }
             ],
@@ -4502,7 +4509,9 @@
             "omittedConstructions": 0,
             "limitations": [
               "Current-population native previews only; focus and construction estimates are independent.",
-              "Queue append does not replace or reorder the current head."
+              "Queue append does not replace or reorder the current head.",
+              "Keep continues the exact existing queue. Append schedules a new item using native insertion; it never means continue an existing copy. Idle can be replaced and a build can precede a trailing conversion.",
+              "Focuses are persistent policies; equal current yields do not imply equal allocations after growth."
             ]
           }
         ],
@@ -4533,7 +4542,9 @@
             }
           ],
           "omittedRuleNames": [],
-          "visibleHostiles": []
+          "visibleHostiles": [],
+          "reviewAdvice": null,
+          "adoptedDecisions": []
         },
         "coverage": {
           "semantics": "Bounded recorded evidence only; absence does not establish falsity or redundancy.",
@@ -4565,6 +4576,12 @@
           "focus0"
         ],
         "city_construction:0": [
+          "defer"
+        ],
+        "city_focus_change:0": [
+          "change"
+        ],
+        "city_construction_change:0": [
           "keep"
         ]
       },
@@ -4582,7 +4599,7 @@
         "observedGameplay": false
       },
       "evidence": {
-        "version": "player-advisories-v3",
+        "version": "player-advisories-v4",
         "player": "Rome",
         "objectives": [
           {
@@ -4628,7 +4645,8 @@
                   "stat": "Production",
                   "amount": "4"
                 }
-              ]
+              ],
+              "adoptedDecisions": []
             },
             "focuses": [
               {
@@ -4666,7 +4684,9 @@
             "omittedConstructions": 0,
             "limitations": [
               "Current-population native previews only; focus and construction estimates are independent.",
-              "Queue append does not replace or reorder the current head."
+              "Queue append does not replace or reorder the current head.",
+              "Keep continues the exact existing queue. Append schedules a new item using native insertion; it never means continue an existing copy. Idle can be replaced and a build can precede a trailing conversion.",
+              "Focuses are persistent policies; equal current yields do not imply equal allocations after growth."
             ]
           }
         ],
@@ -4695,7 +4715,9 @@
             }
           ],
           "omittedRuleNames": [],
-          "visibleHostiles": []
+          "visibleHostiles": [],
+          "reviewAdvice": null,
+          "adoptedDecisions": []
         },
         "coverage": {
           "semantics": "Bounded recorded evidence only; absence does not establish falsity or redundancy.",
@@ -4724,9 +4746,15 @@
       },
       "labels": {
         "city_focus:0": [
-          "keep"
+          "defer"
         ],
         "city_construction:0": [
+          "defer"
+        ],
+        "city_focus_change:0": [
+          "keep"
+        ],
+        "city_construction_change:0": [
           "keep"
         ]
       },
@@ -4744,7 +4772,7 @@
         "observedGameplay": false
       },
       "evidence": {
-        "version": "player-advisories-v3",
+        "version": "player-advisories-v4",
         "player": "Rome",
         "objectives": [
           {
@@ -4792,7 +4820,8 @@
                   "stat": "Production",
                   "amount": "4"
                 }
-              ]
+              ],
+              "adoptedDecisions": []
             },
             "focuses": [
               {
@@ -4826,7 +4855,7 @@
             ],
             "constructions": [
               {
-                "id": "construction0",
+                "id": "append:Worker",
                 "native": {
                   "name": "Worker",
                   "queueOperation": "append",
@@ -4846,7 +4875,13 @@
                     "change": {}
                   },
                   "requiredTechnologies": [],
-                  "resourceRequirements": {}
+                  "resourceRequirements": {},
+                  "existingQueue": [
+                    "Granary"
+                  ],
+                  "additionalCopy": false,
+                  "queueDelayTurns": null,
+                  "completionAfterQueueTurns": null
                 }
               }
             ],
@@ -4855,7 +4890,9 @@
             "limitations": [
               "Current-population native previews only; focus and construction estimates are independent.",
               "Queue append does not replace or reorder the current head.",
-              "Food comparison and construction completion effects are unavailable."
+              "Food comparison and construction completion effects are unavailable.",
+              "Keep continues the exact existing queue. Append schedules a new item using native insertion; it never means continue an existing copy. Idle can be replaced and a build can precede a trailing conversion.",
+              "Focuses are persistent policies; equal current yields do not imply equal allocations after growth."
             ]
           }
         ],
@@ -4879,7 +4916,9 @@
           "omittedRuleNames": [
             "Worker"
           ],
-          "visibleHostiles": []
+          "visibleHostiles": [],
+          "reviewAdvice": null,
+          "adoptedDecisions": []
         },
         "coverage": {
           "semantics": "Bounded recorded evidence only; absence does not establish falsity or redundancy.",
@@ -4912,6 +4951,12 @@
         ],
         "city_construction:0": [
           "defer"
+        ],
+        "city_focus_change:0": [
+          "keep"
+        ],
+        "city_construction_change:0": [
+          "keep"
         ]
       },
       "rationale": "Unavailable comparisons support deferral to the gameplay model rather than an invented estimate.",
@@ -4928,7 +4973,7 @@
         "observedGameplay": false
       },
       "evidence": {
-        "version": "player-advisories-v3",
+        "version": "player-advisories-v4",
         "player": "Rome",
         "objectives": [
           {
@@ -4974,7 +5019,8 @@
                   "stat": "Production",
                   "amount": "4"
                 }
-              ]
+              ],
+              "adoptedDecisions": []
             },
             "focuses": [
               {
@@ -5009,7 +5055,7 @@
             ],
             "constructions": [
               {
-                "id": "construction0",
+                "id": "append:Worker",
                 "native": {
                   "name": "Worker",
                   "queueOperation": "append",
@@ -5038,7 +5084,11 @@
                     "change": {}
                   },
                   "requiredTechnologies": [],
-                  "resourceRequirements": {}
+                  "resourceRequirements": {},
+                  "existingQueue": [],
+                  "additionalCopy": false,
+                  "queueDelayTurns": 0,
+                  "completionAfterQueueTurns": null
                 }
               }
             ],
@@ -5046,7 +5096,9 @@
             "omittedConstructions": 0,
             "limitations": [
               "Current-population native previews only; focus and construction estimates are independent.",
-              "Queue append does not replace or reorder the current head."
+              "Queue append does not replace or reorder the current head.",
+              "Keep continues the exact existing queue. Append schedules a new item using native insertion; it never means continue an existing copy. Idle can be replaced and a build can precede a trailing conversion.",
+              "Focuses are persistent policies; equal current yields do not imply equal allocations after growth."
             ]
           }
         ],
@@ -5075,7 +5127,9 @@
             }
           ],
           "omittedRuleNames": [],
-          "visibleHostiles": []
+          "visibleHostiles": [],
+          "reviewAdvice": null,
+          "adoptedDecisions": []
         },
         "coverage": {
           "semantics": "Bounded recorded evidence only; absence does not establish falsity or redundancy.",
@@ -5104,10 +5158,16 @@
       },
       "labels": {
         "city_focus:0": [
-          "keep"
+          "defer"
         ],
         "city_construction:0": [
-          "construction0"
+          "append:Worker"
+        ],
+        "city_focus_change:0": [
+          "keep"
+        ],
+        "city_construction_change:0": [
+          "change"
         ]
       },
       "rationale": "Appending the supplied Worker to an empty queue serves the explicit role; no focus change is needed.",
@@ -5124,7 +5184,7 @@
         "observedGameplay": false
       },
       "evidence": {
-        "version": "player-advisories-v3",
+        "version": "player-advisories-v4",
         "player": "Rome",
         "objectives": [
           {
@@ -5488,7 +5548,8 @@
                   "stat": "Production",
                   "amount": "4"
                 }
-              ]
+              ],
+              "adoptedDecisions": []
             },
             "focuses": [
               {
@@ -5523,7 +5584,7 @@
             ],
             "constructions": [
               {
-                "id": "construction0",
+                "id": "append:Worker",
                 "native": {
                   "name": "Worker",
                   "queueOperation": "append",
@@ -5552,7 +5613,13 @@
                     "change": {}
                   },
                   "requiredTechnologies": [],
-                  "resourceRequirements": {}
+                  "resourceRequirements": {},
+                  "existingQueue": [
+                    "Granary"
+                  ],
+                  "additionalCopy": false,
+                  "queueDelayTurns": null,
+                  "completionAfterQueueTurns": null
                 }
               }
             ],
@@ -5560,7 +5627,9 @@
             "omittedConstructions": 0,
             "limitations": [
               "Current-population native previews only; focus and construction estimates are independent.",
-              "Queue append does not replace or reorder the current head."
+              "Queue append does not replace or reorder the current head.",
+              "Keep continues the exact existing queue. Append schedules a new item using native insertion; it never means continue an existing copy. Idle can be replaced and a build can precede a trailing conversion.",
+              "Focuses are persistent policies; equal current yields do not imply equal allocations after growth."
             ]
           }
         ],
@@ -5591,7 +5660,9 @@
             }
           ],
           "omittedRuleNames": [],
-          "visibleHostiles": []
+          "visibleHostiles": [],
+          "reviewAdvice": null,
+          "adoptedDecisions": []
         },
         "coverage": {
           "semantics": "Bounded recorded evidence only; absence does not establish falsity or redundancy.",
@@ -5638,6 +5709,12 @@
           "focus0"
         ],
         "city_construction:0": [
+          "defer"
+        ],
+        "city_focus_change:0": [
+          "change"
+        ],
+        "city_construction_change:0": [
           "keep"
         ]
       },

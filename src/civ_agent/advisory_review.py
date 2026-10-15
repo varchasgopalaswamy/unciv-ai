@@ -35,7 +35,7 @@ def _last_completed(db):
     )
 
 
-def _baseline(state, last) -> JsonObject:
+def _baseline(state, last) -> JsonObject | None:
     baseline = state.get("reviewMaterialBaseline")
     if (
         isinstance(baseline, dict)
@@ -44,14 +44,7 @@ def _baseline(state, last) -> JsonObject:
         and baseline.get("identity") == fingerprint({k: v for k, v in baseline.items() if k != "identity"})
     ):
         return copy.deepcopy(baseline)
-    # Older stores retain only a hash; it cannot reconstruct historical facts.
-    unavailable = {
-        "available": False,
-        "reviewTurn": last,
-        "fullFingerprint": state.get("reviewBaseline"),
-        "reason": "comparable_material_baseline_unavailable",
-    }
-    return {**unavailable, "identity": fingerprint(unavailable)}
+    return None
 
 
 def review_input(memory, turn, settings, next_review_turn) -> JsonObject | None:
@@ -74,6 +67,8 @@ def review_input(memory, turn, settings, next_review_turn) -> JsonObject | None:
             return None
         current = bounded_facts(overview["body"])
         baseline = _baseline(state, last)
+        if baseline is None:
+            return None
         objectives = [reference(k, r) for k, r in records.items() if r["category"] == "strategy" and active(r, turn)]
         words = set(re.findall(r"\w{4,}", canonical(objectives).casefold()))
         statements = []
@@ -144,9 +139,11 @@ def review_current(memory, evidence):
         objective_versions = {
             key: record["version"] for key, record in objectives.items() if active(record, review["completedTurn"])
         }
+        baseline = _baseline(state, _last_completed(db))
         return (
             objective_versions == {r["key"]: r["version"] for r in evidence.get("objectives", [])}
-            and _baseline(state, _last_completed(db))["identity"] == review["baseline"]["identity"]
+            and baseline is not None
+            and baseline["identity"] == review["baseline"]["identity"]
             and all(current.get(r["key"], {}).get("version") == r["version"] for r in refs)
         )
 

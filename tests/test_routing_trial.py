@@ -38,7 +38,10 @@ def fixture(path, *, protected=False):
 
 def response(tokens=50):
     return {
-        "answers": [{"name": "delivery", "type": "choice", "choice": "batch", "confidence": 0.98}],
+        "answers": [
+            {"name": "response_needed", "type": "choice", "choice": "needed", "confidence": 0.98},
+            {"name": "response_timing", "type": "choice", "choice": "can_wait", "confidence": 0.98},
+        ],
         "usage": {"input_tokens": tokens},
         "latencyMs": 12,
     }
@@ -51,10 +54,10 @@ def test_trial_reuses_exact_frozen_responses_without_new_calls_or_copying_key(tm
     client.evaluate.return_value = response()
     root = tmp_path / "isolated"
     first = asyncio.run(trial(root, tmp_path / "not-read.key", path, client=client))
-    assert first["accounting"]["calls"] == 2
-    assert first["policies"]["legacy"]["evaluation"]["accepted"] == 1
-    assert first["policies"]["candidate"]["evaluation"]["accepted"] == 1
-    assert first["accounting"]["spentNanodollars"] == 100 * NANODOLLARS_PER_INPUT_TOKEN
+    assert first["accounting"]["calls"] == 1
+    assert first["policyVersion"] == POLICY_VERSION
+    assert first["evaluation"]["accepted"] == 1
+    assert first["accounting"]["spentNanodollars"] == 50 * NANODOLLARS_PER_INPUT_TOKEN
     assert first["comparisonThreshold"] == 0.90
     client.reset_mock()
     again = asyncio.run(trial(root, tmp_path / "not-read.key", path, client=client))
@@ -66,13 +69,15 @@ def test_trial_reuses_exact_frozen_responses_without_new_calls_or_copying_key(tm
 
 def test_trial_call_cap_and_budget_apply_before_dispatch(tmp_path):
     path = tmp_path / "fixture.json"
-    fixture(path)
+    value = fixture(path)
+    value["cases"].append({**value["cases"][0], "id": "case-2"})
+    path.write_text(json.dumps(value))
     client = AsyncMock()
     client.evaluate.return_value = response()
     capped = asyncio.run(trial(tmp_path / "capped", None, path, max_calls=1, client=client))
     assert client.evaluate.await_count == 1
     assert capped["accounting"]["calls"] == 1
-    assert capped["policies"]["candidate"]["evaluation"]["missing"] == 1
+    assert capped["evaluation"]["missing"] == 1
     client.reset_mock()
     empty = asyncio.run(trial(tmp_path / "empty", None, path, budget_usd=0, client=client))
     assert empty["accounting"]["calls"] == 0
@@ -86,17 +91,17 @@ def test_unknown_completion_is_durable_and_never_dispatched_again(tmp_path):
     client.evaluate.side_effect = RuntimeError("simulated crash")
     root = tmp_path / "interrupted"
     with pytest.raises(RuntimeError, match="simulated crash"):
-        asyncio.run(trial(root, None, path, policies=("legacy",), client=client))
+        asyncio.run(trial(root, None, path, client=client))
     pending = json.loads((root / "trial.json").read_text())
     saved = next(iter(pending["requests"].values()))
     assert saved["response"] is None
     body = request_body("incoming", value["cases"][0]["bundle"], policy_version=POLICY_VERSION)
     assert saved["reservedNanodollars"] == estimate_tokens(body) * NANODOLLARS_PER_INPUT_TOKEN
     client.reset_mock()
-    result = asyncio.run(trial(root, None, path, policies=("legacy",), client=client))
+    result = asyncio.run(trial(root, None, path, client=client))
     client.evaluate.assert_not_awaited()
     assert result["accounting"]["unknownCompletions"] == 1
-    assert result["policies"]["legacy"]["evaluation"]["fallbacks"] == {"completion_unknown": 1}
+    assert result["evaluation"]["fallbacks"] == {"completion_unknown": 1}
 
 
 def test_protected_cases_never_reserve_or_call_and_missing_usage_retains_budget(tmp_path):
@@ -106,10 +111,10 @@ def test_protected_cases_never_reserve_or_call_and_missing_usage_retains_budget(
     protected = asyncio.run(trial(tmp_path / "protected", None, path, client=client))
     client.evaluate.assert_not_awaited()
     assert protected["accounting"]["calls"] == 0
-    assert protected["policies"]["legacy"]["evaluation"]["protectedBypasses"] == 1
+    assert protected["evaluation"]["protectedBypasses"] == 1
     fixture(path)
     client.evaluate.return_value = {"answers": [], "fallback": "timeout", "usage": {}}
-    missing = asyncio.run(trial(tmp_path / "unknown-usage", None, path, policies=("legacy",), client=client))
+    missing = asyncio.run(trial(tmp_path / "unknown-usage", None, path, client=client))
     assert missing["accounting"]["reservedNanodollars"] > 0
     assert missing["accounting"]["spentNanodollars"] == 0
 
@@ -118,18 +123,18 @@ def test_trial_pins_configuration_and_prevents_parallel_processes(tmp_path):
     path = tmp_path / "fixture.json"
     value = fixture(path)
     root = tmp_path / "pinned"
-    store = TrialStore(root, value, max_calls=1, budget_usd=0.1, policies=[POLICY_VERSION])
+    store = TrialStore(root, value, max_calls=1, budget_usd=0.1)
     try:
         with pytest.raises(ValueError, match="running process"):
-            TrialStore(root, value, max_calls=1, budget_usd=0.1, policies=[POLICY_VERSION])
+            TrialStore(root, value, max_calls=1, budget_usd=0.1)
     finally:
         store.close()
     for values in (dict(max_calls=2, budget_usd=0.1), dict(max_calls=1, budget_usd=0.2)):
         with pytest.raises(ValueError, match="immutable"):
-            TrialStore(root, value, policies=[POLICY_VERSION], **values)
+            TrialStore(root, value, **values)
     changed = {**value, "notes": "changed fixture"}
     with pytest.raises(ValueError, match="immutable"):
-        TrialStore(root, changed, max_calls=1, budget_usd=0.1, policies=[POLICY_VERSION])
+        TrialStore(root, changed, max_calls=1, budget_usd=0.1)
 
 
 def two_direction_fixture(path):
@@ -164,7 +169,7 @@ def two_question_response():
     }
 
 
-def test_two_question_trial_reuses_only_exact_outgoing_with_separate_cost_and_provenance(tmp_path):
+def test_current_trial_reuses_exact_responses_with_separate_cost_and_provenance(tmp_path):
     path = tmp_path / "fixture.json"
     two_direction_fixture(path)
     prior_client = AsyncMock()
@@ -173,7 +178,7 @@ def test_two_question_trial_reuses_only_exact_outgoing_with_separate_cost_and_pr
         {"answers": [], "fallback": "timeout", "usage": {}, "latencyMs": 5000},
     ]
     prior = tmp_path / "prior"
-    asyncio.run(trial(prior, None, path, policies=("candidate",), client=prior_client))
+    asyncio.run(trial(prior, None, path, client=prior_client))
     frozen = prior / "fixture.json"
     before = {file.name: file.read_bytes() for file in prior.iterdir() if file.is_file()}
     client = AsyncMock()
@@ -184,24 +189,22 @@ def test_two_question_trial_reuses_only_exact_outgoing_with_separate_cost_and_pr
             current,
             None,
             frozen,
-            policies=("two-question",),
             client=client,
             reuse_trial=prior,
             max_calls=200,
             budget_usd=0.05,
         )
     )
-    assert client.evaluate.await_count == 1
-    assert len(client.evaluate.call_args.args[0]["questions"]) == 2
-    assert result["accounting"]["calls"] == 1 and result["accounting"]["reusedResponses"] == 1
+    client.evaluate.assert_not_awaited()
+    assert result["accounting"]["calls"] == 0 and result["accounting"]["reusedResponses"] == 2
     assert result["accounting"]["reusedFallbacks"] == {"timeout": 1}
-    assert result["accounting"]["spentNanodollars"] == 60 * NANODOLLARS_PER_INPUT_TOKEN
+    assert result["accounting"]["spentNanodollars"] == 0
     assert (current / "fixture.json").read_bytes() == frozen.read_bytes()
     journal = json.loads((current / "trial.json").read_text())
-    assert len(journal["requests"]) == len(journal["reused"]) == 1
+    assert len(journal["requests"]) == 0 and len(journal["reused"]) == 2
     reused = next(iter(journal["reused"].values()))
-    assert reused["provenance"]["sourcePolicyVersion"] == "diplomacy-routing-v2"
-    assert reused["response"]["fallback"] == "timeout"
+    assert reused["provenance"]["sourcePolicyVersion"] == POLICY_VERSION
+    assert any(row["response"].get("fallback") == "timeout" for row in journal["reused"].values())
     assert {file.name: file.read_bytes() for file in prior.iterdir() if file.is_file()} == before
     client.reset_mock()
     assert (
@@ -210,7 +213,6 @@ def test_two_question_trial_reuses_only_exact_outgoing_with_separate_cost_and_pr
                 current,
                 None,
                 frozen,
-                policies=("two-question",),
                 client=client,
                 reuse_trial=prior,
                 max_calls=200,
@@ -222,17 +224,24 @@ def test_two_question_trial_reuses_only_exact_outgoing_with_separate_cost_and_pr
     client.evaluate.assert_not_awaited()
 
 
-@pytest.mark.parametrize("change", ["fixture_bytes", "model", "request", "pending", "prompt"])
+@pytest.mark.parametrize("change", ["fixture_bytes", "model", "policy", "request", "pending", "prompt"])
 def test_reuse_refuses_changed_or_uncompleted_cache_before_any_paid_call(tmp_path, monkeypatch, change):
     import scripts.trial_diplomacy_routing as module
-    from civ_agent.diplomacy_decisions import TWO_QUESTION_POLICY_VERSION
 
     path = tmp_path / "fixture.json"
     two_direction_fixture(path)
     original = AsyncMock()
-    original.evaluate.return_value = response()
+    original.evaluate.side_effect = [
+        response(),
+        {
+            "answers": [
+                {"name": "delivery_needed", "type": "choice", "choice": "needed", "confidence": 0.98},
+                {"name": "delivery_timing", "type": "choice", "choice": "can_wait", "confidence": 0.98},
+            ]
+        },
+    ]
     prior = tmp_path / "prior"
-    asyncio.run(trial(prior, None, path, policies=("candidate",), client=original))
+    asyncio.run(trial(prior, None, path, client=original))
     frozen = prior / "fixture.json"
     journal = json.loads((prior / "trial.json").read_text())
     row = next(row for row in journal["requests"].values() if row["caseId"] == "case-outgoing")
@@ -242,6 +251,8 @@ def test_reuse_refuses_changed_or_uncompleted_cache_before_any_paid_call(tmp_pat
         path = frozen
     if change == "model":
         journal["configuration"]["model"] = "another-model"
+    elif change == "policy":
+        journal["configuration"]["policyVersion"] = "diplomacy-routing-v2"
     elif change == "request":
         row["request"]["input"] += " "
     elif change == "pending":
@@ -249,19 +260,17 @@ def test_reuse_refuses_changed_or_uncompleted_cache_before_any_paid_call(tmp_pat
     elif change == "prompt":
         implementation = module.request_body
 
-        def altered(direction, bundle, *, policy_version):
+        def altered(direction, bundle, *, policy_version=POLICY_VERSION):
             body: JsonObject = implementation(direction, bundle, policy_version=policy_version)
-            if direction == "outgoing" and policy_version == TWO_QUESTION_POLICY_VERSION:
+            if direction == "outgoing":
                 body["questions"][0]["instructions"] += " changed"
             return body
 
         monkeypatch.setattr(module, "request_body", altered)
     (prior / "trial.json").write_text(json.dumps(journal))
     client = AsyncMock()
-    with pytest.raises(ValueError, match="fixture|model|request|changed"):
-        asyncio.run(
-            trial(tmp_path / "rejected", None, path, policies=("two-question",), client=client, reuse_trial=prior)
-        )
+    with pytest.raises(ValueError, match="fixture|model|policy|request|changed"):
+        asyncio.run(trial(tmp_path / "rejected", None, path, client=client, reuse_trial=prior))
     client.evaluate.assert_not_awaited()
     assert not (tmp_path / "rejected").exists()
 
@@ -270,10 +279,16 @@ def test_reuse_preserves_prior_refusal_without_new_outgoing_call(tmp_path):
     path = tmp_path / "fixture.json"
     two_direction_fixture(path)
     prior_client = AsyncMock()
-    refusal = {"answers": [{"name": "delivery", "type": "refusal"}], "usage": {"input_tokens": 25}}
+    refusal = {
+        "answers": [
+            {"name": "delivery_needed", "type": "refusal"},
+            {"name": "delivery_timing", "type": "choice", "choice": "can_wait", "confidence": 0.98},
+        ],
+        "usage": {"input_tokens": 25},
+    }
     prior_client.evaluate.side_effect = [response(), refusal]
     prior = tmp_path / "prior"
-    asyncio.run(trial(prior, None, path, policies=("candidate",), client=prior_client))
+    asyncio.run(trial(prior, None, path, client=prior_client))
     client = AsyncMock()
     client.evaluate.return_value = two_question_response()
     result = asyncio.run(
@@ -281,12 +296,11 @@ def test_reuse_preserves_prior_refusal_without_new_outgoing_call(tmp_path):
             tmp_path / "current",
             None,
             prior / "fixture.json",
-            policies=("two-question",),
             client=client,
             reuse_trial=prior,
         )
     )
-    assert client.evaluate.await_count == 1
-    assert result["accounting"]["reusedResponses"] == 1
-    report = result["policies"]["two-question"]["evaluation"]
+    client.evaluate.assert_not_awaited()
+    assert result["accounting"]["reusedResponses"] == 2
+    report = result["evaluation"]
     assert report["byDirection"]["outgoing"]["fallbacks"] == {"refusal": 1}

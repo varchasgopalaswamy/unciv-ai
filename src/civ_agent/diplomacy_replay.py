@@ -13,8 +13,7 @@ from civ_agent.diplomacy_decisions import (
     CHOICES,
     CONFIDENCE_THRESHOLD,
     POLICY_VERSION,
-    TWO_QUESTION_CHOICES,
-    TWO_QUESTION_POLICY_VERSION,
+    QUESTION_CHOICES,
     fallback,
     parse_answer,
 )
@@ -82,13 +81,14 @@ def _confidence_summary(values):
 
 
 def _question_summary(rows):
-    selected = [
-        row for row in rows if row["direction"] == "incoming" and row["policyVersion"] == TWO_QUESTION_POLICY_VERSION
-    ]
+    selected = [row for row in rows if row["policyVersion"] == POLICY_VERSION]
     questions = {}
-    for name, choices in TWO_QUESTION_CHOICES.items():
+    for name, choices in {
+        name: choices for questions in QUESTION_CHOICES.values() for name, choices in questions.items()
+    }.items():
+        eligible = [row for row in selected if name in QUESTION_CHOICES[row["direction"]]]
         answers = [
-            answer for row in selected for answer in row["decision"].get("rawAnswers", []) if answer.get("name") == name
+            answer for row in eligible for answer in row["decision"].get("rawAnswers", []) if answer.get("name") == name
         ]
         chosen = [answer for answer in answers if answer.get("type") == "choice"]
         confidences = [answer["confidence"] for answer in chosen]
@@ -106,7 +106,7 @@ def _question_summary(rows):
             "choices": dict(Counter(answer["choice"] for answer in chosen)),
             "choiceResponses": len(chosen),
             "refusals": refused,
-            "unknown": len(selected) - len(chosen) - refused,
+            "unknown": len(eligible) - len(chosen) - refused,
             "confidence": _confidence_summary(confidences),
             "probabilities": {
                 choice: {"reported": len(values), "median": median(values) if values else None}
@@ -194,7 +194,7 @@ def _summary(rows):
             "harmfulOmission": _rate(sum(row["harmfulOmitted"] for row in omitted), len(omitted)),
         },
         "confidenceBands": bands,
-        "confidenceBasis": "Original choice confidence for one-question policies; confidence of the effective action's governing question for incoming two-question policies.",
+        "confidenceBasis": "Confidence of the effective action's governing binary question; normalized margin, not calibrated accuracy.",
         "rawChoiceConfidence": _confidence_summary(
             [row["decision"].get("rawChoiceConfidence", row["decision"]["confidence"]) for row in confidence]
         ),
@@ -224,9 +224,7 @@ def evaluate(cases, responses, *, threshold=CONFIDENCE_THRESHOLD, thresholds=Non
             "direction": case["direction"],
             "expected": case["expected"],
             "protected": protected,
-            "policyVersion": response.get("policyVersion", POLICY_VERSION)
-            if isinstance(response, dict)
-            else POLICY_VERSION,
+            "policyVersion": response.get("policyVersion") if isinstance(response, dict) else None,
         }
         envelope = response if isinstance(response, dict) else {}
         unavailable = response is None or envelope.get("rawUnavailable", False)
@@ -234,6 +232,9 @@ def evaluate(cases, responses, *, threshold=CONFIDENCE_THRESHOLD, thresholds=Non
             decision = fallback(case["direction"], "protected")
         elif unavailable:
             rows.append({**row, "evaluated": False, "reason": "raw_response_unavailable"})
+            continue
+        elif envelope.get("policyVersion") != POLICY_VERSION:
+            rows.append({**row, "evaluated": False, "reason": "policy_version_mismatch"})
             continue
         elif envelope.get("fallback"):
             decision = fallback(case["direction"], envelope["fallback"])
@@ -243,7 +244,7 @@ def evaluate(cases, responses, *, threshold=CONFIDENCE_THRESHOLD, thresholds=Non
                 response,
                 threshold,
                 thresholds=thresholds,
-                policy_version=envelope.get("policyVersion", POLICY_VERSION),
+                policy_version=POLICY_VERSION,
             )
         immediate = next(iter(CHOICES[case["direction"]]))
         omit = "no_separate_response" if case["direction"] == "incoming" else "omit"
@@ -326,14 +327,15 @@ async def collect(cases, client):
         if case.get("protected"):
             continue
         result = await client.classify(case["direction"], case["bundle"])
-        answer = result.get("rawAnswer")
+        if result.get("policyVersion") != POLICY_VERSION:
+            raise ValueError("Replay requires the current routing policy")
         answers = result.get("rawAnswers")
-        has_raw = isinstance(answers, list) or isinstance(answer, dict)
+        has_raw = isinstance(answers, list)
         responses[case["id"]] = {
-            "answers": answers if isinstance(answers, list) else [answer] if isinstance(answer, dict) else [],
+            "answers": answers if has_raw else [],
             "rawUnavailable": not has_raw and result.get("fallback") in {None, "low_confidence"},
             "fallback": result.get("fallback") if not has_raw else None,
-            "policyVersion": result.get("policyVersion", POLICY_VERSION),
+            "policyVersion": POLICY_VERSION,
             "usage": result.get("usage", {}),
             "latencyMs": result.get("latencyMs"),
             "routingResult": result,

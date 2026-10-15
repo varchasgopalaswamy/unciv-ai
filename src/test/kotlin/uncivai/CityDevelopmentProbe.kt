@@ -64,6 +64,12 @@ object CityDevelopmentProbe {
             check(observed.constructions.map { it.productionStored } == listOf(7, 0))
             check(observed.constructions[0].turns == view.constructions.turnsToConstruction("Worker", true))
             check(observed.constructions[1].turns == view.constructions.turnsToConstruction("Worker", false))
+            val worker = uncivai.player.ConstructionEstimator(player).observe(city).getValue("Worker")
+            check(worker.production.stored == 7)
+            check(worker.appendProduction.stored == 0) { "A new copy reused the current Worker's invested production" }
+            check(worker.appendProduction.turnsIfStartedNow == view.constructions.turnsToConstruction("Worker", false))
+            check(worker.production.turnsIfStartedNow == observed.constructions[0].turns)
+            check(json().toJson(game) == raw) { "Construction estimates mutated the saved game" }
             check(research.current == "Pottery")
             val pottery = research.technologies.single { it.name == "Pottery" }
             check(pottery.cost == player.tech.costOfTech("Pottery") && pottery.turns == player.tech.turnsToTech("Pottery"))
