@@ -9,7 +9,7 @@ import time
 from pathlib import Path
 
 from civ_agent.agent_settings import add_settings_arguments, setting_argument
-from civ_agent.container_supervisor import validate_setup
+from civ_agent.container_supervisor import validate_routing_credentials, validate_setup
 from civ_agent.container_support import (
     DEFAULT_AUTH,
     ContainerError,
@@ -99,6 +99,10 @@ def parser(*, add_help=True, action="start"):
         result.add_argument("--fast", action=argparse.BooleanOptionalAction, default=None)
         result.add_argument("--strategy-guide", action=argparse.BooleanOptionalAction, default=None)
         result.add_argument("--civilization-guide", action=argparse.BooleanOptionalAction, default=None)
+        result.add_argument("--native-advice-enabled", action=argparse.BooleanOptionalAction, default=None)
+        from civ_agent.decisions_policy import add_decisions_arguments
+
+        add_decisions_arguments(result, defaults=False)
         result.add_argument("--review-interval", type=int)
         result.add_argument("--review-attempts", type=int)
     return result
@@ -106,6 +110,8 @@ def parser(*, add_help=True, action="start"):
 
 def resolve_options(args):
     overrides = {}
+    from civ_agent.decisions_policy import DECISIONS_FIELDS
+
     fields = {
         "game": (
             "master_seed",
@@ -131,6 +137,8 @@ def resolve_options(args):
             "fast",
             "strategy_guide",
             "civilization_guide",
+            "native_advice_enabled",
+            *DECISIONS_FIELDS,
             "review_interval",
             "review_attempts",
         ),
@@ -163,6 +171,7 @@ def initialize(root, config, auth_root, *, original=None, images=None, validatio
         raise ContainerError("The provider credential directory must be outside the match directory")
     if (root / "resolved.json").exists() or (root / "exploration.json").exists():
         raise ContainerError("A saved game exists; use game resume or a new --state-dir")
+    validate_routing_credentials(config, auth_root)
     images = images or {
         "runtime": resolve_image(config.runtime.image),
         **({"desktop": resolve_image(config.runtime.desktop_image)} if config.human else {}),
@@ -172,7 +181,26 @@ def initialize(root, config, auth_root, *, original=None, images=None, validatio
         config.limits.max_turns = validation["maxTurns"] + 1
     private_directory(root)
     record = identity(root)
-    record.update(images=images, auth_root=str(auth_root), native_setup=validation)
+    if config.agents.decisions_enabled:
+        from civ_agent.decisions_ledger import DecisionsLedger
+
+        record["decisionsAuthority"] = DecisionsLedger(auth_root).authority
+    from civ_agent.decisions_tasks import TASK_VERSION
+    from civ_agent.diplomacy_decisions import MODEL, POLICY_VERSION
+
+    record.update(
+        images=images,
+        auth_root=str(auth_root),
+        native_setup=validation,
+        experiments={
+            "native_advice_enabled": config.agents.native_advice_enabled,
+            "decisions_enabled": config.agents.decisions_enabled,
+            "nativeGuideVersion": "native-guidance-v1",
+            "classifierModel": MODEL,
+            "routingPolicyVersion": POLICY_VERSION,
+            "advisoryPolicyVersion": TASK_VERSION,
+        },
+    )
     write_private_json(root / "container.json", record)
     write_private_json(root / "resolved.json", config.model_dump())
     if original is not None:
@@ -192,7 +220,10 @@ def resume_configuration(root, args):
     if args.port is not None:
         config.runtime.browser_port = args.port
     if args.auth_dir is not None:
-        record["auth_root"] = str(args.auth_dir.expanduser().resolve())
+        selected_auth = args.auth_dir.expanduser().resolve()
+        if config.agents.decisions_enabled and selected_auth != Path(record["auth_root"]).resolve():
+            raise ValueError("Cannot change auth directory: this game's Decisions accounting authority is pinned")
+        record["auth_root"] = str(selected_auth)
     for key, option in (("runtime", "image"), ("desktop", "desktop_image")):
         if getattr(args, option) is not None:
             record["images"][key] = resolve_image(getattr(args, option))
@@ -236,6 +267,8 @@ def run(args):
         os.umask(0o077)
         root = args.state_dir.expanduser().resolve()
         if args.action == "status":
+            from civ_agent.experiment_status import experiment_status
+
             status = read_json(root / "container-status.json", {})
             result = read_record(path_for(root), "state", "result") if path_for(root).exists() else None
             saved = read_json(root / "resolved.json")
@@ -247,6 +280,7 @@ def run(args):
                         "browser": read_json(root / "browser.json"),
                         "result": result,
                         "players": roster.player_records() if roster else [],
+                        "experiments": experiment_status(root, roster, read_json(root / "container.json", {})),
                     },
                     indent=2,
                 )

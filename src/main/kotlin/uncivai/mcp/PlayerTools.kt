@@ -48,6 +48,18 @@ internal fun createPlayerToolsServer(session: PlayerSession): Server = Server(
     ),
 ).apply {
     addTool(
+        name = "native_advice",
+        description = "Read native next-action alternatives at an already observed epoch/revision, optionally filtered by city and unit handles. This does not apply actions, reveal new territory, simulate combat or consume random state. Read limitations and prerequisites; overlapping recommendations require re-evaluation after acting.",
+        inputSchema = InputSchemas.nativeAdvice.toolSchema(),
+        toolAnnotations = QUERY_ANNOTATIONS,
+    ) { request ->
+        measuredPlayerResult(session, "native_advice", request.arguments) {
+            val query = InputSchemas.nativeAdvice.decode(uncivai.player.NativeAdviceRequest.serializer(), request.arguments ?: throw InvalidToolArgumentsException())
+            PlayerTurnJson.json.encodeToString(uncivai.player.NativeAdvice.serializer(), session.nativeAdvice(query))
+        }
+    }
+
+    addTool(
         name = "player_receipt",
         description = "Trusted recovery transport: read an exact previously executed request without executing it.",
         inputSchema = TURN_COMMAND_INPUT_SCHEMA,
@@ -146,7 +158,7 @@ internal fun createPlayerToolsServer(session: PlayerSession): Server = Server(
 
     addTool(
         name = "player_inspect",
-        description = "Inspect player-visible information on demand. POLITICS gives known third-party relations, era and policy branch counts; WONDERS gives native built/known/unlocated status (city construction estimates remain in wonderOpportunities); NOTIFICATIONS pages your native history, optionally by turn; REPLAY pages territorial history at a turn within your explored map. CIVILOPEDIA searches public rules: filter category/search, then supply exact names for mechanical reference text. TILE uses destination x/y for live yield breakdown, defense and freshwater; optional target is your city handle. UNIT uses your unit target OR a currently visible destination to inspect units there. ROAD uses worker target and destination for the native road/rail route, work, maintenance and connection estimates; read it before CONNECT_ROAD. Lists use offset/limit (maximum 100). Foreign private orders and undisclosed identities are excluded.",
+        description = "Inspect player-visible information on demand. POLITICS gives known third-party relations, era and policy branch counts; WONDERS gives native built/known/unlocated status (city construction estimates remain in wonderOpportunities); NOTIFICATIONS pages your native history, optionally by turn; REPLAY pages territorial history at a turn within your explored map. CIVILOPEDIA searches public rules: filter category/search, then supply exact names for mechanical reference text. CITY_FOCUS uses your city target to compare native focus allocations on detached copies, including yields, food and current-construction timing; it preserves locks and manual specialists without changing the live city. TILE uses destination x/y for live yield breakdown, defense and freshwater; optional target is your city handle. UNIT uses your unit target OR a currently visible destination to inspect units there. ROAD uses worker target and destination for the native road/rail route, work, maintenance and connection estimates; read it before CONNECT_ROAD. Lists use offset/limit (maximum 100). Foreign private orders and undisclosed identities are excluded.",
         inputSchema = InputSchemas.playerInspect.toolSchema(),
         toolAnnotations = QUERY_ANNOTATIONS,
     ) { request ->

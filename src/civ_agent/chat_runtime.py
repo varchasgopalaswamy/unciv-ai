@@ -28,6 +28,8 @@ class ChatRuntime:
         self.epoch = None
         self.listener = None
         self.worker = None
+        self.routing_worker = None
+        self.routing_task = None
         self.running = False
         self.held = True
         self.dispatching = False
@@ -104,8 +106,15 @@ class ChatRuntime:
             raise
         self.listener = asyncio.create_task(self.receive())
         self.worker = asyncio.create_task(self.dispatch())
+        if service.gateway.routing is not None:
+            self.routing_worker = asyncio.create_task(self.schedule_routing())
         self.subscription.update(status="CONNECTING", consecutiveFailures=0)
-        return {"connected": True, "epoch": self.epoch, "reviewInterval": service.reviews.interval}
+        return {
+            "connected": True,
+            "epoch": self.epoch,
+            "reviewInterval": service.reviews.interval,
+            "decisionsEnabled": service.decisions_enabled,
+        }
 
     async def social(self, op, **fields):
         if self.connection is None:
@@ -120,6 +129,9 @@ class ChatRuntime:
             if await self.service.io.call(self.service.memory.pending):
                 raise StateConflict("COMMUNICATION_NOT_CONNECTED")
             return
+        routing = getattr(getattr(self.service, "gateway", None), "routing", None)
+        if routing is not None:
+            await routing.reconcile(self.epoch, self.connection)
         # Only the host can settle an uncertain command. Never re-run a model to
         # guess what happened, and never send a new identity for an old request.
         for request in await self.service.io.call(self.service.memory.pending):
@@ -173,18 +185,52 @@ class ChatRuntime:
                 )
                 await asyncio.sleep(1)
 
+    async def schedule_routing(self):
+        """Delivery deadlines run independently of player-model computation."""
+
+        async def classify_arrivals():
+            try:
+                routing = self.service.gateway.routing
+                rows = await self.service.io.call(routing.store.incoming)
+                if any(not row["routing"].get("choice") for row in rows):
+                    await routing.route_incoming(self.epoch, await self.social("state"), lambda: self.social("state"))
+            except (OSError, ValueError, TimeoutError, aiohttp.ClientError):
+                pass  # The next tick can reconsider unclassified events.
+            self.pending.set()
+
+        while self.running:
+            await asyncio.sleep(0.25)
+            gateway = self.service.gateway
+            if self.held or gateway.paused or gateway.checkpoint_requested or gateway.run_failure:
+                continue
+            try:
+                await gateway.routing.expire_incoming(self.epoch)
+                await gateway.routing.flush_due(self.epoch, self.connection)
+            except (OSError, ValueError, TimeoutError, aiohttp.ClientError):
+                pass  # Uncertain sends retain their durable identity for receipt lookup.
+            if self.routing_task is None or self.routing_task.done():
+                self.routing_task = asyncio.create_task(classify_arrivals())
+            if await self.service.io.call(self.service.memory.has_wake):
+                self.pending.set()
+
     async def dispatch(self):
         while self.running:
-            await self.pending.wait()
-            await asyncio.sleep(COMMUNICATION_BATCH_SECONDS)  # Batch in application code, never in model context.
+            routing = self.service.gateway.routing
+            if routing is None:
+                await self.pending.wait()
+                await asyncio.sleep(COMMUNICATION_BATCH_SECONDS)
+            else:
+                with contextlib.suppress(TimeoutError):
+                    await asyncio.wait_for(self.pending.wait(), 0.5)
             self.pending.clear()
             if (
                 self.held
                 or self.service.gateway.paused
                 or self.service.gateway.checkpoint_requested
                 or self.service.gateway.run_failure
-                or not await self.service.io.call(self.service.memory.has_wake)
             ):
+                continue
+            if not await self.service.io.call(self.service.memory.has_wake):
                 continue
             job = job_id()
             self.dispatching = True
@@ -400,12 +446,13 @@ class ChatRuntime:
         self.service.gateway.reviewing = False
         self.running = False
         self.subscription["status"] = "DISCONNECTED"
-        for task in (self.listener, self.worker):
+        for task in (self.listener, self.worker, self.routing_worker, self.routing_task):
             if task is not None:
                 task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await task
         self.listener = self.worker = None
+        self.routing_worker = self.routing_task = None
         if self.connection is not None:
             with contextlib.suppress(OSError, ValueError, TimeoutError, aiohttp.ClientError):
                 await self.service.flush_telemetry()

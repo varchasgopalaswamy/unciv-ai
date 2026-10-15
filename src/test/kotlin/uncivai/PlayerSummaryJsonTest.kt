@@ -79,6 +79,7 @@ class PlayerSummaryJsonTest {
                 "communication",
                 "communicationChanges",
                 "turn",
+                "nativeAdvice",
                 "result",
                 "movementPreview",
                 "missionPreview",
@@ -99,6 +100,8 @@ class PlayerSummaryJsonTest {
         assertEquals(0, sessionMethods.getValue("summary").parameterCount)
         assertEquals(0, sessionMethods.getValue("result").parameterCount)
         assertEquals(uncivai.player.PlayerFinalState::class.java, sessionMethods.getValue("result").returnType)
+        assertEquals(uncivai.player.NativeAdvice::class.java, sessionMethods.getValue("nativeAdvice").returnType)
+        assertEquals(listOf(uncivai.player.NativeAdviceRequest::class.java), sessionMethods.getValue("nativeAdvice").parameterTypes.toList())
         assertEquals(uncivai.player.MovementPreview::class.java, sessionMethods.getValue("movementPreview").returnType)
         assertEquals(listOf(uncivai.player.MovementPreviewRequest::class.java), sessionMethods.getValue("movementPreview").parameterTypes.toList())
         assertEquals(uncivai.player.MissionPreview::class.java, sessionMethods.getValue("missionPreview").returnType)

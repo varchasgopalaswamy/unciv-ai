@@ -87,6 +87,7 @@ The bounded `player_inspect` read supplies the larger on-demand surfaces:
 | `NOTIFICATIONS` | The player's retained native notification history, optionally by turn. |
 | `REPLAY` | Native territorial history within the player's currently explored map, from turn 5. |
 | `ROAD` | Native road/rail path, per-tile jobs, worker-turns and current maintenance/connection effects. |
+| `CITY_FOCUS` | Native focus allocation previews for an owned city, including yields, food, current-construction timing and assignments on detached copies. |
 
 Paged lists accept `offset` and `limit` (maximum 100). Civilopedia named reads accept
 up to 16 entries. Road work excludes travel/interruptions; complete numerical

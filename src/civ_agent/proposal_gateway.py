@@ -16,6 +16,7 @@ from aiohttp import web
 from pydantic import ValidationError
 from sqlalchemy.exc import SQLAlchemyError
 
+from civ_agent import experiment_metrics
 from civ_agent.action_templates import add_decision_commands, research_change
 from civ_agent.civilization_state import CivilizationState, StateConflict
 from civ_agent.diplomacy_tools import argument_error, commitment_problem, unavailable
@@ -160,6 +161,9 @@ class ProposalGateway:
         self.accounting: JobAccounting | None = None
         self.history = None
         self.run_failure = memory.run_failure()
+        self.routing = None
+        self.native_advice_enabled = False
+        self.advisories = None
         self.failed = asyncio.Event()
         if self.run_failure:
             self.failed.set()
@@ -181,6 +185,8 @@ class ProposalGateway:
             await self.checkpoint_released.wait()
 
     def request_checkpoint(self):
+        if self.routing is not None:
+            self.routing.suspend()
         self.checkpoint_requested = True
         self.checkpoint_released.clear()
 
@@ -267,7 +273,9 @@ class ProposalGateway:
     async def select_startup_memory(self, job: JobAccess, topics: set[str]):
         async with self.admit(), job.lock:
             self.check(job)
-            selection = await self.io.call(self.memory.select_startup_context, job.id, topics)
+            selection = await self.io.call(
+                self.memory.select_startup_context, job.id, topics, job.memory.get("advisoryRanking")
+            )
             job.memory.update(selection)
 
     def check(self, job: JobAccess, *, ended_allowed=False):
@@ -293,11 +301,16 @@ class ProposalGateway:
         if job.catalogue is not None:
             return copy.deepcopy(job.catalogue)
         upstream = await job.connection.list_tools()
-        job.catalogue = self.tool_catalogue(upstream, job.purpose)
+        job.catalogue = self.tool_catalogue(
+            upstream,
+            job.purpose,
+            routing_enabled=self.routing is not None,
+            native_advice_enabled=self.native_advice_enabled,
+        )
         return copy.deepcopy(job.catalogue)
 
     @staticmethod
-    def tool_catalogue(upstream, purpose):
+    def tool_catalogue(upstream, purpose, *, routing_enabled=False, native_advice_enabled=False):
         """Project native tools without starting a gameplay or notebook job."""
         tools = []
         for tool in upstream:
@@ -411,6 +424,7 @@ class ProposalGateway:
                             "history_read",
                             "chat_read",
                             "chat_history",
+                            "native_advice",
                             "memory_read",
                             "memory_search",
                             "trade_options",
@@ -496,12 +510,23 @@ class ProposalGateway:
         add(
             "chat_send",
             "Send authenticated text to chatRecipients from chat_read. Use to for a direct message or recipients for a private group, excluding yourself; omit both for public chat. Reply to all with recipients equal to the message participants minus yourself. Each exact participant set has separate history; recipient order does not matter. Private messages notify every recipient; public mentions notify only mentioned players. Mentions must be in the audience. Groups carry text only: never combine recipients with to or nativeAction. Ordinary text has no game effects. Trade and peace use trade tools. "
+            + "delivery=auto may return sent, queued or omitted with a deliveryId. Only a host receipt proves delivery. Use delivery=immediate to send now, or chat_delivery to override or cancel the original draft. "
             + (
                 "Optional nativeAction executes DENOUNCE or ISSUE_DEMAND against a civilization (selection=type from native.availableDemandsToSend), or RESPOND_DIPLOMACY against an owned alert handle with an offered selection. Available demands are actions you may initiate, not incoming requests. Read player_turn first; these actions require your active turn. Inspect nativeDiplomacy sender, event, options, declaresWar and consequences before responding. Built-in AI only understands explicit native requests."
                 if purpose == "gameplay"
                 else ""
             ),
         )
+        if routing_enabled:
+            add(
+                "chat_delivery",
+                "Inspect an owned deliveryId, send its original text and audience immediately, or cancel an unsent draft. Repeating immediate never duplicates a delivered message. Only disposition=sent with a host receipt establishes delivery.",
+            )
+        if native_advice_enabled and purpose == "gameplay":
+            add(
+                "native_advice",
+                "Read native next-action alternatives from your observed position. Optional cities/units filter owned handles. Read limitations, costs and prerequisites. Recommendations sharing a subject, destination or budget are alternatives; re-evaluate after each action. You decide whether to use them. This read neither applies actions nor simulates discoveries or combat.",
+            )
         add(
             "commitment_offer",
             "Propose exact social terms. This is not an engine trade or peace treaty. Everyone must explicitly consent. Social promises, including kind=peace, record stated intentions and never restrict legal game actions or impose penalties. Terms and conditions may be ambiguous; players can negotiate or disagree about their meaning. conditions describes when the promise applies; use 'Unconditional' if applicable.",
@@ -569,6 +594,26 @@ class ProposalGateway:
             job.details_read.append(query)
         return {**value, "query": query.model_dump()}
 
+    async def conversation_update(self, job, arguments):
+        unseen = await self.io.call(self.memory.outgoing_messages, job.outgoing_start)
+        fresh = [
+            row["message"]
+            for row in unseen
+            if row["job"] != job.id
+            and row["message"]["message"] not in job.seen_messages
+            and self.same_conversation(arguments, row["message"])
+        ]
+        if not fresh:
+            return None
+        job.seen_messages.update(message["message"] for message in fresh)
+        return {
+            "error": "CONVERSATION_UPDATED",
+            "applied": False,
+            "recoverable": True,
+            "messages": fresh,
+            "instruction": "You already sent these messages from another conversation view. Reconsider whether this new message is still needed. No additional read is required.",
+        }
+
     async def invoke(self, job: JobAccess, name: str, arguments: JsonObject, call_id: str) -> JsonObject:
         """Accepted MCP calls belong to the job, even if its model disconnects.
 
@@ -628,6 +673,10 @@ class ProposalGateway:
             ended = result.get("stateUpdate", {}).get("kind") == "turn_ended"
             if ended:
                 job.gameplay_fenced = True
+            if name == "native_advice":
+                # Advice explicitly names its observation epoch/revision. These
+                # are evidence, not authority to bypass command validation.
+                return result
             return public_result(result)
         except asyncio.CancelledError:
             self.forget_observation(job)
@@ -671,11 +720,19 @@ class ProposalGateway:
                     receipt is not None and name == "player_command" and arguments.get("kind") == "END_TURN"
                 ),
             )
+            advice_revision = (job.observation or {}).get("revision")
             if receipt is not None:
                 result = copy.deepcopy(receipt)
             else:
                 result = await self._call(job, name, arguments, call_id, startup=startup)
             result = await self.settle_gameplay(job, name, result)
+            if self.native_advice_enabled:
+                if name == "native_advice":
+                    await self.io.call(experiment_metrics.exposure, self.memory, job, call_id, result, startup)
+                elif name == "player_command":
+                    await self.io.call(
+                        experiment_metrics.action_match, self.memory, job, call_id, arguments, result, advice_revision
+                    )
             result = await self.update_after_action(job, name, arguments, call_id, result)
             result = await self.io.call(self.memory.call, job.id, call_id, name, arguments, result)
             assert result is not None
@@ -966,7 +1023,11 @@ class ProposalGateway:
         recent = await self.io.call(self.memory.snapshot, job.purpose)
         events = recent["events"]
         await self.io.call(
-            self.memory.refresh_memory, job.id, ["event:" + str(event["id"]) for event in events], recent["cursor"]
+            self.memory.refresh_memory,
+            job.id,
+            ["event:" + str(event["id"]) for event in events],
+            recent["cursor"],
+            routing_ids=recent.get("routingEventIds", []) if job.purpose == "communication" else [],
         )
         delivered = {event["body"]["message"] for event in events if event["kind"] == "message"}
         outgoing = await self.io.call(self.memory.outgoing_messages, limit=20, echo_cursor=recent["cursor"])
@@ -989,6 +1050,7 @@ class ProposalGateway:
                     **social,
                     "messages": events,
                     "conversationContext": context,
+                    **({"deliveries": await self.routing.statuses()} if self.routing is not None else {}),
                     **({"recentSentMessages": messages} if messages else {}),
                 },
             )
@@ -1026,6 +1088,37 @@ class ProposalGateway:
         if intent is not None:
             intent = validate(Intent, intent).model_dump()
         initiative_decisions = arguments.pop("initiativeDecisions", [])
+        delivery = "auto"
+        if name == "native_advice":
+            if not self.native_advice_enabled or job.purpose != "gameplay":
+                raise StateConflict("NATIVE_ADVICE_DISABLED")
+            if job.observation is None:
+                return self.reobserve_after_negotiation("Read player_turn before native_advice.")
+            try:
+                async with asyncio.timeout(5):
+                    value = await job.connection.tool(
+                        "native_advice", {**arguments, "epoch": job.epoch, "revision": job.observation["revision"]}
+                    )
+            except (TimeoutError, OSError, ValueError, aiohttp.ClientError):
+                value = {
+                    "available": False,
+                    "epoch": job.epoch,
+                    "revision": job.observation["revision"],
+                    "recommendations": [],
+                    "limitations": ["Native advice unavailable; continue ordinary gameplay."],
+                }
+            self.check(job)
+            if startup:
+                rows = value.get("recommendations", [])
+                if not isinstance(rows, list):
+                    rows = []
+                value = {**value, "recommendations": rows[:8], "remainingRecommendations": max(0, len(rows) - 8)}
+            await self.io.call(self.memory.observe, "native_advice", value, job.id)
+            return value
+        if name == "chat_delivery":
+            if self.routing is None:
+                raise StateConflict("DIPLOMACY_ROUTING_DISABLED")
+            return await self.routing.control(job, arguments)
         if name == "history_read":
             return public_result(
                 await self.io.call(self.memory.history, arguments["turn"], arguments.get("offset", 0), job=job.id)
@@ -1250,6 +1343,7 @@ class ProposalGateway:
         elif name in {"chat_send", "commitment_offer", "commitment_decide"}:
             payload = {**arguments, "epoch": job.epoch}
             if name == "chat_send":
+                delivery = payload.pop("delivery", "auto")
                 payload["op"] = "send"
                 if payload.get("nativeAction") is not None:
                     if job.observation is None:
@@ -1315,28 +1409,16 @@ class ProposalGateway:
             transport = "player_communication"
         else:
             raise ValueError("TOOL_NOT_PERMITTED")
+        if name == "chat_send" and not arguments.get("nativeAction") and self.routing is not None:
+            return await self.routing.send(job, payload, call_id, immediate=delivery == "immediate")
         # State validation and persistence are short. Network execution is
         # serialized separately, never monopolizing the event inbox.
         async with self.dispatch:
             self.check(job)
             if name == "chat_send" and not arguments.get("nativeAction"):
-                unseen = await self.io.call(self.memory.outgoing_messages, job.outgoing_start)
-                fresh = [
-                    row["message"]
-                    for row in unseen
-                    if row["job"] != job.id
-                    and row["message"]["message"] not in job.seen_messages
-                    and self.same_conversation(arguments, row["message"])
-                ]
-                if fresh:
-                    job.seen_messages.update(message["message"] for message in fresh)
-                    return {
-                        "error": "CONVERSATION_UPDATED",
-                        "applied": False,
-                        "recoverable": True,
-                        "messages": fresh,
-                        "instruction": "You already sent these messages from another conversation view. Reconsider whether this new message is still needed. No additional read is required.",
-                    }
+                update = await self.conversation_update(job, arguments)
+                if update:
+                    return update
             request = await self.io.call(
                 self.memory.queue, job.id, transport, payload, call_id, intent, initiative_decisions
             )

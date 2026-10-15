@@ -275,6 +275,7 @@ and `limit` (default 50, maximum 100), with `total` and `nextOffset` in the resu
 | `TILE` | `destination` in the explored map; current yields and their sources, defense and fresh water require current sight. Optional `target` is an own city that can work the tile. |
 | `UNIT` | Either an owned `target` or a currently visible `destination`; mechanical unit reference, health, strengths, promotions and temporary effects. No foreign orders or private XP. |
 | `ROAD` | Owned worker `target` and explored `destination`; native road/rail path and visible per-tile jobs. Full-route worker-turns and maintenance/connection effects require current sight of the whole route. |
+| `CITY_FOCUS` | Owned city `target`; each available focus operation runs on an independent detached copy. Reports yields, food, growth/starvation, current-construction timing and citizen assignments while preserving tile locks and manual specialists. See [city management](City-management.md). |
 
 For example, a Civilopedia index search followed by a selected entry:
 

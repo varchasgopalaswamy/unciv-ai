@@ -8,6 +8,7 @@ import hashlib
 import json
 import re
 import secrets
+import time
 from collections.abc import Callable
 from contextlib import contextmanager
 from pathlib import Path
@@ -60,6 +61,7 @@ class CivilizationState:
         self.root = private_directory(root)
         self.path = self.root / "memory.sqlite3"
         self.civilization = civilization
+        self.routing_enabled = False
         if context_limit < 1000:
             raise ValueError("Private memory context limit must be at least 1000 characters")
         self.context_limit = context_limit
@@ -129,6 +131,13 @@ class CivilizationState:
                     # Reconnect replay must not reflag plans already reconsidered.
                     # The first durable event body remains the source of truth.
                     continue
+                if self.routing_enabled:
+                    event_id = db.execute(
+                        select(tables.events.c.id).where(tables.events.c.source == source)
+                    ).scalar_one()
+                    routes = self._meta(db, "routing:events", {})
+                    routes[str(event_id)] = {"receivedAt": time.time()}
+                    self._set(db, "routing:events", routes)
                 self._advance_turn(db, event.get("turn", event.get("body", {}).get("turn")))
                 # Preserve an utterance as an authenticated statement, never a
                 # world observation inferred from that utterance's content.
@@ -296,11 +305,13 @@ class CivilizationState:
         with self.transaction() as db:
             records = RecordStore(db).all(categories=MEMORY_TYPES | {"contribution"})
             cursor = self._meta(db, "handled:" + purpose, 0)
-            query = (
-                select(tables.events.c.id, tables.events.c.body)
-                .select_from(tables.events.join(tables.inbox))
-                .where(tables.events.c.id > cursor)
-            )
+            query = select(tables.events.c.id, tables.events.c.body).select_from(tables.events.join(tables.inbox))
+            if purpose == "communication" and self.routing_enabled:
+                from civ_agent.diplomacy_store import ready_ids
+
+                query = query.where(tables.events.c.id.in_(ready_ids(self, db)))
+            else:
+                query = query.where(tables.events.c.id > cursor)
             if purpose == "communication":
                 query = query.where(COMMUNICATION_EVENTS)
             rows = db.execute(query.order_by(tables.events.c.id).limit(50)).mappings().all()
@@ -318,6 +329,7 @@ class CivilizationState:
                 "contributionIds": [key for key, r in records.items() if r["category"] == "contribution"],
                 "events": events,
                 "cursor": max(cursor, high),
+                **({"routingEventIds": [row["id"] for row in rows]} if self.routing_enabled else {}),
             }
             selected, omitted = select_context(snapshot, self.context_limit)
             snapshot["contextIds"] = list(selected)
@@ -780,6 +792,10 @@ class CivilizationState:
 
     def has_wake(self) -> bool:
         with self.transaction() as db:
+            if self.routing_enabled:
+                from civ_agent.diplomacy_store import ready_ids
+
+                return bool(ready_ids(self, db))
             game_turn = self._meta(db, "gameTurn", 0)
             if self._meta(db, "lastCompletedCommunicationTurn", -1) >= game_turn:
                 return False
@@ -801,8 +817,13 @@ class CivilizationState:
     def allow_communication_retry(self):
         with self.transaction() as db:
             self._set(db, "attempted:communication", self._meta(db, "handled:communication", 0))
+            if self.routing_enabled:
+                states = self._meta(db, "routing:events", {})
+                for state in states.values():
+                    state.pop("attempted", None)
+                self._set(db, "routing:events", states)
 
-    def select_startup_context(self, job: str, topics: set[str]) -> JsonObject:
+    def select_startup_context(self, job: str, topics: set[str], ranking=None) -> JsonObject:
         """Choose from the dispatch snapshot using the opening player-visible facts."""
         with self.transaction() as db:
             self._validate(db, job)
@@ -811,6 +832,8 @@ class CivilizationState:
             )
             if "contextTopics" not in snapshot:
                 snapshot["contextTopics"] = sorted(topics)
+                if ranking:
+                    snapshot["advisoryRanking"] = ranking
                 # Freeze the versions we actually budget, including fresh review
                 # notices. New records/contributions stay behind dispatch's boundary.
                 keys = [k for k, r in snapshot["records"].items() if r["category"] in MEMORY_TYPES | {"contribution"}]
@@ -901,6 +924,10 @@ class CivilizationState:
                 .values(status="COMPLETED" if completed else "INTERRUPTED")
             )
             snapshot = json.loads(row["snapshot"])
+            if self.routing_enabled and row["purpose"] == "communication":
+                from civ_agent.diplomacy_store import delivered
+
+                delivered(self, db, snapshot.get("routingEventIds", []), completed=completed)
             if completed:
                 key = "handled:" + row["purpose"]
                 self._set(db, key, max(snapshot["cursor"], self._meta(db, key, 0)))
@@ -1213,7 +1240,7 @@ class CivilizationState:
         """Confirmed sends from the existing journal, including not-yet-ingested echoes."""
         with self.transaction() as db:
             query = (
-                select(tables.outbox.c.job, tables.outbox.c.result)
+                select(tables.outbox.c.id, tables.outbox.c.job, tables.outbox.c.result)
                 .select_from(tables.live_requests)
                 .where(
                     tables.request_order > after,
@@ -1225,8 +1252,16 @@ class CivilizationState:
             )
             if limit is not None:
                 query = query.limit(limit)
+            origins = (
+                {
+                    r["body"].get("requestId"): r["body"]["sourceJob"]
+                    for r in RecordStore(db).all(categories={"delivery"}).values()
+                }
+                if self.routing_enabled
+                else {}
+            )
             rows = [
-                {"job": row.job, "message": json.loads(row.result)["message"]}
+                {"job": origins.get(row.id, row.job), "message": json.loads(row.result)["message"]}
                 for row in reversed(db.execute(query).all())
             ]
             if echo_cursor is not None and rows:
@@ -1378,7 +1413,7 @@ class CivilizationState:
             )
             return {key: snapshot["records"][key] for key in keys if key in snapshot.get("delivered", {})}
 
-    def refresh_memory(self, job, keys, cursor=None, include_retired=False, startup=False):
+    def refresh_memory(self, job, keys, cursor=None, include_retired=False, startup=False, routing_ids=()):
         with self.transaction() as db:
             self._validate(db, job)
             row = db.execute(select(tables.jobs.c.snapshot).where(tables.jobs.c.id == job)).one()
@@ -1401,6 +1436,8 @@ class CivilizationState:
                 if key in current and (include_retired or current[key]["body"].get("state") != "retired")
             }
             RecordStore.deliver(snapshot, chosen)
+            if self.routing_enabled and routing_ids:
+                snapshot["routingEventIds"] = sorted(set(snapshot.get("routingEventIds", [])) | set(routing_ids))
             if cursor is not None:
                 snapshot["cursor"] = max(snapshot["cursor"], cursor)
             db.execute(tables.jobs.update().where(tables.jobs.c.id == job).values(snapshot=dump_snapshot(db, snapshot)))

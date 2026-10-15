@@ -519,3 +519,32 @@ def test_resume_validates_all_saved_configs_before_changing_state(saved_batch, b
     assert all(path.read_bytes() == content for path, content in records.items())
     batch_runtime.images.assert_not_called()
     batch_runtime.background.assert_not_called()
+
+
+@pytest.mark.parametrize("status", ["paused", "running"])
+def test_resume_existing_batch_preserves_game_state_and_pinned_images(saved_batch, batch_runtime, status):
+    # A supervisor crash can leave the manifest at "running" after games pause.
+    root = saved_batch
+    manifest_path = root / "batch.json"
+    manifest = json.loads(manifest_path.read_text())
+    for run in manifest["runs"]:
+        run["status"] = status
+        run.pop("error", None)
+        game_root = root / "games" / run["id"]
+        (game_root / "turn-recovery").mkdir()
+        (game_root / "turn-recovery/current.json").write_text('{"saved_turn":71}')
+        (game_root / "exploration.json").write_bytes(b"Existing native checkpoint")
+    manifest_path.write_text(json.dumps(manifest))
+    original = {path: path.read_bytes() for path in (root / "games").rglob("*") if path.is_file()}
+    batch_runtime.validation.reset_mock()
+
+    assert cli.main(["batch", "resume", "--state-dir", str(root)]) == 0
+
+    resumed = json.loads(manifest_path.read_text())
+    assert resumed["format"] == 2 and resumed["parallel"] == manifest["parallel"]
+    assert [run["id"] for run in resumed["runs"]] == [run["id"] for run in manifest["runs"]]
+    assert all(run["status"] == "pending" for run in resumed["runs"])
+    assert all(path.read_bytes() == content for path, content in original.items())
+    batch_runtime.images.assert_not_called()
+    batch_runtime.validation.assert_not_called()
+    batch_runtime.background.assert_called_once_with(root, "batch")

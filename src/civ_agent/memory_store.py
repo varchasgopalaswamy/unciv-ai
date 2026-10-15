@@ -352,15 +352,22 @@ def select_context(snapshot, limit):
     candidates = [
         (key, record)
         for key, record in candidates
-        if record["category"] in {"strategy", "handoff", "contribution"}
-        or record["body"].get("needsReview")
-        or relevant(record)
-        or type(turn) is not int
-        or (record["body"].get("updatedTurn") or 0) >= turn - 2
+        if (record["category"] not in {"belief", "note"} or snapshot.get("advisoryRanking", {}).get(key) != "omit")
+        and (
+            record["category"] in {"strategy", "handoff", "contribution"}
+            or snapshot.get("advisoryRanking", {}).get(key) in {"high", "medium"}
+            or record["body"].get("needsReview")
+            or relevant(record)
+            or type(turn) is not int
+            or (record["body"].get("updatedTurn") or 0) >= turn - 2
+        )
     ]
     candidates.sort(
         key=lambda item: (
             {"strategy": 0, "handoff": 1}.get(item[1]["category"], 2),
+            {"high": 0, "medium": 1}.get(snapshot.get("advisoryRanking", {}).get(item[0]), 2)
+            if item[1]["category"] in {"belief", "note"}
+            else 2,
             not relevant(item[1]),
             not bool(item[1]["body"].get("needsReview")),
             -item[1]["body"].get("priority", 3),

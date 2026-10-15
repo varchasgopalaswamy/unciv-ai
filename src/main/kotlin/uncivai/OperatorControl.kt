@@ -397,6 +397,13 @@ class OperatorControl internal constructor(
         override fun turn() = guarded { delegate.turn() }
         override fun result() = guarded { delegate.result() }
         override fun movementPreview(request: uncivai.player.MovementPreviewRequest) = guarded { delegate.movementPreview(request) }
+
+        override fun nativeAdvice(request: uncivai.player.NativeAdviceRequest): uncivai.player.NativeAdvice {
+            guarded { Unit }
+            // The selector waits on immutable work outside the live-game lock.
+            val result = delegate.nativeAdvice(request)
+            return guarded { result }
+        }
         override fun inspect(request: uncivai.player.PlayerInspectionRequest) = guarded { delegate.inspect(request) }
         override fun missionPreview(request: uncivai.player.MissionPreviewRequest) = guarded { delegate.missionPreview(request) }
         override fun researchDetails(names: List<String>) = guarded { delegate.researchDetails(names) }

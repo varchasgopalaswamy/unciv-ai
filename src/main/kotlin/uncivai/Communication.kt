@@ -314,6 +314,8 @@ internal class Communication(private val runtime: GameExecutor) {
     fun view(civilization: String, participants: List<String>): JsonObject = runtime.accessGame { game ->
         obj(
             "epoch" to runtime.epoch, "civilization" to civilization,
+            "humanPlayers" to state.humanPlayers.filter { it in participants },
+            "routingMetadataAvailable" to true,
             "context" to communicationContext(runtime, game, game.getCivilization(civilization)), "channels" to participants,
             "queuedMessages" to state.queuedMessages.filter { it.author == civilization }.map { it.recordJson() },
             "offers" to state.offers.values.flatten().filter { civilization in it.participants }.map { offer ->

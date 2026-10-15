@@ -1,0 +1,48 @@
+# Short new-game trial: Direct native advice, Decisions city/memory/review advice and diplomacy routing.
+[game]
+master_seed = 20261014
+civilizations = ["Rome", "Greece", "France"]
+randomize = false
+map_size = "Small"
+map_type = "Pangaea"
+city_states = 2
+difficulty = "Prince"
+speed = "Quick"
+
+[agents]
+provider = "openai"
+model = "gpt-6-luna"
+reasoning_effort = "medium"
+communication_reasoning_effort = "medium"
+native_advice_enabled = true
+decisions_enabled = true
+# Shared allowance per player-game; routing and full reviews are separate.
+additional_decisions_budget_usd = 0.10
+decisions_min_confidence = 0.90
+decisions_timeout_seconds = 5
+decisions_startup_min_gap_turns = 5
+decisions_max_request_bytes = 65536
+decisions_max_questions = 64
+decisions_memory_candidate_limit = 16
+decisions_preservation_candidate_limit = 8
+decisions_belief_candidate_limit = 6
+early_review_min_gap_turns = 3
+early_review_min_gap_between_early_turns = 10
+memory_context_chars = 12000
+
+[[players]]
+name = "Agent 1"
+
+[[players]]
+name = "Agent 2"
+
+[[players]]
+name = "Native"
+controller = "built_in_ai"
+
+[limits]
+max_turns = 20
+max_invocations = 100
+max_seconds = 7200
+turn_timeout = 900
+startup_timeout = 300

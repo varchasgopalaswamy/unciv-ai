@@ -16,6 +16,7 @@ from civ_agent.agent_service import AgentService, ServiceError, server_ssl_conte
 from civ_agent.agent_settings import add_settings_arguments, setting_argument
 from civ_agent.civilization_guide import UnsupportedCivilizationGuideError, civilization_reference
 from civ_agent.civilization_state import MemoryFormatError
+from civ_agent.decisions_policy import add_decisions_arguments, decisions_values
 from civ_agent.providers import PROVIDERS
 from civ_agent.scheduler import positive
 from civ_agent.tls import (
@@ -98,6 +99,8 @@ def parser(*, add_help: bool = True) -> argparse.ArgumentParser:
         metavar="LEVEL",
         help="Reasoning effort for background diplomacy; defaults to at most medium for known effort levels",
     )
+    result.add_argument("--native-advice-enabled", action=argparse.BooleanOptionalAction, default=False)
+    add_decisions_arguments(result, include_memory=False)
     return result
 
 
@@ -173,11 +176,12 @@ def run(args: argparse.Namespace) -> int:
             provider=args.provider,
             reasoning_effort=args.reasoning_effort,
             communication_reasoning_effort=args.communication_reasoning_effort,
-            memory_context_chars=args.memory_context_chars,
             review_interval=args.review_interval,
             review_attempts=args.review_attempts,
             strategy_guide=args.strategy_guide,
             civilization_guide=args.civilization_guide,
+            native_advice_enabled=args.native_advice_enabled,
+            **decisions_values(args),
             fast=args.fast,
             gateway_url=host_origin(args.public_host, port) + "/mcp",
             gateway_ca_file=material["ca_file"],

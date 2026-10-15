@@ -32,7 +32,9 @@ class MissionPreview(MovementPreview):
 
 
 class PlayerInspection(BoundaryModel):
-    subject: Literal["POLITICS", "WONDERS", "NOTIFICATIONS", "REPLAY", "CIVILOPEDIA", "TILE", "UNIT", "ROAD"]
+    subject: Literal[
+        "POLITICS", "WONDERS", "NOTIFICATIONS", "REPLAY", "CIVILOPEDIA", "TILE", "UNIT", "ROAD", "CITY_FOCUS"
+    ]
     target: Annotated[str, Field(min_length=1, max_length=128)] = ""
     destination: Position | SkipJsonSchema[None] = None
     category: Annotated[str, Field(min_length=1, max_length=128)] = ""
@@ -128,6 +130,7 @@ class NativeDiplomaticResponse(BoundaryModel):
 
 
 class ChatSend(BoundaryModel):
+    delivery: Literal["auto", "immediate"] = "auto"
     text: Annotated[str, Field(min_length=1, max_length=4000, pattern=r"\S")]
     to: PlayerName = ""
     recipients: Annotated[list[PlayerName], Field(min_length=1, max_length=100)] = Field(
@@ -156,6 +159,16 @@ class GameplayChatSend(ChatSend):
     nativeAction: (
         Annotated[NativeDenouncement | NativeDemand | NativeDiplomaticResponse, Field(discriminator="kind")] | None
     ) = None
+
+
+class ChatDelivery(BoundaryModel):
+    deliveryId: str
+    action: Literal["status", "immediate", "cancel"] = "status"
+
+
+class NativeAdvice(BoundaryModel):
+    cities: Annotated[list[str], Field(max_length=100)] = Field(default_factory=list)
+    units: Annotated[list[str], Field(max_length=100)] = Field(default_factory=list)
 
 
 class CommitmentOffer(WithIntent):
@@ -217,6 +230,8 @@ TOOL_MODELS: dict[str, type[BaseModel]] = {
     "chat_read": ChatRead,
     "chat_history": ChatHistory,
     "chat_send": GameplayChatSend,
+    "chat_delivery": ChatDelivery,
+    "native_advice": NativeAdvice,
     "commitment_offer": CommitmentOffer,
     "commitment_decide": CommitmentDecision,
     "memory_read": MemoryRead,

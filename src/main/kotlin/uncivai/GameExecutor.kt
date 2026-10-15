@@ -362,15 +362,22 @@ class GameExecutor internal constructor(
     }
 
     private fun restorePlayers(players: Map<String, SavedPlayerState>, gameJson: String) {
-        // Rebuilding engine caches can append notices, for example about a captured
-        // city's connection. Validate handles against the original save, then require
-        // that loading preserved its entire notification prefix before binding them.
+        // Rebuilding engine caches can append first-contact alerts and notifications.
+        // Validate handles against the original save and preserve its entire prefix
+        // before binding them. New entries receive handles on their first observation.
         val serializer = json()
         val original = serializer.fromJson(GameInfo::class.java, gameJson)
         for ((civilization, saved) in players) {
             val player = game.civilizations.single { it.civID == civilization }
-            val originalNotifications = original.civilizations.single { it.civID == civilization }.notifications
-            check(saved.alertHandles.size == player.popupAlerts.size) { "Checkpoint alert state is inconsistent" }
+            val originalPlayer = original.civilizations.single { it.civID == civilization }
+            val originalAlerts = originalPlayer.popupAlerts
+            val originalNotifications = originalPlayer.notifications
+            check(saved.alertHandles.size == originalAlerts.size) { "Checkpoint alert state is inconsistent" }
+            check(
+                player.popupAlerts.size >= originalAlerts.size && originalAlerts.indices.all {
+                    serializer.toJson(originalAlerts[it]) == serializer.toJson(player.popupAlerts[it])
+                },
+            ) { "Loading changed saved alerts" }
             check(saved.notificationHandles.size == originalNotifications.size) { "Checkpoint notification state is inconsistent" }
             check(
                 player.notifications.size >= originalNotifications.size && originalNotifications.indices.all {
@@ -386,7 +393,7 @@ class GameExecutor internal constructor(
                 settlerHistory.putAll(saved.settlerHistory)
                 barbarianSightings.putAll(saved.barbarianSightings)
                 player.popupAlerts.forEachIndexed { index, alert ->
-                    saved.alertHandles[index]?.let { alertHandles[alert] = it }
+                    saved.alertHandles.getOrNull(index)?.let { alertHandles[alert] = it }
                 }
                 player.notifications.forEachIndexed { index, notification ->
                     saved.notificationHandles.getOrNull(index)?.let { notificationHandles[notification] = it }

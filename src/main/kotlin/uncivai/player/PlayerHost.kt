@@ -30,6 +30,8 @@ interface PlayerSession {
 
     fun turn(): PlayerTurnSnapshot
 
+    fun nativeAdvice(request: NativeAdviceRequest): NativeAdvice = NativeAdvice(request.epoch, null, request.revision, false, limitations = listOf("Native guidance unavailable on this session."))
+
     fun result(): PlayerFinalState
 
     fun missionPreview(request: MissionPreviewRequest): MissionPreview
@@ -81,6 +83,8 @@ private class BoundPlayerSession(
     }
 
     override fun turn() = playerOperation { turnSession.snapshot() }
+
+    override fun nativeAdvice(request: NativeAdviceRequest) = playerOperation { turnSession.nativeAdvice(request) }
 
     override fun result() = playerOperation { turnSession.snapshot().finalState(civilizationId) }
 

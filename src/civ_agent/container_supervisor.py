@@ -1,18 +1,23 @@
 """Trusted background supervision of independent, disposable game containers."""
 
 import argparse
+import asyncio
 import concurrent.futures
 import contextlib
 import csv
 import hashlib
 import json
+import logging
 import os
 import secrets
 import signal
+import sqlite3
 import subprocess
 import threading
 import time
 from pathlib import Path
+
+from sqlalchemy.exc import OperationalError
 
 from civ_agent.container_support import (
     ContainerError,
@@ -36,6 +41,7 @@ from civ_agent.tls import private_directory, write_private_json
 from civ_agent.turn_archive import civilization_directory_name
 
 RECOVERABLE_MODEL_FAILURES = frozenset({"serverOverloaded", "internalServerError"})
+logger = logging.getLogger(__name__)
 
 
 def recoverable_model_failure(root: Path) -> str | None:
@@ -108,15 +114,85 @@ def agent_auth_arguments(auth_root, name, provider):
     ]
 
 
-def authorize_agent(auth_root, game_id, seat, directory):
-    path = directory / "auth-client.json"
+def validate_routing_credentials(config, auth_root):
+    if config.agents.decisions_enabled:
+        key = auth_root / "decisions.key"
+        if not key.is_file():
+            raise ContainerError("Decisions requires a separate OpenAI API key in AUTH_DIR/decisions.key (mode 600)")
+        from civ_agent.decisions_broker import read_decisions_key
+
+        read_decisions_key(key)
+
+
+def ensure_decisions(root, image):
+    private_directory(root / "decisions-ipc")
+    with locked(root / ".decisions-launch.lock", wait=True):
+        name = auth_name(root) + "-decisions"
+        current = inspected(name)
+        if current and current["State"]["Running"] and current.get("Image") != image:
+            raise ContainerError(
+                "The shared Decisions broker uses a different runtime image. "
+                "Stop its affected games before replacing that broker, or select a separate auth directory."
+            )
+        if not current or not current["State"]["Running"]:
+            if current:
+                podman("rm", name)
+            (root / "decisions-ready.json").unlink(missing_ok=True)
+            arguments = base_arguments(name, game_id="auth", resources=ContainerResources(memory_mib=512, cpus=0.5))
+            podman(*arguments, "--network=pasta:-4", *mount(root, "/auth", writable=True), image, "decisions")
+            podman("start", name)
+        deadline = time.monotonic() + 30
+        while not (root / "decisions-ready.json").exists():
+            current = inspected(name)
+            if not current or not current["State"]["Running"] or time.monotonic() > deadline:
+                raise ContainerError("Decisions broker failed to start")
+            time.sleep(0.2)
+        # The ready file is not evidence that the player socket is reachable or
+        # speaks this protocol. Authenticate with a trusted operator credential.
+        authorize_agent(root, "operator", "health", root / "operator", decisions=True)
+        health = routing_broker_health(root, timeout=5)
+        if health["status"] != "ready":
+            raise ContainerError(f"Decisions broker preflight failed: {health.get('reason', health['status'])}")
+        report = {**health, "checkedAtMs": int(time.time() * 1000), "image": image}
+        write_private_json(root / "decisions-preflight.json", report)
+        return report
+
+
+def routing_broker_health(root, *, timeout=1):
+    """Inspect the existing broker without starting it or calling the provider."""
+    from civ_agent.decisions_broker import RoutingClient
+
+    return asyncio.run(
+        RoutingClient(root / "decisions-ipc/broker.sock", root / "operator/decisions-client.json").health(
+            timeout=timeout
+        )
+    )
+
+
+def decisions_arguments(auth_root, name):
+    return [
+        *mount(auth_root / "decisions-ipc", "/decisions-ipc"),
+        "--env",
+        "CIV_DECISIONS_SOCKET=/decisions-ipc/broker.sock",
+        "--env",
+        f"CIV_DECISIONS_TOKEN_FILE=/match/agent-services/{name}/decisions-client.json",
+    ]
+
+
+def authorize_agent(auth_root, game_id, seat, directory, *, decisions=False, settings=None, player=None):
+    path = directory / ("decisions-client.json" if decisions else "auth-client.json")
     if not path.exists():
         write_private_json(path, {"token": secrets.token_urlsafe(32)})
     token = read_json(path)["token"]
     with locked(auth_root / ".clients.lock", wait=True):
-        clients = read_json(auth_root / "clients.json", {})
+        registry = auth_root / ("decisions-clients.json" if decisions else "clients.json")
+        clients = read_json(registry, {})
         clients[f"{game_id}-{seat}"] = hashlib.sha256(token.encode()).hexdigest()
-        write_private_json(auth_root / "clients.json", clients)
+        if decisions and settings is not None:
+            from civ_agent.decisions_ledger import DecisionsLedger
+
+            DecisionsLedger(auth_root).register(f"{game_id}-{seat}", game_id, player or str(seat), settings)
+        write_private_json(registry, clients)
 
 
 def validate_setup(config, image):
@@ -209,6 +285,14 @@ class GameRun:
         return records
 
     def setup(self):
+        validate_routing_credentials(self.config, self.auth_root)
+        if self.config.agents.decisions_enabled:
+            from civ_agent.decisions_ledger import DecisionsLedger
+
+            authority = DecisionsLedger(self.auth_root).authority
+            if self.record.get("decisionsAuthority", authority) != authority:
+                raise ContainerError("Decisions accounting authority differs from this game's pinned ledger")
+            self.record["decisionsAuthority"] = authority
         cleanup(self.game_id)
         self.record["launch"] = secrets.token_hex(6)
         write_private_json(self.root / "container.json", self.record)
@@ -218,6 +302,9 @@ class GameRun:
             (self.root / "control" / name).unlink(missing_ok=True)
         (self.root / "runtime.json").unlink(missing_ok=True)
         providers = {self.config.settings(p)["provider"] for p in self.config.agent_players}
+        if self.config.agents.decisions_enabled:
+            self.record["routingPreflight"] = ensure_decisions(self.auth_root, self.record["images"]["runtime"])
+            write_private_json(self.root / "container.json", self.record)
         if "openai" in providers:
             ensure_auth(self.auth_root, self.record["images"]["runtime"])
         if "openrouter" in providers:
@@ -250,6 +337,18 @@ class GameRun:
             write_private(codex_home / "config.toml", b'cli_auth_credentials_store = "ephemeral"\n')
             if self.config.settings(player)["provider"] == "openai":
                 authorize_agent(self.auth_root, self.game_id, index, directory)
+            if self.config.agents.decisions_enabled:
+                from civ_agent.decisions_policy import decisions_values
+
+                authorize_agent(
+                    self.auth_root,
+                    self.game_id,
+                    index,
+                    directory,
+                    decisions=True,
+                    settings=decisions_values(self.config.agents),
+                    player=player.civilization,
+                )
         firewall(self.game_id, bridges)
         resources = self.config.resources.desktop if self.config.human else self.config.resources.controller
         args = base_arguments(self.controller, game_id=self.game_id, resources=resources)
@@ -286,6 +385,8 @@ class GameRun:
             for folder in ("agent-services", "agents", "codex"):
                 args += mount(self.root / folder / name, f"/match/{folder}/{name}", writable=True)
             args += agent_auth_arguments(self.auth_root, name, self.config.settings(player)["provider"])
+            if self.config.agents.decisions_enabled:
+                args += decisions_arguments(self.auth_root, name)
             args += [
                 "--env",
                 f"HOME=/match/codex/{name}",
@@ -396,15 +497,54 @@ class GameRun:
 BATCH_SUMMARY_INTERVAL = 10.0
 
 
+def _previous_batch_results(root):
+    """Best-effort fallback from derived output, including summaries predating freshness fields."""
+    try:
+        summary = read_json(root / "results.json", {})
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(summary, dict) or not isinstance(summary.get("runs", []), list):
+        return {}
+    return {
+        row["id"]: {"result_updated_at": summary.get("updated_at"), **row}
+        for row in summary.get("runs", [])
+        if isinstance(row, dict) and isinstance(row.get("id"), str)
+    }
+
+
 def batch_summary(root, manifest):
     rows = []
+    previous = None
     for run in manifest["runs"]:
         directory = root / "games" / run["id"]
         saved = read_json(directory / "resolved.json")
         if saved is None:
             raise ContainerError(f"Saved configuration is missing for game {run['id']}")
         config = ResolvedGameConfig.model_validate(saved)
-        result = read_record(path_for(directory), "state", "result") if path_for(directory).exists() else None
+        path = path_for(directory)
+        result_stale = False
+        try:
+            available = path.exists()
+            result = read_record(path, "state", "result") if available else None
+            result_updated_at = time.time() if result is not None else None
+        except OperationalError as error:
+            # SQLite's extended codes retain the primary code in the low byte.
+            # Only transient read contention is optional; do not hide other database failures.
+            if getattr(error.orig, "sqlite_errorcode", 0) & 0xFF not in {sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED}:
+                raise
+            if previous is None:
+                previous = _previous_batch_results(root)
+            cached = previous.get(run["id"], {})
+            result = cached.get("result")
+            result_updated_at = cached.get("result_updated_at")
+            result_stale = True
+            if not cached.get("result_stale"):
+                logger.warning(
+                    "Game %s monitoring database is busy: %s. Retaining the last result; "
+                    "retrying at the next summary refresh. Gameplay continues.",
+                    run["id"],
+                    path,
+                )
         rows.append(
             {
                 **{k: v for k, v in run.items() if k != "config"},
@@ -414,6 +554,8 @@ def batch_summary(root, manifest):
                 "assignment_seed": config.game.assignment_seed,
                 "players": config.player_records(),
                 "result": result,
+                "result_stale": result_stale,
+                "result_updated_at": result_updated_at,
                 "resources": config.resources.model_dump(),
                 "resource_usage": read_json(directory / "resources.json"),
                 "failure": read_json(directory / "container-status.json", {}).get("reason"),
@@ -434,6 +576,8 @@ def batch_summary(root, manifest):
                 "status",
                 "players",
                 "result",
+                "result_stale",
+                "result_updated_at",
                 "failure",
             ),
         )

@@ -22,6 +22,22 @@ import uncivai.player.TurnCommandKind
 import uncivai.player.TurnCommandRequest
 
 class InputSchemaTest {
+    @Test fun `native advice requires observed identity and bounds filters without authority fields`() {
+        val schema = InputSchemas.nativeAdvice
+        val request = obj("epoch" to "g1", "revision" to "rev1", "cities" to listOf("city1"))
+        assertEquals(listOf("city1"), schema.decode(uncivai.player.NativeAdviceRequest.serializer(), request).cities)
+        for (bad in listOf(
+            obj(),
+            obj("epoch" to "g1"),
+            JsonObject(request + obj("units" to listOf("unit1", "unit1"))),
+            JsonObject(request + obj("cities" to (1..101).map { "city$it" })),
+            JsonObject(request + obj("includeHidden" to true)),
+            JsonObject(request + obj("apply" to true)),
+        )) {
+            assertThrows(PlayerSessionException::class.java) { schema.validate(bad) }
+        }
+    }
+
     @Test
     fun `request contracts enforce types limits and operation fields without disclosing input`() {
         val sentinel = "secret-sentinel"

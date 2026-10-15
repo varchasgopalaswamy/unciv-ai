@@ -15,7 +15,8 @@
         "CIVILOPEDIA",
         "TILE",
         "UNIT",
-        "ROAD"
+        "ROAD",
+        "CITY_FOCUS"
       ]
     },
     "target": {

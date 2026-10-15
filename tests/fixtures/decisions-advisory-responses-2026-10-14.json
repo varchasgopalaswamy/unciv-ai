@@ -1,0 +1,162 @@
+{
+  "attributed-question": {
+    "answers": [
+      {
+        "type": "choice",
+        "name": "preservation:0",
+        "choice": "consider",
+        "confidence": 0.98
+      }
+    ],
+    "fallback": null,
+    "usage": {
+      "input_tokens": 280,
+      "input_tokens_details": {
+        "cached_tokens": 0,
+        "cache_write_tokens": 0
+      },
+      "output_tokens": 0,
+      "output_tokens_details": {
+        "reasoning_tokens": 0
+      },
+      "total_tokens": 280
+    },
+    "model": "gpt-6-luna",
+    "policyVersion": "player-advisories-v1"
+  },
+  "routine-ack": {
+    "answers": [],
+    "fallback": "low_confidence",
+    "usage": {
+      "input_tokens": 265,
+      "input_tokens_details": {
+        "cached_tokens": 0,
+        "cache_write_tokens": 0
+      },
+      "output_tokens": 0,
+      "output_tokens_details": {
+        "reasoning_tokens": 0
+      },
+      "total_tokens": 265
+    },
+    "model": "gpt-6-luna",
+    "policyVersion": "player-advisories-v1"
+  },
+  "old-active-memory": {
+    "answers": [],
+    "fallback": "low_confidence",
+    "usage": {
+      "input_tokens": 319,
+      "input_tokens_details": {
+        "cached_tokens": 0,
+        "cache_write_tokens": 0
+      },
+      "output_tokens": 0,
+      "output_tokens_details": {
+        "reasoning_tokens": 0
+      },
+      "total_tokens": 319
+    },
+    "model": "gpt-6-luna",
+    "policyVersion": "player-advisories-v1"
+  },
+  "belief-new-visible-evidence": {
+    "answers": [
+      {
+        "type": "choice",
+        "name": "beliefs:0",
+        "choice": "reconsider",
+        "confidence": 1.0
+      }
+    ],
+    "fallback": null,
+    "usage": {
+      "input_tokens": 334,
+      "input_tokens_details": {
+        "cached_tokens": 0,
+        "cache_write_tokens": 0
+      },
+      "output_tokens": 0,
+      "output_tokens_details": {
+        "reasoning_tokens": 0
+      },
+      "total_tokens": 334
+    },
+    "model": "gpt-6-luna",
+    "policyVersion": "player-advisories-v1"
+  },
+  "belief-unrelated-evidence": {
+    "answers": [
+      {
+        "type": "choice",
+        "name": "beliefs:0",
+        "choice": "retain",
+        "confidence": 0.96
+      }
+    ],
+    "fallback": null,
+    "usage": {
+      "input_tokens": 315,
+      "input_tokens_details": {
+        "cached_tokens": 0,
+        "cache_write_tokens": 0
+      },
+      "output_tokens": 0,
+      "output_tokens_details": {
+        "reasoning_tokens": 0
+      },
+      "total_tokens": 315
+    },
+    "model": "gpt-6-luna",
+    "policyVersion": "player-advisories-v1"
+  },
+  "material-review": {
+    "answers": [],
+    "fallback": "low_confidence",
+    "usage": {
+      "input_tokens": 302,
+      "input_tokens_details": {
+        "cached_tokens": 0,
+        "cache_write_tokens": 0
+      },
+      "output_tokens": 0,
+      "output_tokens_details": {
+        "reasoning_tokens": 0
+      },
+      "total_tokens": 302
+    },
+    "model": "gpt-6-luna",
+    "policyVersion": "player-advisories-v1"
+  },
+  "coalesced-memory-triage": {
+    "answers": [
+      {
+        "type": "choice",
+        "name": "preservation:0",
+        "choice": "consider",
+        "confidence": 0.98
+      },
+      {
+        "type": "choice",
+        "name": "beliefs:0",
+        "choice": "reconsider",
+        "confidence": 1.0
+      }
+    ],
+    "fallback": "low_confidence",
+    "usage": {
+      "input_tokens": 859,
+      "input_tokens_details": {
+        "cached_tokens": 0,
+        "cache_write_tokens": 0
+      },
+      "output_tokens": 0,
+      "output_tokens_details": {
+        "reasoning_tokens": 0
+      },
+      "total_tokens": 859
+    },
+    "model": "gpt-6-luna",
+    "policyVersion": "player-advisories-v1"
+  }
+}

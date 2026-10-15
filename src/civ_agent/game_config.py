@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from civ_agent.agent_settings import communication_effort, valid_setting
 from civ_agent.civilization_guide import civilization_reference
+from civ_agent.decisions_policy import DecisionsSettings
 from civ_agent.protocol import JsonObject
 from civ_agent.providers import Provider
 
@@ -71,7 +72,7 @@ class GameSetup(Configuration):
         return values
 
 
-class AgentDefaults(Configuration):
+class AgentDefaults(Configuration, DecisionsSettings):
     provider: Provider = "openai"
     model: str = "gpt-6-luna"
     reasoning_effort: str = "medium"
@@ -80,6 +81,7 @@ class AgentDefaults(Configuration):
     review_attempts: Positive = 3
     strategy_guide: bool = False
     civilization_guide: bool = False
+    native_advice_enabled: bool = False
     fast: bool = False
 
     @field_validator("model", "reasoning_effort")
@@ -141,7 +143,7 @@ class Limits(Configuration):
     startup_timeout: Positive = 900
     max_concurrent_jobs: Positive = 4
     model_capacity_retries: Annotated[int, Field(ge=0, le=100)] = 5
-    model_capacity_retry_delay: Annotated[int, Field(gt=0, le=86400)] = 180
+    model_capacity_retry_delay: Annotated[int, Field(gt=0, le=86400)] = 30
 
 
 class ContainerResources(Configuration):

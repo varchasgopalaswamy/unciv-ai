@@ -148,6 +148,56 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
         }
     }
 
+    fun nativeAdvice(request: NativeAdviceRequest): NativeAdvice {
+        val deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(5)
+        val prepared = try {
+            runtime.accessGame { game ->
+                val state = state()
+                val observed = state.fingerprint
+                if (request.epoch != runtime.epoch || observed == null || request.revision != state.observedRevision ||
+                    request.revision != state.revision || observed.phase != "ACTIVE" || game.turns != observed.turn ||
+                    game.currentPlayer != civilizationId
+                ) {
+                    return@accessGame null
+                }
+                // Filters operate on the complete revision-bound result. A cache
+                // hit must not rebuild city/unit inputs while holding the game lock.
+                val cached = NativeAdvicePlanner.cached(civilizationId, request, deadline)
+                if (cached != null) {
+                    cached to null
+                } else {
+                    null to captureNativeAdvice(player(game), observed.copy(revision = state.revision), state, deadline)
+                }
+            }
+        } catch (_: java.util.concurrent.TimeoutException) {
+            return NativeAdvice(request.epoch, null, request.revision, false, limitations = listOf("Native advice unavailable: capture deadline exceeded."))
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+            return NativeAdvice(request.epoch, null, request.revision, false, limitations = listOf("Native advice unavailable: request cancelled."))
+        } catch (_: Exception) {
+            return NativeAdvice(request.epoch, null, request.revision, false, limitations = listOf("Native advice unavailable: permitted inputs could not be captured."))
+        } ?: return NativeAdvice(
+            request.epoch,
+            null,
+            request.revision,
+            false,
+            limitations = listOf("Read player_turn at the current epoch and revision before refreshing native advice."),
+        )
+        val (cached, inputs) = prepared
+        val advice = cached ?: NativeAdvicePlanner.compute(civilizationId, checkNotNull(inputs), request, deadline)
+        return runtime.accessGame { game ->
+            if (runtime.epoch != advice.epoch || state().revision != advice.revision || state().observedRevision != advice.revision || state().fingerprint == null ||
+                game.turns != advice.turn || game.currentPlayer != civilizationId
+            ) {
+                advice.copy(available = false, recommendations = emptyList(), limitations = listOf("The position changed while advice was computed; refresh player_turn."))
+            } else if (Thread.currentThread().isInterrupted || System.nanoTime() >= deadline) {
+                advice.copy(available = false, recommendations = emptyList(), limitations = listOf("Native advice unavailable: request deadline exceeded or request cancelled."))
+            } else {
+                advice
+            }
+        }
+    }
+
     fun inspect(request: PlayerInspectionRequest): PlayerInspection = runtime.accessGame { game ->
         val state = state()
         val player = player(game)

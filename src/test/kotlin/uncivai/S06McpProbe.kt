@@ -285,6 +285,7 @@ object S06McpProbe {
         val expectedInputs = linkedMapOf(
             "player_capabilities" to emptySet(),
             "player_turn" to emptySet(),
+            "native_advice" to setOf("epoch", "revision", "cities", "units"),
             "player_result" to emptySet(),
             "movement_preview" to setOf("target", "destination"),
             "mission_preview" to setOf("target", "mission", "destination"),
@@ -313,6 +314,12 @@ object S06McpProbe {
                     check(schema.string("type") == "string")
                     check(schema.getValue("minLength").jsonPrimitive.content == "1")
                     check(schema.getValue("maxLength").jsonPrimitive.content == maximum)
+                }
+            } else if (name == "native_advice") {
+                check(tool.inputSchema.required.orEmpty().toSet() == setOf("epoch", "revision"))
+                for (field in listOf("cities", "units")) {
+                    check(properties.getValue(field).jsonObject.string("type") == "array")
+                    check(properties.getValue(field).jsonObject.boolean("uniqueItems"))
                 }
             } else if (name in setOf("movement_preview", "mission_preview")) {
                 check(tool.inputSchema.required.orEmpty().toSet() == expectedProperties)

@@ -107,8 +107,18 @@ class ReviewStore:
                 return
             # Publish the factual baseline with its report. It participates in the
             # existing metadata checkpoint and is rewound with that report.
-            observation = json.loads(inputs)["observation"]
+            frozen = json.loads(inputs)
+            observation = frozen["observation"]
             self.memory._set(db, "reviewPosition", review_position(observation))
+            from civ_agent.advisory_store import material_facts
+            from civ_agent.decisions_ledger import fingerprint
+
+            state = self.memory._meta(db, "advisories", {})
+            state["reviewBaseline"] = fingerprint(
+                material_facts(frozen.get("reads", {}).get("player_turn", observation))
+            )
+            state.pop("earlyRequestTurn", None)
+            self.memory._set(db, "advisories", state)
             # Conversations resume before this civ's next gameplay observation.
             # Make the new report available from the trusted boundary snapshot.
             self.memory._advance_turn(db, observation["turn"])

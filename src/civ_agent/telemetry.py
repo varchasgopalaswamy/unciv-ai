@@ -54,8 +54,49 @@ calls = Table(
     Column("elapsed", Integer),
 )
 
+# Paid scheduling work is not a gameplay/communication model activation and is
+# not rolled back with game memory. Do not store conversation text here.
+classifier_calls = Table(
+    "classifier_calls",
+    metadata,
+    Column("id", Text, primary_key=True),
+    Column("payload", Text, nullable=False),
+)
+
 
 class JobAccounting:
+    def classifier(self, direction, result):
+        with self.connect() as db:
+            db.execute(
+                insert(classifier_calls).values(
+                    id=uuid.uuid4().hex,
+                    payload=json.dumps(
+                        {
+                            "direction": direction,
+                            "atMs": int(time.time() * 1000),
+                            **{
+                                key: result.get(key)
+                                for key in (
+                                    "model",
+                                    "policyVersion",
+                                    "usage",
+                                    "latencyMs",
+                                    "choice",
+                                    "fallback",
+                                    "providerError",
+                                    "requestId",
+                                    "accounting",
+                                )
+                            },
+                        }
+                    ),
+                )
+            )
+
+    def classifier_reports(self):
+        with self.connect() as db:
+            return [json.loads(row[0]) for row in db.execute(select(classifier_calls.c.payload))]
+
     def __init__(self, directory: Path, memory_edits: Callable[[str], JsonObject] | None = None):
         self.path = private_directory(directory) / "accounting.sqlite3"
         if self.path.is_symlink():
@@ -120,7 +161,7 @@ class JobAccounting:
 
     def begin_call(self, job: str, name: str, arguments: JsonObject, *, source: str = "tool") -> str:
         id = uuid.uuid4().hex
-        if source not in {"tool", "startup"}:
+        if source not in {"tool", "startup", "internal"}:
             raise ValueError("Invalid call source")
         keys = [source + ":" + str(name)[:128]]
         if name == "player_command" and isinstance(arguments, dict) and isinstance(arguments.get("kind"), str):
@@ -151,6 +192,7 @@ class JobAccounting:
                 return
             row = json.loads(saved[0])
             report = row["telemetry"]
+            row["purpose"] = record.get("purpose", "gameplay")
             if report["phase"] in TERMINAL and record["phase"] not in TERMINAL:
                 return
             report["sequence"] += 1

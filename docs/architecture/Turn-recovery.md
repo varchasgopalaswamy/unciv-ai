@@ -26,6 +26,35 @@ filters the current epoch. Repeated restores no longer move or repair event mirr
 directories. Activation/turn identity is checked before model work starts.
 See [monitoring](Monitoring.md) for storage and explicit export commands.
 
+## Native state rebuilt during loading
+
+Loading an engine save also rebuilds visibility, city connections and other caches.
+This can create first-contact alerts and ordinary notifications, establish diplomacy,
+reveal tiles, and award native city-state or natural-wonder discovery rewards.
+Restoration must retain those effects along with the loaded game.
+
+Both process restart and turn rewind validate saved alert and notification handles
+against the original serialized queues. The original entries must remain an
+unchanged, ordered prefix of the loaded queues. Appended entries receive fresh
+player-local handles when observed. Missing, reordered or modified saved entries,
+including changed alert request IDs, stop restoration instead of rebinding a handle
+to a different event. Unread saved entries can also receive their first handles after
+loading. Repeated loads of the resulting checkpoint must not repeat native events
+or rewards.
+
+Other recovery boundaries require different checks:
+
+- City and unit references bind to stable engine IDs, not collection positions.
+  Engine/ruleset migrations that remove or replace those objects need separate
+  compatibility validation; allowing appended alerts does not make arbitrary engine
+  upgrades safe.
+- Observations, legal actions and revisions are rebuilt after restoration. A saved
+  receipt can replay, but an uncommitted action requires a fresh observation.
+- Native trade requests retain durable request IDs; transient response callbacks
+  are reattached by the native trade bridge before player operations.
+- Accounting remains outside turn rewind and uses commit IDs for outbox replay;
+  it must not be inferred from the number or order of engine events.
+
 ## Background reviews
 
 Opening reviews capture each civilization's own starting view before any player
@@ -93,6 +122,10 @@ restart the host, rewind and verify the original position and fresh credentials.
 They also lose acknowledgements, inject storage failures before and after atomic
 replacement, and reject rewinding across a committed handoff. Trade tests verify
 that a rewind also restores ownership, treasury, diplomacy and private messages.
+Alert recovery tests rebuild first contact during restart and rewind, preserve
+observed and unread saved alerts, replay acknowledgements, reject changed saved
+queues, and verify that a natural-wonder reward is retained without duplication on
+the next restart.
 
 Python tests cover partial coordinated restores, pending reviewers across another
 player's turn, frozen evidence, atomic publication, bounded retries, discarded

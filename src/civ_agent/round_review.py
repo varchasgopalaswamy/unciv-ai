@@ -18,11 +18,34 @@ def review_round(scheduler, status):
         anchor = anchors.get(name)
         return review_due(turn, interval) if type(anchor) is not int else turn - anchor >= interval
 
-    participants = (
+    periodic = (
         list(scheduler.agents)
         if boundary == 0 or forced
         else [name for name, interval in scheduler.review_intervals.items() if due(name, interval)]
     )
+    early = []
+    resuming = scheduler.state.get("reviewPhase", {})
+    if resuming.get("gameTurn") == boundary:
+        early = resuming.get("earlyCivilizations", [])
+    elif boundary > 0 and not forced and scheduler.state["reviewedBoundary"] != boundary:
+        for name in scheduler.agents:
+            if name not in getattr(scheduler, "decisions_players", set()):
+                continue
+            if name in periodic:
+                continue
+            interval = scheduler.review_intervals[name]
+            anchor = anchors.get(name)
+            scheduled_soon = turn + 1 - anchor >= interval if type(anchor) is int else review_due(turn + 1, interval)
+            if scheduled_soon:
+                continue
+            response = scheduler.turns.call_agent(
+                scheduler.agents[name], "review_triage", epoch=status["epoch"], gameTurn=boundary, scheduledSoon=False
+            )
+            if not isinstance(response, dict) or type(response.get("earlyReview")) is not bool:
+                raise RunnerError("Invalid early review response; stopped for inspection.")
+            if response["earlyReview"]:
+                early.append(name)
+    participants = list(dict.fromkeys([*periodic, *early]))
 
     def call(name, stage):
         fields = {"epoch": status["epoch"], "gameTurn": boundary, "stage": stage}
@@ -30,6 +53,8 @@ def review_round(scheduler, status):
             # Once an event resets the interval clock, scheduler-selected review
             # turns no longer necessarily satisfy the service's original modulo.
             fields["forceReview"] = True
+            if name in early:
+                fields["earlyReview"] = True
         agent = scheduler.agents[name]
         # Capturing a position can take time. Metadata polls are short requests
         # and use the loop's heartbeat, without spawning a worker per poll.
@@ -107,7 +132,8 @@ def review_round(scheduler, status):
         "reviewTurn": turn,
         "stage": "Finishing communication",
         "civilizations": participants,
-        "trigger": "war_declaration" if forced else "interval",
+        "trigger": "war_declaration" if forced else "early" if early else "interval",
+        **({"earlyCivilizations": early} if early else {}),
     }
     scheduler.save()
     for name in scheduler.agents:
@@ -147,7 +173,7 @@ def review_round(scheduler, status):
         time.sleep(0.25)
 
     scheduler.state["reviewedBoundary"] = boundary
-    for name in participants:
+    for name in periodic:
         anchors[name] = turn
     if forced:
         scheduler.state["reviewedWarTurn"] = war_turn

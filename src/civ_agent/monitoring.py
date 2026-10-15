@@ -11,7 +11,7 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 
-from sqlalchemy import Column, Index, Integer, MetaData, String, Table, Text, UniqueConstraint, select
+from sqlalchemy import Column, Index, Integer, MetaData, String, Table, Text, UniqueConstraint, inspect, select
 
 from civ_agent.sqlite_database import sqlite_engine
 from civ_agent.tls import private_directory, regular_file
@@ -87,6 +87,10 @@ def read_record(path, collection, key):
     if not path.exists():
         return None
     with read_database(path) as db:
+        # Writers publish the file before committing the schema. Only a wholly
+        # empty database is pending; nonempty incompatible schemas still fail.
+        if not inspect(db).get_table_names():
+            return None
         return get_record(db, collection, key)
 
 
@@ -94,6 +98,8 @@ def read_collection(path, collection):
     if not path.exists():
         return []
     with read_database(path) as db:
+        if not inspect(db).get_table_names():
+            return []
         return [
             json.loads(value)
             for value in db.scalars(

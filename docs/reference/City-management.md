@@ -46,6 +46,15 @@ removed buildings and gold change. Sales also populate `receipt.economy`. Re-obs
 for current eligibility, growth and maintenance. Exact retries return the same
 receipt without repeating a sale or moving another citizen.
 
+`player_inspect(subject="CITY_FOCUS", target=city_handle)` compares the available
+focus operations without changing the live city. Each alternative runs the native
+operation on a fresh detached game copy, preserving locked tiles, growth settings
+and manual specialist assignments. It reports displayed yields, food, growth and
+starvation estimates, current-construction timing and resulting assignments. A
+named focus can reassign citizens even when it matches the current setting;
+keeping current assignments requires no command. Previews hold population and
+the current queue fixed, and exclude future growth, improvements and enemy actions.
+
 ## Regression fixtures
 
 City management is exercised by internal two-city-per-player fixtures under
@@ -68,6 +77,12 @@ controls for both civilizations, and asserts native city state, gold, growth and
 great-person points. It exercises unread options/confirmations, invalid fields,
 hidden coordinates, foreign handles, stale requests, exact receipts, interrupted-turn
 rollback and process restarts. Replaying receipts must preserve checkpoint bytes.
+
+`NativeAdviceIntegrationTest` also compares focus previews with native execution,
+checks unchanged live save bytes and repeated results, preserves tile locks and
+manual specialists, and checks independence from changed private foreign gold and
+population. Unknown city handles are rejected and inactive players receive no
+available focus operations.
 
 ```sh
 ./gradlew build :Unciv:tests:test

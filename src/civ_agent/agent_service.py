@@ -332,11 +332,14 @@ class AgentService:
         review_attempts: int = 3,
         strategy_guide: bool = False,
         civilization_guide: bool = False,
+        native_advice_enabled: bool = False,
+        decisions_enabled: bool = False,
         fast: bool = False,
         gateway_url: str = "https://localhost:8865/mcp",
         gateway_ca_file: Path | None = None,
         connection_factory=HostConnection,
         sessions_root: Path | None = None,
+        **decisions_options,
     ) -> None:
         if model is not None and not valid_setting(model):
             raise ServiceError("INVALID_MODEL")
@@ -354,6 +357,18 @@ class AgentService:
         self.communication_reasoning_effort = communication_reasoning_effort
         self.strategy_guide = strategy_guide
         self.civilization_guide = civilization_guide
+        from civ_agent.decisions_policy import DecisionsSettings
+
+        self.decisions_settings = DecisionsSettings(
+            decisions_enabled=decisions_enabled, memory_context_chars=memory_context_chars, **decisions_options
+        )
+        self.native_advice_enabled = native_advice_enabled
+        self.decisions_enabled = decisions_enabled
+        routing_client = None
+        if decisions_enabled:
+            from civ_agent.decisions_broker import RoutingClient
+
+            routing_client = RoutingClient.from_environment()
         self.fast = fast and provider == "openai"
         self.civilization = civilization
         self.workspace, self.state_dir = private_directory(workspace), private_directory(state_dir)
@@ -408,6 +423,15 @@ class AgentService:
             write_private_json(binding_file, binding)
         self.memory = CivilizationState(self.state_dir / "civilization", civilization, memory_context_chars)
         self.gateway = ProposalGateway(self.memory, self.io, self.workspace)
+        self.gateway.native_advice_enabled = self.native_advice_enabled
+        if routing_client is not None:
+            from civ_agent.diplomacy_routing import DiplomacyRouting
+
+            self.memory.routing_enabled = True
+            self.gateway.routing = DiplomacyRouting(self.gateway, routing_client, settings=self.decisions_settings)
+            from civ_agent.advisory_runtime import AdvisoryRuntime
+
+            self.gateway.advisories = AdvisoryRuntime(self.gateway, routing_client, self.decisions_settings)
         self.gateway.history = self.history
         self.accounting = JobAccounting(self.state_dir / "telemetry", self.memory.memory_edit_counts)
         self.gateway.accounting = self.accounting
@@ -703,6 +727,7 @@ class AgentService:
                 "threadId": None,
                 "phase": "IDLE",
                 "defaultSettings": dict(self.default_settings),
+                "decisionsSettings": self.decisions_settings.model_dump(),
                 "usage": dict.fromkeys(USAGE_KEYS, 0),
             }
         record = self.records.get(activation_id)
@@ -727,6 +752,7 @@ class AgentService:
             result["finalizationError"] = self.finalization_errors[activation_id]
         job = next((job for job in self.gateway.jobs.values() if job.id == activation_id), None)
         result["negotiationWaitSeconds"] = job.waiting_seconds() if job else record.get("negotiationWaitSeconds", 0)
+        result["decisionsSettings"] = self.decisions_settings.model_dump()
         return result
 
     def health(self):
@@ -760,18 +786,24 @@ class AgentService:
 
     async def review_phase(self, payload):
         if (
-            set(payload) not in ({"epoch", "gameTurn", "stage"}, {"epoch", "gameTurn", "stage", "forceReview"})
+            not {"epoch", "gameTurn", "stage"} <= set(payload)
+            or set(payload) - {"epoch", "gameTurn", "stage", "forceReview", "earlyReview"}
             or not identifier(payload.get("epoch"))
             or type(payload.get("gameTurn")) is not int
             or payload["gameTurn"] < 0
             or payload.get("stage") not in {"hold", "start", "status", "release"}
             or type(payload.get("forceReview", False)) is not bool
+            or type(payload.get("earlyReview", False)) is not bool
         ):
             raise ServiceError("INVALID_ARGUMENT")
         async with self.guard:
             try:
                 return await self.reviews.phase(
-                    payload["epoch"], payload["gameTurn"], payload["stage"], payload.get("forceReview", False)
+                    payload["epoch"],
+                    payload["gameTurn"],
+                    payload["stage"],
+                    payload.get("forceReview", False),
+                    early_review=payload.get("earlyReview", False),
                 )
             except ValueError as error:
                 raise ServiceError(str(error), 409) from None
@@ -781,6 +813,25 @@ class AgentService:
             return await self.io.call(self.reviews.store.blocking, payload["epoch"], payload["gameTurn"])
         except ValueError as error:
             raise ServiceError(str(error), 409) from None
+
+    async def review_triage(self, payload):
+        if (
+            set(payload) != {"epoch", "gameTurn", "scheduledSoon"}
+            or payload["epoch"] != self.chat.epoch
+            or type(payload["gameTurn"]) is not int
+            or payload["gameTurn"] < 1
+            or type(payload["scheduledSoon"]) is not bool
+        ):
+            raise ServiceError("INVALID_ARGUMENT")
+        advisory = self.gateway.advisories
+        if advisory is None:
+            return {"earlyReview": False, "reason": "disabled"}
+        if self.gateway.paused or self.gateway.checkpoint_requested or self.gateway.run_failure:
+            return {"earlyReview": False, "reason": "barrier"}
+        # Accepted triage drains before checkpoint capture, just like gateway
+        # reads. A late result must never write into a restored epoch.
+        async with self.gateway.admit():
+            return await advisory.triage(payload["gameTurn"] - 1, scheduled_soon=payload["scheduledSoon"])
 
     async def start(self, payload: JsonObject) -> JsonObject:
         self._validate_start(payload)
@@ -1481,6 +1532,8 @@ class AgentService:
                     result = await self.start(payload)
                 elif operation == "review_phase":
                     result = await self.review_phase(payload)
+                elif operation == "review_triage":
+                    result = await self.review_triage(payload)
                 elif operation in {"open_interactive", "close_interactive"}:
                     from civ_agent import interactive_session
 

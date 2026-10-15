@@ -11,7 +11,7 @@ import kotlinx.serialization.json.JsonPrimitive
 import uncivai.obj
 
 @Serializable
-enum class InspectionSubject { POLITICS, WONDERS, NOTIFICATIONS, REPLAY, CIVILOPEDIA, TILE, UNIT, ROAD }
+enum class InspectionSubject { POLITICS, WONDERS, NOTIFICATIONS, REPLAY, CIVILOPEDIA, TILE, UNIT, ROAD, CITY_FOCUS }
 
 @Serializable
 data class PlayerInspectionRequest(
@@ -33,7 +33,7 @@ internal fun inspectPlayer(player: Civilization, state: TurnSessionState, turn: 
     val subject = request.subject
     if (request.offset < 0 || request.limit !in 1..100 || request.names.size > 16 || request.names.any { it.isBlank() } ||
         request.search?.length?.let { it > 128 } == true ||
-        (request.target != null && subject !in setOf(InspectionSubject.UNIT, InspectionSubject.ROAD, InspectionSubject.TILE)) ||
+        (request.target != null && subject !in setOf(InspectionSubject.UNIT, InspectionSubject.ROAD, InspectionSubject.TILE, InspectionSubject.CITY_FOCUS)) ||
         (request.destination != null && subject !in setOf(InspectionSubject.UNIT, InspectionSubject.ROAD, InspectionSubject.TILE)) ||
         ((request.category != null || request.names.isNotEmpty() || request.search != null) && subject != InspectionSubject.CIVILOPEDIA) ||
         (request.turn != null && subject !in setOf(InspectionSubject.REPLAY, InspectionSubject.NOTIFICATIONS)) ||
@@ -53,6 +53,8 @@ internal fun inspectPlayer(player: Civilization, state: TurnSessionState, turn: 
         InspectionSubject.REPLAY -> inspectReplay(player, request)
 
         InspectionSubject.CIVILOPEDIA -> inspectCivilopedia(player, request)
+
+        InspectionSubject.CITY_FOCUS -> inspectCityFocus(player, state, turn, request.target)
 
         InspectionSubject.TILE -> inspectTile(player, tile(), request.target, state)
 

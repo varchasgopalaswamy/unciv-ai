@@ -43,6 +43,7 @@ internal object InputSchemas {
     val communication = InputSchema("communication")
     val turnCommand = InputSchema("turn-command")
     val details = InputSchema("details")
+    val nativeAdvice = InputSchema("native-advice")
     val victoryProgress = InputSchema("victory-progress")
     val movementPreview = InputSchema("movement-preview")
     val playerInspect = InputSchema("player-inspect")

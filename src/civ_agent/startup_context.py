@@ -150,6 +150,8 @@ async def prepare_startup(gateway, job, *, call_prefix: str = STARTUP_CALL_PREFI
         else ("chat_read",)
     )
     reads = {}
+    if job.purpose == "gameplay" and gateway.native_advice_enabled:
+        names = (*names, "native_advice")
     for name in names:
         # These are service reads, not fabricated model calls. The gateway still
         # records responses and delivered evidence; host API accounting is intact.
@@ -168,7 +170,12 @@ async def prepare_startup(gateway, job, *, call_prefix: str = STARTUP_CALL_PREFI
     # Select using fresh permitted facts, without admitting contributions that
     # arrived after dispatch. Explicit reads below deliver the chosen records;
     # selection alone does not deliver cached evidence.
-    await gateway.select_startup_memory(job, memory_topics(reads, job.memory.get("strategicAdvice")))
+    topics = memory_topics(reads, job.memory.get("strategicAdvice"))
+    if gateway.advisories is not None:
+        async with gateway.admit(), job.lock:
+            gateway.check(job)
+            await gateway.advisories.startup(job, reads, topics)
+    await gateway.select_startup_memory(job, topics)
     selected = job.memory["contextIds"]
     for offset in range(0, len(selected), 20):
         await gateway.call(
@@ -183,6 +190,7 @@ async def prepare_startup(gateway, job, *, call_prefix: str = STARTUP_CALL_PREFI
         "reads": reads,
         "decisionDetails": decision_details,
         "memoryContext": gateway.memory.context(job.memory),
+        "advisories": job.memory.get("advisories", {}),
         **({"strategicAdvice": job.memory["strategicAdvice"]} if job.memory.get("strategicAdvice") else {}),
         # Prepared social context carries the same interpretation guidance as an
         # explicit read, even when chat_read has not been discovered separately.
@@ -288,6 +296,19 @@ def startup_prompt(
     sections.append("Prepared player-visible reads:\n" + encoded(reads))
     if prepared.get("memoryContext"):
         sections.append(prepared["memoryContext"])
+    if any(prepared.get("advisories", {}).get(k) for k in ("preservationCandidates", "beliefNotices")):
+        sections.append(
+            "Optional source-linked memory candidates and belief reconsideration notices; "
+            "you decide whether to read sources or change your notebook:\n"
+            + encoded({k: prepared["advisories"].get(k, []) for k in ("preservationCandidates", "beliefNotices")})
+        )
+    if prepared.get("advisories", {}).get("cityRecommendations"):
+        sections.append(
+            "Optional city recommendations: focus and construction are separate answers over the same native state. "
+            "Coordinate their effects across cities; accept, adjust or reject either. Read the normal selected-option "
+            "inspection before acting, and recompute construction timing after a focus change.\n"
+            + encoded(prepared["advisories"]["cityRecommendations"])
+        )
     instructions = job_instructions(purpose)
     return StartupPrompt(
         instructions=instructions + "\n\n" + startup_instructions(prepared),
@@ -325,4 +346,9 @@ def startup_text(
         + encoded(prepared["reads"])
         + "\n\n"
         + prepared.get("memoryContext", "")
+        + (
+            "\n\nOptional memory and city advisories:\n" + encoded(prepared["advisories"])
+            if prepared.get("advisories")
+            else ""
+        )
     )

@@ -1,0 +1,59 @@
+# Matched variant: baseline. Launch as a NEW game; never change active runs.
+[game]
+master_seed = 20261013
+map_seed = 19238721
+starting_position_seed = 20261013
+assignment_seed = 20261013
+civilizations = ["Inca", "France", "Greece", "Arabia", "China", "Persia"]
+randomize = false
+map_type = "Pangaea"
+map_size = "Medium"
+city_states = 12
+difficulty = "Prince"
+speed = "Standard"
+
+[agents]
+provider = "openai"
+model = "gpt-5.6-luna"
+reasoning_effort = "max"
+communication_reasoning_effort = "medium"
+review_interval = 10
+strategy_guide = true
+civilization_guide = true
+native_advice_enabled = false
+decisions_enabled = false
+
+[[players]]
+name = "Native"
+controller = "built_in_ai"
+
+[[players]]
+name = "Luna1"
+
+[[players]]
+name = "Luna2"
+
+[[players]]
+name = "Luna3"
+
+[[players]]
+name = "Terra1"
+model = "gpt-5.6-terra"
+
+[[players]]
+name = "Terra2"
+model = "gpt-5.6-terra"
+
+[limits]
+turn_timeout = 3600
+max_seconds = 6048000
+
+[resources.controller]
+memory_mib = 4096
+cpus = 2
+pids = 512
+
+[resources.agent]
+memory_mib = 2048
+cpus = 1
+pids = 256

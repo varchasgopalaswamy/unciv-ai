@@ -301,6 +301,7 @@ class Agent(JsonEndpoint):
             "flush_accounting",
             "health",
             "review_phase",
+            "review_triage",
         }:
             status = result.get("status")
             if not isinstance(status, dict):
@@ -450,6 +451,7 @@ class Scheduler:
         self.services_connected = False
         self.round_open = False
         self.review_intervals = {}
+        self.decisions_players = set()
         self.turns = TurnCoordinator(self.store.root.parent, self.operator, self.agents, self.lease)
 
     def history_for(self, flight, player_token=None):
@@ -871,6 +873,8 @@ class Scheduler:
             if type(interval) is not int or interval < 1:
                 raise RunnerError("Invalid review interval from agent service")
             self.review_intervals[civilization] = interval
+            if connected.get("decisionsEnabled") is True:
+                self.decisions_players.add(civilization)
         self.services_connected = True
         self.state.update(status="running", reason=None)
         self.save()

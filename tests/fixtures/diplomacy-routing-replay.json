@@ -1,0 +1,914 @@
+{
+  "version": 1,
+  "notes": "Maintainer-reviewable scheduling labels, not adjudications of truth or promises. Audit-derived exact-audience histories end before the selected message. Synthetic and counterfactual examples are explicitly marked. Raw native actions bypass the classifier.",
+  "cases": [
+    {
+      "id": "mpvwks",
+      "label": "native_action",
+      "source": {
+        "artifact": "build/active-benchmarks-audit-20261013-1342/all-luna-attempt-2-0/g0004/diplomacy.json",
+        "message": "mpvwks"
+      },
+      "direction": "incoming",
+      "protected": true,
+      "expected": [
+        "respond_now"
+      ],
+      "bundle": {
+        "audience": [
+          false,
+          [
+            "Greece",
+            "Inca"
+          ]
+        ],
+        "pending": [
+          {
+            "message": "mpvwks",
+            "author": "Inca",
+            "participants": [
+              "Greece",
+              "Inca"
+            ],
+            "public": false,
+            "text": "I accept the request regarding future settlements near Greece’s established area. Ollantaytambo was already founded at (6,0).",
+            "mentions": [],
+            "turn": 67,
+            "nativeAction": {
+              "kind": "RESPOND_DIPLOMACY",
+              "target": "alert16",
+              "revision": "rev272",
+              "selection": "Accept"
+            }
+          }
+        ],
+        "recentExchanges": [],
+        "queuedDrafts": [],
+        "playerObjectives": [],
+        "pendingProposals": []
+      }
+    },
+    {
+      "id": "mcygkx",
+      "label": "urgent_request",
+      "source": {
+        "artifact": "build/active-benchmarks-audit-20261013-1342/all-luna-attempt-2-0/g0004/diplomacy.json",
+        "message": "mcygkx"
+      },
+      "direction": "incoming",
+      "protected": false,
+      "expected": [
+        "respond_now"
+      ],
+      "bundle": {
+        "audience": [
+          false,
+          [
+            "Arabia",
+            "China"
+          ]
+        ],
+        "pending": [
+          {
+            "message": "mcygkx",
+            "author": "China",
+            "participants": [
+              "Arabia",
+              "China"
+            ],
+            "public": false,
+            "text": "China received Arabia’s Turn 70 notice. Our escorted Settler has been committed to (-11,-15) since Turn 67 and is currently en route from (-3,-5); reconnaissance still shows the site eligible. This is therefore a contested settlement, not an unclaimed fallback from China’s perspective. We intend to continue toward and found there if it remains legal and safe. Please confirm whether Damascus’s Settler is committed to (-11,-15), and whether Arabia is willing to redirect or coordinate to avoid an avoidable frontier dispute. China will continue giving advance notice of any deliberate route change; our notice-only understanding remains in force and is not a permanent no-settle concession.",
+            "mentions": [],
+            "turn": 70,
+            "nativeAction": null
+          }
+        ],
+        "recentExchanges": [
+          {
+            "message": "m8fvg6",
+            "author": "Arabia",
+            "participants": [
+              "Arabia",
+              "China"
+            ],
+            "public": false,
+            "text": "China — Turn 70 notice: Arabia has started a Settler in Damascus for the eligible coastal site at (-11,-15), targeting the currently unclaimed Whales/Fish area near the observed northern corridor. This is not a move toward the (3,-1) Whales corridor; please flag if you consider it toward an established area or if your plans have changed. Arabia is preserving the advance-notice understanding, with no permanent no-settle concession implied.",
+            "mentions": [],
+            "turn": 70,
+            "nativeAction": null
+          }
+        ],
+        "queuedDrafts": [],
+        "playerObjectives": [],
+        "pendingProposals": []
+      }
+    },
+    {
+      "id": "mei6d2",
+      "label": "useful_new_information",
+      "source": {
+        "artifact": "build/active-benchmarks-audit-20261013-1342/all-luna-attempt-2-0/g0004/diplomacy.json",
+        "message": "mei6d2"
+      },
+      "direction": "incoming",
+      "protected": false,
+      "expected": [
+        "respond_now"
+      ],
+      "bundle": {
+        "audience": [
+          false,
+          [
+            "Inca",
+            "Persia"
+          ]
+        ],
+        "pending": [
+          {
+            "message": "mei6d2",
+            "author": "Persia",
+            "participants": [
+              "Inca",
+              "Persia"
+            ],
+            "public": false,
+            "text": "Inca — the Settler route preview to (7,-3) is legal and estimated at 3 turns; no visible capture threat is reported, but the final approach has 6 unseen tiles. I am now deliberately pairing the Settler with its escort and routing it toward (7,-3). This is advance notice only, not a permanent claim or border concession; please flag any deliberate force movement toward our frontier.",
+            "mentions": [],
+            "turn": 72,
+            "nativeAction": null
+          }
+        ],
+        "recentExchanges": [
+          {
+            "message": "mjzlth",
+            "author": "Persia",
+            "participants": [
+              "Inca",
+              "Persia"
+            ],
+            "public": false,
+            "text": "Inca — Persia observes Ollantaytambo founded at (6,0). Our capital Settler is currently being built for the separate (7,-3) site near the Incense; this is advance notice, not a permanent claim or concession. We will give another notice before routing the Settler or any deliberate force toward your established area. The Immortal at (8,0) remains on exploration.",
+            "mentions": [],
+            "turn": 68,
+            "nativeAction": null
+          },
+          {
+            "message": "mxat5q",
+            "author": "Inca",
+            "participants": [
+              "Inca",
+              "Persia"
+            ],
+            "public": false,
+            "text": "Persia — our Scout now observes the Incense tile at (8,-2), and (7,-3) is currently empty. We are evaluating the site without a permanent claim or concession. Please flag before deliberately routing your Settler or any force toward the site or our frontier, and we will do the same.",
+            "mentions": [],
+            "turn": 71,
+            "nativeAction": null
+          },
+          {
+            "message": "mazm4i",
+            "author": "Persia",
+            "participants": [
+              "Inca",
+              "Persia"
+            ],
+            "public": false,
+            "text": "Understood. Persia’s Settler still has one turn remaining, so no route or deliberate force movement toward your frontier occurs this turn. We will preview the route and notify you before deliberately routing toward (7,-3); this is advance notice, not a permanent claim or concession.",
+            "mentions": [],
+            "turn": 71,
+            "nativeAction": null
+          },
+          {
+            "message": "mg2c1d",
+            "author": "Inca",
+            "participants": [
+              "Inca",
+              "Persia"
+            ],
+            "public": false,
+            "text": "Persia — on turn 72 our Scout still sees the Incense tile at (8,-2) empty, while your Immortal is now visible at (6,-2). Is it routing toward (7,-3)/(8,-2), and has your Settler route begun? Please flag deliberate movement as discussed; Inca is still evaluating the site without a permanent claim or concession.",
+            "mentions": [],
+            "turn": 72,
+            "nativeAction": null
+          },
+          {
+            "message": "mo2wfr",
+            "author": "Persia",
+            "participants": [
+              "Inca",
+              "Persia"
+            ],
+            "public": false,
+            "text": "Inca — your turn-72 notice is received. Persia has not made a deliberate Settler or force movement toward (7,-3)/(8,-2) as of our last confirmed status; the Immortal at (6,-2) remains part of the eastern reconnaissance posture. I am checking the Settler route now and will notify you before deliberately routing it or any force toward the site/frontier. This remains advance notice only, not a permanent claim or concession.",
+            "mentions": [],
+            "turn": 72,
+            "nativeAction": null
+          }
+        ],
+        "queuedDrafts": [],
+        "playerObjectives": [],
+        "pendingProposals": []
+      }
+    },
+    {
+      "id": "m1q6mf",
+      "label": "changed_terms",
+      "source": {
+        "artifact": "build/active-benchmarks-audit-20261013-1342/all-luna-attempt-2-0/g0004/diplomacy.json",
+        "message": "m1q6mf"
+      },
+      "direction": "incoming",
+      "protected": false,
+      "expected": [
+        "respond_now"
+      ],
+      "bundle": {
+        "audience": [
+          false,
+          [
+            "Arabia",
+            "China"
+          ]
+        ],
+        "pending": [
+          {
+            "message": "m1q6mf",
+            "author": "China",
+            "participants": [
+              "Arabia",
+              "China"
+            ],
+            "public": false,
+            "text": "Turn 83 update: the engine now reports (-11,-15) as a legal site from Beijing. China is moving the escorted Settler toward it to preserve the option. We recognize Arabia’s nearby Settler and will keep the corridor peaceful—no attack or blocking. If Arabia has already committed to founding there, please let me know; we will reassess on arrival.",
+            "mentions": [],
+            "turn": 83,
+            "nativeAction": null
+          }
+        ],
+        "recentExchanges": [
+          {
+            "message": "mwu0tk",
+            "author": "China",
+            "participants": [
+              "Arabia",
+              "China"
+            ],
+            "public": false,
+            "text": "Turn 76 update: the engine interrupted China’s prior escorted movement order at (-5,-12) while (-11,-15) remains legally eligible. Arabia’s Crossbowman is now visible on the target tile, so China has reissued an escorted route to the adjacent staging tile (-10,-15) rather than entering or attacking the occupied site. Please confirm whether your Settler is present or your expected founding timing; we will keep the corridor peaceful under our accepted race.",
+            "mentions": [],
+            "turn": 76,
+            "nativeAction": null
+          },
+          {
+            "message": "mk9txs",
+            "author": "Arabia",
+            "participants": [
+              "Arabia",
+              "China"
+            ],
+            "public": false,
+            "text": "Turn 77 update: Arabia's Damascus Settler is not yet on the map; Damascus has 75/106 production and the current estimate is about 3 turns to completion. Our Crossbowman remains on (-11,-15), so Arabia cannot found immediately. We remain committed to the agreed first-legal-founder race and peaceful 10-turn corridor term; we will give notice if our route changes. Please keep your escorted Settler staged peacefully as agreed.",
+            "mentions": [],
+            "turn": 77,
+            "nativeAction": null
+          },
+          {
+            "message": "m8n12y",
+            "author": "Arabia",
+            "participants": [
+              "Arabia",
+              "China"
+            ],
+            "public": false,
+            "text": "I now observe your escorted Settler at (-7,-13). To honor the bounded first-arrival race and avoid blocking, Arabia will reposition its Crossbowman from (-11,-15) to adjacent (-10,-14) this turn; our Damascus Settler remains about 3 turns from completion. The corridor remains peaceful under the agreed term.",
+            "mentions": [],
+            "turn": 77,
+            "nativeAction": null
+          },
+          {
+            "message": "m26n2s",
+            "author": "China",
+            "participants": [
+              "Arabia",
+              "China"
+            ],
+            "public": false,
+            "text": "Turn 77 clarification: the engine now reports (-11,-15) is blocked by Beijing's minimum city-spacing rule, so China is cancelling the escorted route and withdrawing from the settlement race. We will not contest or attack the site; please treat the corridor as peaceful.",
+            "mentions": [],
+            "turn": 77,
+            "nativeAction": null
+          },
+          {
+            "message": "mrb7q6",
+            "author": "Arabia",
+            "participants": [
+              "Arabia",
+              "China"
+            ],
+            "public": false,
+            "text": "Confirmed. Arabia accepts your withdrawal from the (-11,-15) race based on Beijing’s spacing restriction and will proceed with our Damascus Settler when completed. We will keep the corridor peaceful and will not attack, block, or immediately settle adjacent during the agreed 10-turn term; this is a bounded site-specific understanding, not a permanent no-settle concession.",
+            "mentions": [],
+            "turn": 78,
+            "nativeAction": null
+          },
+          {
+            "message": "mlwj74",
+            "author": "Arabia",
+            "participants": [
+              "Arabia",
+              "China"
+            ],
+            "public": false,
+            "text": "China — Arabia now observes your escorted Settler at (-7,-14), with Archers nearby. Arabia’s escorted Settler remains routed toward (-11,-15), and we will keep the corridor peaceful under our bounded understanding. Is your Settler withdrawing toward another site, and are the nearby Archers screening it? Please give advance notice of any movement toward (-11,-15).",
+            "mentions": [],
+            "turn": 81,
+            "nativeAction": null
+          },
+          {
+            "message": "miux80",
+            "author": "Arabia",
+            "participants": [
+              "Arabia",
+              "China"
+            ],
+            "public": false,
+            "text": "Separately, Arabia intends to renew the current 1 Cotton for 5 Gold/turn agreement on the same bounded terms at the first legal window. No premium or permanent settlement concession is implied.",
+            "mentions": [],
+            "turn": 81,
+            "nativeAction": null
+          },
+          {
+            "message": "mlio3f",
+            "author": "China",
+            "participants": [
+              "Arabia",
+              "China"
+            ],
+            "public": false,
+            "text": "Confirmed: China has withdrawn from (-11,-15) after the engine's spacing result and will not contest that site during the bounded term. Our escorted Settler is staged at Beijing while we evaluate the separate site at (10,-4); we are not currently moving toward your area. We will give advance notice before any deliberate move near your established cities. We understand your intent to renew the current Cotton-for-5 Gold/turn agreement at the first legal window.",
+            "mentions": [],
+            "turn": 81,
+            "nativeAction": null
+          }
+        ],
+        "queuedDrafts": [],
+        "playerObjectives": [],
+        "pendingProposals": []
+      }
+    },
+    {
+      "id": "mg0r5h",
+      "label": "ambiguous_promise",
+      "source": {
+        "artifact": "build/active-benchmarks-audit-20261013-1342/all-luna-attempt-2-0/g0004/diplomacy.json",
+        "message": "mg0r5h"
+      },
+      "direction": "incoming",
+      "protected": false,
+      "expected": [
+        "respond_now"
+      ],
+      "bundle": {
+        "audience": [
+          false,
+          [
+            "Arabia",
+            "China"
+          ]
+        ],
+        "pending": [
+          {
+            "message": "mg0r5h",
+            "author": "China",
+            "participants": [
+              "Arabia",
+              "China"
+            ],
+            "public": false,
+            "text": "China’s Settler was last observed at (-3,-5), still on the route toward (-11,-15). Its movement has not advanced as quickly as our earlier estimate, so I cannot responsibly promise an exact arrival turn; China still intends to continue while the site remains legal and safe. To avoid a military dispute, I propose a bounded settlement race: whichever Settler legally arrives and founds first gets (-11,-15); the other side does not attack, block, or immediately settle adjacent to the new city for 10 turns, while both sides keep forces peaceful in the corridor. This is a temporary coordination term, not a permanent no-settle concession. If Arabia has a materially earlier ETA or a concrete alternative site, please share it so we can assess a mutually acceptable adjustment.",
+            "mentions": [],
+            "turn": 71,
+            "nativeAction": null
+          }
+        ],
+        "recentExchanges": [
+          {
+            "message": "m8fvg6",
+            "author": "Arabia",
+            "participants": [
+              "Arabia",
+              "China"
+            ],
+            "public": false,
+            "text": "China — Turn 70 notice: Arabia has started a Settler in Damascus for the eligible coastal site at (-11,-15), targeting the currently unclaimed Whales/Fish area near the observed northern corridor. This is not a move toward the (3,-1) Whales corridor; please flag if you consider it toward an established area or if your plans have changed. Arabia is preserving the advance-notice understanding, with no permanent no-settle concession implied.",
+            "mentions": [],
+            "turn": 70,
+            "nativeAction": null
+          },
+          {
+            "message": "mcygkx",
+            "author": "China",
+            "participants": [
+              "Arabia",
+              "China"
+            ],
+            "public": false,
+            "text": "China received Arabia’s Turn 70 notice. Our escorted Settler has been committed to (-11,-15) since Turn 67 and is currently en route from (-3,-5); reconnaissance still shows the site eligible. This is therefore a contested settlement, not an unclaimed fallback from China’s perspective. We intend to continue toward and found there if it remains legal and safe. Please confirm whether Damascus’s Settler is committed to (-11,-15), and whether Arabia is willing to redirect or coordinate to avoid an avoidable frontier dispute. China will continue giving advance notice of any deliberate route change; our notice-only understanding remains in force and is not a permanent no-settle concession.",
+            "mentions": [],
+            "turn": 70,
+            "nativeAction": null
+          },
+          {
+            "message": "msyht1",
+            "author": "Arabia",
+            "participants": [
+              "Arabia",
+              "China"
+            ],
+            "public": false,
+            "text": "China — Arabia confirms Damascus’s Settler is committed to (-11,-15), so this is a genuine contest rather than an accidental route overlap. We are willing to coordinate to avoid a military dispute: please share your Settler’s current position and estimated arrival, and any concrete alternative site or terms you would propose. Arabia is not making a permanent no-settle concession or promising to redirect without a mutually acceptable arrangement; until we agree otherwise, both sides should keep the corridor peaceful and give advance notice of any route change.",
+            "mentions": [],
+            "turn": 70,
+            "nativeAction": null
+          }
+        ],
+        "queuedDrafts": [],
+        "playerObjectives": [],
+        "pendingProposals": []
+      }
+    },
+    {
+      "id": "mp7lcg",
+      "label": "actionable_handoff_despite_unchanged_terms",
+      "source": {
+        "artifact": "build/active-benchmarks-audit-20261013-1342/all-luna-attempt-2-0/g0004/diplomacy.json",
+        "message": "mp7lcg"
+      },
+      "direction": "incoming",
+      "protected": false,
+      "expected": [
+        "respond_now"
+      ],
+      "bundle": {
+        "audience": [
+          false,
+          [
+            "China",
+            "Persia"
+          ]
+        ],
+        "pending": [
+          {
+            "message": "mp7lcg",
+            "author": "Persia",
+            "participants": [
+              "China",
+              "Persia"
+            ],
+            "public": false,
+            "text": "China — I rechecked the native window. Persia remains ready for the exact bounded 30-turn exchange: I give 1 Sugar and receive 1 Cotton. The engine currently requires China to open the negotiation, so please initiate a fresh proposal on those unchanged terms; I will inspect and accept promptly.",
+            "mentions": [],
+            "turn": 85,
+            "nativeAction": null
+          }
+        ],
+        "recentExchanges": [
+          {
+            "message": "moebz7",
+            "author": "Persia",
+            "participants": [
+              "China",
+              "Persia"
+            ],
+            "public": false,
+            "text": "China — the prior 30-turn 1 Cotton for 1 Sugar proposals expired before execution. Persia remains willing to accept those exact bounded 1-for-1 terms if you still have the surplus Cotton; please reissue the native proposal when convenient. Our terminal-project status remains unchanged.",
+            "mentions": [],
+            "turn": 73,
+            "nativeAction": null
+          },
+          {
+            "message": "mzwffk",
+            "author": "China",
+            "participants": [
+              "China",
+              "Persia"
+            ],
+            "public": false,
+            "text": "The prior 30-turn Cotton-for-Sugar proposals expired before execution. I remain ready for the exact bounded exchange: China gives 1 Cotton for Persia’s 1 Sugar for 30 turns. Please open the native proposal when convenient; I will accept it after inspection.",
+            "mentions": [],
+            "turn": 73,
+            "nativeAction": null
+          },
+          {
+            "message": "mmmbsf",
+            "author": "Persia",
+            "participants": [
+              "China",
+              "Persia"
+            ],
+            "public": false,
+            "text": "Turn 74: Persia remains ready for the exact bounded exchange you described—China gives 1 Cotton and Persia gives 1 Sugar for 30 turns. Please reissue the native proposal when convenient; Persia will inspect and accept if those terms are unchanged. No strategic or terminal-project status has changed.",
+            "mentions": [],
+            "turn": 74,
+            "nativeAction": null
+          },
+          {
+            "message": "m6jf3k",
+            "author": "China",
+            "participants": [
+              "China",
+              "Persia"
+            ],
+            "public": false,
+            "text": "Trade options confirm Sugar (1) for 30 turns is available, but China cannot initiate this exchange. Please open the native offer with China giving 1 Cotton and receiving 1 Sugar for 30 turns; I will inspect and accept the exact terms.",
+            "mentions": [],
+            "turn": 74,
+            "nativeAction": null
+          },
+          {
+            "message": "myjdhb",
+            "author": "Persia",
+            "participants": [
+              "China",
+              "Persia"
+            ],
+            "public": false,
+            "text": "China — Persia remains willing to execute the exact bounded 30-turn exchange of 1 Cotton from China for 1 Sugar from Persia if the native offer becomes executable. Current Persia status: no Apollo, UN, Utopia, or spaceship part is under construction. Please update me if your terminal-project or Cotton position has changed.",
+            "mentions": [],
+            "turn": 81,
+            "nativeAction": null
+          },
+          {
+            "message": "mdctfz",
+            "author": "China",
+            "participants": [
+              "China",
+              "Persia"
+            ],
+            "public": false,
+            "text": "Trade options still show Sugar (1) for 30 turns available, while China cannot initiate. Please open the native offer with China giving 1 Cotton and receiving 1 Sugar for 30 turns; I will inspect and accept if unchanged. China’s Cotton position is unchanged.",
+            "mentions": [],
+            "turn": 81,
+            "nativeAction": null
+          },
+          {
+            "message": "mt69ij",
+            "author": "China",
+            "participants": [
+              "China",
+              "Persia"
+            ],
+            "public": false,
+            "text": "Turn 84 check: if the exact bounded native exchange is still executable—China gives 1 Cotton and receives 1 Sugar for 30 turns—please open the native offer. I will inspect the terms before accepting; no other concession is requested.",
+            "mentions": [],
+            "turn": 84,
+            "nativeAction": null
+          },
+          {
+            "message": "mwoi6l",
+            "author": "China",
+            "participants": [
+              "China",
+              "Persia"
+            ],
+            "public": false,
+            "text": "The native 1 Cotton for 1 Sugar / 30-turn proposal d30u2p expired before execution. If the exchange is still executable now, please open a fresh native offer; I will inspect and accept the unchanged terms promptly. No gold or other concession requested.",
+            "mentions": [],
+            "turn": 85,
+            "nativeAction": null
+          }
+        ],
+        "queuedDrafts": [],
+        "playerObjectives": [],
+        "pendingProposals": []
+      }
+    },
+    {
+      "id": "mvzhte",
+      "label": "answer_to_pending_question",
+      "source": {
+        "artifact": "build/active-benchmarks-audit-20261013-1342/all-luna-attempt-2-0/g0004/diplomacy.json",
+        "message": "mvzhte"
+      },
+      "direction": "incoming",
+      "protected": false,
+      "expected": [
+        "respond_now",
+        "batch"
+      ],
+      "bundle": {
+        "audience": [
+          false,
+          [
+            "Arabia",
+            "China"
+          ]
+        ],
+        "pending": [
+          {
+            "message": "mvzhte",
+            "author": "Arabia",
+            "participants": [
+              "Arabia",
+              "China"
+            ],
+            "public": false,
+            "text": "Confirmed: Arabia currently has no Apollo, UN, Utopia, or spaceship part under construction. Arabia remains on its science/economic course and is not in a direct terminal race. We continue to intend exact renewal of 1 Cotton for 5 Gold/turn when the current agreement expires and the native window is executable. The bounded understanding for (-11,-15) and advance notice before deliberate movement near our established area also remains unchanged.",
+            "mentions": [],
+            "turn": 84,
+            "nativeAction": null
+          }
+        ],
+        "recentExchanges": [
+          {
+            "message": "m26n2s",
+            "author": "China",
+            "participants": [
+              "Arabia",
+              "China"
+            ],
+            "public": false,
+            "text": "Turn 77 clarification: the engine now reports (-11,-15) is blocked by Beijing's minimum city-spacing rule, so China is cancelling the escorted route and withdrawing from the settlement race. We will not contest or attack the site; please treat the corridor as peaceful.",
+            "mentions": [],
+            "turn": 77,
+            "nativeAction": null
+          },
+          {
+            "message": "mrb7q6",
+            "author": "Arabia",
+            "participants": [
+              "Arabia",
+              "China"
+            ],
+            "public": false,
+            "text": "Confirmed. Arabia accepts your withdrawal from the (-11,-15) race based on Beijing’s spacing restriction and will proceed with our Damascus Settler when completed. We will keep the corridor peaceful and will not attack, block, or immediately settle adjacent during the agreed 10-turn term; this is a bounded site-specific understanding, not a permanent no-settle concession.",
+            "mentions": [],
+            "turn": 78,
+            "nativeAction": null
+          },
+          {
+            "message": "mlwj74",
+            "author": "Arabia",
+            "participants": [
+              "Arabia",
+              "China"
+            ],
+            "public": false,
+            "text": "China — Arabia now observes your escorted Settler at (-7,-14), with Archers nearby. Arabia’s escorted Settler remains routed toward (-11,-15), and we will keep the corridor peaceful under our bounded understanding. Is your Settler withdrawing toward another site, and are the nearby Archers screening it? Please give advance notice of any movement toward (-11,-15).",
+            "mentions": [],
+            "turn": 81,
+            "nativeAction": null
+          },
+          {
+            "message": "miux80",
+            "author": "Arabia",
+            "participants": [
+              "Arabia",
+              "China"
+            ],
+            "public": false,
+            "text": "Separately, Arabia intends to renew the current 1 Cotton for 5 Gold/turn agreement on the same bounded terms at the first legal window. No premium or permanent settlement concession is implied.",
+            "mentions": [],
+            "turn": 81,
+            "nativeAction": null
+          },
+          {
+            "message": "mlio3f",
+            "author": "China",
+            "participants": [
+              "Arabia",
+              "China"
+            ],
+            "public": false,
+            "text": "Confirmed: China has withdrawn from (-11,-15) after the engine's spacing result and will not contest that site during the bounded term. Our escorted Settler is staged at Beijing while we evaluate the separate site at (10,-4); we are not currently moving toward your area. We will give advance notice before any deliberate move near your established cities. We understand your intent to renew the current Cotton-for-5 Gold/turn agreement at the first legal window.",
+            "mentions": [],
+            "turn": 81,
+            "nativeAction": null
+          },
+          {
+            "message": "m1q6mf",
+            "author": "China",
+            "participants": [
+              "Arabia",
+              "China"
+            ],
+            "public": false,
+            "text": "Turn 83 update: the engine now reports (-11,-15) as a legal site from Beijing. China is moving the escorted Settler toward it to preserve the option. We recognize Arabia’s nearby Settler and will keep the corridor peaceful—no attack or blocking. If Arabia has already committed to founding there, please let me know; we will reassess on arrival.",
+            "mentions": [],
+            "turn": 83,
+            "nativeAction": null
+          },
+          {
+            "message": "mtiw6t",
+            "author": "Arabia",
+            "participants": [
+              "Arabia",
+              "China"
+            ],
+            "public": false,
+            "text": "Yes—Arabia is already committed to founding at (-11,-15) with the escorted Settler now routed there. We will proceed peacefully and will not attack, block, or deliberately interfere with your Settler. Given your earlier withdrawal and our bounded site-specific understanding, please treat this as Arabia's active first-arrival claim; if your Settler continues toward the site, give advance notice before entering the immediate corridor so we can avoid an incident. The current Cotton-for-5-Gold/turn agreement remains intended for exact renewal at the first legal window.",
+            "mentions": [],
+            "turn": 83,
+            "nativeAction": null
+          },
+          {
+            "message": "mrxn3z",
+            "author": "China",
+            "participants": [
+              "Arabia",
+              "China"
+            ],
+            "public": false,
+            "text": "Understood. China will withdraw the Settler from the (-11,-15) corridor and will not block, attack, or deliberately interfere with Damascus. We will give notice before any future deliberate movement near your established area. We also continue to favor renewing the current 1 Cotton for 5 Gold/turn agreement at the first legal window. Separately, can you confirm whether Arabia currently has Apollo, the UN, Utopia, or any spaceship part under construction?",
+            "mentions": [],
+            "turn": 83,
+            "nativeAction": null
+          }
+        ],
+        "queuedDrafts": [],
+        "playerObjectives": [],
+        "pendingProposals": []
+      }
+    },
+    {
+      "id": "duplicate-victory-report",
+      "label": "unchanged_report",
+      "source": {
+        "artifact": "build/active-benchmarks-audit-20261013-1342/all-luna-attempt-2-0/g0004/diplomacy.json",
+        "message": "mvzhte",
+        "transformation": "Counterfactual identical resend after the original answer; not an observed extra message."
+      },
+      "direction": "outgoing",
+      "expected": [
+        "omit"
+      ],
+      "bundle": {
+        "audience": [
+          false,
+          [
+            "Arabia",
+            "China"
+          ]
+        ],
+        "pending": [],
+        "recentExchanges": [
+          {
+            "message": "mvzhte",
+            "author": "Arabia",
+            "participants": [
+              "Arabia",
+              "China"
+            ],
+            "public": false,
+            "text": "Confirmed: Arabia currently has no Apollo, UN, Utopia, or spaceship part under construction. Arabia remains on its science/economic course and is not in a direct terminal race. We continue to intend exact renewal of 1 Cotton for 5 Gold/turn when the current agreement expires and the native window is executable. The bounded understanding for (-11,-15) and advance notice before deliberate movement near our established area also remains unchanged.",
+            "mentions": [],
+            "turn": 84,
+            "nativeAction": null
+          }
+        ],
+        "proposedMessage": {
+          "author": "Arabia",
+          "text": "Confirmed: Arabia currently has no Apollo, UN, Utopia, or spaceship part under construction. Arabia remains on its science/economic course and is not in a direct terminal race. We continue to intend exact renewal of 1 Cotton for 5 Gold/turn when the current agreement expires and the native window is executable. The bounded understanding for (-11,-15) and advance notice before deliberate movement near our established area also remains unchanged."
+        },
+        "queuedDrafts": [],
+        "playerObjectives": [],
+        "pendingProposals": []
+      }
+    },
+    {
+      "id": "ack",
+      "label": "acknowledgement",
+      "source": {
+        "synthetic": true
+      },
+      "direction": "incoming",
+      "expected": [
+        "no_separate_response",
+        "batch"
+      ],
+      "bundle": {
+        "audience": [
+          false,
+          [
+            "Greece",
+            "Rome"
+          ]
+        ],
+        "pending": [
+          {
+            "author": "Greece",
+            "text": "Thanks, received."
+          }
+        ],
+        "recentExchanges": [
+          {
+            "author": "Greece",
+            "text": "The road is complete."
+          }
+        ],
+        "queuedDrafts": [],
+        "playerObjectives": [],
+        "pendingProposals": []
+      }
+    },
+    {
+      "id": "answered-question",
+      "label": "answered_question",
+      "source": {
+        "synthetic": true
+      },
+      "direction": "incoming",
+      "expected": [
+        "no_separate_response"
+      ],
+      "bundle": {
+        "audience": [
+          false,
+          [
+            "Greece",
+            "Rome"
+          ]
+        ],
+        "pending": [
+          {
+            "author": "Greece",
+            "text": "Did you receive the map?"
+          }
+        ],
+        "recentExchanges": [
+          {
+            "author": "Greece",
+            "text": "Did you receive the map?"
+          },
+          {
+            "author": "Rome",
+            "text": "Yes, received."
+          }
+        ],
+        "queuedDrafts": [],
+        "playerObjectives": [],
+        "pendingProposals": []
+      }
+    },
+    {
+      "id": "bluff",
+      "label": "bluff",
+      "source": {
+        "synthetic": true
+      },
+      "direction": "incoming",
+      "expected": [
+        "respond_now"
+      ],
+      "bundle": {
+        "audience": [
+          false,
+          [
+            "Greece",
+            "Rome"
+          ]
+        ],
+        "pending": [
+          {
+            "author": "Greece",
+            "text": "My army will attack next turn unless you withdraw now."
+          }
+        ],
+        "recentExchanges": [],
+        "queuedDrafts": [],
+        "playerObjectives": [],
+        "pendingProposals": []
+      }
+    },
+    {
+      "id": "ambiguous-promise",
+      "label": "ambiguous_promise",
+      "source": {
+        "synthetic": true
+      },
+      "direction": "incoming",
+      "expected": [
+        "respond_now"
+      ],
+      "bundle": {
+        "audience": [
+          false,
+          [
+            "Greece",
+            "Rome"
+          ]
+        ],
+        "pending": [
+          {
+            "author": "Greece",
+            "text": "We may stay peaceful if the frontier remains acceptable. Does that work for you?"
+          }
+        ],
+        "recentExchanges": [],
+        "queuedDrafts": [],
+        "playerObjectives": [],
+        "pendingProposals": []
+      }
+    }
+  ]
+}

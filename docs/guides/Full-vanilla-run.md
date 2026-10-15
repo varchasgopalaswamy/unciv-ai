@@ -336,6 +336,23 @@ games. A specific game remains directly watchable with
 `match watch --state-dir .../games/<stem>`. Existing per-turn token/call/timing
 accounting remains in the databases; see [telemetry](../reference/Telemetry.md).
 
+A temporary SQLite lock during a summary read leaves that game's last result in
+place and retries at the next refresh. Other games keep running and refreshing.
+Both result files mark the affected row with `result_stale` and retain its
+`result_updated_at` timestamp; without a previous successful read, the result and
+timestamp are empty. The first lock in each outage is logged in `supervisor.log`.
+The freshness fields clear/update after a successful read. These fields describe
+derived reports only and do not change batch manifests or game checkpoints.
+At startup, monitoring readers wait while the database file exists but its schema
+has not been committed. Until a result is available, its value and timestamp are
+empty; later refreshes pick up the initialized database. This startup wait does
+not suppress errors from incompatible schemas or corrupt databases.
+The batch supervisor runs from the Python installation that launches `batch
+resume`, so supervisor fixes apply to existing paused batches without rebuilding
+or replacing their pinned game images. An interrupted player turn follows the
+ordinary [turn recovery](../architecture/Turn-recovery.md) procedure; completed
+turns are retained.
+
 `batch generate --dry-run` previews the generated TOMLs without publishing a
 directory. `batch start --dry-run` previews resolved inputs without creating state
 or contacting Podman. These validate the TOML, not native rules; native validation

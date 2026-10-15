@@ -85,6 +85,10 @@ class FakeHost:
         self.agent_failures = {}
         self.pending_reviews = {}
         self.readiness_checks = []
+        self.decisions_enabled = False
+        self.early_review_players = set()
+        self.triage_requests = []
+        self.review_starts = []
         self.finalizations = []
         self.terminal_finalizations, self.result_deliveries = [], []
         self.result_failures = {}
@@ -404,8 +408,13 @@ class FakeHost:
     def agent_request(self, civilization, body):
         if body["op"] == "health":
             return 200, {"status": {"civilization": civilization, "runFailure": self.agent_failures.get(civilization)}}
+        if body["op"] == "review_triage":
+            self.triage_requests.append((civilization, body))
+            return 200, {"status": {"earlyReview": civilization in self.early_review_players}}
         if body["op"] == "review_phase":
             self.readiness_checks.append((civilization, body["gameTurn"]))
+            if body["stage"] == "start":
+                self.review_starts.append((civilization, body))
             pending = self.pending_reviews.get(civilization)
             return 200, {
                 "status": {
@@ -418,7 +427,13 @@ class FakeHost:
             }
         if body["op"] in {"connect", "disconnect", "barrier", "flush_accounting"}:
             return 200, {
-                "status": {"connected": True, "ready": True, "paused": body.get("paused", False), "reviewInterval": 5}
+                "status": {
+                    "connected": True,
+                    "ready": True,
+                    "paused": body.get("paused", False),
+                    "reviewInterval": 5,
+                    "decisionsEnabled": self.decisions_enabled,
+                }
             }
         if body["op"] == "snapshot":
             self.snapshots[civilization, body["id"]] = copy.deepcopy(
@@ -832,6 +847,34 @@ class SchedulerTest(unittest.TestCase):
         self.assertEqual(state["status"], "budget_exhausted")
         self.assertEqual(self.host.phase, "PAUSED")
         self.assertIsNone(self.host.lease)
+
+    def assert_decisions_round_boundary(self, early):
+        self.host.decisions_enabled = True
+        self.host.early_review_players = {"Rome"} if early else set()
+        result = self.run_cli("--max-turns", "2", "--max-seconds", "30")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual([play["request"]["gameTurn"] for play in self.host.plays], [0, 0, 1, 1])
+        self.assertCountEqual(
+            self.host.triage_requests,
+            [
+                (name, {"op": "review_triage", "epoch": self.host.epoch, "gameTurn": 1, "scheduledSoon": False})
+                for name in ("Rome", "Greece")
+            ],
+        )
+        starts = [(name, body) for name, body in self.host.review_starts if body["gameTurn"] == 1]
+        self.assertEqual([name for name, _ in starts], ["Rome"] if early else [])
+        if early:
+            self.assertTrue(starts[0][1]["earlyReview"])
+        self.assertEqual(self.saved()["handoffs"], 4)
+        self.assertEqual(self.saved()["reviewedBoundary"], 1)
+        self.assertEqual(self.saved()["reviewAnchors"], {"Rome": 0, "Greece": 0})
+        self.assertEqual(self.saved()["status"], "budget_exhausted")
+
+    def test_decisions_triage_crosses_round_boundary_without_a_review(self):
+        self.assert_decisions_round_boundary(early=False)
+
+    def test_decisions_triage_crosses_round_boundary_with_an_early_review(self):
+        self.assert_decisions_round_boundary(early=True)
 
     def test_manual_takeover_does_not_recapture_and_claim_to_undo_the_old_attempt(self):
         self.host.behaviors = ["incomplete"]

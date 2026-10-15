@@ -289,7 +289,7 @@ def agent(civilization):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("role", choices=("controller", "agent", "auth", "watch", "validate"))
+    parser.add_argument("role", choices=("controller", "agent", "auth", "decisions", "watch", "validate"))
     parser.add_argument("arguments", nargs=argparse.REMAINDER)
     args = parser.parse_args(argv)
     os.umask(0o077)
@@ -298,6 +298,11 @@ def main(argv=None):
         return controller()
     if args.role == "agent":
         return agent(*args.arguments)
+    if args.role == "decisions":
+        from civ_agent.decisions_broker import main as decisions_main
+
+        decisions_main()
+        return 0
     if args.role == "validate":
         return subprocess.call(
             native(["--validate-setup", "--data-dir", "/tmp/validation", *args.arguments]), cwd=ASSETS

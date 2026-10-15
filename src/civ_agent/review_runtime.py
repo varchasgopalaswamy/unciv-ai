@@ -100,7 +100,7 @@ class ReviewRuntime:
         self.unconfirmed_process = None
         self.active = False
 
-    async def phase(self, epoch, game_turn, stage, force_review=False):
+    async def phase(self, epoch, game_turn, stage, force_review=False, *, early_review=False):
         service = self.service
         if epoch != service.chat.epoch:
             raise ValueError("WORKSPACE_EPOCH_CONFLICT")
@@ -112,6 +112,8 @@ class ReviewRuntime:
             if not service.gateway.paused or not service.chat.held or service.chat.dispatching:
                 raise ValueError("REVIEW_BARRIER_REQUIRED")
             await self.prepare_round(game_turn, force_review)
+            if early_review and service.gateway.advisories is not None:
+                await service.gateway.advisories.save(lastEarlyTurn=turn)
             service.gateway.reviewing = True
             self.start()
         elif stage == "release":

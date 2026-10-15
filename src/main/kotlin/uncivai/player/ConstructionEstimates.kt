@@ -98,10 +98,14 @@ internal fun constructionTurns(city: City, name: String, useStoredProduction: Bo
 internal class ConstructionEstimateCache {
     private var key: List<Byte>? = null
     private var value: Map<String, Map<String, ConstructionEstimate>> = emptyMap()
+    private var nativePreferences: Map<Pair<String, String>, com.unciv.logic.automation.AutomationSelection.BuildingPreference> = emptyMap()
+
+    fun nativePreference(city: String, construction: String) = nativePreferences[city to construction]
 
     fun clear() {
         key = null
         value = emptyMap()
+        nativePreferences = emptyMap()
     }
 
     fun observe(player: Civilization): Map<String, Map<String, ConstructionEstimate>> {
@@ -120,6 +124,7 @@ internal class ConstructionEstimateCache {
             val estimator = ConstructionEstimator(player)
             val estimates = player.cities.associate { it.id to estimator.observe(it) }
             value = Collections.unmodifiableMap(estimates)
+            nativePreferences = estimator.nativePreferences.toMap()
             key = current
         }
         return value
@@ -130,12 +135,14 @@ internal class ConstructionEstimateCache {
  * Python can serve selective reads and refresh their evidence without a second read.
  */
 internal class ConstructionEstimator(private val player: Civilization) {
+    val nativePreferences = HashMap<Pair<String, String>, com.unciv.logic.automation.AutomationSelection.BuildingPreference>()
     private val preview = BuildingYieldPreview(player.gameInfo)
     private val decimal = DecimalFormat("0.#", DecimalFormatSymbols(Locale.ROOT))
     private val metrics = Stat.entries.filter { it != Stat.Faith || player.gameInfo.isReligionEnabled() }
 
     fun observe(city: City): Map<String, ConstructionEstimate> {
         val queue = city.cityConstructions
+        val automation = com.unciv.logic.automation.city.ConstructionAutomation(queue)
         val rules = player.gameInfo.ruleset
         // Victory prerequisites are public rules, even before their technologies
         // unlock the city production menu. Keep their native costs available for
@@ -186,6 +193,9 @@ internal class ConstructionEstimator(private val player: Civilization) {
                     ),
                     completion = (construction as? Building)?.takeUnless { queue.isBuilt(it.name) }?.let { building ->
                         val compared = preview.compare(city, building)
+                        automation.buildingPreference(building, compared.after.automationTotal - compared.before.automationTotal)?.let {
+                            nativePreferences[city.id to building.name] = it
+                        }
                         val sources = (compared.before.sources.keys + compared.after.sources.keys).sorted().associateWith { source ->
                             changes(compared.before.sources[source] ?: Stats(), compared.after.sources[source] ?: Stats())
                         }.filterValues { it.isNotEmpty() }
@@ -203,7 +213,7 @@ internal class ConstructionEstimator(private val player: Civilization) {
                                 compared.before.turnsToStarvation,
                                 compared.after.turnsToStarvation,
                             ),
-                            BuildingCompletionPreview.estimate(city, building)?.let { grants ->
+                            oneTime = BuildingCompletionPreview.estimate(city, building)?.let { grants ->
                                 fun cityName(id: String) = player.cities.single { it.id == id }.name
                                 ConstructionGrants(
                                     freeze(grants.amounts),

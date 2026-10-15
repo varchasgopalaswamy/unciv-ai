@@ -28,9 +28,12 @@ Run shell examples from the repository root unless a page says otherwise.
 | [Match dashboard](guides/Match-dashboard.md) | TUI, live output and model-connection status |
 | [Chat, memory and recovery](guides/Chat-memory-and-recovery.md) | Human communication, history and interrupted-turn recovery |
 | [Optional strategy guide](guides/Strategy-guide.md) | Advisory strategy context, CLI toggle and size measurements |
+| [Native guidance and Decisions](guides/Native-guidance-and-routing.md) | Direct native advice, city choices, diplomacy/memory/review triage, credentials and evaluation |
 | [Saved strategic positions](scenarios/Strategic-positions.md) | Reusable failure cases, live model comparisons and opening benchmarks |
 
 ## Architecture
+
+[Decisions advisory layer](architecture/Decisions-advisory-layer.md) documents the broker budget, city questions, memory triage and early-review boundaries.
 
 | Reference | Contents |
 | --- | --- |
