@@ -110,13 +110,12 @@ class ReviewStore:
             frozen = json.loads(inputs)
             observation = frozen["observation"]
             self.memory._set(db, "reviewPosition", review_position(observation))
-            from civ_agent.advisory_store import material_facts
-            from civ_agent.decisions_ledger import fingerprint
+            from civ_agent.advisory_review import completed_baseline
 
             state = self.memory._meta(db, "advisories", {})
-            state["reviewBaseline"] = fingerprint(
-                material_facts(frozen.get("reads", {}).get("player_turn", observation))
-            )
+            baseline = completed_baseline(parent, frozen)
+            state["reviewBaseline"] = baseline["fullFingerprint"]
+            state["reviewMaterialBaseline"] = baseline
             state.pop("earlyRequestTurn", None)
             self.memory._set(db, "advisories", state)
             # Conversations resume before this civ's next gameplay observation.

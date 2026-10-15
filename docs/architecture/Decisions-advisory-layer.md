@@ -21,8 +21,11 @@ existing validation and lifecycle; classification never filters those writes.
 The trusted broker alone chooses the model, task instructions, question types,
 choices, policy versions, confidence threshold, limits and prices. Clients send
 frozen memory/review/city evidence to `/batch`; unknown top-level controls and
-arbitrary gameplay tasks are rejected. The versioned task policy is `player-advisories-v2`,
-broker protocol 2. Health checks authenticate locally and make no provider calls. There are no provider retries.
+arbitrary gameplay tasks are rejected. Every request identifies its player, which
+must match the authenticated principal. The task policy is
+`player-advisories-v3`, broker protocol 3; it is separate from the diplomacy
+routing policy. Health checks authenticate and check local compatibility without
+calling the provider. Broker and player runtimes must use compatible versions.
 
 The operator registers each immutable container game ID and assigned player
 against a broker principal. Credential rotation updates its token hash without
@@ -38,8 +41,12 @@ game checkpoints. A process-shared initialization lock serializes WAL setup and
 authority-file publication. SQLite `BEGIN IMMEDIATE` atomically reserves across
 requests and processes before dispatch. Stable evidence-derived request IDs deduplicate
 replayed requests. Validated input usage settles reservations; missing or invalid
-usage retains them. Pending work after a lost reply/crash is never redispatched.
-Completed results are stored before replying. A restart or rewind cannot refund
+usage retains them. Completed results are stored before replying. A lost or
+unverifiable reply permits at most one free `GET /batch/{request_id}` receipt
+lookup per reachable cached attempt. Lookup cannot call the provider or reserve
+funds. Only an explicit `not_submitted` receipt permits resubmitting the same
+immutable request through ledger deduplication. An unknown completion never
+becomes a new paid retry. A restart or rewind cannot refund
 spending or pending reservations. The game manifest pins the broker authority;
 resume rejects an auth-directory change, and an authority/ledger mismatch or
 missing ledger fails closed.
@@ -52,6 +59,22 @@ This is a **local estimated spending ceiling**, not an invoice guarantee;
 regional processing premiums, long-context multipliers and provider tokenization
 can differ. The broker does not accept client prices, exemptions or identities.
 
+The ledger retains dispatched `replayEvidence`, model, policy version, input and
+question-prompt hashes, submitted question names and typed answer diagnostics.
+Original evidence remains in the trusted ledger rather than being copied into
+player replies or telemetry. The runtime verifies request, model, policy, input,
+prompt and question identities and reparses diagnostics before using an answer.
+Historical captures from an older policy cannot be treated as v3 results.
+
+Each submitted question has a `questionResults` row with status `accepted`,
+`low_confidence`, `refusal`, `missing` or `malformed`. Sanitized typed choices and
+refusals remain in `rawAnswers`; valid choices retain their original confidence
+and optional complete probability vectors. Only independently accepted choices
+enter `answers`. A batch fallback summarizes the first failure without discarding
+unrelated valid answers. An invalid named answer is isolated when possible;
+an unassignable malformed envelope can reject the batch. The runtime preserves
+the difference between a refusal and a low-confidence choice.
+
 ## Startup and delivery
 
 Startup reads ordinary permitted context and action details. When native advice
@@ -60,31 +83,51 @@ and recorded as exposed advice. Its alternatives retain the normal startup
 bound of eight, with omission counts; explicit reads can retrieve the remainder.
 Native reads and gameplay commands never initiate Decisions classification.
 
-Independent tasks share one eligible startup batch: optional-memory
-relevance, statement preservation, belief reconsideration and two questions per
-captured city (population focus and construction). Each task sees
+Independent tasks share one eligible startup batch: optional-memory inclusion
+and priority, statement preservation, belief reconsideration and two questions
+per captured city (population focus and construction). Each task sees
 frozen inputs and does not depend on another task's result. Internal classifier
 access never counts as delivering a memory or exposing gameplay advice.
 
 Material eligibility ignores transport IDs, stockpiles and routine counters.
-Startup batches require the configured turn gap and a meaningful memory
-selection need, new permitted evidence for preservation/belief reconsideration,
-or changed city-choice context.
-Attempts, including failures, are cached before network I/O. Optional-memory
-rankings have their own objective/topic/candidate-version key. Stable failed
-inputs are not repeatedly submitted. Overlarge/invalid batches use deterministic
-memory selection. Refusal, low confidence, timeout, cooldown and exhaustion
-leave direct native gameplay advice unchanged.
+Memory triage and city capture have separate attempt clocks using the configured
+startup gap, five turns by default. A communication activation cannot consume
+the next eligible gameplay city's attempt. Memory selection needs, new permitted
+sources and changed city context determine the questions within an eligible
+batch. Capture failures also consume their bounded city attempt.
+
+Attempts are persisted before network I/O. Source outcomes and optional rankings
+are cached against source, objective and topic context; belief attempts also
+include the recorded new evidence. Completed low-confidence, refused or failed
+stable inputs do not cause repeated paid calls. A changed relevance context can
+make the same source eligible for reconsideration. Overlarge inputs omit whole
+optional candidates and report coverage; invalid or unusable batches leave
+deterministic memory selection available. Refusal, low confidence, timeout,
+cooldown and exhaustion leave direct native gameplay advice unchanged.
+
+Private delivery bindings retain the original request/question and source
+versions or native city basis. After explicit startup memory reads, separate
+`advisory_delivery` events record context, notice or city-advice exposure. Review
+scheduling has its own exposure acknowledgment when a review task is prepared.
+Dispositions distinguish `delivered`, `no_notice`, `not_selected`, `stale` and
+`not_accepted`. Cached memory advice can be exposed in a later activation when it
+fits the context budget. Keep/defer city advice counts as exposed advice, never
+as an executed action. These records stay outside model-facing notices, carry no
+source prose or token usage, and do not add classifier calls or spending.
+Acceptance, exposure, model adoption and gameplay effects are separate outcomes.
 
 ## City choices
 
-At eligible gameplay startup, the service captures up to four manageable owned
-cities, prioritizing empty queues. Each has one focus question and one construction
-question. Both use the same pinned player/epoch/revision/turn, shared empire facts,
+At eligible gameplay startup with native `phase="ACTIVE"`, the service captures
+up to four manageable owned cities, prioritizing empty queues. Each has one focus
+question and one construction question. Both use the same pinned
+player/epoch/revision/turn, shared empire facts,
 and saved objectives. They have independent confidence/fallback handling and do
 not assume the other's answer. The gameplay model coordinates the recommendations
 and recomputes construction estimates after changing focus. Keep and defer are
-explicit alternatives; no recommendation is executed automatically.
+explicit alternatives; no recommendation is executed automatically. An active
+position can remain eligible when mandatory choices make `canEndTurn=false`;
+native availability checks still determine the offered choices.
 
 `player_inspect(subject="CITY_FOCUS", target=...)` computes native allocations on
 a fresh detached world for each available focus. It preserves growth settings,
@@ -111,9 +154,11 @@ results are discarded. Startup replay never initiates another paid request.
 Stable context reuses cached answers against freshly captured native options.
 Transport fields, treasury increments and ordinary progress counters do not force
 reclassification; construction/growth estimates use meaningful timing bands for
-eligibility. Failed stable inputs remain cached. With no usable answer, normal
-gameplay and independently enabled native advice continue. These questions share
-the existing additional allowance and startup cooldown. Status exposes internal
+eligibility. Reused answers retain their original request identity; delivery uses
+fresh native bindings and checks the complete active-objective set. Failed stable
+inputs remain cached. With no usable answer, normal gameplay and independently
+enabled native advice continue. These questions share the additional allowance
+and their own city attempt clock. Status exposes internal
 capture counts separately from delivered cities/questions.
 
 ## Memory
@@ -127,6 +172,16 @@ deterministic. Optional rankings fit the existing `memory_context_chars` budget,
 preserve original wording/dates/uncertainty/citations and pass through ordinary
 explicit `memory_read` delivery. Classifier access creates no delivered evidence.
 
+Retrieval has two independent binary questions per candidate.
+`retrieval_include:i` chooses `include` or `omit` for present usefulness;
+`retrieval_priority:i` chooses `high` or `normal`, assuming the memory is shown.
+Accepted inclusion can make an older optional note or belief eligible. Priority
+changes ordering among eligible memories and cannot grant eligibility alone.
+Omission applies to optional memory; pending `needsReview` notices retain their
+ordinary eligibility. Mandatory strategies and eligible handoffs keep their
+deterministic handling, so accepted inclusion need not fit the final character
+budget. Later exposure still binds to the original source version and request.
+
 Preservation presents source-linked attributed statements and unresolved
 questions at a normal activation. It never creates an activation or saves memory
 on the player's behalf. Belief notices carry the belief version and new source
@@ -136,15 +191,44 @@ classifier results, guidance observations and notices cannot seed cascades.
 Candidates/notices are separate activation data. The player can read their
 sources before choosing explicit notebook edits.
 
+Attributed sources preserve author, audience, source turn, exact text and
+uncertainty. Chronological bounds use source turn and event sequence, rather than
+lexical record IDs. A preservation decision does not establish that a statement
+has already been compared with every active belief. Belief reconsideration uses
+the claim's exact polarity and uncertainty, recorded overview comparisons and
+attributed new statements. Projection coverage reports missing fields and bounded
+rosters; absence or truncation is not proof of contradiction. Accepted `skip` and
+`retain` answers produce no positive notice and never revise memory.
+
 ## Early reviews
 
 Before selecting participants, the scheduler requests triage only for players
 with Decisions enabled and no scheduled review due now or next round. Triage
 uses previously recorded permitted material facts and saved reconsideration
 criteria, without opening a player connection or capturing a full review.
-Acceptance needs meaningful changed evidence, configured confidence, three
-rounds since any completed review and ten since the last accepted early review.
-An unchanged attempted signature does not create another paid call.
+Each completed strategic review atomically commits a bounded material-facts
+baseline, full fingerprint, schema and source identity alongside its report.
+Triage compares that baseline with current recorded facts, explicit deltas,
+`recentProgress` and relevant attributed statements. An old hash alone cannot
+reconstruct historical facts; unavailable baselines and incomplete comparisons
+remain explicit.
+
+The scheduler supplies authoritative `nextReviewTurn` in completed-round units.
+`sourceTurn`, `completedTurn` and `boundaryTurn` distinguish observation age from
+the upcoming boundary. The binary question asks whether an additional full
+review is worth its cost before that scheduled review; routine increments alone
+are insufficient. Acceptance needs meaningful changed evidence, configured
+confidence, three rounds since any completed review and ten since the last
+scheduled early review. An unchanged attempted signature does not create another
+paid call.
+
+The original request and its evidence remain immutable during receipt recovery
+or cache reuse. If a newer observation has the same material context, a separate
+current delivery binding revalidates source versions, baseline identity and the
+complete active-objective set. A different semantic context cannot be rebound
+to the old judgment. Review exposure also requires the accepted request and
+current binding to match the actual prepared review turn. Duplicate scheduling
+acknowledgments are deduplicated by original request and turn.
 
 Accepted requests join the same communication-draining hold, host barrier,
 parallel review and release workflow. Persisted participant metadata lets an
@@ -162,10 +246,25 @@ diplomacy classifier usage and full review usage.
 The broker ledger is the spending authority; checkpoint metadata is diagnostic.
 
 The labeled [advisory replay fixture](../../tests/fixtures/decisions-advisory-replay.json)
-has seven synthetic, provenance-labeled cases. Offline replay with no responses
-reports missing data, not accuracy. The bounded live replay exercises real API
-contracts and accounting, and does not execute gameplay or measure stronger play.
+has 19 provenance-labeled cases and 32 questions across the six advisory tasks.
+These are provisional assistant-authored judgments over synthetic evidence using
+current production schemas, including negative, missing-coverage and boundary
+cases. One explicitly labeled schema/parser stress case combines startup and
+review fields that runtime emits separately. Historical fixtures and captured
+responses remain historical artifacts; they cannot be relabeled as current v3
+quality evidence.
+
+Replay checks policy, input, prompt, model and request identity, then reports raw
+choices, accepted answers and observed delivery separately. Confidence/status
+denominators remain per question and task. Threshold sweeps use calibration
+cases only and do not select a threshold automatically; holdout results stay
+separate. Offline replay with no responses reports missing data, not accuracy.
+The current implementation has no paid v3 advisory-quality comparison or gameplay
+benefit evidence. Synthetic classifier-response tests validate contracts and
+accounting, rather than stronger play.
+
 Tests cover direct native delivery, independent toggles, unrestricted legal
-choices, explicit memory reads, non-recursive notices, barrier/anchor behavior, concurrent reservations, lost
-replies, restarts, rewinds, token rotation and pinned authorities. No engine edits
-or public contributions are part of this advisory layer.
+choices, explicit memory reads, non-recursive notices, barrier/anchor behavior,
+concurrent reservations, lost replies, bounded free receipt recovery, partial
+answers, raw diagnostics, cached later exposure, restarts, rewinds, token
+rotation and pinned authorities.

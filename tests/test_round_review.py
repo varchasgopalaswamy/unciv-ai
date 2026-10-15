@@ -24,6 +24,7 @@ def test_early_review_shares_barrier_preserves_periodic_anchor_and_suppresses_du
         calls.append((name, operation, fields))
         if operation == "review_triage":
             assert name == "Rome" and not fenced[0] and not resume
+            assert fields == {"epoch": "g1", "gameTurn": 5, "scheduledSoon": False, "nextReviewTurn": 20}
             return {"earlyReview": True}
         if fields["stage"] == "start":
             assert fenced[0]
@@ -84,6 +85,28 @@ def test_early_triage_is_skipped_when_periodic_review_is_next_round():
     )
     assert review_round(scheduler, {"epoch": "g1", "turn": 5})
     assert calls == []
+
+
+@pytest.mark.parametrize("anchor,interval,boundary,expected", [(None, 5, 7, 10), (3, 8, 7, 11), (9, 10, 13, 19)])
+def test_triage_receives_scheduler_next_review_in_completed_turns(anchor, interval, boundary, expected):
+    calls = []
+    agent = SimpleNamespace(call=lambda op, **fields: calls.append((op, fields)) or {"earlyReview": False})
+    scheduler = SimpleNamespace(
+        agents={"Rome": agent},
+        review_intervals={"Rome": interval},
+        decisions_players={"Rome"},
+        state={"reviewedBoundary": boundary - 1, "reviewAnchors": {} if anchor is None else {"Rome": anchor}},
+        turns=SimpleNamespace(call_agent=lambda agent, op, **fields: agent.call(op, **fields)),
+        round_open=True,
+        save=Mock(),
+    )
+    assert review_round(scheduler, {"epoch": "g1", "turn": boundary})
+    assert calls == [
+        (
+            "review_triage",
+            {"epoch": "g1", "gameTurn": boundary, "scheduledSoon": False, "nextReviewTurn": expected},
+        )
+    ]
 
 
 @pytest.mark.parametrize("stop", [None, "pause", "stop", "budget"])

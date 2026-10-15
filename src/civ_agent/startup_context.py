@@ -185,6 +185,10 @@ async def prepare_startup(gateway, job, *, call_prefix: str = STARTUP_CALL_PREFI
             call_prefix + f"memory:{offset}",
             source="startup",
         )
+    if gateway.advisories is not None:
+        async with gateway.admit(), job.lock:
+            gateway.check(job)
+            await gateway.advisories.finish_delivery(job)
     return {
         "coreTools": core_definitions(catalogue, job.purpose),
         "reads": reads,

@@ -186,7 +186,7 @@ def initialize(root, config, auth_root, *, original=None, images=None, validatio
 
         record["decisionsAuthority"] = DecisionsLedger(auth_root).authority
     from civ_agent.decisions_tasks import TASK_VERSION
-    from civ_agent.diplomacy_decisions import MODEL, POLICY_VERSION
+    from civ_agent.diplomacy_decisions import MODEL
 
     record.update(
         images=images,
@@ -197,7 +197,7 @@ def initialize(root, config, auth_root, *, original=None, images=None, validatio
             "decisions_enabled": config.agents.decisions_enabled,
             "nativeGuideVersion": "native-guidance-v1",
             "classifierModel": MODEL,
-            "routingPolicyVersion": POLICY_VERSION,
+            "routingPolicyVersion": config.agents.decisions_routing_policy,
             "advisoryPolicyVersion": TASK_VERSION,
         },
     )

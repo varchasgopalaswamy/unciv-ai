@@ -816,11 +816,13 @@ class AgentService:
 
     async def review_triage(self, payload):
         if (
-            set(payload) != {"epoch", "gameTurn", "scheduledSoon"}
+            set(payload) != {"epoch", "gameTurn", "scheduledSoon", "nextReviewTurn"}
             or payload["epoch"] != self.chat.epoch
             or type(payload["gameTurn"]) is not int
             or payload["gameTurn"] < 1
             or type(payload["scheduledSoon"]) is not bool
+            or type(payload["nextReviewTurn"]) is not int
+            or payload["nextReviewTurn"] < payload["gameTurn"]
         ):
             raise ServiceError("INVALID_ARGUMENT")
         advisory = self.gateway.advisories
@@ -831,7 +833,11 @@ class AgentService:
         # Accepted triage drains before checkpoint capture, just like gateway
         # reads. A late result must never write into a restored epoch.
         async with self.gateway.admit():
-            return await advisory.triage(payload["gameTurn"] - 1, scheduled_soon=payload["scheduledSoon"])
+            return await advisory.triage(
+                payload["gameTurn"] - 1,
+                scheduled_soon=payload["scheduledSoon"],
+                next_review_turn=payload["nextReviewTurn"],
+            )
 
     async def start(self, payload: JsonObject) -> JsonObject:
         self._validate_start(payload)

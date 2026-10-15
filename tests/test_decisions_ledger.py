@@ -25,6 +25,7 @@ from tests.test_decisions_broker import server
 def evidence(text="Could you send ships?") -> JsonObject:
     return {
         "version": TASK_VERSION,
+        "player": "Rome",
         "preservation": [{"key": "event:1", "version": 1, "record": {"body": {"author": "Greece", "text": text}}}],
     }
 
@@ -207,7 +208,7 @@ def test_zero_allowance_invalid_envelopes_and_gameplay_tasks_do_not_dispatch(tmp
             ):
                 supplied = {**evidence(), **injected}
                 async with session.post(
-                    url + "/batch", headers=headers, json={"requestId": request_id(supplied), "evidence": supplied}
+                    url + "/batch", headers=headers, json={"requestId": "0" * 64, "evidence": supplied}
                 ) as response:
                     assert response.status == 400
             for _ in range(2):

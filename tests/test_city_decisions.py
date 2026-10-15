@@ -2,13 +2,21 @@
 
 import asyncio
 import copy
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import select
 
 from civ_agent import memory_schema as tables
 from civ_agent.city_decisions import capture, recommendations, semantic_key
-from civ_agent.decisions_tasks import CITY_LIMIT, TASK_VERSION, parse_answers, request_body, request_id
+from civ_agent.decisions_tasks import (
+    CITY_LIMIT,
+    TASK_VERSION,
+    parse_answers,
+    request_body,
+    request_id,
+    request_metadata,
+)
 from civ_agent.memory_snapshots import load_snapshot
 from civ_agent.memory_store import RecordStore
 from civ_agent.startup_context import prepare_startup, startup_prompt
@@ -19,7 +27,8 @@ from tests.test_decisions_advisories import setup
 def add_cities(host, count=2):
     original = host.tool
     host.focus_reads = []
-    host.view["isYourTurn"] = True
+    host.view["phase"] = "ACTIVE"
+    host.view["canEndTurn"] = True
     host.view["economy"] = {"happiness": 4, "goldPerTurn": 2, "treasury": 100}
     prototype = copy.deepcopy(host.view["cities"][0])
     prototype.update(
@@ -93,7 +102,10 @@ def add_cities(host, count=2):
                     ],
                 },
             }
-        return await original(name, args)
+        result = await original(name, args)
+        if name == "player_turn":
+            result["phase"] = host.view["phase"]
+        return result
 
     host.tool = tool
 
@@ -105,7 +117,8 @@ def choose_candidates(classifier, host=None, *, focus_mode="success"):
         result = await original(evidence, timeout=timeout)
         if not isinstance(result.get("answers"), list):
             return result
-        for answer in result["answers"]:
+        raw = copy.deepcopy(result.get("rawAnswers", result["answers"]))
+        for answer in raw:
             if answer["name"].startswith("city_focus:") and answer.get("type") == "choice":
                 answer["choice"] = "focus1"
                 if focus_mode == "low":
@@ -116,9 +129,72 @@ def choose_candidates(classifier, host=None, *, focus_mode="success"):
                 answer["choice"] = "construction0"
         if host is not None:
             host.revision = "changed-during-classification"
-        return result
+        body = request_body(evidence, classifier.settings)
+        return {
+            **result,
+            **request_metadata(body, evidence),
+            **parse_answers(body, {"answers": raw}, classifier.settings.decisions_min_confidence),
+        }
 
     classifier.batch = batch
+
+
+@pytest.mark.parametrize("can_end_turn", [False, True])
+def test_native_active_phase_captures_cities_even_with_mandatory_choices(tmp_path, can_end_turn):
+    async def run():
+        async with setup(tmp_path) as (_, gateway, host, _):
+            add_cities(host, 1)
+            host.view["canEndTurn"] = can_end_turn
+            assert "isYourTurn" not in host.view
+            job = await gateway.open("job", "gameplay", "g1", host, {}, 0)
+            await gateway.call(job, "player_turn", {}, "initial")
+            cities, _, status = await capture(gateway, job, [])
+            assert len(cities) == status["capturedCities"] == 1
+            assert host.__dict__["focus_reads"]
+            assert host.executed == []
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("phase", ["WAITING", "PAUSED", "DEFEATED", "FINISHED"])
+def test_inactive_native_phase_never_reads_city_previews(tmp_path, phase):
+    async def run():
+        async with setup(tmp_path) as (_, gateway, host, _):
+            add_cities(host, 1)
+            host.view["phase"] = phase
+            job = await gateway.open("job", "gameplay", "g1", host, {}, 0)
+            await gateway.call(job, "player_turn", {}, "initial")
+            assert await capture(gateway, job, []) == ([], {}, {"reason": "not_active_gameplay", "capturedCities": 0})
+            assert host.__dict__["focus_reads"] == []
+
+    asyncio.run(run())
+
+
+def test_missing_native_phase_is_ineligible_without_a_host_read():
+    job = SimpleNamespace(observation={}, purpose="gameplay")
+    assert asyncio.run(capture(None, job, [])) == ([], {}, {"reason": "not_active_gameplay", "capturedCities": 0})
+
+
+def test_changed_native_source_during_preview_discards_captured_cities(tmp_path):
+    async def run():
+        async with setup(tmp_path) as (_, gateway, host, _):
+            add_cities(host, 1)
+            original = host.tool
+
+            async def changed(name, args):
+                result = await original(name, args)
+                if name == "player_inspect" and args.get("subject") == "CITY_FOCUS":
+                    result["revision"] = "stale-preview"
+                return result
+
+            host.tool = changed
+            job = await gateway.open("job", "gameplay", "g1", host, {}, 0)
+            await gateway.call(job, "player_turn", {}, "initial")
+            cities, context, status = await capture(gateway, job, [])
+            assert cities == [] and context == {}
+            assert status["reason"] == "stale_native_input"
+
+    asyncio.run(run())
 
 
 def test_two_city_questions_coalesce_with_memory_and_preserve_native_delivery(tmp_path):
@@ -301,7 +377,7 @@ def test_city_request_replay_ignores_transport_binding_but_not_native_changes(tm
             job = await gateway.open("job", "gameplay", "g1", host, {}, 0)
             await gateway.call(job, "player_turn", {}, "initial")
             cities, context, _ = await capture(gateway, job, [])
-            evidence = {"version": TASK_VERSION, "cities": cities, "cityContext": context}
+            evidence = {"version": TASK_VERSION, "player": "Rome", "cities": cities, "cityContext": context}
             restarted = copy.deepcopy(evidence)
             restarted["cities"][0]["basis"].update(epoch="restored-epoch", revision="restored-revision")
             assert request_id(restarted) == request_id(evidence)
@@ -332,7 +408,7 @@ def test_question_limit_omits_whole_city_pairs(tmp_path, question_limit):
 
 def test_byte_limit_omits_city_pair_and_its_unneeded_construction_rules(tmp_path):
     async def run():
-        async with setup(tmp_path, decisions_max_request_bytes=16000) as (_, gateway, host, classifier):
+        async with setup(tmp_path, decisions_max_request_bytes=20000) as (_, gateway, host, classifier):
             add_cities(host)
             host.view["cities"][0]["constructionOptions"] = ["Market"]
             host.view["cities"][1]["constructionOptions"] = ["Granary"]
@@ -397,7 +473,7 @@ def test_capture_limits_omissions_unknown_ids_and_broker_controls(tmp_path):
                 )
                 == []
             )
-            evidence = {"version": TASK_VERSION, "cities": cities, "cityContext": context}
+            evidence = {"version": TASK_VERSION, "player": "Rome", "cities": cities, "cityContext": context}
             body = request_body(evidence, classifier.settings)
             assert len(body["questions"]) == 2 * CITY_LIMIT
             for key in ("instructions", "model", "budgetExempt"):

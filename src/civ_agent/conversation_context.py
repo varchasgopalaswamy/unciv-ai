@@ -20,12 +20,16 @@ def audience(message, civilization):
     return None
 
 
-def conversation_context(db, civilization, seeds=()):
+def conversation_context(db, civilization, seeds=(), *, exclude_message_ids=()):
     base = (
         select(tables.events.c.body)
         .select_from(tables.events.join(tables.inbox))
         .where(tables.events.c.kind == "message")
     )
+    if exclude_message_ids:
+        # Routing's pending messages are a separate input, not prior exchange
+        # evidence. Exclude before taking excerpts so older context survives.
+        base = base.where(func.json_extract(tables.events.c.body, "$.body.message").not_in(exclude_message_ids))
     recent = [json.loads(body)["body"] for body in db.scalars(base.order_by(tables.events.c.id.desc()).limit(50))]
     sent = []
     for row in db.execute(
@@ -57,7 +61,7 @@ def conversation_context(db, civilization, seeds=()):
         if sent
         else set()
     )
-    sent = [m for m in sent if m["message"] not in echoed]
+    sent = [m for m in sent if m["message"] not in echoed and m["message"] not in exclude_message_ids]
     selected = list(
         dict.fromkeys(key for m in [*reversed(seeds), *recent, *sent] if (key := audience(m, civilization)) is not None)
     )

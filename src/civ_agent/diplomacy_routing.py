@@ -7,7 +7,15 @@ import time
 
 from civ_agent.civilization_state import StateConflict
 from civ_agent.conversation_context import audience
-from civ_agent.diplomacy_decisions import BATCH_SECONDS, CHOICES, TIMEOUT_SECONDS, fallback
+from civ_agent.decisions_policy import DecisionsSettings, routing_thresholds
+from civ_agent.diplomacy_decisions import (
+    BATCH_SECONDS,
+    CHOICES,
+    TIMEOUT_SECONDS,
+    TWO_QUESTION_POLICY_VERSION,
+    fallback,
+    parse_answer,
+)
 from civ_agent.diplomacy_store import DiplomacyStore, delivery_status, tuple_thread
 from civ_agent.memory_store import encode
 
@@ -23,7 +31,7 @@ class DiplomacyRouting:
         self.active_drafts = set()
         self.generation = 0
         self.timeout = settings.decisions_timeout_seconds if settings is not None else TIMEOUT_SECONDS
-        self.min_confidence = settings.decisions_min_confidence if settings is not None else 0.90
+        self.settings = settings or DecisionsSettings()
 
     def suspend(self):
         self.generation += 1
@@ -52,27 +60,58 @@ class DiplomacyRouting:
         except (OSError, ValueError):
             self.check_generation(generation)
             result = fallback(direction, "service_failure")
-        if self.gateway.accounting is not None:
-            await self.gateway.io.call(
-                self.gateway.accounting.classifier,
-                direction,
-                result if isinstance(result, dict) else fallback(direction, "malformed_broker_output"),
-            )
         self.check_generation(generation)
+        result = self.validate_decision(direction, result)
+        if self.gateway.accounting is not None:
+            await self.gateway.io.call(self.gateway.accounting.classifier, direction, result)
+        return result
+
+    def validate_decision(self, direction, result):
+        """Validate the effective broker action; diagnostic raw data cannot grant it."""
         if (
             not isinstance(result, dict)
             or not isinstance(result.get("choice"), str)
             or result.get("choice") not in CHOICES[direction]
         ):
             return fallback(direction, "malformed_broker_output")
+        policy = result.get("policyVersion")
+        if (policy is not None and policy != self.settings.decisions_routing_policy) or (
+            policy is None and self.settings.decisions_routing_policy != "diplomacy-routing-v1"
+        ):
+            return {**result, **fallback(direction, "routing_policy_mismatch"), "overridden": True}
+        thresholds = routing_thresholds(self.settings, direction)
+        result = {**result, "thresholds": thresholds}
         if result["choice"] != next(iter(CHOICES[direction])):
             confidence = result.get("confidence")
+            choice = result["choice"]
+            assert isinstance(choice, str)
+            required = thresholds[choice]
             if (
                 not isinstance(confidence, (int, float))
                 or isinstance(confidence, bool)
-                or not self.min_confidence <= confidence <= 1
+                or not required <= confidence <= 1
             ):
-                return fallback(direction, "low_confidence")
+                return {
+                    **result,
+                    **fallback(direction, "low_confidence"),
+                    "confidence": confidence,
+                    "overridden": True,
+                    "appliedThreshold": required,
+                    "lowConfidence": True,
+                }
+            result["appliedThreshold"] = required
+            if direction == "incoming" and policy == TWO_QUESTION_POLICY_VERSION:
+                # The binary confidence must belong to the question granting
+                # this action. Raw evidence can restrict a requested action;
+                # it never upgrades a broker's immediate response to batching.
+                parsed = parse_answer(
+                    direction,
+                    {"answers": result.get("rawAnswers")},
+                    thresholds=thresholds,
+                    policy_version=TWO_QUESTION_POLICY_VERSION,
+                )
+                if any(result.get(key) != parsed.get(key) for key in ("choice", "confidence", "questionBasis")):
+                    return {**result, **fallback(direction, "malformed_broker_output"), "overridden": True}
         return result
 
     def protected(self, thread, social):

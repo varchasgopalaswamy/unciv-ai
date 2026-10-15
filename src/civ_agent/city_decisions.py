@@ -54,7 +54,7 @@ async def internal_read(gateway, job, name, arguments):
 
 async def capture(gateway, job, objectives) -> tuple[list[JsonObject], JsonObject, JsonObject]:
     observation = job.observation or {}
-    if job.purpose != "gameplay" or not observation.get("isYourTurn"):
+    if job.purpose != "gameplay" or observation.get("phase") != "ACTIVE":
         return [], {}, {"reason": "not_active_gameplay", "capturedCities": 0}
     captured_basis = basis(gateway, job)
     candidates = [

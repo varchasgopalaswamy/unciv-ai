@@ -33,6 +33,20 @@ short-lived access tokens. `auth status` reports whether the login exists and th
 manager is running. Use `--auth-dir` consistently to select another durable login.
 Changing the account requires stopping the manager and affected games first.
 
+Recreate the shared login and Decisions services from the latest built runtime
+image with:
+
+```sh
+.venv/bin/civ-agent auth restart
+```
+
+This restarts configured services, retains credentials and the Decisions spending
+ledger, and verifies Decisions readiness without a paid API request. Use
+`--auth-dir PATH` for another auth directory or `--image IMAGE` for another runtime
+image. Run `civ-agent image build` first to include source changes. Stop affected
+games before upgrading their shared services; saved games retain their pinned
+runtime images.
+
 ## Start and watch
 
 ```sh

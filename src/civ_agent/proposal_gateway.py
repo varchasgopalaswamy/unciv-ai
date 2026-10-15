@@ -32,6 +32,7 @@ from civ_agent.memory_records import (
     memory_argument_error,
     public_record,
 )
+from civ_agent.memory_store import RecordStore
 from civ_agent.model_view import model_view, trade_inspection
 from civ_agent.observations import (
     DETAIL_MODELS,
@@ -1250,7 +1251,7 @@ class ProposalGateway:
                 include_retired=arguments.get("includeRetired", False),
                 startup=startup,
             )
-            job.memory["records"].update(chosen)
+            RecordStore.deliver(job.memory, chosen)
             return public_result(
                 MemoryReadResult.model_validate(
                     {"records": [public_record(key, record) for key, record in chosen.items()]}

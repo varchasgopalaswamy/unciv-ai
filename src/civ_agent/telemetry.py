@@ -1,20 +1,343 @@
 """Service-owned accounting, outside both model workspaces and game rollback snapshots."""
 
 import json
+import math
+import re
 import time
 import uuid
+from collections import Counter
 from collections.abc import Callable
 from contextlib import contextmanager
 from pathlib import Path
+from statistics import median
 
 from sqlalchemy import REAL, Column, Integer, MetaData, Table, Text, insert, select
 
+from civ_agent.diplomacy_decisions import (
+    CHOICES,
+    TWO_QUESTION_CHOICES,
+    TWO_QUESTION_POLICY_VERSION,
+    probability_vector,
+    two_question_answers,
+)
 from civ_agent.protocol import JsonObject
 from civ_agent.sqlite_database import sqlite_engine
 from civ_agent.tls import private_directory
 
 TOKEN_KEYS = ("input_tokens", "cached_input_tokens", "output_tokens", "reasoning_output_tokens")
 TERMINAL = {"COMPLETED", "FAILED", "INTERRUPTED"}
+
+
+def _probability(value):
+    return type(value) in (int, float) and math.isfinite(value) and 0 <= value <= 1
+
+
+def _label(value):
+    return value if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9._:/-]{1,128}", value) else None
+
+
+def _hash(value):
+    return value if isinstance(value, str) and re.fullmatch(r"[a-f0-9]{64}", value) else None
+
+
+def _counters(value, keys):
+    return (
+        {key: value[key] for key in keys if type(value.get(key)) is int and value[key] >= 0}
+        if isinstance(value, dict)
+        else {}
+    )
+
+
+ADVISORY_CHOICES = {
+    "retrieval_include": {"include", "omit"},
+    "retrieval_priority": {"high", "normal"},
+    "preservation": {"consider", "skip"},
+    "beliefs": {"reconsider", "retain"},
+    "early_review": {"review", "wait"},
+    "city_focus": {"keep", "defer"},
+    "city_construction": {"keep", "defer"},
+}
+ADVISORY_STATUSES = {"accepted", "low_confidence", "refusal", "missing", "malformed"}
+ADVISORY_DELIVERY_STATUSES = {"delivered", "no_notice", "not_selected", "stale", "not_accepted"}
+
+
+def _advisory_name(value):
+    if value == "early_review":
+        return value
+    if not isinstance(value, str):
+        return None
+    prefix, separator, index = value.partition(":")
+    return (
+        value
+        if separator
+        and prefix in ADVISORY_CHOICES
+        and prefix != "early_review"
+        and index.isascii()
+        and index.isdigit()
+        and len(index) <= 2
+        and int(index) < 64
+        else None
+    )
+
+
+def _advisory_choice(name, value):
+    if not isinstance(value, str):
+        return False
+    prefix = name.split(":", 1)[0]
+    if value in ADVISORY_CHOICES[prefix]:
+        return True
+    pattern = {"city_focus": r"focus\d{1,2}", "city_construction": r"construction\d{1,2}"}.get(prefix)
+    return pattern is not None and re.fullmatch(pattern, value) is not None
+
+
+def _advisory_answer(answer) -> JsonObject | None:
+    if not isinstance(answer, dict) or (name := _advisory_name(answer.get("name"))) is None:
+        return None
+    if answer.get("type") == "refusal":
+        return {"name": name, "type": "refusal"}
+    if (
+        answer.get("type") != "choice"
+        or not _advisory_choice(name, answer.get("choice"))
+        or not _probability(answer.get("confidence"))
+    ):
+        return None
+    raw: JsonObject = {"name": name, "type": "choice", "choice": answer["choice"], "confidence": answer["confidence"]}
+    vector = answer.get("probabilities")
+    if isinstance(vector, list) and 1 <= len(vector) <= 64:
+        values = [item.get("value") for item in vector if isinstance(item, dict)]
+        if (
+            all(isinstance(value, str) for value in values)
+            and len(values) == len(vector) == len(set(values))
+            and (name.split(":", 1)[0].startswith("city_") or set(values) == ADVISORY_CHOICES[name.split(":", 1)[0]])
+            and all(
+                _advisory_choice(name, item.get("value")) and _probability(item.get("probability")) for item in vector
+            )
+            and abs(sum(item["probability"] for item in vector) - 1) <= 0.02
+        ):
+            raw["probabilities"] = [{"value": item["value"], "probability": item["probability"]} for item in vector]
+    return raw
+
+
+def _advisory_metadata(result):
+    names = (
+        list(dict.fromkeys(name for item in result.get("questionNames", []) if (name := _advisory_name(item))))
+        if isinstance(result.get("questionNames"), list)
+        else []
+    )
+    raw = (
+        [parsed for answer in result.get("rawAnswers", []) if (parsed := _advisory_answer(answer))]
+        if isinstance(result.get("rawAnswers"), list)
+        else []
+    )
+    accepted = (
+        [
+            parsed
+            for answer in result.get("answers", [])
+            if (parsed := _advisory_answer(answer)) and parsed["type"] == "choice"
+        ]
+        if isinstance(result.get("answers"), list)
+        else []
+    )
+    statuses = []
+    seen = set()
+    for item in result.get("questionResults", []) if isinstance(result.get("questionResults"), list) else []:
+        if (
+            not isinstance(item, dict)
+            or (name := _advisory_name(item.get("name"))) is None
+            or name in seen
+            or not isinstance(item.get("status"), str)
+            or item["status"] not in ADVISORY_STATUSES
+        ):
+            continue
+        seen.add(name)
+        row: JsonObject = {"name": name, "status": item["status"]}
+        if _probability(item.get("threshold")):
+            row["threshold"] = item["threshold"]
+        answer = _advisory_answer(item.get("rawAnswer"))
+        if answer is not None and answer["name"] == name:
+            row["rawAnswer"] = answer
+        statuses.append(row)
+    tasks = {}
+    for prefix in ADVISORY_CHOICES:
+        selected = [row for row in statuses if row["name"].split(":", 1)[0] == prefix]
+        answers = [row for row in raw if row["name"].split(":", 1)[0] == prefix]
+        confidences = [row["confidence"] for row in answers if row["type"] == "choice"]
+        expected = sum(name.split(":", 1)[0] == prefix for name in names)
+        if not (selected or answers or expected):
+            continue
+        tasks[prefix] = {
+            "questions": expected,
+            "statuses": dict(Counter(row["status"] for row in selected)),
+            "unreported": max(0, expected - len(selected)),
+            "rawChoices": dict(Counter(row["choice"] for row in answers if row["type"] == "choice")),
+            "rawConfidence": {
+                "known": len(confidences),
+                "median": median(confidences) if confidences else None,
+                "min": min(confidences) if confidences else None,
+                "max": max(confidences) if confidences else None,
+            },
+        }
+    return {
+        **(
+            {"brokerReconciliation": result["brokerReconciliation"]}
+            if type(result.get("brokerReconciliation")) is bool
+            else {}
+        ),
+        "questionNames": names,
+        "answers": accepted,
+        "rawAnswers": raw,
+        "questionResults": statuses,
+        "byTask": tasks,
+    }
+
+
+def _advisory_delivery_metadata(result):
+    rows = []
+    for item in result.get("deliveryResults", []) if isinstance(result.get("deliveryResults"), list) else []:
+        if (
+            not isinstance(item, dict)
+            or (name := _advisory_name(item.get("name"))) is None
+            or not isinstance(item.get("status"), str)
+            or item["status"] not in ADVISORY_DELIVERY_STATUSES
+        ):
+            continue
+        row: JsonObject = {"requestId": _hash(item.get("requestId")), "name": name, "status": item["status"]}
+        if _advisory_choice(name, item.get("choice")):
+            row["choice"] = item["choice"]
+        if isinstance(item.get("exposure"), str) and item["exposure"] in {"context", "notice", "advice", "scheduler"}:
+            row["exposure"] = item["exposure"]
+        rows.append(row)
+    prefixes = {row["name"].split(":", 1)[0] for row in rows}
+    return {
+        "usage": None,
+        "accounting": None,
+        "deliveryResults": rows,
+        "byTask": {
+            prefix: {
+                "questions": sum(row["name"].split(":", 1)[0] == prefix for row in rows),
+                "statuses": dict(Counter(row["status"] for row in rows if row["name"].split(":", 1)[0] == prefix)),
+            }
+            for prefix in sorted(prefixes)
+        },
+    }
+
+
+def classifier_metadata(direction, result) -> JsonObject:
+    """Copy typed accounting fields only; provider/input text never belongs here."""
+    result = result if isinstance(result, dict) else {}
+    usage = _counters(result.get("usage"), (*TOKEN_KEYS, "total_tokens"))
+    supplied_usage = result.get("usage")
+    if isinstance(supplied_usage, dict):
+        for field, keys in (
+            ("input_tokens_details", ("cached_tokens", "cache_write_tokens")),
+            ("output_tokens_details", ("reasoning_tokens",)),
+        ):
+            details = _counters(supplied_usage.get(field), keys)
+            if details:
+                usage[field] = details
+    provider = result.get("providerError")
+    provider = (
+        {
+            **({"kind": _label(provider.get("kind"))} if _label(provider.get("kind")) else {}),
+            **(
+                {"httpStatus": provider["httpStatus"]}
+                if type(provider.get("httpStatus")) is int and 100 <= provider["httpStatus"] <= 599
+                else {}
+            ),
+        }
+        if isinstance(provider, dict)
+        else None
+    )
+    accounting = result.get("accounting")
+    accounting = (
+        {
+            **_counters(
+                accounting,
+                (
+                    "ceilingNanodollars",
+                    "spentNanodollars",
+                    "reservedNanodollars",
+                    "requests",
+                    "inputTokens",
+                    "unknownCompletions",
+                ),
+            ),
+            **{key: _label(accounting[key]) for key in ("rateVersion", "limitKind") if _label(accounting.get(key))},
+            **({"authority": _hash(accounting.get("authority"))} if _hash(accounting.get("authority")) else {}),
+        }
+        if isinstance(accounting, dict)
+        else None
+    )
+    report = {
+        **{key: _label(result.get(key)) for key in ("model", "policyVersion", "choice", "fallback")},
+        "usage": usage if supplied_usage is not None else None,
+        "latencyMs": result["latencyMs"]
+        if type(result.get("latencyMs")) in (int, float)
+        and math.isfinite(result["latencyMs"])
+        and result["latencyMs"] >= 0
+        else None,
+        "providerError": provider,
+        "requestId": _hash(result.get("requestId")),
+        "accounting": accounting,
+    }
+    for key in ("inputHash", "promptHash"):
+        if _hash(result.get(key)):
+            report[key] = result[key]
+    if type(result.get("contextSchemaVersion")) is int and result["contextSchemaVersion"] >= 0:
+        report["contextSchemaVersion"] = result["contextSchemaVersion"]
+    if direction == "advisory_batch":
+        return {**report, **_advisory_metadata(result)}
+    if direction == "advisory_delivery":
+        return {**report, **_advisory_delivery_metadata(result)}
+    if direction not in CHOICES:
+        return report
+    for key in ("confidence", "rawChoiceConfidence", "appliedThreshold"):
+        if _probability(result.get(key)):
+            report[key] = result[key]
+    for key in ("overridden", "lowConfidence"):
+        if type(result.get(key)) is bool:
+            report[key] = result[key]
+    if isinstance(result.get("rawChoice"), str) and result["rawChoice"] in CHOICES[direction]:
+        report["rawChoice"] = result["rawChoice"]
+    if isinstance(result.get("thresholds"), dict):
+        report["thresholds"] = {
+            key: value
+            for key, value in result["thresholds"].items()
+            if key in CHOICES[direction] and _probability(value)
+        }
+    if direction == "incoming" and result.get("policyVersion") == TWO_QUESTION_POLICY_VERSION:
+        raw = two_question_answers(result.get("rawAnswers"))
+        if raw is not None:
+            report["rawAnswers"] = raw
+        if isinstance(result.get("questionBasis"), str) and result["questionBasis"] in TWO_QUESTION_CHOICES:
+            report["questionBasis"] = result["questionBasis"]
+        # No three-way distribution was requested for this policy. Never copy
+        # one from diagnostic metadata or invent it from the binary answers.
+        report["probabilities"] = None
+        return report
+    probabilities = probability_vector(direction, result.get("probabilities"))
+    if probabilities is not None:
+        report["probabilities"] = probabilities
+    raw = result.get("rawAnswer")
+    if isinstance(raw, dict) and raw.get("name") == "delivery":
+        if raw.get("type") == "refusal":
+            report["rawAnswer"] = {"name": "delivery", "type": "refusal"}
+        elif (
+            raw.get("type") == "choice"
+            and isinstance(raw.get("choice"), str)
+            and raw["choice"] in CHOICES[direction]
+            and _probability(raw.get("confidence"))
+        ):
+            report["rawAnswer"] = {
+                "name": "delivery",
+                "type": "choice",
+                "choice": raw["choice"],
+                "confidence": raw["confidence"],
+            }
+            probabilities = probability_vector(direction, raw.get("probabilities"))
+            if probabilities is not None:
+                report["rawAnswer"]["probabilities"] = probabilities
+    return report
 
 
 def merge_model_usage(record: JsonObject, total: object, fields: dict[str, str]) -> bool:
@@ -74,20 +397,7 @@ class JobAccounting:
                         {
                             "direction": direction,
                             "atMs": int(time.time() * 1000),
-                            **{
-                                key: result.get(key)
-                                for key in (
-                                    "model",
-                                    "policyVersion",
-                                    "usage",
-                                    "latencyMs",
-                                    "choice",
-                                    "fallback",
-                                    "providerError",
-                                    "requestId",
-                                    "accounting",
-                                )
-                            },
+                            **classifier_metadata(direction, result),
                         }
                     ),
                 )

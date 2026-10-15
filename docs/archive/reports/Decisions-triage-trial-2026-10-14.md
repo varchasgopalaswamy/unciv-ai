@@ -60,17 +60,19 @@ recommendation use was not measured because no gameplay was executed.
 
 ## Offline reproduction
 
-The [case fixture](../../../tests/fixtures/decisions-advisory-replay.json) retains
-the exact frozen evidence and labels. The
+The [archived v2 case fixture](../../../tests/fixtures/decisions-advisory-replay-v2.json) retains
+the historical scenario evidence and labels in its later fixture encoding. The
 [captured broker answers](../../../tests/fixtures/decisions-advisory-responses-2026-10-14.json)
 retain typed accepted choices, usage and fallback metadata. Low-confidence
 choices are omitted by the broker; they are not fabricated during replay.
 
-```sh
-uv run python -m civ_agent.advisory_replay \
-  tests/fixtures/decisions-advisory-replay.json \
-  --responses tests/fixtures/decisions-advisory-responses-2026-10-14.json
-```
+The responses are from the v1 trial described above; the v2 fixture encoding does
+not establish an identical original request body. This is a historical capture.
+The current replay CLI requires strict v3 evidence
+and identities and intentionally rejects this archived fixture and response set.
+Reproducing the original result requires the implementation revision used for
+this trial; it is not a current-policy quality check. No legacy runtime path is
+maintained for the archived inputs.
 
 Live diplomacy replay, container acceptance with a freshly built image and
 matched gameplay evaluation remain separate rollout work. Active benchmarks were

@@ -33,7 +33,10 @@ def parser(*, add_help=True, group="runtime", action="setup"):
         result.add_argument("--codex", default="codex")
         result.add_argument("--tag", default="localhost/civ-agent")
     if group == "auth":
-        result.add_argument("--provider", choices=PROVIDERS, default="openai")
+        if action == "restart":
+            result.description = "Recreate configured auth and Decisions servers using the selected runtime image."
+        if action != "restart":
+            result.add_argument("--provider", choices=PROVIDERS, default="openai")
         result.add_argument("--auth-dir", type=Path, default=DEFAULT_AUTH)
         result.add_argument("--image", default="localhost/civ-agent:runtime")
         if action == "login":
@@ -59,6 +62,12 @@ def run(args):
             print("Rootless runtime ready. Games will survive terminal closure and logout.")
             return 0
         root = args.auth_dir.expanduser().resolve()
+        if args.action == "restart":
+            from civ_agent.container_supervisor import restart_brokers
+
+            image = resolve_image(args.image)
+            print(json.dumps(restart_brokers(root, image), indent=2))
+            return 0
         if args.provider == "openrouter":
             path = root / "openrouter.key"
             if args.action == "status":

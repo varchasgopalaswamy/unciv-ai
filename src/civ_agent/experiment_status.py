@@ -1,20 +1,22 @@
 """Read-only operator diagnostics; never construct a live memory/accounting service."""
 
 import json
+import math
 import time
 from collections import Counter
+from statistics import median
 
-from sqlalchemy import func, inspect, select
+from sqlalchemy import func, inspect, literal_column, select
 from sqlalchemy.exc import SQLAlchemyError
 
 from civ_agent import memory_schema as memory
 from civ_agent.decisions_ledger import RATE_VERSION, accounts, requests
 from civ_agent.decisions_policy import decisions_values
-from civ_agent.diplomacy_decisions import BATCH_SECONDS
+from civ_agent.diplomacy_decisions import BATCH_SECONDS, CHOICES, TWO_QUESTION_CHOICES, two_question_answers
 from civ_agent.experiment_metrics import summarize_records
 from civ_agent.monitoring import read_database
 from civ_agent.protocol import JsonObject
-from civ_agent.telemetry import calls, classifier_calls, jobs
+from civ_agent.telemetry import calls, classifier_calls, classifier_metadata, jobs
 from civ_agent.turn_archive import civilization_directory_name
 
 
@@ -88,13 +90,180 @@ def memory_status(path, *, now):
         }
 
 
-def classifier_status(path):
+def routing_classifier_summary(reports) -> JsonObject:
+    """Classifications are paid decisions, distinct from advisory/bypass work."""
+    classified = [
+        report
+        for report in reports
+        if report.get("direction") in CHOICES
+        and report.get("fallback") not in {"protected", "immediate", "routing_deadline"}
+    ]
+    summary = _routing_sample(classified)
+    summary["excluded"] = {
+        "advisoryBatch": sum(report.get("direction") == "advisory_batch" for report in reports),
+        "protectedOrDeadlineBypass": sum(
+            report.get("direction") in CHOICES
+            and report.get("fallback") in {"protected", "immediate", "routing_deadline"}
+            for report in reports
+        ),
+        "otherDirections": sum(report.get("direction") not in {*CHOICES, "advisory_batch"} for report in reports),
+    }
+    summary["byDirection"] = {
+        direction: _routing_sample([report for report in classified if report["direction"] == direction])
+        for direction in CHOICES
+    }
+    return summary
+
+
+def _routing_sample(reports) -> JsonObject:
+    raw = Counter()
+    effective = Counter()
+    for report in reports:
+        choices = CHOICES[report["direction"]]
+        for key, counts in (("rawChoice", raw), ("choice", effective)):
+            if isinstance(report.get(key), str) and report[key] in choices:
+                counts[report[key]] += 1
+    return {
+        "calls": len(reports),
+        "rawDispositions": dict(raw),
+        "rawDispositionUnknown": len(reports) - sum(raw.values()),
+        "effectiveDispositions": dict(effective),
+        "effectiveDispositionUnknown": len(reports) - sum(effective.values()),
+        "genuineOverrides": sum(report.get("overridden") is True for report in reports),
+        "overrideUnknown": sum(type(report.get("overridden")) is not bool for report in reports),
+        "lowConfidenceImmediate": sum(
+            report.get("lowConfidence") is True
+            and report.get("overridden") is False
+            and report.get("rawChoice") == report.get("choice") == next(iter(CHOICES[report["direction"]]))
+            for report in reports
+        ),
+        "lowConfidence": sum(report.get("lowConfidence") is True for report in reports),
+        "lowConfidenceUnknown": sum(type(report.get("lowConfidence")) is not bool for report in reports),
+        "confidence": _confidence_summary([report.get("confidence") for report in reports]),
+        "rawChoiceConfidence": _confidence_summary([report.get("rawChoiceConfidence") for report in reports]),
+        "confidenceByPolicy": {
+            policy: _confidence_summary(
+                [report.get("confidence") for report in reports if (report.get("policyVersion") or "unknown") == policy]
+            )
+            for policy in sorted({report.get("policyVersion") or "unknown" for report in reports})
+        },
+        "questionBasis": dict(Counter(report["questionBasis"] for report in reports if report.get("questionBasis"))),
+        "perQuestion": _question_summaries(reports),
+    }
+
+
+def _confidence_summary(values):
+    known = [value for value in values if type(value) in (int, float) and math.isfinite(value) and 0 <= value <= 1]
+    return {
+        "known": len(known),
+        "unknown": len(values) - len(known),
+        "mean": sum(known) / len(known) if known else None,
+        "median": median(known) if known else None,
+        "min": min(known) if known else None,
+        "max": max(known) if known else None,
+        "bins": {
+            "<0.50": sum(value < 0.5 for value in known),
+            "0.50-<0.70": sum(0.5 <= value < 0.7 for value in known),
+            "0.70-<0.80": sum(0.7 <= value < 0.8 for value in known),
+            "0.80-<0.90": sum(0.8 <= value < 0.9 for value in known),
+            ">=0.90": sum(value >= 0.9 for value in known),
+        },
+    }
+
+
+def _question_summaries(reports):
+    questions = {name: [] for name in TWO_QUESTION_CHOICES}
+    for report in reports:
+        for answer in two_question_answers(report.get("rawAnswers")) or []:
+            questions[answer["name"]].append(answer)
+    return {
+        name: {
+            "calls": len(answers),
+            "choices": dict(Counter(answer["choice"] for answer in answers if answer.get("type") == "choice")),
+            "refusals": sum(answer.get("type") == "refusal" for answer in answers),
+            "confidence": _confidence_summary([answer.get("confidence") for answer in answers]),
+        }
+        for name, answers in questions.items()
+    }
+
+
+def _advisory_delivery_summary(reports):
+    rows = [row for report in reports for row in report.get("deliveryResults", [])]
+    prefixes = {row["name"].split(":", 1)[0] for row in rows}
+    return {
+        "events": len(reports),
+        "questionObservations": len(rows),
+        "latest": max(reports, key=lambda report: report["atMs"]) if reports else None,
+        "byTask": {
+            prefix: {
+                "questionObservations": sum(row["name"].split(":", 1)[0] == prefix for row in rows),
+                "statuses": dict(Counter(row["status"] for row in rows if row["name"].split(":", 1)[0] == prefix)),
+            }
+            for prefix in sorted(prefixes)
+        },
+    }
+
+
+def _advisory_request_reports(reports):
+    """Fold observations of the same immutable advisory request, not routing calls."""
+    groups = {}
+    for index, report in enumerate(reports):
+        identifier = report.get("requestId")
+        valid = (
+            isinstance(identifier, str) and len(identifier) == 64 and all(c in "0123456789abcdef" for c in identifier)
+        )
+        key = ("advisory", identifier) if report.get("direction") == "advisory_batch" and valid else ("event", index)
+        groups.setdefault(key, []).append((index, report))
+    unresolved = {"broker_unavailable", "malformed_broker_output", "completion_unknown"}
+    folded = []
+    for observations in groups.values():
+        observations.sort(key=lambda item: (item[1]["atMs"], item[0]))
+        if observations[0][1].get("direction") != "advisory_batch":
+            folded.append(observations[0][1])
+            continue
+        resolved = [item for item in observations if item[1].get("fallback") not in unresolved]
+        selected = dict((resolved or observations)[-1][1])
+        compatible = [item for item in observations if _same_advisory_identity(selected, item[1])]
+        if len(compatible) != len(observations):
+            selected["observationIdentityConflict"] = True
+        # A receipt can reveal previously unknown provider usage. It never adds
+        # another charge, and a later empty receipt cannot erase known usage.
+        for field in ("usage", "latencyMs"):
+            known = [item for item in compatible if item[1].get(field) is not None and item[1].get(field) != {}]
+            preferred = [item for item in known if item[1].get("fallback") not in unresolved]
+            if known:
+                selected[field] = (preferred or known)[-1][1][field]
+        folded.append(selected)
+    return folded
+
+
+def _same_advisory_identity(first, second):
+    return all(
+        first.get(key) in (None, []) or second.get(key) in (None, []) or first[key] == second[key]
+        for key in ("model", "policyVersion", "inputHash", "promptHash", "questionNames")
+    )
+
+
+def classifier_status(path) -> JsonObject:
     if not path.exists():
         return {"status": "waiting_for_first_classification", "calls": 0}
     with read_database(path) as db:
         if not inspect(db).has_table("classifier_calls"):
             return {"status": "waiting_for_first_classification", "calls": 0}
-        reports = [json.loads(value) for value in db.scalars(select(classifier_calls.c.payload))]
+        reports = [
+            {
+                "direction": report.get("direction"),
+                "atMs": report["atMs"],
+                **classifier_metadata(report.get("direction"), report),
+            }
+            for value in db.scalars(select(classifier_calls.c.payload).order_by(literal_column("rowid")))
+            for report in [json.loads(value)]
+        ]
+        deliveries = [report for report in reports if report.get("direction") == "advisory_delivery"]
+        reports = [report for report in reports if report.get("direction") != "advisory_delivery"]
+        advisory_observations = [report for report in reports if report.get("direction") == "advisory_batch"]
+        reconciliations = [report for report in advisory_observations if report.get("brokerReconciliation") is True]
+        reports = _advisory_request_reports(reports)
         latest = max(reports, key=lambda r: r["atMs"]) if reports else None
         latency = [r["latencyMs"] for r in reports if isinstance(r.get("latencyMs"), (int, float))]
         usage = Counter()
@@ -125,6 +294,16 @@ def classifier_status(path):
             else "waiting_for_first_classification",
             "calls": len(reports),
             "fallbacks": dict(Counter(r["fallback"] for r in reports if r.get("fallback"))),
+            "routing": routing_classifier_summary(reports),
+            "advisoryDelivery": _advisory_delivery_summary(deliveries),
+            "advisoryObservations": {
+                "events": len(advisory_observations),
+                "requests": sum(report.get("direction") == "advisory_batch" for report in reports),
+                "reconciliations": len(reconciliations),
+                "identityConflicts": sum(report.get("observationIdentityConflict") is True for report in reports),
+                "fallbacks": dict(Counter(r["fallback"] for r in advisory_observations if r.get("fallback"))),
+                "latestReconciliation": reconciliations[-1] if reconciliations else None,
+            },
             "latest": latest,
             "averageLatencyMs": sum(latency) / len(latency) if latency else None,
             "usage": dict(usage),

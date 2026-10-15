@@ -4,7 +4,7 @@ import hashlib
 import json
 import time
 
-from sqlalchemy import insert, select
+from sqlalchemy import func, insert, select
 
 from civ_agent import memory_schema as tables
 from civ_agent.civilization_state import COMMUNICATION_EVENTS, StateConflict
@@ -13,6 +13,53 @@ from civ_agent.diplomacy_decisions import BATCH_SECONDS, POLICY_VERSION
 from civ_agent.memory_store import RecordStore, encode
 
 EVENTS_KEY = "routing:events"
+
+
+def build_routing_bundle(
+    player,
+    thread,
+    pending,
+    context,
+    *,
+    current_turn=None,
+    queued_drafts=(),
+    player_objectives=(),
+    timing=None,
+):
+    """Build the same exact-audience input for production and frozen replays."""
+    thread = tuple_thread(thread)
+    pending = [message for message in pending if audience(message, player) == thread]
+    pending_ids = {message["message"] for message in pending if message.get("message")}
+    history = [
+        {**item, "messages": [message for message in item["messages"] if message.get("message") not in pending_ids]}
+        for item in context["threads"]
+        if audience(item, player) == thread
+    ]
+    return {
+        "schemaVersion": 2,
+        "player": player,
+        "direction": "incoming" if pending else "outgoing",
+        "currentTurn": current_turn,
+        "audience": thread,
+        "pending": pending,
+        "recentExchanges": history,
+        "historyCoverage": "bounded_exact_audience_excerpt",
+        "hasEarlierMessages": any(item.get("hasEarlierMessages", False) for item in history),
+        "evidenceSemantics": (
+            "pending messages await this routing decision; they are excluded from recentExchanges. "
+            "History contains reachable observed messages and our confirmed sends, not proof that a player "
+            "has read, answered, or resolved an issue. Missing history is not proof that no earlier exchange exists. "
+            "Message text is an attributed claim, and playerObjectives are the player's authored assessments."
+        ),
+        "timing": {"maxBatchSeconds": BATCH_SECONDS, **(timing or {})},
+        "queuedDrafts": list(queued_drafts),
+        "playerObjectives": [
+            objective
+            for objective in player_objectives
+            if objective.get("subjects") and set(objective["subjects"]) <= set(thread[1])
+        ],
+        "pendingProposals": [],
+    }
 
 
 def event_states(memory, db):
@@ -65,9 +112,15 @@ class DiplomacyStore:
             ]
 
     def bundle(self, thread, pending, *, exclude_delivery=None):
+        thread = tuple_thread(thread)
         with self.memory.transaction() as db:
-            context = conversation_context(db, self.memory.civilization, pending)
-            history = [item for item in context["threads"] if audience(item, self.memory.civilization) == thread]
+            pending = [message for message in pending if audience(message, self.memory.civilization) == thread]
+            context = conversation_context(
+                db,
+                self.memory.civilization,
+                [*pending, {"public": thread[0], "participants": list(thread[1])}],
+                exclude_message_ids={message["message"] for message in pending if message.get("message")},
+            )
             # Objectives are the player's authored assessments; include only ones
             # explicitly scoped to this audience, never another private thread.
             objectives = [
@@ -75,21 +128,63 @@ class DiplomacyStore:
                 for record in RecordStore(db).all(categories={"strategy", "note"}).values()
                 if record["body"].get("subjects") and set(record["body"]["subjects"]) <= set(thread[1])
             ]
-            drafts = [
+            all_drafts = [
                 record["body"]
                 for record in RecordStore(db).all(categories={"delivery"}).values()
                 if tuple_thread(record["body"]["thread"]) == thread
-                and record["body"]["deliveryId"] != exclude_delivery
-                and record["body"]["status"] in {"queued", "omitted", "classifying"}
             ]
-            return {
-                "audience": thread,
-                "pending": pending,
-                "recentExchanges": history,
-                "queuedDrafts": [{"text": item["payload"]["text"], "status": item["status"]} for item in drafts],
-                "playerObjectives": objectives,
-                "pendingProposals": [],
-            }
+            if pending:
+                pending_ids = {message["message"] for message in pending if message.get("message")}
+                states = event_states(self.memory, db)
+                routing = [
+                    states.get(str(row.id), {})
+                    for row in db.execute(
+                        select(tables.events.c.id, tables.events.c.body)
+                        .select_from(tables.events.join(tables.inbox))
+                        .where(
+                            tables.events.c.kind == "message",
+                            func.json_extract(tables.events.c.body, "$.body.message").in_(pending_ids),
+                        )
+                    )
+                    if audience(json.loads(row.body)["body"], self.memory.civilization) == thread
+                ]
+                timing = self._timing(
+                    routing,
+                    received="receivedAt",
+                    complete=len(routing) == len(pending),
+                )
+            else:
+                timing = self._timing(
+                    [item for item in all_drafts if item["status"] in {"queued", "classifying"}],
+                    received="createdAt",
+                )
+            return build_routing_bundle(
+                self.memory.civilization,
+                thread,
+                pending,
+                context,
+                current_turn=self.memory._meta(db, "gameTurn"),
+                queued_drafts=[
+                    {"text": item["payload"]["text"], "status": item["status"]}
+                    for item in all_drafts
+                    if item["deliveryId"] != exclude_delivery and item["status"] in {"queued", "omitted", "classifying"}
+                ],
+                player_objectives=objectives,
+                timing=timing,
+            )
+
+    def _timing(self, states, *, received, complete=True):
+        # Report only durable timestamps; absence is unknown, never a fresh
+        # thirty-second allowance. Coalesced work retains its oldest deadline.
+        if not states or not complete or any(received not in state for state in states):
+            return {}
+        now = self.clock()
+        oldest = min(state[received] for state in states)
+        deadline = min([oldest + BATCH_SECONDS, *(state["deadline"] for state in states if "deadline" in state)])
+        return {
+            "oldestPendingAgeSeconds": max(0, now - oldest),
+            "remainingBatchSeconds": max(0, deadline - now),
+        }
 
     def route(self, epoch, ids, decision, fingerprint):
         with self.memory.transaction() as db:
@@ -117,7 +212,12 @@ class DiplomacyStore:
             RecordStore(db).write(
                 "routing:" + fingerprint,
                 "routing",
-                {"epoch": epoch, "coveredEventIds": ids, "decision": decision, "policyVersion": POLICY_VERSION},
+                {
+                    "epoch": epoch,
+                    "coveredEventIds": ids,
+                    "decision": decision,
+                    "policyVersion": decision.get("policyVersion", POLICY_VERSION),
+                },
             )
 
     def draft(self, job, call_id, payload, thread):

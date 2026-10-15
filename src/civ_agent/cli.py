@@ -36,7 +36,7 @@ def parser() -> argparse.ArgumentParser:
     for action in ("generate", "start", "resume", "stop", "status"):
         command = batches.add_parser(action, parents=[batch.parser(add_help=False, action=action)])
         command.set_defaults(handler=batch.run)
-    for group, actions in (("runtime", ("setup",)), ("image", ("build",)), ("auth", ("login", "status"))):
+    for group, actions in (("runtime", ("setup",)), ("image", ("build",)), ("auth", ("login", "status", "restart"))):
         commands = groups.add_parser(group).add_subparsers(required=True)
         for action in actions:
             command = commands.add_parser(action, parents=[runtime.parser(add_help=False, group=group, action=action)])

@@ -857,7 +857,16 @@ class SchedulerTest(unittest.TestCase):
         self.assertCountEqual(
             self.host.triage_requests,
             [
-                (name, {"op": "review_triage", "epoch": self.host.epoch, "gameTurn": 1, "scheduledSoon": False})
+                (
+                    name,
+                    {
+                        "op": "review_triage",
+                        "epoch": self.host.epoch,
+                        "gameTurn": 1,
+                        "scheduledSoon": False,
+                        "nextReviewTurn": 5,
+                    },
+                )
                 for name in ("Rome", "Greece")
             ],
         )

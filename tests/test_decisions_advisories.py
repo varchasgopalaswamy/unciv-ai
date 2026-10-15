@@ -11,6 +11,7 @@ from pydantic import ValidationError
 from sqlalchemy import select
 
 from civ_agent import memory_schema as tables
+from civ_agent.advisory_answers import failed_answers
 from civ_agent.advisory_runtime import AdvisoryRuntime
 from civ_agent.advisory_store import material_facts
 from civ_agent.agent_service import AgentService
@@ -19,7 +20,7 @@ from civ_agent.commands import agent_server, game
 from civ_agent.decisions_broker import RoutingClient
 from civ_agent.decisions_ledger import fingerprint
 from civ_agent.decisions_policy import DecisionsSettings, decisions_values
-from civ_agent.decisions_tasks import request_body, request_id
+from civ_agent.decisions_tasks import parse_answers, request_body, request_id, request_metadata
 from civ_agent.game_config import GameConfig, load_config
 from civ_agent.memory_snapshots import load_snapshot
 from civ_agent.memory_store import RecordStore
@@ -78,7 +79,13 @@ class Classifier:
             return {"requestId": request_id(evidence), "answers": "not an answer list"}
         body = request_body(evidence, self.settings)
         answers = []
-        values = {"retrieval": "high", "preservation": "consider", "beliefs": "reconsider", "early_review": "review"}
+        values = {
+            "retrieval_include": "include",
+            "retrieval_priority": "high",
+            "preservation": "consider",
+            "beliefs": "reconsider",
+            "early_review": "review",
+        }
         for q in body["questions"]:
             prefix = q["name"].split(":")[0]
             answer = {
@@ -94,7 +101,19 @@ class Classifier:
             elif self.mode == "unknown":
                 answer["choice"] = "invented-choice"
             answers.append(answer)
-        return {"answers": answers, "requestId": request_id(evidence), "usage": {"input_tokens": 100}}
+        return {
+            **request_metadata(body, evidence),
+            **parse_answers(body, {"answers": answers}, self.settings.decisions_min_confidence),
+            "usage": {"input_tokens": 100},
+        }
+
+    async def lookup(self, identifier, *, timeout):
+        evidence = next(e for e in self.calls if request_id(e) == identifier)
+        body = request_body(evidence, self.settings)
+        return {
+            **request_metadata(body, evidence),
+            **failed_answers(body, self.settings.decisions_min_confidence, "completion_unknown"),
+        }
 
 
 @asynccontextmanager
@@ -177,7 +196,9 @@ def test_service_enables_native_and_decisions_independently(tmp_path, monkeypatc
             assert (service.gateway.routing is not None) == decisions_enabled
             service.chat.epoch = "g1"
             service.gateway.request_checkpoint()
-            triage = await service.review_triage({"epoch": "g1", "gameTurn": 4, "scheduledSoon": False})
+            triage = await service.review_triage(
+                {"epoch": "g1", "gameTurn": 4, "scheduledSoon": False, "nextReviewTurn": 10}
+            )
             assert not triage["earlyReview"] and triage["reason"] == ("barrier" if decisions_enabled else "disabled")
         finally:
             await service.close()
@@ -409,16 +430,16 @@ def test_early_review_uses_recorded_changes_cooldowns_and_no_full_capture(tmp_pa
                 memory._set(db, "advisories", {"reviewBaseline": fingerprint(material_facts({"cities": []}))})
             runtime = gateway.advisories
             assert runtime is not None
-            assert not (await runtime.triage(2, scheduled_soon=False))["earlyReview"]
-            assert not (await runtime.triage(3, scheduled_soon=True))["earlyReview"]
+            assert not (await runtime.triage(2, scheduled_soon=False, next_review_turn=20))["earlyReview"]
+            assert not (await runtime.triage(3, scheduled_soon=True, next_review_turn=20))["earlyReview"]
             assert classifier.calls == []
-            assert (await runtime.triage(3, scheduled_soon=False))["earlyReview"]
-            assert (await runtime.triage(3, scheduled_soon=False))["earlyReview"]
+            assert (await runtime.triage(3, scheduled_soon=False, next_review_turn=20))["earlyReview"]
+            assert (await runtime.triage(3, scheduled_soon=False, next_review_turn=20))["earlyReview"]
             assert len(classifier.calls) == 1
             await runtime.save(lastEarlyTurn=3)
-            assert not (await runtime.triage(12, scheduled_soon=False))["earlyReview"]
+            assert not (await runtime.triage(12, scheduled_soon=False, next_review_turn=20))["earlyReview"]
             # Same previously classified facts do not generate another call after cooldown.
-            assert not (await runtime.triage(13, scheduled_soon=False))["earlyReview"]
+            assert not (await runtime.triage(13, scheduled_soon=False, next_review_turn=20))["earlyReview"]
             assert len(classifier.calls) == 1
 
     asyncio.run(run())
@@ -451,7 +472,7 @@ def test_early_review_rejects_stale_recorded_evidence(tmp_path):
 
             classifier.batch = changed
             assert gateway.advisories is not None
-            assert (await gateway.advisories.triage(3, scheduled_soon=False)) == {
+            assert (await gateway.advisories.triage(3, scheduled_soon=False, next_review_turn=20)) == {
                 "earlyReview": False,
                 "reason": "stale_evidence",
             }

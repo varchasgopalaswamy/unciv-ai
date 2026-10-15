@@ -1,0 +1,336 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "id": "attributed-question",
+      "provenance": "Synthetic private exact-audience message; tests preservation without resolving stated intent.",
+      "evidence": {
+        "version": "player-advisories-v2",
+        "preservation": [
+          {
+            "key": "event:1",
+            "version": 1,
+            "record": {
+              "body": {
+                "author": "Greece",
+                "participants": [
+                  "Greece",
+                  "Rome"
+                ],
+                "turn": 12,
+                "text": "Can you send ships to protect our coast next round? I may be able to send gold."
+              }
+            }
+          }
+        ]
+      },
+      "labels": {
+        "preservation:0": [
+          "consider"
+        ]
+      }
+    },
+    {
+      "id": "routine-ack",
+      "provenance": "Synthetic acknowledgment after an answered question.",
+      "evidence": {
+        "version": "player-advisories-v2",
+        "preservation": [
+          {
+            "key": "event:2",
+            "version": 1,
+            "record": {
+              "body": {
+                "author": "Greece",
+                "participants": [
+                  "Greece",
+                  "Rome"
+                ],
+                "turn": 12,
+                "text": "Thanks, understood."
+              }
+            }
+          }
+        ]
+      },
+      "labels": {
+        "preservation:0": [
+          "skip"
+        ]
+      }
+    },
+    {
+      "id": "old-active-memory",
+      "provenance": "Synthetic active old memory with unchanged uncertainty and citation; relevance derives from current coast objective.",
+      "evidence": {
+        "version": "player-advisories-v2",
+        "topics": [
+          "coast",
+          "ships"
+        ],
+        "objectives": [
+          {
+            "key": "strategy1",
+            "version": 1,
+            "record": {
+              "assessment": "Defend the coast and seek a naval ally.",
+              "reconsiderWhen": [
+                "Visible enemy ships threaten the coast."
+              ]
+            }
+          }
+        ],
+        "retrieval": [
+          {
+            "key": "note1",
+            "version": 1,
+            "record": {
+              "type": "note",
+              "text": "Greece previously offered naval help along our coast.",
+              "createdTurn": 1,
+              "updatedTurn": 1,
+              "state": "active",
+              "priority": 4
+            }
+          }
+        ]
+      },
+      "labels": {
+        "retrieval:0": [
+          "high"
+        ]
+      }
+    },
+    {
+      "id": "belief-new-visible-evidence",
+      "provenance": "Synthetic permitted visible observation contradicts an active belief; only a reconsideration notice is allowed.",
+      "evidence": {
+        "version": "player-advisories-v2",
+        "beliefs": [
+          {
+            "key": "belief1",
+            "version": 1,
+            "record": {
+              "type": "belief",
+              "claim": "No Greek ships have been observed near Rome.",
+              "uncertainty": "medium",
+              "sources": [
+                "observation:coast"
+              ],
+              "state": "active",
+              "createdTurn": 2,
+              "updatedTurn": 2
+            }
+          }
+        ],
+        "newEvidence": [
+          {
+            "key": "observation:coast",
+            "version": 1,
+            "record": {
+              "body": {
+                "turn": 12,
+                "visibleUnits": [
+                  {
+                    "civilization": "Greece",
+                    "name": "Trireme",
+                    "position": {
+                      "x": 2,
+                      "y": 0
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "labels": {
+        "beliefs:0": [
+          "reconsider"
+        ]
+      }
+    },
+    {
+      "id": "belief-unrelated-evidence",
+      "provenance": "Synthetic unrelated attributed economic message does not contradict a naval observation.",
+      "evidence": {
+        "version": "player-advisories-v2",
+        "beliefs": [
+          {
+            "key": "belief1",
+            "version": 1,
+            "record": {
+              "type": "belief",
+              "claim": "No Greek ships have been observed near Rome.",
+              "uncertainty": "medium",
+              "sources": [
+                "observation:coast"
+              ],
+              "state": "active",
+              "createdTurn": 2,
+              "updatedTurn": 2
+            }
+          }
+        ],
+        "newEvidence": [
+          {
+            "key": "event:3",
+            "version": 1,
+            "record": {
+              "body": {
+                "author": "France",
+                "text": "I finished a Granary in Paris."
+              }
+            }
+          }
+        ]
+      },
+      "labels": {
+        "beliefs:0": [
+          "retain"
+        ]
+      }
+    },
+    {
+      "id": "material-review",
+      "provenance": "Synthetic recorded loss of two owned cities and current economic pressure; no war trigger or full review capture.",
+      "evidence": {
+        "version": "player-advisories-v2",
+        "objectives": [
+          {
+            "key": "strategy1",
+            "version": 1,
+            "record": {
+              "assessment": "Develop three coastal cities.",
+              "reconsiderWhen": [
+                "Loss of an owned city."
+              ]
+            }
+          }
+        ],
+        "earlyReview": {
+          "facts": {
+            "citiesNoLongerOwned": [
+              "c2",
+              "c3"
+            ],
+            "currentCities": [
+              "c1"
+            ],
+            "happiness": -12
+          },
+          "lastReviewTurn": 2
+        }
+      },
+      "labels": {
+        "early_review": [
+          "review"
+        ]
+      }
+    },
+    {
+      "id": "coalesced-memory-triage",
+      "provenance": "Synthetic independent relevance, preservation and reconsideration questions sharing frozen evidence. No gameplay recommendations.",
+      "evidence": {
+        "version": "player-advisories-v2",
+        "topics": [
+          "coast",
+          "ships"
+        ],
+        "objectives": [
+          {
+            "key": "strategy1",
+            "version": 1,
+            "record": {
+              "assessment": "Defend the coast and seek a naval ally.",
+              "reconsiderWhen": [
+                "Visible enemy ships threaten the coast."
+              ]
+            }
+          }
+        ],
+        "retrieval": [
+          {
+            "key": "note1",
+            "version": 1,
+            "record": {
+              "type": "note",
+              "text": "Greece previously offered naval help along our coast.",
+              "createdTurn": 1,
+              "updatedTurn": 1,
+              "state": "active",
+              "priority": 4
+            }
+          }
+        ],
+        "preservation": [
+          {
+            "key": "event:1",
+            "version": 1,
+            "record": {
+              "body": {
+                "author": "Greece",
+                "participants": [
+                  "Greece",
+                  "Rome"
+                ],
+                "turn": 12,
+                "text": "Can you send ships to protect our coast next round? I may be able to send gold."
+              }
+            }
+          }
+        ],
+        "beliefs": [
+          {
+            "key": "belief1",
+            "version": 1,
+            "record": {
+              "type": "belief",
+              "claim": "No Greek ships have been observed near Rome.",
+              "uncertainty": "medium",
+              "sources": [
+                "observation:coast"
+              ],
+              "state": "active",
+              "createdTurn": 2,
+              "updatedTurn": 2
+            }
+          }
+        ],
+        "newEvidence": [
+          {
+            "key": "observation:coast",
+            "version": 1,
+            "record": {
+              "body": {
+                "turn": 12,
+                "visibleUnits": [
+                  {
+                    "civilization": "Greece",
+                    "name": "Trireme",
+                    "position": {
+                      "x": 2,
+                      "y": 0
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "labels": {
+        "retrieval:0": [
+          "high"
+        ],
+        "preservation:0": [
+          "consider"
+        ],
+        "beliefs:0": [
+          "reconsider"
+        ]
+      }
+    }
+  ]
+}

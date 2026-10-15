@@ -38,8 +38,14 @@ def review_round(scheduler, status):
             scheduled_soon = turn + 1 - anchor >= interval if type(anchor) is int else review_due(turn + 1, interval)
             if scheduled_soon:
                 continue
+            next_review_turn = anchor + interval if type(anchor) is int else (turn // interval + 1) * interval
             response = scheduler.turns.call_agent(
-                scheduler.agents[name], "review_triage", epoch=status["epoch"], gameTurn=boundary, scheduledSoon=False
+                scheduler.agents[name],
+                "review_triage",
+                epoch=status["epoch"],
+                gameTurn=boundary,
+                scheduledSoon=False,
+                nextReviewTurn=next_review_turn,
             )
             if not isinstance(response, dict) or type(response.get("earlyReview")) is not bool:
                 raise RunnerError("Invalid early review response; stopped for inspection.")

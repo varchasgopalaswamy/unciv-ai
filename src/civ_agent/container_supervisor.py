@@ -36,6 +36,7 @@ from civ_agent.container_support import (
 )
 from civ_agent.game_config import ContainerResources, ResolvedGameConfig
 from civ_agent.monitoring import path_for, read_record
+from civ_agent.protocol import JsonObject
 from civ_agent.providers import read_api_key
 from civ_agent.tls import private_directory, write_private_json
 from civ_agent.turn_archive import civilization_directory_name
@@ -63,7 +64,7 @@ def recoverable_model_failure(root: Path) -> str | None:
     return None
 
 
-def ensure_auth(root, image):
+def ensure_auth(root, image, *, restart=False):
     private_directory(root)
     private_directory(root / "ipc")
     if not (root / "codex/auth.json").is_file():
@@ -71,6 +72,11 @@ def ensure_auth(root, image):
     with locked(root / ".launch.lock", wait=True):
         name = auth_name(root)
         current = inspected(name)
+        if restart and current:
+            if current["State"]["Running"]:
+                podman("stop", "--time", "90", name, timeout=100)
+            podman("rm", name)
+            current = None
         if not current or not current["State"]["Running"]:
             if current:
                 podman("rm", name)
@@ -124,11 +130,16 @@ def validate_routing_credentials(config, auth_root):
         read_decisions_key(key)
 
 
-def ensure_decisions(root, image):
+def ensure_decisions(root, image, *, restart=False):
     private_directory(root / "decisions-ipc")
     with locked(root / ".decisions-launch.lock", wait=True):
         name = auth_name(root) + "-decisions"
         current = inspected(name)
+        if restart and current:
+            if current["State"]["Running"]:
+                podman("stop", "--time", "90", name, timeout=100)
+            podman("rm", name)
+            current = None
         if current and current["State"]["Running"] and current.get("Image") != image:
             raise ContainerError(
                 "The shared Decisions broker uses a different runtime image. "
@@ -156,6 +167,44 @@ def ensure_decisions(root, image):
         report = {**health, "checkedAtMs": int(time.time() * 1000), "image": image}
         write_private_json(root / "decisions-preflight.json", report)
         return report
+
+
+def restart_brokers(root, image):
+    """Recreate configured shared services without replacing their durable state."""
+    name = auth_name(root)
+    auth = (root / "codex/auth.json").is_file()
+    decisions = (root / "decisions.key").is_file()
+    # Check both services before interrupting either one. A missing credential
+    # must not silently skip a previously configured, still-running broker.
+    if not auth and inspected(name):
+        raise ContainerError("Login credentials missing; restore AUTH_DIR/codex/auth.json before restarting")
+    if not decisions and inspected(name + "-decisions"):
+        raise ContainerError("Decisions key missing; restore AUTH_DIR/decisions.key before restarting")
+    if not auth and not decisions:
+        raise ContainerError("No auth or Decisions credentials configured in this auth directory")
+    if decisions:
+        from civ_agent.decisions_broker import read_decisions_key
+
+        read_decisions_key(root / "decisions.key")
+    private_directory(root)
+    for directory, configured in (("ipc", auth), ("decisions-ipc", decisions)):
+        if configured:
+            private_directory(root / directory)
+    result: JsonObject = {
+        "auth_directory": str(root),
+        "image": image,
+        "auth": {"status": "not_configured"},
+        "decisions": {"status": "not_configured"},
+    }
+    if auth:
+        result["auth"] = {"status": "ready", "container": ensure_auth(root, image, restart=True)}
+    if decisions:
+        result["decisions"] = {
+            "status": "ready",
+            "container": name + "-decisions",
+            "health": ensure_decisions(root, image, restart=True),
+        }
+    return result
 
 
 def routing_broker_health(root, *, timeout=1):

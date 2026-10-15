@@ -9,7 +9,7 @@ import time
 from decimal import Decimal
 from pathlib import Path
 
-from sqlalchemy import Column, Integer, MetaData, String, Table, UniqueConstraint, insert, select
+from sqlalchemy import Column, Integer, MetaData, String, Table, UniqueConstraint, func, insert, or_, select
 
 from civ_agent.decisions_policy import DecisionsSettings
 from civ_agent.protocol import JsonObject
@@ -123,8 +123,15 @@ class DecisionsLedger:
             if identity is not None and identity != principal:
                 raise ValueError("Decisions immutable game/player account conflict: cannot change principal")
             prior = db.execute(select(accounts).where(accounts.c.principal == principal)).mappings().first()
-            if prior is not None and dict(prior) != saved:
-                raise ValueError("Decisions immutable account or policy conflict")
+            if prior is not None:
+                # Additive settings with unchanged defaults must not invalidate
+                # an existing accounting identity or reset its spending.
+                normalized = dict(prior)
+                normalized["settings"] = canonical(
+                    DecisionsSettings.model_validate_json(prior["settings"]).model_dump()
+                )
+                if normalized != saved:
+                    raise ValueError("Decisions immutable account or policy conflict")
             if prior is None:
                 db.execute(insert(accounts).values(**saved))
 
@@ -134,6 +141,13 @@ class DecisionsLedger:
             if value is None:
                 raise ValueError("Decisions account not registered by operator")
             return DecisionsSettings.model_validate_json(value)
+
+    def player(self, principal):
+        with self.engine.begin() as db:
+            value = db.scalar(select(accounts.c.player).where(accounts.c.principal == principal))
+            if value is None:
+                raise ValueError("Decisions account not registered by operator")
+            return value
 
     @staticmethod
     def _totals(db, principal):
@@ -157,7 +171,21 @@ class DecisionsLedger:
                 **self._totals(db, principal),
             }
 
-    def reserve(self, principal, request_id, evidence_hash, body):
+    def lookup(self, principal, request_id):
+        """Read a receipt without reserving funds or dispatching a provider call."""
+        with self.engine.begin() as db:
+            row = db.execute(
+                select(requests.c.result).where(requests.c.principal == principal, requests.c.id == request_id)
+            ).first()
+            if row is None:
+                return {"answers": [], "fallback": "not_submitted", "requestId": request_id}
+            return (
+                json.loads(row[0])
+                if row[0]
+                else {"answers": [], "fallback": "completion_unknown", "requestId": request_id}
+            )
+
+    def reserve(self, principal, request_id, evidence_hash, body, *, pending_result=None):
         """BEGIN IMMEDIATE serializes reservations across broker processes too.
 
         A reservation without a durable result has unknown completion. Never
@@ -183,7 +211,12 @@ class DecisionsLedger:
             totals = self._totals(db, principal)
             reservation = estimate_tokens(body) * NANODOLLARS_PER_INPUT_TOKEN
             denied = ceiling == 0 or totals["spentNanodollars"] + totals["reservedNanodollars"] + reservation > ceiling
-            result = {"answers": [], "fallback": "budget_exhausted", "requestId": request_id} if denied else None
+            result = (
+                {**(pending_result or {}), "answers": [], "fallback": "budget_exhausted", "requestId": request_id}
+                if denied
+                else None
+            )
+            pending = {**pending_result, "pending": True} if pending_result is not None else None
             db.execute(
                 insert(requests).values(
                     principal=principal,
@@ -192,7 +225,7 @@ class DecisionsLedger:
                     reserved=0 if denied else reservation,
                     spent=0,
                     input_tokens=None,
-                    result=canonical(result) if result else None,
+                    result=canonical(result or pending) if result or pending else None,
                     rate_version=RATE_VERSION,
                     created_ms=int(time.time() * 1000),
                 )
@@ -211,6 +244,10 @@ class DecisionsLedger:
         with self.engine.begin() as db:
             db.execute(
                 requests.update()
-                .where(requests.c.principal == principal, requests.c.id == request_id, requests.c.result.is_(None))
+                .where(
+                    requests.c.principal == principal,
+                    requests.c.id == request_id,
+                    or_(requests.c.result.is_(None), func.json_extract(requests.c.result, "$.pending") == 1),
+                )
                 .values(**values)
             )

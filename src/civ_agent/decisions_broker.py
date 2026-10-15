@@ -12,14 +12,16 @@ from typing import Any
 import aiohttp
 from aiohttp import web
 
-from civ_agent.decisions_ledger import RATE_VERSION, DecisionsLedger, fingerprint
-from civ_agent.decisions_tasks import TASK_VERSION, dispatch_evidence, parse_answers, request_body, request_id
+from civ_agent.advisory_answers import failed_answers
+from civ_agent.decisions_ledger import RATE_VERSION, DecisionsLedger
+from civ_agent.decisions_policy import routing_thresholds
+from civ_agent.decisions_tasks import TASK_VERSION, parse_answers, request_body, request_id, request_metadata
 from civ_agent.diplomacy_decisions import MODEL, POLICY_VERSION, DecisionsClient, fallback
 from civ_agent.protocol import JsonObject
 from civ_agent.providers import ProviderError, read_api_key
 from civ_agent.tls import private_directory, write_private_json
 
-BROKER_PROTOCOL_VERSION = 2
+BROKER_PROTOCOL_VERSION = 3
 _PROVIDER_ERROR_KINDS = {
     "authentication",
     "access_denied",
@@ -145,7 +147,11 @@ class DecisionsBroker:
             except ValueError:
                 policy = None
             options = (
-                {"timeout": policy.decisions_timeout_seconds, "threshold": policy.decisions_min_confidence}
+                {
+                    "timeout": policy.decisions_timeout_seconds,
+                    "thresholds": routing_thresholds(policy, body["direction"]),
+                    "policy_version": policy.decisions_routing_policy,
+                }
                 if policy is not None
                 else {}
             )
@@ -164,41 +170,73 @@ class DecisionsBroker:
             if not isinstance(envelope, dict) or set(envelope) != {"requestId", "evidence"}:
                 raise ValueError("Invalid envelope")
             evidence = envelope["evidence"]
+            if not isinstance(evidence, dict) or evidence.get("player") != self.ledger.player(principal):
+                raise ValueError("Invalid player perspective")
             if envelope["requestId"] != request_id(evidence):
                 raise ValueError("Invalid stable request ID")
             body = request_body(evidence, settings)
         except (ValueError, TypeError, KeyError, UnicodeError):
             raise web.HTTPBadRequest() from None
+        metadata = request_metadata(body, evidence)
+        pending = {
+            **metadata,
+            **failed_answers(body, settings.decisions_min_confidence, "completion_unknown"),
+            "replayEvidence": json.loads(body["input"]),
+        }
         async with self.locks.setdefault(principal, asyncio.Lock()):
             cached = self.ledger.reserve(
-                principal, envelope["requestId"], fingerprint(dispatch_evidence(evidence)), body
+                principal, envelope["requestId"], metadata["inputHash"], body, pending_result=pending
             )
             if cached is not None:
-                return web.json_response({**cached, "accounting": self.ledger.status(principal)})
+                if "questionResults" not in cached:
+                    cached = {
+                        **pending,
+                        **failed_answers(body, settings.decisions_min_confidence, cached["fallback"]),
+                    }
+                    if cached["fallback"] == "budget_exhausted":
+                        self.ledger.complete(principal, envelope["requestId"], cached)
+                return web.json_response(self._reply(principal, cached))
             # No provider retries. A cancelled/unknown call retains its reservation.
             raw = await self.client.evaluate(body, timeout=settings.decisions_timeout_seconds)
             parsed = (
-                {"answers": [], "fallback": raw["fallback"]}
+                failed_answers(body, settings.decisions_min_confidence, raw["fallback"])
                 if raw.get("fallback")
                 else parse_answers(body, raw, settings.decisions_min_confidence)
             )
             result = {
                 **parsed,
-                "model": MODEL,
-                "policyVersion": TASK_VERSION,
+                **metadata,
                 "providerError": raw.get("providerError"),
                 "usage": raw.get("usage", {}),
                 "latencyMs": raw.get("latencyMs"),
-                "requestId": envelope["requestId"],
+                "replayEvidence": pending["replayEvidence"],
             }
             self.ledger.complete(principal, envelope["requestId"], result)
-            return web.json_response({**result, "accounting": self.ledger.status(principal)})
+            return web.json_response(self._reply(principal, result))
+
+    def _reply(self, principal, result):
+        return {
+            **{k: v for k, v in result.items() if k not in {"replayEvidence", "pending"}},
+            "accounting": self.ledger.status(principal),
+        }
+
+    async def lookup(self, request):
+        principal = self._authenticate(request)
+        identifier = request.match_info["request_id"]
+        if len(identifier) != 64 or any(c not in "0123456789abcdef" for c in identifier):
+            raise web.HTTPBadRequest()
+        try:
+            self.ledger.settings(principal)
+        except ValueError:
+            raise web.HTTPForbidden() from None
+        return web.json_response(self._reply(principal, self.ledger.lookup(principal, identifier)))
 
     def application(self):
         app = web.Application(client_max_size=256 * 1024)
         app.router.add_get("/health", self.health)
         app.router.add_post("/classify", self.classify)
         app.router.add_post("/batch", self.batch)
+        app.router.add_get("/batch/{request_id}", self.lookup)
         return app
 
 
@@ -311,6 +349,32 @@ class RoutingClient:
             return result
         except (TimeoutError, OSError, ValueError, aiohttp.ClientError):
             return {"answers": [], "fallback": "broker_unavailable", "requestId": stable_id}
+
+    async def lookup(self, identifier, *, timeout=5) -> JsonObject:
+        """A free receipt lookup can never start a Decisions provider request."""
+        if (
+            not isinstance(identifier, str)
+            or len(identifier) != 64
+            or any(c not in "0123456789abcdef" for c in identifier)
+        ):
+            raise ValueError("Invalid Decisions request ID")
+        try:
+            async with aiohttp.ClientSession(
+                connector=aiohttp.UnixConnector(path=self.socket_path),
+                timeout=aiohttp.ClientTimeout(total=timeout),
+            ) as session:
+                async with session.get(
+                    "http://localhost/batch/" + identifier,
+                    headers={"Authorization": "Bearer " + self._token()},
+                    allow_redirects=False,
+                ) as response:
+                    response.raise_for_status()
+                    result = await response.json()
+            if not isinstance(result, dict) or result.get("requestId") != identifier:
+                raise ValueError("Invalid Decisions lookup reply")
+            return result
+        except (TimeoutError, OSError, ValueError, aiohttp.ClientError):
+            return {"answers": [], "fallback": "broker_unavailable", "requestId": identifier}
 
 
 def main():

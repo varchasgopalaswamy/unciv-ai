@@ -337,6 +337,10 @@ def select_context(snapshot, limit):
     def relevant(record):
         return any(subject.casefold() in subjects for subject in record["body"].get("subjects", []))
 
+    def rank(key):
+        value = snapshot.get("advisoryRanking", {}).get(key, {})
+        return value if isinstance(value, dict) else {}
+
     candidates = [
         (key, value)
         for key, value in snapshot["records"].items()
@@ -352,10 +356,14 @@ def select_context(snapshot, limit):
     candidates = [
         (key, record)
         for key, record in candidates
-        if (record["category"] not in {"belief", "note"} or snapshot.get("advisoryRanking", {}).get(key) != "omit")
+        if (
+            record["category"] not in {"belief", "note"}
+            or rank(key).get("include") is not False
+            or record["body"].get("needsReview")
+        )
         and (
             record["category"] in {"strategy", "handoff", "contribution"}
-            or snapshot.get("advisoryRanking", {}).get(key) in {"high", "medium"}
+            or rank(key).get("include") is True
             or record["body"].get("needsReview")
             or relevant(record)
             or type(turn) is not int
@@ -365,11 +373,9 @@ def select_context(snapshot, limit):
     candidates.sort(
         key=lambda item: (
             {"strategy": 0, "handoff": 1}.get(item[1]["category"], 2),
-            {"high": 0, "medium": 1}.get(snapshot.get("advisoryRanking", {}).get(item[0]), 2)
-            if item[1]["category"] in {"belief", "note"}
-            else 2,
-            not relevant(item[1]),
             not bool(item[1]["body"].get("needsReview")),
+            (0 if rank(item[0]).get("priority") == "high" else 1) if item[1]["category"] in {"belief", "note"} else 2,
+            not relevant(item[1]),
             -item[1]["body"].get("priority", 3),
             -(item[1]["body"].get("updatedTurn") or 0),
             item[0],
