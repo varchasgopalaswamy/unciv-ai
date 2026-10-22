@@ -62,6 +62,36 @@ class TurnCoordinator:
             self.call_agent(agent, "barrier", paused=False)
         self.operator.call("unbarrier", leaseId=self.lease)
 
+    def resolve_requests(self, epoch):
+        """Settle abandoned identities before either side's checkpoint is captured."""
+        for civilization, agent in self.agents.items():
+            pending = self.call_agent(agent, "pending_requests")
+            if pending.get("civilization") != civilization or not isinstance(pending.get("requests"), list):
+                raise ValueError("Invalid pending request response")
+            for request in pending["requests"]:
+                payload = request.get("payload")
+                if (
+                    request.get("transport") not in {"player_command", "player_communication"}
+                    or not isinstance(payload, dict)
+                    or payload.get("requestId") != request.get("id")
+                    or payload.get("epoch") != epoch
+                ):
+                    raise ValueError("Invalid pending request identity")
+                result = self.operator.call(
+                    "resolve_request",
+                    leaseId=self.lease,
+                    epoch=epoch,
+                    civilization=civilization,
+                    transport=request["transport"],
+                    request=payload,
+                )
+                receipt = result.get("receipt")
+                if not isinstance(receipt, dict):
+                    raise ValueError("Invalid request resolution receipt")
+                settled = self.call_agent(agent, "settle_request", requestId=request["id"], receipt=receipt)
+                if settled.get("settled") != request["id"]:
+                    raise ValueError("Invalid settled request response")
+
     def capture(self, status, scheduler):
         target = self.root / "current.json"
         if target.exists():
@@ -71,6 +101,7 @@ class TurnCoordinator:
         id = status["epoch"] + "-handoff-" + str(status["handoff"]) + "-" + uuid.uuid4().hex[:8]
         self.quiesce()
         try:
+            self.resolve_requests(status["epoch"])
             host = self.operator.call("snapshot", leaseId=self.lease)["checkpoint"]
             components = {}
             for civilization, agent in self.agents.items():

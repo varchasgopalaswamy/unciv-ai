@@ -17,6 +17,7 @@ from civ_agent.agent_service import server_ssl_context
 from civ_agent.civilization_state import CivilizationState
 from civ_agent.mcp_results import RESULT_FORMAT_HEADER, STRUCTURED_RESULT_FORMAT, canonical_tool_result
 from civ_agent.proposal_gateway import JobAccess, ProposalGateway, public_result, tool_result
+from civ_agent.review_grounding import ReviewEvidence
 from civ_agent.service_io import ServiceIO
 from civ_agent.tls import client_ssl_context, ensure_server_certificate
 from tests.test_proposal_gateway import Host
@@ -114,6 +115,7 @@ def test_review_http_admission_honors_review_and_checkpoint_boundaries(tmp_path,
                     }
                 ],
                 review_inputs={"reads": {"research_details": {"technologies": [{"name": "Mining", "cost": 55}]}}},
+                review_evidence=ReviewEvidence({"observation": {"turn": 0}}),
             )
             gateway.jobs[review.token] = review
             gateway.paused = True
@@ -132,7 +134,9 @@ def test_review_http_admission_honors_review_and_checkpoint_boundaries(tmp_path,
                     ) as client:
                         assert [tool.name for tool in (await client.list_tools()).tools] == ["research_details"]
                         reply = await client.session.call_tool("research_details", {"names": ["Mining"]})
-                        assert reply.structured_content == {"technologies": [{"name": "Mining", "cost": 55}]}
+                        assert reply.structured_content["data"] == {"technologies": [{"name": "Mining", "cost": 55}]}
+                        assert review.review_evidence is not None
+                        assert reply.structured_content["source"] in review.review_evidence.sources
                         for name, arguments in (
                             ("player_command", {"kind": "END_TURN"}),
                             ("chat_send", {"text": "Hello"}),

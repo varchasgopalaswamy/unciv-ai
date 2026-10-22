@@ -9,7 +9,7 @@ import aiohttp
 
 from civ_agent.agent_history import HISTORY_METHODS
 from civ_agent.agent_settings import codex_thread_settings, communication_effort
-from civ_agent.civilization_state import StateConflict, job_id
+from civ_agent.civilization_state import StateConflict, job_id, receipt_is_uncertain
 from civ_agent.host_connection import HostConnection
 from civ_agent.protocol import JsonObject
 from civ_agent.provider_usage import reconcile_provider_usage
@@ -130,22 +130,31 @@ class ChatRuntime:
             if await self.service.io.call(self.service.memory.pending):
                 raise StateConflict("COMMUNICATION_NOT_CONNECTED")
             return
-        routing = getattr(getattr(self.service, "gateway", None), "routing", None)
+        gateway = self.service.gateway
+        routing = gateway.routing
         if routing is not None:
             await routing.reconcile(self.epoch, self.connection)
         # Only the host can settle an uncertain command. Never re-run a model to
         # guess what happened, and never send a new identity for an old request.
-        for request in await self.service.io.call(self.service.memory.pending):
-            import json
+        async with gateway.dispatch:
+            gateway.in_flight += 1
+            try:
+                for request in await self.service.io.call(self.service.memory.pending, exclude_purpose="delivery"):
+                    import json
 
-            payload = json.loads(request["payload"])
-            if request["transport"] == "player_command":
-                result = await self.connection.tool("player_receipt", payload)
-            else:
-                result = await self.connection.tool(
-                    "player_communication", {"op": "receipt", "epoch": self.epoch, "requestId": request["id"]}
-                )
-            await self.service.io.call(self.service.memory.receipt, request["id"], result)
+                    payload = json.loads(request["payload"])
+                    if request["transport"] == "player_command":
+                        result = await self.connection.tool("player_receipt", payload)
+                    else:
+                        result = await self.connection.tool(
+                            "player_communication", {"op": "receipt", "epoch": self.epoch, "requestId": request["id"]}
+                        )
+                    if receipt_is_uncertain(result):
+                        await self.service.io.call(self.service.memory.uncertain, request["id"])
+                        continue
+                    await self.service.io.call(self.service.memory.receipt, request["id"], result)
+            finally:
+                gateway.in_flight -= 1
 
     async def receive(self):
         while self.running:
@@ -259,6 +268,8 @@ class ChatRuntime:
                 self.dispatching = False
 
     async def compute(self, id):
+        from civ_agent.agent_service import ProcessDrainError
+
         service = self.service
         await service.io.call(service.accounting.start, id, self.epoch, True)
         job = await service.gateway.open(id, "communication", self.epoch, self.connection, self.settings)
@@ -441,6 +452,10 @@ class ChatRuntime:
             record["summary"] = final[:2400]
             try:
                 await process.close()
+            except ProcessDrainError:
+                record["error"] = "HISTORY_DRAIN_FAILED"
+                self.error = "HISTORY_DRAIN_FAILED"
+                raise
             except BaseException:
                 # Retain ownership for close() to retry. In particular, do not
                 # finish the gateway job or shut down I/O under live callbacks.

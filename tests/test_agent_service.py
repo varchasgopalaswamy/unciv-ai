@@ -59,13 +59,57 @@ class FakeCodex:
         self.factory, self.workspace, self.notification = factory, workspace, notification
         self.closed = False
         self.thread_id = None
+        self.economy = "economy" in workspace.name
+        self.job = None
 
     async def start(self, token, settings):
+        self.job = self.factory.service.gateway.jobs[token]
+        if self.economy:
+            return
         self.factory.tokens.append(token)
         if self.factory.hold == "startup":
             await asyncio.Future()
 
     async def request(self, method: str, payload: JsonObject) -> JsonObject:
+        if self.economy:
+            if method == "thread/start":
+                self.thread_id = "economy-" + self.workspace.name
+                return {
+                    "thread": {"id": self.thread_id},
+                    "modelProvider": payload["modelProvider"],
+                    "model": payload.get("model") or self.factory.default_model,
+                    "reasoningEffort": payload.get("config", {}).get(
+                        "model_reasoning_effort", self.factory.default_effort
+                    ),
+                }
+            if method == "turn/start":
+                await self.notification(
+                    "thread/tokenUsage/updated",
+                    {
+                        "threadId": self.thread_id,
+                        "turnId": "economy-turn",
+                        "tokenUsage": {
+                            "total": {
+                                "inputTokens": 0,
+                                "cachedInputTokens": 0,
+                                "outputTokens": 0,
+                                "reasoningOutputTokens": 0,
+                            }
+                        },
+                    },
+                )
+                await self.factory.service.gateway.invoke(self.job, "finish_role", {}, "economy-finish")
+                await self.notification(
+                    "turn/completed",
+                    {"threadId": self.thread_id, "turn": {"id": "economy-turn", "status": "completed"}},
+                )
+                return {"turn": {"id": "economy-turn"}}
+            if method == "turn/interrupt":
+                await self.notification(
+                    "turn/completed",
+                    {"threadId": self.thread_id, "turn": {"id": payload["turnId"], "status": "interrupted"}},
+                )
+                return {}
         self.factory.calls.append((method, payload))
         if method == "thread/start":
             self.factory.thread_count += 1
@@ -110,6 +154,8 @@ class FakeCodex:
                 },
             )
             if getattr(self, "complete", self.factory.complete):
+                if self.factory.service.gateway.role_coordinator is not None:
+                    await self.factory.service.gateway.invoke(self.job, "finish_role", {}, "finish:" + turn_id)
                 common = {"threadId": self.thread_id, "turnId": turn_id}
                 await self.notification(
                     "item/started",
@@ -161,13 +207,47 @@ class FakeCodex:
         raise AssertionError(method)
 
     async def close(self):
-        if self.factory.close_failure:
+        if self.factory.close_failure and not self.economy:
             raise ServiceError("TEST_STOP_FAILED")
         self.closed = True
         await self.notification("service/disconnected", {})
 
 
 class FakeFactory:
+    @property
+    def service(self):
+        return self._service
+
+    @service.setter
+    def service(self, service):
+        self._service = service
+        if service is None:
+            return
+        original = service._notification
+
+        async def notification(method, params):
+            # Test-side manual completions stand for a model that explicitly finishes its role.
+            if (
+                method == "turn/completed"
+                and params.get("turn", {}).get("status") == "completed"
+                and service.turn_roles is not None
+                and params.get("threadId") == service.records.get(service.active_id, {}).get("threadId")
+                and params.get("turn", {}).get("id") == service.turn_id
+            ):
+                roles = service.turn_roles
+                job = roles.jobs.get("gameplay")
+                if (
+                    job is not None
+                    and not roles.ready["gameplay"]
+                    and not service.failure
+                    and not service.gateway.run_failure
+                    and not job.pending_calls
+                ):
+                    await service.gateway.invoke(job, "finish_role", {}, "fixture:finish:" + service.turn_id)
+            await original(method, params)
+
+        service._notification = notification
+
     def __init__(self):
         self.service = None
         self.instances, self.tokens, self.calls = [], [], []
@@ -181,7 +261,8 @@ class FakeFactory:
 
     def __call__(self, executable, workspace, mcp_url, ca_file, notification):
         process = FakeCodex(self, workspace, notification)
-        self.instances.append(process)
+        if not process.economy:
+            self.instances.append(process)
         return process
 
     def connection(self, *args, **kwargs):
@@ -288,7 +369,7 @@ class AgentServiceTests(AgentServiceTestCase):
         persist = self.service._persist
 
         def fail_terminal(record, **kwargs):
-            if record["phase"] == "COMPLETED":
+            if record["phase"] == "COMPLETED" and record.get("purpose", "gameplay") == "gameplay":
                 raise SQLAlchemyError("Database failure")
             return persist(record, **kwargs)
 
@@ -446,7 +527,7 @@ class AgentServiceTests(AgentServiceTestCase):
         self.assertNotEqual(starts[0]["cwd"], starts[-1]["cwd"])
         self.assertIn("Do not access the filesystem", instructions)
         self.assertNotIn("files: turn_", prompt)
-        self.assertIn("After END_TURN succeeds, finish immediately", instructions)
+        self.assertIn("Finish immediately after ending it", instructions)
         self.assertNotIn("Previous strategy, next-turn handoff and historical knowledge", instructions)
         self.assertNotIn("Civ tool discovery:", prompt)
         metadata = self.service.records[second["activationId"]]["startup"]

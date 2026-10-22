@@ -9,6 +9,7 @@ import pytest
 from civ_agent import service_recovery
 from civ_agent.agent_service import AgentService, ServiceError
 from civ_agent.civilization_state import StateConflict
+from civ_agent.proposal_gateway import public_result
 from tests.test_agent_service import AgentServiceTestCase, FakeCodex, FakeFactory
 
 
@@ -47,9 +48,35 @@ class HandoffFactory(FakeFactory):
         self.completion = "interrupted"
 
     def __call__(self, executable, workspace, mcp_url, ca_file, notification):
+        if "economy" in workspace.name:
+            return super().__call__(executable, workspace, mcp_url, ca_file, notification)
         process = HandoffCodex(self, workspace, notification)
         self.instances.append(process)
         return process
+
+
+async def native_handoff(service, job, arguments, call_id):
+    """Exercise native receipt handling through the trusted two-role coordinator."""
+    if job.gameplay_fenced:
+        return await service.gateway.call(job, "player_command", arguments, call_id)
+    roles = service.turn_roles
+    roles.native_call_id = call_id
+    await service.gateway.call(
+        job,
+        "finish_role",
+        {key: arguments[key] for key in ("deferReason", "deferChoices") if key in arguments},
+        call_id + ":role",
+    )
+    ended = asyncio.create_task(job.gameplay_ended.wait())
+    assert roles.advance_task is not None
+    try:
+        await asyncio.wait({ended, roles.advance_task}, return_when=asyncio.FIRST_COMPLETED)
+        if roles.advance_task.done() and roles.advance_task.exception() is not None:
+            await roles.advance_task
+    finally:
+        ended.cancel()
+        await asyncio.gather(ended, return_exceptions=True)
+    return public_result(await service.io.call(service.memory.call, job.id, call_id, "player_command", arguments))
 
 
 class HandoffFailureTests(AgentServiceTestCase):
@@ -60,7 +87,7 @@ class HandoffFailureTests(AgentServiceTestCase):
             while self.service.status()["phase"] == "STARTING":
                 await asyncio.sleep(0.001)
         job = self.service.gateway.jobs[self.factory.tokens[-1]]
-        await self.service.gateway.call(job, "player_command", {"kind": "END_TURN"}, "end")
+        await native_handoff(self.service, job, {"kind": "END_TURN"}, "end")
         proof = {"activationId": job.id, "epoch": "epoch-one", "gameTurn": 0, "committedHandoff": 1}
         await self.service.finish_handoff(proof)
         await self.terminal()
@@ -122,25 +149,26 @@ class HandoffFailureTests(AgentServiceTestCase):
             return call(job_id, call_id, name, arguments, result)
 
         arguments = {"kind": "END_TURN", "deferReason": "Hold position"}
-        with patch.object(self.service.memory, "call", side_effect=fail_response):
-            with pytest.raises(OSError, match="Response not saved"):
-                await self.service.gateway.call(job, "player_command", arguments, "end")
-        assert self.service.memory.call_receipt(job.id, "end") is not None
         release = asyncio.Event()
         process = self.factory.instances[-1]
         request = process.request
 
         async def delayed(method, payload):
-            await release.wait()
+            if method == "turn/interrupt":
+                await release.wait()
             return await request(method, payload)
 
         with patch.object(process, "request", side_effect=delayed):
             try:
+                with patch.object(self.service.memory, "call", side_effect=fail_response):
+                    with pytest.raises(OSError, match="Response not saved"):
+                        await native_handoff(self.service, job, arguments, "end")
+                assert self.service.memory.call_receipt(job.id, "end") is not None
                 await self.service.finish_handoff(
                     {"activationId": job.id, "epoch": "epoch-one", "gameTurn": 0, "committedHandoff": 1}
                 )
                 assert job.gameplay_fenced
-                result = await self.service.gateway.call(job, "player_command", arguments, "end")
+                result = await native_handoff(self.service, job, arguments, "end")
                 assert "memoryPhase" not in result
                 assert await self.service.gateway.tools(job) == []
                 assert len(self.service.memory.requests_for_job(job.id)) == 1
@@ -148,7 +176,8 @@ class HandoffFailureTests(AgentServiceTestCase):
                     await self.service.gateway.call(job, "memory_update", {"changes": []}, "late")
             finally:
                 release.set()
-            assert (await self.terminal())["phase"] == "COMPLETED"
+            status = await self.terminal()
+            assert status["phase"] == "COMPLETED", status
 
     async def test_completion_timeout_stops_model_and_preserves_committed_turn(self):
         self.factory.complete = False
@@ -157,11 +186,16 @@ class HandoffFailureTests(AgentServiceTestCase):
             while self.service.status()["phase"] == "STARTING":
                 await asyncio.sleep(0.001)
         job = self.service.gateway.jobs[self.factory.tokens[-1]]
+
+        async def accepted_before_timeout(method, payload):
+            await job.gameplay_ended.wait()
+            return {}
+
         with (
-            patch.object(self.factory.instances[-1], "request", new_callable=AsyncMock, return_value={}),
+            patch.object(self.factory.instances[-1], "request", side_effect=accepted_before_timeout),
             patch("civ_agent.agent_service.MODEL_INTERRUPT_TIMEOUT", 0.02),
         ):
-            await self.service.gateway.call(job, "player_command", {"kind": "END_TURN"}, "end")
+            await native_handoff(self.service, job, {"kind": "END_TURN"}, "end")
             status = await self.terminal()
         assert status["phase"] == "FAILED" and status["error"] == "COMPLETION_TIMEOUT"
         assert not status["usageComplete"]
@@ -183,8 +217,8 @@ class HandoffFailureTests(AgentServiceTestCase):
             return await save(record, **kwargs)
 
         with patch.object(self.service, "_save", side_effect=failing):
-            result = await self.service.gateway.call(
-                job, "player_command", {"kind": "END_TURN", "deferReason": "Hold position"}, "end"
+            result = await native_handoff(
+                self.service, job, {"kind": "END_TURN", "deferReason": "Hold position"}, "end"
             )
             assert result["stateUpdate"]["kind"] == "turn_ended"
             status = await self.terminal()
@@ -247,7 +281,7 @@ def test_handoff_drains_final_usage_without_additional_model_work(tmp_path, monk
         monkeypatch.setattr(
             service.provider_usage,
             "read",
-            lambda _: (
+            lambda thread: (
                 {
                     "usage": {
                         "input_tokens": 20,
@@ -257,7 +291,7 @@ def test_handoff_drains_final_usage_without_additional_model_work(tmp_path, monk
                     },
                     "modelRequests": 1,
                 }
-                if trace_available
+                if trace_available and thread == "thread-one"
                 else None
             ),
         )
@@ -272,9 +306,7 @@ def test_handoff_drains_final_usage_without_additional_model_work(tmp_path, monk
                 job, "player_command", {"kind": "END_TURN", "intent": {"deferReason": "invalid nesting"}}, "invalid"
             )
             assert "error" in failed and not job.gameplay_ended.is_set()
-            result = await service.gateway.call(
-                job, "player_command", {"kind": "END_TURN", "deferReason": "Hold position"}, "end"
-            )
+            result = await native_handoff(service, job, {"kind": "END_TURN", "deferReason": "Hold position"}, "end")
             assert result["stateUpdate"]["kind"] == "turn_ended"
             assert "memoryPhase" not in result
             await asyncio.wait_for(factory.interrupt_started.wait(), 2)

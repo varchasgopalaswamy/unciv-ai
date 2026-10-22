@@ -28,6 +28,7 @@ def answer(direction, choice, confidence) -> JsonObject:
         direction,
         {"answers": raw},
         policy_version=POLICY_VERSION,
+        threshold=0.9,
     )
     return {**result, "policyVersion": POLICY_VERSION}
 
@@ -207,7 +208,7 @@ def test_confidence_bins_use_explicit_boundaries_and_empty_samples_stay_unknown(
 
 def test_two_question_accounting_keeps_intent_and_action_confidence_separate_after_reopen(tmp_path):
     raw = [binary_answer("response_needed", "not_needed", 0.4), binary_answer("response_timing", "can_wait", 0.95)]
-    result = parse_answer("incoming", {"answers": raw}, policy_version=POLICY_VERSION)
+    result = parse_answer("incoming", {"answers": raw}, policy_version=POLICY_VERSION, threshold=0.9)
     result["policyVersion"] = POLICY_VERSION
     for question in result["rawAnswers"]:
         question["providerText"] = "PRIVATE TEXT"

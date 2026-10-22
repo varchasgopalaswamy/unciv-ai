@@ -338,7 +338,12 @@ internal class EngineTrades(private val runtime: GameExecutor) {
         }
         val proposal = EngineTradeProposal(id, (previous?.version ?: 0) + 1, civilization, b.civID, clauses(civilization, b.civID, give, receive), deadline, previous?.counterofferLimit ?: state.counterofferLimit, now, listOf(TradeConsent(civilization, "accept", now)), friendship = if (friendship) FriendshipTerms() else null)
         legality(proposal)?.let { return unavailable(it) }
-        if (previous != null) replace(previous.copy(status = "SUPERSEDED"), civilization)
+        if (!friendship && !TradeOperations(a, b).tryReserve(engineTrade(proposal), id, proposal.version))
+            return unavailable("The offer's gold or resources are already committed.")
+        if (previous != null) {
+            previous.participants().filter { it != civilization }.forEach { player(it).releaseTradeCommitment(id) }
+            replace(previous.copy(status = "SUPERSEDED"), civilization)
+        }
         state.proposals.getOrPut(id) { mutableListOf() }.add(proposal)
         if (previous == null) {
             state.activeProposal = id
@@ -380,7 +385,7 @@ internal class EngineTrades(private val runtime: GameExecutor) {
                 a.popupAlerts.removeAll { it.type == AlertType.DeclarationOfFriendship && it.value == b.civID }
                 b.popupAlerts.removeAll { it.type == AlertType.DeclarationOfFriendship && it.value == a.civID }
             } else {
-                check(TradeOperations(a, b).tryEnact(trade)) { "Trade changed inside its serialized execution." }
+                check(TradeOperations(a, b).tryEnact(trade, proposal.proposal)) { "Trade changed inside its serialized execution." }
             }
             a.gameInfo.checkForVictory()
             // A gameplay job must re-observe effects before spending changed resources or ending turn.
@@ -412,6 +417,9 @@ internal class EngineTrades(private val runtime: GameExecutor) {
 
     internal fun legality(proposal: EngineTradeProposal): String? {
         proposal.failure?.let { return it }
+        proposal.participants().forEach { id ->
+            player(id).invalidatedTradeCommitments[proposal.nativeRequestId ?: proposal.proposal]?.let { return it }
+        }
         val a = player(proposal.author)
         val b = player(proposal.partner)
         TradeOperations(a, b).stateReason()?.let { return it }
@@ -420,7 +428,7 @@ internal class EngineTrades(private val runtime: GameExecutor) {
         if ((trade.ourOffers + trade.theirOffers).any { !visibleTerm(a, it) || !visibleTerm(b, it) }) {
             return "These terms are outside the players' permitted information."
         }
-        return TradeOperations(a, b).invalidReason(trade)
+        return TradeOperations(a, b).invalidReason(trade, proposal.nativeRequestId ?: proposal.proposal)
     }
 
     fun invalidateDiplomacy(a: String, b: String) {
@@ -461,6 +469,8 @@ internal class EngineTrades(private val runtime: GameExecutor) {
     }
     internal fun replace(proposal: EngineTradeProposal, actor: String) {
         state.proposals.getValue(proposal.proposal)[proposal.version - 1] = proposal
+        if (proposal.status !in setOf("PENDING", "SUPERSEDED"))
+            proposal.participants().forEach { player(it).releaseTradeCommitment(proposal.nativeRequestId ?: proposal.proposal) }
         if (state.activeProposal == proposal.proposal && proposal.status !in setOf("PENDING", "SUPERSEDED")) {
             state.completedWaitMillis += (minOf(runtime.clockMillis(), proposal.deadlineMillis ?: Long.MAX_VALUE) - state.openedAtMillis).coerceAtLeast(0)
             state.activeProposal = null

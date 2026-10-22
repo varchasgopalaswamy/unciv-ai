@@ -406,6 +406,8 @@ class FakeHost:
         return 200, dict(status=self.status(), **extra)
 
     def agent_request(self, civilization, body):
+        if body["op"] == "pending_requests":
+            return 200, {"status": {"civilization": civilization, "requests": []}}
         if body["op"] == "health":
             return 200, {"status": {"civilization": civilization, "runFailure": self.agent_failures.get(civilization)}}
         if body["op"] == "review_triage":

@@ -8,9 +8,10 @@ Follow that runbook to start the host, agent services and scheduler. Public/priv
 commitments are also covered by internal regression fixtures.
 
 Add `--model NAME --reasoning-effort LEVEL` to `match start` to select settings
-for both gameplay and communication. The defaults allow one gameplay job and one
-communication job per civilization, with four jobs across the match. Configure
-these with `--jobs-per-civilization 1|2` and `--max-concurrent-jobs N`.
+for the main player, economy manager and communication. The defaults allow three
+jobs per civilization, with four jobs across the match. Configure these with
+`--jobs-per-civilization 2|3` and `--max-concurrent-jobs N` (at least two).
+A main-player admission reserves capacity and an invocation for its economy partner.
 Invocation and time budgets include communication jobs and interrupted attempts.
 
 ## What the model controls
@@ -216,11 +217,13 @@ Opening reviewers save their starting view before gameplay and run concurrently.
 Periodic reviewers capture fresh positions after all players finish the due round.
 Active conversations finish first; gameplay and communication then remain paused
 while reviews run concurrently. An interrupted reviewer restarts with the frozen input
-and the same model settings. Three attempts are allowed by default. An exhausted
-task stays pending; inspect the failure before increasing the limit, for example
-`civ-agent game resume --state-dir DIR --review-attempts 4`. Completion atomically
-saves the dated report and removes its temporary input. All reports finish before
-gameplay and communication resume. Gameplay has no mandatory
+and the same model settings. A review allows an initial attempt and at most one
+correction with feedback; `--review-attempts 1` disables correction. Exhaustion
+marks advice `UNAVAILABLE`, preserving failed inputs for inspection. Completion
+atomically saves a usable dated report and removes its temporary input. The
+shared phase releases after every review has either published or safely become
+unavailable. Persistence, input-preparation and shutdown/drain failures still
+stop the phase. Gameplay has no mandatory
 end-of-turn memory-writing phase.
 
 Keep the entire state directory: the boundary refers to private database records

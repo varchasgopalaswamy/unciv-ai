@@ -18,8 +18,18 @@ existing validation and lifecycle; classification never filters those writes.
 
 ## Execution and budget authority
 
+The Decisions API has selectable `luna` and `jev` backends. Jev uses local
+Winnow-12B and is the default. Both adapters normalize their complete answer
+probability vectors before acceptance. `decisions_acceptance_probability`
+defaults to 0.95 for Luna and 0.98 for Jev; explicit routing probability overrides
+inherit this value when omitted. The internal `confidence` compatibility field
+contains selected-answer probability. Native confidence remains separately in
+`providerConfidence`; an entropy or margin score cannot authorize acceptance.
+These are conditional probabilities over supplied alternatives, not correctness
+guarantees. Old confidence-named configuration controls are rejected.
+
 The trusted broker alone chooses the model, task instructions, question types,
-choices, policy versions, confidence threshold, limits and prices. Clients send
+choices, policy versions, acceptance threshold, limits and prices. Clients send
 frozen memory/review/city evidence to `/batch`; unknown top-level controls and
 arbitrary gameplay tasks are rejected. Every request identifies its player, which
 must match the authenticated principal. The task policy is
@@ -35,13 +45,15 @@ creating a new account. Settings are registered by the supervisor, never supplie
 as spending controls by player services. The default additional allowance is
 $0.10 per player-game, shared by all advisory batches and early-review triage.
 Diplomacy routing and full strategic-review model jobs are accounted separately.
-Zero allowance skips new advisory calls while preserving deterministic selection,
+For Luna, zero allowance skips new advisory calls while preserving deterministic selection,
 independent native advice and periodic/war-triggered reviews.
+Jev calls remain enabled at zero allowance. Jev needs no API key, and records
+usage and durable request identities without charging or reserving dollars.
 
 `AUTH_DIR/decisions.sqlite3` owns reservations and validated input usage outside
 game checkpoints. A process-shared initialization lock serializes WAL setup and
 authority-file publication. SQLite `BEGIN IMMEDIATE` atomically reserves across
-requests and processes before dispatch. Stable evidence-derived request IDs deduplicate
+requests and processes before dispatch. Stable evidence-and-model-derived request IDs deduplicate
 replayed requests. Validated input usage settles reservations; missing or invalid
 usage retains them. Completed results are stored before replying. A lost or
 unverifiable reply permits at most one free `GET /batch/{request_id}` receipt
@@ -53,7 +65,10 @@ spending or pending reservations. The game manifest pins the broker authority;
 resume rejects an auth-directory change, and an authority/ledger mismatch or
 missing ledger fails closed.
 
-Rate version `decisions-standard-2026-10-14-v1` uses the verified standard
+The protocol's accounting contract is `decisions-backends-v1`. Each request
+pins its own backend rate at reservation and keeps that rate through settlement.
+Jev uses `decisions-local-free-v1` at zero cost. Luna rate version
+`decisions-standard-2026-10-14-v1` uses the verified standard
 [$0.10 per million input tokens, with no output charge](https://developers.openai.com/api/docs/guides/decisions#pricing-and-availability).
 The estimate counts every serialized UTF-8 byte as one token, adds 2,048 tokens
 of framing headroom and 128 per question, then reserves integer nanodollars.
@@ -70,8 +85,8 @@ Historical captures from an older policy cannot be treated as current results.
 
 Each submitted question has a `questionResults` row with status `accepted`,
 `low_confidence`, `refusal`, `missing` or `malformed`. Sanitized typed choices and
-refusals remain in `rawAnswers`; valid choices retain their original confidence
-and optional complete probability vectors. Only independently accepted choices
+refusals remain in `rawAnswers`; normalized choices retain selected probability,
+native provider confidence and complete probability vectors. Only independently accepted choices
 enter `answers`. A batch fallback summarizes the first failure without discarding
 unrelated valid answers. An invalid named answer is isolated when possible;
 an unassignable malformed envelope can reject the batch. The runtime preserves
@@ -211,14 +226,24 @@ rosters; absence or truncation is not proof of contradiction. Accepted `skip` an
 
 ## Early reviews
 
-Full strategic reports receive a compact named-fact catalogue from their frozen
-player-visible inputs. Population and partial map sightings never establish a
-foreign empire's total city count. Reports must state material assumptions with
-exact fact IDs and values; interpretations remain inferred or unknown. Referenced
-values are checked before publication. Assumption sources such as `review:20:1`
-can be retained in adopted strategy, preserving dated evidence without certifying
-the player's inference. Planning guidance traces investments through completion,
-travel, prerequisites and the first useful action, including civilian exposure.
+Full strategic reports receive source labels on their starting observations and
+every frozen tool result actually delivered to that reviewer. Material assumptions
+cite those labels and remain inferred or unknown. Validation binds citations to
+the exact delivered payload and date; it does not prove the interpretation.
+The compact named-fact catalogue is a convenience, not a whitelist of admissible
+evidence. Population and partial map sightings never establish a foreign empire's
+total city count. Cited payloads remain in the private report archive, while dated
+references such as `review:20:1` can be retained in adopted strategy. Planning
+guidance traces investments through completion, travel, prerequisites and the
+first useful action, including civilian exposure.
+
+Invalid reports receive actionable feedback and at most one correction. An
+unusable report after that becomes `UNAVAILABLE`; the shared phase can release
+without new advice. Earlier reports retain their dates, and an unavailable
+review does not replace the last completed material-facts baseline. Input
+preparation, persistence and unconfirmed shutdown or history drain remain fatal
+to the phase. See the [runtime guide](../guides/Native-guidance-and-routing.md#review-evidence-and-failures)
+for output guards and failure distinctions.
 
 Before selecting participants, the scheduler requests triage only for players
 with Decisions enabled and no scheduled review due now or next round. Triage

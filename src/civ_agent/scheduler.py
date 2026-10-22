@@ -155,7 +155,7 @@ class JsonEndpoint:
         try:
             maximum = (
                 32 * 1024 * 1024
-                if operation in {"archive", "results", "snapshot"}
+                if operation in {"archive", "results", "snapshot", "pending_requests", "resolve_request"}
                 else 300 * 1024
                 if operation == "events"
                 else 65536
@@ -169,6 +169,7 @@ class JsonEndpoint:
                     "interrupt",
                     "archive",
                     "snapshot",
+                    "pending_requests",
                     "verify_snapshot",
                     "restore",
                     "cancel_jobs",
@@ -292,6 +293,8 @@ class Agent(JsonEndpoint):
             "disconnect",
             "barrier",
             "snapshot",
+            "pending_requests",
+            "settle_request",
             "verify_snapshot",
             "retain_snapshot",
             "restore",

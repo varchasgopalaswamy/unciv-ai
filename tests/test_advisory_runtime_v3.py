@@ -84,7 +84,9 @@ def test_city_attempt_does_not_block_new_communication_memory_work_same_turn(tmp
 
 def test_zero_allowance_never_dispatches_or_captures_native_city_previews(tmp_path):
     async def run():
-        async with setup(tmp_path, native_enabled=False, additional_decisions_budget_usd=0) as (
+        async with setup(
+            tmp_path, native_enabled=False, decisions_backend="luna", additional_decisions_budget_usd=0
+        ) as (
             memory,
             gateway,
             host,
@@ -260,7 +262,7 @@ def completed_result(evidence, settings):
     ]
     return {
         **request_metadata(body, evidence),
-        **parse_answers(body, {"answers": raw}, settings.decisions_min_confidence),
+        **parse_answers(body, {"answers": raw}, settings.decisions_acceptance_probability),
     }
 
 
@@ -288,7 +290,9 @@ def test_lost_reply_gets_one_receipt_lookup_and_never_redispatches_unknown_compl
                     body = request_body(evidence, classifier.settings)
                     return {
                         **result,
-                        **failed_answers(body, classifier.settings.decisions_min_confidence, "completion_unknown"),
+                        **failed_answers(
+                            body, classifier.settings.decisions_acceptance_probability, "completion_unknown"
+                        ),
                     }
                 if receipt == "wrong_metadata":
                     result["promptHash"] = "0" * 64

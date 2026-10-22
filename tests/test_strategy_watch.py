@@ -278,6 +278,32 @@ def test_unavailable_storage_never_creates_records_or_crosses_player_and_epoch(t
     assert reader.read(["Rome"], "g1", [])[0].report is None
 
 
+def test_unavailable_review_retains_dated_advice_and_rewinds_with_checkpoint(tmp_path, memories):
+    memory = memories("Rome")
+    ReviewStore(memory).complete(
+        prepare(memory, 5),
+        {**assessment(), "assessment": "Earlier advice", "_evidence": {"private": "Exact archived observation"}},
+    )
+    store = ReviewStore(memory)
+    job = prepare(memory, 10)
+    store.unavailable(job, "Invalid report after correction")
+    checkpoint = tmp_path / "unavailable-review.json"
+    digest = memory.backup(checkpoint)
+    complete(memory, prepare(memory, 15), "Future advice")
+    memory.restore(checkpoint, digest, "g2")
+    snapshot = memory.snapshot("gameplay", 11)
+    assert snapshot["strategicReviewStatus"] == {"asOfTurn": 10, "status": "UNAVAILABLE"}
+    assert snapshot["strategicAdvice"]["asOfTurn"] == 5
+    view = StrategyReader(tmp_path).read(["Rome"], "g2", [])[0]
+    assert view.status == "Unavailable" and view.pending is None
+    assert view.report is not None and view.report["turn"] == 5
+    assert "_evidence" not in view.report
+    assert "T10" in report_text(view).plain and "Earlier advice" in report_text(view).plain
+    memory.pause(False)
+    prepare(memory, 20)
+    assert StrategyReader(tmp_path).read(["Rome"], "g2", [])[0].status == "Pending T20"
+
+
 @pytest.mark.parametrize("size", [(120, 40), (80, 24)])
 def test_strategy_tab_selection_refresh_freeze_and_reading_position(tmp_path, memories, monkeypatch, size):
     monkeypatch.setenv("NO_COLOR", "1")

@@ -40,8 +40,26 @@ def test_client_request_no_retry_and_temporary_circuit():
             return web.json_response(
                 {
                     "answers": [
-                        {"name": "delivery_needed", "type": "choice", "choice": "needed", "confidence": 0.99},
-                        {"name": "delivery_timing", "type": "choice", "choice": "can_wait", "confidence": 0.99},
+                        {
+                            "name": "delivery_needed",
+                            "type": "choice",
+                            "choice": "needed",
+                            "confidence": 0.98,
+                            "probabilities": [
+                                {"value": "needed", "probability": 0.99},
+                                {"value": "not_needed", "probability": 0.01},
+                            ],
+                        },
+                        {
+                            "name": "delivery_timing",
+                            "type": "choice",
+                            "choice": "can_wait",
+                            "confidence": 0.98,
+                            "probabilities": [
+                                {"value": "can_wait", "probability": 0.99},
+                                {"value": "now", "probability": 0.01},
+                            ],
+                        },
                     ],
                     "usage": {"input_tokens": 15, "output_tokens": 1},
                 }
@@ -186,7 +204,7 @@ def test_classify_requires_registered_enabled_current_account_without_default_po
             if account == "old_policy":
                 settings["decisions_routing_policy"] = "diplomacy-routing-v1"
             if account == "incomplete":
-                del settings["decisions_incoming_batch_confidence"]
+                del settings["decisions_incoming_batch_probability"]
             with broker.ledger.engine.begin() as db:
                 db.execute(accounts.update().where(accounts.c.principal == "seat").values(settings=canonical(settings)))
         async with server(broker.application()) as url, aiohttp.ClientSession() as session:

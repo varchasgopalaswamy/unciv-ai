@@ -53,8 +53,9 @@ def test_pending_excluded_before_history_limit_and_context_identifies_player(mem
     assert bundle["hasEarlierMessages"] is True
     assert bundle["historyCoverage"] == "bounded_exact_audience_excerpt"
     assert bundle["recentExchanges"][0]["hasEarlierMessages"] is True
-    assert "not proof" in bundle["evidenceSemantics"]
-    assert "pending messages await this routing decision" in bundle["evidenceSemantics"]
+    assert "may be incomplete" in bundle["evidenceSemantics"]
+    assert "does not prove" in bundle["evidenceSemantics"]
+    assert "await attention" in bundle["evidenceSemantics"]
     assert not {"read", "answered", "resolved"} & bundle.keys()
 
 

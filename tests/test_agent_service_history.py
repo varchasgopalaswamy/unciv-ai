@@ -268,7 +268,7 @@ class ServiceHistoryTests(unittest.IsolatedAsyncioTestCase):
         persist = self.service._persist
 
         def stalled(record):
-            if record["phase"] == "COMPLETED":
+            if record["phase"] == "COMPLETED" and record["activationId"] == "activation":
                 entered.set()
                 if not release.wait(8):
                     raise TimeoutError("Test did not release final flush")

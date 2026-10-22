@@ -121,7 +121,7 @@ def agent_auth_arguments(auth_root, name, provider):
 
 
 def validate_routing_credentials(config, auth_root):
-    if config.agents.decisions_enabled:
+    if config.agents.decisions_enabled and config.agents.decisions_backend == "luna":
         key = auth_root / "decisions.key"
         if not key.is_file():
             raise ContainerError("Decisions requires a separate OpenAI API key in AUTH_DIR/decisions.key (mode 600)")
@@ -234,7 +234,16 @@ def ensure_decisions(root, image, *, restart=False):
                 podman("rm", name)
             (root / "decisions-ready.json").unlink(missing_ok=True)
             arguments = base_arguments(name, game_id="auth", resources=ContainerResources(memory_mib=512, cpus=0.5))
-            podman(*arguments, "--network=pasta:-4", *mount(root, "/auth", writable=True), image, "decisions")
+            endpoint = os.environ.get("CIV_JEV_ENDPOINT", "http://169.254.1.3:8091/v1/systemone")
+            podman(
+                *arguments,
+                "--network=pasta:-4,--map-host-loopback,169.254.1.3",
+                "--env",
+                "CIV_JEV_ENDPOINT=" + endpoint,
+                *mount(root, "/auth", writable=True),
+                image,
+                "decisions",
+            )
             podman("start", name)
         deadline = time.monotonic() + 30
         while not (root / "decisions-ready.json").exists():
@@ -257,16 +266,31 @@ def restart_brokers(root, image):
     """Recreate configured shared services without replacing their durable state."""
     name = auth_name(root)
     auth = (root / "codex/auth.json").is_file()
-    decisions = (root / "decisions.key").is_file()
+    decisions = (
+        (root / "decisions-clients.json").is_file()
+        or (root / "decisions.key").is_file()
+        or bool(inspected(name + "-decisions"))
+    )
     # Check both services before interrupting either one. A missing credential
     # must not silently skip a previously configured, still-running broker.
     if not auth and inspected(name):
         raise ContainerError("Login credentials missing; restore AUTH_DIR/codex/auth.json before restarting")
-    if not decisions and inspected(name + "-decisions"):
-        raise ContainerError("Decisions key missing; restore AUTH_DIR/decisions.key before restarting")
     if not auth and not decisions:
         raise ContainerError("No auth or Decisions credentials configured in this auth directory")
-    if decisions:
+    luna_configured = (root / "decisions.key").exists()
+    if not luna_configured and (root / "decisions.sqlite3").is_file():
+        from civ_agent.decisions_ledger import DecisionsLedger, accounts
+
+        ledger = DecisionsLedger(root)
+        try:
+            with ledger.engine.connect() as db:
+                luna_configured = luna_configured or any(
+                    json.loads(row[0]).get("decisions_backend", "luna") == "luna"
+                    for row in db.execute(accounts.select().with_only_columns(accounts.c.settings))
+                )
+        finally:
+            ledger.engine.dispose()
+    if luna_configured:
         from civ_agent.decisions_broker import read_decisions_key
 
         read_decisions_key(root / "decisions.key")
@@ -304,13 +328,15 @@ def routing_broker_health(root, *, timeout=1):
     )
 
 
-def decisions_arguments(auth_root, name):
+def decisions_arguments(auth_root, name, *, backend="jev"):
     return [
         *mount(auth_root / "decisions-ipc", "/decisions-ipc"),
         "--env",
         "CIV_DECISIONS_SOCKET=/decisions-ipc/broker.sock",
         "--env",
         f"CIV_DECISIONS_TOKEN_FILE=/match/agent-services/{name}/decisions-client.json",
+        "--env",
+        f"CIV_DECISIONS_BACKEND={backend}",
     ]
 
 
@@ -521,7 +547,7 @@ class GameRun:
                 args += mount(self.root / folder / name, f"/match/{folder}/{name}", writable=True)
             args += agent_auth_arguments(self.auth_root, name, self.config.settings(player)["provider"])
             if self.config.agents.decisions_enabled:
-                args += decisions_arguments(self.auth_root, name)
+                args += decisions_arguments(self.auth_root, name, backend=self.config.agents.decisions_backend)
             args += [
                 "--env",
                 f"HOME=/match/codex/{name}",

@@ -5,6 +5,7 @@ from typing import Annotated, Literal
 from pydantic import BaseModel, Field, RootModel, field_validator, model_validator
 from pydantic.json_schema import SkipJsonSchema
 
+from civ_agent.economy_roles import CityOverride, EconomyRequest, FinishRole
 from civ_agent.game_commands import Position
 from civ_agent.memory_records import (
     HistoryReadResult,
@@ -217,6 +218,9 @@ class FriendshipOffer(Partner, WithIntent):
 
 
 TOOL_MODELS: dict[str, type[BaseModel]] = {
+    "finish_role": FinishRole,
+    "economy_request": EconomyRequest,
+    "city_override": CityOverride,
     **DETAIL_MODELS,
     "movement_preview": MovementPreview,
     "player_inspect": PlayerInspection,

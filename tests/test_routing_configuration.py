@@ -12,7 +12,7 @@ from civ_agent.tls import private_directory, write_private
 def test_missing_key_rejects_enabled_game_before_images_or_launch(tmp_path, monkeypatch):
     resolve = Mock(side_effect=AssertionError("Must reject credentials before resolving images"))
     monkeypatch.setattr("civ_agent.commands.game.resolve_image", resolve)
-    config = GameConfig(agents={"decisions_enabled": True}).resolved()
+    config = GameConfig(agents={"decisions_enabled": True, "decisions_backend": "luna"}).resolved()
     with pytest.raises(supervisor.ContainerError, match="separate OpenAI API key"):
         initialize(tmp_path / "game", config, tmp_path / "auth")
     assert not (tmp_path / "game").exists()
@@ -23,7 +23,7 @@ def test_key_permissions_and_independent_client_credentials(tmp_path):
     auth, player = private_directory(tmp_path / "auth"), private_directory(tmp_path / "seat")
     disabled = GameConfig().resolved()
     supervisor.validate_routing_credentials(disabled, auth)
-    enabled = GameConfig(agents={"decisions_enabled": True}).resolved()
+    enabled = GameConfig(agents={"decisions_enabled": True, "decisions_backend": "luna"}).resolved()
     write_private(auth / "decisions.key", b"only-the-trusted-broker-has-this-key\n")
     supervisor.validate_routing_credentials(enabled, auth)
     (auth / "decisions.key").chmod(0o644)
@@ -85,6 +85,6 @@ def test_ready_file_requires_authenticated_compatible_socket_preflight(tmp_path,
         with pytest.raises(supervisor.ContainerError, match=health["reason"]) as error:
             supervisor.ensure_decisions(tmp_path, "image")
         if health["status"] == "incompatible":
-            assert "protocolVersion expected 3, found 2" in str(error.value)
+            assert "protocolVersion expected 4, found 2" in str(error.value)
             assert "civ-agent image build" in str(error.value)
         assert not (tmp_path / "decisions-preflight.json").exists()

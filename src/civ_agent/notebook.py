@@ -13,6 +13,7 @@ class Notebook:
     def __init__(self, db, snapshot, job, purpose, turn, game_turn):
         self.store = RecordStore(db, turn)
         self.snapshot, self.job, self.purpose = snapshot, job, purpose
+        self.city_owners: dict[str, str] | None = None
         observed_turns = [
             r["body"].get("turn", r["body"].get("context", {}).get("turn"))
             for key, r in snapshot["records"].items()
@@ -28,7 +29,7 @@ class Notebook:
 
     def update(self, change):
         key = change.get("id")
-        if self.purpose != "gameplay" and change["op"] != "create":
+        if self.purpose not in {"gameplay", "economy"} and change["op"] != "create":
             return {
                 "id": key,
                 "accepted": False,
@@ -36,6 +37,13 @@ class Notebook:
                 "instruction": "Save a new contribution with create. Existing notebook entries are read-only during this exchange.",
             }
         old = self.store.all(keys=[key]).get(key) if key else None
+        kind = (change.get("content") or {}).get("type") or (old or {}).get("category")
+        if kind == "city_plan" and self.city_owners is not None:
+            city = (change.get("content") or {}).get("city") or (old or {}).get("body", {}).get("city")
+            if self.city_owners.get(city) != self.purpose:
+                return {"id": key, "accepted": False, "reason": "CITY_OWNED_BY_OTHER_ROLE"}
+        if self.purpose == "economy" and kind != "city_plan":
+            return {"id": key, "accepted": False, "reason": "ROLE_MEMORY_NOT_PERMITTED"}
         if change["op"] != "create":
             if (
                 not old
@@ -85,7 +93,18 @@ class Notebook:
                     if old and proposed["type"] != old["category"]:
                         raise ValueError("TYPE_CHANGE_REQUIRES_NEW_RECORD")
                 content = self.store.content(proposed, self.snapshot, old["body"] if old else None)
-                category = content["type"] if self.purpose == "gameplay" else "contribution"
+                category = content["type"] if self.purpose in {"gameplay", "economy"} else "contribution"
+                if category == "city_plan":
+                    if old and old["body"]["city"] != content["city"]:
+                        return {"id": key, "accepted": False, "reason": "CITY_IDENTITY_IMMUTABLE"}
+                    if any(
+                        k != key
+                        and r["category"] == "city_plan"
+                        and r["body"].get("state") == "active"
+                        and r["body"].get("city") == content["city"]
+                        for k, r in self.store.all().items()
+                    ):
+                        return {"id": key, "accepted": False, "reason": "CITY_PLAN_ALREADY_EXISTS"}
                 if category == "strategy":
                     content["_decisionBaselines"] = decision_baselines(
                         content, old["body"] if old else {}, self.snapshot, self.basis["turn"]
@@ -104,6 +123,11 @@ class Notebook:
                     "updatedTurn": self.basis["turn"],
                     "state": "active",
                     "basis": self.basis,
+                    **(
+                        {"_confirmedActions": old["body"]["_confirmedActions"]}
+                        if old and "_confirmedActions" in old["body"]
+                        else {}
+                    ),
                     "_seenNotice": self.snapshot["records"].get(key, {}).get("body", {}).get("_noticeVersion", 0),
                 }
                 key = key or self.store.handle()

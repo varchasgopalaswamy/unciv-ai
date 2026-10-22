@@ -305,6 +305,11 @@ private fun errorResult(code: String, message: String, failure: PlayerSessionExc
             put("code", code)
             put("message", message)
         }
+        failure?.spending?.let { spending ->
+            put("applied", false)
+            put("recoverable", true)
+            put("spending", PlayerTurnJson.json.encodeToJsonElement(uncivai.player.SpendingFailure.serializer(), spending))
+        }
         failure?.movementRisk?.let { risk ->
             put("applied", false)
             put("recoverable", true)

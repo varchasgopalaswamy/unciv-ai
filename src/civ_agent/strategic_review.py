@@ -5,9 +5,15 @@ from typing import Annotated, Self
 
 from pydantic import Field, model_validator
 
-from civ_agent.player_prompts import DIPLOMACY_GUIDANCE, STRATEGY_GUIDANCE, VICTORY_HORIZON_GUIDANCE
+from civ_agent.player_prompts import (
+    DIPLOMACY_GUIDANCE,
+    EVIDENCE_GUIDANCE,
+    INVESTMENT_GUIDANCE,
+    STRATEGY_GUIDANCE,
+    VICTORY_HORIZON_GUIDANCE,
+)
 from civ_agent.protocol import JsonObject
-from civ_agent.review_grounding import MaterialAssumption, bind_assumptions, named_facts
+from civ_agent.review_grounding import MaterialAssumption, ReviewEvidence, named_facts
 from civ_agent.schemas import BoundaryModel
 
 ReviewText = Annotated[str, Field(min_length=1, max_length=600)]
@@ -54,7 +60,7 @@ class StrategicReview(BoundaryModel):
         description="What prior choices achieved, what is unknown, and which assumptions changed. An opening review may state that no prior choice exists."
     )
     materialAssumptions: Annotated[list[MaterialAssumption], Field(min_length=1, max_length=6)] = Field(
-        description="Key assumptions driving the plans, with exact named facts. Interpretations are inferred; unsupported premises stay unknown."
+        description="Key assumptions driving the plans. Cite observations for inferences; unsupported premises stay unknown."
     )
     plans: Annotated[list[StrategicPlan], Field(min_length=1, max_length=3)] = Field(
         description="Concrete competing plans, numbered from 1; normally two or three, or one if only one is credible."
@@ -109,85 +115,77 @@ def review_facts(value: JsonObject) -> JsonObject:
 
 
 ADVISOR_INSTRUCTIONS = (
-    "You are this civilization's independent strategic adviser. Recommend how it can win from the supplied "
-    "position. Your advice is for the player to judge.\n\n"
-    "Compare concrete investments that could improve our chances of winning. Normally compare continued "
-    "development with the strongest plausible alternatives in expansion, diplomacy or military action. "
-    "Use one plan when only one is credible. Compare investments over one shared horizon, "
-    "including preparation, opportunity costs, likely rival responses and what happens if rivals continue developing. "
-    "Military costs include recruitment, upgrades, positioning and travel. Consider limited objectives such as taking "
-    "a useful city, pillaging or forcing rival military spending, with conditions for seeking peace, rather than "
-    "judging every military option as a full domination campaign. Account for benefits to uninvolved rivals. "
-    "Compare the earliest feasible intervention with rival progress and the opportunity window.\n\n"
+    "You are this civilization's strategic adviser. Recommend how it can win from the position shown. "
+    "The player will decide whether to follow your advice.\n\n"
+    "Compare two or three credible plans over the same number of turns, or one if only one is realistic. "
+    "Consider development, expansion, diplomacy and limited military action. Include preparation, costs, "
+    "travel, what each plan delays, likely rival responses and gains to uninvolved rivals. A military plan "
+    "can aim to take a useful city, pillage or force defensive spending; say when to seek peace. "
+    "Check whether we can act before the opportunity passes.\n\n"
     + STRATEGY_GUIDANCE
-    + " Identify uncertainties and useful ways to resolve them.\n\n"
+    + "\n\n"
     + VICTORY_HORIZON_GUIDANCE
     + "\n\n"
-    "Explain the preference or leave it open. When undecided, recommend useful information gathering or reversible "
-    "investments. Distinguish investments useful across victories from committing to a particular finish. "
-    "Use decisionFeedback to compare the player's earlier expectations with observed results. Treat prior choices "
-    "as hypotheses and reassess alternatives, including abandonment; do not preserve a plan merely because it exists. "
-    "Distinguish a command being accepted from its intended result and correlation from causation. "
-    "Use recentProgress for repeated orders, changed assumptions, unhappiness, resource/access changes and spending. "
-    "Compare further recruitment or upgrades with existing-force use, defense, waiting and development; travel and treaty timing matter. "
-    "Compare saving or available production choices with feasible investments, including the cost of waiting. "
-    "Respect productionPolicy: Gold/Science/Culture production is unavailable before its stated era. "
-    "Use named construction_details with horizonTurns for native city investment comparisons. "
-    "Give observable expectations, first actions and conditions for reconsideration. A broad victory direction can "
-    "remain open; cover terminal projects only when they affect a current decision.\n\n"
-    "Use namedFacts to ground materialAssumptions: cite each fact's exact id and value. Population is the sum "
-    "of city populations, never a count of cities. Foreign empireCityCount remains unknown when the supplied "
-    "facts do not establish it; visible city locations provide only a lower bound and old sightings may be stale. "
-    "Treat interpretations as inferred and unsupported premises as unknown; a citation does not prove a conclusion. "
-    "For an investment, trace completion and travel to the first useful action, including its exact technology, "
-    "resource and location requirements. A Worker completing near Mining does not validate a Quarry plan that "
-    "needs later Masonry. For civilian moves, compare exposure and escort arrival with the benefit; a peaceful "
-    "neighbor can change its intent, and no visible capture threat does not establish safety. Risky legal choices "
-    "remain available.\n\n"
+    + EVIDENCE_GUIDANCE
+    + " Review what earlier choices actually achieved, not just which orders were given. "
+    "Consider changing or abandoning a plan when its expectations fail.\n\n"
+    + INVESTMENT_GUIDANCE
+    + " Use the available construction comparisons when build costs or timing matter.\n\n"
+    "Cite the source labels attached to observations supporting important assumptions. "
+    "Label your conclusions as inferences, and leave unsupported assumptions unknown. Population counts "
+    "people, not cities; seeing some foreign cities does not establish how many exist.\n\n"
     + DIPLOMACY_GUIDANCE
-    + "\nConsider whether influencing another player could improve a plan or make it feasible. "
-    "Connect worthwhile diplomatic initiatives to the plans being considered, accounting for existing exchanges "
-    "and agreements. Explain the desired change in another player's behavior, its incentives, our relative benefit "
-    "and proposed terms. "
-    "Human and agent players can negotiate in chat; built-in AI responds only to native diplomatic actions and trades.\n\n"
-    "The supplied observations and read-only tools describe the frozen position. "
-    "All tools available to this review are defined below. Call them directly with tools.<name>(arguments) in "
-    "functions.exec; no tool discovery is needed. "
-    "Return one complete JSON report matching the supplied schema, preferably under 6000 characters."
+    + "\nSuggest at most two worthwhile diplomatic approaches tied to these plans. Explain who to approach, "
+    "why they might cooperate, proposed terms and the next step. Built-in AI players respond to game "
+    "diplomacy and trades rather than chat.\n\n"
+    "Give your preferred plan, first actions, expected results and reasons to reconsider. If the evidence "
+    "does not favor a plan, say so and suggest useful scouting or a choice that keeps options open. "
+    "Use the supplied position and read-only tools. Their descriptions are below; call them directly "
+    "with tools.<name>(arguments) in functions.exec. Return a concise report in the requested format, "
+    "preferably under 6000 characters."
 )
 
 
-def advice_prompt(inputs, *, strategy_guide=False, civilization_guide=False):
+def advice_prompt(inputs, *, evidence=None, strategy_guide=False, civilization_guide=False):
     from civ_agent.civilization_guide import civilization_reference
     from civ_agent.startup_context import StartupPrompt, encoded, reference_sections, tool_definitions
     from civ_agent.strategy_guide import strategy_reference
 
     definitions = tool_definitions(inputs["catalogue"])
+    evidence = evidence if evidence is not None else ReviewEvidence(inputs)
     reference = strategy_reference() if strategy_guide else ""
     civ_reference = civilization_reference(inputs["civilization"]) if civilization_guide else ""
     sections = reference_sections(reference, civ_reference)
+
+    def deliver(name, data, arguments=None):
+        return evidence.deliver(name, data, arguments)
+
     return StartupPrompt(
-        ADVISOR_INSTRUCTIONS + "\nRead tool definitions:\n" + encoded(definitions),
+        ADVISOR_INSTRUCTIONS + "\nAvailable tools:\n" + encoded(definitions),
         ("\n\n".join(sections) + "\n\n" if sections else "")
         + (
             "Opening position before the first move, turn "
             if inputs["turn"] == 0
-            else "Frozen position after all players completed round "
+            else "Position after all players completed round "
         )
         + str(inputs["turn"])
         + ":\n"
         + encoded(
             {
-                "namedFacts": review_named_facts(inputs),
-                "player_turn": frozen_read(inputs, "player_turn", {}),
-                "victory_progress": frozen_read(inputs, "victory_progress", {"sections": ["rankings"]}),
-                "chat_read": frozen_read(inputs, "chat_read", {}),
+                "positionFacts": deliver("Position facts and their meanings", review_position_facts(inputs)),
+                "player_turn": deliver("player_turn", frozen_read(inputs, "player_turn", {})),
+                "victory_progress": deliver(
+                    "victory_progress",
+                    frozen_read(inputs, "victory_progress", {"sections": ["rankings"]}),
+                    {"sections": ["rankings"]},
+                ),
+                "chat_read": deliver("chat_read", frozen_read(inputs, "chat_read", {})),
             }
         )
         + "\nKnown foreign cities (current visibility or last observation; hex distances are not travel times):\n"
-        + encoded(review_cities(inputs["observation"], inputs["civilization"]))
-        + "\nRecent accepted commands and observed effects:\n"
-        + encoded(inputs["actions"]),
+        + encoded(deliver("Known foreign cities", review_cities(inputs["observation"], inputs["civilization"])))
+        + "\nRecent actions and their observed results:\n"
+        + encoded(deliver("Recent actions and their observed results", inputs["actions"])),
         strategy_reference=reference,
         civilization_reference=civ_reference,
     )
@@ -319,21 +317,25 @@ def frozen_read(inputs: JsonObject, name: str, arguments: JsonObject) -> JsonObj
     return value
 
 
-def review_named_facts(inputs: JsonObject) -> list[JsonObject]:
-    return named_facts(
+def review_position_facts(inputs: JsonObject) -> list[JsonObject]:
+    facts = named_facts(
         inputs["observation"],
         inputs["reads"].get("victory_progress"),
         civilization=inputs.get("civilization"),
     )
+    return [{key: value for key, value in fact.items() if key not in {"id", "source"}} for fact in facts]
 
 
-def parse_advice(text: str, observation: JsonObject, *, facts: list[JsonObject] | None = None) -> JsonObject:
+def parse_advice(text: str, observation: JsonObject, *, evidence: ReviewEvidence | None = None) -> JsonObject:
     advice = StrategicAdvice.model_validate_json(text).model_dump()
     if type(observation.get("turn")) is not int:
         raise ValueError("STRATEGIC_REVIEW_POSITION_MISMATCH")
-    advice["review"]["materialAssumptions"] = bind_assumptions(
-        advice["review"]["materialAssumptions"], named_facts(observation) if facts is None else facts
-    )
+    registry = evidence if evidence is not None else ReviewEvidence({"observation": observation})
+    if registry.turn != observation["turn"]:
+        raise ValueError("STRATEGIC_REVIEW_POSITION_MISMATCH")
+    advice["review"]["materialAssumptions"], sources = registry.bind(advice["review"]["materialAssumptions"])
+    if sources:
+        advice["_evidence"] = sources
     return advice
 
 

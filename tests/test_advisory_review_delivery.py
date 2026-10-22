@@ -124,7 +124,7 @@ def seed_triage(harness, mode="review"):
     }
     result = {
         **request_metadata(body, evidence),
-        **parse_answers(body, {"answers": [answer]}, harness.settings.decisions_min_confidence),
+        **parse_answers(body, {"answers": [answer]}, harness.settings.decisions_acceptance_probability),
     }
     harness.advisory.store.save(
         reviewEvidence=evidence,

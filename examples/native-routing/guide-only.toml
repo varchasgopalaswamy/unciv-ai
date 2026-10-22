@@ -22,6 +22,7 @@ strategy_guide = true
 civilization_guide = true
 native_advice_enabled = true
 decisions_enabled = false
+decisions_backend = "jev"
 
 [[players]]
 name = "Native"

@@ -56,14 +56,20 @@ def test_lost_response_is_reconciled_without_executing_another_action(tmp_path, 
                 )
             pending = memory.pending()[0]
             restarted = CivilizationState(tmp_path / "private", "Rome")
-            runtime = ChatRuntime(SimpleNamespace(io=io, memory=restarted))
+            fresh_gateway = ProposalGateway(restarted, io, tmp_path / "restarted-workspace")
+            runtime = ChatRuntime(SimpleNamespace(io=io, memory=restarted, gateway=fresh_gateway))
             runtime.connection, runtime.epoch = host, "g1"
             await runtime.reconcile()
-            assert not restarted.pending()
+            assert bool(restarted.pending()) == (not enacted)
             assert len(host.executed) == int(enacted)
             row = restarted.requests_for_job("old")[0]
             assert row["id"] == pending["id"]
-            assert json.loads(row["result"]).get("done", False) == enacted
+            if enacted:
+                assert json.loads(row["result"])["done"]
+            else:
+                assert row["result"] is None
+                with pytest.raises(StateConflict, match="CHECKPOINT_REQUEST_UNSETTLED"):
+                    restarted.backup(tmp_path / "unsettled.json")
         finally:
             await io.close()
 

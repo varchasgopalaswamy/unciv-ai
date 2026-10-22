@@ -47,6 +47,8 @@ class NegotiationFactory(FakeFactory):
         self.host = NegotiationHost(self)
 
     def __call__(self, executable, workspace, mcp_url, ca_file, notification):
+        if "economy" in workspace.name:
+            return super().__call__(executable, workspace, mcp_url, ca_file, notification)
         process = NegotiationCodex(self, workspace, notification)
         self.instances.append(process)
         return process
@@ -240,6 +242,43 @@ class NegotiationSuspensionTests(AgentServiceTestCase):
         assert not job.pending_calls and not job.negotiation_calls and job.wait_started is None
         assert self.models.count == 1 and self.models.instances[0].closed
         assert len(self.models.host.writes) == 1
+
+    async def test_incoming_negotiation_suspends_both_unfinished_roles(self):
+        models = self.models
+
+        class WorkingEconomy(FakeCodex):
+            passes = 0
+
+            async def request(self, method, payload):
+                if method == "turn/start":
+                    self.passes += 1
+                    return {"turn": {"id": "economy-pass-" + str(self.passes)}}
+                return await super().request(method, payload)
+
+        def process_factory(executable, workspace, mcp_url, ca_file, notification):
+            if "economy" in workspace.name:
+                return WorkingEconomy(models, workspace, notification)
+            return models(executable, workspace, mcp_url, ca_file, notification)
+
+        self.service.process_factory = process_factory
+        main = await self.start_game()
+        runtime = self.service.economy_runtime
+        assert runtime is not None
+        await self.until(lambda: runtime.turn_id == "economy-pass-1")
+        economy = runtime.job
+        self.models.host.active = True
+        await self.suspended()
+        await self.until(lambda: self.service.records[economy.id].get("negotiationWait") == {"state": "waiting"})
+        assert self.service.turn_roles is not None
+        assert self.service.turn_roles.ready == {"gameplay": False, "economy": False}
+        assert runtime.turn_id == "economy-pass-1" and not economy.model_stopped.is_set()
+        self.models.host.active = False
+        self.models.host.settled.set()
+        await self.until(lambda: self.models.count == 2 and runtime.turn_id == "economy-pass-2")
+        assert not main.negotiation_pending.is_set() and not economy.negotiation_pending.is_set()
+        assert not self.models.host.executed
+        await self.service.interrupt(main.id)
+        assert main.model_stopped.is_set() and economy.model_stopped.is_set()
 
     async def test_lost_lease_during_suspension_is_a_failure(self):
         job = await self.start_game()

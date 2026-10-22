@@ -9,6 +9,7 @@ difficulty = "Prince"
 speed = "Quick"
 
 [agents]
+decisions_backend = "jev"
 provider = "openai"
 model = "GPT-5.6-luna"
 reasoning_effort = "max"

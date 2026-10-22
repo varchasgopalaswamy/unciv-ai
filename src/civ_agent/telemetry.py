@@ -492,7 +492,13 @@ class JobAccounting:
             # A rewind can restore an older activation record, but accounting
             # describes the work that actually ran. Completion evidence survives.
             if not report["usageComplete"]:
-                report["phase"] = record["phase"]
+                report["phase"] = (
+                    {"finished": "ROLE_FINISHED", "waiting_negotiation": "WAITING_NEGOTIATION"}.get(
+                        str(record.get("roleState", "")), record["phase"]
+                    )
+                    if record["phase"] not in TERMINAL
+                    else record["phase"]
+                )
             if id in self.starts and not terminal:
                 report["elapsedMs"] = max(report["elapsedMs"], int((time.monotonic() - self.starts[id]) * 1000))
             report["negotiationWaitMs"] = max(report["negotiationWaitMs"], int(wait_seconds * 1000))

@@ -89,7 +89,7 @@ def test_victory_comparison_is_preloaded_once_and_chart_queries_pass_through(tmp
             comparison_query = {"tool": "victory_progress", "arguments": startup_query}
             assert prepared["reads"]["victory_progress"] == {**comparison, "query": comparison_query}
             prompt = startup_prompt(prepared, "gameplay", "Play this turn")
-            reads = json.JSONDecoder().raw_decode(prompt.user.split("Prepared player-visible reads:\n", 1)[1])[0]
+            reads = json.JSONDecoder().raw_decode(prompt.user.split("Current game information:\n", 1)[1])[0]
             assert reads["victory_progress"] == {**comparison, "query": comparison_query}
             assert "score" not in reads["victory_progress"]
             assert host.victory_calls == [startup_query]
@@ -456,6 +456,9 @@ def test_prepared_reads_establish_evidence_and_update_base_without_model_calls(t
             assert {tool["name"] for tool in prepared["coreTools"]} == {
                 "mcp__civ__player_turn",
                 "mcp__civ__player_command",
+                "mcp__civ__finish_role",
+                "mcp__civ__economy_request",
+                "mcp__civ__city_override",
                 "mcp__civ__construction_details",
                 "mcp__civ__unit_details",
                 "mcp__civ__map_region",
@@ -463,9 +466,9 @@ def test_prepared_reads_establish_evidence_and_update_base_without_model_calls(t
             }
             for tool in prepared["coreTools"]:
                 Draft202012Validator.check_schema(tool["inputSchema"])
-            assert "social promises" in prepared["readInstructions"]["chat_read"]
+            assert "social promises" in prepared["readInstructions"]["chat_read"].lower()
             assert (
-                json.loads(startup_text(prepared).split("Prepared player-visible reads:\n", 1)[1].split("\n\n", 1)[0])
+                json.loads(startup_text(prepared).split("Current game information:\n", 1)[1].split("\n\n", 1)[0])
                 == prepared["reads"]
             )
             action = view["alerts"][0]["command"]
@@ -567,7 +570,7 @@ def test_private_startup_context_follows_observation_reviews_and_expiry(tmp_path
             assert "memoryUpdates" not in prepared["reads"].get("player_turn", {})
             prompt = startup_prompt(prepared, purpose, "Play this turn")
             assert prompt.user.count(prepared["memoryContext"]) == 1
-            assert prompt.user.index("Prepared player-visible reads:") < prompt.user.index(prepared["memoryContext"])
+            assert prompt.user.index("Current game information:") < prompt.user.index(prepared["memoryContext"])
             assert "Temporary report" not in prompt.instructions
             assert startup_text(prepared).count(prepared["memoryContext"]) == 1
             saved = memory.call(
@@ -664,7 +667,7 @@ def test_prompt_prefix_excludes_state_memory_identity_and_capability_changes(str
         assert private not in first.instructions
         assert first.user.count(private) == 1
         assert private not in second.user
-    assert first.user.index("Prepared capabilities") < first.user.index("MEMORY_SENTINEL")
+    assert first.user.index("Available actions") < first.user.index("MEMORY_SENTINEL")
     assert first.user.index("MEMORY_SENTINEL") < first.user.index("private-state-1")
     assert "inputSchema" in first.instructions and "inputSchema" not in first.user
     assert "TEMPORARY_ERROR" in second.user
@@ -702,9 +705,7 @@ def test_strategy_reference_is_optional_once_and_before_dynamic_context(tmp_path
     assert interactive == reference + "\n\n" + startup_text(prepared)
     assert interactive.count(reference) == 1
     assert interactive.index(reference) < interactive.index("PRIVATE_MEMORY_SENTINEL")
-    assert (
-        json.loads(interactive.split("Prepared player-visible reads:\n", 1)[1].split("\n\n", 1)[0]) == prepared["reads"]
-    )
+    assert json.loads(interactive.split("Current game information:\n", 1)[1].split("\n\n", 1)[0]) == prepared["reads"]
 
 
 def test_prefix_is_deterministic_and_communication_has_its_own_workflow():

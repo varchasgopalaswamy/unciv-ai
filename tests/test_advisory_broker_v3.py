@@ -57,7 +57,10 @@ def test_broker_persists_all_answers_and_private_inputs_and_lookup_never_dispatc
             assert result["rawAnswers"][1]["confidence"] == 0.7
             assert "replayEvidence" not in result
             body = request_body(supplied, settings)
-            assert validate_result(body, supplied, result, 0.9)["fallback"] == "low_confidence"
+            assert (
+                validate_result(body, supplied, result, settings.decisions_acceptance_probability)["fallback"]
+                == "low_confidence"
+            )
             durable = ledger.lookup("seat", request_id(supplied))
             assert durable["replayEvidence"] == json.loads(body["input"])
             before = ledger.status("seat")

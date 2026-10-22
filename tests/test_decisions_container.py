@@ -13,17 +13,22 @@ import pytest
 
 from civ_agent.container_supervisor import authorize_agent, decisions_arguments
 from civ_agent.container_support import base_arguments, mount, podman
+from civ_agent.decisions_broker import BROKER_PROTOCOL_VERSION
+from civ_agent.decisions_policy import DecisionsSettings
+from civ_agent.diplomacy_decisions import POLICY_VERSION
 from civ_agent.game_config import ContainerResources
-from civ_agent.tls import private_directory, write_private, write_private_json
+from civ_agent.tls import private_directory, write_private_json
 
 pytestmark = pytest.mark.skipif(os.environ.get("CIV_CONTAINER_TESTS") != "1", reason="requires rootless Podman")
 
 BROKER = """
 from civ_agent import decisions_broker
+from civ_agent.decisions_policy import DecisionsSettings, routing_thresholds
+from civ_agent.diplomacy_decisions import POLICY_VERSION
 
 class FakeDecisions:
-    def __init__(self, key):
-        assert key == 'synthetic-container-test-key'
+    def __init__(self, key=None, *, backend):
+        assert key is None and backend == 'jev'
 
     def health_snapshot(self):
         return {
@@ -32,8 +37,15 @@ class FakeDecisions:
             'lastFailure': None,
         }
 
-    async def classify(self, direction, bundle):
-        return {'choice': 'batch', 'confidence': 0.99, 'originalBundle': bundle, 'direction': direction}
+    async def classify(self, direction, bundle, *, timeout, thresholds, policy_version):
+        settings = DecisionsSettings(decisions_enabled=True)
+        assert policy_version == POLICY_VERSION == settings.decisions_routing_policy
+        assert timeout == settings.decisions_timeout_seconds
+        assert thresholds == routing_thresholds(settings, direction)
+        return {
+            'choice': 'batch', 'confidence': 0.99, 'originalBundle': bundle,
+            'direction': direction, 'policyVersion': policy_version,
+        }
 
 decisions_broker.DecisionsClient = FakeDecisions
 decisions_broker.main()
@@ -82,8 +94,15 @@ def test_packaged_broker_authenticated_socket_mount_and_restart(tmp_path):
     auth = private_directory(tmp_path / "auth")
     private_directory(auth / "decisions-ipc")
     player = private_directory(tmp_path / "player")
-    write_private(auth / "decisions.key", b"synthetic-container-test-key\n")
-    authorize_agent(auth, game_id, 0, player, decisions=True)
+    authorize_agent(
+        auth,
+        game_id,
+        0,
+        player,
+        decisions=True,
+        settings=DecisionsSettings(decisions_enabled=True).model_dump(),
+        player="Rome",
+    )
     write_private_json(player / "wrong.json", {"token": "unregistered-container-test-token"})
     names = []
 
@@ -95,18 +114,19 @@ def test_packaged_broker_authenticated_socket_mount_and_restart(tmp_path):
             assert time.monotonic() < deadline, "packaged routing broker did not become ready"
             time.sleep(0.1)
         ready = json.loads((auth / "decisions-ready.json").read_text())
-        assert ready["ready"] and ready["protocolVersion"] == 1
+        assert ready["ready"] and ready["protocolVersion"] == BROKER_PROTOCOL_VERSION
 
     def probe():
         result = json.loads(podman("exec", player_name, "/opt/app/.venv/bin/python", "-c", PLAYER).stdout)
         assert result["health"]["status"] == "ready"
-        assert result["health"]["protocolVersion"] == 1
+        assert result["health"]["protocolVersion"] == BROKER_PROTOCOL_VERSION
         assert result["health"]["upstreamStatus"] == "unchecked"
         assert result["classification"] == {
             "choice": "batch",
             "confidence": 0.99,
             "originalBundle": result["bundle"],
             "direction": "outgoing",
+            "policyVersion": POLICY_VERSION,
         }
         assert result["wrongHealth"]["reason"] == "broker_access_denied"
         assert result["wrongClassification"]["fallback"] == "broker_access_denied"

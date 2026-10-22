@@ -19,7 +19,7 @@ Sources = Annotated[
 ]
 Retirement = Literal["completed", "abandoned", "superseded", "retracted", "expired", "irrelevant"]
 BRIEF_TYPES = {"strategy", "handoff"}
-MEMORY_TYPES = BRIEF_TYPES | {"belief", "note"}
+MEMORY_TYPES = BRIEF_TYPES | {"belief", "note", "city_plan"}
 
 
 class Assumption(BoundaryModel):
@@ -27,7 +27,7 @@ class Assumption(BoundaryModel):
     source: str = Field(
         default="",
         max_length=160,
-        description="Optional delivered evidence ID or the review:<turn>:<number> source of an adopted review assumption. Its interpretation remains inferred or unknown.",
+        description="Optional evidence ID or source copied from a review assumption.",
     )
 
 
@@ -106,8 +106,17 @@ class Note(Content):
     )
 
 
-RecordContent = Annotated[Strategy | Handoff | Belief | Note, Field(discriminator="type")]
-CONTENT_MODELS = {"strategy": Strategy, "handoff": Handoff, "belief": Belief, "note": Note}
+class CityPlan(Content):
+    type: Literal["city_plan"]
+    city: Source
+    reasons: dict[Literal["focus", "growth", "citizens", "specialists", "construction", "purchases"], ShortThought]
+    expectedBenefits: Thoughts = Field(default_factory=list)
+    reconsiderWhen: Thoughts = Field(default_factory=list)
+    sources: Sources = Field(default_factory=list)
+
+
+RecordContent = Annotated[Strategy | Handoff | Belief | Note | CityPlan, Field(discriminator="type")]
+CONTENT_MODELS = {"strategy": Strategy, "handoff": Handoff, "belief": Belief, "note": Note, "city_plan": CityPlan}
 
 
 class Create(BoundaryModel):
@@ -208,7 +217,10 @@ class MemoryRead(BoundaryModel):
 
 class MemorySearch(BoundaryModel):
     type: (
-        Literal["strategy", "handoff", "belief", "note", "contribution", "decision", "observation", "statement"] | None
+        Literal[
+            "strategy", "handoff", "belief", "note", "city_plan", "contribution", "decision", "observation", "statement"
+        ]
+        | None
     ) = None
     subject: str = Field(default="", max_length=160)
     state: Literal["active", "retired", "all"] = "active"
@@ -229,6 +241,9 @@ class RecordedInitiativeDecision(InitiativeDecision):
 
 
 class Intent(BoundaryModel):
+    cityPlan: str = Field(
+        default="", max_length=160, description="Optional delivered city_plan memory ID explaining this city action."
+    )
     reason: Annotated[str, Field(min_length=1, max_length=1000, pattern=r"\S")]
     strategy: str = Field(
         default="",
@@ -259,6 +274,11 @@ def public_record(key, record):
         **(body if record["category"] in MEMORY_TYPES | {"decision"} else {"body": body}),
         **({"reviewEvidence": review_evidence} if review_evidence else {}),
         **(
+            {"confirmedActions": body.get("confirmedActions", record["body"].get("_confirmedActions", {}))}
+            if record["category"] == "city_plan"
+            else {}
+        ),
+        **(
             {"reviewSources": sorted({ref["key"] for ref in record["body"]["_review"]})}
             if record["category"] in MEMORY_TYPES and record["body"].get("_review")
             else {}
@@ -267,6 +287,10 @@ def public_record(key, record):
 
 
 def record_text(body):
+    if body.get("type") == "city_plan":
+        return f"{body['city']}: " + "; ".join(
+            f"{aspect}: {reason}" for aspect, reason in body.get("reasons", {}).items()
+        )
     return body.get("assessment") or body.get("claim") or body.get("text") or body.get("reason", "")
 
 
@@ -283,6 +307,10 @@ class RecordMetadata(BoundaryModel):
     historical: bool = False
     unverifiedSources: list[str] = Field(default_factory=list)
     reviewEvidence: Annotated[list[JsonObject], Field(max_length=20)] = Field(default_factory=list)
+
+
+class StoredCityPlan(CityPlan, RecordMetadata):
+    confirmedActions: dict[str, JsonObject] = Field(default_factory=dict)
 
 
 class StoredStrategy(Strategy, RecordMetadata):
@@ -335,7 +363,14 @@ class DecisionRecord(BoundaryModel):
 
 
 ReadRecord = Annotated[
-    StoredStrategy | StoredBelief | StoredNote | StoredHandoff | EvidenceRecord | DecisionRecord | ContributionRecord,
+    StoredStrategy
+    | StoredBelief
+    | StoredNote
+    | StoredHandoff
+    | StoredCityPlan
+    | EvidenceRecord
+    | DecisionRecord
+    | ContributionRecord,
     Field(discriminator="type"),
 ]
 

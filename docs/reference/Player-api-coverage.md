@@ -546,7 +546,7 @@ Sources: [setup][setup], [game CLI][game-cli], [operator][operator],
 | Save/load/Undo as player commands | Missing | Native controls exist; agents lack arbitrary rollback/file access. Operator recovery is not an agent Undo API. |
 | Lost action response | Available | Durable receipts/exact-request lookup; no blind repeat mutation. |
 | Crash/timeout/interrupted turn | Available | Stop and operator resume at active-turn start; obsolete conversation-checkpoint continuation removed. |
-| Interrupted background review | Available | Durable inputs/retry limits; shared review phase holds gameplay and message delivery until all reports finish. |
+| Interrupted background review | Available | Durable frozen inputs; initial attempt and at most one correction. The shared phase holds gameplay and message delivery until reviews publish or safely become unavailable; persistence and shutdown/drain failures still stop for inspection. |
 | Opening/periodic strategy review | Available | Asynchronous reports, short/mid/long-term advice, preload/TUI display; not a native game rule. |
 | Private memory/chat/action history | Available | Scoped records/contributions/provenance and database history; not native notification log. |
 | Model configuration | Available | Per-civ model/reasoning, requested service priority, retained resume settings. |

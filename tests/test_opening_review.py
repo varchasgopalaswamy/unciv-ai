@@ -219,7 +219,7 @@ def test_opening_reviews_run_concurrently_then_each_civ_uses_its_own_report(tmp_
                 while rome.status()["phase"] != "RUNNING":
                     await asyncio.sleep(0.01)
             user = [p for method, p in factory.calls if method == "turn/start"][-1]["input"][0]["text"]
-            assert "Latest completed strategic advice" in user and '"asOfTurn":0' in user
+            assert "Previous strategic advice" in user and '"asOfTurn":0' in user
         finally:
             await asyncio.gather(*(service.close() for service in services.values()))
 

@@ -13,12 +13,11 @@ from civ_agent.observations import DetailQuery, project_detail
 from civ_agent.protocol import JsonObject
 
 LIMITATIONS = [
-    "Focus and construction are independent recommendations over the same captured state; neither assumes the other was applied.",
-    "The gameplay agent coordinates empire needs and can accept, change or reject either choice without an override.",
-    "Read the selected option's normal inspection before acting. Queue commands append; reordering is a separate native operation.",
-    "Keep continues the exact existing queue without adding a copy. Append schedules a new item using native queue insertion; it never means continue an existing copy. Native insertion can replace idle or place a build before a trailing conversion.",
-    "For a queue move, previousQueueProduction describes that entry before the move and production describes starting it first. Native stored work belongs to the first queued copy of its name after reordering.",
-    "Focuses are persistent allocation policies. Equal immediate yields do not establish equal allocations after growth or other changes.",
+    "Each suggestion assumes the current city, without applying the other suggestion. The player decides how to balance cities.",
+    "Check the selected option's details before acting. Keeping leaves the queue alone; adding and moving are separate choices.",
+    "Adding means another item. It can replace an idle order or go before a final production conversion.",
+    "Moving an item to the front can change its credited work: the first queued copy of a construction gets the stored work.",
+    "A focus guides future citizens too; matching yields today do not make two focuses equivalent.",
 ]
 
 
@@ -188,7 +187,7 @@ async def internal_read(gateway, job, name, arguments):
 
 async def capture(gateway, job, objectives) -> tuple[list[JsonObject], JsonObject, JsonObject]:
     observation = job.observation or {}
-    if job.purpose != "gameplay" or observation.get("phase") != "ACTIVE":
+    if job.purpose not in {"gameplay", "economy"} or observation.get("phase") != "ACTIVE":
         return [], {}, {"reason": "not_active_gameplay", "capturedCities": 0}
     captured_basis = basis(gateway, job)
     candidates = [

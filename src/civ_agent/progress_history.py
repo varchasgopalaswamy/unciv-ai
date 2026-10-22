@@ -109,7 +109,7 @@ def investment_accounting(actions: list[JsonObject]) -> JsonObject:
             for a in spending[-MAX_ROWS:]
         ],
         "omittedSpendingReceipts": max(0, len(spending) - MAX_ROWS),
-        "basis": "Only confirmed receipt.economy gold changes are counted. Missing amounts are unknown. Queue orders are not completed production; upkeep is reported for all current owned units, not attributed to a plan.",
+        "basis": "Gold totals count confirmed changes only; missing amounts are unknown. Queueing is not completion. Unit upkeep covers your whole army, not this plan alone.",
     }
 
 
@@ -121,7 +121,7 @@ def progress_context(history: list[JsonObject], actions: list[JsonObject]) -> Js
         "fromTurn": first["turn"],
         "toTurn": now["turn"],
         "observedTurns": [row["turn"] for row in history],
-        "basis": "Latest permitted observation per turn, with within-turn position changes retained. Equal sampled positions do not prove no movement between observations or an available route. Exploration is empire-wide, not attributed to a unit. Receipt acceptance does not establish progress. Missing turns are not observations. Full receipts and observations remain in turn history.",
+        "basis": "The latest observation from each recorded turn, including movement seen during that turn. Matching positions do not prove a unit stayed still or had a route. Exploration totals cover your whole empire. Accepted orders do not prove progress; missing turns are unknown. See turn history for full details.",
     }
     if first["exploredTiles"] is not None and now["exploredTiles"] is not None:
         result["exploration"] = {

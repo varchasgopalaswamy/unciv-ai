@@ -835,14 +835,23 @@ def test_trade_receipt_reconciliation_after_response_loss(tmp_path, enacted):
                     "accept",
                 )
             assert job.closed and len(memory.pending()) == 1
+            request_id = memory.pending()[0]["id"]
             restarted = CivilizationState(tmp_path / "private", "Rome")
-            runtime = ChatRuntime(SimpleNamespace(io=io, memory=restarted))
+            fresh_gateway = ProposalGateway(restarted, io, tmp_path / "restarted-workspace")
+            runtime = ChatRuntime(SimpleNamespace(io=io, memory=restarted, gateway=fresh_gateway))
             runtime.connection, runtime.epoch = host, "g1"
             await runtime.reconcile()
-            assert not restarted.pending()
+            await runtime.reconcile()
+            assert bool(restarted.pending()) == (not enacted)
             assert len(host.writes) == int(enacted)
-            receipt = json.loads(restarted.requests_for_job("chat")[0]["result"])
-            assert ("outcome" in receipt) == enacted
+            request = restarted.requests_for_job("chat")[0]
+            assert request["id"] == request_id
+            if enacted:
+                assert "outcome" in json.loads(request["result"])
+            else:
+                assert request["result"] is None
+                with pytest.raises(StateConflict, match="CHECKPOINT_REQUEST_UNSETTLED"):
+                    restarted.backup(tmp_path / "unsettled-trade.json")
         finally:
             await io.close()
 

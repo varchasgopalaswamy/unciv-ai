@@ -75,6 +75,8 @@ internal data class CommunicationJob(
     val claimedAtMs: Long? = null,
     val telemetry: JobTelemetry? = null,
     val reportedUsage: ModelUsage? = null,
+    val parentJob: String? = null,
+    val computing: Boolean = true,
 )
 
 @Serializable

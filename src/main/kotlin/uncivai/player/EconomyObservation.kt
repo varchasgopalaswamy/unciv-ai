@@ -36,6 +36,8 @@ data class EconomyResource(
     val imported: Int,
     val exported: Int,
     val offered: Int,
+    val committed: Int,
+    val spendable: Int,
     val unimprovedOwnedTiles: Int,
     val unimprovedAlliedCityStateTiles: Int,
     val citiesDemanding: Int,
@@ -52,6 +54,8 @@ data class GoldenAgeObservation(val turnsRemaining: Int, val storedHappiness: In
 @Serializable
 data class EconomyObservation(
     val treasury: Int,
+    val committedGold: Int,
+    val availableGold: Int,
     val goldPerTurn: Int,
     val unitMaintenance: Int,
     val goldBreakdown: List<EconomyAmount>,
@@ -78,6 +82,8 @@ internal fun observeEconomy(player: Civilization, includeDevelopment: Boolean = 
     )
     return EconomyObservation(
         treasury = player.gold,
+        committedGold = player.committedGold(),
+        availableGold = player.availableGold(),
         goldenAge = GoldenAgeObservation(player.goldenAges.turnsLeftForCurrentGoldenAge, player.goldenAges.storedHappiness, player.goldenAges.happinessRequiredForNextGoldenAge()),
         goldPerTurn = stats.values.map { it.gold }.sum().roundToInt(),
         unitMaintenance = -(stats["Unit upkeep"]?.gold ?: 0f).roundToInt(),
@@ -150,6 +156,8 @@ private fun observeEconomyResources(player: Civilization): List<EconomyResource>
                 imported = imports[resource.name].orEmpty().sumOf { it.amount },
                 exported = exports[resource.name].orEmpty().sumOf { it.amount },
                 offered = offered[resource.name].orEmpty().sumOf { it.amount },
+                committed = player.committedResource(resource.name),
+                spendable = player.availableResource(resource.name),
                 unimprovedOwnedTiles = unimproved[resource.name].orEmpty().count { it.getOwner() === player },
                 unimprovedAlliedCityStateTiles = unimproved[resource.name].orEmpty().count { it.getOwner() !== player },
                 citiesDemanding = demands[resource.name].orEmpty().count { !it.isWeLoveTheKingDayActive() },

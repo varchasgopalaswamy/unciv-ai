@@ -185,8 +185,8 @@ def initialize(root, config, auth_root, *, original=None, images=None, validatio
         from civ_agent.decisions_ledger import DecisionsLedger
 
         record["decisionsAuthority"] = DecisionsLedger(auth_root).authority
+    from civ_agent.decisions_backends import BACKENDS
     from civ_agent.decisions_tasks import TASK_VERSION
-    from civ_agent.diplomacy_decisions import MODEL
 
     record.update(
         images=images,
@@ -196,7 +196,9 @@ def initialize(root, config, auth_root, *, original=None, images=None, validatio
             "native_advice_enabled": config.agents.native_advice_enabled,
             "decisions_enabled": config.agents.decisions_enabled,
             "nativeGuideVersion": "native-guidance-v1",
-            "classifierModel": MODEL,
+            "classifierModel": BACKENDS[config.agents.decisions_backend].model,
+            "decisionsBackend": config.agents.decisions_backend,
+            "acceptanceProbability": config.agents.decisions_acceptance_probability,
             "routingPolicyVersion": config.agents.decisions_routing_policy,
             "advisoryPolicyVersion": TASK_VERSION,
         },

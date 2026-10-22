@@ -19,6 +19,7 @@ import ssl
 import tempfile
 import time
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 
 import aiohttp
@@ -52,6 +53,7 @@ from civ_agent.providers import (
     provider_arguments,
     provider_environment,
 )
+from civ_agent.review_output_guard import ReviewOutputGuard
 from civ_agent.review_runtime import ReviewRuntime
 from civ_agent.schemas import StartRequest, start_error
 from civ_agent.service_io import ServiceIO
@@ -67,6 +69,10 @@ MODEL_INTERRUPT_TIMEOUT = 30.0
 CODEX_NOTIFICATION_BYTES = 16 * 1024 * 1024
 CODEX_NOTIFICATION_COUNT = 4096
 CODEX_NOTIFICATION_FLUSH_SECONDS = 30.0
+CODEX_STREAM_BATCH_BYTES = 8 * 1024
+CODEX_TEXT_DELTAS = frozenset(
+    {"item/agentMessage/delta", "item/reasoning/summaryTextDelta", "item/commandExecution/outputDelta"}
+)
 USAGE_KEYS = {
     "input_tokens": "inputTokens",
     "cached_input_tokens": "cachedInputTokens",
@@ -79,6 +85,23 @@ class ServiceError(Exception):
     def __init__(self, code: str, status: int = 400) -> None:
         self.code, self.status = code, status
         super().__init__(code)
+
+
+class ProcessDrainError(ServiceError):
+    """Inference exited, but accepted notifications still belong to this process."""
+
+    process_exited = True
+
+    def __init__(self) -> None:
+        super().__init__("CODEX_NOTIFICATION_FLUSH_TIMEOUT", 503)
+
+
+@dataclass
+class QueuedNotification:
+    method: str
+    params: JsonObject
+    size: int
+    queued: float
 
 
 def identifier(value):
@@ -109,10 +132,12 @@ class CodexProcess:
         self.notification_task: asyncio.Task[None] | None = None
         self.transport_failure_task: asyncio.Task[None] | None = None
         self.auth_task: asyncio.Task[None] | None = None
-        self.notifications: asyncio.Queue[tuple[str, JsonObject, int, float] | None] = asyncio.Queue()
+        self.notifications: asyncio.Queue[QueuedNotification | None] = asyncio.Queue()
+        self.notification_tail: QueuedNotification | None = None
         self.notification_bytes = self.notification_count = 0
         self.notification_peak_bytes = self.notification_peak_count = 0
         self.notification_delivered = self.notification_failures = 0
+        self.notification_coalesced = 0
         self.notification_lag = self.notification_duration = 0.0
         self.notifications_ended = False
         self.transport_error: str | None = None
@@ -123,6 +148,15 @@ class CodexProcess:
         self.requests: dict[int, tuple[str, JsonObject]] = {}
         self.sequence = 0
         self.auth_client = None
+        self.output_guard: ReviewOutputGuard | None = None
+
+    @property
+    def process_exited(self) -> bool:
+        return self.process is None or self.process.returncode is not None
+
+    @property
+    def notification_drained(self) -> bool:
+        return self.notifications_ended and self.notification_task is not None and self.notification_task.done()
 
     async def start(self, token: str, settings: JsonObject) -> None:
         provider = settings["provider"]
@@ -203,6 +237,10 @@ class CodexProcess:
         future: asyncio.Future[JsonObject] = asyncio.get_running_loop().create_future()
         self.pending[request_id] = future
         self.requests[request_id] = method, parameters
+        if method == "turn/start":
+            self.output_guard = (
+                ReviewOutputGuard(parameters["threadId"]) if parameters.get("outputSchema") is not None else None
+            )
         try:
             await self.socket.send_json({"id": request_id, "method": method, "params": parameters})
             return await asyncio.wait_for(future, 30)
@@ -241,6 +279,29 @@ class CodexProcess:
         if self.transport_error is not None or self.notifications_ended:
             return False
         size = len(json.dumps(params, ensure_ascii=False).encode("utf-8")) + len(method) + 64
+        tail = self.notification_tail
+        if (
+            method in CODEX_TEXT_DELTAS
+            and isinstance(params.get("delta"), str)
+            and tail is not None
+            and tail.method == method
+            and isinstance(tail.params.get("delta"), str)
+            and {key: value for key, value in params.items() if key != "delta"}
+            == {key: value for key, value in tail.params.items() if key != "delta"}
+        ):
+            combined = {**params, "delta": tail.params["delta"] + params["delta"]}
+            combined_size = len(json.dumps(combined, ensure_ascii=False).encode("utf-8")) + len(method) + 64
+            if combined_size <= CODEX_STREAM_BATCH_BYTES:
+                extra = combined_size - tail.size
+                if self.notification_bytes + extra > CODEX_NOTIFICATION_BYTES:
+                    self._transport_failed("CODEX_NOTIFICATION_OVERFLOW")
+                    return False
+                tail.params = combined
+                tail.size = combined_size
+                self.notification_bytes += extra
+                self.notification_peak_bytes = max(self.notification_peak_bytes, self.notification_bytes)
+                self.notification_coalesced += 1
+                return True
         if (
             self.notification_bytes + size > CODEX_NOTIFICATION_BYTES
             or self.notification_count >= CODEX_NOTIFICATION_COUNT
@@ -251,7 +312,9 @@ class CodexProcess:
         self.notification_count += 1
         self.notification_peak_bytes = max(self.notification_peak_bytes, self.notification_bytes)
         self.notification_peak_count = max(self.notification_peak_count, self.notification_count)
-        self.notifications.put_nowait((method, params, size, time.monotonic()))
+        item = QueuedNotification(method, params, size, time.monotonic())
+        self.notification_tail = item
+        self.notifications.put_nowait(item)
         if self.notification_task is None:
             self.notification_task = asyncio.create_task(self._deliver_notifications())
         return True
@@ -265,7 +328,10 @@ class CodexProcess:
 
     async def _deliver_notifications(self) -> None:
         while (item := await self.notifications.get()) is not None:
-            method, params, size, queued = item
+            if self.notification_tail is item:
+                # Never mutate an event already being delivered to a callback.
+                self.notification_tail = None
+            method, params, size, queued = item.method, item.params, item.size, item.queued
             started = time.monotonic()
             self.notification_lag = max(self.notification_lag, started - queued)
             try:
@@ -285,6 +351,7 @@ class CodexProcess:
             "peakQueuedNotifications": self.notification_peak_count,
             "deliveredNotifications": self.notification_delivered,
             "failedNotifications": self.notification_failures,
+            "coalescedNotifications": self.notification_coalesced,
             "maxQueueLagMs": round(self.notification_lag * 1000),
             "maxCallbackMs": round(self.notification_duration * 1000),
         }
@@ -367,6 +434,11 @@ class CodexProcess:
                         if not self._queue_notification("service/approvalRequired", {}):
                             break
                     else:
+                        if self.output_guard is not None:
+                            failure = self.output_guard.observe(message["method"], message.get("params", {}))
+                            if failure is not None:
+                                self._transport_failed(failure)
+                                break
                         notice = self.model_status.observe(message["method"], message.get("params", {}))
                         await self._model_notice(notice)
                         if self.transport_error is not None:
@@ -391,6 +463,8 @@ class CodexProcess:
                                 # Bind before consuming following frames, which can
                                 # arrive before request()'s caller resumes.
                                 self.model_status.begin(params["threadId"], result["turn"]["id"])
+                                if self.output_guard is not None:
+                                    self.output_guard.bind_turn(result["turn"]["id"])
                             future.set_result(result)
         except (ValueError, OSError, aiohttp.ClientError):
             pass
@@ -438,7 +512,7 @@ class CodexProcess:
                 if self.notification_task is not None:
                     await asyncio.shield(self.notification_task)
         except TimeoutError:
-            raise ServiceError("CODEX_NOTIFICATION_FLUSH_TIMEOUT", 503) from None
+            raise ProcessDrainError() from None
         if self.socket is not None:
             await self.socket.close()
         if self.session is not None:
@@ -463,6 +537,7 @@ class AgentService:
         provider: str = "openai",
         reasoning_effort: str | None = None,
         communication_reasoning_effort: str | None = None,
+        economy_model: JsonObject | None = None,
         memory_context_chars: int = 12000,
         review_interval: int = 5,
         review_attempts: int = 3,
@@ -491,6 +566,11 @@ class AgentService:
             civilization_reference(civilization)
         self.default_settings = {"provider": provider, "model": model, "reasoningEffort": reasoning_effort}
         self.communication_reasoning_effort = communication_reasoning_effort
+        from civ_agent.game_config import EconomyModel
+
+        self.economy_model = EconomyModel.model_validate(economy_model or {}).model_dump(exclude_none=True)
+        self.economy_runtime = None
+        self.turn_roles = None
         self.strategy_guide = strategy_guide
         self.civilization_guide = civilization_guide
         from civ_agent.decisions_policy import DecisionsSettings
@@ -505,6 +585,8 @@ class AgentService:
             from civ_agent.decisions_broker import RoutingClient
 
             routing_client = RoutingClient.from_environment()
+            routing_client.backend = self.decisions_settings.decisions_backend
+            routing_client.timeout = self.decisions_settings.decisions_timeout_seconds
         self.fast = fast and provider == "openai"
         self.civilization = civilization
         self.workspace, self.state_dir = private_directory(workspace), private_directory(state_dir)
@@ -835,13 +917,20 @@ class AgentService:
                 if self.chat.running:
                     await self.chat.reconcile()
                 for job in list(self.gateway.jobs.values()):
-                    if job.id == record["activationId"]:
+                    if (
+                        job.id == record["activationId"]
+                        or self.records.get(job.id, {}).get("parentActivation") == record["activationId"]
+                    ):
                         async with job.lock:
                             job.gameplay_fenced = True
                             if job.handoff_at is None:
                                 job.handoff_at = time.monotonic()
                             job.gameplay_ended.set()
             record["confirmedHandoff"] = payload["committedHandoff"]
+            if self.turn_roles is not None and self.turn_roles.record["activationId"] == record["activationId"]:
+                self.turn_roles.committed = True
+                self.turn_roles.changed.set()
+                record["roles"] = copy.deepcopy(self.turn_roles.state())
             await self._save(record)
             return self.status(record["activationId"])
 
@@ -889,10 +978,28 @@ class AgentService:
         job = next((job for job in self.gateway.jobs.values() if job.id == activation_id), None)
         result["negotiationWaitSeconds"] = job.waiting_seconds() if job else record.get("negotiationWaitSeconds", 0)
         result["decisionsSettings"] = self.decisions_settings.model_dump()
+        if record.get("purpose", "gameplay") == "gameplay":
+            children = [r for r in self.records.values() if r.get("parentActivation") == activation_id]
+            economy_usage = {key: sum(r.get("usage", {}).get(key, 0) for r in children) for key in USAGE_KEYS}
+            result["mainUsage"] = dict(record.get("usage", {}))
+            result["economyUsage"] = economy_usage
+            result["usage"] = {key: result["mainUsage"].get(key, 0) + economy_usage[key] for key in USAGE_KEYS}
+            result["mainUsageComplete"] = record.get("usageComplete", False)
+            result["economyUsageComplete"] = bool(children) and all(r.get("usageComplete", False) for r in children)
+            result["usageComplete"] = result["mainUsageComplete"] and result["economyUsageComplete"]
+            result["economyModelRequests"] = sum(r.get("modelRequests", 0) for r in children)
         return result
 
     def health(self):
         failure = self.gateway.run_failure or self.reviews.failure
+        if failure is None and self.economy_runtime is not None and self.economy_runtime.process is not None:
+            economy_record = self.records.get(self.economy_runtime.active_id, {})
+            if economy_record.get("error") == "STOP_UNCONFIRMED":
+                failure = {
+                    "error": "STOP_UNCONFIRMED",
+                    "diagnosticId": self.economy_runtime.active_id,
+                    "job": self.economy_runtime.active_id,
+                }
         if failure is None and self.active_id is not None and self.active_task is not None and self.active_task.done():
             record = self.records[self.active_id]
             if record["phase"] not in TERMINAL:
@@ -1275,7 +1382,9 @@ class AgentService:
         model_record["threadId"] = thread_id
         self.known_threads.add(thread_id)
         assert self.match is not None
-        self.match["effectiveSettings"] = dict(effective_settings)
+        self.match["economyEffectiveSettings" if job.purpose == "economy" else "effectiveSettings"] = dict(
+            effective_settings
+        )
         await self.io.call(write_private_json, self.match_file, copy.deepcopy(self.match))
         await self._save(record)
         if self.failure:
@@ -1283,12 +1392,20 @@ class AgentService:
         self.accept_usage = True
         message = prompt.user
         while True:
+            if record.get("roleState") in {"finished", "waiting_negotiation"} and self.chat.running:
+                while not (await self.chat.social("job_claim", job=job.id, purpose=job.purpose))["granted"]:
+                    if self.failure:
+                        raise ServiceError(self.failure)
+                    await asyncio.sleep(0.25)
             await self._start_model_turn(record, process, message)
             stopped = asyncio.create_task(self.stop_event.wait())
             negotiating = asyncio.create_task(job.negotiation_pending.wait())
             handed_off = asyncio.create_task(job.gameplay_ended.wait())
+            role_finished = asyncio.create_task(job.role_finished.wait())
             try:
-                await asyncio.wait({stopped, negotiating, handed_off}, return_when=asyncio.FIRST_COMPLETED)
+                await asyncio.wait(
+                    {stopped, negotiating, handed_off, role_finished}, return_when=asyncio.FIRST_COMPLETED
+                )
                 # A model may finish before an accepted offer reaches the host.
                 # Let that call establish its outcome (or negotiation hold)
                 # before treating the conversation as terminal.
@@ -1298,7 +1415,8 @@ class AgentService:
                 stopped.cancel()
                 negotiating.cancel()
                 handed_off.cancel()
-                await asyncio.gather(stopped, negotiating, handed_off, return_exceptions=True)
+                role_finished.cancel()
+                await asyncio.gather(stopped, negotiating, handed_off, role_finished, return_exceptions=True)
             if self.failure:
                 raise ServiceError(self.failure)
             if job.gameplay_ended.is_set():
@@ -1306,7 +1424,25 @@ class AgentService:
                 # Stop inference before a closing message reprocesses the context.
                 await self._interrupt_model_turn(record, process, "COMPLETION_TIMEOUT")
                 return
+            if job.role_finished.is_set() and self.gateway.role_coordinator is not None:
+                await self._interrupt_model_turn(record, process, "COMPLETION_TIMEOUT")
+                record["roleState"] = "finished"
+                await self._save(record)
+                await self.flush_telemetry()
+                message = await self.gateway.role_coordinator.wait_for_resume(job)
+                if job.gameplay_ended.is_set():
+                    return
+                fresh = await self.gateway.call(job, "player_turn", {}, f"resume:{record.get('modelRequests', 0)}")
+                message += "\n" + json.dumps(fresh, ensure_ascii=False)
+                continue
             if not job.negotiation_pending.is_set():
+                if self.completion == "completed" and self.gateway.role_coordinator is not None:
+                    # Explicit completion is required; a closing message is not a turn handoff.
+                    record["finishReminders"] = record.get("finishReminders", 0) + 1
+                    if record["finishReminders"] > 2:
+                        raise ServiceError("ROLE_NOT_FINISHED")
+                    message = "Use finish_role after completing your role's work. The host advances the native turn."
+                    continue
                 return
             message = await self._settle_negotiation(record, job, process)
             await self.io.call(self.history.next_conversation, record["activationId"], record["modelPhase"])
@@ -1347,6 +1483,7 @@ class AgentService:
             self.completion = self.early_completions[self.turn_id]
             self.stop_event.set()
         record["phase"] = "RUNNING"
+        record.pop("roleState", None)
         await self._save(record)
 
     async def _interrupt_model_turn(self, record, process, timeout_error):
@@ -1374,12 +1511,16 @@ class AgentService:
         await self._save(record)
         await self._interrupt_model_turn(record, process, "NEGOTIATION_SUSPEND_TIMEOUT")
         record["negotiationWait"] = {"state": "waiting"}
+        record["roleState"] = "waiting_negotiation"
         await self._save(record)
+        await self.flush_telemetry()
         self.diagnostics.emit("gameplay_negotiation_suspended", activationId=job.id, turnId=self.turn_id)
         calls = list(job.negotiation_calls.items())
         # Shield individual calls from a model disconnect. A real job stop cancels
         # and drains them in gateway.close(), retaining uncertain-action handling.
         results = await asyncio.gather(*(asyncio.shield(task) for task, _ in calls))
+        if not calls:
+            await self.gateway.wait_for_gameplay(job)
         if self.failure:
             raise ServiceError(self.failure)
         self.gateway.check(job, ended_allowed=True)
@@ -1473,6 +1614,7 @@ class AgentService:
         )
         owner = asyncio.current_task()
         assert owner is not None
+        economy_task = advance_task = negotiation_task = None
 
         async def watchdog():
             while True:
@@ -1480,6 +1622,21 @@ class AgentService:
                 if self.stopping:
                     return
                 now = time.monotonic()
+                if (
+                    advance_task is not None
+                    and advance_task.done()
+                    and not advance_task.cancelled()
+                    and advance_task.exception()
+                    and record.get("confirmedHandoff") != record["handoff"] + 1
+                ):
+                    self.failure = "TURN_COMPLETION_FAILED"
+                if (
+                    negotiation_task is not None
+                    and negotiation_task.done()
+                    and not negotiation_task.cancelled()
+                    and negotiation_task.exception()
+                ):
+                    self.failure = "NEGOTIATION_MONITOR_FAILED"
                 if self.gateway.run_failure or self.failure:
                     self.failure = self.gateway.run_failure["error"] if self.gateway.run_failure else self.failure
                 elif now - self.last_heartbeat >= payload["leaseSeconds"]:
@@ -1535,13 +1692,12 @@ class AgentService:
             # service defaults or the local Codex configuration have changed.
             selected = record.get("effectiveSettings", record["settings"])
             if self.chat.running:
-                while not (
-                    await self.chat.social(
-                        "job_claim",
-                        job=record["activationId"],
-                        purpose="gameplay",
-                    )
-                )["granted"]:
+                while True:
+                    admission = await self.chat.social("job_claim", job=record["activationId"], purpose="gameplay")
+                    if admission["granted"]:
+                        break
+                    if admission.get("reason") in {"MODEL_INVOCATION_LIMIT", "ROLE_CAPACITY_TOO_SMALL"}:
+                        raise ServiceError(admission["reason"], 503)
                     await asyncio.sleep(1)
                 self.gameplay_permit = record["activationId"]
             await self.io.call(
@@ -1550,6 +1706,20 @@ class AgentService:
                 record["epoch"],
                 self.gameplay_permit == record["activationId"],
             )
+            from civ_agent.economy_roles import TurnRoles
+            from civ_agent.economy_runtime import EconomyRuntime, run_economy
+
+            self.turn_roles = TurnRoles(self, record)
+            self.gateway.role_coordinator = self.turn_roles
+            self.turn_roles.register(job)
+            self.economy_runtime = EconomyRuntime(self, self.turn_roles, payload)
+            economy_task = asyncio.create_task(run_economy(self, self.turn_roles, payload, record))
+            advance_task = asyncio.create_task(self.turn_roles.advance())
+            self.turn_roles.advance_task = advance_task
+            negotiation_task = asyncio.create_task(self.turn_roles.watch_negotiation())
+            await self.economy_runtime.started.wait()
+            if economy_task.done():
+                await economy_task
             prepared = await prepare_startup(self.gateway, job)
             prompt = startup_prompt(
                 prepared,
@@ -1568,6 +1738,14 @@ class AgentService:
             }
             record["modelPhase"] = "gameplay"
             await self._model_turn(record, job, prompt, workspace, selected)
+            if job.gameplay_ended.is_set() and advance_task is not None:
+                try:
+                    await asyncio.shield(advance_task)
+                except (OSError, SQLAlchemyError):
+                    if record.get("confirmedHandoff") != record["handoff"] + 1:
+                        raise
+            if economy_task is not None and self.turn_roles is not None and self.turn_roles.committed:
+                await asyncio.wait_for(asyncio.shield(economy_task), 60)
             if job.gameplay_ended.is_set() and self.failure is None:
                 record["completionReason"] = "native_handoff"
             if self.completion not in {"completed", "interrupted"} and self.failure is None:
@@ -1591,6 +1769,38 @@ class AgentService:
                 else "CODEX_CONNECTION_FAILED"
             )
         finally:
+            self.stopping = True
+            # Model shutdown can fail after both roles authorized advancement. Drain an
+            # already issued native handoff before cancelling its controller.
+            if (
+                advance_task is not None
+                and self.turn_roles is not None
+                and self.turn_roles.committing
+                and not advance_task.done()
+            ):
+                with contextlib.suppress(Exception):
+                    await asyncio.wait_for(asyncio.shield(advance_task), 30)
+            if (
+                economy_task is not None
+                and self.turn_roles is not None
+                and self.turn_roles.committed
+                and not economy_task.done()
+            ):
+                with contextlib.suppress(Exception):
+                    await asyncio.wait_for(asyncio.shield(economy_task), 60)
+            if economy_task is not None:
+                if not economy_task.done():
+                    economy_task.cancel()
+                economy_result = await asyncio.gather(economy_task, return_exceptions=True)
+                if isinstance(economy_result[0], Exception) and self.failure is None:
+                    self.failure = "ECONOMY_ROLE_FAILED"
+            if negotiation_task is not None:
+                negotiation_task.cancel()
+                await asyncio.gather(negotiation_task, return_exceptions=True)
+            if advance_task is not None:
+                advance_task.cancel()
+                await asyncio.gather(advance_task, return_exceptions=True)
+            self.gateway.role_coordinator = None
             if self.gateway.run_failure:
                 self.failure = self.gateway.run_failure["error"]
                 record["runFailure"] = self.health()["runFailure"]
@@ -1613,11 +1823,21 @@ class AgentService:
             try:
                 if self.process is not None:
                     await self.process.close()
+            except ProcessDrainError:
+                # Inference has exited; retain its worker and I/O until the
+                # accepted history/accounting writes can finish safely.
+                record["error"] = "HISTORY_DRAIN_FAILED"
+                await self._save(record)
+                raise
             except BaseException:
                 # Never advertise terminal without confirmed process shutdown.
                 record["error"] = "STOP_UNCONFIRMED"
                 await self._save(record)
                 raise
+            if self.economy_runtime is not None and self.economy_runtime.process is not None:
+                record["error"] = "STOP_UNCONFIRMED"
+                await self._save(record)
+                raise ServiceError("STOP_UNCONFIRMED", 503)
             trace_complete = await self.io.call(reconcile_provider_usage, record, self.provider_usage)
             job.model_stopped.set()
             finished = copy.deepcopy(record)
@@ -1659,6 +1879,12 @@ class AgentService:
     async def close(self):
         if self.active_task is not None and not self.active_task.done():
             await self.interrupt(self.active_id)
+        if self.economy_runtime is not None and self.economy_runtime.process is not None:
+            await self.economy_runtime.process.close()
+            self.economy_runtime.process = None
+            if self.economy_runtime.job is not None:
+                self.economy_runtime.job.model_stopped.set()
+                await self.gateway.close(self.economy_runtime.job, False)
         if self.process is not None:
             # A failed activation can retain a stopped process whose accepted
             # notifications have not flushed yet. Never close their I/O below.
@@ -1688,6 +1914,9 @@ class AgentService:
                 raise web.HTTPUnauthorized(text="AUTHENTICATION_REQUIRED")
             try:
                 payload = await request.json()
+            except (ValueError, UnicodeError):
+                return web.json_response({"error": "INVALID_JSON"}, status=400)
+            try:
                 if not isinstance(payload, dict):
                     raise ServiceError("INVALID_ARGUMENT")
                 operation = payload.pop("op", None)
@@ -1724,6 +1953,12 @@ class AgentService:
                     result = await service_recovery.barrier(self, payload["paused"])
                 elif operation == "snapshot":
                     result = await service_recovery.capture(self, payload["id"])
+                elif operation == "pending_requests":
+                    if payload:
+                        raise ServiceError("INVALID_ARGUMENT")
+                    result = await service_recovery.pending_requests(self)
+                elif operation == "settle_request":
+                    result = await service_recovery.settle_request(self, payload)
                 elif operation == "retain_snapshot":
                     result = await service_recovery.retain(self, payload["id"])
                 elif operation == "verify_snapshot":
@@ -1782,8 +2017,8 @@ class AgentService:
                 return web.json_response({"status": result})
             except ServiceError as error:
                 return web.json_response({"error": error.code}, status=error.status)
-            except (ValueError, UnicodeError):
-                return web.json_response({"error": "INVALID_JSON"}, status=400)
+            except StateConflict as error:
+                return web.json_response({"error": str(error)}, status=409)
 
         application.router.add_post("/agent", control)
         application.router.add_post("/mcp", self.gateway.handle)

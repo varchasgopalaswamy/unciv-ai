@@ -25,9 +25,9 @@ def outgoing(needed, need_confidence, timing, timing_confidence):
 
 @pytest.mark.parametrize("needed", ["needed", "not_needed"])
 def test_uncertain_usefulness_with_confident_safe_wait_batches_original_draft(needed):
-    result = parse_answer("outgoing", outgoing(needed, 0.2, "can_wait", 0.95))
+    result = parse_answer("outgoing", outgoing(needed, 0.2, "can_wait", 0.99))
     assert result["choice"] == "batch"
-    assert result["questionBasis"] == "delivery_timing" and result["confidence"] == 0.95
+    assert result["questionBasis"] == "delivery_timing" and result["confidence"] == 0.99
     assert result["rawAnswers"][0]["confidence"] == 0.2
 
 
@@ -37,8 +37,8 @@ def test_omission_requires_confident_unnecessary_and_uncertain_timing_stays_imme
     questions = request_body("outgoing", {"proposedMessage": {"text": "Still building it, as you just asked."}})[
         "questions"
     ]
-    assert "fresh answers" in questions[0]["instructions"]
-    assert "exact audience" in questions[0]["instructions"]
+    assert "fresh answers" in questions[0]["instructions"].casefold()
+    assert "exact recipients" in questions[0]["instructions"]
     assert "Assuming delivery is needed" in questions[1]["instructions"]
 
 
@@ -168,12 +168,10 @@ def test_outgoing_timing_question_requires_the_full_window_and_keeps_deadline_as
 
     assert json.loads(body["input"]) == bundle
     timing = body["questions"][1]
-    assert "END of the full remaining" in timing["instructions"]
-    assert "not any earlier instant" in timing["instructions"]
-    assert "attributed timing evidence" in timing["instructions"]
-    assert "zero remaining window" in timing["instructions"]
-    assert "would precede the deadline" in timing["instructions"]
-    assert "do not invent extra response time" in timing["instructions"]
-    assert "Receipt-anchored windows move with delivery" in timing["instructions"]
-    assert "precedes any current deadline" in timing["choices"][1]["description"]
+    assert "full remaining delay" in timing["instructions"]
+    assert "delivery at the end" in timing["instructions"]
+    assert "deadlines even if they may be bluffs" in timing["instructions"]
+    assert "If no time remains, choose now" in timing["instructions"]
+    assert "window starting on receipt" in timing["instructions"]
+    assert "before any current deadline" in timing["choices"][1]["description"]
     assert "Classifier: choose can_wait" not in timing["instructions"]

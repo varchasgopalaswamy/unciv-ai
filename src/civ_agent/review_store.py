@@ -73,7 +73,7 @@ class ReviewStore:
                     select(
                         tables.reviews.c.job, tables.reviews.c.turn, tables.reviews.c.status, tables.reviews.c.attempts
                     )
-                    .where(available_for_turn(turn), tables.reviews.c.status != "COMPLETED")
+                    .where(available_for_turn(turn), tables.reviews.c.status == "PENDING")
                     .order_by(tables.reviews.c.turn)
                     .limit(1)
                 )
@@ -95,6 +95,22 @@ class ReviewStore:
     def failed(self, parent, error):
         with self.memory.transaction() as db:
             db.execute(tables.reviews.update().where(tables.reviews.c.job == parent).values(error=error))
+
+    def unavailable(self, parent, error):
+        """Retain failed input for inspection without blocking play on missing advice."""
+        with self.memory.transaction() as db:
+            inputs = db.execute(
+                select(tables.reviews.c.inputs).where(
+                    tables.reviews.c.job == parent, tables.reviews.c.status == "PENDING"
+                )
+            ).scalar_one_or_none()
+            if inputs is not None:
+                self.memory._advance_turn(db, json.loads(inputs)["observation"]["turn"])
+            db.execute(
+                tables.reviews.update()
+                .where(tables.reviews.c.job == parent, tables.reviews.c.status == "PENDING")
+                .values(status="UNAVAILABLE", advice=None, error=error)
+            )
 
     def complete(self, parent, advice):
         with self.memory.transaction() as db:
@@ -133,6 +149,22 @@ def available_for_turn(turn):
     return (tables.reviews.c.turn < turn) | ((tables.reviews.c.turn == 0) & (turn >= 0))
 
 
+def latest_review_status(db, turn):
+    if turn is None:
+        return None
+    row = (
+        db.execute(
+            select(tables.reviews.c.turn, tables.reviews.c.status)
+            .where(available_for_turn(turn))
+            .order_by(tables.reviews.c.turn.desc())
+            .limit(1)
+        )
+        .mappings()
+        .first()
+    )
+    return {"asOfTurn": row["turn"], "status": row["status"]} if row else None
+
+
 def latest_advice(db, turn):
     """Freeze the opening or latest earlier end-of-turn report at dispatch."""
     if turn is None:
@@ -150,6 +182,9 @@ def latest_advice(db, turn):
     if row is None:
         return None
     advice = {"asOfTurn": row["turn"], **json.loads(row["advice"])}
+    # Exact observation payloads remain once in the archived report. Subsequent
+    # player context and adopted memory need only their dated source metadata.
+    advice.pop("_evidence", None)
     for index, assumption in enumerate(advice["review"]["materialAssumptions"], 1):
         assumption["source"] = f"review:{row['turn']}:{index}"
     return advice

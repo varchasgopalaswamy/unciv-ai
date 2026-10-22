@@ -16,6 +16,7 @@ from civ_agent.review_runtime import ReviewProgress
 from civ_agent.strategic_review import advice_prompt, frozen_read
 from civ_agent.telemetry import jobs as accounting_jobs
 from tests.test_agent_service import AgentServiceTestCase, FakeCodex, FakeFactory, ServiceError, StartupHost
+from tests.test_handoff_completion import native_handoff
 from tests.test_strategic_review import VICTORIES, assessment
 from tests.test_victory_snapshot import position
 
@@ -123,6 +124,8 @@ class ReviewFactory(FakeFactory):
         self.boundary_turn = None
 
     def __call__(self, executable, workspace, mcp_url, ca_file, notification):
+        if "economy" in workspace.name:
+            return super().__call__(executable, workspace, mcp_url, ca_file, notification)
         process = ReviewCodex(self, workspace, notification)
         self.instances.append(process)
         return process
@@ -150,7 +153,7 @@ class StrategicAdviserServiceTests(AgentServiceTestCase):
 
     async def handoff(self, turn=5):
         job = await self.begin_turn(turn)
-        result = await self.service.gateway.call(job, "player_command", {"kind": "END_TURN"}, "end")
+        result = await native_handoff(self.service, job, {"kind": "END_TURN"}, "end")
         assert result["kind"] == "END_TURN" and "memoryPhase" not in result
         record = await self.terminal()
         proof = {
@@ -236,14 +239,14 @@ class StrategicAdviserServiceTests(AgentServiceTestCase):
         prompt = advice_prompt(inputs)
         assert '"name":"The Glory of Rome"' in prompt.user
         facts = json.JSONDecoder().raw_decode(
-            prompt.user.split("Frozen position after all players completed round 5:\n", 1)[1]
+            prompt.user.split("Position after all players completed round 5:\n", 1)[1]
         )[0]
-        victory = facts["victory_progress"]
+        victory = facts["victory_progress"]["data"]
         assert victory["sections"] == ["rankings"] and victory["victories"] == [] and victory["rivals"] == []
         assert "score" not in victory
         assert [metric["name"] for metric in victory["metrics"]] == ["Population", "Production"]
         assert victory["rankings"]["rows"][0]["values"] == [33, 7]
-        assert facts["player_turn"]["civilizationProfile"]["uniqueUnits"] == [
+        assert facts["player_turn"]["data"]["civilizationProfile"]["uniqueUnits"] == [
             {"name": "Legion", "missingTechnologies": ["Iron Working"]}
         ]
         assert "OLD_SCIENCE_FIRST_PLAN" not in prompt.user and "Uncertain conquest" not in prompt.user
@@ -393,7 +396,7 @@ class StrategicAdviserServiceTests(AgentServiceTestCase):
         inputs = json.loads(pending["inputs"])
         prompt = advice_prompt(inputs)
         assert "old strategy" not in prompt.user
-        definitions = json.loads(prompt.instructions.split("Read tool definitions:\n", 1)[1])
+        definitions = json.loads(prompt.instructions.split("Available tools:\n", 1)[1])
         assert {tool["name"] for tool in definitions} == {"mcp__civ__" + tool["name"] for tool in inputs["catalogue"]}
         assert "mcp__civ__policy_details" in {tool["name"] for tool in definitions}
         assert len(self.factory.instances) == 2
@@ -402,7 +405,7 @@ class StrategicAdviserServiceTests(AgentServiceTestCase):
         for name in ("player_command", "memory_read", "memory_update", "chat_send", "trade_offer", "movement_preview"):
             assert (await self.service.gateway.call(reviewer, name, {}, "1"))["error"] == "REVIEW_READ_ONLY"
         assert "memory_read" not in {t["name"] for t in await self.service.gateway.tools(reviewer)}
-        assert (await self.service.gateway.call(reviewer, "research_details", {"names": ["TEST"]}, "2"))[
+        assert (await self.service.gateway.call(reviewer, "research_details", {"names": ["TEST"]}, "2"))["data"][
             "technologies"
         ][0]["cost"] == 80
         # No live read, no private history, no future facts.
@@ -429,6 +432,7 @@ class StrategicAdviserServiceTests(AgentServiceTestCase):
             {"sections": ["charts", "rankings"], "metrics": ["Production"], "civilizations": ["Rome"], "fromTurn": 0},
             "frozen-victory",
         )
+        frozen = frozen["data"]
         assert frozen["turn"] == 6 and frozen["charts"]["turns"][-1] == 6
         assert len(frozen["charts"]["series"]) == 1 and frozen["rankings"]["rows"][0]["values"] == [7]
         assert self.factory.native_reads == before
@@ -460,7 +464,7 @@ class StrategicAdviserServiceTests(AgentServiceTestCase):
         next_record = await self.terminal()
         assert next_record["phase"] == "COMPLETED"
         main_prompt = [p for m, p in self.factory.calls if m == "turn/start"][-1]["input"][0]["text"]
-        assert main_prompt.count("Latest completed strategic advice") == 1
+        assert main_prompt.count("Previous strategic advice") == 1
         assert '"asOfTurn":5' in main_prompt
         proof = {"activationId": "next-turn", "epoch": record["epoch"], "gameTurn": 6, "committedHandoff": 2}
         await self.service.finish_handoff(proof)
@@ -470,7 +474,7 @@ class StrategicAdviserServiceTests(AgentServiceTestCase):
         )
         await self.terminal()
         later_prompt = [p for m, p in self.factory.calls if m == "turn/start"][-1]["input"][0]["text"]
-        assert later_prompt.count("Latest completed strategic advice") == 1
+        assert later_prompt.count("Previous strategic advice") == 1
         assert '"asOfTurn":5' in later_prompt
 
     async def test_turn_before_interval_has_no_review_inputs_or_extra_process(self):
@@ -481,7 +485,9 @@ class StrategicAdviserServiceTests(AgentServiceTestCase):
         assert (await self.service.review_phase({"stage": "status", "epoch": "epoch-one", "gameTurn": 5}))[
             "pendingReview"
         ] is None
-        assert self.factory.native_reads == 1 and len(self.factory.instances) == 1  # Ordinary victory preload only.
+        assert (
+            self.factory.native_reads == 2 and len(self.factory.instances) == 1
+        )  # Both role preloads; no review process.
 
     async def test_review_includes_final_arrival_without_advancing_paused_inbox(self):
         await self.handoff()
@@ -537,7 +543,7 @@ class StrategicAdviserServiceTests(AgentServiceTestCase):
         assert '"proposal":' not in prompt
         assert isinstance(self.factory, ReviewFactory) and self.factory.review_process is not None
         reviewer = next(job for job in self.service.gateway.jobs.values() if job.review_inputs is not None)
-        assert await self.service.gateway.call(reviewer, "chat_read", {}, "social") == social
+        assert (await self.service.gateway.call(reviewer, "chat_read", {}, "social"))["data"] == social
         await self.factory.review_process.finish_review()
         await self.finished_review()
 
@@ -622,15 +628,16 @@ class StrategicAdviserServiceTests(AgentServiceTestCase):
         await self.start_review()
         assert self.factory.review_process is not None
         await self.factory.review_process.finish_review("invalid")
-        assert self.service.reviews.worker is not None
-        await asyncio.wait_for(self.service.reviews.worker, 3)
-        failure = self.service.health()["runFailure"]
-        assert failure is not None and failure["error"] == "STRATEGIC_REVIEW_ATTEMPTS_EXHAUSTED"
-        pending = self.service.reviews.store.pending()
-        assert pending is not None and pending["inputs"] and pending["attempts"] == 1
-        response = await self.service.review_phase({"stage": "status", "epoch": "epoch-one", "gameTurn": 6})
-        pending = response["pendingReview"]
-        assert pending is not None and pending["attempts"] == 1
+        async with asyncio.timeout(3):
+            while self.service.reviews.store.pending() is not None or self.service.reviews.active:
+                assert self.service.reviews.failure is None
+                await asyncio.sleep(0.01)
+        assert self.service.health()["runFailure"] is None
+        task = self.service.reviews.store.at_turn(5)
+        assert task is not None and task["status"] == "UNAVAILABLE"
+        response: JsonObject = await self.service.review_phase({"stage": "status", "epoch": "epoch-one", "gameTurn": 6})
+        assert response["pendingReview"] is None and response["ready"]
+        assert response["reviewOutcome"]["status"] == "UNAVAILABLE"
         assert len(self.factory.instances) == 2 and all(p.closed for p in self.factory.instances)
         assert self.service.memory.snapshot("gameplay", 6)["strategicAdvice"] is None
         assert len(self.service.memory.requests_for_job("activation-one")) == 1
@@ -721,7 +728,7 @@ class StrategicAdviserServiceTests(AgentServiceTestCase):
         pending = self.service.reviews.store.pending()
         assert pending is not None and pending["inputs"] and pending["attempts"] == 1
         self.service.chat.epoch = "restored"
-        response = await self.service.review_phase({"stage": "status", "epoch": "restored", "gameTurn": 6})
+        response: JsonObject = await self.service.review_phase({"stage": "status", "epoch": "restored", "gameTurn": 6})
         pending = response["pendingReview"]
         assert pending is not None and pending["turn"] == 5
         with pytest.raises(ServiceError, match="WORKSPACE_EPOCH_CONFLICT"):

@@ -137,6 +137,33 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
         if (completed?.first == request.detached()) completed.second.detached() else null
     }
 
+    /** The operator fences execution before issuing a durable no-effect receipt. */
+    internal fun resolveRequest(request: TurnCommandRequest): TurnCommandReceipt = runtime.accessGame { game ->
+        if (request.epoch != runtime.epoch) fail(PlayerSessionFailure.STALE_EPOCH)
+        if (request.requestId.length !in 1..128 || request.requestId.any { it.code !in 0x20..0x7e }) fail(PlayerSessionFailure.INVALID_ARGUMENT)
+        val player = player(game)
+        val state = state()
+        val detached = request.detached()
+        state.receipts[request.requestId]?.let { (original, receipt) ->
+            if (original != detached) fail(PlayerSessionFailure.REQUEST_ID_CONFLICT)
+            return@accessGame receipt.detached()
+        }
+        validateShape(detached)
+        val receipt = TurnCommandReceipt(
+            requestId = request.requestId,
+            epoch = runtime.epoch,
+            kind = request.kind,
+            revision = state.revision.ifEmpty { request.revision },
+            turn = game.turns,
+            isYourTurn = game.currentPlayer == player.civID,
+            actionSummary = "Request cancelled before execution.",
+            error = "REQUEST_CANCELLED",
+        )
+        state.receipts[request.requestId] = detached to receipt
+        runtime.commitCheckpoint()
+        receipt.detached()
+    }
+
     fun snapshot(): PlayerTurnSnapshot = runtime.accessGame { game ->
         runtime.captureCombatReports()
         val state = state()
@@ -282,6 +309,15 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
         if (game.currentPlayer != player.civID || game.currentPlayerCiv !== player) fail(PlayerSessionFailure.NOT_YOUR_TURN)
         val before = snapshot(game, player, state)
         if (request.revision != before.revision) fail(PlayerSessionFailure.STALE_REVISION)
+        val spendingCost = when (request.kind) {
+            TurnCommandKind.BUY_CONSTRUCTION -> before.cities.singleOrNull { it.handle == request.target }?.purchases?.constructions?.singleOrNull { it.name == request.selection }?.goldCost
+            TurnCommandKind.BUY_TILE -> before.cities.singleOrNull { it.handle == request.target }?.purchases?.tiles?.singleOrNull { it.position == request.destination }?.goldCost
+            TurnCommandKind.UPGRADE_UNIT -> before.map.units.singleOrNull { it.handle == request.target }?.economy?.upgrades?.singleOrNull { it.targetName == request.selection }?.goldCost
+            else -> null
+        }
+        if (spendingCost != null && !game.gameParameters.godMode && spendingCost > player.availableGold())
+            throw PlayerSessionException(PlayerSessionFailure.OPTION_UNAVAILABLE,
+                spending = SpendingFailure(spendingCost, player.gold, player.committedGold(), player.availableGold()))
         if (before.phase != "ACTIVE") fail(PlayerSessionFailure.COMMAND_UNAVAILABLE)
         if (gameHasResult(game) && request.kind != TurnCommandKind.RESOLVE_CAPTURED_CITY) fail(PlayerSessionFailure.COMMAND_UNAVAILABLE)
         if (player.hasCaptureDecision() && request.kind !in setOf(TurnCommandKind.RESOLVE_CAPTURED_CITY, TurnCommandKind.ACKNOWLEDGE_ALERT)) fail(PlayerSessionFailure.TURN_BLOCKED)

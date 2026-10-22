@@ -318,13 +318,20 @@ class DiplomacyRouting:
                     await self._deliver(epoch, draft["deliveryId"], connection)
 
     async def reconcile(self, epoch, connection):
+        # Match ordinary delivery lock order. Recovery runs behind checkpoint
+        # barriers too, so it cannot enter the normal admission gate.
+        async with self.delivery_lock, self.gateway.dispatch:
+            self.gateway.in_flight += 1
+            try:
+                await self._reconcile(epoch, connection)
+            finally:
+                self.gateway.in_flight -= 1
+
+    async def _reconcile(self, epoch, connection):
         for draft in await self.gateway.io.call(self.store.drafts):
             if draft["status"] != "sending":
                 continue
-            pending = await self.gateway.io.call(self.gateway.memory.pending)
-            request = next((row for row in pending if row["id"] == draft["requestId"]), None)
-            if request is None:
-                request = await self.gateway.io.call(self.store.delivery_request, draft["requestId"])
+            request = await self.gateway.io.call(self.store.delivery_request, draft["requestId"])
             result = (
                 json.loads(request["result"])
                 if request["result"]

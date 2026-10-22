@@ -1,5 +1,8 @@
 package uncivai.player
 
+@kotlinx.serialization.Serializable
+data class SpendingFailure(val cost: Int, val total: Int, val committed: Int, val available: Int)
+
 enum class PlayerSessionFailure {
     SESSION_CLOSED,
     PLAYER_UNAVAILABLE,
@@ -28,7 +31,8 @@ class PlayerSessionException(
     val reason: PlayerSessionFailure,
     val movementRisk: CivilianMovementRisk? = null,
     val rejectedMove: TurnCommandRequest? = null,
-) : RuntimeException(messageFor(reason)) {
+    val spending: SpendingFailure? = null,
+) : RuntimeException(spending?.let { "Purchase costs ${it.cost} gold; ${it.available} available, with ${it.committed} committed to pending trades (${it.total} total)." } ?: messageFor(reason)) {
     companion object {
         private fun messageFor(reason: PlayerSessionFailure): String = when (reason) {
             PlayerSessionFailure.SESSION_CLOSED -> "Player session is closed"

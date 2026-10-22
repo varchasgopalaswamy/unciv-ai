@@ -47,6 +47,9 @@ def projection_files(records, events):
             groups["HANDOFF.md"].append(rendered)
         if category == "strategy":
             groups["STRATEGY.md"].append(rendered)
+        if category == "city_plan":
+            files[f"cities/{key}.md"] = rendered
+            groups["economy.md"].append(rendered)
         if category == "note":
             files[f"notes/{key}.md"] = rendered
         for subject in record["body"].get("subjects", []):

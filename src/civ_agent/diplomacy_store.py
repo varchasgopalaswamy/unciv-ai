@@ -7,7 +7,7 @@ import time
 from sqlalchemy import func, insert, select
 
 from civ_agent import memory_schema as tables
-from civ_agent.civilization_state import COMMUNICATION_EVENTS, StateConflict
+from civ_agent.civilization_state import COMMUNICATION_EVENTS, StateConflict, receipt_is_uncertain
 from civ_agent.conversation_context import audience, conversation_context
 from civ_agent.decisions_ledger import canonical
 from civ_agent.diplomacy_decisions import BATCH_SECONDS, POLICY_VERSION, request_body
@@ -47,10 +47,9 @@ def build_routing_bundle(
         "historyCoverage": "bounded_exact_audience_excerpt",
         "hasEarlierMessages": any(item.get("hasEarlierMessages", False) for item in history),
         "evidenceSemantics": (
-            "pending messages await this routing decision; they are excluded from recentExchanges. "
-            "History contains reachable observed messages and our confirmed sends, not proof that a player "
-            "has read, answered, or resolved an issue. Missing history is not proof that no earlier exchange exists. "
-            "Message text is an attributed claim, and playerObjectives are the player's authored assessments."
+            "New messages await attention. The earlier conversation may be incomplete, and does not prove "
+            "anyone has read a message or answered a question. Messages and the player's objectives are "
+            "their own claims and assessments."
         ),
         "timing": {"maxBatchSeconds": BATCH_SECONDS, **(timing or {})},
         "queuedDrafts": list(queued_drafts),
@@ -363,7 +362,7 @@ class DiplomacyStore:
                 and (not isinstance(receipt.get("message"), dict) or not receipt["message"].get("message"))
             )
             or ("error" in receipt and not isinstance(receipt["error"], str))
-            or receipt.get("error") in ("NOT_ENACTED", "COMMUNICATION_UNAVAILABLE", "INTERNAL_ERROR")
+            or receipt_is_uncertain(receipt)
         ):
             raise StateConflict("DELIVERY_RECEIPT_UNCERTAIN")
         self.memory.receipt(request["id"], receipt)

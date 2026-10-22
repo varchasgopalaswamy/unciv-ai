@@ -18,6 +18,7 @@ review_interval = 10
 strategy_guide = true
 civilization_guide = true
 decisions_enabled = true
+decisions_backend = "jev"
 
 [[players]]
 name = "Unciv"

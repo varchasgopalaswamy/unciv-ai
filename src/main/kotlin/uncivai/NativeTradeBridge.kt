@@ -57,7 +57,7 @@ internal class NativeTradeBridge(private val runtime: GameExecutor, private val 
         for (items in listOf(request.give, request.receive)) {
             if (items.map { it.type to it.name }.distinct().size != items.size) fail(PlayerSessionFailure.INVALID_ARGUMENT)
         }
-        val requestId = newRequestId()
+        val requestId = previous?.nativeRequestId ?: newRequestId()
         val proposal = EngineTradeProposal(
             previous?.proposal ?: trades.newProposalId(), (previous?.version ?: 0) + 1, actor, other.civID,
             if (friendship) emptyList() else trades.clauses(actor, other.civID, request.give, request.receive),
@@ -68,15 +68,18 @@ internal class NativeTradeBridge(private val runtime: GameExecutor, private val 
         if (friendship && other.popupAlerts.any { it.type == AlertType.DeclarationOfFriendship && it.value == actor }) {
             return trades.unavailable("A native friendship request is already pending.")
         }
+        if (!friendship && !TradeOperations(player, other).tryReserve(trades.engineTrade(proposal), requestId, proposal.version))
+            return trades.unavailable("The offer's assets are already committed.")
         // All rejection checks precede removing a prior request or publishing replacement terms.
         if (previous != null) {
-            removeRequest(previous)
+            removeRequest(previous, release = false)
             trades.replace(previous.copy(status = "SUPERSEDED"), actor)
         }
         if (friendship) {
             other.popupAlerts.add(PopupAlert(AlertType.DeclarationOfFriendship, actor).also { it.requestId = requestId })
         } else {
             other.tradeRequests.add(TradeRequest(actor, trades.engineTrade(proposal).reverse()).also { it.requestId = requestId })
+            player.tradeCommitments.firstOrNull { it.id == requestId }?.nativeRequest = true
             player.cache.updateCivResources()
         }
         state.proposals.getOrPut(proposal.proposal) { mutableListOf() }.add(proposal)
@@ -118,8 +121,9 @@ internal class NativeTradeBridge(private val runtime: GameExecutor, private val 
         return obj("trade" to view(final, actor), "outcome" to final.outcome?.recordJson())
     }
 
-    private fun removeRequest(proposal: EngineTradeProposal) {
+    private fun removeRequest(proposal: EngineTradeProposal, release: Boolean = true) {
         for (civilization in proposal.participants().map(trades::player)) {
+            if (release) civilization.releaseTradeCommitment(proposal.nativeRequestId ?: proposal.proposal)
             civilization.tradeRequests.removeAll { it.requestId == proposal.nativeRequestId }
             civilization.popupAlerts.removeAll { it.requestId == proposal.nativeRequestId }
             civilization.cache.updateCivResources()

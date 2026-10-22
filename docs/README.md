@@ -38,6 +38,7 @@ Run shell examples from the repository root unless a page says otherwise.
 | Reference | Contents |
 | --- | --- |
 | [Containers](architecture/Containers.md) | Player/game isolation, durable state, shared login and image provenance |
+| [Economy manager](architecture/Economy-manager.md) | Concurrent city management, role completion, city plans, model settings, and engine commitments |
 | [Turn recovery](architecture/Turn-recovery.md) | Coordinated turn rewind, durable notes and stop policy |
 | [Python architecture](architecture/Python-architecture.md) | Services, model jobs and module ownership |
 | [Kotlin architecture](architecture/Kotlin-architecture.md) | Engine boundary, input contracts and request handling |

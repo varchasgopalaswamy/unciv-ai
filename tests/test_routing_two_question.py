@@ -29,7 +29,7 @@ def response(needed="needed", need_confidence=0.95, timing="can_wait", timing_co
 
 
 def parse(value, **options):
-    return parse_answer("incoming", value, policy_version=POLICY_VERSION, **options)
+    return parse_answer("incoming", value, policy_version=POLICY_VERSION, **{"threshold": 0.9, **options})
 
 
 def test_current_policy_uses_two_independent_questions_in_each_direction():
@@ -100,7 +100,7 @@ def test_uncertain_now_stays_immediate_and_has_no_fictional_override():
 
 
 @pytest.mark.parametrize("confidence,expected", [(0.899999, "respond_now"), (0.9, "batch"), (1, "batch")])
-def test_default_batch_confidence_floor_and_inclusive_boundary(confidence, expected):
+def test_explicit_batch_probability_floor_and_inclusive_boundary(confidence, expected):
     result = parse(response("needed", 0.95, "can_wait", confidence))
     assert result["choice"] == expected
 
@@ -204,8 +204,8 @@ def test_runtime_rechecks_effective_confidence_and_current_policy_without_trusti
     router = object.__new__(DiplomacyRouting)
     router.settings = SimpleNamespace(
         decisions_routing_policy=POLICY_VERSION,
-        decisions_incoming_batch_confidence=0.9,
-        decisions_incoming_suppress_confidence=0.9,
+        decisions_incoming_batch_probability=0.9,
+        decisions_incoming_suppress_probability=0.9,
     )
     result = {**parse(response("not_needed", 0.4, "can_wait", 0.95)), "policyVersion": POLICY_VERSION}
     assert router.validate_decision("incoming", result)["choice"] == "batch"
@@ -220,8 +220,8 @@ def test_runtime_rejects_missing_or_removed_policy_metadata(policy):
     router = object.__new__(DiplomacyRouting)
     router.settings = SimpleNamespace(
         decisions_routing_policy=POLICY_VERSION,
-        decisions_incoming_batch_confidence=0.9,
-        decisions_incoming_suppress_confidence=0.9,
+        decisions_incoming_batch_probability=0.9,
+        decisions_incoming_suppress_probability=0.9,
     )
     result = parse(response("not_needed", 0.99, "can_wait", 0.99))
     if policy is not None:
@@ -243,8 +243,8 @@ def test_runtime_cannot_repurpose_one_questions_confidence_for_the_other_action(
     router = object.__new__(DiplomacyRouting)
     router.settings = SimpleNamespace(
         decisions_routing_policy=POLICY_VERSION,
-        decisions_incoming_batch_confidence=0.9,
-        decisions_incoming_suppress_confidence=0.9,
+        decisions_incoming_batch_probability=0.9,
+        decisions_incoming_suppress_probability=0.9,
     )
     result = {
         **parse(response("not_needed", need_confidence, "can_wait", timing_confidence)),
@@ -260,8 +260,8 @@ def test_raw_two_question_metadata_cannot_upgrade_an_effective_immediate_result(
     router = object.__new__(DiplomacyRouting)
     router.settings = SimpleNamespace(
         decisions_routing_policy=POLICY_VERSION,
-        decisions_incoming_batch_confidence=0.9,
-        decisions_incoming_suppress_confidence=0.9,
+        decisions_incoming_batch_probability=0.9,
+        decisions_incoming_suppress_probability=0.9,
     )
     confident_batch = parse(response("needed", 0.95, "can_wait", 0.95))
     immediate = {

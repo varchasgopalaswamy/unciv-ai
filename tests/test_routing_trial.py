@@ -5,9 +5,9 @@ from unittest.mock import AsyncMock
 import pytest
 
 from civ_agent.decisions_ledger import NANODOLLARS_PER_INPUT_TOKEN, estimate_tokens
-from civ_agent.diplomacy_decisions import POLICY_VERSION, request_body
+from civ_agent.diplomacy_decisions import POLICY_VERSION
 from civ_agent.protocol import JsonObject
-from scripts.trial_diplomacy_routing import TrialStore, trial
+from scripts.trial_diplomacy_routing import TrialStore, request_body, trial
 
 
 def fixture(path, *, protected=False):

@@ -258,7 +258,7 @@ def test_capture_is_preloaded_and_command_updates_clear_it_without_an_extra_over
             job = await gateway.open("recapture", "gameplay", "g1", host, {}, game_turn=60)
             prepared = await prepare_startup(gateway, job)
             prompt = startup_prompt(prepared, "gameplay", "Play this turn")
-            reads = json.JSONDecoder().raw_decode(prompt.user.split("Prepared player-visible reads:\n", 1)[1])[0]
+            reads = json.JSONDecoder().raw_decode(prompt.user.split("Current game information:\n", 1)[1])[0]
             initial = reads["player_turn"]
             assert initial["tacticalReview"]["potentialCaptureTargets"][0]["capture"] == tile["units"][1]["capture"]
             region = await gateway.call(job, "map_region", {"center": tile["position"], "radius": 0}, "inspect-map")

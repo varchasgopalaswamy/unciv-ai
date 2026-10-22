@@ -104,7 +104,7 @@ class Classifier:
             answers.append(answer)
         return {
             **request_metadata(body, evidence),
-            **parse_answers(body, {"answers": answers}, self.settings.decisions_min_confidence),
+            **parse_answers(body, {"answers": answers}, self.settings.decisions_acceptance_probability),
             "usage": {"input_tokens": 100},
         }
 
@@ -113,7 +113,7 @@ class Classifier:
         body = request_body(evidence, self.settings)
         return {
             **request_metadata(body, evidence),
-            **failed_answers(body, self.settings.decisions_min_confidence, "completion_unknown"),
+            **failed_answers(body, self.settings.decisions_acceptance_probability, "completion_unknown"),
         }
 
 
@@ -147,7 +147,9 @@ def test_defaults_validation_retired_flags_and_service_container_arguments(tmp_p
             if value:
                 arguments.append("--" + key.replace("_", "-"))
         else:
-            arguments.extend(["--" + key.replace("_", "-"), str(value)])
+            arguments.extend(
+                ["--" + key.replace("_", "-"), json.dumps(value) if isinstance(value, dict) else str(value)]
+            )
     assert decisions_values(agent_server.parser().parse_args(arguments)) == decisions_values(config.agents)
     overridden = game.resolve_options(
         game.parser().parse_args(
@@ -250,7 +252,11 @@ def test_native_suggestions_are_delivered_directly_without_paid_gameplay_classif
 @pytest.mark.parametrize("mode", ["success", "low", "refusal", "unknown", "timeout", "malformed", "zero"])
 def test_memory_triage_cannot_filter_native_options_or_add_gameplay_questions(tmp_path, mode):
     async def run():
-        async with setup(tmp_path, additional_decisions_budget_usd=0 if mode == "zero" else 0.1) as (
+        async with setup(
+            tmp_path,
+            decisions_backend="luna" if mode == "zero" else "jev",
+            additional_decisions_budget_usd=0 if mode == "zero" else 0.1,
+        ) as (
             memory,
             gateway,
             host,

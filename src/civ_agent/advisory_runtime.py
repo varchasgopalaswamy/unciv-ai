@@ -14,6 +14,7 @@ from civ_agent.advisory_store import (
     pending_memory_requests,
     source_attempt_key,
 )
+from civ_agent.decisions_backends import BACKENDS
 from civ_agent.decisions_tasks import TASK_VERSION, request_body, request_id, request_metadata, validate_result
 from civ_agent.protocol import JsonObject
 
@@ -32,7 +33,7 @@ class AdvisoryRuntime:
     async def evaluate(self, evidence):
         """Persist attempts before I/O; only receipt lookup can reconcile lost replies."""
         try:
-            stable_id = request_id(evidence)
+            stable_id = request_id(evidence, model=BACKENDS[self.settings.decisions_backend].model)
         except (ValueError, TypeError, KeyError):
             return {"answers": [], "rawAnswers": [], "questionResults": [], "fallback": "input_unavailable"}
         state = await self.state()
@@ -56,8 +57,8 @@ class AdvisoryRuntime:
             }
         else:
             metadata = request_metadata(body, evidence)
-            threshold = self.settings.decisions_min_confidence
-            if self.settings.additional_decisions_budget_usd == 0:
+            threshold = self.settings.decisions_acceptance_probability
+            if self.settings.decisions_backend == "luna" and self.settings.additional_decisions_budget_usd == 0:
                 result = {**metadata, **failed_answers(body, threshold, "budget_exhausted")}
             else:
                 pending = {**metadata, **failed_answers(body, threshold, "completion_unknown")}
@@ -176,7 +177,7 @@ class AdvisoryRuntime:
         if not memory_eligible:
             for field in ("retrieval", "preservation", "beliefs", "newEvidence"):
                 evidence[field] = []
-        active_gameplay = job.purpose == "gameplay" and (job.observation or {}).get("phase") == "ACTIVE"
+        active_gameplay = job.purpose in {"gameplay", "economy"} and (job.observation or {}).get("phase") == "ACTIVE"
         city_trigger = city_decisions.change_key(job, evidence["objectives"]) if active_gameplay else None
         city_changed = city_trigger != state.get("cityTrigger")
         unresolved_city = state.get("cityResult", {}).get("fallback") in {
@@ -193,12 +194,16 @@ class AdvisoryRuntime:
             "not_active_gameplay"
             if not active_gameplay
             else "disabled_budget"
-            if self.settings.additional_decisions_budget_usd == 0
+            if self.settings.decisions_backend == "luna" and self.settings.additional_decisions_budget_usd == 0
             else "unchanged_city_decision"
         )
         capture_status: JsonObject = {"capturedCities": 0, "reason": reason}
         city_result: JsonObject = {"answers": []}
-        if city_eligible and self.settings.additional_decisions_budget_usd > 0:
+        if self.gateway.role_coordinator is not None and job.purpose != "economy":
+            city_eligible = False
+        if city_eligible and (
+            self.settings.decisions_backend == "jev" or self.settings.additional_decisions_budget_usd > 0
+        ):
             await self.save(cityAttemptTurn=turn, cityTrigger=city_trigger)
             try:
                 async with asyncio.timeout(self.settings.decisions_timeout_seconds):

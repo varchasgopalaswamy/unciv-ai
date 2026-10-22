@@ -16,10 +16,11 @@ reasoning_effort = "medium"
 communication_reasoning_effort = "medium"
 native_advice_enabled = true
 decisions_enabled = true
-# Shared allowance per player-game; routing and full reviews are separate.
+decisions_backend = "jev"
+# Luna-only allowance; Jev requests are free and ignore this spending limit.
 additional_decisions_budget_usd = 0.10
-decisions_min_confidence = 0.90
-decisions_timeout_seconds = 5
+decisions_acceptance_probability = 0.98
+decisions_timeout_seconds = 120
 decisions_startup_min_gap_turns = 5
 decisions_max_request_bytes = 65536
 decisions_max_questions = 64

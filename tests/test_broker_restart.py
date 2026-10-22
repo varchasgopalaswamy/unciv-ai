@@ -202,13 +202,41 @@ def test_invalid_decisions_key_preserves_both_running_services(fake_runtime, inv
     assert all(row["State"]["Running"] for row in fake.containers.values())
 
 
-@pytest.mark.parametrize("missing_role", ["auth", "decisions"])
-def test_missing_credential_for_existing_service_preserves_both(fake_runtime, missing_role):
+def test_missing_auth_credential_for_existing_service_preserves_both(fake_runtime):
     fake = fake_runtime
-    configure(fake.root, "decisions" if missing_role == "auth" else "auth")
+    configure(fake.root, "decisions")
     fake.existing("auth")
     fake.existing("decisions")
     with pytest.raises((ValueError, supervisor.ContainerError)):
+        supervisor.restart_brokers(fake.root, "new-image")
+    assert fake.calls == []
+
+
+def test_jev_broker_restarts_without_an_openai_key(fake_runtime):
+    fake = fake_runtime
+    configure(fake.root, "auth")
+    fake.existing("auth")
+    fake.existing("decisions")
+    result = supervisor.restart_brokers(fake.root, "new-image")
+    assert result["decisions"]["status"] == "ready"
+    assert not (fake.root / "decisions.key").exists()
+    created = [args for args, _ in fake.calls if args[0] == "create" and args[-1] == "decisions"]
+    assert created and "--network=pasta:-4,--map-host-loopback,169.254.1.3" in created[0]
+    assert "CIV_JEV_ENDPOINT=http://169.254.1.3:8091/v1/systemone" in created[0]
+
+
+def test_registered_luna_account_requires_its_key_before_restarting_any_service(fake_runtime):
+    from civ_agent.decisions_ledger import DecisionsLedger
+    from civ_agent.decisions_policy import DecisionsSettings
+
+    fake = fake_runtime
+    configure(fake.root, "auth")
+    fake.existing("auth")
+    fake.existing("decisions")
+    ledger = DecisionsLedger(fake.root)
+    ledger.register("paid", "game", "Rome", DecisionsSettings(decisions_backend="luna").model_dump())
+    ledger.engine.dispose()
+    with pytest.raises(ValueError):
         supervisor.restart_brokers(fake.root, "new-image")
     assert fake.calls == []
 

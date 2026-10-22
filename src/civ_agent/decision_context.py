@@ -23,7 +23,7 @@ def intent_feedback(pinned: JsonObject) -> JsonObject:
         "intentFeedback": {
             "linked": False,
             **unverified,
-            "instruction": "These references could not be verified and do not affect command execution. Use saved strategy/decision IDs and initiative numbers from the delivered report, or omit the references. Do not repeat an executed command just to change annotations.",
+            "instruction": "These references could not be verified; this does not affect the action. Copy saved strategy/decision IDs and review initiative numbers, or omit them. Do not repeat an action to change its annotations.",
         }
     }
 
@@ -149,9 +149,8 @@ def decision_feedback(
         "choices": feedback,
         "omittedChoices": max(0, len(choices) - MAX_CHOICES),
         "basis": (
-            "Player-authored expectations, not instructions. Changes describe the whole owned position and do not "
-            "establish causation or strategic success, including changes after an ended choice. Actions are linked only by recorded intent; acceptance alone "
-            "does not prove the expected result. Missing links or an unavailable baseline are not evidence of failure. "
-            "A due review invites reconsideration and never restricts actions."
+            "These are your earlier expectations. Changes cover your whole position and may follow an ended choice; "
+            "they do not show what caused them. Listed actions are those you linked to the choice, and acceptance "
+            "does not prove success. Missing evidence is inconclusive. Review dates are reminders, not restrictions."
         ),
     }

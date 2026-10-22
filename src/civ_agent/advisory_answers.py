@@ -29,6 +29,11 @@ def typed_answer(question, answer):
     ):
         return None
     raw = {k: answer[k] for k in ("name", "type", "choice", "confidence")}
+    for field in ("probability", "providerConfidence"):
+        if field in answer:
+            if not probability(answer[field]):
+                return None
+            raw[field] = answer[field]
     if "probabilities" in answer:
         values = answer["probabilities"]
         if (

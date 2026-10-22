@@ -41,7 +41,7 @@ def test_uncertain_immediate_is_distinct_from_overridden_batch_and_retains_quest
     batch = parse_answer("incoming", envelope("batch", 0.8))
     assert batch["choice"] == "respond_now" and batch["rawChoice"] == "batch"
     assert batch["fallback"] == "low_confidence" and batch["overridden"]
-    assert batch["appliedThreshold"] == 0.9
+    assert batch["appliedThreshold"] == 0.98
     assert [answer["confidence"] for answer in batch["rawAnswers"]] == [0.8, 0.8]
     assert "private text" not in json.dumps(batch)
 
@@ -58,15 +58,21 @@ def test_bounded_batching_and_suppression_have_independent_thresholds(direction,
 
 
 def test_routing_controls_are_independent_of_advisories_without_inheriting_old_settings():
-    settings = DecisionsSettings(decisions_min_confidence=0.1)
+    settings = DecisionsSettings(
+        decisions_acceptance_probability=0.1,
+        decisions_incoming_batch_probability=0.98,
+        decisions_incoming_suppress_probability=0.98,
+        decisions_outgoing_batch_probability=0.98,
+        decisions_outgoing_omit_probability=0.98,
+    )
     assert settings.decisions_routing_policy == POLICY_VERSION
-    assert set(routing_thresholds(settings, "incoming").values()) == {0.9}
-    assert set(routing_thresholds(settings, "outgoing").values()) == {0.9}
+    assert set(routing_thresholds(settings, "incoming").values()) == {0.98}
+    assert set(routing_thresholds(settings, "outgoing").values()) == {0.98}
     config = GameConfig(agents=settings.model_dump()).resolved()
-    assert config.agents.decisions_min_confidence == 0.1
+    assert config.agents.decisions_acceptance_probability == 0.1
     for value in (-0.1, 1.1, float("nan"), float("inf")):
         with pytest.raises(ValidationError):
-            DecisionsSettings(decisions_outgoing_omit_confidence=value)
+            DecisionsSettings(decisions_outgoing_omit_probability=value)
 
 
 @pytest.mark.parametrize(

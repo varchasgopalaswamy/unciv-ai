@@ -18,7 +18,7 @@ def review_inputs() -> JsonObject:
         "catalogue": [],
         "turn": 10,
         "civilization": "Rome",
-        "observation": {"cities": [], "map": {"tiles": []}},
+        "observation": {"turn": 10, "cities": [], "map": {"tiles": []}},
         "reads": {
             "player_turn": {"turn": 10, "civilization": "Rome"},
             "victory_progress": position(10),
@@ -46,50 +46,36 @@ def test_guidance_reaches_each_prompt_independently_of_optional_reference(review
 
 def test_peace_guidance_preserves_agency_and_compares_incremental_betrayal_costs():
     for principle in (
-        "breaking social promises are available strategies",
-        "not action restrictions or automatic breach penalties",
-        "withdrawal is optional",
-        "Interpret their stated terms and conditions",
-        "native treaties and declarations of friendship have separate engine effects",
-        "Before accepting or renewing peace, compare who gains more",
-        "compare acting now with waiting for its stated expiry or keeping peace",
-        "Separate the costs of war itself from additional costs of breaking the promise",
-        "who could learn of it, how, and what different response is plausible",
-        "do not assume automatic public knowledge or a coalition",
-        "surprise, lost military opportunities and rival progress while waiting",
+        "bluff or break a social promise",
+        "no automatic penalties or action restrictions",
+        "you need not withdraw",
+        "Private promises are not automatically public",
+        "compare acting now, waiting for it to expire and keeping it",
     ):
         assert principle in DIPLOMACY_GUIDANCE
 
 
 def test_review_compares_limited_intervention_with_relative_development():
     for principle in (
-        "whether it can finish before rivals, not just improve our output",
-        "compare catching up with timely disruption or a coalition",
-        "Limited military action can support any victory",
-        "Use reconnaissance to resolve important gaps",
-        "do not assume either peace or war is best",
+        "finishing before rivals",
+        "catching up, disrupting a rival or finding allies",
+        "neither peace nor war is always best",
     ):
         assert principle in STRATEGY_GUIDANCE
     for principle in (
-        "Use one plan when only one is credible",
-        "one shared horizon",
-        "Military costs include recruitment, upgrades, positioning and travel",
-        "taking a useful city, pillaging or forcing rival military spending",
-        "conditions for seeking peace",
-        "rather than judging every military option as a full domination campaign",
-        "benefits to uninvolved rivals",
-        "earliest feasible intervention with rival progress and the opportunity window",
+        "over the same number of turns",
+        "or one if only one is realistic",
+        "gains to uninvolved rivals",
+        "say when to seek peace",
     ):
         assert principle in ADVISOR_INSTRUCTIONS
 
 
 def test_victory_horizon_focuses_information_on_current_decisions():
     for principle in (
-        "Separate a broad victory direction from its terminal projects",
-        "could change a current choice",
-        "an unstarted terminal project is not evidence of danger",
-        "could change a decision",
-        "at their stated checkpoint or trigger",
+        "choices that matter over the next several turns",
+        "could change today's decision",
+        "A missing requirement does not mean a rival has started its final project",
     ):
         assert principle in VICTORY_HORIZON_GUIDANCE
 

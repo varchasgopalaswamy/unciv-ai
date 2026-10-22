@@ -15,6 +15,7 @@ city_states = 2
 victories = ["Scientific", "Cultural", "Domination", "Diplomatic", "Time"]
 
 [agents]
+decisions_backend = "jev"
 model = "gpt-6-luna"
 reasoning_effort = "medium"
 review_interval = 5

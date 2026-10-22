@@ -35,7 +35,7 @@ from civ_agent.notebook import Notebook
 from civ_agent.observations import DetailQuery, detail_fingerprint, native_observation, project_detail
 from civ_agent.progress_history import HISTORY_TURNS, advance_history, progress_context
 from civ_agent.protocol import JsonObject
-from civ_agent.review_store import latest_advice
+from civ_agent.review_store import latest_advice, latest_review_status
 from civ_agent.schemas import validate
 from civ_agent.sqlite_database import sqlite_engine
 from civ_agent.tls import private_directory, write_private_json
@@ -54,6 +54,12 @@ class StateConflict(ValueError):
 
 class MemoryFormatError(StateConflict):
     """An unsupported store needs a fresh match, not an implicit migration."""
+
+
+def receipt_is_uncertain(result: JsonObject) -> bool:
+    error = result.get("error")
+    code = error.get("code") if isinstance(error, dict) else error
+    return code in ("NOT_ENACTED", "COMMUNICATION_UNAVAILABLE", "INTERNAL_ERROR")
 
 
 class CivilizationState:
@@ -325,6 +331,9 @@ class CivilizationState:
                 "purpose": purpose,
                 "gameTurn": game_turn if game_turn is not None else self._meta(db, "gameTurn"),
                 "strategicAdvice": latest_advice(
+                    db, game_turn if game_turn is not None else self._meta(db, "gameTurn")
+                ),
+                "strategicReviewStatus": latest_review_status(
                     db, game_turn if game_turn is not None else self._meta(db, "gameTurn")
                 ),
                 "records": records,
@@ -825,7 +834,7 @@ class CivilizationState:
                     state.pop("attempted", None)
                 self._set(db, "routing:events", states)
 
-    def select_startup_context(self, job: str, topics: set[str], ranking=None) -> JsonObject:
+    def select_startup_context(self, job: str, topics: set[str], ranking=None, owned_cities=None) -> JsonObject:
         """Choose from the dispatch snapshot using the opening player-visible facts."""
         with self.transaction() as db:
             self._validate(db, job)
@@ -841,6 +850,16 @@ class CivilizationState:
                 keys = [k for k, r in snapshot["records"].items() if r["category"] in MEMORY_TYPES | {"contribution"}]
                 snapshot["records"].update(RecordStore(db).all(keys=keys))
                 selected, snapshot["omitted"] = select_context(snapshot, self.context_limit)
+                if snapshot["purpose"] == "economy" and owned_cities is not None:
+                    plans = {
+                        key: record
+                        for key, record in snapshot["records"].items()
+                        if record["category"] == "city_plan"
+                        and record["body"].get("state") == "active"
+                        and record["body"].get("city") in owned_cities
+                    }
+                    snapshot["omitted"] = max(0, snapshot["omitted"] - len(plans.keys() - selected.keys()))
+                    selected.update(plans)
                 # Dispatch's provisional selection has not been shown yet. Do not
                 # leave omitted records marked as evidence delivered to the model.
                 for key in set(snapshot["contextIds"]) - selected.keys():
@@ -1014,7 +1033,7 @@ class CivilizationState:
             assert result is not None
             return result
 
-    def patch(self, job: str, changes: list[JsonObject], call_id: str | None = None) -> JsonObject:
+    def patch(self, job: str, changes: list[JsonObject], call_id: str | None = None, city_owners=None) -> JsonObject:
         """Commit independent notebook edits and their replayable result together."""
         changes = validate(MemoryUpdate, {"changes": changes}).model_dump()["changes"]
         with self.transaction() as db:
@@ -1031,6 +1050,7 @@ class CivilizationState:
             notebook = Notebook(
                 db, snapshot, job, row["purpose"], self._meta(db, "gameTurn", row["game_turn"]), row["game_turn"]
             )
+            notebook.city_owners = city_owners
             result = {"changes": [notebook.update(change) for change in changes]}
             db.execute(tables.jobs.update().where(tables.jobs.c.id == job).values(snapshot=dump_snapshot(db, snapshot)))
             if call_id is not None:
@@ -1115,6 +1135,19 @@ class CivilizationState:
             if intent is not None:
                 intent = validate(Intent, intent).model_dump()
                 # Intent is an audit annotation; the host validates the action.
+                city_plan = intent.get("cityPlan")
+                city_record = snapshot["records"].get(city_plan)
+                if (
+                    city_record
+                    and city_record["category"] == "city_plan"
+                    and city_record["body"].get("city") == payload.get("target")
+                    and snapshot.get("delivered", {}).get(city_plan) == city_record["version"]
+                ):
+                    pinned["cityPlan"] = {
+                        "key": city_plan,
+                        "version": city_record["version"],
+                        "reason": intent["reason"],
+                    }
                 key = intent.get("strategy")
                 chosen = intent.get("decision")
                 if chosen:
@@ -1211,17 +1244,17 @@ class CivilizationState:
                 record = records[row["decision"]]
                 self._record(db, row["decision"], "decision", {**record["body"], "settlement": value}, row["job"])
 
-    def pending(self):
+    def pending(self, *, exclude_purpose=None):
         with self.transaction() as db:
-            return [
-                dict(row)
-                for row in db.execute(
-                    select(tables.outbox)
-                    .select_from(tables.live_requests)
-                    .where(tables.outbox.c.result.is_(None))
-                    .order_by(tables.request_order)
-                ).mappings()
-            ]
+            query = (
+                select(tables.outbox)
+                .select_from(tables.live_requests.join(tables.jobs, tables.jobs.c.id == tables.outbox.c.job))
+                .where(tables.outbox.c.result.is_(None))
+                .order_by(tables.request_order)
+            )
+            if exclude_purpose is not None:
+                query = query.where(tables.jobs.c.purpose != exclude_purpose)
+            return [dict(row) for row in db.execute(query).mappings()]
 
     def requests_for_job(self, job: str):
         with self.transaction() as db:
@@ -1311,6 +1344,8 @@ class CivilizationState:
             )
             if row is None:
                 raise StateConflict("UNKNOWN_REQUEST")
+            if receipt_is_uncertain(result):
+                raise StateConflict("RECEIPT_UNCERTAIN")
             if row["result"] is not None:
                 if json.loads(row["result"]) != result:
                     raise StateConflict("RECEIPT_CONFLICT")
@@ -1329,6 +1364,27 @@ class CivilizationState:
                 {**record["body"], "outcome": "rejected" if "error" in result else "confirmed", "receipt": result},
                 row["job"],
             )
+            city_ref = record["body"].get("_pinned", {}).get("cityPlan")
+            if city_ref and "error" not in result:
+                current_plan = RecordStore(db).all(keys=[city_ref["key"]]).get(city_ref["key"])
+                if current_plan and current_plan["category"] == "city_plan":
+                    confirmed = dict(current_plan["body"].get("_confirmedActions", {}))
+                    command = record["body"]["command"]
+                    confirmed[command.get("kind", "action")] = {
+                        "receipt": "receipt:" + request_id,
+                        "turn": record["body"]["turn"],
+                        "planVersion": city_ref["version"],
+                        "reason": city_ref["reason"],
+                        "selection": command.get("selection"),
+                        "actionSummary": result.get("actionSummary"),
+                    }
+                    self._record(
+                        db,
+                        city_ref["key"],
+                        "city_plan",
+                        {**current_plan["body"], "_confirmedActions": confirmed},
+                        row["job"],
+                    )
             self._settle_trade(db, result)
             trade = result.get("trade") or {}
             if trade.get("status") == "ENACTED" and (trade.get("outcome") or result.get("outcome")):

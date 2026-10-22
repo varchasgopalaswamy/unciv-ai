@@ -138,7 +138,7 @@ def test_startup_and_command_deltas_include_new_settlers_and_clear_expired_sight
             job = await gateway.open("protect", "gameplay", "g1", host, {}, game_turn=60)
             prepared = await prepare_startup(gateway, job)
             prompt = startup_prompt(prepared, "gameplay", "Play this turn")
-            reads = json.JSONDecoder().raw_decode(prompt.user.split("Prepared player-visible reads:\n", 1)[1])[0]
+            reads = json.JSONDecoder().raw_decode(prompt.user.split("Current game information:\n", 1)[1])[0]
             initial = reads["player_turn"]
             assert initial["units"][0]["protection"]["current"]["protection"] == "UNESCORTED"
             assert initial["tacticalReview"]["recentBarbarianSightings"][0]["lastSeenTurn"] == 58

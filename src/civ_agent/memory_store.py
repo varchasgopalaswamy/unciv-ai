@@ -361,6 +361,11 @@ def select_context(snapshot, limit):
         for key, value in snapshot["records"].items()
         if value["category"] in MEMORY_TYPES | {"contribution"}
         and value["body"].get("state") == "active"
+        and (
+            value["category"] != "city_plan"
+            or snapshot["purpose"] == "economy"
+            and value["body"].get("city", "").casefold() in subjects
+        )
         and not expired_at(value, snapshot.get("gameTurn"))
         and (value["category"] != "handoff" or snapshot["purpose"] == "gameplay" and handoff_eligible(value, turn))
     ]

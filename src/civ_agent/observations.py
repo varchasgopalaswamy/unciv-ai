@@ -408,7 +408,18 @@ def overview(snapshot: JsonObject) -> JsonObject:
     value["economy"] = {
         key: item
         for key, item in (snapshot.get("economy") or {}).items()
-        if key in {"treasury", "goldPerTurn", "happiness", "unitMaintenance", "unitSupply", "goldenAge", "development"}
+        if key
+        in {
+            "treasury",
+            "committedGold",
+            "availableGold",
+            "goldPerTurn",
+            "happiness",
+            "unitMaintenance",
+            "unitSupply",
+            "goldenAge",
+            "development",
+        }
     }
     value["economy"]["resources"] = resource_summary(snapshot.get("economy") or {})
     value["economy"]["happinessBudget"] = {

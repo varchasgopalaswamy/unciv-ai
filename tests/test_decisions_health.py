@@ -49,9 +49,7 @@ def test_health_is_authenticated_free_and_reports_failure_circuit_recovery(tmp_p
             calls.append(await request.json())
             if len(calls) <= 3:
                 return web.Response(status=401, text="provider secret: forbidden-api-key and private player text")
-            return web.json_response(
-                {"answers": [{"name": "delivery", "type": "choice", "choice": "batch", "confidence": 0.99}]}
-            )
+            return web.json_response({"answers": []})
 
         provider_app = web.Application()
         provider_app.router.add_post("/decisions", provider)

@@ -110,7 +110,8 @@ def test_triage_receives_scheduler_next_review_in_completed_turns(anchor, interv
 
 
 @pytest.mark.parametrize("stop", [None, "pause", "stop", "budget"])
-def test_all_reports_finish_before_release_and_last_completion_still_checks_limits(monkeypatch, stop):
+@pytest.mark.parametrize("unavailable", [False, True])
+def test_all_reports_finish_before_release_and_last_completion_still_checks_limits(monkeypatch, stop, unavailable):
     status = {
         "epoch": "g1",
         "serverInstance": "host",
@@ -153,7 +154,18 @@ def test_all_reports_finish_before_release_and_last_completion_still_checks_limi
                     requested = stop
         elif stage == "release":
             assert finished == set(names) and not requested and not budget
-        return {"civilization": name, "epoch": "g1", "gameTurn": 6, "ready": ready, "pendingReview": pending}
+        return {
+            "civilization": name,
+            "epoch": "g1",
+            "gameTurn": 6,
+            "ready": ready,
+            "pendingReview": pending,
+            **(
+                {"reviewOutcome": {"status": "UNAVAILABLE", "attempts": 2}}
+                if unavailable and name == "France" and stage == "status"
+                else {}
+            ),
+        }
 
     agents = {name: SimpleNamespace(call=lambda op, name=name, **fields: call(name, op, **fields)) for name in names}
 
@@ -201,6 +213,7 @@ def test_all_reports_finish_before_release_and_last_completion_still_checks_limi
         assert not fenced and scheduler.state == {
             "reviewedBoundary": 6,
             "reviewAnchors": {name: 5 for name in names},
+            **({"unavailableReviews": [{"civilization": "France", "turn": 5, "attempts": 2}]} if unavailable else {}),
         }
         assert [name for name, stage in calls if stage == "release"] == names
         # Reconnecting at the completed boundary releases holds without another review.

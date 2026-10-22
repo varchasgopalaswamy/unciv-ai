@@ -14,18 +14,43 @@ See the [advisory architecture](../architecture/Decisions-advisory-layer.md).
 
 ## Credentials and launch
 
-Standalone native guidance needs no additional credential. Decisions needs a
-separate OpenAI API key in `AUTH_DIR/decisions.key`, a regular private file (mode `600`) outside the match
-directory. Configure it using your normal secret-management process, not in a
-TOML file, command argument, notebook or player workspace. Missing or invalid
-credentials reject an enabled new game before image resolution or launch.
+Decisions has two backends: `jev` (the default, using local Winnow) and `luna`
+(OpenAI Decisions). Jev uses `http://127.0.0.1:8091/v1/systemone` during local
+development and requires no API key. The trusted container broker reaches host
+loopback through its own pasta mapping. Set the operator environment variable
+`CIV_JEV_ENDPOINT` to override that endpoint; in container launches, the URL must
+be reachable from the broker container. Player containers retain socket-only
+access to classification.
+
+Luna requires a separate OpenAI API key in `AUTH_DIR/decisions.key`, a regular
+private file (mode `600`) outside the match directory. Configure it using your
+normal secret-management process. Missing or invalid Luna credentials reject an
+enabled Luna game before image resolution or launch.
+
+```toml
+[agents]
+decisions_enabled = true
+decisions_backend = "jev"                  # or "luna"
+decisions_acceptance_probability = 0.98     # optional: Jev 0.98, Luna 0.95
+```
+
+Acceptance uses the probability assigned to the selected answer among the
+supplied alternatives. The common API's legacy `confidence` field aliases that
+probability; `rawAnswers` also retains explicit `probability` and native
+`providerConfidence` fields. Jev's entropy and Luna's margin scores are
+diagnostics, and do not grant acceptance. Conditional answer probability is not
+a measured chance of correctness. Defaults are conservative operating points
+from the local comparison, rather than a calibration guarantee.
 
 The supervisor starts a trusted Decisions broker with the auth directory. Player
 services receive only its local socket and their own broker credential, distinct
 from the provider-login credential. The OpenAI API key is not mounted into player
 containers. Local agent-service development uses `CIV_DECISIONS_SOCKET` and
 `CIV_DECISIONS_TOKEN_FILE` to identify this broker; neither variable holds an API
-key. The classifier is `gpt-6-luna`. The only supported routing policy is
+key. `CIV_DECISIONS_BACKEND` selects the expected backend for standalone broker
+clients; game containers receive it from their saved configuration.
+The classifier is `Winnow-12B` for Jev and `gpt-6-luna` for Luna.
+The only supported routing policy is
 `diplomacy-routing-v4`; enabling Decisions selects it automatically. Older
 routing policies, account settings and response schemas are rejected.
 
@@ -43,12 +68,16 @@ rejects the new launch. Rebuild the current runtime image and use
 `civ-agent auth restart` to replace the broker. The preflight does not call the provider. Its upstream
 access is `unchecked` until an actual classification succeeds or fails.
 
-The current Decisions backend uses Platform API-key authentication and separate
-API billing. ChatGPT subscription access used by the game agents does not supply
-this key. The documented [ChatGPT plan integration](https://developers.openai.com/siwc/token-sharing-open-source/models-and-inference)
-supports Responses inference; the [Decisions API](https://developers.openai.com/api/docs/guides/decisions)
-is a separate endpoint. To try guidance without a Decisions key, set
-`decisions_enabled=false` on a new game.
+The Luna backend uses Platform API-key authentication and separate API billing.
+ChatGPT subscription access used by the game agents does not supply this key.
+Choose Jev to use Decisions without API billing or a Decisions key.
+
+The broker protocol is version 4. Old confidence-named TOML/CLI controls are
+rejected so their values cannot silently acquire different units. Use
+`decisions_acceptance_probability` and the routing probability overrides below.
+Existing broker accounts pin their complete settings; historical accounts and
+receipts are not silently relabeled or converted. Rebuild runtime images for
+new games using this contract.
 
 ## Short local trial
 
@@ -77,7 +106,7 @@ internal city preview capture and delivered city recommendations (`cityAdvice`),
 `additionalSpending` from the trusted ledger, and `fullReviewUsage` from service telemetry. The broker ledger is the
 spending authority; checkpoint metadata can show an older diagnostic sample.
 
-The default $0.10 additional allowance is per player-game and shared by all
+For Luna, the default $0.10 additional allowance is per player-game and shared by all
 new advisory tasks. Diplomacy scheduling and full strategic-review model jobs
 remain separate. The broker reserves estimated cost before dispatch and settles
 validated input usage. Unknown completions retain reservations. Keep both
@@ -91,6 +120,9 @@ regional and long-context premiums may differ. All defaults and bounds are shown
 in [trial.toml](../../examples/native-routing/trial.toml), including
 `memory_context_chars=12000`. Set `additional_decisions_budget_usd=0` to preserve
 routing and independent native advice while disabling new paid advisory work.
+Jev records token usage and durable receipts at zero cost, even when the dollar
+allowance is zero or an earlier paid allowance was exhausted. Historical paid
+receipts keep their recorded rate; restarting never refunds them.
 
 Rootless container smoke checks use an explicit freshly built runtime image,
 synthetic credentials and a fake provider; they make no model requests:
@@ -178,9 +210,55 @@ that fallback or an event already delivered to the player model.
 
 Checkpoint barriers cancel unfinished classifications and suspend delivery.
 Drafts are not unsettled host requests until delivery begins. Sending uses a
-durable request identity and receipt reconciliation. Restart retains deadlines;
+durable request identity. The routing worker owns reconciliation of routed sends;
+general chat reconciliation leaves those requests to it. Sending and receipt
+recovery are serialized, so a lookup cannot turn an active send into a failed
+delivery. `NOT_ENACTED` means no receipt was found, not that the request can never
+succeed. Missing or transient results stay uncertain. The routing worker can
+retry the exact original request; gameplay commands are not automatically replayed.
+Confirmed receipts remain immutable, and unresolved requests block checkpoint
+capture with `CHECKPOINT_REQUEST_UNSETTLED`. Before taking snapshots, the trusted
+coordinator resolves abandoned non-routed requests under the paused host executor:
+completed actions retain their receipts; absent actions receive a durable
+`REQUEST_CANCELLED` receipt that also blocks late execution. The player and host
+snapshots therefore include the same outcome. Restart retains deadlines;
 rewind retains only reachable decisions and queues. Pauses can exceed a queue's
 wall-clock deadline: delivery resumes only after the existing barrier permits it.
+
+## Review evidence and failures
+
+Reviewers can cite any observation delivered in their starting context or frozen
+tool reads. Each has a source label tied to its exact permitted contents and date.
+Material assumptions cite those labels and distinguish inference from unknown
+premises. Validation checks that sources were actually delivered to that review;
+it does not certify that an inference is true. A short named-fact summary remains
+available but does not restrict which observations can support a report. Cited
+payloads stay in the private report archive; later advice and adopted strategies
+retain compact dated references.
+
+An invalid report receives clear feedback and at most one correction, usually in
+the same conversation with the observations already read. A configured attempt
+limit of one disables correction; larger limits do not add repeated attempts.
+If no usable report results, that review becomes `UNAVAILABLE`, its failed input
+and diagnostics remain inspectable, and play resumes when the shared phase is
+otherwise safe. Players see that advice is unavailable; an earlier completed
+report may still appear with its original date. Missing advice does not invent a
+replacement strategy or advance the completed-review evidence baseline.
+
+Structured review output is stopped above 128 KiB per assistant report message
+or after more than 4,096 consecutive whitespace characters outside JSON strings.
+These guards do not inspect reasoning, tool output or ordinary chat. Adjacent
+text fragments from the same stream are combined before history processing,
+without changing their text or crossing tool, usage or completion events. The
+notification queue remains bounded at 16 MiB and 4,096 entries, including work
+being processed; overflow is an explicit failure rather than silent event loss.
+
+Shutdown confirms process exit separately from saving accepted history and
+accounting events. `STOP_UNCONFIRMED` means process shutdown was not confirmed.
+`HISTORY_DRAIN_FAILED` or `REVIEW_HISTORY_DRAIN_FAILED` means those accepted events
+could not finish draining after shutdown. Persistence, input-preparation and
+shutdown/drain failures still stop for inspection; the service never publishes
+a successful review or starts another reviewer over unfinished shutdown work.
 
 ## Advisory policy v4
 
@@ -199,7 +277,7 @@ probability vectors. Only independently accepted choices enter `answers`:
 
 | Question status | Meaning |
 | --- | --- |
-| `accepted` | Valid choice at or above `decisions_min_confidence`. |
+| `accepted` | Valid choice at or above `decisions_acceptance_probability`. |
 | `low_confidence` | Valid raw choice retained, with no accepted choice. |
 | `refusal` | Typed refusal retained, with no invented choice or confidence. |
 | `missing` | No answer for this submitted question. |
@@ -299,16 +377,19 @@ Enable the current implementation with:
 ```toml
 [agents]
 decisions_enabled = true
-decisions_incoming_batch_confidence = 0.90
-decisions_incoming_suppress_confidence = 0.90
-decisions_outgoing_batch_confidence = 0.90
-decisions_outgoing_omit_confidence = 0.90
+decisions_backend = "jev"
+decisions_acceptance_probability = 0.98
+# Optional per-action overrides:
+decisions_incoming_batch_probability = 0.98
+decisions_incoming_suppress_probability = 0.99
+decisions_outgoing_batch_probability = 0.98
+decisions_outgoing_omit_probability = 0.99
 ```
 
-These four confidence controls govern routing alone. Keep
-`decisions_min_confidence` at its advisory setting; lowering it also affects
-city, memory and review advice. Routing thresholds have their own explicit
-defaults and are never inferred from older settings. An immediate model
+These four probability overrides govern routing alone. When omitted, they inherit
+`decisions_acceptance_probability`, which also governs city, memory and review
+advice. Explicit routing overrides remain independent of the global setting.
+An immediate model
 choice needs no confidence override; low confidence and an actual override from
 batch/suppression to immediate handling are recorded separately. Original choice,
 confidence, validated probability vector, effective choice, threshold and policy
@@ -373,6 +454,11 @@ in context does not establish that it was handled.
 
 ## Evaluation evidence
 
+The prompts were subsequently rewritten in plain language, with repeated advice
+consolidated and internal bookkeeping removed from player guidance. The results
+below describe the earlier wording. The revised prompts have offline regression
+coverage; they have not had a new paid quality trial.
+
 The October 15 v4 implementation replay evaluated all 185 existing cases for
 $0.0236295 without provider failures. Its initial outgoing prompt matched labels
 on 80/89 cases with 3 fallbacks, compared with 47/89 and 41 fallbacks under the
@@ -381,10 +467,10 @@ authored deadline cases at high confidence. Incoming matched 86/96 cases.
 
 Those failures informed three prompt variants evaluated on the same 17
 development regressions, including new contrasting deadlines and receipt-relative
-clocks. The retained symmetric timing prompt matched 11/17 labels: no harmful
+clocks. The symmetric timing prompt selected at that stage matched 11/17 labels: no harmful
 deferrals or omissions, six unnecessary immediate sends and four low-confidence
 fallbacks. A shorter variant reintroduced two harmful deferrals and was discarded.
-The retained prompt has not been rerun on all 185 cases. These development results
+That prompt was not rerun on all 185 cases. These development results
 do not establish independent holdout accuracy, production fallback rates, token
 savings or time savings. Total spending across the four journals was $0.0293907.
 The private local validation manifest is
@@ -481,9 +567,10 @@ For an isolated short classifier trial with a $0.005 local estimated ceiling:
 
 ```sh
 uv run python scripts/trial_decisions_advisories.py \
-  --trial-dir /tmp/advisory-trial --key-file AUTH_DIR/decisions.key
+  --trial-dir /tmp/advisory-trial --backend jev
 ```
 
+For Luna, use `--backend luna --key-file AUTH_DIR/decisions.key`.
 Reusing the trial directory reuses its immutable account and cached results.
 The separate key is read only in the trusted trial process. The report includes
 submitted-case frequency, tokens, validated input cost, reservations, fallbacks,

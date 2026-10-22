@@ -5,19 +5,34 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from civ_agent.decisions_backends import BACKENDS, DEFAULT_BACKEND, DecisionBackend
+
 
 class DecisionsSettings(BaseModel):
     model_config = ConfigDict(extra="forbid", validate_default=True, allow_inf_nan=False)
 
     decisions_enabled: bool = False
+    decisions_backend: DecisionBackend = DEFAULT_BACKEND
     additional_decisions_budget_usd: Annotated[float, Field(ge=0, le=1000)] = 0.10
-    decisions_min_confidence: Annotated[float, Field(ge=0, le=1)] = 0.90
+    decisions_acceptance_probability: Annotated[float, Field(ge=0, le=1, strict=True)] = Field(
+        default_factory=lambda data: BACKENDS[data["decisions_backend"]].acceptance_probability
+    )
     decisions_routing_policy: Literal["diplomacy-routing-v4"] = "diplomacy-routing-v4"
-    decisions_incoming_batch_confidence: Annotated[float, Field(ge=0, le=1)] = 0.90
-    decisions_incoming_suppress_confidence: Annotated[float, Field(ge=0, le=1)] = 0.90
-    decisions_outgoing_batch_confidence: Annotated[float, Field(ge=0, le=1)] = 0.90
-    decisions_outgoing_omit_confidence: Annotated[float, Field(ge=0, le=1)] = 0.90
-    decisions_timeout_seconds: Annotated[int, Field(ge=1, le=5)] = 5
+    decisions_incoming_batch_probability: Annotated[float, Field(ge=0, le=1, strict=True)] = Field(
+        default_factory=lambda data: data["decisions_acceptance_probability"]
+    )
+    decisions_incoming_suppress_probability: Annotated[float, Field(ge=0, le=1, strict=True)] = Field(
+        default_factory=lambda data: data["decisions_acceptance_probability"]
+    )
+    decisions_outgoing_batch_probability: Annotated[float, Field(ge=0, le=1, strict=True)] = Field(
+        default_factory=lambda data: data["decisions_acceptance_probability"]
+    )
+    decisions_outgoing_omit_probability: Annotated[float, Field(ge=0, le=1, strict=True)] = Field(
+        default_factory=lambda data: data["decisions_acceptance_probability"]
+    )
+    decisions_timeout_seconds: Annotated[int, Field(ge=1, le=300)] = Field(
+        default_factory=lambda data: 120 if data["decisions_backend"] == "jev" else 5
+    )
     decisions_startup_min_gap_turns: Annotated[int, Field(ge=1)] = 5
     decisions_max_request_bytes: Annotated[int, Field(ge=1024, le=65536)] = 65536
     decisions_max_questions: Annotated[int, Field(ge=1, le=64)] = 64
@@ -36,30 +51,37 @@ def add_decisions_arguments(parser, *, defaults=True, include_memory=True):
     for name, field in DecisionsSettings.model_fields.items():
         if name == "memory_context_chars" and not include_memory:
             continue
-        options = {"default": field.default if defaults else None}
+        options = {"default": field.default if defaults and field.default_factory is None else None}
         if name == "decisions_enabled":
             options["action"] = argparse.BooleanOptionalAction
         else:
-            options["type"] = type(field.default)
+            options["type"] = (
+                (int if name == "decisions_timeout_seconds" else float)
+                if field.default_factory is not None
+                else type(field.default)
+            )
+        if name == "decisions_backend":
+            options["choices"] = tuple(BACKENDS)
         if name == "decisions_routing_policy":
             options["choices"] = ("diplomacy-routing-v4",)
         parser.add_argument("--" + name.replace("_", "-"), **options)
 
 
 def decisions_values(source):
-    return {name: getattr(source, name) for name in DECISIONS_FIELDS}
+    values = {name: getattr(source, name) for name in DECISIONS_FIELDS if getattr(source, name) is not None}
+    return DecisionsSettings.model_validate(values).model_dump()
 
 
 def routing_thresholds(settings, direction):
     """Routing controls never lower confidence requirements for advisory tasks."""
     if direction == "incoming":
         return {
-            "batch": settings.decisions_incoming_batch_confidence,
-            "no_separate_response": settings.decisions_incoming_suppress_confidence,
+            "batch": settings.decisions_incoming_batch_probability,
+            "no_separate_response": settings.decisions_incoming_suppress_probability,
         }
     if direction == "outgoing":
         return {
-            "batch": settings.decisions_outgoing_batch_confidence,
-            "omit": settings.decisions_outgoing_omit_confidence,
+            "batch": settings.decisions_outgoing_batch_probability,
+            "omit": settings.decisions_outgoing_omit_probability,
         }
     raise ValueError("Unknown routing direction")

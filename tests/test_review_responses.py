@@ -17,7 +17,7 @@ MISSING_PHASE = object()
 
 
 @asynccontextmanager
-async def reviewing(tmp_path):
+async def reviewing(tmp_path, *, attempts=1):
     factory = ReviewFactory()
     service = AgentService(
         "Rome",
@@ -28,7 +28,7 @@ async def reviewing(tmp_path):
         None,
         process_factory=factory,
         connection_factory=factory.connection,
-        review_attempts=1,
+        review_attempts=attempts,
     )
     factory.service = service
     service.chat.epoch = "epoch-one"
@@ -75,13 +75,19 @@ async def published(service, advice):
 
 
 async def rejected(service, error):
-    assert service.reviews.worker is not None
-    await asyncio.wait_for(service.reviews.worker, 3)
-    assert service.reviews.failure is not None
-    assert service.reviews.failure["error"] == "STRATEGIC_REVIEW_ATTEMPTS_EXHAUSTED"
-    pending = service.reviews.store.pending()
-    assert pending is not None and pending["inputs"] and pending["attempts"] == 1
-    assert error in pending["error"]
+    from sqlalchemy import select
+
+    from civ_agent import memory_schema as tables
+
+    async with asyncio.timeout(3):
+        while service.reviews.store.pending() is not None or service.reviews.active:
+            assert service.reviews.failure is None, service.reviews.failure
+            await asyncio.sleep(0.01)
+    assert service.reviews.failure is None
+    assert service.reviews.store.at_turn(0)["status"] == "UNAVAILABLE"
+    with service.memory.transaction() as db:
+        failure = db.scalar(select(tables.reviews.c.error).where(tables.reviews.c.turn == 0))
+    assert error in failure
     assert service.memory.snapshot("gameplay", 0)["strategicAdvice"] is None
 
 

@@ -149,7 +149,7 @@ def test_preloaded_comparison_leads_to_an_executable_promotion_with_its_focused_
             job = await gateway.open("promote", "gameplay", "g1", host, {})
             prepared = await prepare_startup(gateway, job)
             prompt = startup_prompt(prepared, "gameplay", "Play this turn")
-            reads = json.JSONDecoder().raw_decode(prompt.user.split("Prepared player-visible reads:\n", 1)[1])[0]
+            reads = json.JSONDecoder().raw_decode(prompt.user.split("Current game information:\n", 1)[1])[0]
             unit = reads["player_turn"]["units"][0]
             assert unit["promotions"]["recovery"]["turnEndsToFullHealth"] == 3
             choice = unit["promotions"]["choices"][1]

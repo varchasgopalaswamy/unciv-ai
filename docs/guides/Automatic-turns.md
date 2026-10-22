@@ -1,8 +1,10 @@
 # Automatic turns over HTTPS
 
-The supervisor starts a fresh Codex conversation for each civilization's new game
-turn, supplies selected private memory and a scoped gateway credential, and watches
-the host for a committed handoff. A model's
+The supervisor starts fresh main-player and economy-manager conversations for each
+agent civilization's new game turn. Each receives selected private memory and a
+scoped gateway credential. The host waits for both roles to finish and commits
+one native handoff. See [economy management](../architecture/Economy-manager.md)
+for ownership, model settings, city plans, and engine trade commitments. A model's
 claim that it ended a turn does not advance scheduling. The game API, operator API,
 and agent-service control all use authenticated HTTPS with certificate verification.
 
@@ -133,8 +135,9 @@ next player can start while provider completion and accounting drain. There is
 no model-driven post-turn memory phase. Independent strategy reviews run
 concurrently before any civilization's first move on turn 0, then after all
 players complete every Kth round starting at K (default 5). Active conversations
-finish before capture. Gameplay and communication stay paused until every report
-is ready, then subsequent jobs receive the advice.
+finish before capture. Gameplay and communication stay paused until every review
+has either published advice or safely finished as unavailable, then subsequent
+jobs receive the available dated advice and review status.
 This wait does not consume that turn's timeout.
 See [background reviews](../architecture/Background-turn-memory.md).
 
@@ -274,10 +277,13 @@ of that player's turn and starts a fresh conversation. Messages and agent state
 are restored together with the game. The old attempt remains in operator archives.
 A completed handoff is retained even when its response was lost.
 
-Pending strategic reviewers restart from their durable frozen inputs. The default is three
-attempts per task; exhaustion stops for inspection. Increase `--review-attempts` on
-`game resume` (or the agent server) to authorize more attempts. Operator pauses and exhausted time budgets do
-not start additional retries.
+Pending strategic reviewers restart from their durable frozen inputs. A review
+gets at most two attempts: the initial report and one correction with feedback.
+`--review-attempts 1` disables correction; larger values do not expand this cap.
+Exhaustion marks the advice unavailable and lets play continue once the shared
+phase is safe. Persistence, input-preparation and shutdown/drain failures still
+stop for inspection. Operator pauses and exhausted time budgets do not start
+additional retries.
 
 A partial restore stays fenced and the next resume continues it. A `HALTED` host
 must first restart from its native checkpoint so the scheduler can determine

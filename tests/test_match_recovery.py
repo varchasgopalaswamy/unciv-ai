@@ -67,6 +67,8 @@ class Player:
         if op == "barrier":
             self.memory.pause(fields["paused"])
             return {"ready": True}
+        if op == "pending_requests":
+            return {"civilization": self.name, "requests": []}
         if op == "snapshot":
             path = self.root / (fields["id"] + ".json")
             return {"id": fields["id"], "sha256": self.memory.backup(path), "civilization": self.name}
@@ -189,7 +191,8 @@ def test_committed_turn_keeps_its_effects_and_epoch_separates_obsolete_history(t
 
 
 @pytest.mark.parametrize(
-    "operation", ["barrier", "snapshot", "retain_snapshot", "verify_snapshot", "cancel_jobs", "restore"]
+    "operation",
+    ["barrier", "pending_requests", "snapshot", "retain_snapshot", "verify_snapshot", "cancel_jobs", "restore"],
 )
 def test_lease_is_renewed_while_a_service_operation_is_blocked(tmp_path, monkeypatch, operation):
     host, players, state, coordinator = setup(tmp_path)
@@ -219,7 +222,7 @@ def test_lease_is_renewed_while_a_service_operation_is_blocked(tmp_path, monkeyp
 
     monkeypatch.setattr(host, "call", operator)
     monkeypatch.setattr(players["Rome"], "call", player)
-    if operation in {"barrier", "snapshot", "retain_snapshot"}:
+    if operation in {"barrier", "pending_requests", "snapshot", "retain_snapshot"}:
         coordinator.capture({"epoch": "g1", "turn": 1, "handoff": 1}, state)
         assert not host.paused
     else:

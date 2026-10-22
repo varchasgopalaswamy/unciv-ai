@@ -242,7 +242,7 @@ def ledger_inventory(path, output):
                     "spentNanodollars": saved["spent"],
                     "reservedNanodollars": saved["reserved"],
                     "policyVersion": result.get("policyVersion"),
-                    "threshold": settings.get("decisions_min_confidence"),
+                    "threshold": settings.get("decisions_acceptance_probability"),
                     "budgetUsd": settings.get("additional_decisions_budget_usd"),
                     "rawAnswersRetained": isinstance(result.get("rawAnswers"), list),
                     "rawAnswers": diagnostics["rawAnswers"],

@@ -120,7 +120,7 @@ def test_first_turn_preloads_future_uniques_through_the_existing_reads(tmp_path)
             job = await gateway.open("opening", "gameplay", "g1", host, {})
             prepared = await prepare_startup(gateway, job)
             prompt = startup_prompt(prepared, "gameplay", "Play this turn")
-            reads = json.JSONDecoder().raw_decode(prompt.user.split("Prepared player-visible reads:\n", 1)[1])[0]
+            reads = json.JSONDecoder().raw_decode(prompt.user.split("Current game information:\n", 1)[1])[0]
             profile = reads["player_turn"]["civilizationProfile"]
             assert reads["player_turn"]["cities"] == []
             assert profile["ability"]["effects"][0]["technologyConditions"][0]["met"] is True

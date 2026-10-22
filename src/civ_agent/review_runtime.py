@@ -5,6 +5,8 @@ import contextlib
 import json
 import time
 
+from pydantic import ValidationError
+
 from civ_agent.agent_history import HISTORY_METHODS
 from civ_agent.agent_settings import codex_thread_settings, valid_setting
 from civ_agent.civilization_state import job_id
@@ -14,6 +16,7 @@ from civ_agent.proposal_gateway import JobAccess, public_result
 from civ_agent.protocol import JsonObject
 from civ_agent.provider_usage import reconcile_provider_usage
 from civ_agent.review_context import development_changes, review_position, upcoming_events
+from civ_agent.review_grounding import ReviewEvidence
 from civ_agent.review_store import ReviewStore
 from civ_agent.strategic_review import (
     REVIEW_READ_TOOLS,
@@ -22,7 +25,6 @@ from civ_agent.strategic_review import (
     parse_advice,
     review_due,
     review_facts,
-    review_named_facts,
 )
 from civ_agent.telemetry import merge_model_usage
 from civ_agent.tls import private_directory
@@ -31,6 +33,28 @@ from civ_agent.victory_snapshot import capture_victory
 
 class ReviewFatalError(RuntimeError):
     """Input preparation, persistence and unconfirmed shutdown need operator inspection."""
+
+
+def correction_message(error):
+    """Give actionable feedback without echoing the report, private input or a traceback."""
+    if isinstance(error, ValidationError):
+        first = error.errors(include_input=False, include_url=False)[0]
+        location = ".".join(map(str, first["loc"])) or "report"
+        reason = f"{location}: {first['msg']}"
+    else:
+        reason = str(error) or type(error).__name__
+        reason = {
+            "REVIEW_OUTPUT_STALLED": "The report stopped making progress. Keep the corrected report concise.",
+            "REVIEW_OUTPUT_LIMIT": "The report was too long. Keep the corrected report concise.",
+            "REVIEW_PROCESS_FAILED": "The previous review was interrupted.",
+        }.get(reason, reason)
+        if reason.startswith(("STRATEGIC_REVIEW_PLAN: ", "STRATEGIC_REVIEW_SOURCE: ")):
+            reason = reason.split(": ", 1)[1]
+    return (
+        "Please correct the previous review report. "
+        + reason[:400]
+        + " Use the observations already supplied and return one complete corrected report."
+    )
 
 
 class OfflineConnection:
@@ -93,7 +117,9 @@ class ReviewRuntime:
         review_due(0, interval)
         if type(attempts) is not int or attempts < 1:
             raise ValueError("Review attempts must be positive")
-        self.service, self.interval, self.attempts = service, interval, attempts
+        # One initial attempt and at most one correction. A lower configured cap
+        # still limits spending; larger caps do not repeat an invalid review blindly.
+        self.service, self.interval, self.attempts = service, interval, min(attempts, 2)
         self.store = ReviewStore(service.memory)
         self.worker = None
         self.pending = asyncio.Event()
@@ -131,7 +157,8 @@ class ReviewRuntime:
             "epoch": epoch,
             "gameTurn": game_turn,
             "ready": not service.chat.dispatching and not self.active,
-            "pendingReview": task if task and task["status"] != "COMPLETED" else None,
+            "pendingReview": task if task and task["status"] == "PENDING" else None,
+            **({"reviewOutcome": task} if task and task["status"] != "PENDING" else {}),
         }
 
     async def prepare_round(self, game_turn, force_review=False):
@@ -282,6 +309,13 @@ class ReviewRuntime:
             await self.unconfirmed_process.close()
             self.unconfirmed_process = None
 
+    async def persist(self, function, *args, **kwargs):
+        """Required review records must never degrade into unavailable advice."""
+        try:
+            return await self.service.io.call(function, *args, **kwargs)
+        except Exception as error:
+            raise ReviewFatalError("REVIEW_RECORD_FAILED") from error
+
     async def dispatch(self):
         service = self.service
         try:
@@ -289,11 +323,17 @@ class ReviewRuntime:
                 await self.pending.wait()
                 self.pending.clear()
                 async with service.gateway.admit(review=True):
-                    task = await service.io.call(self.store.pending)
+                    task = await self.persist(self.store.pending)
                 if task is None:
                     continue
                 if task["attempts"] >= self.attempts:
-                    raise ValueError("STRATEGIC_REVIEW_ATTEMPTS_EXHAUSTED")
+                    async with service.gateway.admit(review=True):
+                        await self.persist(
+                            self.store.unavailable,
+                            task["job"],
+                            task.get("error") or "STRATEGIC_REVIEW_ATTEMPTS_EXHAUSTED",
+                        )
+                    continue
                 attempt_id = job_id()
                 # Paid jobs are subject to the same invocation budget and host accounting.
                 parent = {"parentJob": task["job"]} if task["turn"] > 0 else {}
@@ -305,7 +345,7 @@ class ReviewRuntime:
                 self.active = True
                 try:
                     async with service.gateway.admit(review=True):
-                        task = await service.io.call(self.store.attempt, task["job"], self.attempts)
+                        task = await self.persist(self.store.attempt, task["job"], self.attempts)
                     await self.compute(task, attempt_id)
                 except asyncio.CancelledError:
                     raise
@@ -316,8 +356,12 @@ class ReviewRuntime:
                         "strategic_review_failed", error=error, job=attempt_id, gameTurn=task["turn"]
                     )
                     async with service.gateway.admit(review=True):
-                        await service.io.call(self.store.failed, task["job"], str(error) or type(error).__name__)
-                    self.pending.set()
+                        await self.persist(self.store.failed, task["job"], str(error) or type(error).__name__)
+                        latest = await self.persist(self.store.at_turn, task["turn"])
+                        if latest["attempts"] >= self.attempts:
+                            await self.persist(self.store.unavailable, task["job"], str(error) or type(error).__name__)
+                        else:
+                            self.pending.set()
                 finally:
                     try:
                         with contextlib.suppress(Exception):
@@ -333,10 +377,16 @@ class ReviewRuntime:
 
     async def compute(self, task, id):
         """Each reviewer has its own frozen view and runs beside other reviewers."""
-        from civ_agent.agent_service import USAGE_KEYS
+        from civ_agent.agent_service import USAGE_KEYS, ProcessDrainError
 
         service = self.service
-        inputs, settings = json.loads(task["inputs"]), json.loads(task["settings"])
+        try:
+            inputs, settings = json.loads(task["inputs"]), json.loads(task["settings"])
+            evidence = ReviewEvidence(inputs)
+            if type(evidence.turn) is not int or evidence.turn != inputs["reads"]["player_turn"]["turn"]:
+                raise ValueError("STRATEGIC_REVIEW_POSITION_MISMATCH")
+        except Exception as error:
+            raise ReviewFatalError("REVIEW_INPUT_FAILED") from error
         epoch = service.chat.epoch
         job = JobAccess(
             id,
@@ -347,6 +397,7 @@ class ReviewRuntime:
             verified=True,
             catalogue=inputs["catalogue"],
             review_inputs=inputs,
+            review_evidence=evidence,
         )
         record = {
             "activationId": id,
@@ -387,6 +438,10 @@ class ReviewRuntime:
             try:
                 if process is not None:
                     await process.close()
+            except ProcessDrainError as error:
+                self.unconfirmed_process = process
+                record["error"] = "REVIEW_HISTORY_DRAIN_FAILED"
+                raise ReviewFatalError("REVIEW_HISTORY_DRAIN_FAILED") from error
             except BaseException as error:
                 self.unconfirmed_process = process
                 record["error"] = "STOP_UNCONFIRMED"
@@ -406,11 +461,15 @@ class ReviewRuntime:
                 return
             if method == "service/transportFailure":
                 record["transportError"] = str(params.get("reason", "CODEX_TRANSPORT_FAILED"))[:200]
-                record["error"] = "REVIEW_PROCESS_FAILED"
+                record["error"] = (
+                    record["transportError"]
+                    if record["transportError"] in {"REVIEW_OUTPUT_STALLED", "REVIEW_OUTPUT_LIMIT"}
+                    else "REVIEW_PROCESS_FAILED"
+                )
                 done.set()
                 return
             if method in HISTORY_METHODS:
-                await service.io.call(service.history.notify, id, record["threadId"], method, params)
+                await self.persist(service.history.notify, id, record["threadId"], method, params)
             if not closing and completed is None and method in {"service/disconnected", "service/approvalRequired"}:
                 record["error"] = "REVIEW_PROCESS_FAILED"
                 if method == "service/disconnected" and isinstance(params.get("reason"), str):
@@ -447,19 +506,27 @@ class ReviewRuntime:
             service.records[id] = record
             try:
                 prompt = advice_prompt(
-                    inputs, strategy_guide=service.strategy_guide, civilization_guide=service.civilization_guide
+                    inputs,
+                    evidence=evidence,
+                    strategy_guide=service.strategy_guide,
+                    civilization_guide=service.civilization_guide,
                 )
                 record["startup"] = prompt.metadata()
                 output_schema = advice_schema(inputs["reads"]["player_turn"])
+                first_input = prompt.user
+                if task.get("error"):
+                    feedback = correction_message(ValueError(task["error"]))
+                    first_input += "\n\n" + feedback
+                    record["startup"]["retryFeedbackCharacters"] = len(feedback)
             except Exception as error:
                 raise ReviewFatalError("REVIEW_PROMPT_FAILED") from error
             try:
                 workspace = private_directory(service.workspace / "reviews" / id)
-                await service.io.call(service.accounting.start, id, epoch, True)
-                await service.io.call(service.history.begin, record, None, job.token)
-                await service.io.call(service.history.next_conversation, id, "strategic_review")
-                await service.io.call(service.history.startup_context, id, prompt.instructions, role="developer")
-                await service.io.call(service.history.startup_context, id, prompt.user)
+                await self.persist(service.accounting.start, id, epoch, True)
+                await self.persist(service.history.begin, record, None, job.token)
+                await self.persist(service.history.next_conversation, id, "strategic_review")
+                await self.persist(service.history.startup_context, id, prompt.instructions, role="developer")
+                await self.persist(service.history.startup_context, id, first_input)
             except Exception as error:
                 raise ReviewFatalError("REVIEW_RECORD_FAILED") from error
             await save()
@@ -491,49 +558,73 @@ class ReviewRuntime:
                 ):
                     raise ValueError("REVIEW_SETTINGS_CHANGED")
                 await save()
-                response = await process.request(
-                    "turn/start",
-                    {
-                        "threadId": record["threadId"],
-                        "input": [{"type": "text", "text": prompt.user}],
-                        "approvalPolicy": "never",
-                        "summary": "auto",
-                        "model": record["effectiveSettings"]["model"],
-                        **({"effort": settings["reasoningEffort"]} if settings.get("reasoningEffort") else {}),
-                        **({"serviceTier": "fast"} if service.fast else {}),
-                        "outputSchema": output_schema,
-                    },
-                )
-                expected = response["turn"]["id"]
-                record["turnId"] = expected
-                await service.io.call(service.history.bind_turn, id, expected)
-                if expected in early_usage:
-                    await usage(early_usage[expected])
-                if expected in early_completions:
-                    completed = early_completions[expected]
-                    done.set()
-                record["phase"] = "RUNNING"
-                if progress.value["stage"] == "Starting":
-                    progress.value["stage"] = "Thinking"
-                await save()
-                while not done.is_set():
+                turn_input = first_input
+                while True:
+                    expected = None
+                    completed = None
+                    done.clear()
+                    response = await process.request(
+                        "turn/start",
+                        {
+                            "threadId": record["threadId"],
+                            "input": [{"type": "text", "text": turn_input}],
+                            "approvalPolicy": "never",
+                            "summary": "auto",
+                            "model": record["effectiveSettings"]["model"],
+                            **({"effort": settings["reasoningEffort"]} if settings.get("reasoningEffort") else {}),
+                            **({"serviceTier": "fast"} if service.fast else {}),
+                            "outputSchema": output_schema,
+                        },
+                    )
+                    expected = response["turn"]["id"]
+                    record["turnId"] = expected
+                    record["reviewAttempt"] = task["attempts"]
+                    await self.persist(service.history.bind_turn, id, expected)
+                    if expected in early_usage:
+                        await usage(early_usage[expected])
+                    if expected in early_completions:
+                        completed = early_completions[expected]
+                        done.set()
+                    record["phase"] = "RUNNING"
+                    if progress.value["stage"] == "Starting":
+                        progress.value["stage"] = "Thinking"
+                    await save()
+                    while not done.is_set():
+                        try:
+                            await asyncio.wait_for(done.wait(), 3)
+                        except TimeoutError:
+                            if service.gateway.run_failure:
+                                raise ValueError(service.gateway.run_failure["error"]) from None
+                            if not (await service.chat.social("job_heartbeat", job=id))["granted"]:
+                                raise ValueError("REVIEW_PERMIT_EXPIRED") from None
+                            await save()
+                            await service.flush_telemetry()
+                    if completed != "completed" or record.get("error"):
+                        if record.get("transportError") == "CODEX_NOTIFICATION_FAILED":
+                            raise ReviewFatalError("REVIEW_RECORD_FAILED")
+                        raise ValueError(record.get("error", "STRATEGIC_REVIEW_FAILED"))
+                    progress.value["stage"] = "Validating"
+                    await save()
+                    answer = final_messages.get(expected, unphased_messages.get(expected, ""))
                     try:
-                        await asyncio.wait_for(done.wait(), 3)
-                    except TimeoutError:
-                        if service.gateway.run_failure:
-                            raise ValueError(service.gateway.run_failure["error"]) from None
-                        if not (await service.chat.social("job_heartbeat", job=id))["granted"]:
-                            raise ValueError("REVIEW_PERMIT_EXPIRED") from None
+                        advice = parse_advice(answer, inputs["reads"]["player_turn"], evidence=evidence)
+                        break
+                    except ValueError as error:
+                        if str(error) == "STRATEGIC_REVIEW_POSITION_MISMATCH":
+                            raise ReviewFatalError("REVIEW_INPUT_FAILED") from error
+                        if task["attempts"] >= self.attempts:
+                            raise
+                        await self.persist(self.store.failed, task["job"], str(error))
+                        task = await self.persist(self.store.attempt, task["job"], self.attempts)
+                        turn_input = correction_message(error)
+                        await self.persist(service.history.next_conversation, id, "strategic_review")
+                        await self.persist(service.history.startup_context, id, turn_input)
+                        progress.value["stage"] = "Correcting"
                         await save()
-                        await service.flush_telemetry()
-                if completed != "completed" or record.get("error"):
-                    raise ValueError(record.get("error", "STRATEGIC_REVIEW_FAILED"))
-                progress.value["stage"] = "Validating"
-                await save()
-                answer = final_messages.get(expected, unphased_messages.get(expected, ""))
-                advice = parse_advice(answer, inputs["reads"]["player_turn"], facts=review_named_facts(inputs))
             await stop()
             if record.get("transportError") or record.get("error"):
+                if record.get("transportError") == "CODEX_NOTIFICATION_FAILED":
+                    raise ReviewFatalError("REVIEW_RECORD_FAILED")
                 raise ValueError(record.get("error", "REVIEW_PROCESS_FAILED"))
             progress.value["stage"] = "Publishing"
             await save()
@@ -541,7 +632,7 @@ class ReviewRuntime:
             # Publish only after the hold, so rewind restores exactly that boundary.
             async with service.gateway.admit(review=True):
                 try:
-                    await service.io.call(self.store.complete, task["job"], advice)
+                    await self.persist(self.store.complete, task["job"], advice)
                 except Exception as error:
                     raise ReviewFatalError("REVIEW_RECORD_FAILED") from error
             success = True
@@ -560,18 +651,25 @@ class ReviewRuntime:
                 if not closing:
                     await stop()
             finally:
-                await service.gateway.close(job, success)
-                trace_complete = (
-                    await service.io.call(reconcile_provider_usage, record, service.provider_usage)
-                    if stopped
-                    else False
-                )
-                if stopped:
-                    record["phase"] = (
-                        "COMPLETED" if success else "INTERRUPTED" if record.get("error") == "INTERRUPTED" else "FAILED"
+                try:
+                    await service.gateway.close(job, success)
+                    trace_complete = (
+                        await self.persist(reconcile_provider_usage, record, service.provider_usage)
+                        if stopped
+                        else False
                     )
-                progress.value["stage"] = record["phase"].capitalize()
-                record["usageComplete"] = trace_complete or (
-                    stopped and completed == "completed" and record.get("usageReported", False)
-                )
-                await save()
+                    if stopped:
+                        record["phase"] = (
+                            "COMPLETED"
+                            if success
+                            else "INTERRUPTED"
+                            if record.get("error") == "INTERRUPTED"
+                            else "FAILED"
+                        )
+                    progress.value["stage"] = record["phase"].capitalize()
+                    record["usageComplete"] = trace_complete or (
+                        stopped and completed == "completed" and record.get("usageReported", False)
+                    )
+                    await save()
+                except Exception as error:
+                    raise ReviewFatalError("REVIEW_RECORD_FAILED") from error

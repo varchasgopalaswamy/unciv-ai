@@ -157,7 +157,7 @@ internal class Telemetry(private val runtime: GameExecutor) {
         }
     }
 
-    private fun belongsToTurn(job: CommunicationJob, turn: TurnMetrics): Boolean = job.purpose in setOf("gameplay", "review") && job.epoch == turn.epoch && job.civilization == turn.civilization &&
+    private fun belongsToTurn(job: CommunicationJob, turn: TurnMetrics): Boolean = job.purpose in setOf("gameplay", "economy", "review") && job.epoch == turn.epoch && job.civilization == turn.civilization &&
         (job.handoff == turn.handoff || (job.purpose == "review" && job.handoff == null && job.gameTurn == 0 && turn.gameTurn == 0))
 
     fun beginTurn(game: GameInfo, activationId: String) {

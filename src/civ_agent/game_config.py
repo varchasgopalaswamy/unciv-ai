@@ -99,9 +99,23 @@ class AgentDefaults(Configuration, DecisionsSettings):
         return value
 
 
+class EconomyModel(Configuration):
+    provider: Provider | None = None
+    model: str | None = None
+    reasoning_effort: str | None = None
+
+    @field_validator("model", "reasoning_effort")
+    @classmethod
+    def setting(cls, value):
+        if value is not None and not valid_setting(value):
+            raise ValueError("Invalid economy model setting")
+        return value
+
+
 class Player(Configuration):
     name: str
     controller: Literal["agent", "human", "built_in_ai"] = "agent"
+    economy_model: EconomyModel | None = None
     provider: Provider | None = None
     model: str | None = None
     reasoning_effort: str | None = None
@@ -116,6 +130,8 @@ class Player(Configuration):
 
     @model_validator(mode="after")
     def settings(self):
+        if self.economy_model is not None and self.controller != "agent":
+            raise ValueError("Only agent players have economy model settings")
         if self.provider is not None and self.controller != "agent":
             raise ValueError("Only agent players have provider settings")
         for value in (self.model, self.reasoning_effort, self.communication_reasoning_effort):
@@ -199,8 +215,18 @@ class GameConfig(Configuration):
     def settings(self, player) -> JsonObject:
         provider = player.provider or self.agents.provider
         gameplay_effort = player.reasoning_effort or self.agents.reasoning_effort
+        economy = {
+            "provider": provider,
+            "model": player.model or self.agents.model,
+            "reasoning_effort": gameplay_effort,
+        }
+        if player.economy_model is not None:
+            economy.update(player.economy_model.model_dump(exclude_none=True))
+        if economy["provider"] == "openrouter" and "/" not in economy["model"]:
+            raise ValueError("OpenRouter economy model requires an explicit model ID")
         return {
             **self.agents.model_dump(),
+            "economy_model": economy,
             "provider": provider,
             "model": player.model or self.agents.model,
             "reasoning_effort": gameplay_effort,

@@ -140,7 +140,7 @@ def choose_candidates(classifier, host=None, *, focus_mode="success"):
         return {
             **result,
             **request_metadata(body, evidence),
-            **parse_answers(body, {"answers": raw}, classifier.settings.decisions_min_confidence),
+            **parse_answers(body, {"answers": raw}, classifier.settings.decisions_acceptance_probability),
         }
 
     classifier.batch = batch
@@ -255,7 +255,7 @@ def test_city_change_and_alternative_questions_coalesce_with_memory_and_preserve
             assert (
                 prepared["reads"]["native_advice"]["recommendations"][0]["explanation"] == "Original native explanation"
             )
-            assert "Optional city recommendations" in startup_prompt(prepared, "gameplay", "Play").user
+            assert "City advice." in startup_prompt(prepared, "gameplay", "Play").user
             assert not any(q.tool == "player_inspect" for q in job.details_read)
             with memory.transaction() as db:
                 snapshot = load_snapshot(
@@ -301,7 +301,11 @@ def test_focus_failure_does_not_discard_construction_answer(tmp_path):
 @pytest.mark.parametrize("mode", ["unknown", "timeout", "malformed", "refusal", "low", "zero"])
 def test_failure_keeps_ordinary_gameplay_without_fabricated_advice(tmp_path, mode):
     async def run():
-        async with setup(tmp_path, additional_decisions_budget_usd=0 if mode == "zero" else 0.1) as (
+        async with setup(
+            tmp_path,
+            decisions_backend="luna" if mode == "zero" else "jev",
+            additional_decisions_budget_usd=0 if mode == "zero" else 0.1,
+        ) as (
             _,
             gateway,
             host,
@@ -316,6 +320,23 @@ def test_failure_keeps_ordinary_gameplay_without_fabricated_advice(tmp_path, mod
             assert bool(prepared["reads"]["native_advice"]["recommendations"])
             if mode == "zero":
                 assert host.__dict__["focus_reads"] == []
+
+    asyncio.run(run())
+
+
+def test_free_jev_captures_and_classifies_city_advice_with_zero_dollar_allowance(tmp_path):
+    async def run():
+        async with setup(tmp_path, decisions_backend="jev", additional_decisions_budget_usd=0) as (
+            _,
+            gateway,
+            host,
+            classifier,
+        ):
+            add_cities(host, 1)
+            job = await gateway.open("job", "gameplay", "g1", host, {}, 0)
+            prepared = await prepare_startup(gateway, job)
+            assert classifier.calls and host.__dict__["focus_reads"]
+            assert prepared["advisories"]["cityRecommendations"]
 
     asyncio.run(run())
 

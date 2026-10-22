@@ -19,6 +19,7 @@ from civ_agent.civilization_guide import (
 )
 from civ_agent.commands import agent_server, game
 from civ_agent.game_config import GameConfig, ResolvedGameConfig, load_config
+from civ_agent.review_grounding import ReviewEvidence
 from civ_agent.startup_context import startup_prompt, startup_text
 from civ_agent.strategic_review import advice_prompt
 from civ_agent.strategy_guide import strategy_reference
@@ -30,7 +31,7 @@ from tests.test_victory_snapshot import position
 CIVILIZATIONS = ("Inca", "France", "Greece", "Arabia", "China", "Persia")
 
 
-def prompt_for(civilization, purpose, *, strategy_guide=False, civilization_guide=False):
+def prompt_for(civilization, purpose, *, strategy_guide=False, civilization_guide=False, evidence=None):
     reads = {
         "player_turn": {"turn": 10, "civilization": civilization},
         "chat_read": {"civilization": civilization, "messages": ["PRIVATE_CHAT"]},
@@ -43,9 +44,10 @@ def prompt_for(civilization, purpose, *, strategy_guide=False, civilization_guid
                 "civilization": civilization,
                 "turn": 10,
                 "reads": reads,
-                "observation": {},
+                "observation": {"turn": 10},
                 "actions": {"entries": []},
             },
+            evidence=evidence,
             strategy_guide=strategy_guide,
             civilization_guide=civilization_guide,
         )
@@ -69,8 +71,11 @@ def prompt_for(civilization, purpose, *, strategy_guide=False, civilization_guid
 @pytest.mark.parametrize("strategy_guide", [False, True])
 @pytest.mark.parametrize("civilization_guide", [False, True])
 def test_only_own_advice_appears_once_after_general_guide(civilization, purpose, strategy_guide, civilization_guide):
-    prompt = prompt_for(civilization, purpose, strategy_guide=strategy_guide, civilization_guide=civilization_guide)
-    baseline = prompt_for(civilization, purpose)
+    evidence = ReviewEvidence({"observation": {"turn": 10}})
+    prompt = prompt_for(
+        civilization, purpose, strategy_guide=strategy_guide, civilization_guide=civilization_guide, evidence=evidence
+    )
+    baseline = prompt_for(civilization, purpose, evidence=evidence)
     text = prompt if isinstance(prompt, str) else prompt.user
     original = baseline if isinstance(baseline, str) else baseline.user
     reference = civilization_reference(civilization)
@@ -255,9 +260,7 @@ def test_interactive_session_forwards_service_advice_without_model_calls(tmp_pat
             text = session["context"]
             reference = civilization_reference("France")
             assert text.count(reference) == 1
-            assert (
-                text.index(strategy_reference()) < text.index(reference) < text.index("Prepared player-visible reads")
-            )
+            assert text.index(strategy_reference()) < text.index(reference) < text.index("Current game information")
             assert factory.calls == []
             assert await interactive_session.close_session(service, {"jobId": session["jobId"]}) == {"closed": True}
         finally:

@@ -120,12 +120,12 @@ def _delivery(case, parsed, supplied):
     return result
 
 
-def report(cases, responses, *, threshold=0.90, deliveries=None):
+def report(cases, responses, *, threshold=0.90, deliveries=None, settings=None):
     if type(threshold) not in (float, int) or not math.isfinite(threshold) or not 0 <= threshold <= 1:
         raise ValueError("Replay confidence threshold must be between zero and one")
     rows, all_questions, usage, fallbacks = [], [], Counter(), Counter()
     for case in cases:
-        body = request_body(case["evidence"], DecisionsSettings(decisions_enabled=True))
+        body = request_body(case["evidence"], settings or DecisionsSettings(decisions_enabled=True))
         expected = request_metadata(body, case["evidence"])
         supplied = responses.get(case["id"])
         verified = isinstance(supplied, dict) and all(supplied.get(key) == expected[key] for key in IDENTITY_FIELDS)
@@ -135,8 +135,9 @@ def report(cases, responses, *, threshold=0.90, deliveries=None):
         elif not verified:
             parsed, status = {"answers": []}, "identity_mismatch"
         else:
-            parsed, status = validate_result(body, case["evidence"], supplied, case.get("threshold", 0.90)), "evaluated"
-            if threshold != case.get("threshold", 0.90) and parsed.get("fallback") != "malformed_broker_output":
+            original_threshold = settings.decisions_acceptance_probability if settings else case.get("threshold", 0.90)
+            parsed, status = validate_result(body, case["evidence"], supplied, original_threshold), "evaluated"
+            if threshold != original_threshold and parsed.get("fallback") != "malformed_broker_output":
                 questions_by_name = {question["name"]: question for question in body["questions"]}
                 rechecked = [
                     outcome(questions_by_name[row["name"]], row["rawAnswer"], threshold)
@@ -272,14 +273,17 @@ def calibrate(cases, responses, *, thresholds=(0.7, 0.8, 0.9, 0.95, 0.99)):
     }
 
 
-async def live(cases, client):
+async def live(cases, client, *, settings=None):
+    settings = settings or DecisionsSettings(
+        decisions_enabled=True, decisions_backend=getattr(client, "backend", "jev")
+    )
     health = await client.health()
     if health.get("status") != "ready":
         raise ValueError("Authenticated compatible broker required for live replay")
     responses: JsonObject = {}
     for case in cases:
         responses[case["id"]] = await client.batch(case["evidence"])
-    return report(cases, responses)
+    return report(cases, responses, settings=settings, threshold=settings.decisions_acceptance_probability)
 
 
 def main(argv=None):
@@ -287,7 +291,7 @@ def main(argv=None):
     parser.add_argument("fixtures", type=Path)
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--responses", type=Path)
-    mode.add_argument("--live-broker", action="store_true", help="Paid requests charged to the broker-owned allowance")
+    mode.add_argument("--live-broker", action="store_true", help="Use the broker account's selected Decisions backend")
     parser.add_argument(
         "--calibrate", action="store_true", help="Report calibration-only sweeps; never select a threshold"
     )

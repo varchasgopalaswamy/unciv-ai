@@ -87,14 +87,15 @@ class StrategyReader:
                     tables.reviews.c.status,
                     tables.reviews.c.attempts,
                     tables.reviews.c.error,
-                    tables.reviews.c.advice,
+                    func.json_remove(tables.reviews.c.advice, "$._evidence").label("advice"),
                     func.coalesce(tables.jobs.c.epoch, epoch).label("sourceEpoch"),
                 )
                 .select_from(tables.reviews.outerjoin(tables.jobs, tables.reviews.c.job == tables.jobs.c.id))
                 .order_by(tables.reviews.c.turn.desc())
             )
             completed = db.execute(query.where(tables.reviews.c.status == "COMPLETED").limit(1)).mappings().first()
-            pending = db.execute(query.where(tables.reviews.c.status != "COMPLETED").limit(1)).mappings().first()
+            pending = db.execute(query.where(tables.reviews.c.status == "PENDING").limit(1)).mappings().first()
+            recent = db.execute(query.limit(1)).mappings().first()
             report = {"turn": completed["turn"], **json.loads(completed["advice"])} if completed else None
             delivered = None
             if completed:
@@ -106,7 +107,7 @@ class StrategyReader:
                         func.json_extract(tables.jobs.c.snapshot, "$.strategicAdvice.asOfTurn") == completed["turn"],
                     )
                 )
-            task = pending if pending is not None else completed
+            task = pending if pending is not None else recent
             matching = [
                 job
                 for job in jobs
@@ -138,6 +139,11 @@ class StrategyReader:
                 dict(pending) if pending else None,
                 delivered,
                 latest,
+                error=(
+                    f"The review for T{recent['turn']} was unavailable. Play can continue; any earlier report is dated."
+                    if recent and recent["status"] == "UNAVAILABLE" and pending is None
+                    else None
+                ),
                 progress=progress,
                 trace=trace,
             )

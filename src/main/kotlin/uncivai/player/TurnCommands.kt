@@ -1,5 +1,7 @@
 package uncivai.player
 
+import kotlinx.serialization.EncodeDefault
+import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import java.util.Collections
@@ -194,6 +196,7 @@ data class TurnCommandRequest(
 data class TurnControls(val canDeferChoices: Boolean = false, val canMoveAutomatedUnits: Boolean = false, val autoplayScopes: List<String> = emptyList())
 
 @Serializable
+@OptIn(ExperimentalSerializationApi::class)
 data class TurnCommandReceipt(
     val requestId: String,
     val epoch: String,
@@ -202,6 +205,7 @@ data class TurnCommandReceipt(
     val turn: Int,
     val isYourTurn: Boolean,
     val actionSummary: String,
+    @EncodeDefault(EncodeDefault.Mode.NEVER) val error: String? = null,
     val feedback: AlertContent? = null,
     val combat: CombatOutcome? = null,
     val economy: EconomyOutcome? = null,

@@ -68,7 +68,7 @@ class SummaryReader:
                 .where(
                     or_(
                         tables.jobs.c.id.in_(jobs),
-                        and_(tables.jobs.c.game_turn.in_(turns), tables.jobs.c.purpose == "gameplay"),
+                        and_(tables.jobs.c.game_turn.in_(turns), tables.jobs.c.purpose.in_(["gameplay", "economy"])),
                     )
                 )
                 .order_by(tables.job_order)
@@ -108,7 +108,7 @@ class SummaryReader:
         jobs = (
             [row for row in self.jobs if row["id"] == job]
             if job is not None
-            else [row for row in self.jobs if row["purpose"] == "gameplay" and row["game_turn"] == turn]
+            else [row for row in self.jobs if row["purpose"] in {"gameplay", "economy"} and row["game_turn"] == turn]
         )
         ids = {row["id"] for row in jobs}
         return (

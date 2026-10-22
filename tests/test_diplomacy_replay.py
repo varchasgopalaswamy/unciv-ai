@@ -6,7 +6,12 @@ from unittest.mock import AsyncMock
 import pytest
 
 from civ_agent.diplomacy_decisions import POLICY_VERSION
-from civ_agent.diplomacy_replay import collect, evaluate
+from civ_agent.diplomacy_replay import collect
+from civ_agent.diplomacy_replay import evaluate as evaluate_default
+
+
+def evaluate(*args, **kwargs):
+    return evaluate_default(*args, **{"threshold": 0.9, **kwargs})
 
 
 def envelope(direction, choice, confidence=0.99):
@@ -67,7 +72,7 @@ def test_labeled_replay_covers_audit_cases_without_future_or_other_audience():
         for message in case["bundle"]["recentExchanges"]:
             assert message["participants"] == selected["participants"]
             assert message["turn"] <= selected["turn"] and message["message"] != selected["message"]
-    responses = {case["id"]: envelope(case["direction"], case["expected"][0], 0.95) for case in fixture}
+    responses = {case["id"]: envelope(case["direction"], case["expected"][0], 0.99) for case in fixture}
     scored = evaluate(fixture, responses)
     assert scored["accepted"] == len(fixture) and scored["actionableDeferred"] == 0
     # This tests the replay harness with oracle responses, not the live model.

@@ -99,12 +99,12 @@ class LaunchAgentTest(unittest.TestCase):
             code, execute, _ = self.launch(civilization)
             self.assertEqual(code, 0)
             prompt = execute.call_args.args[1][-1]
-            self.assertIn("Follow scenario.instructions", prompt)
-            self.assertIn("otherwise your objective is to win the game", prompt)
+            self.assertIn("Follow the scenario's instructions", prompt)
+            self.assertIn("otherwise play to win", prompt)
             self.assertNotIn("CLOSE_START_DIPLOMACY", prompt)
             self.assertNotIn("Rome declares war", prompt)
             self.assertNotIn("reviewId=", prompt)
-            self.assertIn("End the turn after your chosen actions and required native decisions", prompt)
+            self.assertIn("End the turn once you have made your choices and resolved required decisions", prompt)
             self.assertEqual(prompt.count("Civ tool discovery:"), 1)
             self.assertIn('"mcp__civ__player_turn"', prompt)
 

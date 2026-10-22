@@ -28,7 +28,7 @@ from tests.test_routing_canary import incoming
 
 
 def binary_answer(name, choice, confidence):
-    probability = (1 + confidence) / 2
+    probability = confidence
     return {
         "name": name,
         "type": "choice",
@@ -49,17 +49,17 @@ def test_current_policy_is_default_and_settings_and_cli_preserve_it():
     arguments = parser.parse_args(["--decisions-routing-policy", POLICY_VERSION])
     settings = DecisionsSettings.model_validate(decisions_values(arguments))
     assert settings.decisions_routing_policy == POLICY_VERSION
-    assert settings.decisions_incoming_batch_confidence == settings.decisions_incoming_suppress_confidence == 0.9
+    assert settings.decisions_incoming_batch_probability == settings.decisions_incoming_suppress_probability == 0.98
     config = GameConfig(agents=settings.model_dump()).resolved()
     assert config.agents.decisions_routing_policy == POLICY_VERSION
-    assert config.agents.decisions_min_confidence == 0.9
+    assert config.agents.decisions_acceptance_probability == 0.98
 
 
 def test_two_question_provider_broker_runtime_preserves_binary_evidence_and_batch_deadline(tmp_path):
     async def run():
         requests = []
         decisions = {
-            "uncertain response, safe wait": ("not_needed", 0.4, "can_wait", 0.95),
+            "uncertain response, safe wait": ("not_needed", 0.7, "can_wait", 0.95),
             "uncertain wait": ("needed", 0.99, "can_wait", 0.8),
             "no response": ("not_needed", 0.99, "can_wait", 0.95),
             "urgent": ("needed", 0.99, "now", 0.99),
@@ -70,7 +70,7 @@ def test_two_question_provider_broker_runtime_preserves_binary_evidence_and_batc
             requests.append(body)
             assert request.headers["Authorization"] == "Bearer local-two-question-test-key"
             bundle = json.loads(body["input"])
-            assert body == request_body(bundle["direction"], bundle, policy_version=POLICY_VERSION)
+            assert body == request_body(bundle["direction"], bundle, policy_version=POLICY_VERSION, backend="luna")
             if bundle["direction"] == "incoming":
                 assert [question["name"] for question in body["questions"]] == list(TWO_QUESTION_CHOICES)
                 needed, needed_confidence, timing, timing_confidence = decisions[bundle["pending"][0]["text"]]
@@ -79,7 +79,7 @@ def test_two_question_provider_broker_runtime_preserves_binary_evidence_and_batc
                     binary_answer("response_timing", timing, timing_confidence),
                 ]
             else:
-                assert body == request_body("outgoing", bundle, policy_version=POLICY_VERSION)
+                assert body == request_body("outgoing", bundle, policy_version=POLICY_VERSION, backend="luna")
                 answers = [
                     binary_answer("delivery_needed", "needed", 0.95),
                     binary_answer("delivery_timing", "can_wait", 0.95),
@@ -91,7 +91,9 @@ def test_two_question_provider_broker_runtime_preserves_binary_evidence_and_batc
         app = web.Application()
         app.router.add_post("/v1/decisions", provider)
         auth, seat = private_directory(tmp_path / "auth"), private_directory(tmp_path / "seat")
-        settings = DecisionsSettings(decisions_enabled=True, decisions_routing_policy=POLICY_VERSION)
+        settings = DecisionsSettings(
+            decisions_enabled=True, decisions_backend="luna", decisions_routing_policy=POLICY_VERSION
+        )
         authorize_agent(
             auth, "isolated-two-question-test", 0, seat, decisions=True, settings=settings.model_dump(), player="Rome"
         )
@@ -109,13 +111,13 @@ def test_two_question_provider_broker_runtime_preserves_binary_evidence_and_batc
                     clock = [100.0]
                     router = DiplomacyRouting(
                         gateway,
-                        RoutingClient(tmp_path / "broker.sock", seat / "decisions-client.json"),
+                        RoutingClient(tmp_path / "broker.sock", seat / "decisions-client.json", backend="luna"),
                         settings=settings,
                         clock=lambda: clock[0],
                     )
                     result = await router.classify("incoming", incoming("uncertain response, safe wait"))
                     assert result["choice"] == "batch" and result["rawChoice"] == "no_separate_response"
-                    assert result["confidence"] == 0.95 and result["rawChoiceConfidence"] == 0.4
+                    assert result["confidence"] == 0.95 and result["rawChoiceConfidence"] == 0.7
                     assert result["questionBasis"] == "response_timing"
                     assert result["fallback"] == "low_confidence" and result["lowConfidence"] and result["overridden"]
                     assert result["probabilities"] is None and "rawAnswer" not in result
@@ -172,7 +174,7 @@ def test_two_question_provider_broker_runtime_preserves_binary_evidence_and_batc
                     )
                     assert len(host.writes) == 2 and len(requests) == before
                     reports = accounting.classifier_reports()
-                    assert reports[0]["confidence"] == 0.95 and reports[0]["rawChoiceConfidence"] == 0.4
+                    assert reports[0]["confidence"] == 0.95 and reports[0]["rawChoiceConfidence"] == 0.7
                     assert len(reports[0]["rawAnswers"]) == 2 and reports[0]["probabilities"] is None
                     assert "PRIVATE" not in json.dumps(reports)
             finally:

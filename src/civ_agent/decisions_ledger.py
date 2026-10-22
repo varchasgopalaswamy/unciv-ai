@@ -11,6 +11,7 @@ from pathlib import Path
 
 from sqlalchemy import Column, Integer, MetaData, String, Table, UniqueConstraint, func, insert, or_, select
 
+from civ_agent.decisions_backends import BACKENDS
 from civ_agent.decisions_policy import DecisionsSettings
 from civ_agent.protocol import JsonObject
 from civ_agent.sqlite_database import sqlite_engine
@@ -19,7 +20,7 @@ from civ_agent.tls import private_directory, regular_file, write_private_json
 # Verified 2026-10-14 against https://developers.openai.com/api/docs/guides/decisions
 # Standard input $0.10 / 1M tokens, no output charge. Regional/long-context
 # multipliers and tokenizer differences mean this is a LOCAL ESTIMATED ceiling.
-RATE_VERSION = "decisions-standard-2026-10-14-v1"
+RATE_VERSION = "decisions-backends-v1"
 NANODOLLARS_PER_INPUT_TOKEN = 100
 metadata = MetaData()
 authority_table = Table(
@@ -154,7 +155,9 @@ class DecisionsLedger:
             "reservedNanodollars": sum(r["reserved"] for r in rows),
             "requests": len(rows),
             "inputTokens": sum(r["input_tokens"] or 0 for r in rows),
-            "unknownCompletions": sum(r["result"] is None or r["reserved"] > 0 for r in rows),
+            "unknownCompletions": sum(
+                r["result"] is None or r["reserved"] > 0 or bool(json.loads(r["result"]).get("pending")) for r in rows
+            ),
         }
 
     def status(self, principal):
@@ -206,8 +209,11 @@ class DecisionsLedger:
             if ceiling is None:
                 raise ValueError("Decisions account not registered by operator")
             totals = self._totals(db, principal)
-            reservation = estimate_tokens(body) * NANODOLLARS_PER_INPUT_TOKEN
-            denied = ceiling == 0 or totals["spentNanodollars"] + totals["reservedNanodollars"] + reservation > ceiling
+            spec = next(spec for spec in BACKENDS.values() if spec.model == body["model"])
+            reservation = estimate_tokens(body) * spec.nanodollars_per_input_token
+            denied = spec.nanodollars_per_input_token > 0 and (
+                ceiling == 0 or totals["spentNanodollars"] + totals["reservedNanodollars"] + reservation > ceiling
+            )
             result = (
                 {**(pending_result or {}), "answers": [], "fallback": "budget_exhausted", "requestId": request_id}
                 if denied
@@ -223,7 +229,7 @@ class DecisionsLedger:
                     spent=0,
                     input_tokens=None,
                     result=canonical(result or pending) if result or pending else None,
-                    rate_version=RATE_VERSION,
+                    rate_version=spec.rate_version,
                     created_ms=int(time.time() * 1000),
                 )
             )
@@ -236,9 +242,15 @@ class DecisionsLedger:
         values: JsonObject = {"result": canonical(result)}
         # No validated usage => retain the reservation, including refusals and
         # transport failures. Returned results are still cached, never retried.
-        if valid:
-            values.update(reserved=0, spent=tokens * NANODOLLARS_PER_INPUT_TOKEN, input_tokens=tokens)
         with self.engine.begin() as db:
+            rate = db.scalar(
+                select(requests.c.rate_version).where(requests.c.principal == principal, requests.c.id == request_id)
+            )
+            if valid:
+                per_token = next(
+                    spec.nanodollars_per_input_token for spec in BACKENDS.values() if spec.rate_version == rate
+                )
+                values.update(reserved=0, spent=tokens * per_token, input_tokens=tokens)
             db.execute(
                 requests.update()
                 .where(

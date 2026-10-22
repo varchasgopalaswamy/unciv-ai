@@ -6,6 +6,7 @@ import re
 import shutil
 
 from civ_agent.agent_history import HistoryStore
+from civ_agent.civilization_state import StateConflict, receipt_is_uncertain
 from civ_agent.tls import private_directory, write_private_json
 
 
@@ -61,7 +62,8 @@ async def barrier(service, paused):
 async def capture(service, id):
     if not service.gateway.paused or service.gateway.in_flight or service.gateway.calls_in_flight:
         raise ValueError("BARRIER_REQUIRED")
-    await service.chat.reconcile()
+    if await service.io.call(service.memory.pending):
+        raise StateConflict("CHECKPOINT_REQUEST_UNSETTLED")
     path = checkpoint_path(service, id)
     if path.exists():
         digest = await service.io.call(lambda: hashlib.sha256(path.read_bytes()).hexdigest())
@@ -85,6 +87,51 @@ async def capture(service, id):
 
         digest = await service.io.call(save)
     return {"id": id, "sha256": digest, "civilization": service.civilization}
+
+
+def require_resolution_barrier(service):
+    gateway = service.gateway
+    if not gateway.paused or gateway.in_flight or gateway.calls_in_flight:
+        raise StateConflict("BARRIER_REQUIRED")
+
+
+def require_abandoned_owner(service, request):
+    if any(job.id == request["job"] and not job.closed for job in service.gateway.jobs.values()):
+        raise StateConflict("REQUEST_OWNER_ACTIVE")
+
+
+async def pending_requests(service):
+    """Expose abandoned requests only to the trusted checkpoint coordinator."""
+    require_resolution_barrier(service)
+    await service.chat.reconcile()
+    async with service.gateway.dispatch:
+        require_resolution_barrier(service)
+        requests = await service.io.call(service.memory.pending, exclude_purpose="delivery")
+        for request in requests:
+            require_abandoned_owner(service, request)
+        return {
+            "civilization": service.civilization,
+            "requests": [
+                {"id": request["id"], "transport": request["transport"], "payload": json.loads(request["payload"])}
+                for request in requests
+            ],
+        }
+
+
+async def settle_request(service, payload):
+    if set(payload) != {"requestId", "receipt"} or not isinstance(payload["receipt"], dict):
+        raise StateConflict("INVALID_ARGUMENT")
+    require_resolution_barrier(service)
+    async with service.gateway.dispatch:
+        require_resolution_barrier(service)
+        requests = await service.io.call(service.memory.pending, exclude_purpose="delivery")
+        request = next((request for request in requests if request["id"] == payload["requestId"]), None)
+        if request is not None:
+            require_abandoned_owner(service, request)
+        if receipt_is_uncertain(payload["receipt"]):
+            raise StateConflict("RECEIPT_UNCERTAIN")
+        await service.io.call(service.memory.receipt, payload["requestId"], payload["receipt"])
+    return {"settled": payload["requestId"]}
 
 
 async def retain(service, id):

@@ -13,19 +13,25 @@ import json
 import math
 import os
 from decimal import Decimal
+from functools import partial
 from pathlib import Path
 
+from civ_agent.decisions_backends import BACKENDS
 from civ_agent.decisions_broker import read_decisions_key
 from civ_agent.decisions_ledger import NANODOLLARS_PER_INPUT_TOKEN, RATE_VERSION, estimate_tokens, fingerprint
 from civ_agent.diplomacy_decisions import (
-    MODEL,
     POLICY_VERSION,
     DecisionsClient,
-    request_body,
 )
+from civ_agent.diplomacy_decisions import request_body as routing_request_body
 from civ_agent.diplomacy_replay import evaluate, load_fixture
 from civ_agent.protocol import JsonObject
 from civ_agent.tls import private_directory, regular_file, write_private, write_private_json
+
+# This is the explicitly paid historical Luna trial; normal runtime selection
+# is owned by DecisionsSettings. Keep its frozen journals provider-specific.
+MODEL = BACKENDS["luna"].model
+request_body = partial(routing_request_body, backend="luna")
 
 
 def reuse_snapshot(root, fixture, fixture_bytes):

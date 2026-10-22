@@ -24,7 +24,7 @@ def accepted(evidence, settings):
     raw = {"name": "early_review", "type": "choice", "choice": "review", "confidence": 0.99}
     return {
         **request_metadata(body, evidence),
-        **parse_answers(body, {"answers": [raw]}, settings.decisions_min_confidence),
+        **parse_answers(body, {"answers": [raw]}, settings.decisions_acceptance_probability),
     }
 
 

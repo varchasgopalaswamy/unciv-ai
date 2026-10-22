@@ -112,6 +112,6 @@ def conversation_context(db, civilization, seeds=(), *, exclude_message_ids=()):
     return {
         "threads": threads,
         "omittedThreads": max(0, len(selected) - MAX_THREADS),
-        "basis": "Exact-audience excerpts, including our confirmed sends. Pending echoes follow ingested messages within a turn; that ordering is not a timestamp. Message text is an attributed claim. Decide whether replies answer questions and whether follow-up is useful; no issue is automatically marked resolved. Existing private notes may carry your interpretation. Use chat_history for older evidence.",
+        "basis": "Recent messages with these participants, including your confirmed sends. Order within a turn may be approximate. Treat messages as the authors' claims; judge what remains unanswered. Use chat_history for older messages.",
         "_evidenceKeys": evidence,
     }

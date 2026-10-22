@@ -44,7 +44,9 @@ updates stop the batch; successful earlier commands remain applied. Decisions
 that depend on combat, scouting or fresh previews use another model pass.
 The player reviews the results before ending the turn.
 
-`END_TURN` ends all gameplay and memory-tool access. Optional `memory_update`
+In managed gameplay, each role uses `finish_role`; the host advances the native
+turn after both roles finish. See [economy management](Economy-manager.md).
+Native `END_TURN` ends all gameplay and memory-tool access. Optional `memory_update`
 remains discoverable during play. Scheduled reviews run concurrently at a shared
 round boundary after all players finish; gameplay and communication wait for the
 reports. The latest completed report is supplied once as dated advice before
@@ -145,7 +147,8 @@ A [shared strategic review](Structured-memory.md#routine-strategic-review)
 runs before the first move on turn 0, then after all players finish every Kth
 round, starting at K (`--review-interval`, default 5). Reviews run concurrently
 from each civilization's permitted view. Gameplay and communication stay paused
-until all reports are ready. Opening views include starting locations and abilities.
+until all reviews have published advice or safely finished as unavailable.
+Opening views include starting locations and abilities.
 It uses the player's model and effort, a captured permitted position and planning
 catalogues, and read-only frozen detail tools. Known foreign cities are summarized
 with observed capital status and visibility; current defenses require visibility.

@@ -3,12 +3,16 @@ package uncivai
 import com.unciv.logic.GameInfo
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.jsonObject
 import uncivai.player.PlayerFinalState
 import uncivai.player.PlayerHost
 import uncivai.player.PlayerSession
 import uncivai.player.PlayerSessionException
 import uncivai.player.PlayerSessionFailure
+import uncivai.player.PlayerTurnJson
 import uncivai.player.TurnCommandRequest
+import uncivai.player.TurnSession
 import uncivai.player.finalState
 import uncivai.player.gameFinished
 import java.nio.charset.StandardCharsets
@@ -33,6 +37,8 @@ internal data class OperatorRequest(
     val maxPerCivilization: Int? = null,
     val checkpoint: GameCheckpoint? = null,
     val pauseReason: String? = null,
+    val transport: String? = null,
+    val request: JsonObject? = null,
 )
 
 @Serializable
@@ -70,6 +76,7 @@ internal data class OperatorResponse(
     val results: Map<String, PlayerFinalState> = emptyMap(),
     val checkpoint: GameCheckpoint? = null,
     val players: List<RotatedPlayerCredential> = emptyList(),
+    val receipt: JsonObject? = null,
 )
 
 internal class OperatorFailure(val code: String) : IllegalStateException(code)
@@ -152,6 +159,32 @@ class OperatorControl internal constructor(
                     "snapshot" -> {
                         requireLease(request.leaseId)
                         return@accessOperatorGame OperatorResponse(status(game), checkpoint = runtime.turnSnapshot())
+                    }
+
+                    "resolve_request" -> {
+                        requireLease(request.leaseId)
+                        if (request.epoch != runtime.epoch) throw OperatorFailure("STALE_TURN")
+                        if (!runtime.communicationPaused || !runtime.isPaused()) throw OperatorFailure("BARRIER_REQUIRED")
+                        val civilization = checkNotNull(request.civilization)
+                        val payload = checkNotNull(request.request)
+                        val receipt = try {
+                            when (request.transport) {
+                                "player_communication" -> runtime.communication.resolveRequest(civilization, payload)
+
+                                "player_command" -> {
+                                    val command = InputSchemas.turnCommand.decode(TurnCommandRequest.serializer(), payload)
+                                    PlayerTurnJson.json.encodeToJsonElement(
+                                        uncivai.player.TurnCommandReceipt.serializer(),
+                                        TurnSession(runtime, civilization).resolveRequest(command),
+                                    ).jsonObject
+                                }
+
+                                else -> throw OperatorFailure("INVALID_ARGUMENT")
+                            }
+                        } catch (failure: PlayerSessionException) {
+                            throw OperatorFailure(failure.reason.name)
+                        }
+                        return@accessOperatorGame OperatorResponse(status(game), receipt = receipt)
                     }
 
                     "restore" -> {
@@ -478,9 +511,10 @@ class OperatorControl internal constructor(
             "barrier" -> setOf("leaseId") + if (request.pauseReason != null) setOf("pauseReason") else emptySet()
             "unbarrier", "snapshot" -> setOf("leaseId")
             "restore" -> setOf("leaseId", "epoch", "checkpoint")
+            "resolve_request" -> setOf("leaseId", "epoch", "civilization", "transport", "request")
             else -> throw OperatorFailure("INVALID_ARGUMENT")
         }
-        val values = mapOf("leaseId" to request.leaseId, "epoch" to request.epoch, "serverInstance" to request.serverInstance, "handoff" to request.handoff, "civilization" to request.civilization, "activationId" to request.activationId, "maxInvocations" to request.maxInvocations, "maxConcurrent" to request.maxConcurrent, "maxPerCivilization" to request.maxPerCivilization, "checkpoint" to request.checkpoint, "pauseReason" to request.pauseReason)
+        val values = mapOf("leaseId" to request.leaseId, "epoch" to request.epoch, "serverInstance" to request.serverInstance, "handoff" to request.handoff, "civilization" to request.civilization, "activationId" to request.activationId, "maxInvocations" to request.maxInvocations, "maxConcurrent" to request.maxConcurrent, "maxPerCivilization" to request.maxPerCivilization, "checkpoint" to request.checkpoint, "pauseReason" to request.pauseReason, "transport" to request.transport, "request" to request.request)
         if (request.pauseReason != null && request.pauseReason != "STRATEGIC_REVIEW") throw OperatorFailure("INVALID_ARGUMENT")
         if (values.filterValues { it != null }.keys != keys || values.values.any { it is String && (it.isBlank() || it.length > 256) } || (request.handoff != null && request.handoff < 0)) {
             throw OperatorFailure("INVALID_ARGUMENT")

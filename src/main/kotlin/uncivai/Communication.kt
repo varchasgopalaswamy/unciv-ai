@@ -70,6 +70,23 @@ internal class Communication(private val runtime: GameExecutor) {
     internal val agreements = AgreementLifecycle(runtime)
     private val random = SecureRandom()
     private val state get() = runtime.communicationState
+
+    /** Serialized with normal mutations; the stored receipt also fences late arrivals. */
+    internal fun resolveRequest(civilization: String, arguments: JsonObject): JsonObject = runtime.accessGame { game ->
+        val request = InputSchemas.communication.decode(CommunicationRequest.serializer(), arguments)
+        if (request.epoch != runtime.epoch) throw PlayerSessionException(PlayerSessionFailure.STALE_EPOCH)
+        if (game.civilizations.none { it.civID == civilization && it.isHuman() && it.isMajorCiv() }) fail()
+        if (request.op !in setOf("send", "trade_offer", "trade_decide", "friendship_offer", "offer", "revise", "accept", "withdraw", "reconsider")) fail()
+        val key = "$civilization:${checkNotNull(request.requestId)}"
+        state.requests[key]?.let {
+            if (it.request != arguments) throw PlayerSessionException(PlayerSessionFailure.REQUEST_ID_CONFLICT)
+            return@accessGame it.response
+        }
+        val response = obj("error" to "REQUEST_CANCELLED")
+        state.requests[key] = CommunicationReceipt(arguments, response, CommunicationAudit(runtime.handoff, game.currentPlayer, System.currentTimeMillis()))
+        runtime.commitCheckpoint()
+        response
+    }
     private fun fail(): Nothing = throw PlayerSessionException(PlayerSessionFailure.INVALID_ARGUMENT)
     private fun shortId(prefix: String): String = shortCommunicationId(prefix, random) { candidate ->
         when (prefix) {
@@ -250,25 +267,30 @@ internal class Communication(private val runtime: GameExecutor) {
         val now = System.currentTimeMillis()
         val prior = state.jobs[id]
         if (prior != null && prior.civilization != civilization) fail()
-        val active = state.jobs.values.filter { it.expires > now }
         if (request.op == "job_claim" && prior == null) {
             val purpose = checkNotNull(request.purpose)
             val parent = request.parentJob?.let { state.jobs[it] ?: fail() }
             val openingReview = purpose == "review" && parent == null
-            if (parent != null && (purpose != "review" || parent.civilization != civilization || parent.purpose != "gameplay")) fail()
+            if (purpose == "economy" && (parent == null || parent.expires <= now || parent.epoch != runtime.epoch)) fail()
+            if (parent != null && (purpose !in setOf("review", "economy") || parent.civilization != civilization || parent.purpose != "gameplay")) fail()
             if (openingReview && runtime.accessGame { it.turns != 0 }) fail()
             val phaseAllowsJob = if (purpose == "review") runtime.communicationPaused && runtime.isPaused() else !runtime.communicationPaused
-            if (!phaseAllowsJob || state.invocations >= state.maxInvocations || active.size >= state.maxConcurrent ||
-                (purpose == "review" && runtime.accessGame(::gameFinished)) ||
-                active.count { it.civilization == civilization } >= state.maxPerCivilization || active.any { it.civilization == civilization && it.purpose == purpose }
+            if (!invocationCapacityAvailable(state.jobs, purpose, request.parentJob, now, state.invocations, state.maxInvocations))
+                return obj("granted" to false, "reason" to "MODEL_INVOCATION_LIMIT")
+            if (purpose == "gameplay" && (state.maxConcurrent < 2 || state.maxPerCivilization < 2))
+                return obj("granted" to false, "reason" to "ROLE_CAPACITY_TOO_SMALL")
+            if (!phaseAllowsJob || !computingCapacityAvailable(state.jobs, id, civilization, purpose, request.parentJob, now, state.maxConcurrent, state.maxPerCivilization) ||
+                (purpose == "review" && runtime.accessGame(::gameFinished))
             ) {
                 return obj("granted" to false)
             }
-            state.jobs[id] = runtime.accessGame { game -> CommunicationJob(civilization, purpose, now + 90000, epoch = parent?.epoch ?: runtime.epoch, handoff = if (openingReview) null else parent?.handoff ?: runtime.handoff, gameTurn = parent?.gameTurn ?: game.turns, claimedAtMs = now) }
+            state.jobs[id] = runtime.accessGame { game -> CommunicationJob(civilization, purpose, now + 90000, epoch = parent?.epoch ?: runtime.epoch, handoff = if (openingReview) null else parent?.handoff ?: runtime.handoff, gameTurn = parent?.gameTurn ?: game.turns, claimedAtMs = now, parentJob = request.parentJob) }
             state.invocations++
         } else if (prior != null) {
             if (request.op !in setOf("job_release", "job_report") && prior.expires <= now) return obj("granted" to false)
             if (request.op == "job_claim" && prior.purpose != request.purpose) fail()
+            if (request.op == "job_claim" && !prior.computing && !computingCapacityAvailable(state.jobs, id, civilization, prior.purpose, prior.parentJob, now, state.maxConcurrent, state.maxPerCivilization))
+                return obj("granted" to false)
             val report = request.telemetry
             val oldReport = prior.telemetry
             if (report != null && oldReport != null && report.sequence < oldReport.sequence) return obj("granted" to true)
@@ -292,6 +314,12 @@ internal class Communication(private val runtime: GameExecutor) {
                 usage = mergeUsage(prior.usage, request.usage),
                 telemetry = report ?: prior.telemetry,
                 reportedUsage = if (report != null) request.usage else prior.reportedUsage,
+                computing = when {
+                    request.op == "job_release" -> false
+                    request.op == "job_claim" -> true
+                    report != null -> report.phase !in setOf("WAITING_NEGOTIATION", "ROLE_FINISHED", "COMPLETED", "FAILED", "INTERRUPTED")
+                    else -> prior.computing
+                },
             )
         } else {
             fail()

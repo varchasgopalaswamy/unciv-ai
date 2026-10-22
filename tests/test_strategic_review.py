@@ -31,7 +31,7 @@ def assessment(victories=VICTORIES) -> JsonObject:
                 {
                     "assessment": "Whether factories repay their cost before Greece finishes remains unknown.",
                     "status": "unknown",
-                    "facts": [],
+                    "sources": [],
                 }
             ],
             "plans": [

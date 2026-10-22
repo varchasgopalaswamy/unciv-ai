@@ -18,19 +18,15 @@ def investment_comparison(
     result: JsonObject = {
         "horizonTurns": horizon,
         "basis": (
-            "Compare continuing the current output for this horizon with starting the named construction now. "
-            "Rates, population and assignments are held fixed. Completion benefits begin after the estimated build "
-            "turns. The main comparison ends with no conversion; following scenarios compare converting now with "
-            "building/purchasing and then explicitly selecting that conversion. They use native post-building rates. "
-            "This is a static comparison, not a growth forecast or a recommendation. One-time grants, subsequent "
-            "builds, specialist staffing and rival responses are excluded. Empire effects are reported separately "
-            "as an immediate completion preview, outside the cumulative city comparison. Gold yields already "
-            "include maintenance; purchase cost is reported separately. Purchase assumes immediate completion. "
-            "Queue append, continuing and moving an existing item are separate operations; a hypothetical follow-up "
-            "does not change or resume the actual queue. Break-even reports the first "
-            "turn at or after completion that repays construction-period yield losses when the later rate improves; "
-            "it does not value the production or gold spent. Happiness is a level change, not a cumulative yield. "
-            "Only stats present on both sides are compared."
+            "Compare today's output with starting this construction now, keeping rates, population and citizen "
+            "assignments fixed. Benefits begin after the estimated build time. This is a comparison, not a forecast "
+            "or recommendation: it leaves out growth, one-time rewards, later builds, new specialists and rival responses. "
+            "Effects on the empire are shown separately as if completed now. Gold includes maintenance; purchasing "
+            "costs extra and completes immediately. The main comparison uses no production conversion. Following "
+            "scenarios compare converting now with building or buying first, then choosing that conversion. "
+            "These scenarios leave the actual queue unchanged; adding, moving and continuing an item are separate choices. "
+            "Break-even means recovering yields lost while building, once later yields improve; it does not repay "
+            "the production or purchase cost. Happiness is a level, not an accumulating yield. Only shared stats are compared."
         ),
     }
     completion = estimate.get("completion")
@@ -140,24 +136,19 @@ def investment_comparison(
 
 
 ESTIMATE_BASIS = (
-    "Completion compares ongoing city yields at current population and citizen assignments, with no "
-    "production conversion or construction-specific bonus on either side. Food is net surplus; Gold "
-    "includes maintenance. Growth shows native rounded food accumulation and growth/starvation times "
-    "if completed now. Specialist slots are unstaffed opportunities. oneTime separately reports native completion grants if finished now, including free "
-    "buildings, units, choices, population and stored yields. They are not included in the passive yield "
-    "comparison. Empire previews separately include native happiness and food effects in owned cities; future growth "
-    "and citizen reassignment are excluded. Following previews explicitly select an available conversion after "
-    "completion and include its native building modifiers; they do not alter the real queue. While-building changes compare starting this item with "
-    "the current construction. Turns assume starting now, using stored production and overflow, and "
-    "exclude time behind earlier queue entries. Blocked choices remain unavailable. Null construction time means "
-    "no current completion estimate. Omitted yield changes are zero at displayed precision."
-    " Named victory projects and spaceship parts include costs and requirements even before their technology "
-    "unlocks; their hypothetical build times exclude time to satisfy those prerequisites."
-    " Queue progress supplies production for individual queued copies. In named construction reads, "
-    "a progress row includes production only when it differs from the entry's production estimate."
-    " appendProduction is a separate native estimate for appending a new copy: it excludes work invested "
-    "in an already queued copy. Its start-now estimate uses current overflow and excludes queue delay; "
-    "it is not the completion time of an item waiting behind the current queue."
+    "Estimates keep current population and citizen assignments fixed. Completion compares normal city yields "
+    "before and after building, without production conversion or construction-specific bonuses. Food is surplus "
+    "after consumption; Gold includes maintenance. Growth shows rounded food accumulation and time to growth "
+    "or starvation if completed now. Specialist slots need citizens to fill them. One-time rewards and empire "
+    "happiness and food effects are shown separately, not added to ongoing city yields. Future growth and new "
+    "citizen assignments are excluded. Following scenarios show choosing a production conversion after completion, "
+    "including building bonuses; the real queue stays unchanged. While-building changes compare starting this "
+    "item with the current construction. Build times assume starting now, with the stated work and overflow. "
+    "They exclude waiting behind other items or meeting missing prerequisites, including for locked victory "
+    "projects and spaceship parts. Unavailable choices remain unavailable; a missing time means no estimate. "
+    "Unlisted yield changes round to zero. A queued copy's progress is shown separately when it differs from "
+    "the general estimate. Appending adds another copy without reusing work already invested in a queued copy. "
+    "Its estimate uses current overflow and excludes queue delay."
 )
 
 

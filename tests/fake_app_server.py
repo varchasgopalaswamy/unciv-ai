@@ -84,6 +84,7 @@ async def exercise_trade(civilization, communication, view, call):
 
 async def main():
     arguments = sys.argv[1:]
+    economy = "economy" in Path.cwd().name
     if "app-server" not in arguments:
         raise RuntimeError("Fake executable only supports app-server")
     listen = arguments[arguments.index("--listen") + 1]
@@ -96,7 +97,7 @@ async def main():
 
     def record(method, params):
         value = dict(
-            method=method,
+            method=("economy/" + method if economy else method),
             params=params,
             argv=arguments,
             tokenHash=hashlib.sha256(token.encode()).hexdigest(),
@@ -125,7 +126,8 @@ async def main():
         async def report_usage():
             usage = dict(inputTokens=10, cachedInputTokens=2, outputTokens=3, reasoningOutputTokens=0, totalTokens=13)
             turns = sum(
-                row.get("method") == "turn/start" and row.get("params", {}).get("threadId") == current["thread"]
+                row.get("method") == ("economy/turn/start" if economy else "turn/start")
+                and row.get("params", {}).get("threadId") == current["thread"]
                 for row in (json.loads(line) for line in trace.read_text().splitlines())
             )
             total = {key: value * turns for key, value in usage.items()}
@@ -217,7 +219,7 @@ async def main():
                             {
                                 "assessment": "The timing of rival development remains uncertain.",
                                 "status": "unknown",
-                                "facts": [],
+                                "sources": [],
                             }
                         ],
                         "plans": [
@@ -327,6 +329,11 @@ async def main():
                         )
                         return value
 
+                if economy:
+                    await call("finish_role", {})
+                    await report_usage()
+                    await complete("completed")
+                    return
                 view = (
                     await call("chat_read", {"includeContext": True})
                     if communication
@@ -359,7 +366,7 @@ async def main():
                 if continuation:
                     result = await call("player_command", {"kind": "END_TURN"})
                 elif scenario.get("name") == "CONCURRENT_TRADE_TEST":
-                    assert "recovery.reads" in current["instructions"]
+                    assert "Follow error recovery instructions" in current["instructions"]
                     result = await exercise_trade(match.group(1), communication, view, call)
                 else:
                     assert not communication
@@ -368,7 +375,7 @@ async def main():
                     await asyncio.Event().wait()
                 if "error" in result:
                     raise RuntimeError("Gateway rejected fake gameplay")
-                behavior = result["behavior"]
+                behavior = result.get("behavior", "slow_report" if scenario.get("testSlowCompletion") else "complete")
                 if behavior == "slow_report":
                     assert "memoryPhase" not in result
                     await asyncio.sleep(4)

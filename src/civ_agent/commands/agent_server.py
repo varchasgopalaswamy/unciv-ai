@@ -99,6 +99,12 @@ def parser(*, add_help: bool = True) -> argparse.ArgumentParser:
         metavar="LEVEL",
         help="Reasoning effort for background diplomacy; defaults to at most medium for known effort levels",
     )
+    result.add_argument(
+        "--economy-model",
+        type=json.loads,
+        default=None,
+        help="Economy role provider/model/reasoning_effort JSON overrides",
+    )
     result.add_argument("--native-advice-enabled", action=argparse.BooleanOptionalAction, default=False)
     add_decisions_arguments(result, include_memory=False)
     return result
@@ -176,6 +182,7 @@ def run(args: argparse.Namespace) -> int:
             provider=args.provider,
             reasoning_effort=args.reasoning_effort,
             communication_reasoning_effort=args.communication_reasoning_effort,
+            economy_model=args.economy_model,
             review_interval=args.review_interval,
             review_attempts=args.review_attempts,
             strategy_guide=args.strategy_guide,

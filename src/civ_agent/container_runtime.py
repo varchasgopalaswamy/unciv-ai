@@ -283,7 +283,7 @@ def agent(civilization):
             if value:
                 arguments.append("--" + key.replace("_", "-"))
         else:
-            arguments += ["--" + key.replace("_", "-"), str(value)]
+            arguments += ["--" + key.replace("_", "-"), json.dumps(value) if isinstance(value, dict) else str(value)]
     return agent_server.run(agent_server.parser().parse_args(arguments))
 
 

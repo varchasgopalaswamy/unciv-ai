@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, Mock
 
-from civ_agent.agent_service import AgentService, ServiceError
+from civ_agent.agent_service import AgentService, ProcessDrainError, ServiceError
 from tests.test_agent_service import FakeCodex, FakeFactory
 
 
@@ -24,6 +24,7 @@ class ReplayCodex(FakeCodex):
         result = await super().request(method, payload)
         if method == "turn/start" and self.factory.burst:
             turn_id = result["turn"]["id"]
+            await self.factory.service.gateway.invoke(self.job, "finish_role", {}, "early-finish:" + turn_id)
             await self.notification(
                 "thread/tokenUsage/updated",
                 {
@@ -58,6 +59,8 @@ class ReplayFactory(FakeFactory):
         self.burst = False
 
     def __call__(self, executable, workspace, mcp_url, ca_file, notification):
+        if "economy" in workspace.name:
+            return super().__call__(executable, workspace, mcp_url, ca_file, notification)
         process = ReplayCodex(self, workspace, notification)
         self.instances.append(process)
         return process
@@ -105,10 +108,9 @@ class CompletionCorrelationTests(unittest.IsolatedAsyncioTestCase):
         }
 
     async def wait_running(self):
-        for _ in range(100):
-            if self.service.status()["phase"] != "STARTING":
-                break
-            await asyncio.sleep(0.001)
+        async with asyncio.timeout(4):
+            while self.service.status()["phase"] == "STARTING":
+                await asyncio.sleep(0.001)
         self.assertEqual("RUNNING", self.service.status()["phase"])
 
     async def complete(self, turn):
@@ -194,6 +196,30 @@ class CompletionCorrelationTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.service.io.closed)
         self.assertEqual(2, process.close.await_count)
         self.assertEqual("STOP_UNCONFIRMED", self.service.records["failed"]["error"])
+
+    async def test_gameplay_with_confirmed_exit_and_stalled_history_keeps_accurate_failure_and_ownership(self):
+        self.factory.complete = False
+        await self.service.start(self.payload())
+        await self.wait_running()
+        process = self.factory.instances[-1]
+        original_close = process.close
+        process.close = AsyncMock(side_effect=ProcessDrainError())
+        try:
+            await self.service._notification(
+                "turn/completed", {"threadId": "thread-one", "turn": {"id": "turn-1", "status": "completed"}}
+            )
+            assert self.service.active_task is not None
+            with self.assertRaises(ProcessDrainError):
+                await asyncio.wait_for(asyncio.shield(self.service.active_task), 2)
+            record = self.service.records["first"]
+            self.assertEqual("HISTORY_DRAIN_FAILED", record["error"])
+            self.assertEqual("RUNNING", record["phase"])
+            self.assertNotIn("usageComplete", record)
+            self.assertIs(self.service.process, process)
+            self.assertFalse(self.service.io.closed)
+            self.assertFalse(self.service.diagnostics.closed)
+        finally:
+            process.close = original_close
 
     async def test_foreign_turn_usage_is_excluded_and_current_multi_request_usage_accumulates(self):
         self.factory.complete = False

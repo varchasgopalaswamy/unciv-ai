@@ -689,7 +689,8 @@
       "enum": [
         "gameplay",
         "review",
-        "communication"
+        "communication",
+        "economy"
       ]
     },
     "usage": {

@@ -5,11 +5,11 @@ observations come first in the changing part of the turn preload; historical
 strategy follows as data. Stable instructions and capabilities remain at the
 front for prompt caching.
 
-**Memory format 11 removes cached-observation command dependencies and requires
+**Memory format 12 adds economy city plans and concurrent role lifecycle state and requires
 fresh private stores in a new match directory.** Older
 databases and checkpoints are rejected without modification. There is no legacy
 runtime or automatic migration. Preserve old match directories for auditing.
-Restart and turn rewind work within format 11. Preserve existing benchmark images
+Restart and turn rewind work within format 12. Preserve existing benchmark images
 and stores; the operator dashboard can still render their older reports.
 
 SQLite remains authoritative, with SQLAlchemy Core owning access. Immutable
@@ -32,6 +32,7 @@ job's latest native view; that reference does not mark it as model-delivered evi
 | `handoff` | Unfinished work or questions for the next game turn | Replace its complete content; at most one active |
 | `belief` | A claim with uncertainty and optional historical citations | Amend changed fields or retire |
 | `note` | Useful retained information, optionally referring to another memory ID | Amend changed fields or retire |
+| `city_plan` | Economy-owned city choices, reasons, expectations, and receipt-backed confirmations | Amend changed fields or retire |
 
 The agent chooses its strategy; the service neither scores it nor requires a
 particular victory route. There is no separate persistent `plan`, `soul` or

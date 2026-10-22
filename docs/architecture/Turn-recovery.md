@@ -2,7 +2,8 @@
 
 Recovery retains one coordinated checkpoint at the start of the active player's
 turn. `game resume` rewinds an interrupted turn, including player memories and
-shared diplomacy, and starts a new conversation. Completed turns are never replayed.
+shared diplomacy, economy city plans, requests, overrides, and role completion.
+It starts fresh main and economy conversations. Completed turns are never replayed.
 The host's durable handoff receipt determines whether a turn completed.
 
 The checkpoint is published before an activation can start. It references immutable
@@ -13,6 +14,21 @@ Usage, retry counts and operator diagnostics remain outside the rewind.
 Accounting retains accepted completion flags as well as counters: restoring an
 older activation record cannot downgrade a report for work that already completed.
 Host rejections leave reports pending and surface as telemetry failures.
+
+Before capturing either side, the coordinator fences mutations and reconciles
+abandoned requests. Receipt lookup remains read-only: `NOT_ENACTED` is provisional.
+For a request whose owner is no longer active, the operator resolves its exact
+identity under the host executor. A completed action returns its existing receipt;
+an absent action gets a durable `REQUEST_CANCELLED` receipt. That same receipt
+rejects late arrivals without executing them. Gameplay actions are never replayed
+to discover their outcome. Routed messages retain their delivery worker's separate
+reconciliation path.
+
+The service saves the authoritative result before the host and player snapshots
+are taken. Lost resolution responses can be retried with the same identity, and
+the resulting cancellation survives process restart and checkpoint restore.
+An active owner, unresolved host failure or conflicting receipt still prevents
+checkpoint publication. Player snapshot capture makes no host calls.
 
 The coordinator renews the host lease while waiting for each service's checkpoint
 operations, including restores that take longer than the lease duration. If renewal
@@ -60,8 +76,9 @@ Other recovery boundaries require different checks:
 Opening reviews capture each civilization's own starting view before any player
 moves, then run concurrently. Every K rounds, starting at K (default 5), the
 scheduler waits for all players and active conversations to finish, freezes play
-and communication, and captures fresh inputs for concurrent reviews. Every report
-must finish before the shared phase is released. Reviewers can read only the captured position and planning
+and communication, and captures fresh inputs for concurrent reviews. Each review
+must publish advice or safely finish as unavailable before the shared phase is
+released. Reviewers can read only the captured position and planning
 catalogues, and cannot write notebook entries.
 
 Human text messages submitted during review wait in a checkpointed, sender-private
@@ -73,17 +90,20 @@ Pending reviews restart from saved inputs after a stop; completed reports are
 reused. The next gameplay checkpoint includes the completed reports and reviewed
 round marker, so rewinding that turn does not repeat its preceding review phase.
 Attempts and paid usage survive rewind. Completion atomically saves advice and removes input.
-`--review-attempts` defaults to 3; exhaustion stops for inspection.
+There is at most one correction after the initial attempt; `--review-attempts 1`
+disables correction. Exhaustion marks advice `UNAVAILABLE` and retains failed
+inputs for inspection, without blocking safe release of the shared phase.
 
 ## Stops
 
 - An active-player crash, deadline or incomplete turn stops gameplay. Explicit
   resume restores the turn checkpoint and starts a fresh attempt.
 - A lost action response is reconciled against its durable receipt first.
-- A failed strategic reviewer can retry within the shared review phase. Gameplay
-  and communication wait until all reports are ready.
-- Broken invariants, persistence failures and exhausted
-  review retries stop for inspection; they are not automatic gameplay retry loops.
+- An invalid strategic report can receive one correction with feedback. Gameplay
+  and communication wait until all reviews have published or safely become unavailable.
+- Broken invariants, persistence or input-preparation failures, and unconfirmed
+  process shutdown or history drain stop for inspection. Unavailable advice is
+  not an automatic gameplay retry loop.
 - Operator pauses and budget limits stop work until explicit resume.
 
 This replaces historical round checkpoints and the manual round-rollback command.

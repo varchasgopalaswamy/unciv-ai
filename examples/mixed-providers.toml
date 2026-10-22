@@ -11,6 +11,7 @@ map_size = "Small"
 city_states = 2
 
 [agents]
+decisions_backend = "jev"
 provider = "openai"
 model = "gpt-6-luna"
 reasoning_effort = "medium"

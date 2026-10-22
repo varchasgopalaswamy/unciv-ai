@@ -116,9 +116,9 @@ def development_changes(before: JsonObject | None, after: JsonObject) -> JsonObj
         if value is not None and before["totals"][key] is not None
     }
     result["basis"] = (
-        "Endpoint observations, not interval averages. Production sums displayed city yields with current construction modifiers. "
-        "Ownership/building additions can include purchases, gifts or captures; removals do not establish destruction. "
-        "Recent accepted actions provide additional context."
+        "Rates describe the observed turns, not intervening averages. Production includes current construction "
+        "bonuses. Purchases, gifts or captures may add cities/buildings; missing ones need not be destroyed. "
+        "Check recent actions for context."
     )
 
     def changes(key, rows):
@@ -278,11 +278,11 @@ def upcoming_events(snapshot: JsonObject, social: JsonObject) -> JsonObject:
             "horizonTurns": TIMELINE_TURNS,
             "happinessNow": (snapshot.get("economy") or {}).get("happiness"),
             "basis": (
-                "Current research, active non-wonder construction and first city growth/starvation only; later queue entries are not scheduled here. "
-                "ETAs use current rates. Unlocks can require resources or other prerequisites. Building yield changes compare the current city; "
-                "they are not additive forecasts of future happiness. Growth can change happiness; use the current happiness budget. "
-                "Trade terms use native remaining durations; city-state estimates assume current influence decay without other players' intervention. "
-                "Wonder estimates remain under wonderOpportunities."
+                "Dates use current rates for research, active construction and next growth/starvation. Later queue "
+                "entries are excluded; see wonderOpportunities for wonders. Unlocks may have other requirements. "
+                "Building gains assume today's city; do not add them into a happiness forecast. Allow for growth "
+                "using the happiness budget. Trade dates use remaining durations; city-state dates assume current "
+                "influence decay without outside intervention."
             ),
             "events": events[:MAX_EVENTS],
             "omittedEvents": max(0, len(events) - MAX_EVENTS),

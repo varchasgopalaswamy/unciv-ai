@@ -1,4 +1,4 @@
-"""Regressions from the benchmark's population/city-count and planning failures."""
+"""Reviews cite the permitted observations they actually received."""
 
 import json
 
@@ -6,9 +6,8 @@ import pytest
 
 from civ_agent.memory_records import public_record
 from civ_agent.memory_store import RecordStore
-from civ_agent.observations import overview
-from civ_agent.review_grounding import MaterialAssumption, named_facts
-from civ_agent.strategic_review import parse_advice, review_named_facts
+from civ_agent.review_grounding import MaterialAssumption, ReviewEvidence, named_facts
+from civ_agent.strategic_review import parse_advice
 from tests.test_strategic_review import assessment
 
 
@@ -47,6 +46,14 @@ def facts():
     )
 
 
+def assumption_report(source, *, status="inferred"):
+    value = assessment()
+    value["review"]["materialAssumptions"] = [
+        {"assessment": "Founding here avoids travel and offers useful luxuries.", "status": status, "sources": source}
+    ]
+    return value
+
+
 def test_population_never_establishes_foreign_city_count_or_current_stale_sightings():
     values = {fact["id"]: fact for fact in facts()}
     assert values["rival/Greece/totalPopulation"]["value"] == 3
@@ -57,92 +64,72 @@ def test_population_never_establishes_foreign_city_count_or_current_stale_sighti
     assert not any(fact["subject"] == "Sparta" for fact in facts())
 
 
-@pytest.mark.parametrize(
-    "reference",
-    [
-        {"id": "rival/Greece/empireCityCount", "value": 3},
-        {"id": "rival/Greece/hiddenCities", "value": 3},
-        {"id": "rival/Greece/totalPopulation", "value": True},
-    ],
-)
-def test_review_rejects_invented_or_misquoted_facts(reference):
-    value = assessment()
-    value["review"]["materialAssumptions"] = [
-        {"assessment": "Greece's expansion changes our opportunity window.", "status": "inferred", "facts": [reference]}
-    ]
-    with pytest.raises(ValueError, match="STRATEGIC_REVIEW_FACT"):
-        parse_advice(json.dumps(value), position(), facts=facts())
-
-
-def test_review_preserves_named_evidence_without_certifying_interpretation():
-    value = assessment()
-    value["review"]["materialAssumptions"] = [
-        {
-            "assessment": "Greece's population may make a race for land worthwhile.",
-            "status": "inferred",
-            "facts": [{"id": "rival/Greece/totalPopulation", "value": 3}],
+def test_opening_settlement_report_can_cite_rich_read_without_inventing_fact_paths():
+    evidence = ReviewEvidence({"observation": {"turn": 0}})
+    settlement = {
+        "settlement": {
+            "candidates": [
+                {
+                    "siteStatus": "ELIGIBLE",
+                    "route": {"estimatedTurns": 0},
+                    "score": 165,
+                    "unclaimedLuxuryHappinessIfConnected": 8,
+                }
+            ]
         }
-    ]
-    parsed = parse_advice(json.dumps(value), position(), facts=facts())
-    assumption = parsed["review"]["materialAssumptions"][0]
-    assert assumption["status"] == "inferred"
-    assert assumption["facts"][0]["metric"] == "totalPopulation"
-    assert assumption["facts"][0]["observedTurn"] == 20
-    assumption["source"] = "review:20:1"
-    pinned = RecordStore.pin({"records": {}, "strategicAdvice": {"asOfTurn": 20, **parsed}}, ["review:20:1"])
-    assert pinned[0]["assessment"]["facts"][0]["metric"] == "totalPopulation"
-    assert pinned[0]["assessment"]["status"] == "inferred"
+    }
+    delivered = evidence.deliver("unit_details", settlement, {"unit": "unit2", "sections": ["settlement"]})
+    report = parse_advice(json.dumps(assumption_report([delivered["source"]])), {"turn": 0}, evidence=evidence)
+    source = report["review"]["materialAssumptions"][0]["sources"][0]
+    assert source["name"] == "unit_details" and source["observedTurn"] == 0
+    assert source["arguments"]["unit"] == "unit2"
+    assert "data" not in source
+    assert report["_evidence"][source["id"]]["data"] == settlement
+    assert delivered["data"] == settlement
+
+
+@pytest.mark.parametrize("kind", ["unknown", "undelivered", "other_job", "duplicate"])
+def test_report_rejects_sources_not_delivered_to_this_review(kind):
+    evidence = ReviewEvidence({"observation": position()})
+    ours = evidence.deliver("player_turn", {"cities": []})["source"]
+    foreign = ReviewEvidence({"observation": position()}).deliver("player_turn", {"cities": []})["source"]
+    refs = {
+        "unknown": ["invented"],
+        "undelivered": ["settlement/candidates/0/score"],
+        "other_job": [foreign],
+        "duplicate": [ours, ours],
+    }[kind]
+    with pytest.raises(ValueError, match="STRATEGIC_REVIEW_SOURCE"):
+        parse_advice(json.dumps(assumption_report(refs)), position(), evidence=evidence)
+
+
+def test_sources_are_immutable_deduplicated_and_only_retained_when_cited():
+    evidence = ReviewEvidence({"observation": position()})
+    data = {"settlement": {"score": 165}}
+    first = evidence.deliver("unit_details", data, {"unit": "unit2"})
+    again = evidence.deliver("unit_details", data, {"unit": "unit2"})
+    unused = evidence.deliver("unit_details", {"hiddenToModel": "not cited"}, {"unit": "unit1"})
+    assert first == again
+    data["settlement"]["score"] = -1
+    first["data"]["settlement"]["score"] = -2
+    value = assumption_report([first["source"]])
+    value["review"]["materialAssumptions"] *= 2
+    report = parse_advice(json.dumps(value), position(), evidence=evidence)
+    assert set(report["_evidence"]) == {first["source"]}
+    assert unused["source"] not in report["_evidence"]
+    assert report["_evidence"][first["source"]]["data"]["settlement"]["score"] == 165
 
 
 def test_unsupported_assumptions_remain_unknown():
     with pytest.raises(ValueError):
-        MaterialAssumption(assessment="A rival owns three cities", status="inferred", facts=[])
-    assert MaterialAssumption(assessment="A rival's total city count is unknown", status="unknown", facts=[])
+        MaterialAssumption(assessment="A rival owns three cities", status="inferred", sources=[])
+    assert MaterialAssumption(assessment="A rival's total city count is unknown", status="unknown", sources=[])
 
 
-def test_fact_references_are_unique():
-    value = assessment()
-    reference = {"id": "rival/Greece/totalPopulation", "value": 3}
-    value["review"]["materialAssumptions"] = [
-        {"assessment": "Population matters", "status": "inferred", "facts": [reference, reference]}
-    ]
-    with pytest.raises(ValueError, match="STRATEGIC_REVIEW_FACT"):
-        parse_advice(json.dumps(value), position(), facts=facts())
-
-
-def test_runtime_facts_use_permitted_raw_snapshot_before_overview_compaction():
-    raw = position()
-    # Review startup's overview removes map tiles and flattens city development.
-    compact = overview(raw)
-    result = review_named_facts(
-        {
-            "civilization": "France",
-            "observation": raw,
-            "reads": {
-                "player_turn": compact,
-                "victory_progress": {
-                    "metrics": [{"name": "Population"}],
-                    "rankings": {"rows": [{"civilization": "Greece", "values": [3]}]},
-                },
-            },
-        }
-    )
-    values = {fact["id"]: fact["value"] for fact in result}
-    assert values["rival/Greece/visibleCityCountLowerBound"] == 1
-    assert values["rival/Greece/observedCityLocationsCount"] == 2
-    assert values["city/ours/population"] == 3
-
-
-def test_adopting_review_preserves_dated_sources_after_later_reviews():
-    value = assessment()
-    value["review"]["materialAssumptions"] = [
-        {
-            "assessment": "Greece's population may make expansion worthwhile.",
-            "status": "inferred",
-            "facts": [{"id": "rival/Greece/totalPopulation", "value": 3}],
-        }
-    ]
-    advice = parse_advice(json.dumps(value), position(), facts=facts())
+def test_adopting_review_retains_compact_dated_sources_after_later_reviews():
+    evidence = ReviewEvidence({"observation": position()})
+    delivered = evidence.deliver("victory_progress", {"Population": 3})
+    advice = parse_advice(json.dumps(assumption_report([delivered["source"]])), position(), evidence=evidence)
     advice["review"]["materialAssumptions"][0]["source"] = "review:20:1"
     store = RecordStore(None)
     content = {
@@ -153,10 +140,60 @@ def test_adopting_review_preserves_dated_sources_after_later_reviews():
     adopted = store.content(content, {"records": {}, "strategicAdvice": {"asOfTurn": 20, **advice}})
     replaced = store.content(content, {"records": {}, "strategicAdvice": None}, adopted)
     assert not replaced["unverifiedSources"]
-    evidence = replaced["_assumptions"][0]
-    assert evidence["reviewTurn"] == 20
-    assert evidence["assessment"]["facts"][0]["observedTurn"] == 20
-    assert evidence["assessment"]["status"] == "inferred"
     visible = public_record("mem1", {"category": "strategy", "body": replaced})["reviewEvidence"][0]
-    assert visible["facts"][0]["metric"] == "totalPopulation"
     assert visible["source"] == "review:20:1" and visible["reviewTurn"] == 20
+    source = visible["sources"][0]
+    assert source["observedTurn"] == 20 and source["sha256"]
+    assert "data" not in source and "_evidence" not in visible
+
+
+def test_exact_source_archive_and_compact_adopted_evidence_survive_checkpoint(tmp_path):
+    from sqlalchemy import select
+
+    from civ_agent import memory_schema as tables
+    from civ_agent.review_store import ReviewStore
+    from tests.test_structured_memory import setup
+
+    memory = setup(tmp_path)
+    store = ReviewStore(memory)
+    evidence = ReviewEvidence({"observation": position()})
+    original = {"settlement": {"score": 165, "siteStatus": "ELIGIBLE"}}
+    delivered = evidence.deliver("unit_details", original, {"unit": "unit2"})
+    report = parse_advice(json.dumps(assumption_report([delivered["source"]])), position(), evidence=evidence)
+    store.prepare("review20", {"turn": 20, "observation": position()}, {}, 60)
+    store.complete("review20", report)
+    snapshot = memory.snapshot("gameplay", 21)
+    assert "_evidence" not in snapshot["strategicAdvice"]
+    assert "siteStatus" not in json.dumps(snapshot["strategicAdvice"])
+    memory.finish_job("game", True)
+    memory.start_job("adopt", "gameplay", {}, game_turn=21)
+    result = memory.patch(
+        "adopt",
+        [
+            {
+                "op": "create",
+                "content": {
+                    "type": "strategy",
+                    "assessment": "Settle here",
+                    "assumptions": [{"text": "The current site is promising", "source": "review:20:1"}],
+                },
+            }
+        ],
+    )
+    assert not result.get("error")
+    checkpoint = tmp_path / "review-sources.json"
+    digest = memory.backup(checkpoint)
+    store.prepare("review25", {"turn": 25, "observation": {"turn": 25}}, {}, 60)
+    store.complete("review25", assessment())
+    memory.restore(checkpoint, digest, "restored")
+    with memory.transaction() as db:
+        archived = json.loads(
+            db.execute(select(tables.reviews.c.advice).where(tables.reviews.c.job == "review20")).scalar_one()
+        )
+        assert archived["_evidence"][delivered["source"]]["data"] == original
+        records = RecordStore(db).all(categories={"strategy"}, project=False)
+        adopted = next(iter(records.values()))
+        visible = public_record("mem1", adopted)["reviewEvidence"][0]
+        assert visible["sources"][0]["id"] == delivered["source"]
+        assert "data" not in visible["sources"][0]
+        assert visible["source"] == "review:20:1"

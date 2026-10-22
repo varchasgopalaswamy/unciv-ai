@@ -11,7 +11,8 @@ and action records cannot reconstruct.
 Each civilization receives an opening review before its first move on turn **0**.
 These reviews run concurrently, subject to the shared job limits. Each uses only
 that civilization's revealed starting area, units and ability profile, plus
-permitted planning information. Gameplay waits until all opening reports are ready.
+permitted planning information. Gameplay waits until each opening review has
+published advice or safely finished as unavailable.
 
 `--review-interval K` defaults to **5**. Subsequent reviews are prepared after all
 players finish rounds K, 2K, 3K, and so on, including built-in AI processing.
@@ -22,8 +23,9 @@ A civilization has at most one pending review. For example, Rome, Greece and
 France all finish turn 5 before any turn-5 review starts. Existing conversations
 finish, new communication jobs are held, and the scheduler freezes gameplay and
 communication. The services then capture fresh permitted views at the turn-6
-boundary and run their reviews concurrently. All reports must finish before play
-or communication resumes. Each report's `asOfTurn` names the completed round.
+boundary and run their reviews concurrently. Each review must publish advice or
+safely finish as unavailable before play or communication resumes. Each report's
+`asOfTurn` names the completed round.
 
 Humans may submit plain chat during this pause. The host checkpoints it in a
 sender-private queue, outside all recipient streams and review inputs. Releasing
@@ -55,7 +57,7 @@ are identified as proposals, without implying acceptance or native peace effects
 
 Capturing data is service work, not another model request. Opening inputs become
 pending immediately, with no preceding gameplay job or action history. Reconnecting
-reuses pending inputs or a completed report. Periodic reviews require a confirmed
+reuses pending inputs or the recorded review outcome. Periodic reviews require a confirmed
 gameplay handoff for that civilization in the completed round. No review is
 captured by `END_TURN`. Late message arrivals are included directly from the host
 without advancing the paused inbox listener's cursor.
@@ -116,6 +118,13 @@ failed attempts cannot advance it. Turn recovery restores
 the matching baseline, and the full review inputs are still deleted on completion.
 
 ## Reports and diplomatic advice
+
+Starting observations and frozen tool results carry source labels belonging to
+that reviewer. Material assumptions cite any of those delivered sources and
+distinguish inference from unknown premises. Validation checks provenance rather
+than certifying the interpretation or limiting evidence to the named-fact summary.
+Cited payloads are retained once in the private report archive; later advice and
+adopted memory keep compact dated references.
 
 Reviews compare up to three concrete `plans`, each with an objective, required
 investment, expected observations, first actions, relative outcome and risks.
@@ -195,9 +204,13 @@ already includes the reports. Reports and temporary inputs change atomically;
 inputs are removed only after the report is saved.
 
 A restarted reviewer uses a fresh conversation and the same frozen inputs.
-`--review-attempts` defaults to 3. Attempts and spending survive a rewind;
-exhaustion is exposed through service health and stops the scheduler for
-inspection. Explicitly increasing the limit permits further attempts on resume.
+An invalid report gets actionable feedback and at most one correction, normally
+in the same conversation with the observations already read. `--review-attempts 1`
+disables correction; larger values do not expand the two-attempt cap. Attempts
+and spending survive a rewind. Exhaustion marks the review `UNAVAILABLE`, retains
+failed inputs and diagnostics, and lets the shared phase release when otherwise
+safe. Later player context exposes that status; any earlier completed report
+keeps its original date and the completed-review baseline is not advanced.
 Pausing stops model processes and keeps pending inputs without launching retries.
 Prompt and output-schema preparation failures stop immediately as
 `REVIEW_PROMPT_FAILED`, retaining their exception causes in diagnostics. They are
@@ -206,13 +219,23 @@ reads use the stored model-facing `proposalId` field when selecting current
 commitments and consents; the native communication boundary uses `proposal`.
 Persistence failures and unconfirmed process shutdown stop immediately; another
 reviewer is not launched while the previous process might still be running.
+Structured report output also has size and consecutive-whitespace guards.
+Accepted stream fragments are combined without changing text or crossing usage,
+tool or lifecycle events, and the notification queue remains bounded. Confirming
+process exit is separate from draining accepted history/accounting events:
+`STOP_UNCONFIRMED` identifies the former, while `REVIEW_HISTORY_DRAIN_FAILED`
+identifies the latter. A failed drain remains owned by the service and stops the
+phase rather than publishing advice or starting another reviewer. See the
+[runtime guide](../guides/Native-guidance-and-routing.md#review-evidence-and-failures)
+for bounds and diagnostics.
 
 The shared phase permits frozen review reads and report publication while keeping
 ordinary gateway calls fenced. MCP initialization, tool discovery and tool calls
 share this admission rule; blocking reviewer initialization would deadlock
 `thread/start` before the model runs. A recovery checkpoint also holds review publication.
 Restoration closes abandoned reviewer processes and credentials before replacing
-state. A restored pending review must finish before the shared phase is released.
+state. A restored pending review must publish or safely become unavailable before
+the shared phase is released.
 
 ## Mechanical completion and telemetry
 
@@ -253,5 +276,5 @@ cadence, read-only frozen tools, other-player overlap, the next own
 turn waiting and receiving the report, model/effort/priority settings, failed and
 cancelled reviews, bounded attempts, checkpoint restoration, lost handoff
 responses and delayed usage. Waiting is tested beyond the gameplay timeout,
-including lease renewal, pause/resume and fatal review failures.
+including lease renewal, pause/resume, unavailable advice and fatal lifecycle failures.
 They use fake model processes; no paid model is needed for lifecycle validation.

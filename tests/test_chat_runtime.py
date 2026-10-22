@@ -7,7 +7,7 @@ import pytest
 from civ_agent.agent_service import AgentService, ServiceError
 from civ_agent.civilization_guide import civilization_reference
 from civ_agent.strategy_guide import strategy_reference
-from tests.test_agent_service import StartupHost
+from tests.test_agent_service import FakeCodex, StartupHost
 
 
 def test_polling_health_reports_failures_and_recovery_without_losing_cursor(tmp_path, monkeypatch):
@@ -161,6 +161,7 @@ class MailboxHost:
 class Jobs:
     def __init__(self):
         self.service = None
+        self.default_model, self.default_effort, self.close_failure = "test-model", "medium", False
         self.purposes = []
         self.prompts = []
         self.instructions = []
@@ -170,6 +171,8 @@ class Jobs:
 
     def __call__(self, executable, workspace, url, ca, notification):
         owner = self
+        if "economy" in workspace.name:
+            return FakeCodex(self, workspace, notification)
 
         class Process:
             def __init__(self):
@@ -274,7 +277,9 @@ def test_transport_failure_during_close_cannot_finalize_communication_as_complet
     asyncio.run(run())
 
 
-def test_unconfirmed_chat_flush_retains_process_and_io_until_a_later_close_succeeds(tmp_path, monkeypatch):
+def test_chat_history_drain_retains_process_and_io_until_a_later_close_succeeds(tmp_path, monkeypatch):
+    from civ_agent.agent_service import ProcessDrainError
+
     async def run():
         host = MailboxHost()
         monkeypatch.setattr("civ_agent.chat_runtime.HostConnection", lambda *args, **kwargs: host)
@@ -290,7 +295,7 @@ def test_unconfirmed_chat_flush_retains_process_and_io_until_a_later_close_succe
                 close_calls += 1
                 await close()
                 if close_calls <= 2:
-                    raise ServiceError("CODEX_NOTIFICATION_FLUSH_TIMEOUT", 503)
+                    raise ProcessDrainError()
 
             process.close = delayed_flush
             return process
@@ -315,7 +320,7 @@ def test_unconfirmed_chat_flush_retains_process_and_io_until_a_later_close_succe
                 await service.chat.compute("unconfirmed-chat")
             assert close_calls == 1
             assert "unconfirmed-chat" in service.chat.jobs
-            assert service.chat.job_records["unconfirmed-chat"][0]["error"] == "STOP_UNCONFIRMED"
+            assert service.chat.job_records["unconfirmed-chat"][0]["error"] == "HISTORY_DRAIN_FAILED"
             with pytest.raises(ServiceError, match="^CODEX_NOTIFICATION_FLUSH_TIMEOUT$"):
                 await service.close()
             assert close_calls == 2
@@ -327,7 +332,7 @@ def test_unconfirmed_chat_flush_retains_process_and_io_until_a_later_close_succe
             assert service.io.closed
             record_file = service.state_dir / "chat-jobs" / (hashlib.sha256(b"unconfirmed-chat").hexdigest() + ".json")
             record = json.loads(record_file.read_text())
-            assert record["phase"] == "FAILED" and record["error"] == "STOP_UNCONFIRMED"
+            assert record["phase"] == "FAILED" and record["error"] == "HISTORY_DRAIN_FAILED"
         finally:
             await service.close()
 
@@ -448,7 +453,7 @@ def test_chat_batches_and_replies_while_planning_job_is_held(
             assert '"mcp__civ__chat_read"' in jobs.instructions[1]
             assert '"mcp__civ__chat_send"' in jobs.instructions[1]
             assert '"mcp__civ__player_capabilities"' not in jobs.instructions[1]
-            assert "otherwise your objective is to win the game" in jobs.instructions[1]
+            assert "otherwise play to win" in jobs.instructions[1]
             assert host.sent == ["I will consider your offer."]
             assert service.status()["phase"] == "RUNNING"  # Long planning still in progress.
             await asyncio.sleep(0.1)

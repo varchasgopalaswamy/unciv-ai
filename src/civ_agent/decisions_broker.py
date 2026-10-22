@@ -14,6 +14,7 @@ import aiohttp
 from aiohttp import web
 
 from civ_agent.advisory_answers import failed_answers
+from civ_agent.decisions_backends import BACKENDS, DEFAULT_BACKEND
 from civ_agent.decisions_ledger import RATE_VERSION, DecisionsLedger
 from civ_agent.decisions_policy import routing_thresholds
 from civ_agent.decisions_tasks import TASK_VERSION, parse_answers, request_body, request_id, request_metadata
@@ -22,7 +23,7 @@ from civ_agent.protocol import JsonObject
 from civ_agent.providers import ProviderError, read_api_key
 from civ_agent.tls import private_directory, write_private_json
 
-BROKER_PROTOCOL_VERSION = 3
+BROKER_PROTOCOL_VERSION = 4
 _PROVIDER_ERROR_KINDS = {
     "authentication",
     "access_denied",
@@ -41,22 +42,22 @@ _HEALTH_VERSIONS = {
     "accountingRateVersion": RATE_VERSION,
 }
 _VERSION_PATTERNS = {
-    "classifierModel": r"gpt-[1-9][0-9]{0,2}(?:\.[0-9]{1,2})?-(?:luna|sol|terra)",
+    "classifierModel": r"(?:gpt-[1-9][0-9]{0,2}(?:\.[0-9]{1,2})?-(?:luna|sol|terra)|Winnow-12B)",
     "routingPolicyVersion": r"diplomacy-routing-v[1-9][0-9]{0,2}",
     "advisoryPolicyVersion": r"player-advisories-v[1-9][0-9]{0,2}",
-    "accountingRateVersion": r"decisions-standard-[0-9]{4}-[0-9]{2}-[0-9]{2}-v[1-9][0-9]{0,2}",
+    "accountingRateVersion": r"decisions-(?:backends-v[1-9][0-9]{0,2}|standard-[0-9]{4}-[0-9]{2}-[0-9]{2}-v[1-9][0-9]{0,2})",
 }
 
 
-def version_contract():
-    return dict(_HEALTH_VERSIONS)
+def version_contract(backend=DEFAULT_BACKEND):
+    return {**_HEALTH_VERSIONS, "classifierModel": BACKENDS[backend].model}
 
 
-def health_failure(body):
+def health_failure(body, backend=DEFAULT_BACKEND):
     """Return version diagnostics without reflecting an untrusted health body."""
     mismatches = {}
     if isinstance(body, dict):
-        for field, expected in _HEALTH_VERSIONS.items():
+        for field, expected in version_contract(backend).items():
             if field not in body or body[field] == expected and type(body[field]) is type(expected):
                 continue
             actual = body[field]
@@ -76,7 +77,7 @@ def health_failure(body):
     return result
 
 
-def _valid_health(body):
+def _valid_health(body, backend=DEFAULT_BACKEND):
     if not isinstance(body, dict) or set(body) != {
         "protocolVersion",
         "classifierModel",
@@ -92,7 +93,7 @@ def _valid_health(body):
     if (
         type(body["protocolVersion"]) is not int
         or body["protocolVersion"] != BROKER_PROTOCOL_VERSION
-        or body["classifierModel"] != MODEL
+        or body["classifierModel"] != BACKENDS[backend].model
         or body["routingPolicyVersion"] != POLICY_VERSION
         or body["advisoryPolicyVersion"] != TASK_VERSION
         or body["accountingRateVersion"] != RATE_VERSION
@@ -132,9 +133,18 @@ def read_decisions_key(path):
 class DecisionsBroker:
     def __init__(self, root, client=None):
         self.root = Path(root)
-        self.client = client or DecisionsClient(read_decisions_key(self.root / "decisions.key"))
+        self.client = client
+        self.clients = {}
         self.ledger = DecisionsLedger(self.root)
         self.locks = {}
+
+    def _client(self, backend=DEFAULT_BACKEND):
+        if self.client is not None:
+            return self.client
+        if backend not in self.clients:
+            key = read_decisions_key(self.root / "decisions.key") if backend == "luna" else None
+            self.clients[backend] = DecisionsClient(key, backend=backend)
+        return self.clients[backend]
 
     def _authenticate(self, request):
         authorization = request.headers.get("Authorization", "")
@@ -156,16 +166,17 @@ class DecisionsBroker:
         raise web.HTTPUnauthorized()
 
     async def health(self, request):
-        self._authenticate(request)
+        principal = self._authenticate(request)
+        try:
+            backend = self.ledger.settings(principal).decisions_backend
+        except ValueError:
+            backend = DEFAULT_BACKEND
+        spec = version_contract(backend)
         return web.json_response(
             {
-                "protocolVersion": BROKER_PROTOCOL_VERSION,
-                "classifierModel": MODEL,
-                "routingPolicyVersion": POLICY_VERSION,
-                "advisoryPolicyVersion": TASK_VERSION,
-                "accountingRateVersion": RATE_VERSION,
+                **spec,
                 "status": "ready",
-                **self.client.health_snapshot(),
+                **self._client(backend).health_snapshot(),
             }
         )
 
@@ -195,7 +206,9 @@ class DecisionsBroker:
                 "thresholds": routing_thresholds(policy, body["direction"]),
                 "policy_version": policy.decisions_routing_policy,
             }
-            return web.json_response(await self.client.classify(body["direction"], body["bundle"], **options))
+            return web.json_response(
+                await self._client(policy.decisions_backend).classify(body["direction"], body["bundle"], **options)
+            )
 
     async def batch(self, request):
         principal = self._authenticate(request)
@@ -212,7 +225,7 @@ class DecisionsBroker:
             evidence = envelope["evidence"]
             if not isinstance(evidence, dict) or evidence.get("player") != self.ledger.player(principal):
                 raise ValueError("Invalid player perspective")
-            if envelope["requestId"] != request_id(evidence):
+            if envelope["requestId"] != request_id(evidence, model=BACKENDS[settings.decisions_backend].model):
                 raise ValueError("Invalid stable request ID")
             body = request_body(evidence, settings)
         except (ValueError, TypeError, KeyError, UnicodeError):
@@ -220,7 +233,7 @@ class DecisionsBroker:
         metadata = request_metadata(body, evidence)
         pending = {
             **metadata,
-            **failed_answers(body, settings.decisions_min_confidence, "completion_unknown"),
+            **failed_answers(body, settings.decisions_acceptance_probability, "completion_unknown"),
             "replayEvidence": json.loads(body["input"]),
         }
         async with self.locks.setdefault(principal, asyncio.Lock()):
@@ -230,11 +243,13 @@ class DecisionsBroker:
             if cached is not None:
                 return web.json_response(self._reply(principal, cached))
             # No provider retries. A cancelled/unknown call retains its reservation.
-            raw = await self.client.evaluate(body, timeout=settings.decisions_timeout_seconds)
+            raw = await self._client(settings.decisions_backend).evaluate(
+                body, timeout=settings.decisions_timeout_seconds
+            )
             parsed = (
-                failed_answers(body, settings.decisions_min_confidence, raw["fallback"])
+                failed_answers(body, settings.decisions_acceptance_probability, raw["fallback"])
                 if raw.get("fallback")
-                else parse_answers(body, raw, settings.decisions_min_confidence)
+                else parse_answers(body, raw, settings.decisions_acceptance_probability)
             )
             result = {
                 **parsed,
@@ -250,7 +265,7 @@ class DecisionsBroker:
     def _reply(self, principal, result):
         if result.get("fallback") != "not_submitted" and (
             result.get("policyVersion") != TASK_VERSION
-            or result.get("model") != MODEL
+            or result.get("model") != BACKENDS[self.ledger.settings(principal).decisions_backend].model
             or not isinstance(result.get("questionResults"), list)
         ):
             raise web.HTTPConflict(text="Incompatible Decisions receipt; its reservation remains retained")
@@ -280,8 +295,9 @@ class DecisionsBroker:
 
 
 class RoutingClient:
-    def __init__(self, socket_path, token_file):
+    def __init__(self, socket_path, token_file, *, backend=DEFAULT_BACKEND, timeout=120):
         self.socket_path, self.token_file = str(socket_path), Path(token_file)
+        self.backend, self.timeout = backend, timeout
         self.last_health: dict[str, Any] = {"status": "unchecked", "reason": "not_checked"}
 
     def _token(self):
@@ -296,8 +312,8 @@ class RoutingClient:
         socket = os.environ.get("CIV_DECISIONS_SOCKET")
         token = os.environ.get("CIV_DECISIONS_TOKEN_FILE")
         if not socket or not token or not Path(token).is_file():
-            raise ValueError("Decisions requires an authenticated trusted broker and separate API key")
-        return cls(socket, token)
+            raise ValueError("Decisions requires an authenticated trusted broker")
+        return cls(socket, token, backend=os.environ.get("CIV_DECISIONS_BACKEND", DEFAULT_BACKEND))
 
     async def health(self, timeout=5):
         """Free local preflight. Timeout must be positive and no greater than five seconds.
@@ -319,7 +335,11 @@ class RoutingClient:
                         body = await response.json()
                     except (ValueError, aiohttp.ContentTypeError):
                         body = None
-            result: dict[str, Any] = body if isinstance(body, dict) and _valid_health(body) else health_failure(body)
+            result: dict[str, Any] = (
+                body
+                if isinstance(body, dict) and _valid_health(body, self.backend)
+                else health_failure(body, self.backend)
+            )
         except TimeoutError:
             result = {"status": "unavailable", "reason": "broker_timeout"}
         except aiohttp.ClientResponseError as error:
@@ -342,7 +362,8 @@ class RoutingClient:
         try:
             token = self._token()
             async with aiohttp.ClientSession(
-                connector=aiohttp.UnixConnector(path=self.socket_path), timeout=aiohttp.ClientTimeout(total=5)
+                connector=aiohttp.UnixConnector(path=self.socket_path),
+                timeout=aiohttp.ClientTimeout(total=self.timeout + 1),
             ) as session:
                 async with session.post(
                     "http://localhost/classify",
@@ -364,8 +385,8 @@ class RoutingClient:
         except (OSError, ValueError, aiohttp.ClientError):
             return fallback(direction, "broker_unavailable")
 
-    async def batch(self, evidence, *, timeout=5) -> JsonObject:
-        stable_id = request_id(evidence)
+    async def batch(self, evidence, *, timeout=120) -> JsonObject:
+        stable_id = request_id(evidence, model=BACKENDS[self.backend].model)
         try:
             async with aiohttp.ClientSession(
                 connector=aiohttp.UnixConnector(path=self.socket_path),

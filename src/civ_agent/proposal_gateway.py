@@ -6,7 +6,7 @@ import hmac
 import json
 import secrets
 import time
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, nullcontext
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
@@ -47,6 +47,7 @@ from civ_agent.observations import (
     required_detail,
 )
 from civ_agent.protocol import JsonObject
+from civ_agent.review_grounding import ReviewEvidence, source_catalogue
 from civ_agent.schemas import validate
 from civ_agent.service_io import ServiceIO
 from civ_agent.social_context import social_context
@@ -134,6 +135,7 @@ class JobAccess:
     gameplay_ended: asyncio.Event = field(default_factory=asyncio.Event)
     model_stopped: asyncio.Event = field(default_factory=asyncio.Event)
     review_inputs: JsonObject | None = None
+    review_evidence: ReviewEvidence | None = None
     outgoing_start: int = 0
     seen_messages: set[str] = field(default_factory=set)
     pending_calls: dict[asyncio.Task, JsonObject] = field(default_factory=dict)
@@ -141,6 +143,7 @@ class JobAccess:
     completed_actions: dict[asyncio.Task, JsonObject] = field(default_factory=dict)
     negotiation_pending: asyncio.Event = field(default_factory=asyncio.Event)
     suspend_for_negotiation: bool = False
+    role_finished: asyncio.Event = field(default_factory=asyncio.Event)
 
     def waiting_seconds(self) -> float:
         return self.completed_wait + (time.monotonic() - self.wait_started if self.wait_started is not None else 0)
@@ -157,6 +160,8 @@ class ProposalGateway:
         self.checkpoint_released.set()
         self.calls_in_flight = 0
         self.dispatch = asyncio.Lock()
+        self.role_dispatch = asyncio.Lock()
+        self.role_coordinator: Any = None
         self.in_flight = 0
         self.deferred_completions = []
         self.accounting: JobAccounting | None = None
@@ -275,7 +280,13 @@ class ProposalGateway:
         async with self.admit(), job.lock:
             self.check(job)
             selection = await self.io.call(
-                self.memory.select_startup_context, job.id, topics, job.memory.get("advisoryRanking")
+                self.memory.select_startup_context,
+                job.id,
+                topics,
+                job.memory.get("advisoryRanking"),
+                {city["handle"] for city in (job.observation or {}).get("cities", [])}
+                if job.purpose == "economy"
+                else None,
             )
             job.memory.update(selection)
 
@@ -300,7 +311,7 @@ class ProposalGateway:
         if job.gameplay_fenced:
             return []
         if job.catalogue is not None:
-            return copy.deepcopy(job.catalogue)
+            return source_catalogue(job.catalogue) if job.review_inputs is not None else copy.deepcopy(job.catalogue)
         upstream = await job.connection.list_tools()
         job.catalogue = self.tool_catalogue(
             upstream,
@@ -308,44 +319,60 @@ class ProposalGateway:
             routing_enabled=self.routing is not None,
             native_advice_enabled=self.native_advice_enabled,
         )
-        return copy.deepcopy(job.catalogue)
+        catalogue = copy.deepcopy(job.catalogue)
+        if self.role_coordinator is not None and job.purpose in {"gameplay", "economy"}:
+            from civ_agent.economy_roles import CITY_COMMANDS
+
+            for entry in catalogue:
+                if entry["name"] == "player_command":
+                    kinds = entry["inputSchema"]["properties"]["kind"]["enum"]
+                    entry["inputSchema"]["properties"]["kind"]["enum"] = [
+                        kind
+                        for kind in kinds
+                        if kind not in {"END_TURN", "AUTOPLAY"} and (job.purpose != "economy" or kind in CITY_COMMANDS)
+                    ]
+                    entry["description"] += (
+                        " In this managed turn, use finish_role; the host advances the game. City economic commands require economy ownership or a main-player city_override."
+                    )
+        if self.role_coordinator is not None and job.purpose == "economy":
+            from civ_agent.economy_roles import ECONOMY_TOOLS
+
+            catalogue = [entry for entry in catalogue if entry["name"] in ECONOMY_TOOLS]
+        job.catalogue = catalogue
+        return catalogue
 
     @staticmethod
     def tool_catalogue(upstream, purpose, *, routing_enabled=False, native_advice_enabled=False):
         """Project native tools without starting a gameplay or notebook job."""
         tools = []
         for tool in upstream:
-            if tool["name"] in READ_TOOLS and (purpose == "gameplay" or tool["name"] in COMMUNICATION_READ_TOOLS):
+            if tool["name"] in READ_TOOLS and (
+                purpose in {"gameplay", "economy"} or tool["name"] in COMMUNICATION_READ_TOOLS
+            ):
                 entry = copy.deepcopy(tool)
                 if tool["name"] == "player_turn":
                     entry["description"] = (
-                        "Read the current overview at turn startup or to resynchronize: tactics, strategy review, "
-                        "city/unit roster, pending decisions, factual alerts and notifications. Inspect legal options and "
-                        "consequences with focused detail tools before acting; use chat_read for social promises.\n"
-                        "After successful gameplay actions, apply stateUpdate instead of reading player_turn again:\n"
-                        "- delta: baseStateId must match your stateId; adopt the new stateId. set replaces whole "
-                        "sections; top-level removed deletes fields. collections upsert replaces whole rows by key, "
-                        "removed drops IDs, and optional order sets row order. Sections and rows absent from the update stay unchanged. "
-                        "Each included row replaces the entire old row: fields absent from that replacement are removed. "
-                        "Removals mean absent from this view, not necessarily destroyed. Ignore an update already "
-                        "at your stateId; read player_turn for a missing/mismatched base.\n"
-                        "- full: replace the overview. unavailable: keep the successful receipt and read player_turn; "
-                        "refresh failure never undoes an action. Never repeat an applied action to refresh state.\n"
-                        "- turn_ended: gameplay has ended; finish this conversation.\n"
-                        "native.availableDemandsToSend lists actions YOU may send, not requests received or promises. "
-                        "Received native messages are in alerts.nativeDiplomacy with sender, event and response options. "
-                        "For city-state messages, copy an offered option's RESPOND_CITY_STATE_ALERT command. "
-                        "Major-player messages supply responseTool for chat_send with nativeAction. "
-                        "Inspect new alerts and decisions. Reread relevant invalidatedDetails only when needed for "
-                        "the next action; unchanged inspections remain valid. An argument error with applied=false "
-                        "alone needs no refresh; follow recovery.reads when supplied."
-                        " Research/policy/victory/result and trade/agreement/chat reads are separate from overview "
-                        "updates. When an earlier read becomes outdated, its query "
-                        "appears in invalidatedDetails. Full reads and communication actions may return this list "
-                        "at the top level. A full player_turn replaces the overview, not those independent reads."
-                        " A response's memoryUpdates contains versioned private records, separate from the overview; "
-                        "replace older copies by ID, retaining newer versions on replay. Review notices are advisory "
-                        "and never require a memory edit or prohibit an action."
+                        "Read your current position, units, cities, decisions, alerts and strategic review. Use detail "
+                        "tools to inspect options and consequences; chat_read includes social promises.\n"
+                        "After an action, use stateUpdate rather than repeating this read:\n"
+                        "- delta: baseStateId must match your stateId. set replaces sections; top-level removed deletes "
+                        "fields. In collections, upsert replaces rows by key, removed deletes rows and order sets their "
+                        "order. Unmentioned sections and rows stay unchanged. Each supplied row replaces the old row: "
+                        "fields absent from that replacement are removed. Adopt the new stateId; ignore an update already "
+                        "at that ID. Read player_turn if the base is missing or mismatched. A removed entity may still exist "
+                        "outside your view.\n"
+                        "- full: replace the overview. unavailable: keep the successful receipt and read player_turn. "
+                        "A failed refresh does not undo the action; never repeat it to refresh state.\n"
+                        "- turn_ended: finish this conversation.\n"
+                        "Check new alerts and decisions. native.availableDemandsToSend lists demands you may send. "
+                        "Incoming messages are in alerts.nativeDiplomacy: copy the offered RESPOND_CITY_STATE_ALERT "
+                        "command for city-states, or use responseTool with chat_send/nativeAction for major players.\n"
+                        "Read invalidatedDetails again only when needed; other inspections remain valid. This list may "
+                        "also accompany full reads or communication actions. Research, policy, victory, result, trade, "
+                        "agreement and chat reads are independent: replacing the overview does not refresh them. "
+                        "An argument error with applied=false needs no refresh unless recovery.reads says otherwise.\n"
+                        "For private memoryUpdates, replace older records by ID and keep newer versions if an update "
+                        "repeats. Review notices are suggestions; they require neither a memory edit nor a change of action."
                     )
                     entry["outputSchema"] = TurnOverview.model_json_schema()
                 elif tool["name"] == "player_capabilities":
@@ -386,30 +413,25 @@ class ProposalGateway:
                         "does not fix city spacing or foreign ownership. Reconsider repeatedly blocked sites."
                     )
                 tools.append(entry)
-            elif tool["name"] == "player_command" and purpose == "gameplay":
+            elif tool["name"] == "player_command" and purpose in {"gameplay", "economy"}:
                 entry = copy.deepcopy(tool)
                 entry["inputSchema"] = command_schema()
                 entry["description"] = (
-                    "Execute one game action: kind (e.g. FOUND_CITY) is an argument, not a tool name. Use "
-                    "offered commands when useful; intent annotations and routine detail reads are optional. Native previews remain required. Civilian movement with "
-                    "captureRisk requires explicit confirmAction=true; it accepts only the current move, not later route turns. Add a "
-                    "confirmationField only after reading and accepting its consequences; templates never supply "
-                    "consent. The compact schema lists possible fields; the server strictly validates required and "
-                    "permitted fields for the selected kind. Invalid arguments return expectedArguments without acting. "
-                    "Check the reported outcome; apply stateUpdate as described by player_turn.\n"
-                    "Read alert facts and consequences before responding or acknowledging. DISMISS_NOTIFICATIONS takes "
-                    "targets=[read notice handles]; dismissed contents remain in receipts. "
-                    "CAST_DIPLOMATIC_VOTE uses selection=candidate civilizationId from victory.ballot. "
-                    "ABSTAIN_DIPLOMATIC_VOTE and ACKNOWLEDGE_DIPLOMATIC_RESULTS take kind and optional intent; "
-                    "read victory.votingResults before acknowledging results. "
-                    "Review the current unit roster and pending decisions before END_TURN. Idle units and tactical warnings do not block it; "
-                    "top-level deferReason can optionally record why you left an action unused. "
-                    "ACKNOWLEDGE_ALERT uses target, not handle. Copy the overview's alert/endTurn command. "
-                    "RESPOND_CITY_STATE_ALERT uses an alert target and an offered response selection from the overview. "
-                    "unit_details sections=[settlement] explains founding consequences; SET_UNIT_DESTINATION needs a matching "
-                    "movement_preview(target,destination), whose command uses engine pathfinding. "
-                    "Save optional private knowledge during play when useful context is absent from observations. "
-                    "After END_TURN succeeds, finish immediately."
+                    "Take one game action using kind, such as FOUND_CITY. Copy offered commands when useful. "
+                    "Intent and routine detail reads are optional; required previews still apply. SET_UNIT_DESTINATION "
+                    "requires a matching movement_preview(target,destination). For founding consequences, read "
+                    "unit_details sections=[settlement].\n"
+                    "Add a confirmationField only after reading and accepting the consequences yourself. For civilian "
+                    "captureRisk, confirmAction=true accepts this move's exposure only, not later turns of the route. "
+                    "Invalid arguments return expectedArguments without acting. Check the outcome and apply stateUpdate.\n"
+                    "Read alerts before answering or acknowledging them. Copy the overview's commands: ACKNOWLEDGE_ALERT "
+                    "uses target; RESPOND_CITY_STATE_ALERT uses target and the offered selection; DISMISS_NOTIFICATIONS "
+                    "uses targets=[read notice handles] and keeps their contents in receipts. CAST_DIPLOMATIC_VOTE uses "
+                    "selection=candidate civilizationId from victory.ballot. ABSTAIN_DIPLOMATIC_VOTE and "
+                    "ACKNOWLEDGE_DIPLOMATIC_RESULTS need only kind and optional intent; read victory.votingResults "
+                    "before acknowledging.\n"
+                    "Before END_TURN, review your units and pending decisions. Idle units and tactical warnings do not "
+                    "block it. Optional deferReason explains unused actions. After END_TURN succeeds, finish immediately."
                 )
                 tools.append(entry)
 
@@ -439,7 +461,7 @@ class ProposalGateway:
                     },
                     "inputSchema": (
                         MemoryContributions
-                        if name == "memory_update" and purpose != "gameplay"
+                        if name == "memory_update" and purpose not in {"gameplay", "economy"}
                         else tool_model(name, purpose)
                     ).model_json_schema(),
                 }
@@ -449,20 +471,82 @@ class ProposalGateway:
             if name in TOOL_OUTPUT_MODELS:
                 tools[-1]["outputSchema"] = TOOL_OUTPUT_MODELS[name].model_json_schema()
 
+        if purpose in {"gameplay", "economy"}:
+            add(
+                "finish_role",
+                "Finish your work for this role. The host waits for both roles and advances the native turn. Stop issuing actions after success; another pass may be requested.",
+            )
+        if purpose == "gameplay":
+            add(
+                "economy_request",
+                "Send a city production or economic priority to the economy manager. Routine late requests carry to the next turn; urgent requests reopen its current turn.",
+            )
+            add(
+                "city_override",
+                "Take economic control of an owned city for the rest of this turn. Supply a reason. This fences conflicting economy commands.",
+            )
+
         for name, description in {
-            "unit_details": "Inspect one owned unit by its player_turn handle. Prefer explicit sections: movement (swaps/paths/orders; use movement_preview for distant destinations), combat (attacks), orders (rename, GUARD/SET_UP, ESCORT/STOP_ESCORT, EXPLORE/STOP_EXPLORATION, AUTOMATE/STOP_AUTOMATION, fortify/sleep/skip/wake), promotions (including saved city defaults), work (road connections and worker/water improvements; Work Boats are consumed), settlement (current-site native blockers, movement requirements and native promises; movement_preview also inspects prospective city sites), economy (upgrade/pillage/disband), abilities (great people/spaceship/gifts), or air (missions, bases/capacity, carried units and interception readiness; use mission_preview for special missions). Multiple sections are allowed; omitted sections or [all] returns full details. Only returned sections count as inspected. EXPLORE explores automatically; AUTOMATE uses native unit automation, including choosing and building improvements for Workers. These orders persist across turns; inspect orders to stop them. Movement captureRisk requires confirmAction=true to accept exposure for this move; a same-tile escort permits movement normally. Read availability, warnings and confirmations; copy an offered command; intent is optional. Receipts report actual effects.",
-            "city_details": "Inspect one owned city by its player_turn handle. Prefer explicit sections: status (capture choices), production (queue/progress/options), citizens (growth/work tiles/specialists/focus), economy (yields/buildings/sales), purchases, or combat (bombardment). Multiple sections are allowed. Omitted sections or [all] returns full details. Each section retains native consequences; unrelated sections do not count as inspected. Prefer construction_details(names=[candidates]) for queueing/buying specific buildings or units. Copy offered commands; intent is optional.",
-            "construction_details": "Compare construction in an owned city. Supply names and horizonTurns (1-100) for static build/purchase versus current-output comparisons, with assumptions and native blockers. following compares conversion now with building or buying then selecting that conversion, including native modifiers; endOfHorizon retains completed assets or unfinished work. queueOptions separates append, continue and reorder. Empire happiness and food effects are a separate immediate-completion preview. Omit names for a compact catalogue with native completion times, city-specific ongoing yield gains, maintenance and knownNames for the full ruleset. Unrecognized names return unknownNames with suggestions, separately from known but blocked choices. Supply up to 16 names for before/after yields, source changes, conditional effect descriptions, specialist slots, costs, eligibility, queue progress, purchase confirmations and copyable commands. Named victory projects and spaceship parts include native costs and required technologies/resources while still locked; their hypothetical build times exclude prerequisite research. Passive completion comparisons hold population and citizen assignments fixed; oneTime separately reports native completion grants. whileBuilding shows the immediate change from the current construction. Food is net surplus; Gold includes maintenance. Turns assume starting now, excluding earlier queue entries. Production conversions show their yield after modifiers. Read named options to compare choices; copy command with optional intent. Confirm purchases explicitly after reading consequences.",
-            "map_region": "Read explored tiles and frontier within radius 0–4 of an observed coordinate, respecting world wrap. Unexplored tiles have no data. Explored tiles outside current sight retain permitted known or remembered information; check visibility and observation timestamps. Default format=compact: each tile inherits tileDefaults, with its explicit fields overriding those defaults, including null/false/empty values. All visible facts are retained; position, terrain, visibility, units and yields remain on each tile. Use format=full for expanded tile objects. Read player_details(map_index) to locate distant regions.",
-            "player_details": "Read full economy and development opportunities, diplomacy (including war consequences), settlement candidates and scores, research progress, policy choices, current/previous turn receipts, or map coordinate index. Settlement scores are advice based on current/remembered knowledge; preview a route before travel. Uses the latest permitted snapshot; returned evidence identifies what was read. For CITY_STATE_ACTION inspect section=diplomacy: target=civilizationId, selection=available actions.name, and confirmAction=true only after accepting any confirmation. DECLARE_WAR also accepts city-states. Inspect receipt.cityState for actual influence and alliance changes.",
+            "unit_details": (
+                "Inspect an owned unit using its player_turn handle. Choose sections: movement (paths, swaps and orders; "
+                "use movement_preview for distant destinations), combat, orders (rename, guard, set up, escort, explore, "
+                "automate, fortify, sleep, skip, wake and stopping orders), promotions (including saved city defaults), "
+                "work (roads and improvements), settlement (founding requirements and promises), economy "
+                "(upgrade/pillage/disband), abilities (great people/spaceship/gifts), or air (missions, bases, capacity "
+                "and interception). Use mission_preview for special missions and movement_preview for prospective "
+                "city sites. Multiple sections are allowed; omit sections or use [all] for everything. Only returned "
+                "sections count as inspected. EXPLORE and AUTOMATE persist across turns; Worker automation chooses "
+                "and builds improvements. Inspect orders to stop them. Work Boats are consumed when improving a tile. "
+                "For movement captureRisk, confirmAction=true accepts exposure for this move; a same-tile escort "
+                "permits normal movement. Read warnings and confirmations, then copy an offered command."
+            ),
+            "city_details": (
+                "Inspect an owned city using its player_turn handle. Choose sections: status (capture choices), "
+                "production (queue and options), citizens (growth, worked tiles, specialists and focus), economy "
+                "(yields, buildings and sales), purchases, or combat (bombardment). Multiple sections are allowed; "
+                "omit sections or use [all] for everything. Only returned sections count as inspected. For specific "
+                "buildings or units, use construction_details(names=[candidates]). Read consequences and copy an "
+                "offered command."
+            ),
+            "construction_details": (
+                "Compare things an owned city could build or buy. Omit names for completion times, ongoing yield "
+                "gains, maintenance and knownNames. Supply up to 16 names for detailed costs, requirements, "
+                "before/after yields and their sources, conditional effects, specialist slots, queue progress and "
+                "commands. unknownNames includes suggestions; known but blocked choices show their requirements.\n"
+                "Times assume starting now and exclude earlier queue entries or missing research. Locked victory "
+                "projects and spaceship parts still show costs and technology/resource requirements. queueOptions "
+                "distinguishes continuing, reordering and adding an item.\n"
+                "Comparisons hold population and citizen assignments fixed. Food is net surplus; Gold includes "
+                "maintenance. oneTime lists completion grants separately. whileBuilding compares the immediate "
+                "change from current construction. Empire happiness and food effects assume completion now. "
+                "Conversion yields include their modifiers.\n"
+                "horizonTurns (1–100) compares building or buying against continuing current output. following "
+                "compares converting now with building or buying and then selecting that conversion. endOfHorizon "
+                "shows completed assets or unfinished work. Read the named options and copy a command; add purchase "
+                "confirmation only after accepting the consequences."
+            ),
+            "map_region": (
+                "Read explored tiles and frontier within radius 0–4 of an observed coordinate, including world wrap. "
+                "Unexplored tiles have no data. Outside current sight, check visibility and observation dates for "
+                "remembered information. With format=compact, tile fields override tileDefaults, even when null, "
+                "false or empty; visible facts are retained. Use format=full for expanded tiles, or "
+                "player_details(map_index) to locate distant regions."
+            ),
+            "player_details": (
+                "Read your economy, development opportunities, diplomacy and war consequences, settlement sites, "
+                "research, policies, current/previous turn receipts, or map index. Site scores use current and "
+                "remembered information; preview a route before travel. The evidence ID identifies this read. "
+                "For CITY_STATE_ACTION, read section=diplomacy and copy target=civilizationId and "
+                "selection=available actions.name. Add confirmAction=true only after accepting the consequences. "
+                "DECLARE_WAR also accepts city-states. receipt.cityState reports influence and alliance changes."
+            ),
         }.items():
             if name in {"unit_details", "city_details"}:
                 description += (
-                    " Combat consequences put HP and damage-based remaining HP together; destructionPossible is advisory. "
-                    "attackerConsumedOnAttack identifies self-destructing units independently of damage. "
-                    "Early death, withdrawal or interception can change those estimates. Position contexts show current "
-                    "visible proximity, not future enemy reach or guaranteed protection. Movement afterMove estimates "
-                    "remaining movement and actions if the route completes; recheck after arrival."
+                    " Combat HP and remaining-HP estimates may change with death, withdrawal or interception. "
+                    "destructionPossible warns of risk; attackerConsumedOnAttack means consumption regardless of "
+                    "damage. Nearby forces do not establish enemy reach or protection. afterMove estimates movement "
+                    "and actions after completing the route; recheck on arrival."
                 )
             add(name, description)
 
@@ -504,9 +588,17 @@ class ProposalGateway:
         )
         add(
             "chat_read",
-            "Read new messages, current social promises with their versions, pending trade IDs and active agreement summaries. conversationContext supplies bounded exact-audience excerpts, including confirmed sends, with source IDs and turns. Interpret replies alongside your private notes; use chat_history for older evidence. An effective older promise can coexist with a proposed revision; they are distinct versions. includeContext=true adds scenario, rules, economy and known diplomacy when you lack a turn overview. includeHistory=true includes the retained ledger; prefer chat_history, trade_read or agreement_read for selected older records. Inspect binding terms with trade_read before deciding. Social consent has no native game effect; interpret ambiguous promises freely."
+            "Read new messages, current promises, pending trade IDs and active agreements. conversationContext "
+            "includes recent messages with the same participants and your confirmed sends, with IDs and turns. "
+            "Use chat_history for older messages. A proposed revision does not replace an older promise still in "
+            "effect; check their versions. includeContext=true adds rules, economy and known diplomacy when you "
+            "lack an overview. includeHistory=true adds older records; use trade_read or agreement_read for exact "
+            "terms. Read a binding trade before deciding. Social promises express intentions; they do not change "
+            "the game rules, and players interpret ambiguous terms."
             + (
-                " handledMessages may list message IDs already read and fully considered, including any needed response or action. Successful gameplay completion then avoids separate attention for those messages; merely reading them does not."
+                " Use handledMessages for IDs you have fully considered and responded to or acted on as needed. "
+                "After successful gameplay, those messages need no separate response session. Reading alone "
+                "does not mark them handled."
                 if routing_enabled and purpose == "gameplay"
                 else ""
             ),
@@ -517,10 +609,20 @@ class ProposalGateway:
         )
         add(
             "chat_send",
-            "Send authenticated text to chatRecipients from chat_read. Use to for a direct message or recipients for a private group, excluding yourself; omit both for public chat. Reply to all with recipients equal to the message participants minus yourself. Each exact participant set has separate history; recipient order does not matter. Private messages notify every recipient; public mentions notify only mentioned players. Mentions must be in the audience. Groups carry text only: never combine recipients with to or nativeAction. Ordinary text has no game effects. Trade and peace use trade tools. "
-            + "delivery=auto may return sent, queued or omitted with a deliveryId. Only a host receipt proves delivery. Use delivery=immediate to send now, or chat_delivery to override or cancel the original draft. "
+            "Send a message to chatRecipients from chat_read. Use to for one player or recipients for a private "
+            "group, excluding yourself; omit both for public chat. To reply to everyone, copy the participants "
+            "except yourself. Each participant group has its own history; order does not matter. Private messages "
+            "notify everyone receiving them. Public messages notify only mentioned players; mentions must belong "
+            "to the audience. Never combine recipients with to or nativeAction. Text alone has no game effects; "
+            "use trade tools for binding trades or peace. "
+            + "delivery=auto returns sent, queued or omitted with a deliveryId. Only a sent receipt proves delivery. "
+            "Use delivery=immediate to send now, or chat_delivery to send or cancel the original draft. "
             + (
-                "Optional nativeAction executes DENOUNCE or ISSUE_DEMAND against a civilization (selection=type from native.availableDemandsToSend), or RESPOND_DIPLOMACY against an owned alert handle with an offered selection. Available demands are actions you may initiate, not incoming requests. Read player_turn first; these actions require your active turn. Inspect nativeDiplomacy sender, event, options, declaresWar and consequences before responding. Built-in AI only understands explicit native requests."
+                "During your active turn, nativeAction may DENOUNCE or ISSUE_DEMAND against a civilization "
+                "(selection=type from native.availableDemandsToSend), or RESPOND_DIPLOMACY using your alert handle "
+                "and an offered selection. Read player_turn first. Available demands are ones you may send. "
+                "Before replying, read nativeDiplomacy's sender, event, options, declaresWar and consequences. "
+                "Built-in AI players understand these game requests, not ordinary chat."
                 if purpose == "gameplay"
                 else ""
             ),
@@ -528,12 +630,16 @@ class ProposalGateway:
         if routing_enabled:
             add(
                 "chat_delivery",
-                "Inspect an owned deliveryId, send its original text and audience immediately, or cancel an unsent draft. Repeating immediate never duplicates a delivered message. Only disposition=sent with a host receipt establishes delivery.",
+                "Check your deliveryId, send its original message immediately, or cancel it before sending. "
+                "Repeating immediate does not send a second copy. Delivery requires disposition=sent and a receipt.",
             )
         if native_advice_enabled and purpose == "gameplay":
             add(
                 "native_advice",
-                "Read native next-action alternatives from your observed position. Optional cities/units filter owned handles. Read limitations, costs and prerequisites. Recommendations sharing a subject, destination or budget are alternatives; re-evaluate after each action. You decide whether to use them. This read neither applies actions nor simulates discoveries or combat.",
+                "Read suggested next actions. Optional cities/units select your owned handles. Check costs, "
+                "requirements and limitations. Suggestions sharing a unit, city, destination or budget may be "
+                "alternatives; reconsider after each action. Reading advice takes no actions and predicts "
+                "neither discoveries nor combat results.",
             )
         add(
             "commitment_offer",
@@ -545,28 +651,31 @@ class ProposalGateway:
         )
         add(
             "memory_read",
-            "Read records by ID. Active records by default; includeRetired to inspect archived entries. Observations describe earlier facts; statements and notebook entries are assessments. After your turn ends, only information from that completed turn is available.",
+            "Read private records by ID; use includeRetired for archived entries. Observations record earlier "
+            "facts; statements and notes contain assessments. After your turn ends, information is limited to "
+            "that completed turn.",
         )
         add(
             "memory_search",
-            "Search private records by type, subject, state or text, 20 per page. Active only by default. history=true explicitly reads reachable revisions as historical evidence, never active instructions. Use nextOffset for another page.",
+            "Search private records by type, subject, state or text, 20 per page. Results are active by default; "
+            "history=true includes earlier versions as historical evidence. Use nextOffset for another page.",
         )
         add(
             "memory_update",
             (
-                "Save private contributions with create for your next turn. Existing notebook entries are read-only during this exchange. "
+                "Use create to leave private notes for your next turn. Existing notebook entries are read-only "
+                "during this exchange. "
                 if purpose != "gameplay"
-                else "Create, replace or retire a provisional strategy or next-turn handoff; at most one active record of each. "
-                "Read before replacing; supply complete content, with no inherited fields. Handoffs are preloaded only "
-                "on the following game turn; strategy ages from its own authoring turn. Notes and beliefs use amend "
-                "for changed fields; omitted fields stay, lists replace. Communication contributions are immutable: "
-                "use them to create/amend entries and retire them when handled. "
+                else "Create, replace or retire at most one active strategy and one handoff. Read before replacing either; supply the "
+                "whole entry, since omitted fields are not kept. Handoffs appear next turn only; strategy dates "
+                "from when you wrote it. Use amend for changed note or belief fields: omitted fields stay and "
+                "lists replace earlier lists. Contributions from conversations cannot be edited; use them to "
+                "update your notebook, then retire them when handled. "
             )
-            + "Keep knowledge, reasons and uncertainties; receipts preserve routine facts. "
-            "Citations are optional historical references, at most 20 per list; "
-            "unavailable references produce warnings and never become verified evidence. "
-            "needsReview/reviewSources are advisory. Assessments do not authorize or prohibit actions. "
-            "Retirement preserves history and does not cancel a promise.",
+            + "Save useful knowledge, reasoning and uncertainty; receipts already keep routine facts. Citations "
+            "are optional, up to 20 per list. Unavailable sources produce warnings and remain unverified. "
+            "needsReview/reviewSources are reminders, not restrictions on actions or required edits. Retiring an "
+            "entry preserves its history and does not cancel a promise.",
         )
         return tools
 
@@ -655,12 +764,18 @@ class ProposalGateway:
     ) -> JsonObject:
         accounting = self.accounting
         counted = (
-            await self.io.call(accounting.begin_call, job.id, name, arguments, source=source) if accounting else None
+            await self.io.call(
+                accounting.begin_call, job.id, name, arguments, source="internal" if source == "host" else source
+            )
+            if accounting
+            else None
         )
         outcome, replayed = "incomplete", False
         ended = False
         try:
-            result, replayed = await self._call_once(job, name, arguments, call_id, startup=source == "startup")
+            result, replayed = await self._call_once(
+                job, name, arguments, call_id, startup=source == "startup", host_handoff=source == "host"
+            )
             outcome = "error" if "error" in result else "success"
             if result.get("error") == "STATE_UPDATE_FAILED":
                 await self.sync_failure()
@@ -685,6 +800,8 @@ class ProposalGateway:
                 # Advice explicitly names its observation epoch/revision. These
                 # are evidence, not authority to bypass command validation.
                 return result
+            if self.role_coordinator is not None and job.purpose == "economy":
+                result = {**result, "economyCoordination": self.role_coordinator.context()}
             return public_result(result)
         except asyncio.CancelledError:
             self.forget_observation(job)
@@ -707,14 +824,34 @@ class ProposalGateway:
                 job.gameplay_ended.set()
 
     async def _call_once(
-        self, job: JobAccess, name: str, arguments: JsonObject, call_id: str, *, startup: bool = False
+        self,
+        job: JobAccess,
+        name: str,
+        arguments: JsonObject,
+        call_id: str,
+        *,
+        startup: bool = False,
+        host_handoff: bool = False,
     ) -> tuple[JsonObject, bool]:
         self.check(job, ended_allowed=True)
         if not isinstance(name, str) or not isinstance(arguments, dict):
             raise ValueError("INVALID_ARGUMENT")
         if job.review_inputs is not None:
-            return public_result(frozen_read(job.review_inputs, name, arguments)), False
-        async with job.lock:
+            if job.review_evidence is None:
+                raise ValueError("REVIEW_EVIDENCE_REQUIRED")
+            value = public_result(frozen_read(job.review_inputs, name, arguments))
+            if "error" in value:
+                return value, False
+            return job.review_evidence.deliver(name, value, arguments), False
+        async with (
+            job.lock,
+            (
+                self.role_dispatch
+                if self.role_coordinator is not None
+                and name in {"player_command", "finish_role", "city_override", "economy_request", "memory_update"}
+                else nullcontext()
+            ),
+        ):
             self.check(job, ended_allowed=True)
             previous = await self.io.call(self.memory.call, job.id, call_id, name, arguments)
             if previous is not None:
@@ -732,7 +869,7 @@ class ProposalGateway:
             if receipt is not None:
                 result = copy.deepcopy(receipt)
             else:
-                result = await self._call(job, name, arguments, call_id, startup=startup)
+                result = await self._call(job, name, arguments, call_id, startup=startup, host_handoff=host_handoff)
             result = await self.settle_gameplay(job, name, result)
             if self.native_advice_enabled:
                 if name == "native_advice":
@@ -742,6 +879,11 @@ class ProposalGateway:
                         experiment_metrics.action_match, self.memory, job, call_id, arguments, result, advice_revision
                     )
             result = await self.update_after_action(job, name, arguments, call_id, result)
+            if self.role_coordinator is not None and name == "player_command":
+                await self.role_coordinator.after_action(job, arguments, result)
+                for sibling in self.role_coordinator.jobs.values():
+                    if sibling is not job:
+                        self.forget_observation(sibling)
             result = await self.io.call(self.memory.call, job.id, call_id, name, arguments, result)
             assert result is not None
             return result, receipt is not None
@@ -838,7 +980,7 @@ class ProposalGateway:
         call_id: str,
         result: JsonObject,
     ) -> JsonObject:
-        if "error" in result:
+        if "error" in result or result.get("roleFinished"):
             return result
         social_change = name in {"commitment_offer", "commitment_decide"}
         changes_game = (
@@ -848,7 +990,7 @@ class ProposalGateway:
         )
         if not changes_game and not social_change:
             return result
-        if job.purpose != "gameplay":
+        if job.purpose not in {"gameplay", "economy"}:
             self.forget_observation(job)
             invalidated = [query.model_dump() for query in job.pending_invalidated]
             job.pending_invalidated.clear()
@@ -926,9 +1068,18 @@ class ProposalGateway:
         await self.sync_failure()
         return failed
 
+    @staticmethod
+    def suspend_negotiation(job: JobAccess) -> None:
+        # Capture accepted calls before waking the model controller. A queued
+        # call still needs its settled result even if it has not reached the
+        # native negotiation check when suspension starts.
+        job.delivered_overview = None
+        job.negotiation_calls.update(job.pending_calls)
+        job.negotiation_pending.set()
+
     async def wait_for_gameplay(self, job: JobAccess) -> bool:
         """Long-poll in code, outside dispatch and the memory actor. Chat jobs remain runnable."""
-        waited = False
+        waited = job.negotiation_pending.is_set()
         job.wait_started = time.monotonic()
         try:
             while True:
@@ -944,21 +1095,23 @@ class ProposalGateway:
                     raise StateConflict("NEGOTIATION_STATUS_UNAVAILABLE")
                 if not active:
                     return waited
+                if self.role_coordinator is not None:
+                    for sibling in self.role_coordinator.jobs.values():
+                        if sibling is not job and not self.role_coordinator.ready[sibling.purpose]:
+                            self.suspend_negotiation(sibling)
                 if job.suspend_for_negotiation and job.pending_calls:
                     # An earlier action's response may have reached the code
                     # cell but never been printed before it was interrupted.
                     # Rebase the settled response instead of referring to an
                     # overview delta the model might not have received.
-                    job.delivered_overview = None
-                    job.negotiation_calls.update(job.pending_calls)
-                    job.negotiation_pending.set()
+                    self.suspend_negotiation(job)
                 waited = True
         finally:
             job.completed_wait += time.monotonic() - job.wait_started
             job.wait_started = None
 
     async def settle_gameplay(self, job: JobAccess, name: str, result: JsonObject) -> JsonObject:
-        if job.purpose != "gameplay":
+        if job.purpose not in {"gameplay", "economy"}:
             return result
         if name in {"trade_offer", "friendship_offer"} and "error" not in result and result.get("trade"):
             if result["trade"].get("mode") == "NATIVE_AI":
@@ -1067,7 +1220,14 @@ class ProposalGateway:
         )
 
     async def _call(
-        self, job: JobAccess, name: str, arguments: JsonObject, call_id: str, *, startup: bool = False
+        self,
+        job: JobAccess,
+        name: str,
+        arguments: JsonObject,
+        call_id: str,
+        *,
+        startup: bool = False,
+        host_handoff: bool = False,
     ) -> JsonObject:
         self.check(job)
         arguments = copy.deepcopy(arguments)
@@ -1094,13 +1254,44 @@ class ProposalGateway:
                 arguments = command_arguments(arguments)
             except ValidationError as error:
                 return command_error(arguments, error)
+        coordinator = self.role_coordinator
+        if coordinator is not None and job.purpose == "economy":
+            from civ_agent.economy_roles import ECONOMY_TOOLS
+
+            if name not in ECONOMY_TOOLS:
+                return {"error": "ROLE_ACTION_NOT_PERMITTED", "applied": False}
+        finishing_role = name == "finish_role" or (
+            name == "player_command" and arguments.get("kind") == "END_TURN" and not host_handoff
+        )
+        if coordinator is not None and finishing_role:
+            if await self.wait_for_gameplay(job):
+                self.forget_observation(job)
+                return self.reobserve_after_negotiation()
+        if coordinator is not None and name in {"finish_role", "economy_request", "city_override"}:
+            return await coordinator.tool(job, name, arguments)
+        if (
+            coordinator is not None
+            and name == "player_command"
+            and job.purpose in {"gameplay", "economy"}
+            and not host_handoff
+        ):
+            if arguments["kind"] == "END_TURN":
+                # Older model integrations may still send END_TURN: it finishes only their role.
+                return await coordinator.tool(
+                    job,
+                    "finish_role",
+                    {k: arguments[k] for k in ("deferChoices", "deferReason", "initiativeDecisions") if k in arguments},
+                )
+            problem = coordinator.command_problem(job, arguments)
+            if problem:
+                return problem
         intent = arguments.pop("intent", None)
         if intent is not None:
             intent = validate(Intent, intent).model_dump()
         initiative_decisions = arguments.pop("initiativeDecisions", [])
         delivery = "auto"
         if name == "native_advice":
-            if not self.native_advice_enabled or job.purpose != "gameplay":
+            if not self.native_advice_enabled or job.purpose not in {"gameplay", "economy"}:
                 raise StateConflict("NATIVE_ADVICE_DISABLED")
             if job.observation is None:
                 return self.reobserve_after_negotiation("Read player_turn before native_advice.")
@@ -1277,7 +1468,13 @@ class ProposalGateway:
                 job.memory["records"].update(chosen)
             return public_result(MemorySearchResult.model_validate(result).model_dump(exclude_unset=True))
         if name == "memory_update":
-            result = await self.io.call(self.memory.patch, job.id, arguments["changes"], call_id)
+            owners = None
+            if self.role_coordinator is not None and job.purpose in {"gameplay", "economy"}:
+                owners = {
+                    city["handle"]: self.role_coordinator.owner(city["handle"])
+                    for city in (job.observation or {}).get("cities", [])
+                }
+            result = await self.io.call(self.memory.patch, job.id, arguments["changes"], call_id, owners)
             for change in result["changes"]:
                 if change["accepted"]:
                     record = change["record"]
@@ -1288,7 +1485,7 @@ class ProposalGateway:
                     }
             return MemoryUpdateResult.model_validate(result).model_dump(exclude_unset=True)
         if name == "player_command":
-            if job.purpose != "gameplay":
+            if job.purpose not in {"gameplay", "economy"}:
                 raise StateConflict("GAMEPLAY_NOT_PERMITTED")
             if job.observation is None:
                 return self.reobserve_after_negotiation(

@@ -162,12 +162,16 @@ def review_round(scheduler, status):
         if not can_continue(force=True):
             return False
         call(name, "start")
+    unavailable = {}
     while True:
         pending = []
         for name in participants:
             progress = call(name, "status")
             if progress["pendingReview"] is not None or not progress["ready"]:
                 pending.append(name)
+            elif (progress.get("reviewOutcome") or {}).get("status") == "UNAVAILABLE":
+                outcome = progress["reviewOutcome"]
+                unavailable[name] = {"civilization": name, "turn": turn, "attempts": outcome["attempts"]}
         # Recheck operator requests and budgets even when the last report finished.
         if not can_continue(force=not pending):
             return False
@@ -184,7 +188,16 @@ def review_round(scheduler, status):
     if forced:
         scheduler.state["reviewedWarTurn"] = war_turn
     scheduler.state.pop("reviewPhase", None)
+    if unavailable:
+        scheduler.state["unavailableReviews"] = list(unavailable.values())
+    else:
+        scheduler.state.pop("unavailableReviews", None)
     scheduler.save()
     release()
-    scheduler.output.line("Status", "All strategic reviews ready; resuming play and communication.")
+    scheduler.output.line(
+        "Status",
+        f"Strategic reviews finished; {len(unavailable)} unavailable. Resuming play and communication."
+        if unavailable
+        else "All strategic reviews ready; resuming play and communication.",
+    )
     return True

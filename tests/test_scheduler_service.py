@@ -180,7 +180,7 @@ class SchedulerServiceTest(unittest.TestCase):
         return [
             row
             for path in (self.state_dir / "agent-services").glob(civilization + "/activations/*.json")
-            if (row := json.loads(path.read_text())).get("purpose") != "review"
+            if (row := json.loads(path.read_text())).get("purpose", "gameplay") == "gameplay"
         ]
 
     def test_terminal_results_reach_real_https_services_without_an_extra_model_turn(self):
@@ -209,13 +209,13 @@ class SchedulerServiceTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual([play["civ"] for play in self.host.plays], ["Rome", "Greece", "Rome", "Greece"])
         self.assertEqual(self.saved()["handoffs"], 4)
-        self.assertEqual(self.saved()["usage"]["input_tokens"], 40)
+        self.assertEqual(self.saved()["usage"]["input_tokens"], 80)
         records = self.records()
         starts = [record for record in records if record["method"] == "thread/start"]
         resumes = [record for record in records if record["method"] == "thread/resume"]
         self.assertEqual((len(starts), len(resumes)), (6, 0))  # Two opening reviews and four turns.
         self.assertEqual(4, len({play["thread"] for play in self.host.plays}))
-        self.assertEqual(len({record["tokenHash"] for record in records}), 6)
+        self.assertEqual(len({record["tokenHash"] for record in records}), 10)
         for record in starts + resumes:
             self.assertFalse(record["operatorTokenPresent"])
             self.assertIn("mcp_servers.civ", " ".join(record["argv"]))
@@ -228,9 +228,7 @@ class SchedulerServiceTest(unittest.TestCase):
             self.assertIn("include_permissions_instructions=false", record["argv"])
             self.assertIn("skills.include_instructions=false", record["argv"])
             label = (
-                "Read tool definitions:"
-                if Path(record["params"]["cwd"]).parent.name == "reviews"
-                else "Civ tool discovery:"
+                "Available tools:" if Path(record["params"]["cwd"]).parent.name == "reviews" else "Civ tool discovery:"
             )
             self.assertIn(label, record["params"]["developerInstructions"])
             self.assertIn(Path(record["params"]["cwd"]).parent.parent.name, {"Rome", "Greece"})
@@ -369,7 +367,9 @@ class SchedulerServiceTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         sources = list((self.state_dir / "agent-services").glob("*/history/*/events.jsonl"))
         streams = read_collection(path_for(self.state_dir), "streams")
-        self.assertEqual((len(sources), len(streams)), (3, 1))  # Review histories are separate from gameplay.
+        self.assertEqual(
+            (len(sources), len(streams)), (4, 1)
+        )  # Economy and review histories are separate from gameplay.
         source_events = [json.loads(line) for line in self.source_history(streams[0]).read_text().splitlines()]
         mirror_events = read_collection(path_for(self.state_dir), "events")
         self.assertGreater(len(source_events), 100)
@@ -484,12 +484,7 @@ class SchedulerServiceTest(unittest.TestCase):
         self.assertTrue(all("finalizationElapsedMs" in record for record in records))
         self.assertGreaterEqual(sum(row["method"] == "turn/interrupt" for row in self.records()), 1)
         calls = [row["params"] for row in self.records() if row["method"] == "test/tool"]
-        greece_end = next(
-            index
-            for index, row in enumerate(calls)
-            if row["civilization"] == "Greece" and row["tool"] == "player_command"
-        )
-        self.assertGreaterEqual(greece_end, 0)
+        self.assertEqual([play["civ"] for play in self.host.plays], ["Rome", "Greece"])
         self.assertFalse(any(row["tool"] == "memory_update" for row in calls))
         rome = next(row for row in records if row["civilization"] == "Rome")
         greece = next(row for row in records if row["civilization"] == "Greece")
@@ -503,19 +498,20 @@ class SchedulerServiceTest(unittest.TestCase):
         result = self.run_cli("--max-turns", "2", "--max-seconds", "60", "--turn-timeout", "15")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(self.host.handoff, 4)
-        calls = [row["params"] for row in self.records() if row["method"] == "test/tool"]
-        rome_ends = [
-            i for i, row in enumerate(calls) if row["civilization"] == "Rome" and row["tool"] == "player_command"
-        ]
-        greece_ends = [
-            i for i, row in enumerate(calls) if row["civilization"] == "Greece" and row["tool"] == "player_command"
-        ]
-        self.assertLess(rome_ends[1], greece_ends[1])
+        self.assertEqual([play["civ"] for play in self.host.plays], ["Rome", "Greece", "Rome", "Greece"])
         records = [
             json.loads(path.read_text()) for path in (self.state_dir / "agent-services").glob("*/activations/*.json")
         ]
-        rome_next = next(row for row in records if row["civilization"] == "Rome" and row["gameTurn"] == 1)
-        greece_previous = next(row for row in records if row["civilization"] == "Greece" and row["gameTurn"] == 0)
+        rome_next = next(
+            row
+            for row in records
+            if row.get("purpose", "gameplay") == "gameplay" and row["civilization"] == "Rome" and row["gameTurn"] == 1
+        )
+        greece_previous = next(
+            row
+            for row in records
+            if row.get("purpose", "gameplay") == "gameplay" and row["civilization"] == "Greece" and row["gameTurn"] == 0
+        )
         self.assertLess(rome_next["gameplayEndedAtMs"], greece_previous["finalizationFinishedAtMs"])
         checkpoint = json.loads((self.state_dir / "turn-recovery/current.json").read_text())
         self.assertEqual(checkpoint["handoff"], 3)
