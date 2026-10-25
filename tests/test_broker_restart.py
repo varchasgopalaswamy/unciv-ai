@@ -53,6 +53,10 @@ class FakePodman:
     def __call__(self, *arguments, **options):
         self.calls.append((arguments, options))
         action = arguments[0]
+        if action == "container":
+            assert arguments[1] == "exists"
+            assert options == {"check": False}
+            return subprocess.CompletedProcess(arguments, 0 if arguments[2] in self.containers else 1)
         if action == "run":
             assert arguments[1:7] == (
                 "--rm",
@@ -122,6 +126,83 @@ def configure(root, *roles):
         write_private(root / "codex/auth.json", b'{"tokens":{"refresh_token":"synthetic-login"}}\n')
     if "decisions" in roles:
         write_private(root / "decisions.key", b"synthetic-decisions-key\n")
+
+
+def test_cli_stop_preserves_credentials_and_other_services_then_auth_can_start_again(fake_runtime, monkeypatch, capsys):
+    fake = fake_runtime
+    configure(fake.root, "auth", "decisions")
+    name = fake.existing("auth")
+    decisions = fake.existing("decisions")
+    write_private_json(fake.root / "clients.json", {"game-seat": "existing-client"})
+    write_private(fake.root / "decisions.sqlite3", b"durable-ledger")
+    files = ["codex/auth.json", "decisions.key", "clients.json", "decisions.sqlite3", "decisions-ready.json"]
+    before = {f: (fake.root / f).read_bytes() for f in files}
+    resolve = Mock(side_effect=AssertionError("Stopping must not resolve an image"))
+    monkeypatch.setattr(runtime, "resolve_image", resolve)
+    assert cli.main(["auth", "stop", "--auth-dir", str(fake.root)]) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report == {"auth_directory": str(fake.root), "container": name, "manager_running": False}
+    assert not fake.containers[name]["State"]["Running"]
+    assert fake.containers[decisions]["State"]["Running"]
+    assert not fake.ready("auth").exists()
+    assert {f: (fake.root / f).read_bytes() for f in files} == before
+    assert [args[0] for args, _ in fake.calls] == ["stop"]
+    resolve.assert_not_called()
+    supervisor.ensure_auth(fake.root, "old-image")
+    assert fake.containers[name]["State"]["Running"]
+    assert {f: (fake.root / f).read_bytes() for f in files} == before
+
+
+@pytest.mark.parametrize("present", [False, True])
+def test_stop_is_idempotent_without_credentials_and_clears_stale_readiness(fake_runtime, present):
+    fake = fake_runtime
+    if present:
+        fake.existing("auth", running=False)
+    else:
+        write_private(fake.ready("auth"), b"stale-readiness")
+    for _ in range(2):
+        assert supervisor.stop_auth(fake.root)["manager_running"] is False
+    assert not fake.ready("auth").exists()
+    assert not any(args[0] in {"stop", "rm", "create", "start"} for args, _ in fake.calls)
+
+
+def test_cli_stop_failure_is_reported_and_preserves_readiness(fake_runtime, capsys):
+    fake = fake_runtime
+    name = fake.existing("auth")
+    fake.fail_stop = True
+    assert cli.main(["auth", "stop", "--auth-dir", str(fake.root)]) == 2
+    output = capsys.readouterr()
+    assert "stop failed" in output.err and not output.out
+    assert fake.containers[name]["State"]["Running"]
+    assert fake.ready("auth").exists()
+
+
+def test_stop_requires_confirmed_shutdown(fake_runtime, monkeypatch):
+    fake = fake_runtime
+    name = fake.existing("auth")
+    running = fake.inspected(name)
+    monkeypatch.setattr(supervisor, "inspected", lambda _: running)
+    with pytest.raises(supervisor.ContainerError, match="Could not confirm"):
+        supervisor.stop_auth(fake.root)
+    assert fake.ready("auth").exists()
+
+
+@pytest.mark.parametrize("exists_code", [0, 125])
+def test_stop_does_not_mistake_inspection_failure_for_missing_container(fake_runtime, monkeypatch, exists_code):
+    fake = fake_runtime
+    fake.existing("auth")
+    monkeypatch.setattr(supervisor, "inspected", lambda _: None)
+    monkeypatch.setattr(supervisor, "podman", lambda *_, **__: subprocess.CompletedProcess([], exists_code))
+    with pytest.raises(supervisor.ContainerError, match="Could not inspect"):
+        supervisor.stop_auth(fake.root)
+    assert fake.ready("auth").exists()
+
+
+@pytest.mark.parametrize("option", ["--provider", "--image"])
+def test_stop_has_no_provider_or_image_option(option, tmp_path):
+    with pytest.raises(SystemExit) as error:
+        cli.main(["auth", "stop", "--auth-dir", str(tmp_path), option, "unused"])
+    assert error.value.code == 2
 
 
 @pytest.mark.parametrize("role", ["auth", "decisions"])

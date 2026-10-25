@@ -1,11 +1,16 @@
 """Operator-owned bounds shared by configuration, services and the trusted broker."""
 
 import argparse
+import json
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from civ_agent.decisions_backends import BACKENDS, DEFAULT_BACKEND, DecisionBackend
+from civ_agent.effort_decisions import EFFORT_LEVELS, Effort, canonical_levels
+
+MAX_DECISIONS_TIMEOUT_SECONDS = 300
+EARLY_REVIEW_MIN_TURN = 10
 
 
 class DecisionsSettings(BaseModel):
@@ -13,6 +18,12 @@ class DecisionsSettings(BaseModel):
 
     decisions_enabled: bool = False
     decisions_backend: DecisionBackend = DEFAULT_BACKEND
+    decisions_effort_enabled: bool = False
+    decisions_effort_levels: Annotated[list[Effort], Field(min_length=2, max_length=5)] = Field(
+        default_factory=lambda: list(EFFORT_LEVELS)
+    )
+    decisions_effort_min_probability: Annotated[float, Field(ge=0, le=1, strict=True)] = 0.50
+    decisions_effort_min_margin: Annotated[float, Field(ge=0, le=1, strict=True)] = 0.15
     additional_decisions_budget_usd: Annotated[float, Field(ge=0, le=1000)] = 0.10
     decisions_acceptance_probability: Annotated[float, Field(ge=0, le=1, strict=True)] = Field(
         default_factory=lambda data: BACKENDS[data["decisions_backend"]].acceptance_probability
@@ -30,7 +41,7 @@ class DecisionsSettings(BaseModel):
     decisions_outgoing_omit_probability: Annotated[float, Field(ge=0, le=1, strict=True)] = Field(
         default_factory=lambda data: data["decisions_acceptance_probability"]
     )
-    decisions_timeout_seconds: Annotated[int, Field(ge=1, le=300)] = Field(
+    decisions_timeout_seconds: Annotated[int, Field(ge=1, le=MAX_DECISIONS_TIMEOUT_SECONDS)] = Field(
         default_factory=lambda data: 120 if data["decisions_backend"] == "jev" else 5
     )
     decisions_startup_min_gap_turns: Annotated[int, Field(ge=1)] = 5
@@ -43,6 +54,17 @@ class DecisionsSettings(BaseModel):
     early_review_min_gap_between_early_turns: Annotated[int, Field(ge=10)] = 10
     memory_context_chars: Annotated[int, Field(ge=1000)] = 12000
 
+    @field_validator("decisions_effort_levels")
+    @classmethod
+    def effort_levels(cls, values):
+        return canonical_levels(values)
+
+    @model_validator(mode="after")
+    def effort_requires_decisions(self):
+        if self.decisions_effort_enabled and not self.decisions_enabled:
+            raise ValueError("decisions_effort_enabled requires decisions_enabled")
+        return self
+
 
 DECISIONS_FIELDS = tuple(DecisionsSettings.model_fields)
 
@@ -52,8 +74,11 @@ def add_decisions_arguments(parser, *, defaults=True, include_memory=True):
         if name == "memory_context_chars" and not include_memory:
             continue
         options = {"default": field.default if defaults and field.default_factory is None else None}
-        if name == "decisions_enabled":
+        if name in {"decisions_enabled", "decisions_effort_enabled"}:
             options["action"] = argparse.BooleanOptionalAction
+        elif name == "decisions_effort_levels":
+            options["type"] = json.loads
+            options["metavar"] = "JSON"
         else:
             options["type"] = (
                 (int if name == "decisions_timeout_seconds" else float)

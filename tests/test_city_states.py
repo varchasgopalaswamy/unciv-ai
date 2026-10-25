@@ -10,6 +10,7 @@ from civ_agent.game_commands import command_arguments, command_schema
 from civ_agent.observations import overview, required_detail
 from civ_agent.proposal_gateway import ProposalGateway
 from civ_agent.service_io import ServiceIO
+from civ_agent.state_updates import apply_overview_update
 from tests.test_proposal_gateway import Host
 from tests.test_tactical_review import reviewed
 
@@ -146,8 +147,9 @@ def test_city_state_popup_options_are_actionable_without_chat_or_extra_reads(tmp
             assert "error" not in response
             assert host.executed[-1]["target"] == "alert1"
             assert host.executed[-1]["selection"] == selection
-            assert response["stateUpdate"]["collections"]["alerts"]["removed"] == ["alert1"]
-            assert response["stateUpdate"]["set"]["canEndTurn"]
+            current = apply_overview_update(view, response["stateUpdate"])
+            assert current["alerts"] == []
+            assert current["canEndTurn"]
         finally:
             await io.close()
 

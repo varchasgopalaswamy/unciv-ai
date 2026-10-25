@@ -88,7 +88,15 @@ def parser(*, add_help: bool = True) -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--scenario",
-        choices=["trade-cycle", "war-paid", "war-joint", "agreement-lifecycle", "mixed-diplomacy"],
+        choices=[
+            "economy-manager",
+            "military-manager",
+            "trade-cycle",
+            "war-paid",
+            "war-joint",
+            "agreement-lifecycle",
+            "mixed-diplomacy",
+        ],
         help="prepared exercise (default: Vanilla Rome/Greece/France); on resume, verify the saved scenario",
     )
     parser.add_argument(
@@ -189,6 +197,8 @@ def launch(options):
         raise ValueError("A custom TLS configuration already supplies listenHost and publicHost.")
 
     civilizations = ("Rome", "Greece") if options.scenario == "trade-cycle" else humans + agents
+    if options.scenario in {"economy-manager", "military-manager"}:
+        civilizations = ("Rome", "Greece")
     if options.scenario == "mixed-diplomacy":
         civilizations = ("Rome", "Greece", "France", "Egypt")
     ensure_players(

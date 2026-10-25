@@ -40,6 +40,7 @@ from civ_agent.agent_settings import (
 from civ_agent.chat_runtime import ChatRuntime
 from civ_agent.civilization_guide import civilization_reference
 from civ_agent.civilization_state import CivilizationState, StateConflict
+from civ_agent.coordination_updates import context_compacted
 from civ_agent.diagnostics import Diagnostics
 from civ_agent.host_connection import HostConnection
 from civ_agent.model_status import LogLines, ModelStatus
@@ -538,6 +539,8 @@ class AgentService:
         reasoning_effort: str | None = None,
         communication_reasoning_effort: str | None = None,
         economy_model: JsonObject | None = None,
+        economy_interval: int = 5,
+        military_model: JsonObject | None = None,
         memory_context_chars: int = 12000,
         review_interval: int = 5,
         review_attempts: int = 3,
@@ -569,7 +572,15 @@ class AgentService:
         from civ_agent.game_config import EconomyModel
 
         self.economy_model = EconomyModel.model_validate(economy_model or {}).model_dump(exclude_none=True)
+        if type(economy_interval) is not int or economy_interval <= 0:
+            raise ServiceError("INVALID_ECONOMY_INTERVAL")
+        self.economy_interval = economy_interval
         self.economy_runtime = None
+        self.military_model = EconomyModel.model_validate(military_model or {}).model_dump(exclude_none=True)
+        self.military_runtime = None
+        from civ_agent.peace_review import PeaceReviews
+
+        self.peace_reviews = PeaceReviews(self)
         self.turn_roles = None
         self.strategy_guide = strategy_guide
         self.civilization_guide = civilization_guide
@@ -641,6 +652,7 @@ class AgentService:
             write_private_json(binding_file, binding)
         self.memory = CivilizationState(self.state_dir / "civilization", civilization, memory_context_chars)
         self.gateway = ProposalGateway(self.memory, self.io, self.workspace)
+        self.gateway.peace_reviews = self.peace_reviews
         self.gateway.native_advice_enabled = self.native_advice_enabled
         if routing_client is not None:
             from civ_agent.diplomacy_routing import DiplomacyRouting
@@ -674,6 +686,12 @@ class AgentService:
             if record["phase"] not in TERMINAL:
                 record["phase"], record["error"] = "FAILED", "SERVICE_RESTARTED"
                 record["usageComplete"] = reconciled
+                if record.pop("roleWaitStartedAtMs", None) is not None:
+                    # No live monotonic timer survives a process restart. Keep
+                    # recorded durations, without counting downtime as waiting.
+                    record["roleWaitIncomplete"] = True
+                record.pop("economyWait", None)
+                record.pop("roleState", None)
                 self._persist(record)
             elif reconciled and not was_reconciled:
                 record["usageComplete"] = True
@@ -977,21 +995,48 @@ class AgentService:
             result["finalizationError"] = self.finalization_errors[activation_id]
         job = next((job for job in self.gateway.jobs.values() if job.id == activation_id), None)
         result["negotiationWaitSeconds"] = job.waiting_seconds() if job else record.get("negotiationWaitSeconds", 0)
+        result["roleWaitSeconds"] = record.get("roleWaitSeconds", 0) + (
+            max(0, time.time() - record["roleWaitStartedAtMs"] / 1000)
+            if record.get("roleWaitStartedAtMs") is not None
+            else 0
+        )
         result["decisionsSettings"] = self.decisions_settings.model_dump()
         if record.get("purpose", "gameplay") == "gameplay":
             children = [r for r in self.records.values() if r.get("parentActivation") == activation_id]
-            economy_usage = {key: sum(r.get("usage", {}).get(key, 0) for r in children) for key in USAGE_KEYS}
+            economy_children = [r for r in children if r.get("purpose") == "economy"]
+            military_children = [r for r in children if r.get("purpose") == "military"]
+            economy_usage = {key: sum(r.get("usage", {}).get(key, 0) for r in economy_children) for key in USAGE_KEYS}
+            military_usage = {key: sum(r.get("usage", {}).get(key, 0) for r in military_children) for key in USAGE_KEYS}
+            result["militaryUsage"] = military_usage
+            result["militaryUsageComplete"] = all(r.get("usageComplete", False) for r in military_children)
+            result["militaryModelRequests"] = sum(r.get("modelRequests", 0) for r in military_children)
             result["mainUsage"] = dict(record.get("usage", {}))
             result["economyUsage"] = economy_usage
-            result["usage"] = {key: result["mainUsage"].get(key, 0) + economy_usage[key] for key in USAGE_KEYS}
+            result["usage"] = {
+                key: result["mainUsage"].get(key, 0) + economy_usage[key] + military_usage[key] for key in USAGE_KEYS
+            }
             result["mainUsageComplete"] = record.get("usageComplete", False)
-            result["economyUsageComplete"] = bool(children) and all(r.get("usageComplete", False) for r in children)
-            result["usageComplete"] = result["mainUsageComplete"] and result["economyUsageComplete"]
-            result["economyModelRequests"] = sum(r.get("modelRequests", 0) for r in children)
+            result["economyUsageComplete"] = all(r.get("usageComplete", False) for r in economy_children)
+            result["usageComplete"] = (
+                result["mainUsageComplete"]
+                and result["economyUsageComplete"]
+                and all(r.get("usageComplete", False) for r in military_children)
+            )
+            result["economyModelRequests"] = sum(r.get("modelRequests", 0) for r in economy_children)
         return result
 
     def health(self):
         failure = self.gateway.run_failure or self.reviews.failure
+        if failure is None and self.peace_reviews.unconfirmed_process is not None:
+            failure = {"error": "STOP_UNCONFIRMED", "diagnosticId": "peace-consultation", "job": "peace-consultation"}
+        if failure is None and self.military_runtime is not None and self.military_runtime.process is not None:
+            military_record = self.records.get(self.military_runtime.active_id, {})
+            if military_record.get("error") == "STOP_UNCONFIRMED":
+                failure = {
+                    "error": "STOP_UNCONFIRMED",
+                    "diagnosticId": self.military_runtime.active_id,
+                    "job": self.military_runtime.active_id,
+                }
         if failure is None and self.economy_runtime is not None and self.economy_runtime.process is not None:
             economy_record = self.records.get(self.economy_runtime.active_id, {})
             if economy_record.get("error") == "STOP_UNCONFIRMED":
@@ -1249,6 +1294,11 @@ class AgentService:
         record = self.records[self.active_id]
         model_record = record
         thread_id = model_record.get("threadId")
+        if thread_id and params.get("threadId") == thread_id and context_compacted(method, params):
+            job = next((job for job in self.gateway.jobs.values() if job.id == self.active_id), None)
+            if job is not None:
+                async with job.lock:
+                    self.gateway.reset_coordination(job)
         if method == "service/transportFailure":
             if params.get("reason") in {
                 "CODEX_NOTIFICATION_OVERFLOW",
@@ -1290,7 +1340,7 @@ class AgentService:
                 self.stop_event.set()
                 return
             if (
-                (self.completion is None or record.get("negotiationWait"))
+                (self.completion is None or record.get("negotiationWait") or record.get("economyWait"))
                 and not self.stopping
                 and self.failure is None
             ):
@@ -1321,7 +1371,7 @@ class AgentService:
             return
         await self._save(record)
 
-    async def _model_turn(self, record, job, prompt, workspace, selected):
+    async def _model_turn(self, record, job, prompt, workspace, selected, prepared=None):
         """One gameplay conversation, with no post-turn model bookkeeping."""
         if self.failure:
             raise ServiceError(self.failure)
@@ -1343,6 +1393,9 @@ class AgentService:
         await self.io.call(self.history.startup_context, record["activationId"], prompt.instructions, role="developer")
         await self.io.call(self.history.startup_context, record["activationId"], prompt.user)
         await process.start(job.token, selected)
+        from civ_agent.effort_decisions import base_settings, select_effort
+
+        selected = await select_effort(self, record, job, prepared, selected, process)
         options: JsonObject = {
             "cwd": str(workspace),
             "approvalPolicy": "never",
@@ -1382,17 +1435,18 @@ class AgentService:
         model_record["threadId"] = thread_id
         self.known_threads.add(thread_id)
         assert self.match is not None
-        self.match["economyEffectiveSettings" if job.purpose == "economy" else "effectiveSettings"] = dict(
-            effective_settings
-        )
+        self.match[
+            job.purpose + "EffectiveSettings" if job.purpose in {"economy", "military"} else "effectiveSettings"
+        ] = base_settings(record)
         await self.io.call(write_private_json, self.match_file, copy.deepcopy(self.match))
         await self._save(record)
         if self.failure:
             raise ServiceError(self.failure)
         self.accept_usage = True
+        self.gateway.commit_startup_coordination(job)
         message = prompt.user
         while True:
-            if record.get("roleState") in {"finished", "waiting_negotiation"} and self.chat.running:
+            if record.get("roleState") in {"finished", "waiting_negotiation", "waiting_economy"} and self.chat.running:
                 while not (await self.chat.social("job_claim", job=job.id, purpose=job.purpose))["granted"]:
                     if self.failure:
                         raise ServiceError(self.failure)
@@ -1402,21 +1456,28 @@ class AgentService:
             negotiating = asyncio.create_task(job.negotiation_pending.wait())
             handed_off = asyncio.create_task(job.gameplay_ended.wait())
             role_finished = asyncio.create_task(job.role_finished.wait())
+            role_wait = asyncio.create_task(job.role_wait_pending.wait())
             try:
                 await asyncio.wait(
-                    {stopped, negotiating, handed_off, role_finished}, return_when=asyncio.FIRST_COMPLETED
+                    {stopped, negotiating, handed_off, role_finished, role_wait}, return_when=asyncio.FIRST_COMPLETED
                 )
                 # A model may finish before an accepted offer reaches the host.
                 # Let that call establish its outcome (or negotiation hold)
                 # before treating the conversation as terminal.
-                while self.completion == "completed" and job.pending_calls and not job.negotiation_pending.is_set():
+                while (
+                    self.completion == "completed"
+                    and job.pending_calls
+                    and not job.negotiation_pending.is_set()
+                    and not job.role_wait_pending.is_set()
+                ):
                     await asyncio.wait({*job.pending_calls, negotiating}, return_when=asyncio.FIRST_COMPLETED)
             finally:
                 stopped.cancel()
                 negotiating.cancel()
                 handed_off.cancel()
                 role_finished.cancel()
-                await asyncio.gather(stopped, negotiating, handed_off, role_finished, return_exceptions=True)
+                role_wait.cancel()
+                await asyncio.gather(stopped, negotiating, handed_off, role_finished, role_wait, return_exceptions=True)
             if self.failure:
                 raise ServiceError(self.failure)
             if job.gameplay_ended.is_set():
@@ -1432,8 +1493,19 @@ class AgentService:
                 message = await self.gateway.role_coordinator.wait_for_resume(job)
                 if job.gameplay_ended.is_set():
                     return
-                fresh = await self.gateway.call(job, "player_turn", {}, f"resume:{record.get('modelRequests', 0)}")
+                arguments = self.gateway.role_coordinator.economy_arguments() if job.purpose == "economy" else {}
+                arguments = {**arguments, "delivery": "full"}
+                fresh = await self.gateway.call(
+                    job, "player_turn", arguments, f"resume:{record.get('modelRequests', 0)}"
+                )
                 message += "\n" + json.dumps(fresh, ensure_ascii=False)
+                continue
+            if job.role_wait_pending.is_set() and self.gateway.role_coordinator is not None:
+                message = await self._settle_economy_wait(record, job, process)
+                if job.gameplay_ended.is_set():
+                    return
+                await self.io.call(self.history.next_conversation, record["activationId"], record["modelPhase"])
+                await self.io.call(self.history.role_wait_result, record["activationId"], message)
                 continue
             if not job.negotiation_pending.is_set():
                 if self.completion == "completed" and self.gateway.role_coordinator is not None:
@@ -1548,6 +1620,80 @@ class AgentService:
             )
         )
 
+    async def _settle_economy_wait(self, record, job, process):
+        """Suspend an unfinished Main without holding tool admission or native dispatch."""
+        coordinator = self.gateway.role_coordinator
+        assert coordinator is not None
+        started = None
+        outcome = "cancelled"
+        try:
+            record["economyWait"] = {"state": "suspending"}
+            await self._save(record)
+            await self._interrupt_model_turn(record, process, "ROLE_WAIT_SUSPEND_TIMEOUT")
+            started = time.monotonic()
+            record["roleWaitStartedAtMs"] = int(time.time() * 1000)
+            record["economyWait"] = {"state": "waiting"}
+            record["roleState"] = "waiting_economy"
+            await self._save(record)
+            await self.flush_telemetry()
+            calls = list(job.role_wait_calls.items())
+            results = await asyncio.gather(*(asyncio.shield(task) for task, _ in calls))
+            outcome = await coordinator.wait_for_economy(job)
+            wait_result = await coordinator.finish_economy_wait(job, outcome)
+            if outcome == "turn_ended":
+                return ""
+            negotiation = None
+            if outcome == "negotiation" or job.negotiation_pending.is_set():
+                record["roleWaitSeconds"] = record.get("roleWaitSeconds", 0) + time.monotonic() - started
+                record.pop("roleWaitStartedAtMs", None)
+                started = None
+                negotiation = await self._settle_negotiation(record, job, process)
+            completed = [value for task, value in job.completed_actions.items() if task not in job.role_wait_calls]
+            job.completed_actions.clear()
+            self.gateway.check(job)
+            # The interrupted code cell may not have printed an accepted result.
+            # Rebase all delivery cursors before supplying one authoritative view.
+            self.gateway.forget_observation(job)
+            self.gateway.reset_coordination(job)
+            fresh = await self.gateway.call(
+                job,
+                "player_turn",
+                {"view": "current", "delivery": "full"},
+                "role-wait-resume:" + str(wait_result["id"]),
+                source="host",
+            )
+            if "error" in fresh:
+                raise ServiceError("ROLE_WAIT_REFRESH_FAILED")
+            return (
+                "Your economy wait ended; your role is still unfinished. Reconsider using the currentGame below, "
+                "which supersedes earlier observations and the historical tool results. Do not repeat successful actions.\n"
+                + json.dumps(
+                    {
+                        "economyWait": wait_result,
+                        **({"completedActions": completed} if completed else {}),
+                        "toolResults": [
+                            {**info, "result": result} for (_, info), result in zip(calls, results, strict=True)
+                        ],
+                        **({"negotiation": negotiation} if negotiation else {}),
+                        "currentGame": fresh,
+                    },
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )
+            )
+        finally:
+            if started is not None:
+                record["roleWaitSeconds"] = record.get("roleWaitSeconds", 0) + time.monotonic() - started
+            record.pop("roleWaitStartedAtMs", None)
+            record.pop("economyWait", None)
+            job.role_wait_pending.clear()
+            job.role_wait_calls.clear()
+            if coordinator.economy_wait_record is not None:
+                record["lastEconomyWait"] = {**coordinator.economy_wait_record, "state": outcome}
+                coordinator.economy_wait_record = None
+                record["roles"] = copy.deepcopy(coordinator.state())
+            await self._save(record)
+
     async def _run(self, payload: JsonObject) -> None:
         try:
             await self._run_job(payload)
@@ -1637,6 +1783,10 @@ class AgentService:
                     and negotiation_task.exception()
                 ):
                     self.failure = "NEGOTIATION_MONITOR_FAILED"
+                if self.turn_roles is not None:
+                    for military_task in self.turn_roles.military_tasks:
+                        if military_task.done() and not military_task.cancelled() and military_task.exception():
+                            self.failure = self.failure or "MILITARY_ROLE_FAILED"
                 if self.gateway.run_failure or self.failure:
                     self.failure = self.gateway.run_failure["error"] if self.gateway.run_failure else self.failure
                 elif now - self.last_heartbeat >= payload["leaseSeconds"]:
@@ -1707,19 +1857,31 @@ class AgentService:
                 self.gameplay_permit == record["activationId"],
             )
             from civ_agent.economy_roles import TurnRoles
-            from civ_agent.economy_runtime import EconomyRuntime, run_economy
+            from civ_agent.economy_runtime import RoleRuntime, run_role, run_scheduled_economy
 
             self.turn_roles = TurnRoles(self, record)
             self.gateway.role_coordinator = self.turn_roles
             self.turn_roles.register(job)
-            self.economy_runtime = EconomyRuntime(self, self.turn_roles, payload)
-            economy_task = asyncio.create_task(run_economy(self, self.turn_roles, payload, record))
+            military_generation = 0
+
+            def start_military():
+                nonlocal military_generation
+                military_generation += 1
+                military_payload = {**payload, "activationId": payload["activationId"] + f":war{military_generation}"}
+                self.military_runtime = RoleRuntime(self, self.turn_roles, military_payload, role="military")
+                return asyncio.create_task(run_role(self, self.turn_roles, military_payload, record, "military"))
+
+            self.turn_roles.start_military = start_military
+            initial_view = await job.connection.tool("player_turn", {})
+            if "error" in initial_view:
+                raise ServiceError("WAR_STATE_UNAVAILABLE", 503)
+            await self.turn_roles.synchronize_war(initial_view)
+            self.economy_runtime = None
+            await self.turn_roles.initialize_economy(initial_view)
+            economy_task = asyncio.create_task(run_scheduled_economy(self, self.turn_roles, payload, record))
             advance_task = asyncio.create_task(self.turn_roles.advance())
             self.turn_roles.advance_task = advance_task
             negotiation_task = asyncio.create_task(self.turn_roles.watch_negotiation())
-            await self.economy_runtime.started.wait()
-            if economy_task.done():
-                await economy_task
             prepared = await prepare_startup(self.gateway, job)
             prompt = startup_prompt(
                 prepared,
@@ -1737,7 +1899,7 @@ class AgentService:
                 **prompt.metadata(),
             }
             record["modelPhase"] = "gameplay"
-            await self._model_turn(record, job, prompt, workspace, selected)
+            await self._model_turn(record, job, prompt, workspace, selected, prepared)
             if job.gameplay_ended.is_set() and advance_task is not None:
                 try:
                     await asyncio.shield(advance_task)
@@ -1800,6 +1962,16 @@ class AgentService:
             if advance_task is not None:
                 advance_task.cancel()
                 await asyncio.gather(advance_task, return_exceptions=True)
+            if self.turn_roles is not None:
+                for military_task in self.turn_roles.military_tasks:
+                    if self.turn_roles.committed and not military_task.done():
+                        with contextlib.suppress(Exception):
+                            await asyncio.wait_for(asyncio.shield(military_task), 60)
+                    if not military_task.done():
+                        military_task.cancel()
+                    military_result = await asyncio.gather(military_task, return_exceptions=True)
+                    if isinstance(military_result[0], Exception) and self.failure is None:
+                        self.failure = "MILITARY_ROLE_FAILED"
             self.gateway.role_coordinator = None
             if self.gateway.run_failure:
                 self.failure = self.gateway.run_failure["error"]
@@ -1892,6 +2064,12 @@ class AgentService:
             self.process = None
         for task in self.finalization_tasks.values():
             await asyncio.shield(task)
+        if self.military_runtime is not None and self.military_runtime.process is not None:
+            await self.military_runtime.process.close()
+            self.military_runtime.process = None
+        if self.peace_reviews.unconfirmed_process is not None:
+            await self.peace_reviews.unconfirmed_process.close()
+            self.peace_reviews.unconfirmed_process = None
         await self.chat.close()
         for job in list(self.gateway.jobs.values()):
             await self.gateway.close(job, False)

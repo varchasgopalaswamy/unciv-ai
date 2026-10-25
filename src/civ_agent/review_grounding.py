@@ -18,7 +18,7 @@ class MaterialAssumption(BoundaryModel):
         description="Use inferred for your interpretation of cited observations; otherwise use unknown."
     )
     sources: Annotated[list[Annotated[str, Field(min_length=1, max_length=40)]], Field(max_length=6)] = Field(
-        description="Source labels attached to observations you received."
+        description="Copy labels from the outer source field of observation envelopes you received. Inner data.evidence IDs are not review source labels."
     )
 
     @model_validator(mode="after")
@@ -69,7 +69,8 @@ class ReviewEvidence:
                 if reference not in self.sources:
                     raise ValueError(
                         f"STRATEGIC_REVIEW_SOURCE: assumption {index} cites {reference!r}, "
-                        "which was not supplied to this review. Cite an observation's source label, "
+                        "which was not supplied to this review. Copy the outer source field of a delivered observation, "
+                        "not its inner data.evidence ID, "
                         "or mark the assumption unknown with no sources."
                     )
                 if reference in seen:

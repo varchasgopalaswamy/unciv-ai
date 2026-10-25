@@ -63,6 +63,7 @@ class FakeCodex:
         self.job = None
 
     async def start(self, token, settings):
+        self.settings = dict(settings)
         self.job = self.factory.service.gateway.jobs[token]
         if self.economy:
             return
@@ -71,6 +72,20 @@ class FakeCodex:
             await asyncio.Future()
 
     async def request(self, method: str, payload: JsonObject) -> JsonObject:
+        if method == "model/list":
+            from civ_agent.effort_decisions import EFFORT_LEVELS
+
+            model = self.settings.get("model") or self.factory.default_model
+            return {
+                "data": [
+                    {
+                        "id": model,
+                        "model": model,
+                        "supportedReasoningEfforts": [{"reasoningEffort": level} for level in EFFORT_LEVELS],
+                    }
+                ],
+                "nextCursor": None,
+            }
         if self.economy:
             if method == "thread/start":
                 self.thread_id = "economy-" + self.workspace.name
@@ -98,7 +113,18 @@ class FakeCodex:
                         },
                     },
                 )
-                await self.factory.service.gateway.invoke(self.job, "finish_role", {}, "economy-finish")
+                requests = [
+                    {
+                        "id": r["id"],
+                        "status": "completed",
+                        "reason": "Reviewed the requested priorities in this fixture.",
+                    }
+                    for r in self.factory.service.turn_roles.requests
+                    if r["status"] == "pending" and r.get("priority") == "urgent"
+                ]
+                await self.factory.service.gateway.invoke(
+                    self.job, "finish_role", {"requests": requests}, "economy-finish"
+                )
                 await self.notification(
                     "turn/completed",
                     {"threadId": self.thread_id, "turn": {"id": "economy-turn", "status": "completed"}},
@@ -320,6 +346,29 @@ class AgentServiceTestCase(unittest.IsolatedAsyncioTestCase):
 
 
 class AgentServiceTests(AgentServiceTestCase):
+    async def test_compaction_resets_only_the_matching_conversations_delivery_baseline(self):
+        from civ_agent.coordination_updates import snapshot
+
+        service = self.service
+        job = await service.gateway.open("compacted-job", "gameplay", "epoch-one", StartupHost(self.factory), {})
+        service.active_id = job.id
+        service.records[job.id] = {"activationId": job.id, "threadId": "current-thread", "phase": "COMPLETED"}
+        try:
+            for method, extra in [
+                ("thread/compacted", {}),
+                ("item/completed", {"item": {"type": "contextCompaction"}}),
+            ]:
+                before = snapshot({}, job.id, job.epoch, job.coordination_scope, 1)
+                job.coordination_seen = before
+                await service._notification(method, {"threadId": "other-thread", **extra})
+                self.assertEqual(job.coordination_seen, before)
+                await service._notification(method, {"threadId": "current-thread", **extra})
+                self.assertIsNone(job.coordination_seen)
+                self.assertNotEqual(job.coordination_scope, before["scopeId"])
+        finally:
+            await service.gateway.close(job, True)
+            service.active_id = None
+
     async def test_recovered_terminal_accounting_releases_orphaned_permits(self):
         from unittest.mock import AsyncMock
 

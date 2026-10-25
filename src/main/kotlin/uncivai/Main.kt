@@ -20,6 +20,7 @@ private fun launchHost(options: CliOptions) {
         val tls = options.tlsConfig?.let(::loadHostTls)
         val expectedMap = options.scenario?.let {
             when (it) {
+                "economy-manager", "military-manager" -> ManagerScenarioSetup.mapName(it)
                 "mixed-diplomacy" -> MixedDiplomacyScenario.MAP_NAME
                 "trade-cycle" -> TradeCycleScenarioSetup.MAP_NAME
                 "agreement-lifecycle" -> AgreementLifecycleScenarioSetup.MAP_NAME
@@ -27,7 +28,9 @@ private fun launchHost(options: CliOptions) {
             }
         }
         val loaded = if (options.newGame || options.validateSetup) {
-            if (options.scenario == "mixed-diplomacy") {
+            if (options.scenario in ManagerScenarioSetup.variants) {
+                HeadlessRuntime.createManagerExercise(options.dataDirectory, checkNotNull(options.scenario), options.seed ?: 416L)
+            } else if (options.scenario == "mixed-diplomacy") {
                 HeadlessRuntime.createMixedDiplomacyExercise(options.dataDirectory, options.seed ?: 415L)
             } else if (options.scenario == "trade-cycle") {
                 HeadlessRuntime.createTradeCycleExercise(options.dataDirectory, options.seed ?: 412L)

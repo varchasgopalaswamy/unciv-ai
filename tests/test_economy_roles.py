@@ -3,7 +3,7 @@
 import asyncio
 from functools import wraps
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from pydantic import ValidationError
@@ -12,6 +12,7 @@ from civ_agent.agent_service import AgentService
 from civ_agent.economy_roles import TurnRoles
 from civ_agent.game_config import GameConfig, Player
 from civ_agent.memory_records import MemoryReadResult, MemoryUpdateResult
+from civ_agent.war_state import WarStore
 from tests.test_agent_service import FakeCodex, FakeFactory
 from tests.test_structured_memory import setup
 
@@ -41,6 +42,67 @@ def coordinator():
         jobs[role] = job
         roles.register(job)
     return roles, jobs
+
+
+@pytest.mark.parametrize("boundary", ["committed", "ended"])
+@run_async
+async def test_negotiation_monitor_waiting_for_dispatch_stops_after_handoff(boundary):
+    roles, jobs = coordinator()
+    gateway = SimpleNamespace(role_dispatch=asyncio.Lock())
+    roles.service.gateway = gateway
+    connection = SimpleNamespace(tool=AsyncMock(return_value={"negotiation": {"active": False}}))
+    jobs["gameplay"].connection = connection
+    async with gateway.role_dispatch:
+        monitor = asyncio.create_task(roles.watch_negotiation())
+        await asyncio.sleep(0)
+        if boundary == "committed":
+            roles.committed = True
+        else:
+            jobs["gameplay"].gameplay_ended.set()
+    try:
+        await asyncio.wait_for(monitor, 1)
+        connection.tool.assert_not_awaited()
+    finally:
+        monitor.cancel()
+        await asyncio.gather(monitor, return_exceptions=True)
+
+
+@run_async
+async def test_negotiation_monitor_pauses_during_handoff_and_resumes_after_rejection():
+    roles, jobs = coordinator()
+    roles.service.gateway = SimpleNamespace(role_dispatch=asyncio.Lock())
+
+    async def read(name, arguments):
+        if name == "player_communication":
+            return {"negotiation": {"active": False}}
+        roles.committed = True
+        return {}
+
+    connection = SimpleNamespace(tool=AsyncMock(side_effect=read))
+    jobs["gameplay"].connection = connection
+    roles.committing = True
+    monitor = asyncio.create_task(roles.watch_negotiation())
+    try:
+        await asyncio.sleep(0)
+        connection.tool.assert_not_awaited()
+        roles.committing = False
+        await asyncio.wait_for(monitor, 2)
+        assert [call.args[0] for call in connection.tool.await_args_list] == [
+            "player_communication",
+            "player_turn",
+        ]
+    finally:
+        monitor.cancel()
+        await asyncio.gather(monitor, return_exceptions=True)
+
+
+@run_async
+async def test_negotiation_monitor_failure_before_handoff_remains_fatal():
+    roles, jobs = coordinator()
+    roles.service.gateway = SimpleNamespace(role_dispatch=asyncio.Lock())
+    jobs["gameplay"].connection = SimpleNamespace(tool=AsyncMock(side_effect=ValueError("HOST_UNAVAILABLE")))
+    with pytest.raises(ValueError, match="HOST_UNAVAILABLE"):
+        await roles.watch_negotiation()
 
 
 def test_economy_model_inheritance_and_per_player_override():
@@ -82,18 +144,38 @@ async def test_override_fences_economy_without_taking_other_cities():
     assert roles.owner("city2") == "economy"
 
 
+@pytest.mark.parametrize("movement,reopen", [("2", True), ("2/2", True), ("0.5/2", True), ("0/2", False)])
 @run_async
-async def test_late_unit_purchase_reopens_main_player():
+async def test_late_unit_purchase_reopens_main_player(movement, reopen):
     roles, jobs = coordinator()
     await roles.tool(jobs["gameplay"], "finish_role", {})
     await roles.after_action(
         jobs["economy"],
         {"kind": "BUY_CONSTRUCTION"},
-        {"economy": {"units": [{"created": True, "handle": "unit1", "movement": "2"}]}},
+        {"economy": {"units": [{"created": True, "handle": "unit1", "movement": movement}]}},
     )
-    assert not roles.ready["gameplay"]
-    assert not jobs["gameplay"].role_finished.is_set()
-    assert "purchased a unit" in await roles.wait_for_resume(jobs["gameplay"])
+    assert roles.ready["gameplay"] is not reopen
+    assert jobs["gameplay"].role_finished.is_set() is not reopen
+    if reopen:
+        assert "purchased a unit" in await roles.wait_for_resume(jobs["gameplay"])
+
+
+@pytest.mark.parametrize("movement,reopen", [("2/2", True), ("0.5/2", True), ("0/2", False)])
+@run_async
+async def test_new_unit_observation_reopens_its_owner_only_with_remaining_movement(monkeypatch, movement, reopen):
+    roles, jobs = coordinator()
+    await roles.tool(jobs["gameplay"], "finish_role", {})
+    roles.wars = WarStore(Mock())
+    monkeypatch.setattr(roles.wars, "synchronize", Mock(return_value={"episodes": {}, "escorts": {}}))
+    roles.service.io = SimpleNamespace(call=AsyncMock(side_effect=lambda function, *args: function(*args)))
+    roles.known_units = set()
+    await roles.synchronize_war(
+        {"diplomacy": {}, "units": [{"handle": "unit1", "military": False, "movement": movement}]}
+    )
+    assert roles.ready["gameplay"] is not reopen
+    assert jobs["gameplay"].role_finished.is_set() is not reopen
+    if reopen:
+        assert "new unit has remaining actions" in await roles.wait_for_resume(jobs["gameplay"])
 
 
 @run_async
@@ -148,6 +230,29 @@ def test_city_plan_is_durable_unique_and_economy_cannot_rewrite_strategy(tmp_pat
     memory.finish_job("econ", True)
     memory.start_job("econ-next", "economy", {}, game_turn=5)
     assert record_id in memory.snapshot("economy", 5)["records"]
+    memory.engine.dispose()
+
+
+def test_city_plan_rejects_display_names_with_recovery_and_preserves_overrides(tmp_path):
+    memory = setup(tmp_path)
+    memory.start_job("econ", "economy", {}, game_turn=4)
+    owners = {"city1": "economy", "city2": "gameplay"}
+
+    def plan(city):
+        result = memory.patch(
+            "econ",
+            [{"op": "create", "content": {"type": "city_plan", "city": city, "reasons": {"growth": "Feed citizens"}}}],
+            city_owners=owners,
+        )
+        MemoryUpdateResult.model_validate(result)
+        return result["changes"][0]
+
+    rejected = plan("Rome (city1)")
+    assert rejected["reason"] == "OWNED_CITY_HANDLE_REQUIRED"
+    assert rejected["recovery"]["reads"][0]["tool"] == "player_turn"
+    assert "without the city's display name" in rejected["instruction"]
+    assert plan("city1")["accepted"]
+    assert plan("city2")["reason"] == "CITY_OWNED_BY_OTHER_ROLE"
     memory.engine.dispose()
 
 
@@ -320,6 +425,109 @@ async def test_economy_preload_includes_every_owned_city_plan_and_denies_diploma
     finally:
         await io.close()
         memory.engine.dispose()
+
+
+@run_async
+async def test_chat_preserves_economy_observations_and_stale_city_plan_edits_request_refresh(tmp_path):
+    from tests.test_diplomacy_contracts import opened
+
+    async with opened(tmp_path, "gameplay") as (gateway, main, host):
+        service = SimpleNamespace(records={}, _save=AsyncMock())
+        roles = TurnRoles(service, {"epoch": "g1", "gameTurn": 0, "activationId": main.id})
+        gateway.role_coordinator = roles
+        roles.register(main)
+        economy = await gateway.open("economy", "economy", "g1", host, {}, 0)
+        roles.register(economy)
+        await gateway.call(main, "player_turn", {}, "main-start")
+        await gateway.call(economy, "player_turn", {}, "economy-start")
+        sent = await gateway.call(main, "chat_send", {"to": "Greece", "text": "Peaceful greetings"}, "message")
+        assert "error" not in sent
+        assert economy.observation is not None
+        created = await gateway.call(
+            economy,
+            "memory_update",
+            {
+                "changes": [
+                    {
+                        "op": "create",
+                        "content": {"type": "city_plan", "city": "city1", "reasons": {"growth": "Keep the city fed"}},
+                    }
+                ]
+            },
+            "plan",
+        )
+        assert created["changes"][0]["accepted"]
+        key = created["changes"][0]["id"]
+        # A real gameplay change can still invalidate a role's observation.
+        gateway.forget_observation(economy)
+        arguments = {"changes": [{"op": "amend", "id": key, "fields": {"reasons": {"growth": "Grow while fed"}}}]}
+        stale = await gateway.call(economy, "memory_update", arguments, "stale-plan")
+        assert stale["error"] == "OBSERVATION_REQUIRED" and not stale["applied"]
+        assert stale["recovery"]["reads"][0]["tool"] == "player_turn"
+        await gateway.call(economy, "player_turn", {}, "refresh")
+        revised = await gateway.call(economy, "memory_update", arguments, "revised-plan")
+        assert revised["changes"][0]["accepted"]
+        await roles.tool(main, "city_override", {"city": "city1", "reason": "Emergency defender"})
+        denied = await gateway.call(economy, "memory_update", arguments, "overridden-plan")
+        assert denied["changes"][0]["reason"] == "CITY_OWNED_BY_OTHER_ROLE"
+        catalogue = await gateway.tools(economy)
+        description = next(tool["description"] for tool in catalogue if tool["name"] == "memory_update")
+        assert "amend" in description and "Existing notebook entries are read-only" not in description
+
+
+@pytest.mark.parametrize("read_first", [True, False])
+@run_async
+async def test_sibling_actions_deliver_fresh_details_and_require_reconsideration_of_edits(tmp_path, read_first):
+    from civ_agent.observations import DetailResult
+    from civ_agent.state_updates import apply_overview_update
+    from tests.test_diplomacy_contracts import opened
+
+    async with opened(tmp_path, "gameplay") as (gateway, main, host):
+        service = SimpleNamespace(records={}, _save=AsyncMock())
+        roles = TurnRoles(service, {"epoch": "g1", "gameTurn": 0, "activationId": main.id})
+        gateway.role_coordinator = roles
+        roles.register(main)
+        economy = await gateway.open("economy", "economy", "g1", host, {}, 0)
+        roles.register(economy)
+        await gateway.call(main, "player_turn", {}, "main-start")
+        baseline = await gateway.call(economy, "player_turn", {}, "economy-start")
+        await gateway.call(economy, "city_details", {"target": "city1"}, "old-city")
+        # Model a changed city and a native command from the other role. The
+        # city's old snapshot must never authorize a stale city-plan edit.
+        host.view["cities"][0]["constructionQueue"] = ["Granary"]
+        action = {"kind": "DISMISS_NOTIFICATIONS", "targets": ["n1"]}
+        assert "error" not in await gateway.call(main, "player_command", action, "main-action")
+        assert economy.observation is None and economy.role_refresh_required
+        edit = {
+            "changes": [
+                {"op": "create", "content": {"type": "city_plan", "city": "city1", "reasons": {"growth": "Grow"}}}
+            ]
+        }
+        if read_first:
+            result = await gateway.call(economy, "city_details", {"target": "city1", "full": True}, "fresh-city")
+            DetailResult.model_validate(result)
+            assert "error" not in result and result["data"]["entity"]["constructionQueue"] == ["Granary"]
+        else:
+            result = await gateway.call(economy, "memory_update", edit, "stale-edit")
+            assert result["error"] == "OBSERVATION_REQUIRED" and not result["applied"]
+            assert not result["recovery"].get("reads")
+            assert not any(r["type"] == "city_plan" for r in gateway.memory.search_memory(economy.id, {})["records"])
+        update = result["stateUpdate"]
+        assert update["kind"] == "delta"
+        refreshed = apply_overview_update(baseline, update)
+        assert refreshed["cities"][0]["constructionQueue"] == ["Granary"]
+        assert update["invalidatedDetails"] == [{"tool": "city_details", "arguments": {"target": "city1"}}]
+        assert not economy.role_refresh_required
+        # Replaying the call returns its original update without extra actions.
+        tool, args, call_id = (
+            ("city_details", {"target": "city1", "full": True}, "fresh-city")
+            if read_first
+            else ("memory_update", edit, "stale-edit")
+        )
+        assert await gateway.call(economy, tool, args, call_id) == result
+        assert len(host.executed) == 1
+        created = await gateway.call(economy, "memory_update", edit, "reconsidered-edit")
+        assert created["changes"][0]["accepted"]
 
 
 @pytest.mark.parametrize("failure", ["retry", "shutdown"])

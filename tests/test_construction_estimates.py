@@ -256,7 +256,11 @@ def test_startup_and_detail_refresh_use_existing_snapshot_without_extra_host_rea
             await gateway.call(job, "player_turn", {}, "refresh")
             assert university not in job.details_read
             refreshed = await gateway.call(job, university.tool, university.arguments, "inspect-again")
-            assert refreshed["data"]["constructions"][0]["completion"]["yields"]["change"]["Science"] == "8"
+            from civ_agent.payload_updates import apply_value
+
+            delivered = apply_value(None, detail["detailUpdate"], detail["data"])
+            data = apply_value(delivered, refreshed["detailUpdate"], refreshed.get("data"))["value"]
+            assert data["constructions"][0]["completion"]["yields"]["change"]["Science"] == "8"
             assert calls.count("player_turn") == 2 and "construction_details" not in calls
         finally:
             await io.close()

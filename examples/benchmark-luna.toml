@@ -7,18 +7,25 @@ map_type = "Pangaea"
 map_size = "Medium"
 city_states = 12
 difficulty = "Prince"
-speed = "Standard"
+speed = "Quick"
 
 [agents]
 provider = "openai"
 model = "gpt-5.6-luna"
-reasoning_effort = "max"
+# Default effort; player/economy_model/military_model overrides still take precedence.
+reasoning_effort = "medium"
 communication_reasoning_effort = "medium"
 review_interval = 10
 strategy_guide = true
 civilization_guide = true
 decisions_enabled = true
 decisions_backend = "jev"
+decisions_effort_enabled = true
+# Decisions chooses among these levels supported by the current model.
+decisions_effort_levels = ["low", "medium", "high", "xhigh", "max"]
+# Otherwise retain reasoning_effort (including the role's override).
+decisions_effort_min_probability = 0.50
+decisions_effort_min_margin = 0.15
 
 [[players]]
 name = "Unciv"
@@ -35,9 +42,10 @@ name = 'Luna3'
 
 [[players]]
 name = 'Luna4'
-
+model = "gpt-6-luna"
 [[players]]
 name = 'Luna5'
+model = "gpt-6-luna"
 
 [limits]
 turn_timeout = 3600

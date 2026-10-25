@@ -2,6 +2,7 @@
 
 import time
 
+from civ_agent.decisions_policy import EARLY_REVIEW_MIN_TURN
 from civ_agent.strategic_review import review_due
 
 
@@ -25,10 +26,41 @@ def review_round(scheduler, status):
     )
     early = []
     resuming = scheduler.state.get("reviewPhase", {})
+
+    def stopped():
+        requested = scheduler.store.requested() or ("pause" if scheduler.interrupted else None)
+        if not requested:
+            return False
+        # Keep accepted early reviews for resume, without classifying the rest
+        # of the players during shutdown or reclassifying at startup.
+        if early and scheduler.state.get("reviewPhase", {}).get("gameTurn") != boundary:
+            scheduler.state["reviewPhase"] = {
+                "gameTurn": boundary,
+                "reviewTurn": turn,
+                "stage": "Preparing",
+                "civilizations": list(dict.fromkeys([*periodic, *early])),
+                "trigger": "early",
+                "earlyCivilizations": early.copy(),
+            }
+            scheduler.save()
+        scheduler.note("stopped" if requested == "stop" else "paused", "Operator requested " + requested + ".")
+        return True
+
+    if stopped():
+        return False
     if resuming.get("gameTurn") == boundary:
         early = resuming.get("earlyCivilizations", [])
-    elif boundary > 0 and not forced and scheduler.state["reviewedBoundary"] != boundary:
+    elif (
+        turn >= EARLY_REVIEW_MIN_TURN
+        and scheduler.round_open
+        and not forced
+        and scheduler.state["reviewedBoundary"] != boundary
+    ):
+        # An unopened round is startup/resume. Classify only fresh boundaries
+        # reached during play; already prepared reviews above still reconcile.
         for name in scheduler.agents:
+            if stopped():
+                return False
             if name not in getattr(scheduler, "decisions_players", set()):
                 continue
             if name in periodic:
@@ -51,6 +83,8 @@ def review_round(scheduler, status):
                 raise RunnerError("Invalid early review response; stopped for inspection.")
             if response["earlyReview"]:
                 early.append(name)
+    if stopped():
+        return False
     participants = list(dict.fromkeys([*periodic, *early]))
 
     def call(name, stage):
@@ -109,9 +143,7 @@ def review_round(scheduler, status):
 
     def can_continue(*, force=False):
         nonlocal current, next_heartbeat
-        requested = scheduler.store.requested() or ("pause" if scheduler.interrupted else None)
-        if requested:
-            scheduler.note("stopped" if requested == "stop" else "paused", "Operator requested " + requested + ".")
+        if stopped():
             return False
         if force or time.monotonic() >= next_heartbeat:
             current = scheduler.operator.call("heartbeat", leaseId=scheduler.lease)["status"]

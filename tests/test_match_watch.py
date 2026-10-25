@@ -344,19 +344,13 @@ def test_dashboard_navigation_live_refresh_freeze_and_quit(tmp_path):
             assert app.snapshot.run["status"] == "running"
             await pilot.press("space")
             assert app.snapshot.run["status"] == "paused"
-            app.query_one(TabbedContent).active = "turns-tab"
-            table = app.query_one("#turns", DataTable)
-            table.focus()
-            table.move_cursor(row=1)
-            await pilot.press("enter")
-            assert app.selected == ("Rome", 1)
-            assert all(e.turn == 1 for e in app.snapshot.activity)
-            assert "Turn 1 · Rome" in str(app.query_one("#metrics", Static).render())
-            assert "Usage complete" in str(app.query_one("#metrics", Static).render())
-            assert "Memory edits 3 accepted" in str(app.query_one("#metrics", Static).render())
-            assert "SOURCE_NOT_DELIVERED: 1" in str(app.query_one("#metrics", Static).render())
+            tabs = app.query_one("#main-tabs", TabbedContent)
+            assert [
+                pane.id for pane in tabs.query("TabPane") if pane.parent is tabs.get_pane("activity-tab").parent
+            ] == ["activity-tab", "diplomacy-tab", "strategy-tab", "economy-tab", "military-tab"]
+            assert not app.query("#turns") and not app.query("#calls")
             await pilot.press("l", "a")
-            assert app.selected is None and app.civilization is None
+            assert app.civilization is None
             log = app.query_one("#activity", RichLog)
             log.scroll_end(animate=False)
             await pilot.pause()

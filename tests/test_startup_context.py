@@ -16,6 +16,7 @@ from civ_agent.review_store import ReviewStore
 from civ_agent.service_io import ServiceIO
 from civ_agent.startup_context import (
     core_definitions,
+    decision_queries,
     memory_topics,
     prepare_startup,
     startup_instructions,
@@ -28,6 +29,28 @@ from civ_agent.telemetry import JobAccounting
 from tests.test_agent_service import StartupHost
 from tests.test_strategic_review import assessment
 from tests.test_structured_memory import create, strategy
+
+
+def test_startup_details_follow_role_responsibilities():
+    view = {
+        "units": [
+            {
+                "handle": "unit1",
+                "inspections": {
+                    "SET_UNIT_ORDER": {
+                        "tool": "unit_details",
+                        "arguments": {"target": "unit1", "sections": ["orders"]},
+                    }
+                },
+            }
+        ],
+        "cities": [{"handle": "city1", "constructionChoice": {"availableSinceChoice": ["Granary"]}}],
+    }
+    unit = ("unit_details", {"target": "unit1", "sections": ["orders"]})
+    city = ("construction_details", {"target": "city1", "names": ["Granary"]})
+    assert decision_queries(view, "economy") == [city]
+    assert decision_queries(view, "military") == [unit]
+    assert decision_queries(view) == [unit, city]
 
 
 def test_victory_comparison_is_preloaded_once_and_chart_queries_pass_through(tmp_path):
@@ -456,21 +479,39 @@ def test_prepared_reads_establish_evidence_and_update_base_without_model_calls(t
             assert {tool["name"] for tool in prepared["coreTools"]} == {
                 "mcp__civ__player_turn",
                 "mcp__civ__player_command",
+                "mcp__civ__inspect_bundle",
+                "mcp__civ__command_help",
                 "mcp__civ__finish_role",
                 "mcp__civ__economy_request",
+                "mcp__civ__economy_wait",
                 "mcp__civ__city_override",
+                "mcp__civ__war_goals",
+                "mcp__civ__escort_assignment",
+                "mcp__civ__role_message",
                 "mcp__civ__construction_details",
                 "mcp__civ__unit_details",
                 "mcp__civ__map_region",
                 "mcp__civ__chat_send",
             }
             for tool in prepared["coreTools"]:
-                Draft202012Validator.check_schema(tool["inputSchema"])
+                if "inputSchema" in tool:
+                    Draft202012Validator.check_schema(tool["inputSchema"])
+                else:
+                    assert tool["name"] == "mcp__civ__player_command"
+                    assert tool["commandIndex"] and tool["schemaRead"]["tool"] == "mcp__civ__command_help"
             assert "social promises" in prepared["readInstructions"]["chat_read"].lower()
-            assert (
-                json.loads(startup_text(prepared).split("Current game information:\n", 1)[1].split("\n\n", 1)[0])
-                == prepared["reads"]
-            )
+            from civ_agent.response_compaction import expand_response
+
+            text = startup_text(prepared)
+            delivered = {"reads": json.loads(text.split("Current game information:\n", 1)[1].split("\n\n", 1)[0])}
+            for heading, field in (
+                ("Shared native values:", "sharedValues"),
+                ("Construction estimate explanations:", "constructionExplanations"),
+                ("Details already available:", "decisionDetails"),
+            ):
+                if heading in text:
+                    delivered[field] = json.loads(text.split(heading + "\n", 1)[1].split("\n\n", 1)[0])
+            assert expand_response(delivered, startup=True)["reads"] == prepared["reads"]
             action = view["alerts"][0]["command"]
             assert action == {"kind": "ACKNOWLEDGE_ALERT", "target": "alert1"}
             result = await gateway.call(job, "player_command", action, "ack")

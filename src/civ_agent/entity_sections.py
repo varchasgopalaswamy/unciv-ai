@@ -6,6 +6,7 @@ from typing import Annotated, Literal
 from pydantic import Field, field_validator
 
 from civ_agent.construction_estimates import ESTIMATE_BASIS, city_construction_data
+from civ_agent.delivery_options import DeliveryOptions
 from civ_agent.protocol import JsonObject
 from civ_agent.schemas import BoundaryModel
 
@@ -19,7 +20,7 @@ class EntityDetails(BoundaryModel):
     target: Annotated[str, Field(min_length=1, max_length=128)]
 
 
-class UnitDetails(EntityDetails):
+class UnitDetails(EntityDetails, DeliveryOptions):
     sections: Annotated[list[UnitSection], Field(min_length=1, max_length=10)] = Field(default_factory=lambda: ["all"])
 
     @field_validator("sections")
@@ -28,7 +29,7 @@ class UnitDetails(EntityDetails):
         return ["all"] if "all" in value else sorted(set(value))
 
 
-class CityDetails(EntityDetails):
+class CityDetails(EntityDetails, DeliveryOptions):
     sections: Annotated[list[CitySection], Field(min_length=1, max_length=7)] = Field(default_factory=lambda: ["all"])
 
     @field_validator("sections")

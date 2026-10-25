@@ -15,7 +15,15 @@ from civ_agent.advisory_store import (
     source_attempt_key,
 )
 from civ_agent.decisions_backends import BACKENDS
-from civ_agent.decisions_tasks import TASK_VERSION, request_body, request_id, request_metadata, validate_result
+from civ_agent.decisions_policy import EARLY_REVIEW_MIN_TURN
+from civ_agent.decisions_tasks import (
+    TASK_VERSION,
+    acceptance_threshold,
+    request_body,
+    request_id,
+    request_metadata,
+    validate_result,
+)
 from civ_agent.protocol import JsonObject
 
 
@@ -57,7 +65,7 @@ class AdvisoryRuntime:
             }
         else:
             metadata = request_metadata(body, evidence)
-            threshold = self.settings.decisions_acceptance_probability
+            threshold = acceptance_threshold(evidence, self.settings)
             if self.settings.decisions_backend == "luna" and self.settings.additional_decisions_budget_usd == 0:
                 result = {**metadata, **failed_answers(body, threshold, "budget_exhausted")}
             else:
@@ -363,6 +371,8 @@ class AdvisoryRuntime:
         await self.gateway.io.call(self.store.city_delivery, job, notices)
 
     async def triage(self, turn, *, scheduled_soon, next_review_turn):
+        if turn < EARLY_REVIEW_MIN_TURN:
+            return {"earlyReview": False, "reason": "opening_turns"}
         if scheduled_soon:
             return {"earlyReview": False, "reason": "scheduled_review_soon"}
         evidence = await self.gateway.io.call(self.store.review_input, turn, self.settings, next_review_turn)

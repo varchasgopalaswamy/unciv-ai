@@ -14,22 +14,26 @@ def test_early_review_shares_barrier_resets_anchor_and_suppresses_duplicates(mon
         "epoch": "g1",
         "serverInstance": "host",
         "handoff": 18,
-        "turn": 5,
+        "turn": 15,
         "activeCivilization": "Rome",
         "phase": "PAUSED",
     }
     calls, fenced = [], [False]
+    requested = None
 
     def call(name, operation, **fields):
+        nonlocal requested
         calls.append((name, operation, fields))
         if operation == "review_triage":
-            assert name == "Rome" and not fenced[0] and not resume
-            assert fields == {"epoch": "g1", "gameTurn": 5, "scheduledSoon": False, "nextReviewTurn": 20}
+            assert name == "Rome" and not fenced[0]
+            assert fields == {"epoch": "g1", "gameTurn": 15, "scheduledSoon": False, "nextReviewTurn": 20}
+            if resume:
+                requested = "stop"
             return {"earlyReview": True}
         if fields["stage"] == "start":
             assert fenced[0]
             assert fields.get("earlyReview", False) == (name == "Rome")
-        return {"civilization": name, "epoch": "g1", "gameTurn": 5, "ready": True, "pendingReview": None}
+        return {"civilization": name, "epoch": "g1", "gameTurn": 15, "ready": True, "pendingReview": None}
 
     agents = {
         name: SimpleNamespace(call=lambda op, name=name, **fields: call(name, op, **fields))
@@ -39,11 +43,11 @@ def test_early_review_shares_barrier_resets_anchor_and_suppresses_duplicates(mon
         review_intervals={"Rome": 20, "Greece": 4},
         decisions_players={"Rome", "Greece"},
         agents=agents,
-        state={"reviewedBoundary": 4, "reviewAnchors": {"Rome": 0, "Greece": 0}},
+        state={"reviewedBoundary": 14, "reviewAnchors": {"Rome": 0, "Greece": 0}},
         round_open=True,
         interrupted=False,
         lease="lease",
-        store=SimpleNamespace(requested=lambda: None),
+        store=SimpleNamespace(requested=lambda: requested),
         operator=SimpleNamespace(call=lambda *args, **kwargs: {"status": status}),
         turns=SimpleNamespace(
             call_agent=lambda agent, op, **fields: agent.call(op, **fields),
@@ -58,11 +62,15 @@ def test_early_review_shares_barrier_resets_anchor_and_suppresses_duplicates(mon
         save=Mock(),
         output=SimpleNamespace(line=Mock()),
     )
-    if resume:
-        scheduler.state["reviewPhase"] = {"gameTurn": 5, "earlyCivilizations": ["Rome"]}
     monkeypatch.setattr("civ_agent.round_review.time.sleep", lambda _: None)
+    if resume:
+        assert not review_round(scheduler, status)
+        assert scheduler.state["reviewPhase"]["earlyCivilizations"] == ["Rome"]
+        requested = None
+        scheduler.round_open = False
+        calls.clear()
     assert review_round(scheduler, status)
-    assert scheduler.state["reviewAnchors"] == {"Rome": 4, "Greece": 4}
+    assert scheduler.state["reviewAnchors"] == {"Rome": 14, "Greece": 14}
     assert [name for name, op, fields in calls if op == "review_phase" and fields["stage"] == "start"] == [
         "Greece",
         "Rome",
@@ -79,15 +87,56 @@ def test_early_triage_is_skipped_when_periodic_review_is_next_round():
         agents={"Rome": agent},
         review_intervals={"Rome": 5},
         decisions_players={"Rome"},
-        state={"reviewedBoundary": 4, "reviewAnchors": {"Rome": 0}},
+        state={"reviewedBoundary": 14, "reviewAnchors": {"Rome": 10}},
+        store=SimpleNamespace(requested=lambda: None),
+        interrupted=False,
         round_open=True,
         save=Mock(),
     )
-    assert review_round(scheduler, {"epoch": "g1", "turn": 5})
+    assert review_round(scheduler, {"epoch": "g1", "turn": 15})
     assert calls == []
 
 
-@pytest.mark.parametrize("anchor,interval,boundary,expected", [(None, 5, 7, 10), (3, 8, 7, 11), (9, 10, 13, 19)])
+@pytest.mark.parametrize("stop_kind", ["stop", "pause", "signal"])
+@pytest.mark.parametrize("after", [0, 1, 3])
+@pytest.mark.parametrize("accepted", [False, True])
+def test_shutdown_stops_triage_fanout_and_retains_accepted_reviews(stop_kind, after, accepted):
+    names = ["Rome", "Greece", "France"]
+    calls = []
+
+    def call(operation, **fields):
+        assert operation == "review_triage"
+        calls.append(fields)
+        if len(calls) == after and stop_kind == "signal":
+            scheduler.interrupted = True
+        return {"earlyReview": accepted}
+
+    scheduler = SimpleNamespace(
+        agents={name: SimpleNamespace(call=call) for name in names},
+        review_intervals=dict.fromkeys(names, 20),
+        decisions_players=set(names),
+        state={"reviewedBoundary": 14, "reviewAnchors": dict.fromkeys(names, 0)},
+        store=SimpleNamespace(requested=lambda: stop_kind if stop_kind != "signal" and len(calls) >= after else None),
+        interrupted=stop_kind == "signal" and after == 0,
+        turns=SimpleNamespace(call_agent=lambda agent, op, **fields: agent.call(op, **fields)),
+        round_open=True,
+        note=Mock(),
+        save=Mock(),
+    )
+    assert not review_round(scheduler, {"epoch": "g1", "turn": 15})
+    assert len(calls) == after
+    assert scheduler.state["reviewedBoundary"] == 14
+    scheduler.note.assert_called_once_with(
+        "stopped" if stop_kind == "stop" else "paused",
+        "Operator requested " + ("pause" if stop_kind == "signal" else stop_kind) + ".",
+    )
+    if accepted and after:
+        assert scheduler.state["reviewPhase"]["earlyCivilizations"] == names[:after]
+    else:
+        assert "reviewPhase" not in scheduler.state
+
+
+@pytest.mark.parametrize("anchor,interval,boundary,expected", [(None, 5, 17, 20), (13, 8, 17, 21), (19, 10, 23, 29)])
 def test_triage_receives_scheduler_next_review_in_completed_turns(anchor, interval, boundary, expected):
     calls = []
     agent = SimpleNamespace(call=lambda op, **fields: calls.append((op, fields)) or {"earlyReview": False})
@@ -96,6 +145,8 @@ def test_triage_receives_scheduler_next_review_in_completed_turns(anchor, interv
         review_intervals={"Rome": interval},
         decisions_players={"Rome"},
         state={"reviewedBoundary": boundary - 1, "reviewAnchors": {} if anchor is None else {"Rome": anchor}},
+        store=SimpleNamespace(requested=lambda: None),
+        interrupted=False,
         turns=SimpleNamespace(call_agent=lambda agent, op, **fields: agent.call(op, **fields)),
         round_open=True,
         save=Mock(),
@@ -107,6 +158,46 @@ def test_triage_receives_scheduler_next_review_in_completed_turns(anchor, interv
             {"epoch": "g1", "gameTurn": boundary, "scheduledSoon": False, "nextReviewTurn": expected},
         )
     ]
+
+
+@pytest.mark.parametrize("boundary", [1, 4, 10, 11, 16])
+@pytest.mark.parametrize("startup", [False, True])
+def test_early_triage_skips_opening_turns_and_startup_then_resumes_at_fresh_boundaries(boundary, startup):
+    calls = []
+    status = {"epoch": "g1", "turn": boundary}
+
+    def call(operation, **fields):
+        if operation == "review_triage":
+            calls.append(fields)
+            return {"earlyReview": False}
+        return {
+            "civilization": "Rome",
+            "epoch": status["epoch"],
+            "gameTurn": status["turn"],
+            "ready": True,
+            "pendingReview": None,
+        }
+
+    agent = SimpleNamespace(call=call)
+    scheduler = SimpleNamespace(
+        agents={"Rome": agent},
+        review_intervals={"Rome": 40},
+        decisions_players={"Rome"},
+        state={"reviewedBoundary": boundary - 1, "reviewAnchors": {"Rome": 0}},
+        store=SimpleNamespace(requested=lambda: None),
+        interrupted=False,
+        turns=SimpleNamespace(call_agent=lambda agent, op, **fields: agent.call(op, **fields), release=Mock()),
+        round_open=not startup,
+        save=Mock(),
+    )
+    assert review_round(scheduler, status)
+    assert len(calls) == int(not startup and boundary >= 11)
+    assert scheduler.round_open
+    if startup and boundary >= 11:
+        status["turn"] += 1
+        assert review_round(scheduler, status)
+        assert len(calls) == 1
+        assert calls[0]["gameTurn"] == boundary + 1
 
 
 @pytest.mark.parametrize("stop", [None, "pause", "stop", "budget"])

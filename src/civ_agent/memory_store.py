@@ -269,7 +269,7 @@ class RecordStore:
         contribution_ids=(),
     ):
         conditions: list[ColumnElement[bool]] = [
-            tables.records.c.category != "notice",
+            tables.records.c.category.in_(MEMORY_TYPES | {"contribution", "decision", "observation", "statement"}),
             (tables.records.c.category != "contribution") | tables.records.c.key.in_(contribution_ids),
         ]
         if type:

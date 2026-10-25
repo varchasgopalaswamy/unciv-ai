@@ -98,7 +98,10 @@ object PeaceTradeProbe {
                 val health = listOf(rome, greece).map { it.units.getCivUnits().single().health }
                 val income = rome.stats.statsForNextTurn.gold to greece.stats.statsForNextTurn.gold
                 val handoff = runtime.executor.handoff
-                accepted = obj("op" to "trade_decide", "epoch" to epoch, "requestId" to "accept-peace", "proposal" to counter["proposal"], "version" to counter["version"], "decision" to "accept")
+                val staleConsent = command("Rome", "trade_decide", "proposal" to counter["proposal"], "version" to counter["version"], "decision" to "accept", "expectedRevision" to "obsolete-review")
+                check(staleConsent.toString().contains("STALE_REVISION"))
+                check(rome.isAtWarWith(greece) && balances == (rome.gold to greece.gold))
+                accepted = obj("op" to "trade_decide", "epoch" to epoch, "requestId" to "accept-peace", "proposal" to counter["proposal"], "version" to counter["version"], "decision" to "accept", "expectedRevision" to api.turn(token).revision)
                 receipt = api.communicate(api.playerToken("Rome"), accepted)
                 check(receipt["trade"]!!.jsonObject["status"]!!.jsonPrimitive.content == "ENACTED")
                 check(runtime.game.currentPlayer == "Rome" && runtime.executor.handoff == handoff)

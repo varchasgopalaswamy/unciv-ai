@@ -18,6 +18,7 @@ from pathlib import Path
 from civ_agent.monitoring import MonitorStore, path_for, read_collection, read_record
 from civ_agent.protocol import JsonObject
 from civ_agent.scheduler import (
+    Agent,
     Operator,
     OperatorError,
     RunnerError,
@@ -206,6 +207,8 @@ class FakeHost:
                                     result["scenario"] = {"testManyEvents": "true"}
                                 if owner.behaviors and owner.behaviors[0] == "slow_report":
                                     result["scenario"] = {"testSlowCompletion": "true"}
+                                if owner.behaviors and owner.behaviors[0] == "hang":
+                                    result["scenario"] = {"testHangGameplay": "true"}
                             elif name == "player_command":
                                 behavior = owner.behaviors.pop(0) if owner.behaviors else "complete"
                                 owner.plays.append(
@@ -230,7 +233,7 @@ class FakeHost:
                                 result = {
                                     "behavior": behavior,
                                     "requestId": arguments["requestId"],
-                                    "kind": "END_TURN",
+                                    "kind": arguments["kind"],
                                     "actionSummary": "Ended turn.",
                                 }
                                 if behavior == "hang":
@@ -673,6 +676,26 @@ class SchedulerTest(unittest.TestCase):
     def saved(self):
         return read_record(path_for(self.state), "state", "run") or {}
 
+    def test_review_triage_outlasts_metadata_timeout_without_changing_health_timeout(self):
+        original = self.host.agent_request
+
+        def delayed(civilization, body):
+            time.sleep(0.3)
+            return original(civilization, body)
+
+        self.host.agent_request = delayed
+        endpoint = self.state / "agent-services/Rome/endpoint.json"
+        agent = Agent(json.loads(endpoint.read_text()))
+        agent.timeout = 0.1
+        self.assertEqual(
+            agent.call("review_triage", epoch=self.host.epoch, gameTurn=4, scheduledSoon=False, nextReviewTurn=10),
+            {"earlyReview": False},
+        )
+        with self.assertRaises(OperatorError) as error:
+            agent.call("health")
+        self.assertEqual(error.exception.code, "TRANSPORT_TIMEOUT")
+        self.assertEqual(len(self.host.triage_requests), 1)
+
     def add_france(self):
         token = secrets.token_urlsafe(32)
         self.host.agent_tokens["France"] = token
@@ -853,9 +876,10 @@ class SchedulerTest(unittest.TestCase):
     def assert_decisions_round_boundary(self, early):
         self.host.decisions_enabled = True
         self.host.early_review_players = {"Rome"} if early else set()
+        self.host.handoff = 24  # Resume at turn 12, beyond the opening-turn gate.
         result = self.run_cli("--max-turns", "2", "--max-seconds", "30")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertEqual([play["request"]["gameTurn"] for play in self.host.plays], [0, 0, 1, 1])
+        self.assertEqual([play["request"]["gameTurn"] for play in self.host.plays], [12, 12, 13, 13])
         self.assertCountEqual(
             self.host.triage_requests,
             [
@@ -864,22 +888,32 @@ class SchedulerTest(unittest.TestCase):
                     {
                         "op": "review_triage",
                         "epoch": self.host.epoch,
-                        "gameTurn": 1,
+                        "gameTurn": 13,
                         "scheduledSoon": False,
-                        "nextReviewTurn": 5,
+                        "nextReviewTurn": 15,
                     },
                 )
                 for name in ("Rome", "Greece")
             ],
         )
-        starts = [(name, body) for name, body in self.host.review_starts if body["gameTurn"] == 1]
+        starts = [(name, body) for name, body in self.host.review_starts if body["gameTurn"] == 13]
         self.assertEqual([name for name, _ in starts], ["Rome"] if early else [])
         if early:
             self.assertTrue(starts[0][1]["earlyReview"])
         self.assertEqual(self.saved()["handoffs"], 4)
-        self.assertEqual(self.saved()["reviewedBoundary"], 1)
-        self.assertEqual(self.saved()["reviewAnchors"], {"Rome": 0, "Greece": 0})
+        self.assertEqual(self.saved()["reviewedBoundary"], 13)
+        self.assertEqual(self.saved()["reviewAnchors"], {"Rome": 12} if early else {})
         self.assertEqual(self.saved()["status"], "budget_exhausted")
+
+    def test_decisions_early_triage_does_not_run_in_opening_rounds(self):
+        self.host.decisions_enabled = True
+        self.host.early_review_players = {"Rome"}
+        result = self.run_cli("--max-turns", "2", "--max-seconds", "30")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual([play["request"]["gameTurn"] for play in self.host.plays], [0, 0, 1, 1])
+        self.assertFalse(self.host.triage_requests)
+        self.assertTrue(self.host.review_starts)
+        self.assertTrue(all(body["gameTurn"] == 0 for _, body in self.host.review_starts))
 
     def test_decisions_triage_crosses_round_boundary_without_a_review(self):
         self.assert_decisions_round_boundary(early=False)

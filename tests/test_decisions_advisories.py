@@ -148,7 +148,7 @@ def test_defaults_validation_retired_flags_and_service_container_arguments(tmp_p
                 arguments.append("--" + key.replace("_", "-"))
         else:
             arguments.extend(
-                ["--" + key.replace("_", "-"), json.dumps(value) if isinstance(value, dict) else str(value)]
+                ["--" + key.replace("_", "-"), json.dumps(value) if isinstance(value, (dict, list)) else str(value)]
             )
     assert decisions_values(agent_server.parser().parse_args(arguments)) == decisions_values(config.agents)
     overridden = game.resolve_options(
@@ -425,19 +425,21 @@ def test_early_review_uses_recorded_changes_cooldowns_and_no_full_capture(tmp_pa
             reviews.prepare("opening", {"turn": 0, "observation": opening}, {}, 60)
             reviews.complete("opening", {})
             with memory.transaction() as db:
-                RecordStore(db).write("observation:overview", "observation", {"turn": 3, "cities": [{"handle": "new"}]})
+                RecordStore(db).write(
+                    "observation:overview", "observation", {"turn": 10, "cities": [{"handle": "new"}]}
+                )
             runtime = gateway.advisories
             assert runtime is not None
-            assert not (await runtime.triage(2, scheduled_soon=False, next_review_turn=20))["earlyReview"]
-            assert not (await runtime.triage(3, scheduled_soon=True, next_review_turn=20))["earlyReview"]
+            assert not (await runtime.triage(9, scheduled_soon=False, next_review_turn=40))["earlyReview"]
+            assert not (await runtime.triage(10, scheduled_soon=True, next_review_turn=40))["earlyReview"]
             assert classifier.calls == []
-            assert (await runtime.triage(3, scheduled_soon=False, next_review_turn=20))["earlyReview"]
-            assert (await runtime.triage(3, scheduled_soon=False, next_review_turn=20))["earlyReview"]
+            assert (await runtime.triage(10, scheduled_soon=False, next_review_turn=40))["earlyReview"]
+            assert (await runtime.triage(10, scheduled_soon=False, next_review_turn=40))["earlyReview"]
             assert len(classifier.calls) == 1
-            await runtime.save(lastEarlyTurn=3)
-            assert not (await runtime.triage(12, scheduled_soon=False, next_review_turn=20))["earlyReview"]
+            await runtime.save(lastEarlyTurn=10)
+            assert not (await runtime.triage(19, scheduled_soon=False, next_review_turn=40))["earlyReview"]
             # Same previously classified facts do not generate another call after cooldown.
-            assert not (await runtime.triage(13, scheduled_soon=False, next_review_turn=20))["earlyReview"]
+            assert not (await runtime.triage(20, scheduled_soon=False, next_review_turn=40))["earlyReview"]
             assert len(classifier.calls) == 1
 
     asyncio.run(run())
@@ -451,18 +453,20 @@ def test_early_review_rejects_stale_recorded_evidence(tmp_path):
             reviews.prepare("opening", {"turn": 0, "observation": opening}, {}, 60)
             reviews.complete("opening", {})
             with memory.transaction() as db:
-                RecordStore(db).write("observation:overview", "observation", {"turn": 3, "cities": [{"handle": "new"}]})
+                RecordStore(db).write(
+                    "observation:overview", "observation", {"turn": 10, "cities": [{"handle": "new"}]}
+                )
             original = classifier.batch
 
             async def changed(evidence, *, timeout):
                 result = await original(evidence, timeout=timeout)
                 with memory.transaction() as db:
-                    RecordStore(db).write("observation:overview", "observation", {"turn": 3, "cities": []})
+                    RecordStore(db).write("observation:overview", "observation", {"turn": 10, "cities": []})
                 return result
 
             classifier.batch = changed
             assert gateway.advisories is not None
-            assert (await gateway.advisories.triage(3, scheduled_soon=False, next_review_turn=20)) == {
+            assert (await gateway.advisories.triage(10, scheduled_soon=False, next_review_turn=20)) == {
                 "earlyReview": False,
                 "reason": "stale_evidence",
             }

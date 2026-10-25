@@ -11,7 +11,8 @@ from pathlib import Path
 import httpx2
 from mcp.client import Client
 from mcp.client.streamable_http import streamable_http_client
-from mcp.types import TextContent
+from mcp.shared.exceptions import MCPError
+from mcp.types import CONNECTION_CLOSED, REQUEST_TIMEOUT, TextContent
 
 from civ_agent.civilization_state import StateConflict
 from civ_agent.diagnostics import Diagnostics
@@ -19,6 +20,17 @@ from civ_agent.protocol import JsonObject
 from civ_agent.tls import client_ssl_context, https_url
 
 _active_connection: ContextVar["HostConnection | None"] = ContextVar("host_diagnostics", default=None)
+
+
+def _failure_code(error: Exception) -> str:
+    # The SDK reports lost connections and read timeouts as MCP errors, too.
+    # A missing response is distinct from an invalid response. The gateway can
+    # retain a committed receipt and request a fresh read without replaying it.
+    if isinstance(error, (TimeoutError, httpx2.TransportError)) or (
+        isinstance(error, MCPError) and error.code in {CONNECTION_CLOSED, REQUEST_TIMEOUT}
+    ):
+        return "HOST_UNAVAILABLE"
+    return "HOST_PROTOCOL_ERROR"
 
 
 class _ProtocolLog(logging.Filter):
@@ -216,7 +228,7 @@ class HostConnection:
         except Exception as error:
             self.record("host_call_failed", callId=call_id, tool="tools/list", stage=stage, error=error)
             self._stop.set()
-            raise StateConflict("HOST_PROTOCOL_ERROR") from None
+            raise StateConflict(_failure_code(error)) from None
         finally:
             _active_connection.reset(scope)
 
@@ -284,7 +296,7 @@ class HostConnection:
                 elapsedMs=round((time.monotonic() - started) * 1000, 3),
             )
             self._stop.set()
-            raise StateConflict("HOST_PROTOCOL_ERROR") from None
+            raise StateConflict(_failure_code(error)) from None
         finally:
             _active_connection.reset(scope)
 

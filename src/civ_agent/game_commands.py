@@ -269,7 +269,7 @@ PlayerCommand = Annotated[
 COMMANDS = TypeAdapter(PlayerCommand)
 
 
-def command_schema() -> JsonObject:
+def command_schema(allowed_kinds: set[str] | frozenset[str] | None = None) -> JsonObject:
     """Compact transport envelope; COMMANDS enforces the selected action's shape.
 
     Inspected options provide complete commands. Keep the accepted field types
@@ -281,15 +281,21 @@ def command_schema() -> JsonObject:
     for variant in schema["oneOf"]:
         fields = schema["$defs"][variant["$ref"].rsplit("/", 1)[1]]["properties"]
         kind = fields["kind"]
-        kinds.extend(kind.get("enum", [kind.get("const")]))
+        selected = [
+            value for value in kind.get("enum", [kind.get("const")]) if allowed_kinds is None or value in allowed_kinds
+        ]
+        if not selected:
+            continue
+        kinds.extend(selected)
         for name, shape in fields.items():
             properties.setdefault(
                 name, {k: v for k, v in shape.items() if k not in {"title", "description", "default"}}
             )
     properties["kind"] = {"type": "string", "enum": sorted(kinds)}
-    properties["initiativeDecisions"]["description"] = (
-        "END_TURN only. Optional private decisions about the delivered strategic report's numbered initiatives."
-    )
+    if "initiativeDecisions" in properties:
+        properties["initiativeDecisions"]["description"] = (
+            "END_TURN only. Optional private decisions about the delivered strategic report's numbered initiatives."
+        )
     definitions = {}
 
     def references(value):

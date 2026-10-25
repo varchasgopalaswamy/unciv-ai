@@ -105,6 +105,13 @@ def parser(*, add_help: bool = True) -> argparse.ArgumentParser:
         default=None,
         help="Economy role provider/model/reasoning_effort JSON overrides",
     )
+    result.add_argument("--military-model", type=json.loads, default=None, help="Military role model JSON overrides")
+    result.add_argument(
+        "--economy-interval",
+        type=positive,
+        default=5,
+        help="Maximum own turns between full economy reviews (default: 5; events can wake it sooner)",
+    )
     result.add_argument("--native-advice-enabled", action=argparse.BooleanOptionalAction, default=False)
     add_decisions_arguments(result, include_memory=False)
     return result
@@ -183,6 +190,8 @@ def run(args: argparse.Namespace) -> int:
             reasoning_effort=args.reasoning_effort,
             communication_reasoning_effort=args.communication_reasoning_effort,
             economy_model=args.economy_model,
+            economy_interval=args.economy_interval,
+            military_model=args.military_model,
             review_interval=args.review_interval,
             review_attempts=args.review_attempts,
             strategy_guide=args.strategy_guide,

@@ -45,7 +45,10 @@ INVESTMENT_GUIDANCE = (
 
 PLANNING_GUIDANCE = (
     "Keep useful plans in your notebook, with expected results, supporting evidence and when to reconsider. "
-    "Compare those expectations with what actually happens; change course when needed. " + INVESTMENT_GUIDANCE
+    "Compare those expectations with what actually happens; change course when needed. "
+    "Keep strategy records concise: at most 3 decisions, each with 1–3 expectedObservations and at most 8 subjects. "
+    "Each decision's objective, investment and reconsiderWhen accepts at most 400 characters; "
+    "strategy reasons, uncertainties and reconsiderWhen each accept at most 5 entries. " + INVESTMENT_GUIDANCE
 )
 
 GAMEPLAY_WORKFLOW = (
@@ -102,27 +105,56 @@ COMMUNICATION_INSTRUCTIONS = (
 
 
 ECONOMY_INSTRUCTIONS = (
-    "Manage all our cities to support our civilization's chosen strategy. You own citizen focus, growth, "
+    "Your current role is economy. Manage all our cities to support our civilization's chosen strategy. "
+    "Scenario tasks for main or military belong to those roles. You own citizen focus, growth, "
     "worked tiles and locks, specialists, construction queues, purchases, building sales and shared city tiles. "
-    "The main player owns research, policies, workers, movement, combat and empire strategy. "
+    "Main owns research, policies, workers, civilians and empire strategy; military controls combat units during wars, with escorts retained by main. "
     "Read economic requests and respect explicit city overrides. Both roles may spend uncommitted gold; "
     "the engine protects funds and resources committed to published trades. Check failures and reconsider. "
     "Keep one city_plan memory per city explaining the current focus, growth, citizens/specialists, construction "
-    "and significant purchases, expected benefits and reconsideration conditions. Mark unexplained inherited "
+    "and significant purchases, expected benefits and reconsideration conditions. Set city_plan.city to the "
+    "exact city handle (for example city2), without the city's display name. Mark unexplained inherited "
     "choices as inherited; never invent a reason or record a failed command as a completed change. "
-    "Retain a sensible plan when its reasons still hold. Fetch detailed options only when useful. "
+    "Read or create that city's plan before making changes; plans delivered at startup already count as read. "
+    "Reread only when missing, changed or recovery requires it. Cite its returned memory ID in intent.cityPlan "
+    "on meaningful city commands. A plan written after an action cannot establish which plan motivated it. "
+    "Retain a sensible plan when its reasons still hold. Leave its notebook record unchanged unless a decision, "
+    "rationale, expectation or specific deadline changes. Do not rewrite current production progress, countdowns "
+    "or treasury figures merely to show that you reviewed them. A no-change review needs only finish_role; "
+    "the service records when you reviewed each city separately from your plans. Fetch details only when useful. "
+    "economyCoordination.economySchedule identifies fullReview and the cities needing this pass. In a targeted "
+    "pass, review those cities against fresh empire constraints; inspect other cities when the decision requires it. "
+    "player_turn can select cities by handle and retains an owned-city index; omit cities for a full overview. "
+    "Unrelated routine changes wait for the periodic full review, whose clock is independent of local passes. "
+    "Use city_plan.reviewTurn only for a specific future decision deadline that native construction, research "
+    "or purchase events do not already cover. The service acknowledges handled dates; an unchanged plan does "
+    "not need its date cleared or advanced. Use purchaseTargets for exact construction names to watch. "
+    "Deferred requests can set a future reviewTurn; prose reconsideration conditions remain your judgment. "
     "Current native facts take priority over old notes. After another role changes the position, refresh "
     "the required observations and reconsider; never repeat a successful action. "
-    "Use finish_role when done; the host waits for both roles. Stop after success unless asked for another pass."
+    "Requests arriving while you work join this pass. Read current coordination in results before finishing "
+    "and dispose of pending urgent requests. Use finish_role when done; the host waits for every active role. "
+    "Stop after success unless asked for another pass."
 )
 
 
 def job_instructions(purpose):
     workflow = {
         "gameplay": GAMEPLAY_INSTRUCTIONS
-        + "\n\nAn economy manager runs concurrently and owns city economics. Send economy_request for production or spending priorities; use city_override for an emergency before changing its city controls. Use finish_role when done; only the host advances the game turn.",
+        + "\n\nYour scenario role is Main (gameplay). A military manager controls combat units, scouts and city bombardment during wars; you retain civilians and all escorts, declarations, nuclear strikes, capture disposition and peace authority. Use escort_assignment to assign or release escort duty; you move both escort and civilian. Before declaring war, and when an existing war lacks goals, supply initial war_goals with opponent, nonempty goals and a reason. Discuss revisions with military using war_goals; you break ties with a reason. Read goal proposals and role messages before subsequent actions. An economy manager owns city economics and city_plan records and wakes on economic events or periodic reviews. Send economy_request for new production or spending priorities: urgent wakes it now, routine joins an active pass or waits for the next scheduled review. Check fresh city queues and economyCoordination request dispositions before sending another urgent request. ECONOMY_CONTEXT_CHANGED returns the refresh for reconsideration; submit a new call only if the request is still needed. Avoid repeating unchanged requests. Use city_override for an emergency before changing its city controls or plan. If a remaining decision depends on economy, call economy_wait alone with the request IDs, or omit IDs to await its current pass, then stop until resumed. Do not poll player_turn while waiting. When your decisions are complete, use finish_role; it suspends inference while the host waits for other roles, and only the host advances the game turn.",
+        "military": (
+            "You control combat units, scouts and city bombardment only while at war with living major civilizations or city-states. "
+            "Main controls civilians and all military units on escort duty. Main retains declarations, nuclear strikes, capture disposition and peace authority. "
+            "Follow accepted war goals. Use war_goals to read, propose, respond and finalize revisions after discussion. Main breaks disagreements. "
+            "Defend immediately if initial goals are pending. Keep military_operation records explaining deployments, expected results, progress and reconsideration. "
+            "Distinguish confirmed events from assessments and unseen threats. Use native previews and assess avoidable losses. "
+            "Read war_goals after coordination notifications and before subsequent actions. Use economy_request for supplies and role_message for private discussion. "
+            "Current facts supersede notes. Use finish_role when done; only the host advances the turn. "
+        )
+        + EVIDENCE_GUIDANCE,
         "economy": ECONOMY_INSTRUCTIONS,
-        "communication": COMMUNICATION_INSTRUCTIONS,
+        "communication": COMMUNICATION_INSTRUCTIONS
+        + " Before binding peace, the service obtains a military overview and main approval of the exact terms. Changed terms require renewed approval. Read war_goals for current objectives.",
     }[purpose]
     return (
         "You are a Civilization player. Use only the permitted Civ tools. "

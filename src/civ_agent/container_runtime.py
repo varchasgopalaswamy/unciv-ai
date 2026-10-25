@@ -195,6 +195,8 @@ def controller():
         ]
         if (ROOT / "exploration.json").exists():
             arguments += ["--resume-checkpoint", str(ROOT / "exploration.json")]
+            if config.game.scenario:
+                arguments += ["--scenario", config.game.scenario]
         else:
             arguments += ["--new-game", "--checkpoint", str(ROOT / "exploration.json"), *config.engine_arguments()]
         if config.human:
@@ -283,7 +285,10 @@ def agent(civilization):
             if value:
                 arguments.append("--" + key.replace("_", "-"))
         else:
-            arguments += ["--" + key.replace("_", "-"), json.dumps(value) if isinstance(value, dict) else str(value)]
+            arguments += [
+                "--" + key.replace("_", "-"),
+                json.dumps(value) if isinstance(value, (dict, list)) else str(value),
+            ]
     return agent_server.run(agent_server.parser().parse_args(arguments))
 
 

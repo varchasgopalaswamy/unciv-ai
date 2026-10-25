@@ -7,6 +7,7 @@ from contextlib import asynccontextmanager
 
 import pytest
 from aiohttp import web
+from mcp.types import CONNECTION_CLOSED, REQUEST_TIMEOUT
 
 from civ_agent.civilization_state import StateConflict
 from civ_agent.diagnostics import Diagnostics
@@ -189,7 +190,7 @@ def test_lost_command_response_is_not_retried_and_receipt_can_be_read(material, 
                 context={"purpose": "gameplay", "activationId": "france-turn-61", "gameTurn": 61},
             ) as host:
                 async with asyncio.timeout(5):
-                    with pytest.raises(StateConflict):
+                    with pytest.raises(StateConflict, match="^HOST_UNAVAILABLE$"):
                         await host.tool("act", {"requestId": "durable-1"})
                     assert enacted == ["durable-1"]
                     assert await host.tool("read", {}) == {"receipt": "durable-1"}
@@ -203,6 +204,31 @@ def test_lost_command_response_is_not_retried_and_receipt_can_be_read(material, 
         assert failed["elapsedMs"] >= 0
         assert any(e["event"] == "host_call_completed" and e.get("tool") == "read" for e in events)
         assert any(e["event"] == "host_session_ready" and e["sessionAttempt"] == 2 for e in events)
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("code", [CONNECTION_CLOSED, REQUEST_TIMEOUT])
+def test_mcp_transport_failure_reconnects_without_replaying_a_command(material, code):
+    async def run():
+        calls = []
+
+        async def call(request, body):
+            calls.append(body["params"]["name"])
+            if body["params"]["name"] == "act":
+                return web.json_response(
+                    {"jsonrpc": "2.0", "id": body["id"], "error": {"code": code, "message": "Lost response"}}
+                )
+            return result(body, {"ok": True})
+
+        async with endpoint(material, call) as (url, requests):
+            async with HostConnection(url, "P" * 43, material["ca_file"]) as host:
+                with pytest.raises(StateConflict, match="^HOST_UNAVAILABLE$"):
+                    await host.tool("act", {"requestId": "one-attempt"})
+                assert calls == ["act"]
+                assert await host.tool("read", {}) == {"ok": True}
+                assert calls == ["act", "read"]
+                assert sum(request["method"] == "initialize" for request in requests) == 2
 
     asyncio.run(run())
 

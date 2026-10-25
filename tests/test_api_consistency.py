@@ -14,6 +14,7 @@ from civ_agent.protocol import JsonObject
 from civ_agent.service_io import ServiceIO
 from civ_agent.social_context import social_context
 from civ_agent.startup_context import prepare_startup, startup_prompt
+from civ_agent.state_updates import apply_overview_update
 from civ_agent.tactical_review import tactical_review
 from tests.test_construction_estimates import estimate
 from tests.test_proposal_gateway import Host
@@ -163,7 +164,7 @@ def test_startup_delivers_messages_once_and_context_only_where_needed(tmp_path, 
 def test_all_independent_reads_expire_without_requerying_them_after_action(tmp_path):
     async def run():
         async with opened(tmp_path) as (gateway, job, host):
-            await gateway.call(job, "player_turn", {}, "start")
+            base = await gateway.call(job, "player_turn", {}, "start")
             await gateway.call(job, "city_details", {"target": "city1", "sections": ["purchases"]}, "local")
             queries = [
                 ("research_details", {"names": ["Mining"]}),
@@ -190,7 +191,7 @@ def test_all_independent_reads_expire_without_requerying_them_after_action(tmp_p
                 },
                 "research",
             )
-            assert result["stateUpdate"]["set"]["researchQueue"] == ["Mining"]
+            assert apply_overview_update(base, result["stateUpdate"])["researchQueue"] == ["Mining"]
             invalidated = result["stateUpdate"]["invalidatedDetails"]
             assert {q["tool"] for q in invalidated} == {name for name, _ in queries}
             assert [name for name, _ in host.calls[before:]] == [

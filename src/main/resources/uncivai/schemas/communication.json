@@ -498,6 +498,11 @@
         },
         "version": {
           "$ref": "#/$defs/version"
+        },
+        "expectedRevision": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
         }
       },
       "required": [
@@ -562,6 +567,11 @@
         },
         "decision": {
           "$ref": "#/$defs/decision"
+        },
+        "expectedRevision": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
         }
       },
       "required": [
@@ -690,7 +700,9 @@
         "gameplay",
         "review",
         "communication",
-        "economy"
+        "economy",
+        "military",
+        "consultation"
       ]
     },
     "usage": {
@@ -935,6 +947,11 @@
           "minimum": 0,
           "maximum": 9223372036854775807
         },
+        "roleWaitMs": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9223372036854775807
+        },
         "negotiationWaitMs": {
           "type": "integer",
           "minimum": 0,
@@ -972,6 +989,9 @@
           "enum": [
             "STARTING",
             "RUNNING",
+            "ROLE_FINISHED",
+            "WAITING_NEGOTIATION",
+            "WAITING_ROLE",
             "COMPLETED",
             "INTERRUPTED",
             "FAILED"

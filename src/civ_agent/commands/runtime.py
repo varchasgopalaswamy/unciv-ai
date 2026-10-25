@@ -14,6 +14,7 @@ from civ_agent.container_support import (
     ContainerError,
     auth_name,
     command,
+    host_environment,
     inspected,
     locked,
     mount,
@@ -35,10 +36,13 @@ def parser(*, add_help=True, group="runtime", action="setup"):
     if group == "auth":
         if action == "restart":
             result.description = "Recreate configured auth and Decisions servers using the selected runtime image."
-        if action != "restart":
+        if action == "stop":
+            result.description = "Stop the shared login manager, retaining saved credentials."
+        if action not in {"restart", "stop"}:
             result.add_argument("--provider", choices=PROVIDERS, default="openai")
         result.add_argument("--auth-dir", type=Path, default=DEFAULT_AUTH)
-        result.add_argument("--image", default="localhost/civ-agent:runtime")
+        if action != "stop":
+            result.add_argument("--image", default="localhost/civ-agent:runtime")
         if action == "login":
             result.add_argument("--key-file", type=Path, help="Import an owner-only OpenRouter API key file")
     return result
@@ -62,6 +66,11 @@ def run(args):
             print("Rootless runtime ready. Games will survive terminal closure and logout.")
             return 0
         root = args.auth_dir.expanduser().resolve()
+        if args.action == "stop":
+            from civ_agent.container_supervisor import stop_auth
+
+            print(json.dumps(stop_auth(root), indent=2))
+            return 0
         if args.action == "restart":
             from civ_agent.container_supervisor import restart_brokers
 
@@ -105,7 +114,7 @@ def run(args):
         with locked(root / ".launch.lock"):
             if (inspected(auth_name(root)) or {}).get("State", {}).get("Running"):
                 raise ContainerError(
-                    "Stop the login manager before changing its account; active games use this session"
+                    "Run civ-agent auth stop before changing its account; active games use this session"
                 )
             image = resolve_image(args.image)
             return subprocess.call(
@@ -132,7 +141,8 @@ def run(args):
                     'cli_auth_credentials_store="file"',
                     "login",
                     "--device-auth",
-                ]
+                ],
+                env=host_environment(),
             )
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
         print(str(error), file=sys.stderr)

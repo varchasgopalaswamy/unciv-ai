@@ -39,6 +39,7 @@ internal fun communicationContext(runtime: GameExecutor, game: GameInfo, player:
 
 /** One source of private communication roles for both gameplay and conversation views. */
 internal fun communicationScenario(runtime: GameExecutor, game: GameInfo, player: Civilization): GameplayScenario? = when (game.tileMap.mapParameters.name) {
+    "Economy manager acceptance", "Military manager acceptance" -> uncivai.ManagerScenarioSetup.scenario(game, player)
     uncivai.MixedDiplomacyScenario.MAP_NAME -> uncivai.MixedDiplomacyScenario.scenario(runtime, game, player)
     TradeCycleScenarioSetup.MAP_NAME -> TradeCycleScenarioSetup.scenario(runtime, game, player.civID)
     AgreementLifecycleScenarioSetup.MAP_NAME -> AgreementLifecycleScenarioSetup.scenario(runtime, game, player)

@@ -103,6 +103,26 @@ def ensure_auth(root, image, *, restart=False):
     return name
 
 
+def stop_auth(root):
+    """Stop the login manager under its launch lock, preserving durable state."""
+    name = auth_name(root)
+    with locked(root / ".launch.lock", wait=True):
+        current = inspected(name)
+        if current is None:
+            # Inspection also returns None on Podman errors. Only a confirmed
+            # missing container is an idempotent success.
+            exists = podman("container", "exists", name, check=False)
+            if exists.returncode != 1:
+                raise ContainerError(f"Could not inspect login manager {name}")
+        elif current["State"]["Running"]:
+            podman("stop", "--time", "90", name, timeout=100)
+            current = inspected(name)
+            if current is None or current["State"]["Running"]:
+                raise ContainerError(f"Could not confirm login manager {name} stopped")
+        (root / "ready.json").unlink(missing_ok=True)
+    return {"auth_directory": str(root), "container": name, "manager_running": False}
+
+
 def agent_auth_arguments(auth_root, name, provider):
     """Only the selected credential is mounted; keys never appear in Podman argv/env."""
     if provider == "openrouter":
@@ -118,6 +138,12 @@ def agent_auth_arguments(auth_root, name, provider):
         "--env",
         f"CIV_AUTH_TOKEN_FILE=/match/agent-services/{name}/auth-client.json",
     ]
+
+
+def player_providers(config, player):
+    """Provision credentials for the configured main and subordinate models."""
+    settings = config.settings(player)
+    return {settings["provider"], settings["economy_model"]["provider"], settings["military_model"]["provider"]}
 
 
 def validate_routing_credentials(config, auth_root):
@@ -462,7 +488,7 @@ class GameRun:
         for name in ("start.json", "request.json"):
             (self.root / "control" / name).unlink(missing_ok=True)
         (self.root / "runtime.json").unlink(missing_ok=True)
-        providers = {self.config.settings(p)["provider"] for p in self.config.agent_players}
+        providers = set().union(*(player_providers(self.config, p) for p in self.config.agent_players))
         if self.config.agents.decisions_enabled:
             self.record["routingPreflight"] = ensure_decisions(self.auth_root, self.record["images"]["runtime"])
             write_private_json(self.root / "container.json", self.record)
@@ -496,7 +522,7 @@ class GameRun:
             from civ_agent.tls import write_private
 
             write_private(codex_home / "config.toml", b'cli_auth_credentials_store = "ephemeral"\n')
-            if self.config.settings(player)["provider"] == "openai":
+            if "openai" in player_providers(self.config, player):
                 authorize_agent(self.auth_root, self.game_id, index, directory)
             if self.config.agents.decisions_enabled:
                 from civ_agent.decisions_policy import decisions_values
@@ -545,7 +571,8 @@ class GameRun:
             args += ["--network", f"{network}:alias=p{index}"]
             for folder in ("agent-services", "agents", "codex"):
                 args += mount(self.root / folder / name, f"/match/{folder}/{name}", writable=True)
-            args += agent_auth_arguments(self.auth_root, name, self.config.settings(player)["provider"])
+            for provider in sorted(player_providers(self.config, player)):
+                args += agent_auth_arguments(self.auth_root, name, provider)
             if self.config.agents.decisions_enabled:
                 args += decisions_arguments(self.auth_root, name, backend=self.config.agents.decisions_backend)
             args += [

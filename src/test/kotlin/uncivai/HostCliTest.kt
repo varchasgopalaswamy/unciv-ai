@@ -10,6 +10,24 @@ import org.junit.Test
 import java.nio.file.Files
 
 class HostCliTest {
+    @Test fun `manager scenarios validate without models and retain identity on resume`() {
+        val directory = Files.createTempDirectory("host-cli-managers-")
+        try {
+            for (variant in ManagerScenarioSetup.variants) {
+                lateinit var parsed: CliOptions
+                HostCli { parsed = it }.parse(listOf("--validate-setup", "--data-dir", directory.toString(), "--scenario", variant))
+                assertEquals(variant, parsed.scenario)
+                assertTrue(parsed.validateSetup)
+                val checkpoint = directory.resolve("$variant.json")
+                Files.writeString(checkpoint, "{}")
+                HostCli { parsed = it }.parse(listOf("--resume-checkpoint", checkpoint.toString(), "--data-dir", directory.toString(), "--scenario", variant))
+                assertEquals(variant, parsed.scenario)
+            }
+        } finally {
+            deleteTreeWithoutFollowingLinks(directory)
+        }
+    }
+
     @Test
     fun `starting position seed is optional and independent of map seed`() {
         val directory = Files.createTempDirectory("host-cli-starting-seed-")

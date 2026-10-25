@@ -5,11 +5,15 @@ from typing import Annotated, Literal
 from pydantic import BaseModel, Field, RootModel, field_validator, model_validator
 from pydantic.json_schema import SkipJsonSchema
 
-from civ_agent.economy_roles import CityOverride, EconomyRequest, FinishRole
+from civ_agent.delivery_options import DeliveryOptions
+from civ_agent.economy_roles import CityOverride, EconomyRequest, FinishRole, RequestDisposition
 from civ_agent.game_commands import Position
+from civ_agent.inspection_bundle import InspectionBundle
 from civ_agent.memory_records import (
+    EconomyMemoryUpdate,
     HistoryReadResult,
     Intent,
+    MemoryContributions,
     MemoryRead,
     MemoryReadResult,
     MemorySearch,
@@ -19,9 +23,47 @@ from civ_agent.memory_records import (
 )
 from civ_agent.observations import DETAIL_MODELS, DetailResult, EntityDetails
 from civ_agent.schemas import BoundaryModel, NonnegativeInt
+from civ_agent.war_state import EscortAssignment, MilitaryOperation, RoleMessage, WarGoals
 
 ShortReference = Annotated[str, Field(min_length=1, max_length=16, pattern=r"^[A-Za-z0-9_-]+$")]
 PlayerName = Annotated[str, Field(min_length=1, max_length=128, pattern=r"\S")]
+
+
+class PlayerTurn(DeliveryOptions):
+    view: Literal["current", "full", "economy"] = Field(
+        default="current",
+        description="Keep the current view (default), request the full overview, or select a focused economy brief. All owned details remain readable in every view.",
+    )
+    cities: Annotated[list[Annotated[str, Field(min_length=1, max_length=128)]], Field(max_length=500)] | None = Field(
+        default=None,
+        description="Optional owned city handles to include in this overview. Empire constraints and the owned-city index remain visible. Omit for all cities; details of any owned city remain available.",
+    )
+
+
+class SpecialistFinishRole(BoundaryModel):
+    requests: list[RequestDisposition] = Field(default_factory=list, max_length=100)
+
+
+class EconomyWait(BoundaryModel):
+    requestIds: Annotated[
+        list[Annotated[str, Field(min_length=1, max_length=128)]],
+        Field(max_length=100, json_schema_extra={"uniqueItems": True}),
+    ] = Field(default_factory=list)
+
+    @field_validator("requestIds")
+    @classmethod
+    def unique_requests(cls, value):
+        if len(value) != len(set(value)):
+            raise ValueError("List each request ID only once")
+        return value
+
+
+class CommandHelp(BoundaryModel):
+    kinds: Annotated[list[Annotated[str, Field(min_length=1, max_length=128)]], Field(min_length=1, max_length=16)]
+
+
+class ReviewPlayerDetails(DeliveryOptions):
+    section: Literal["economy", "diplomacy", "research", "policies", "map_index", "settlement"]
 
 
 class MovementPreview(EntityDetails):
@@ -218,7 +260,15 @@ class FriendshipOffer(Partner, WithIntent):
 
 
 TOOL_MODELS: dict[str, type[BaseModel]] = {
+    "player_turn": PlayerTurn,
+    "inspect_bundle": InspectionBundle,
+    "command_help": CommandHelp,
+    "war_goals": WarGoals,
+    "escort_assignment": EscortAssignment,
+    "military_operation": MilitaryOperation,
+    "role_message": RoleMessage,
     "finish_role": FinishRole,
+    "economy_wait": EconomyWait,
     "economy_request": EconomyRequest,
     "city_override": CityOverride,
     **DETAIL_MODELS,
@@ -248,6 +298,15 @@ TOOL_MODELS: dict[str, type[BaseModel]] = {
 
 
 def tool_model(name: str, purpose: str) -> type[BaseModel]:
+    if name == "finish_role" and purpose in {"economy", "military"}:
+        return SpecialistFinishRole
+    if name == "player_details" and purpose == "review":
+        return ReviewPlayerDetails
+    if name == "memory_update":
+        if purpose == "economy":
+            return EconomyMemoryUpdate
+        if purpose not in {"gameplay"}:
+            return MemoryContributions
     return ChatSend if name == "chat_send" and purpose != "gameplay" else TOOL_MODELS[name]
 
 

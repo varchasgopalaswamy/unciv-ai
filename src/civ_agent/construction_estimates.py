@@ -5,6 +5,18 @@ import math
 
 from civ_agent.protocol import JsonObject
 
+INVESTMENT_BASIS = (
+    "Compare today's output with starting this construction now, keeping rates, population and citizen "
+    "assignments fixed. Benefits begin after the estimated build time. This is a comparison, not a forecast "
+    "or recommendation: it leaves out growth, one-time rewards, later builds, new specialists and rival responses. "
+    "Effects on the empire are shown separately as if completed now. Gold includes maintenance; purchasing "
+    "costs extra and completes immediately. The main comparison uses no production conversion. Following "
+    "scenarios compare converting now with building or buying first, then choosing that conversion. "
+    "These scenarios leave the actual queue unchanged; adding, moving and continuing an item are separate choices. "
+    "Break-even means recovering yields lost while building, once later yields improve; it does not repay "
+    "the production or purchase cost. Happiness is a level, not an accumulating yield. Only shared stats are compared."
+)
+
 
 def investment_comparison(
     estimate: JsonObject,
@@ -17,17 +29,7 @@ def investment_comparison(
     """Arithmetic over native current-state previews, not a future city simulation."""
     result: JsonObject = {
         "horizonTurns": horizon,
-        "basis": (
-            "Compare today's output with starting this construction now, keeping rates, population and citizen "
-            "assignments fixed. Benefits begin after the estimated build time. This is a comparison, not a forecast "
-            "or recommendation: it leaves out growth, one-time rewards, later builds, new specialists and rival responses. "
-            "Effects on the empire are shown separately as if completed now. Gold includes maintenance; purchasing "
-            "costs extra and completes immediately. The main comparison uses no production conversion. Following "
-            "scenarios compare converting now with building or buying first, then choosing that conversion. "
-            "These scenarios leave the actual queue unchanged; adding, moving and continuing an item are separate choices. "
-            "Break-even means recovering yields lost while building, once later yields improve; it does not repay "
-            "the production or purchase cost. Happiness is a level, not an accumulating yield. Only shared stats are compared."
-        ),
+        "basis": INVESTMENT_BASIS,
     }
     completion = estimate.get("completion")
     if completion is None:

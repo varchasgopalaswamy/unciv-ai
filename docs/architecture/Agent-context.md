@@ -210,6 +210,144 @@ social change; the service does not fetch them all again. Relevant expired reads
 appear in `invalidatedDetails`, including on full reads and communication mutation
 responses. Native research and policy responses retain their observed turn number.
 
+## Compact payload delivery
+
+Startup layout 9 describes the following formats. Native observations, legality,
+inspection registration and durable action receipts retain their existing
+checks. Compression affects delivery, not which facts the engine returns.
+`player_turn` preserves the current view when `view` is omitted or `current`;
+`view="full"` explicitly expands a focused economy brief. Recovery reads therefore
+preserve the selected presentation. On observation and notebook reads,
+`delivery="auto"` chooses the transport and `delivery="full"` recovers a missing
+baseline with complete inline data. Sections, construction names, map format,
+overview view and city scope independently select the information. The legacy
+`full` boolean remains accepted but is omitted from advertised input schemas;
+contradictory explicit recovery options are rejected.
+
+After a prepared conversation starts, an explicit `player_turn` still fetches
+fresh native state, but may return `stateUpdate` instead of a complete root
+overview. `unchanged` retains its data, adopts the new `stateId` and still applies
+`invalidatedDetails`. A delta uses the same reducer as an action receipt. The
+service chooses the smaller complete alternative. Startup, a new conversation,
+view/scope changes and `delivery="full"` supply a complete overview. Clients
+without prepared context retain full root responses until explicitly opting in
+through a delivery option. Host review and role-resume reads request full data.
+`apply_player_turn` consumes both root and update forms.
+
+Projected detail reads (`unit_details`, `city_details`, `construction_details`,
+`map_region`, `player_details`) have a `detailUpdate` with conversation `scopeId`,
+`sequence` and `stateId`. `full` supplies the selected `data`; `unchanged` confirms
+revalidation and retains it; `delta` includes JSON Patch operations against the
+matching `baseStateId`. Preserve each query's baseline, ignore older sequences,
+and request that same read with `delivery="full"` if the baseline is unavailable.
+`map_region`'s `format` controls tile representation independently of this flag.
+Missing baselines, compaction and a new conversation force full delivery.
+Baselines advance only after the reply is durably recorded; retries retain their
+original response. Startup details become baselines when the conversation starts.
+An optional `baseQuery` reuses a delivered query for the same tool and target:
+city/unit sections can differ, and construction names can differ only with the
+same horizon. Apply the update to the destination query without changing its
+source. Reject stale destination sequences before resolving the source; a missing
+or advanced source requires a full recovery read. Reuse never registers another
+query as inspected.
+
+Overview updates retain their existing `set`, `removed` and keyed `collections`.
+For changed overview objects, a delta may also carry `patch`: apply these
+JSON Patch operations to the overview after the other changes. The overview
+`baseStateId` still guards the entire update. JSON Patch is implemented with the
+`jsonpatch` library and uses standard escaped JSON Pointer paths and ordered
+operations. Full reads remain available.
+The service compares complete serialized alternatives and uses a patch only when
+smaller and exactly reconstructable, including JSON types. Coordination updates
+retain their separate existing representation.
+
+Notebook reads and current searches include `memoryDelivery`, with the scope,
+sequence and ordered items carrying each record's ID, version and state hash.
+A `full` item has a complete object in `records`; `unchanged` and `delta` refer
+to the matching read baseline. `records` never contains partial record objects.
+Startup notebook metadata seeds exactly the records in the startup message.
+Writes and automatic `memoryUpdates` invalidate affected read baselines, while
+version watermarks prevent stale receipts from restoring older records.
+Historical searches return complete historical evidence and never seed current
+baselines. Missing matches do not delete records. Recover with
+`memory_read(ids=[...], delivery="full", includeRetired=true)`; search also accepts
+`delivery="full"`.
+
+Repeated, exact construction estimate explanations may be shared once in
+`constructionExplanations` within a startup message or reply. An object's
+`explanationRefs` identifies omitted fields and their local explanation IDs.
+Expand these before applying detail or overview updates. The registry contains
+the complete caveats and applies only to that message. Only allowlisted service
+constants at construction fields are shared; authored text is preserved.
+Full recovery reads include the original explanations directly.
+
+Exact repeated native objects, arrays and strings at allowlisted presentation
+fields may also use `sharedValues` and a field value of
+`{"sharedValueRef":"v1"}`. Registries are local to one message and contain at most
+16 values; sharing is used only when the complete serialized response is smaller.
+Authored messages, notebook entries and strategic judgments stay inline. A
+`stateUpdate` can contain its own registry so it remains independently consumable.
+Expand references before checking hashes or applying any update.
+`expand_response`, `apply_player_turn`, `apply_overview_update` and
+`apply_detail_response` implement this order. Prepared startup messages include
+the registry and interpretation guidance; legacy unprepared clients do not
+receive this new sharing format. Full recovery returns inline values.
+
+`decisionFeedback.sharedFacts` stores identical factual objects once. A choice's
+`fieldRefs` maps omitted field names to their exact shared object. The
+`expand_feedback` reference consumer restores the complete original feedback;
+sharing adds no interpretation or causal attribution.
+
+An accepted notebook edit can contain `recordUpdate` instead of `record`.
+`base="submitted"` references that edit's submitted content, and `base="record"`
+references the last complete record delivered with that ID in this conversation.
+Apply `set` field replacements and `removed` deletions. IDs, versions, permission
+errors, warnings, normalized values and service-authored metadata remain
+authoritative. Multiple edits in a batch use preceding successful results;
+failed edits never update the baseline. Receipts are committed in the same
+transaction as the edits. Missing record baselines require
+`memory_read(delivery="full")`.
+
+`inspect_bundle(queries=[{tool,arguments},...])` accepts up to 12 independent
+read-only inspections with already-known arguments. It validates every child
+schema and role permission before reading, then returns ordered results. Each
+child retains its ordinary visibility, inspection evidence, freshness checks
+and durable receipt. A failed child stops the bundle and reports `remaining`.
+`positionChanged` signals an observation-revision change; a bundle is not an
+atomic snapshot. Parent and child receipts make replay idempotent, and an
+accepted bundle drains through checkpointing or a disconnected caller. Review
+bundles use frozen review evidence and cannot read notebook state. Actions,
+communication writes and recursive bundles are excluded.
+
+Managed Main can call `economy_wait` alone when its next choice depends on
+economic work. Empty `requestIds` waits for the current pass; otherwise IDs must
+be unique, known requests (at most 100). The durable receipt is followed by a
+controller suspension; no gateway lock remains held. Main remains unfinished
+and cannot end the native turn while suspended. Dispositions, pass completion,
+attention or new actionable events, negotiation, and a bounded 300-second wait
+wake it. Resume retains the conversation and model settings, supplies a fresh
+full overview/coordination state and accepted outcomes, and never repeats a
+successful action. `WAITING_ROLE` releases compute capacity and is accounted
+separately from negotiation wait. Routine requests retain their priority.
+
+Managed command schemas contain only the role's allowed variants and their
+fields. Specialist `finish_role` exposes request dispositions without Main-only
+fields; review `player_details` omits `turn_history`. Construction horizons
+require at least one construction name in both the advertised schema and runtime
+validation. These contracts retain native legality and action checks.
+
+Startup tool definitions omit JSON Schema title annotations while preserving
+constraints and literal data. The startup `player_command` description retains
+its complete role-filtered `commandIndex` and defers argument schemas to
+`command_help(kinds=[...])`. Offered complete commands can be copied directly;
+help returns the full schema and description for requested permitted kinds.
+Actual MCP discovery retains complete schemas. This reduces repeated startup
+documentation while keeping every allowed command discoverable.
+
+The private accounting ledger additionally counts full detail characters, delta
+characters, unchanged-detail replies and compact memory updates. These counters
+are not model context or estimates of billed tokens.
+
 ## Controller details and the model boundary
 
 Model-facing descriptions explain gameplay choices, terms, availability and how

@@ -4,6 +4,17 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class ComputingCapacityTest {
+    @Test fun `role wait releases compute capacity without ending the job`() {
+        assertFalse(computingJobPhase("WAITING_ROLE"))
+        assertFalse(computingJobPhase("WAITING_NEGOTIATION"))
+        assertFalse(computingJobPhase("ROLE_FINISHED"))
+        assertTrue(computingJobPhase("RUNNING"))
+        assertTrue(computingJobPhase("STARTING"))
+        val jobs = mapOf("main" to main.copy(computing = computingJobPhase("WAITING_ROLE")), "economy" to economy)
+        assertTrue(available(jobs, "chat", "communication"))
+        assertFalse(available(jobs + ("chat" to CommunicationJob("Rome", "communication", 100)), "main", "gameplay"))
+    }
+
     private val main = CommunicationJob("Rome", "gameplay", 100)
     private val economy = CommunicationJob("Rome", "economy", 100, parentJob = "main")
     private fun available(jobs: Map<String, CommunicationJob>, id: String, purpose: String, parent: String? = null, global: Int = 2, perCiv: Int = 2) =
@@ -41,5 +52,23 @@ class ComputingCapacityTest {
         assertFalse(invocationCapacityAvailable(mapOf("main" to main), "communication", null, 1, 1, 2))
         assertTrue(invocationCapacityAvailable(mapOf("main" to main), "economy", "main", 1, 1, 2))
         assertFalse(invocationCapacityAvailable(mapOf("main" to main, "economy" to economy.copy(expires = 0)), "economy", "main", 1, 2, 2))
+    }
+
+    @Test fun `war reserves three roles but peace reserves only two`() {
+        assertFalse(computingCapacityAvailable(emptyMap(), "main", "Rome", "gameplay", null, 1, 2, 4, true))
+        assertTrue(computingCapacityAvailable(emptyMap(), "main", "Rome", "gameplay", null, 1, 3, 3, true))
+        val jobs = mapOf("main" to main.copy(militaryPartnerRequired = true))
+        assertFalse(computingCapacityAvailable(jobs, "chat", "Rome", "communication", null, 1, 3, 3))
+        assertTrue(computingCapacityAvailable(jobs, "military", "Rome", "military", "main", 1, 3, 3))
+        assertFalse(invocationCapacityAvailable(emptyMap(), "gameplay", null, 1, 0, 2, true))
+        assertTrue(invocationCapacityAvailable(emptyMap(), "gameplay", null, 1, 0, 3, true))
+        assertTrue(invocationCapacityAvailable(jobs, "military", "main", 1, 1, 3, true))
+    }
+
+    @Test fun `suspended war roles leave room for sequential consultations`() {
+        val jobs = mapOf("main" to main.copy(computing = false, militaryPartnerRequired = true),
+            "economy" to economy.copy(computing = false),
+            "military" to CommunicationJob("Rome", "military", 100, parentJob = "main", computing = false))
+        assertTrue(computingCapacityAvailable(jobs, "consult", "Rome", "consultation", null, 1, 1, 1))
     }
 }

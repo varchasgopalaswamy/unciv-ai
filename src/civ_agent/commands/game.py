@@ -6,6 +6,7 @@ import os
 import subprocess
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from civ_agent.agent_settings import add_settings_arguments, setting_argument
@@ -57,6 +58,7 @@ def parser(*, add_help=True, action="start"):
     for field in ("max-turns", "max-invocations", "max-seconds", "turn-timeout", "startup-timeout"):
         result.add_argument("--" + field, type=int)
     if action == "start":
+        result.add_argument("--scenario", choices=("economy-manager", "military-manager"))
         result.add_argument("--config", type=Path, help="TOML game configuration")
         result.add_argument(
             "--dry-run", action="store_true", help="Validate setup and show settings without starting models"
@@ -104,6 +106,7 @@ def parser(*, add_help=True, action="start"):
 
         add_decisions_arguments(result, defaults=False)
         result.add_argument("--review-interval", type=int)
+        result.add_argument("--economy-interval", type=int)
         result.add_argument("--review-attempts", type=int)
     return result
 
@@ -114,6 +117,7 @@ def resolve_options(args):
 
     fields = {
         "game": (
+            "scenario",
             "master_seed",
             "map_seed",
             "starting_position_seed",
@@ -140,6 +144,7 @@ def resolve_options(args):
             "native_advice_enabled",
             *DECISIONS_FIELDS,
             "review_interval",
+            "economy_interval",
             "review_attempts",
         ),
         "limits": ("max_turns", "max_invocations", "max_seconds", "turn_timeout", "startup_timeout"),
@@ -240,13 +245,24 @@ def stop_game(root, *, role="game"):
     if record is None:
         raise ContainerError("No containerized run at this path")
     write_private_json(root / "control/request.json", {"action": "stop"})
-    result = command(["systemctl", "--user", "stop", f"civ-{role}-{record['id']}"], check=False, timeout=250)
+    matches = []
     if role == "batch":
         for row in read_json(root / "batch.json")["runs"]:
             match = root / "games" / row["id"]
             if (match / "container.json").exists():
-                stop_game(match)
-    elif result.returncode:
+                matches.append(match)
+                # Publish every request before waiting, including when the batch
+                # supervisor is gone and games are still draining independently.
+                write_private_json(match / "control/request.json", {"action": "stop"})
+    result = command(["systemctl", "--user", "stop", f"civ-{role}-{record['id']}"], check=False, timeout=250)
+    if role == "batch" and matches:
+        # Each game owns independent infrastructure and its own supervisor lock.
+        # Keep fallback waits and container cleanup from accumulating serially.
+        with ThreadPoolExecutor(max_workers=min(8, len(matches)), thread_name_prefix="batch-stop") as worker:
+            pending = [worker.submit(stop_game, match) for match in matches]
+            for future in pending:
+                future.result()
+    elif role != "batch" and result.returncode:
         # A batch owns its games in the batch supervisor, not separate systemd
         # units. Let their controller consume the stop request before removing
         # orphaned infrastructure. No model work is polled or restarted here.

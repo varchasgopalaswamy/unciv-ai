@@ -26,6 +26,7 @@ from civ_agent.construction_estimates import (
     overview_estimates,
     queue_progress,
 )
+from civ_agent.delivery_options import DeliveryOptions
 from civ_agent.entity_sections import (
     CityDetails,
     EntityDetails,
@@ -48,9 +49,21 @@ from civ_agent.review_context import review_position
 from civ_agent.schemas import BoundaryModel
 
 
-class ConstructionDetails(EntityDetails):
+class ConstructionDetails(EntityDetails, DeliveryOptions):
+    model_config = {
+        "json_schema_extra": {
+            "allOf": [
+                {
+                    "if": {"required": ["horizonTurns"], "properties": {"horizonTurns": {"type": "integer"}}},
+                    "then": {"required": ["names"], "properties": {"names": {"minItems": 1}}},
+                }
+            ]
+        }
+    }
     names: Annotated[list[str], Field(max_length=16)] = Field(default_factory=list)
-    horizonTurns: Annotated[int, Field(ge=1, le=100)] | None = None
+    horizonTurns: (
+        Annotated[int, Field(ge=1, le=100, description="Comparison horizon; requires a nonempty names list.")] | None
+    ) = None
 
     @model_validator(mode="after")
     def comparison_requires_names(self):
@@ -59,13 +72,13 @@ class ConstructionDetails(EntityDetails):
         return self
 
 
-class MapRegion(BoundaryModel):
+class MapRegion(DeliveryOptions):
     center: Position
     radius: Annotated[int, Field(ge=0, le=4)] = 2
     format: Literal["compact", "full"] = "compact"
 
 
-class PlayerDetails(BoundaryModel):
+class PlayerDetails(DeliveryOptions):
     section: Literal["economy", "diplomacy", "research", "policies", "turn_history", "map_index", "settlement"]
 
 
@@ -97,7 +110,13 @@ class DetailResult(BoundaryModel):
     turn: int
     query: DetailQuery
     available: bool
-    data: JsonObject
+    data: JsonObject | None = None
+    detailUpdate: JsonObject | None = None
+    constructionExplanations: dict[str, str] | None = None
+    stateUpdate: JsonObject | None = None
+    memoryUpdates: list[JsonObject] | None = None
+    economyCoordination: JsonObject | None = None
+    coordinationUpdate: JsonObject | None = None
 
 
 DETAIL_MODELS: dict[str, type[BoundaryModel]] = {
@@ -199,6 +218,12 @@ class PlayerNotification(BoundaryModel):
 
 
 class TurnOverview(BoundaryModel):
+    constructionExplanations: dict[str, str] | None = None
+    explanationRefs: dict[str, str] | None = None
+    economyBrief: JsonObject | None = None
+    cityScope: JsonObject | None = None
+    economyCoordination: JsonObject | None = None
+    coordinationUpdate: JsonObject | None = None
     turnControls: JsonObject = Field(default_factory=dict)
     stateId: str | None = None
     memoryUpdates: list[JsonObject] | None = None
@@ -772,7 +797,7 @@ def project_detail(snapshot: JsonObject, query: DetailQuery) -> JsonObject:
         query=query,
         available=available,
         data=copy.deepcopy(data),
-    ).model_dump()
+    ).model_dump(exclude_unset=True)
 
 
 def required_detail(command: JsonObject) -> DetailQuery | None:

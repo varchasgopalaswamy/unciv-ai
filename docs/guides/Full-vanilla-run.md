@@ -25,6 +25,17 @@ selects both code and assets from that engine checkout. `--codex PATH` selects a
 standalone Codex executable; `--tag localhost/my-civ` chooses the image name.
 Running a built image needs no JVM source checkout.
 
+When a non-login shell omits `XDG_RUNTIME_DIR` or `DBUS_SESSION_BUS_ADDRESS`,
+the launcher fills them from the existing, user-owned `/run/user/UID` directory
+and its bus socket. Explicit settings are preserved. A systemd user session must
+already exist; this does not create one.
+
+Image builds use `podman --cgroup-manager=cgroupfs build` so their `RUN` steps
+do not need systemd D-Bus authentication. This avoids crun's `sd-bus call` /
+`interactive authentication` failure in shell environments where the runtime
+cannot use the user manager. The option applies only to image builds; game
+containers retain their normal systemd supervision and resource limits.
+
 `runtime setup` enables systemd user lingering so games survive logout.
 `auth login` opens a dedicated device login using your existing account. It leaves
 your everyday Codex home unchanged. The renewable login lives in
@@ -32,6 +43,17 @@ your everyday Codex home unchanged. The renewable login lives in
 short-lived access tokens. `auth status` reports whether the login exists and the
 manager is running. Use `--auth-dir` consistently to select another durable login.
 Changing the account requires stopping the manager and affected games first.
+
+Stop the shared login manager with:
+
+```sh
+.venv/bin/civ-agent auth stop
+```
+
+Use `--auth-dir PATH` to select another login directory. Repeated stops succeed
+when the manager is already stopped or absent. Saved credentials are retained;
+the separate Decisions service keeps running. Starting or resuming an OpenAI
+game starts the login manager again. Check its state with `civ-agent auth status`.
 
 Recreate the shared login and Decisions services from the latest built runtime
 image with:
@@ -88,7 +110,7 @@ names. Mod content is out of scope. Choose `map_size` or a custom `map_radius`.
 | Section | Settings |
 | --- | --- |
 | `[game]` | `civilizations`, `randomize`, `master_seed`, `map_seed`, `starting_position_seed`, `assignment_seed`, `map_type`, `map_size`/`map_radius`, `difficulty`, `speed`, `starting_era`, `city_states`, `victories` |
-| `[agents]` | `provider` (`openai` or `openrouter`), `model`, `reasoning_effort`, `communication_reasoning_effort`, `review_interval`, `review_attempts`, `strategy_guide`, `civilization_guide`, `fast` |
+| `[agents]` | `provider` (`openai` or `openrouter`), `model`, `reasoning_effort`, `communication_reasoning_effort`, `review_interval`, `review_attempts`, `economy_interval` (default 5 own turns, with earlier event-driven reviews), `strategy_guide`, `civilization_guide`, `fast` |
 | `[[players]]` | Unique `name`, `controller` (`agent`, `human`, `built_in_ai`; defaults to `agent`); optional agent `provider`/`model`/`reasoning_effort`/`communication_reasoning_effort` |
 | `[limits]` | `max_turns`, `max_invocations`, `max_seconds`, `turn_timeout`, `startup_timeout`, `max_concurrent_jobs`, `model_capacity_retries`, `model_capacity_retry_delay` |
 | `[resources.controller]`, `[resources.desktop]`, `[resources.agent]` | `memory_mib`, `cpus`, `pids` |
@@ -109,6 +131,29 @@ of the full references for acknowledgement-sized exchanges.
 When omitted, known gameplay levels above `medium` are capped at `medium`; lower,
 `none`, and unknown model-specific levels are preserved. Gameplay and strategic
 reviews continue to use `reasoning_effort`.
+
+The benchmark templates also enable optional Decisions effort selection for
+OpenAI Main/Economy activations. `reasoning_effort` remains their default and can
+still be overridden per player or through `economy_model`/`military_model`.
+Configure the selector in `[agents]`:
+
+```toml
+reasoning_effort = "medium"
+decisions_enabled = true
+decisions_effort_enabled = true
+decisions_effort_levels = ["low", "medium", "high", "xhigh", "max"]
+decisions_effort_min_probability = 0.50
+decisions_effort_min_margin = 0.15
+```
+
+The service offers only levels advertised by the current model. It applies the
+most probable choice when both thresholds pass, otherwise retaining the role's
+default. `none` is excluded. Other providers and roles keep their configured
+effort. Selection and fallback diagnostics are saved in activation records;
+selected effort does not change the next turn's default. Set
+`decisions_effort_enabled = false` for fixed effort. See
+[reasoning effort](../architecture/Decisions-advisory-layer.md#reasoning-effort)
+for input bounds, recovery and validation limits.
 
 Players identify competitors independently of their civilizations. List exactly
 one player per entry in `game.civilizations`. With `randomize = false` (the default),
@@ -339,10 +384,20 @@ limit play to three turns; omit `limits.max_turns` for full games.
 .venv/bin/civ-agent batch resume --state-dir ~/.local/state/unciv-host/benchmark --retry-failed
 ```
 
+Both `batch start` and `batch resume` accept `--fast` to request OpenAI priority
+or `--no-fast` for the default tier. Omit both to preserve each input's setting
+on start, or each game's saved setting on resume. A resume override is saved
+for the games selected to resume; failed games require `--retry-failed` and
+completed or budget-exhausted games are left unchanged. Other providers keep
+their own service tiers.
+
 A failed game is recorded and the next queued game can run. Resume continues
 pending/paused runs; `--retry-failed` opts into retrying failures. Completed and
 budget-exhausted runs stay finished. Explicit image upgrades affect unfinished
-runs. `results.json` and `results.csv` read every game's saved configuration and
+runs. After rebuilding a runtime fix, use `batch resume --retry-failed --image
+localhost/civ-agent:runtime --state-dir PATH` to apply it to failed games;
+resuming without `--image` retains each game's saved image even when the tag
+has been rebuilt. `results.json` and `results.csv` read every game's saved configuration and
 include every seed, named players, assigned civs, effective provider/model/effort,
 stop status, results and failures. While the batch service is active they refresh
 after launches/completions and at least every ten seconds; `updated_at` in

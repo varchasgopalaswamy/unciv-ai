@@ -113,7 +113,7 @@ internal class AccountingMonitoring(path: Path) : AutoCloseable {
             for (id in dirtyTurns) {
                 val turn = turns[id] ?: continue
                 val attempts = buildMap {
-                    putAll(byTurn[Triple(turn.epoch, turn.handoff, turn.civilization)].orEmpty().filterValues { it.purpose in setOf("gameplay", "economy", "review") })
+                    putAll(byTurn[Triple(turn.epoch, turn.handoff, turn.civilization)].orEmpty().filterValues { it.purpose in setOf("gameplay", "economy", "military", "consultation", "review") })
                     if (turn.gameTurn == 0) putAll(byTurn[Triple(turn.epoch, null, turn.civilization)].orEmpty().filterValues { it.purpose == "review" && it.gameTurn == 0 })
                 }
                 val sums = Totals().apply { attempts.values.forEach { job(it, 1) } }
@@ -130,6 +130,7 @@ internal class AccountingMonitoring(path: Path) : AutoCloseable {
                     "jobElapsedMs" to sums.elapsed, "gameplayElapsedMs" to attempts.values.mapNotNull { it.telemetry?.gameplayElapsedMs }.takeIf { it.isNotEmpty() }?.sum(),
                     "finalizationElapsedMs" to attempts.values.mapNotNull { it.telemetry?.finalizationElapsedMs }.takeIf { it.isNotEmpty() }?.sum(),
                     "negotiationWaitMs" to attempts.values.sumOf { it.telemetry?.negotiationWaitMs ?: 0 },
+                    "roleWaitMs" to attempts.values.sumOf { it.telemetry?.roleWaitMs ?: 0 },
                 )
                 updates.add(MonitoringStore.Record("turns", id, value, turn.epoch, turn.civilization, turn.gameTurn))
             }
@@ -149,7 +150,7 @@ internal class AccountingMonitoring(path: Path) : AutoCloseable {
                         val sums = players[civ] ?: Totals()
                         obj(
                             "civilization" to civ, "usage" to sums.usage.json(), "modelJobs" to sums.usage.count, "modelRequests" to sums.requests,
-                            "gameplayUsage" to sums.purposes.getOrPut("gameplay") { Usage() }.json(), "economyUsage" to sums.purposes.getOrPut("economy") { Usage() }.json(), "reviewUsage" to sums.purposes.getOrPut("review") { Usage() }.json(), "chatUsage" to sums.purposes.getOrPut("communication") { Usage() }.json(),
+                            "gameplayUsage" to sums.purposes.getOrPut("gameplay") { Usage() }.json(), "economyUsage" to sums.purposes.getOrPut("economy") { Usage() }.json(), "militaryUsage" to sums.purposes.getOrPut("military") { Usage() }.json(), "consultationUsage" to sums.purposes.getOrPut("consultation") { Usage() }.json(), "reviewUsage" to sums.purposes.getOrPut("review") { Usage() }.json(), "chatUsage" to sums.purposes.getOrPut("communication") { Usage() }.json(),
                             "agentCalls" to sums.agentCalls.json(), "memoryEdits" to sums.memory.json(), "hostCalls" to sums.hostCalls.json(), "activeMs" to sums.activeMs, "jobElapsedMs" to sums.elapsed,
                         )
                     },

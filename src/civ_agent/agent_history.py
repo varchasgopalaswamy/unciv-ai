@@ -337,6 +337,9 @@ class HistoryStore:
     def negotiation_result(self, activation_id, text):
         self.logs[activation_id].append("user_message", {"text": text, "source": "service_negotiation"})
 
+    def role_wait_result(self, activation_id, text):
+        self.logs[activation_id].append("user_message", {"text": text, "source": "service_economy_wait"})
+
     def action(self, activation_id, call_id, kind, description):
         """Record a native receipt's description for observers, outside model context."""
         self.logs[activation_id].append(

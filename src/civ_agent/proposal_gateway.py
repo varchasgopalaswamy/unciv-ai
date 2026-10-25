@@ -19,12 +19,29 @@ from sqlalchemy.exc import SQLAlchemyError
 from civ_agent import experiment_metrics
 from civ_agent.action_templates import add_decision_commands, research_change
 from civ_agent.civilization_state import CivilizationState, StateConflict
+from civ_agent.coordination_updates import (
+    apply_coordination_update,
+    payload_characters,
+)
+from civ_agent.coordination_updates import (
+    content as coordination_content,
+)
+from civ_agent.coordination_updates import (
+    response as coordination_response,
+)
+from civ_agent.coordination_updates import (
+    snapshot as coordination_snapshot,
+)
+from civ_agent.delivery_options import content_arguments, full_delivery
 from civ_agent.diplomacy_tools import argument_error, commitment_problem, unavailable
+from civ_agent.economy_view import economy_overview
+from civ_agent.feedback_view import compact_feedback
 from civ_agent.game_commands import add_combat_commands, command_arguments, command_error, command_schema
+from civ_agent.inspection_bundle import run_bundle
 from civ_agent.mcp_results import RESULT_FORMAT_HEADER, STRUCTURED_RESULT_FORMAT, canonical_tool_result
+from civ_agent.memory_delivery import apply_memory_delivery, memory_response
 from civ_agent.memory_records import (
     Intent,
-    MemoryContributions,
     MemoryReadResult,
     MemorySearchResult,
     MemoryUpdate,
@@ -46,7 +63,14 @@ from civ_agent.observations import (
     project_detail,
     required_detail,
 )
+from civ_agent.payload_updates import (
+    apply_detail_response,
+    apply_memory_receipt,
+    compact_memory_receipt,
+    detail_response,
+)
 from civ_agent.protocol import JsonObject
+from civ_agent.response_compaction import compact_response, expand_response
 from civ_agent.review_grounding import ReviewEvidence, source_catalogue
 from civ_agent.schemas import validate
 from civ_agent.service_io import ServiceIO
@@ -56,6 +80,7 @@ from civ_agent.strategic_review import frozen_read
 from civ_agent.tactical_review import strategy_review, tactical_review
 from civ_agent.telemetry import JobAccounting
 from civ_agent.tool_schemas import TOOL_MODELS, TOOL_OUTPUT_MODELS, tool_model
+from civ_agent.war_state import MILITARY_COMMANDS, ROLE_TOOLS, WarStore, declaration_targets, goal_versions
 
 BOOKKEEPING = {"requestId", "epoch", "revision", "reviewId"}
 NATIVE_TRADE_GAMEPLAY_ONLY = "Handle built-in AI trade and friendship decisions during your gameplay turn."
@@ -117,15 +142,36 @@ class JobAccess:
     token: str = field(default_factory=lambda: secrets.token_urlsafe(32))
     observation: JsonObject | None = None
     delivered_overview: JsonObject | None = None
+    compact_overviews: bool = False
+    overview_view: str = "full"
+    detail_seen: dict[str, JsonObject] = field(default_factory=dict)
+    detail_pending: dict[str, JsonObject] = field(default_factory=dict)
+    memory_seen: dict[str, JsonObject] = field(default_factory=dict)
+    memory_pending: dict[str, JsonObject] = field(default_factory=dict)
+    memory_read_seen: dict[str, JsonObject] = field(default_factory=dict)
+    memory_read_pending: dict[str, JsonObject] = field(default_factory=dict)
+    memory_versions: dict[str, int] = field(default_factory=dict)
+    payload_sequence: int = 0
     social: JsonObject | None = None
     social_read: bool = False
     detail_revision: str | None = None
     details_read: list[DetailQuery] = field(default_factory=list)
     pending_invalidated: list[DetailQuery] = field(default_factory=list)
+    role_refresh_required: bool = False
+    city_scope: list[str] | None = None
+    economy_seen: JsonObject | None = None
+    coordination_seen: JsonObject | None = None
+    coordination_scope: str = field(default_factory=lambda: secrets.token_hex(12))
+    coordination_sequence: int = 0
+    coordination_preparing: bool = False
+    coordination_pending: JsonObject | None = None
     trades: dict[str, JsonObject] = field(default_factory=dict)
     closed: bool = False
     verified: bool = False
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    bundle_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    role_wait_pending: asyncio.Event = field(default_factory=asyncio.Event)
+    role_wait_calls: dict[asyncio.Task, JsonObject] = field(default_factory=dict)
     wait_started: float | None = None
     completed_wait: float = 0
     owns_connection: bool = False
@@ -134,6 +180,7 @@ class JobAccess:
     handoff_at: float | None = None
     gameplay_ended: asyncio.Event = field(default_factory=asyncio.Event)
     model_stopped: asyncio.Event = field(default_factory=asyncio.Event)
+    war_versions: dict[str, int] = field(default_factory=dict)
     review_inputs: JsonObject | None = None
     review_evidence: ReviewEvidence | None = None
     outgoing_start: int = 0
@@ -161,6 +208,10 @@ class ProposalGateway:
         self.calls_in_flight = 0
         self.dispatch = asyncio.Lock()
         self.role_dispatch = asyncio.Lock()
+        self.wars = WarStore(memory)
+        self.peace_reviews: Any = None
+        self.consultation_hold = asyncio.Event()
+        self.consultation_hold.set()
         self.role_coordinator: Any = None
         self.in_flight = 0
         self.deferred_completions = []
@@ -266,6 +317,8 @@ class ProposalGateway:
             task.cancel()
         await asyncio.gather(*pending, return_exceptions=True)
         job.negotiation_calls.clear()
+        job.role_wait_pending.clear()
+        job.role_wait_calls.clear()
         job.completed_actions.clear()
         if job.review_inputs is not None:
             return
@@ -284,7 +337,11 @@ class ProposalGateway:
                 job.id,
                 topics,
                 job.memory.get("advisoryRanking"),
-                {city["handle"] for city in (job.observation or {}).get("cities", [])}
+                {
+                    city["handle"]
+                    for city in (job.observation or {}).get("cities", [])
+                    if job.city_scope is None or city["handle"] in job.city_scope
+                }
                 if job.purpose == "economy"
                 else None,
             )
@@ -320,24 +377,32 @@ class ProposalGateway:
             native_advice_enabled=self.native_advice_enabled,
         )
         catalogue = copy.deepcopy(job.catalogue)
-        if self.role_coordinator is not None and job.purpose in {"gameplay", "economy"}:
+        if self.role_coordinator is not None and job.purpose in {"gameplay", "economy", "military"}:
             from civ_agent.economy_roles import CITY_COMMANDS
 
             for entry in catalogue:
                 if entry["name"] == "player_command":
                     kinds = entry["inputSchema"]["properties"]["kind"]["enum"]
-                    entry["inputSchema"]["properties"]["kind"]["enum"] = [
+                    allowed_kinds = {
                         kind
                         for kind in kinds
-                        if kind not in {"END_TURN", "AUTOPLAY"} and (job.purpose != "economy" or kind in CITY_COMMANDS)
-                    ]
+                        if kind not in {"END_TURN", "AUTOPLAY"}
+                        and (job.purpose != "economy" or kind in CITY_COMMANDS)
+                        and (job.purpose != "military" or kind in MILITARY_COMMANDS)
+                    }
+                    entry["inputSchema"] = command_schema(allowed_kinds)
                     entry["description"] += (
                         " In this managed turn, use finish_role; the host advances the game. City economic commands require economy ownership or a main-player city_override."
                     )
-        if self.role_coordinator is not None and job.purpose == "economy":
+        if self.role_coordinator is not None and job.purpose in {"economy", "military"}:
             from civ_agent.economy_roles import ECONOMY_TOOLS
 
-            catalogue = [entry for entry in catalogue if entry["name"] in ECONOMY_TOOLS]
+            allowed = (
+                ECONOMY_TOOLS | {"war_goals", "role_message"}
+                if job.purpose == "economy"
+                else ECONOMY_TOOLS | ROLE_TOOLS | {"economy_request"}
+            )
+            catalogue = [entry for entry in catalogue if entry["name"] in allowed]
         job.catalogue = catalogue
         return catalogue
 
@@ -347,10 +412,11 @@ class ProposalGateway:
         tools = []
         for tool in upstream:
             if tool["name"] in READ_TOOLS and (
-                purpose in {"gameplay", "economy"} or tool["name"] in COMMUNICATION_READ_TOOLS
+                purpose in {"gameplay", "economy", "military"} or tool["name"] in COMMUNICATION_READ_TOOLS
             ):
                 entry = copy.deepcopy(tool)
                 if tool["name"] == "player_turn":
+                    entry["inputSchema"] = TOOL_MODELS["player_turn"].model_json_schema()
                     entry["description"] = (
                         "Read your current position, units, cities, decisions, alerts and strategic review. Use detail "
                         "tools to inspect options and consequences; chat_read includes social promises.\n"
@@ -368,13 +434,26 @@ class ProposalGateway:
                         "Incoming messages are in alerts.nativeDiplomacy: copy the offered RESPOND_CITY_STATE_ALERT "
                         "command for city-states, or use responseTool with chat_send/nativeAction for major players.\n"
                         "Read invalidatedDetails again only when needed; other inspections remain valid. This list may "
-                        "also accompany full reads or communication actions. Research, policy, victory, result, trade, "
+                        "also accompany full reads or communication actions. In managed turns, detail reads may include "
+                        "a stateUpdate reflecting another role's actions; apply it before using those details. "
+                        "Research, policy, victory, result, trade, "
                         "agreement and chat reads are independent: replacing the overview does not refresh them. "
                         "An argument error with applied=false needs no refresh unless recovery.reads says otherwise.\n"
                         "For private memoryUpdates, replace older records by ID and keep newer versions if an update "
                         "repeats. Review notices are suggestions; they require neither a memory edit nor a change of action."
                     )
+                    entry["description"] += (
+                        " Prepared conversations also return stateUpdate on explicit refreshes. unchanged retains "
+                        "all overview data and adopts stateId; apply invalidatedDetails even when unchanged. "
+                        "Use delivery=full only to recover a missing or mismatched baseline."
+                    )
                     entry["outputSchema"] = TurnOverview.model_json_schema()
+                    entry["outputSchema"]["properties"]["sharedValues"] = {"type": "object"}
+                    definitions = entry["outputSchema"].pop("$defs", {})
+                    entry["outputSchema"] = {
+                        "anyOf": [entry["outputSchema"], {"type": "object", "required": ["stateUpdate"]}],
+                        **({"$defs": definitions} if definitions else {}),
+                    }
                 elif tool["name"] == "player_capabilities":
                     entry["description"] = "List available observation tools and game actions."
                 elif tool["name"] in {"research_details", "policy_details"}:
@@ -413,7 +492,7 @@ class ProposalGateway:
                         "does not fix city spacing or foreign ownership. Reconsider repeatedly blocked sites."
                     )
                 tools.append(entry)
-            elif tool["name"] == "player_command" and purpose in {"gameplay", "economy"}:
+            elif tool["name"] == "player_command" and purpose in {"gameplay", "economy", "military"}:
                 entry = copy.deepcopy(tool)
                 entry["inputSchema"] = command_schema()
                 entry["description"] = (
@@ -444,6 +523,8 @@ class ProposalGateway:
                         "readOnlyHint": name
                         in set(DETAIL_MODELS)
                         | {
+                            "inspect_bundle",
+                            "command_help",
                             "history_read",
                             "chat_read",
                             "chat_history",
@@ -459,32 +540,60 @@ class ProposalGateway:
                         "destructiveHint": False,
                         "openWorldHint": False,
                     },
-                    "inputSchema": (
-                        MemoryContributions
-                        if name == "memory_update" and purpose not in {"gameplay", "economy"}
-                        else tool_model(name, purpose)
-                    ).model_json_schema(),
+                    "inputSchema": tool_model(name, purpose).model_json_schema(),
                 }
             )
             if name == "chat_read" and not (routing_enabled and purpose == "gameplay"):
                 tools[-1]["inputSchema"]["properties"].pop("handledMessages", None)
             if name in TOOL_OUTPUT_MODELS:
                 tools[-1]["outputSchema"] = TOOL_OUTPUT_MODELS[name].model_json_schema()
+                tools[-1]["outputSchema"]["properties"]["sharedValues"] = {"type": "object"}
 
-        if purpose in {"gameplay", "economy"}:
+        if purpose in {"gameplay", "economy", "military"}:
+            add(
+                "inspect_bundle",
+                "Read up to 12 independent inspections in one call using queries=[{tool,arguments}]. Each read "
+                "retains its own permissions, evidence and recovery. Apply results in order, including any "
+                "stateUpdate, then decide. Stops at the first error. positionChanged reports a revision change; "
+                "this is not an atomic snapshot. Actions, chat and nested bundles are not accepted.",
+            )
+            add(
+                "command_help",
+                "Read the complete argument schema and guidance for up to 16 player_command kinds allowed "
+                "for this role. Common actions can copy commands already supplied without this read.",
+            )
             add(
                 "finish_role",
-                "Finish your work for this role. The host waits for both roles and advances the native turn. Stop issuing actions after success; another pass may be requested.",
+                "Finish your work for this role. The host waits for every active role and advances the native turn. Economy reports a disposition for each urgent request; deferred requests may set a future reviewTurn. Stop issuing actions after success; another pass may be requested.",
+            )
+        if purpose in {"gameplay", "military"}:
+            add(
+                "economy_request",
+                "Send a new city production or economic priority to the economy manager. Routine requests wake it next own turn; urgent requests start or reopen it now. Do not repeat unchanged requests.",
             )
         if purpose == "gameplay":
             add(
-                "economy_request",
-                "Send a city production or economic priority to the economy manager. Routine late requests carry to the next turn; urgent requests reopen its current turn.",
+                "economy_wait",
+                "Suspend inference while awaiting economy, leaving your role unfinished. Supply requestIds to wait "
+                "for recorded completed/deferred/rejected dispositions, or omit them to wait for the current pass. "
+                "Returns immediately if already resolved or economy is idle; it never wakes economy or upgrades "
+                "a routine request. New coordination or decisions can wake you early. The host resumes you with "
+                "fresh facts, within 300 seconds and your activation deadline. Call this alone, then stop issuing "
+                "tools until resumed. If you have no remaining decisions, use finish_role instead.",
             )
             add(
                 "city_override",
                 "Take economic control of an owned city for the rest of this turn. Supply a reason. This fences conflicting economy commands.",
             )
+
+        for role_tool, description in {
+            "war_goals": "Read private war episodes, goals, operations, escort assignments and messages. For initial, main must supply opponent, nonempty goals and a reason, including when already at war. For propose, supply the current version, replacement goals and a reason. The counterpart uses respond with proposal, version, agree and reason before either role finalizes. Main breaks disagreement with a reason. Priority 1 is highest. Use the current version and proposal IDs.",
+            "escort_assignment": "Main assigns a military unit to escort duty with an owned civilian, or releases it after unpairing. Main controls both units for the duration of the assignment.",
+            "military_operation": "Military stores the reasoning, goal opponents, progress assessment and reconsideration conditions for an operation. Notes do not establish factual outcomes.",
+            "role_message": "Send a durable private message to another internal role. A finished role is reopened. Messages to an inactive military role are retained for its next activation.",
+        }.items():
+            if role_tool == "war_goals" or purpose in {"gameplay", "economy", "military"}:
+                add(role_tool, description)
 
         for name, description in {
             "unit_details": (
@@ -520,7 +629,8 @@ class ProposalGateway:
                 "maintenance. oneTime lists completion grants separately. whileBuilding compares the immediate "
                 "change from current construction. Empire happiness and food effects assume completion now. "
                 "Conversion yields include their modifiers.\n"
-                "horizonTurns (1–100) compares building or buying against continuing current output. following "
+                "horizonTurns (1–100) requires a nonempty names list and compares building or buying against "
+                "continuing current output. following "
                 "compares converting now with building or buying and then selecting that conversion. endOfHorizon "
                 "shows completed assets or unfinished work. Read the named options and copy a command; add purchase "
                 "confirmation only after accepting the consequences."
@@ -580,7 +690,7 @@ class ProposalGateway:
         )
         add(
             "trade_decide",
-            "Accept or decline the exact trade or friendship proposal you inspected with trade_read; an author can withdraw it. Copy a returned response; your private intent is optional. Acceptance applies all agreed terms together if still legal. Only ENACTED with an outcome confirms execution. Changed, expired or unavailable terms require a new decision.",
+            'Accept or decline the exact trade or friendship proposal you inspected with trade_read; an author can withdraw it. Copy a returned response; your private intent is optional, for example {"proposalId":"trade1","decision":"withdraw","intent":{"reason":"Preserve funds"}}. Put the reason inside intent, not at the top level. Acceptance applies all agreed terms together if still legal. Only ENACTED with an outcome confirms execution. Changed, expired or unavailable terms require a new decision.',
         )
         add(
             "history_read",
@@ -663,7 +773,12 @@ class ProposalGateway:
         add(
             "memory_update",
             (
-                "Use create to leave private notes for your next turn. Existing notebook entries are read-only "
+                "Create one city_plan per owned city with its exact city handle. Read an existing plan and use "
+                "amend to change its content; do not create another plan for the same city. Keep inherited choices "
+                "and unknown reasons explicit within focus, growth, citizens, specialists, construction or purchases. "
+                "You may edit cities owned by economy; respect main's city overrides. "
+                if purpose == "economy"
+                else "Use create to leave private notes for your next turn. Existing notebook entries are read-only "
                 "during this exchange. "
                 if purpose != "gameplay"
                 else "Create, replace or retire at most one active strategy and one handoff. Read before replacing either; supply the "
@@ -738,7 +853,7 @@ class ProposalGateway:
         accepted call so the controller can deliver its result when it resumes.
         """
         self.check(job, ended_allowed=True)
-        if job.negotiation_pending.is_set():
+        if job.negotiation_pending.is_set() or job.role_wait_pending.is_set():
             return {"error": "GAMEPLAY_SUSPENDED", "applied": False}
         task = asyncio.create_task(self.call(job, name, arguments, call_id))
         job.pending_calls[task] = {"tool": name, "arguments": copy.deepcopy(arguments)}
@@ -759,6 +874,136 @@ class ProposalGateway:
         async with self.admit(review=job.review_inputs is not None):
             return await self._admitted_call(job, name, arguments, call_id, source=source)
 
+    @staticmethod
+    def reset_coordination(job: JobAccess) -> None:
+        job.coordination_scope = secrets.token_hex(12)
+        job.coordination_seen = None
+        job.coordination_sequence = 0
+        job.coordination_pending = None
+        job.detail_seen.clear()
+        job.detail_pending.clear()
+        job.memory_seen.clear()
+        job.memory_pending.clear()
+        job.memory_read_seen.clear()
+        job.memory_read_pending.clear()
+        job.payload_sequence = 0
+        job.compact_overviews = False
+
+    @staticmethod
+    def accept_payloads(job: JobAccess, name: str, arguments: JsonObject, result: JsonObject, *, replayed=False):
+        result = expand_response(result)
+        detail = result.get("detailUpdate")
+        if detail is not None and detail["scopeId"] == job.coordination_scope:
+            key = detail_scope(DetailQuery.model_validate(result["query"]))
+            cache = job.detail_pending if job.coordination_preparing else job.detail_seen
+            try:
+                cache[key] = apply_detail_response(cache, result)
+                job.payload_sequence = max(job.payload_sequence, detail["sequence"])
+            except ValueError:
+                cache.pop(key, None)
+        cache = job.memory_pending if job.coordination_preparing else job.memory_seen
+        read_cache = job.memory_read_pending if job.coordination_preparing else job.memory_read_seen
+        delivery = result.get("memoryDelivery")
+        if name in {"memory_read", "memory_search"} and delivery is not None:
+            if delivery["scopeId"] == job.coordination_scope:
+                try:
+                    _, updated = apply_memory_delivery(
+                        read_cache, result, scope=job.coordination_scope, minimum_versions=job.memory_versions
+                    )
+                except ValueError:
+                    for item in delivery.get("items", []):
+                        read_cache.pop(item["id"], None)
+                else:
+                    read_cache.clear()
+                    read_cache.update(updated)
+                    for item in delivery["items"]:
+                        key = item["id"]
+                        if key in updated:
+                            cache[key] = copy.deepcopy(updated[key]["value"])
+                            job.memory_versions[key] = max(job.memory_versions.get(key, 0), updated[key]["version"])
+                    job.payload_sequence = max(job.payload_sequence, delivery["sequence"])
+        elif name in {"memory_read", "memory_search"} and not arguments.get("history"):
+            for record in result.get("records", []):
+                if not record.get("historical") and (not replayed or record["id"] not in cache):
+                    cache[record["id"]] = copy.deepcopy(record)
+        if name == "memory_update" and result.get("recordScope") == job.coordination_scope:
+            for request, change in zip(arguments.get("changes", []), result.get("changes", []), strict=True):
+                if not change.get("accepted") or change.get("version", 0) <= job.memory_versions.get(change["id"], 0):
+                    continue
+                read_cache.pop(change["id"], None)
+                try:
+                    expanded = apply_memory_receipt([request], {"changes": [change]}, cache)["changes"][0]
+                except ValueError:
+                    cache.pop(change["id"], None)
+                    continue
+                if isinstance(expanded.get("record"), dict):
+                    cache[change["id"]] = expanded["record"]
+                    job.memory_versions[change["id"]] = change["version"]
+        for change in result.get("memoryUpdates", []):
+            record = change["record"]
+            if change["version"] > job.memory_versions.get(record["id"], 0):
+                read_cache.pop(record["id"], None)
+                cache[record["id"]] = copy.deepcopy(record)
+                job.memory_versions[record["id"]] = change["version"]
+
+    def coordination_delivery(self, job: JobAccess, *, full: bool = False) -> JsonObject:
+        if self.role_coordinator is None or job.coordination_preparing:
+            return {}
+        current = coordination_snapshot(
+            self.role_coordinator.context(), job.id, job.epoch, job.coordination_scope, job.coordination_sequence + 1
+        )
+        return coordination_response(job.coordination_seen, current, full=full)
+
+    @staticmethod
+    def accept_coordination(job: JobAccess, result: JsonObject) -> None:
+        delivery = result.get("economyCoordination", result.get("coordinationUpdate"))
+        if delivery is None or delivery.get("scopeId") != job.coordination_scope:
+            return
+        try:
+            current = apply_coordination_update(job.coordination_seen, result)
+        except ValueError:
+            job.coordination_seen = None
+            return  # A subsequent call sends a full snapshot; receipts remain replayable.
+        if current is not None:
+            job.coordination_seen = current
+            job.coordination_sequence = current["sequence"]
+            job.economy_seen = coordination_content(current)
+            if "warState" in current:
+                job.war_versions = goal_versions(current["warState"])
+
+    def commit_startup_coordination(self, job: JobAccess) -> None:
+        job.compact_overviews = True
+        if job.coordination_pending is not None:
+            self.accept_coordination(job, {"economyCoordination": job.coordination_pending})
+            job.coordination_pending = None
+        job.detail_seen.update(job.detail_pending)
+        job.detail_pending.clear()
+        job.memory_seen.update(job.memory_pending)
+        job.memory_pending.clear()
+        job.memory_read_seen.update(job.memory_read_pending)
+        job.memory_read_pending.clear()
+
+    def startup_memory_context(self, job: JobAccess) -> str:
+        """Seed exactly the full records in the eventual startup message."""
+        selected = {key: job.memory["records"][key] for key in job.memory["contextIds"]}
+        if not selected:
+            return self.memory.context(job.memory)
+        response = memory_response(
+            {"records": [public_record(key, record) for key, record in selected.items()]},
+            {key: record["version"] for key, record in selected.items()},
+            {},
+            job.coordination_scope,
+            job.payload_sequence + 1,
+            full=True,
+        )
+        _, pending = apply_memory_delivery({}, response, scope=job.coordination_scope)
+        job.memory_read_pending = pending
+        job.memory_pending = {key: copy.deepcopy(item["value"]) for key, item in pending.items()}
+        for key, item in pending.items():
+            job.memory_versions[key] = max(job.memory_versions.get(key, 0), item["version"])
+        job.payload_sequence = response["memoryDelivery"]["sequence"]
+        return self.memory.context(job.memory, response["memoryDelivery"])
+
     async def _admitted_call(
         self, job: JobAccess, name: str, arguments: JsonObject, call_id: str, *, source: str
     ) -> JsonObject:
@@ -771,6 +1016,7 @@ class ProposalGateway:
             else None
         )
         outcome, replayed = "incomplete", False
+        sizes = None
         ended = False
         try:
             result, replayed = await self._call_once(
@@ -796,13 +1042,14 @@ class ProposalGateway:
             ended = result.get("stateUpdate", {}).get("kind") == "turn_ended"
             if ended:
                 job.gameplay_fenced = True
+            visible = result if name == "native_advice" else public_result(result)
+            if source == "tool":
+                sizes = {**payload_characters(visible), "replayedResponses": int(replayed)}
             if name == "native_advice":
                 # Advice explicitly names its observation epoch/revision. These
                 # are evidence, not authority to bypass command validation.
                 return result
-            if self.role_coordinator is not None and job.purpose == "economy":
-                result = {**result, "economyCoordination": self.role_coordinator.context()}
-            return public_result(result)
+            return visible
         except asyncio.CancelledError:
             self.forget_observation(job)
             await self.sync_failure()
@@ -815,7 +1062,7 @@ class ProposalGateway:
             raise
         finally:
             if accounting and counted:
-                await self.io.call(accounting.end_call, counted, outcome, replayed)
+                await self.io.call(accounting.end_call, counted, outcome, replayed, sizes)
             if ended:
                 # The native receipt, tool response and accounting are durable.
                 # Fence further calls before notifying the lifecycle controller.
@@ -836,6 +1083,10 @@ class ProposalGateway:
         self.check(job, ended_allowed=True)
         if not isinstance(name, str) or not isinstance(arguments, dict):
             raise ValueError("INVALID_ARGUMENT")
+        if name == "inspect_bundle":
+            if job.review_inputs is None and job.purpose not in {"gameplay", "economy", "military"}:
+                return {"error": "TOOL_NOT_PERMITTED", "applied": False}, False
+            return await run_bundle(self, job, arguments, call_id)
         if job.review_inputs is not None:
             if job.review_evidence is None:
                 raise ValueError("REVIEW_EVIDENCE_REQUIRED")
@@ -843,18 +1094,33 @@ class ProposalGateway:
             if "error" in value:
                 return value, False
             return job.review_evidence.deliver(name, value, arguments), False
-        async with (
-            job.lock,
-            (
-                self.role_dispatch
-                if self.role_coordinator is not None
-                and name in {"player_command", "finish_role", "city_override", "economy_request", "memory_update"}
-                else nullcontext()
-            ),
-        ):
+        role_lock = (
+            self.role_dispatch
+            if self.role_coordinator is not None
+            and name
+            in {
+                "player_command",
+                "finish_role",
+                "economy_wait",
+                "city_override",
+                "economy_request",
+                "memory_update",
+                "movement_preview",
+                "mission_preview",
+                "player_inspect",
+            }
+            | ROLE_TOOLS
+            | DETAIL_MODELS.keys()
+            else nullcontext()
+        )
+        async with job.lock:
             self.check(job, ended_allowed=True)
             previous = await self.io.call(self.memory.call, job.id, call_id, name, arguments)
             if previous is not None:
+                self.accept_coordination(job, previous)
+                self.accept_payloads(job, name, arguments, previous, replayed=True)
+                if self.role_coordinator is not None and name == "economy_wait":
+                    self.role_coordinator.arm_economy_wait(job, previous, replayed=True)
                 return previous, True
             # The action receipt may be durable even if a barrier interrupted
             # saving the MCP response. Replay it without needing a new observation.
@@ -869,7 +1135,34 @@ class ProposalGateway:
             if receipt is not None:
                 result = copy.deepcopy(receipt)
             else:
-                result = await self._call(job, name, arguments, call_id, startup=startup, host_handoff=host_handoff)
+                finishing = name == "finish_role" or (
+                    name == "player_command" and arguments.get("kind") == "END_TURN" and not host_handoff
+                )
+                waited = self.role_coordinator is not None and finishing and await self.wait_for_gameplay(job)
+                if waited:
+                    self.forget_observation(job)
+                    result = self.reobserve_after_negotiation()
+                else:
+                    async with role_lock:
+                        refresh = {}
+                        result = await self._call(
+                            job, name, arguments, call_id, startup=startup, host_handoff=host_handoff
+                        )
+                        if job.role_refresh_required and result.get("error") == "OBSERVATION_REQUIRED":
+                            refresh = await self.refresh_role_observation(job, call_id)
+                            if refresh:
+                                if name in DETAIL_MODELS.keys() | {
+                                    "movement_preview",
+                                    "mission_preview",
+                                    "player_inspect",
+                                }:
+                                    result = await self._call(job, name, arguments, call_id, startup=startup)
+                                else:
+                                    result["recovery"] = {
+                                        "instruction": "Another role changed the position. Use the returned stateUpdate, "
+                                        "reconsider your choice, then submit a new call. No additional read is required."
+                                    }
+                        result = {**result, **refresh}
             result = await self.settle_gameplay(job, name, result)
             if self.native_advice_enabled:
                 if name == "native_advice":
@@ -878,15 +1171,58 @@ class ProposalGateway:
                     await self.io.call(
                         experiment_metrics.action_match, self.memory, job, call_id, arguments, result, advice_revision
                     )
-            result = await self.update_after_action(job, name, arguments, call_id, result)
-            if self.role_coordinator is not None and name == "player_command":
-                await self.role_coordinator.after_action(job, arguments, result)
-                for sibling in self.role_coordinator.jobs.values():
-                    if sibling is not job:
-                        self.forget_observation(sibling)
-            result = await self.io.call(self.memory.call, job.id, call_id, name, arguments, result)
-            assert result is not None
-            return result, receipt is not None
+            async with self.role_dispatch if self.role_coordinator is not None else nullcontext():
+                if (
+                    self.role_coordinator is not None
+                    and self.role_coordinator.economy_schedule is not None
+                    and job.purpose == "economy"
+                    and name == "player_command"
+                    and "error" not in result
+                ):
+                    from civ_agent.economy_roles import CITY_COMMANDS
+
+                    if arguments.get("kind") in CITY_COMMANDS and arguments.get("target"):
+                        self.role_coordinator.extend_economy_scope([arguments["target"]])
+                result = await self.update_after_action(job, name, arguments, call_id, result)
+                if self.role_coordinator is not None and self.changes_game(name, result) and "error" not in result:
+                    await self.role_coordinator.after_action(job, arguments, result)
+                    for sibling in self.role_coordinator.jobs.values():
+                        if sibling is not job:
+                            observed = sibling.observation is not None or sibling.role_refresh_required
+                            baseline = sibling.delivered_overview
+                            self.forget_observation(sibling)
+                            # Keep the delivered baseline for a small update;
+                            # observation=None still fences choices made from it.
+                            sibling.delivered_overview = baseline
+                            sibling.role_refresh_required = observed
+                if (
+                    self.role_coordinator is not None
+                    and job.purpose in {"gameplay", "economy", "military"}
+                    and name not in {"player_capabilities", "native_advice"}
+                ):
+                    # Native receipts/overviews already committed by deliver_turn
+                    # carry their own delivery. Other replies attach only changes.
+                    if "economyCoordination" not in result and "coordinationUpdate" not in result:
+                        result = {**result, **self.coordination_delivery(job)}
+                if name in DETAIL_MODELS and isinstance(result.get("data"), dict) and "query" in result:
+                    key = detail_scope(DetailQuery.model_validate(result["query"]))
+                    result = detail_response(
+                        job.detail_seen.get(key),
+                        result,
+                        job.coordination_scope,
+                        job.payload_sequence + 1,
+                        key,
+                        full=startup or full_delivery(arguments),
+                        baselines=job.detail_seen,
+                    )
+                result = compact_response(result, full=startup or full_delivery(arguments), share=job.compact_overviews)
+                result = await self.io.call(self.memory.call, job.id, call_id, name, arguments, result)
+                assert result is not None
+                self.accept_coordination(job, result)
+                self.accept_payloads(job, name, arguments, result)
+                if self.role_coordinator is not None and name == "economy_wait":
+                    self.role_coordinator.arm_economy_wait(job, result)
+                return result, receipt is not None
 
     @staticmethod
     def forget_observation(job: JobAccess) -> None:
@@ -896,6 +1232,29 @@ class ProposalGateway:
         job.detail_revision = None
         job.details_read.clear()
         job.trades.clear()
+        job.role_refresh_required = False
+
+    async def refresh_role_observation(self, job: JobAccess, call_id: str) -> JsonObject:
+        """Deliver a sibling's changes with the next read, without retrying a choice."""
+        value = await job.connection.tool("player_turn", {})
+        self.check(job)
+        if (
+            "error" in value
+            or value.get("phase") != "ACTIVE"
+            or value.get("epoch") != job.epoch
+            or value.get("turn") != job.memory.get("gameTurn")
+            or (value.get("negotiation") or {}).get("active")
+        ):
+            return {}
+        return await self.deliver_turn(job, value, "player_turn", {}, "role-refresh:" + call_id, {})
+
+    @staticmethod
+    def changes_game(name, result):
+        return not result.get("roleFinished") and (
+            name == "player_command"
+            or bool(result.get("nativeOutcome"))
+            or (name in {"trade_offer", "friendship_offer", "trade_decide"} and bool(result.get("trade")))
+        )
 
     async def deliver_turn(
         self,
@@ -905,6 +1264,8 @@ class ProposalGateway:
         arguments: JsonObject,
         call_id: str,
         receipt: JsonObject | None = None,
+        *,
+        force_full: bool = False,
     ) -> JsonObject:
         """Register only the reconstructed overview; detail contents stay opt-in."""
         self.check(job)
@@ -917,28 +1278,66 @@ class ProposalGateway:
         if "map" in value and "combatReports" in value:
             value = {"tacticalReview": tactical_review(value).model_dump(exclude_none=True), **value}
         compact = public_result(overview(value))
+        if job.overview_view == "economy":
+            compact = economy_overview(compact, job.social)
+        if job.city_scope is not None:
+            compact["cityScope"] = {
+                "included": list(job.city_scope),
+                "ownedCities": [{"handle": city["handle"], "name": city["name"]} for city in compact.get("cities", [])],
+            }
+            compact["cities"] = [city for city in compact.get("cities", []) if city["handle"] in job.city_scope]
         compact.pop("strategyReview", None)
         compact.pop("stateId", None)
+        compact_read = (
+            receipt is None
+            and job.compact_overviews
+            and not job.coordination_preparing
+            and not force_full
+            and not full_delivery(arguments)
+        )
+        delivery = self.coordination_delivery(job, full=receipt is None and not compact_read)
         invalidated = list(job.pending_invalidated)
         invalidated.extend(
             query for query in changed_details(previous, value, job.details_read) if query not in invalidated
         )
 
         def respond(records, changed):
+            presented = copy.deepcopy(compact)
+            if job.overview_view == "economy":
+                presented = economy_overview(presented, job.social)
+            elif isinstance(presented.get("decisionFeedback"), dict):
+                presented["decisionFeedback"] = compact_feedback(presented["decisionFeedback"])
             current = stamp(
-                {**compact, "strategyReview": strategy_review(records).model_dump()}, job.id, job.epoch, revision
+                {**presented, "strategyReview": strategy_review(records).model_dump()}, job.id, job.epoch, revision
             )
             result = (
                 {**current, **({"invalidatedDetails": [q.model_dump() for q in invalidated]} if invalidated else {})}
-                if receipt is None
-                else {**receipt, "stateUpdate": overview_update(baseline, current, invalidated)}
+                if receipt is None and not compact_read
+                else {
+                    **(receipt or {}),
+                    "stateUpdate": overview_update(
+                        baseline, current, invalidated, compact_nested=True, allow_unchanged=compact_read
+                    ),
+                }
             )
+            if compact_read:
+                complete = {
+                    **current,
+                    **({"invalidatedDetails": [q.model_dump() for q in invalidated]} if invalidated else {}),
+                }
+                if len(json.dumps(result, separators=(",", ":"))) >= len(json.dumps(complete, separators=(",", ":"))):
+                    result = complete
+            result.update(copy.deepcopy(delivery))
             if changed:
                 result["memoryUpdates"] = [
                     {"version": record["version"], "record": public_record(key, record)}
                     for key, record in sorted(changed.items())
                 ]
-            return result
+            return compact_response(
+                result,
+                full=full_delivery(arguments) or call_id.removeprefix("review:").startswith("startup:"),
+                share=job.compact_overviews,
+            )
 
         try:
             observed, result = await self.io.call(
@@ -959,10 +1358,26 @@ class ProposalGateway:
             raise
         job.memory["records"].update(observed)
         job.observation = value
+        job.role_refresh_required = False
+        if self.role_coordinator is not None and job.purpose == "economy":
+            self.role_coordinator.economy_observation = {
+                **value,
+                "cities": [
+                    city
+                    for city in value.get("cities", [])
+                    if job.city_scope is None or city["handle"] in job.city_scope
+                ],
+            }
+        self.accept_coordination(job, result)
+        expanded = expand_response(result)
         job.delivered_overview = (
-            {key: part for key, part in result.items() if key not in {"memoryUpdates", "invalidatedDetails"}}
-            if receipt is None
-            else apply_overview_update(baseline, result["stateUpdate"])
+            {
+                key: part
+                for key, part in expanded.items()
+                if key not in {"memoryUpdates", "invalidatedDetails", "economyCoordination", "coordinationUpdate"}
+            }
+            if "stateUpdate" not in expanded
+            else apply_overview_update(baseline, expanded["stateUpdate"])
         )
         job.details_read = [query for query in job.details_read if query not in invalidated]
         job.pending_invalidated.clear()
@@ -971,6 +1386,73 @@ class ProposalGateway:
                 job.trades.pop(query.arguments["proposalId"], None)
         job.detail_revision = revision
         return result
+
+    async def refresh_economy_request(self, job, arguments, call_id):
+        """Let a sender reconsider stale production requests before publishing them."""
+        from civ_agent.economy_schedule import request_city
+
+        coordinator = self.role_coordinator
+        if (
+            coordinator is None
+            or arguments.get("priority", "routine") != "urgent"
+            or coordinator.jobs.get(job.purpose) is not job
+            or job.purpose not in {"gameplay", "military"}
+            or coordinator.ready.get(job.purpose)
+        ):
+            return None
+        if any(
+            request["status"] == "pending"
+            and request.get("city") == arguments.get("city")
+            and request["text"] == arguments["text"]
+            and request.get("priority", "routine") == arguments.get("priority", "routine")
+            for request in coordinator.requests
+        ):
+            return None
+        value = await job.connection.tool("player_turn", {})
+        self.check(job)
+        if (
+            "error" in value
+            or value.get("phase") != "ACTIVE"
+            or value.get("epoch") != job.epoch
+            or value.get("turn") != job.memory.get("gameTurn")
+            or (value.get("negotiation") or {}).get("active")
+        ):
+            return self.reobserve_after_negotiation()
+        current = public_result(overview(value))
+        target = request_city(value, arguments.get("city"))
+
+        def queues(view):
+            return {
+                city["handle"]: city.get("constructionQueue", [])
+                for city in view.get("cities", [])
+                if target is None or city["handle"] == target
+            }
+
+        previous = job.delivered_overview or {}
+        seen = {r["id"]: r for r in (job.economy_seen or {}).get("requests", [])}
+        changed_dispositions = any(
+            request["status"] != "pending"
+            and request != seen.get(request["id"])
+            and (target is None or request.get("city") is None or request_city(value, request.get("city")) == target)
+            for request in coordinator.requests
+        )
+        if job.observation is not None and queues(previous) == queues(current) and not changed_dispositions:
+            return None
+        return await self.deliver_turn(
+            job,
+            value,
+            "economy_request",
+            arguments,
+            call_id,
+            {
+                "error": "ECONOMY_CONTEXT_CHANGED",
+                "applied": False,
+                "recoverable": True,
+                "recovery": {
+                    "instruction": "Economy changed since your last delivered view. Apply stateUpdate and read the current request dispositions in economyCoordination. Reconsider whether this request is still needed; submit a new call if it is. No additional read is required."
+                },
+            },
+        )
 
     async def update_after_action(
         self,
@@ -983,14 +1465,10 @@ class ProposalGateway:
         if "error" in result or result.get("roleFinished"):
             return result
         social_change = name in {"commitment_offer", "commitment_decide"}
-        changes_game = (
-            name == "player_command"
-            or bool(result.get("nativeOutcome"))
-            or (name in {"trade_offer", "friendship_offer", "trade_decide"} and bool(result.get("trade")))
-        )
+        changes_game = self.changes_game(name, result)
         if not changes_game and not social_change:
             return result
-        if job.purpose not in {"gameplay", "economy"}:
+        if job.purpose not in {"gameplay", "economy", "military"}:
             self.forget_observation(job)
             invalidated = [query.model_dump() for query in job.pending_invalidated]
             job.pending_invalidated.clear()
@@ -1012,10 +1490,6 @@ class ProposalGateway:
             self.check(job)
             return {**result, "stateUpdate": refresh_required()}
         except StateConflict as error:
-            if str(error) == "HOST_UNAVAILABLE":
-                self.forget_observation(job)
-                self.check(job)
-                return {**result, "stateUpdate": refresh_required()}
             return await self.failed_update(job, call_id, result, error)
         except (ValueError, KeyError, TypeError) as error:
             return await self.failed_update(job, call_id, result, error)
@@ -1057,6 +1531,10 @@ class ProposalGateway:
     async def failed_update(self, job, call_id, result, error):
         self.forget_observation(job)
         self.check(job)  # Paused/expired jobs must stop, retaining the raw receipt.
+        if isinstance(error, StateConflict) and str(error) == "HOST_UNAVAILABLE":
+            # Both the player overview and its communication context require
+            # host reads. A dropped read must preserve the confirmed action.
+            return {**result, "stateUpdate": refresh_required()}
         failed = await self.io.call(
             self.memory.fail_run,
             job.id,
@@ -1084,6 +1562,9 @@ class ProposalGateway:
         try:
             while True:
                 self.check(job)
+                if not self.consultation_hold.is_set():
+                    waited = True
+                    await self.consultation_hold.wait()
                 # The first read establishes whether old gameplay assumptions need refreshing.
                 state = await job.connection.tool(
                     "player_communication",
@@ -1111,7 +1592,7 @@ class ProposalGateway:
             job.wait_started = None
 
     async def settle_gameplay(self, job: JobAccess, name: str, result: JsonObject) -> JsonObject:
-        if job.purpose not in {"gameplay", "economy"}:
+        if job.purpose not in {"gameplay", "economy", "military"}:
             return result
         if name in {"trade_offer", "friendship_offer"} and "error" not in result and result.get("trade"):
             if result["trade"].get("mode") == "NATIVE_AI":
@@ -1239,10 +1720,13 @@ class ProposalGateway:
         if BOOKKEEPING & arguments.keys():
             raise ValueError("Supply gameplay choices only; the service manages request bookkeeping.")
         if name == "memory_update":
+            model = tool_model(name, job.purpose)
             try:
+                # Keep independent per-edit permission errors and their receipts.
+                # The advertised role schema describes the edits that can succeed.
                 arguments = MemoryUpdate.model_validate(arguments).model_dump(exclude_unset=True)
             except ValidationError as error:
-                return memory_argument_error(arguments, error)
+                return memory_argument_error(arguments, error, model)
         elif name in TOOL_MODELS:
             model = tool_model(name, job.purpose)
             try:
@@ -1255,24 +1739,38 @@ class ProposalGateway:
             except ValidationError as error:
                 return command_error(arguments, error)
         coordinator = self.role_coordinator
-        if coordinator is not None and job.purpose == "economy":
+        if name == "economy_wait":
+            if coordinator is None:
+                return {"error": "ACTIVE_ROLE_REQUIRED", "applied": False}
+            return await coordinator.economy_wait(job, arguments, call_id)
+        if coordinator is not None and job.purpose in {"economy", "military"}:
             from civ_agent.economy_roles import ECONOMY_TOOLS
 
-            if name not in ECONOMY_TOOLS:
+            allowed = (
+                ECONOMY_TOOLS | {"war_goals", "role_message"}
+                if job.purpose == "economy"
+                else ECONOMY_TOOLS | ROLE_TOOLS | {"economy_request"}
+            )
+            if name not in allowed:
                 return {"error": "ROLE_ACTION_NOT_PERMITTED", "applied": False}
-        finishing_role = name == "finish_role" or (
-            name == "player_command" and arguments.get("kind") == "END_TURN" and not host_handoff
-        )
-        if coordinator is not None and finishing_role:
-            if await self.wait_for_gameplay(job):
-                self.forget_observation(job)
-                return self.reobserve_after_negotiation()
+        if name in ROLE_TOOLS:
+            if name == "war_goals" and arguments.get("action", "read") == "read":
+                state = await self.io.call(self.wars.state)
+                job.war_versions = goal_versions(state)
+                return state
+            if coordinator is None:
+                return {"error": "ACTIVE_ROLE_REQUIRED", "applied": False}
+            return await coordinator.role_tool(job, name, arguments, call_id)
         if coordinator is not None and name in {"finish_role", "economy_request", "city_override"}:
+            if name == "economy_request":
+                refresh = await self.refresh_economy_request(job, arguments, call_id)
+                if refresh is not None:
+                    return refresh
             return await coordinator.tool(job, name, arguments)
         if (
             coordinator is not None
             and name == "player_command"
-            and job.purpose in {"gameplay", "economy"}
+            and job.purpose in {"gameplay", "economy", "military"}
             and not host_handoff
         ):
             if arguments["kind"] == "END_TURN":
@@ -1282,6 +1780,8 @@ class ProposalGateway:
                     "finish_role",
                     {k: arguments[k] for k in ("deferChoices", "deferReason", "initiativeDecisions") if k in arguments},
                 )
+            if job.observation is None:
+                return self.reobserve_after_negotiation("Read player_turn before acting for your assigned role.")
             problem = coordinator.command_problem(job, arguments)
             if problem:
                 return problem
@@ -1290,8 +1790,16 @@ class ProposalGateway:
             intent = validate(Intent, intent).model_dump()
         initiative_decisions = arguments.pop("initiativeDecisions", [])
         delivery = "auto"
+        selected = None
+        if name == "command_help":
+            catalogue = await self._tools(job)
+            command = next((tool for tool in catalogue if tool["name"] == "player_command"), None)
+            kinds = set(arguments["kinds"])
+            if command is None or not kinds <= set(command["inputSchema"]["properties"]["kind"]["enum"]):
+                return {"error": "COMMAND_NOT_PERMITTED", "applied": False}
+            return {"description": command["description"], "inputSchema": command_schema(kinds)}
         if name == "native_advice":
-            if not self.native_advice_enabled or job.purpose not in {"gameplay", "economy"}:
+            if not self.native_advice_enabled or job.purpose not in {"gameplay", "economy", "military"}:
                 raise StateConflict("NATIVE_ADVICE_DISABLED")
             if job.observation is None:
                 return self.reobserve_after_negotiation("Read player_turn before native_advice.")
@@ -1328,7 +1836,7 @@ class ProposalGateway:
         if name in DETAIL_MODELS:
             if job.observation is None:
                 return self.reobserve_after_negotiation("Read player_turn before requesting details.")
-            query = DetailQuery.model_validate({"tool": name, "arguments": arguments})
+            query = DetailQuery.model_validate({"tool": name, "arguments": content_arguments(arguments)})
             value = project_detail(job.observation, query)
             scope = detail_scope(query)
             version, delivered = await self.io.call(
@@ -1392,15 +1900,29 @@ class ProposalGateway:
                 raise StateConflict("TOOL_NOT_PERMITTED")
             if name in {"movement_preview", "mission_preview", "player_inspect"} and job.observation is None:
                 return self.reobserve_after_negotiation("Read player_turn before requesting this inspection.")
-            value = await job.connection.tool(name, arguments)
+            value = await job.connection.tool(name, {} if name == "player_turn" else arguments)
             while name == "player_turn" and job.purpose == "gameplay" and value.get("negotiation", {}).get("active"):
                 await self.wait_for_gameplay(job)
-                value = await job.connection.tool(name, arguments)
+                value = await job.connection.tool(name, {})
             self.check(job)
             if "error" not in value:
                 add_decision_commands(name, value, arguments)
             if name == "player_turn" and "error" not in value:
-                return await self.deliver_turn(job, value, name, arguments, call_id)
+                previous_scope = (job.overview_view, job.city_scope)
+                job.city_scope = arguments.get("cities")
+                selected_view = arguments.get("view", "current")
+                if selected_view != "current":
+                    job.overview_view = selected_view
+                if "delivery" in arguments:
+                    job.compact_overviews = True
+                return await self.deliver_turn(
+                    job,
+                    value,
+                    name,
+                    arguments,
+                    call_id,
+                    force_full=startup or previous_scope != (job.overview_view, job.city_scope),
+                )
             elif name in {"movement_preview", "mission_preview", "player_inspect"} and "error" not in value:
                 if value.get("revision") != job.detail_revision:
                     self.forget_observation(job)
@@ -1452,13 +1974,17 @@ class ProposalGateway:
                 startup=startup,
             )
             RecordStore.deliver(job.memory, chosen)
-            return public_result(
-                MemoryReadResult.model_validate(
-                    {"records": [public_record(key, record) for key, record in chosen.items()]}
-                ).model_dump(exclude_unset=True)
+            result = memory_response(
+                public_result({"records": [public_record(key, record) for key, record in chosen.items()]}),
+                {key: record["version"] for key, record in chosen.items()},
+                job.memory_read_pending if job.coordination_preparing else job.memory_read_seen,
+                job.coordination_scope,
+                job.payload_sequence + 1,
+                full=startup or full_delivery(arguments),
             )
+            return public_result(MemoryReadResult.model_validate(result).model_dump(exclude_unset=True))
         if name == "memory_search":
-            result = await self.io.call(self.memory.search_memory, job.id, arguments)
+            result = await self.io.call(self.memory.search_memory, job.id, content_arguments(arguments))
             if not arguments.get("history"):
                 chosen = await self.io.call(
                     self.memory.delivered_records,
@@ -1466,16 +1992,42 @@ class ProposalGateway:
                     [r["id"] for r in result["records"]],
                 )
                 job.memory["records"].update(chosen)
+                result = memory_response(
+                    public_result(result),
+                    {key: record["version"] for key, record in chosen.items()},
+                    job.memory_read_pending if job.coordination_preparing else job.memory_read_seen,
+                    job.coordination_scope,
+                    job.payload_sequence + 1,
+                    full=startup or full_delivery(arguments),
+                )
             return public_result(MemorySearchResult.model_validate(result).model_dump(exclude_unset=True))
         if name == "memory_update":
             owners = None
-            if self.role_coordinator is not None and job.purpose in {"gameplay", "economy"}:
+            if self.role_coordinator is not None and job.purpose in {"gameplay", "economy", "military"}:
+                edits_city_plan = job.purpose == "economy" or any(
+                    (change.get("content") or {}).get("type") == "city_plan"
+                    or job.memory["records"].get(change.get("id"), {}).get("category") == "city_plan"
+                    for change in arguments["changes"]
+                )
+                if edits_city_plan and job.observation is None:
+                    return self.reobserve_after_negotiation(
+                        "Read player_turn before editing city plans for your assigned role."
+                    )
                 owners = {
                     city["handle"]: self.role_coordinator.owner(city["handle"])
                     for city in (job.observation or {}).get("cities", [])
                 }
-            result = await self.io.call(self.memory.patch, job.id, arguments["changes"], call_id, owners)
-            for change in result["changes"]:
+
+            def respond(result):
+                return {
+                    **compact_memory_receipt(public_result(result), arguments["changes"], job.memory_seen),
+                    "recordScope": job.coordination_scope,
+                    **self.coordination_delivery(job),
+                }
+
+            result = await self.io.call(self.memory.patch, job.id, arguments["changes"], call_id, owners, respond)
+            expanded = apply_memory_receipt(arguments["changes"], result, job.memory_seen)
+            for change in expanded["changes"]:
                 if change["accepted"]:
                     record = change["record"]
                     job.memory["records"][change["id"]] = {
@@ -1485,7 +2037,7 @@ class ProposalGateway:
                     }
             return MemoryUpdateResult.model_validate(result).model_dump(exclude_unset=True)
         if name == "player_command":
-            if job.purpose not in {"gameplay", "economy"}:
+            if job.purpose not in {"gameplay", "economy", "military"}:
                 raise StateConflict("GAMEPLAY_NOT_PERMITTED")
             if job.observation is None:
                 return self.reobserve_after_negotiation(
@@ -1502,6 +2054,13 @@ class ProposalGateway:
                         "instruction": "Read this action's full offer and consequences, then make a fresh decision.",
                     },
                 }
+            if coordinator is not None and (
+                arguments["kind"] == "DECLARE_WAR"
+                or (arguments["kind"] == "CITY_STATE_ACTION" and arguments.get("selection") == "declareWar")
+            ):
+                state = await self.io.call(self.wars.state)
+                if arguments.get("target") not in state["drafts"]:
+                    return {"error": "INITIAL_WAR_GOALS_REQUIRED", "applied": False}
             payload = {**arguments, "epoch": job.epoch, "revision": job.observation["revision"]}
             if arguments.get("kind") == "END_TURN":
                 payload["reviewId"] = job.observation.get("turnReview", {}).get("id")
@@ -1616,6 +2175,19 @@ class ProposalGateway:
             transport = "player_communication"
         else:
             raise ValueError("TOOL_NOT_PERMITTED")
+        declaring = declaration_targets(self.memory.civilization, name, payload, selected, job.observation or {})
+        if declaring and self.role_coordinator is not None:
+            if job.purpose != "gameplay":
+                return {"error": "MAIN_PLAYER_DECISION_REQUIRED", "applied": False}
+            state = await self.io.call(self.wars.state)
+            if not declaring <= state["drafts"].keys():
+                return {"error": "INITIAL_WAR_GOALS_REQUIRED", "applied": False, "opponents": sorted(declaring)}
+        if self.peace_reviews is not None:
+            problem = await self.peace_reviews.authorize(
+                job, name, payload, selected if name in {"trade_offer", "trade_decide", "friendship_offer"} else None
+            )
+            if problem:
+                return problem
         if name == "chat_send" and not arguments.get("nativeAction") and self.routing is not None:
             return await self.routing.send(job, payload, call_id, immediate=delivery == "immediate")
         # State validation and persistence are short. Network execution is

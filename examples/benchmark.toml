@@ -9,10 +9,16 @@ difficulty = "Prince"
 speed = "Quick"
 
 [agents]
+decisions_enabled = true
 decisions_backend = "jev"
+decisions_effort_enabled = true
+decisions_effort_levels = ["low", "medium", "high", "xhigh", "max"]
+decisions_effort_min_probability = 0.50
+decisions_effort_min_margin = 0.15
 provider = "openai"
 model = "GPT-5.6-luna"
-reasoning_effort = "max"
+# Default/fallback effort. Adaptive selection currently applies to OpenAI Main/Economy jobs.
+reasoning_effort = "medium"
 review_interval = 10
 strategy_guide = true
 # civilization_guide = true # Optional advice for the assigned benchmark civilization.

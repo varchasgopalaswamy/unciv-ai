@@ -90,6 +90,7 @@ class StrategicAdvice(BoundaryModel):
 REVIEW_READ_TOOLS = frozenset(
     {
         "player_turn",
+        "inspect_bundle",
         "victory_progress",
         "research_details",
         "policy_details",
@@ -131,7 +132,8 @@ ADVISOR_INSTRUCTIONS = (
     "Consider changing or abandoning a plan when its expectations fail.\n\n"
     + INVESTMENT_GUIDANCE
     + " Use the available construction comparisons when build costs or timing matter.\n\n"
-    "Cite the source labels attached to observations supporting important assumptions. "
+    "Cite the outer source field of observation envelopes supporting important assumptions. "
+    "Copy those source labels exactly; inner data.evidence IDs and fact paths are not review source labels. "
     "Label your conclusions as inferences, and leave unsupported assumptions unknown. Population counts "
     "people, not cities; seeing some foreign cities does not establish how many exist.\n\n"
     + DIPLOMACY_GUIDANCE
@@ -257,15 +259,27 @@ def review_due(turn: int, interval: int = 5) -> bool:
 
 def frozen_read(inputs: JsonObject, name: str, arguments: JsonObject) -> JsonObject:
     """No host connection or notebook access exists along this path."""
+    from civ_agent.delivery_options import content_arguments
     from civ_agent.observations import DETAIL_MODELS, DetailQuery, project_detail
     from civ_agent.social_context import social_context
-    from civ_agent.tool_schemas import TOOL_MODELS
+    from civ_agent.tool_schemas import TOOL_MODELS, tool_model
     from civ_agent.victory_snapshot import victory_read
 
     if name not in REVIEW_READ_TOOLS or name == "player_details" and arguments.get("section") == "turn_history":
         return {"error": "REVIEW_READ_ONLY", "applied": False}
     if name in TOOL_MODELS:
-        arguments = TOOL_MODELS[name].model_validate(arguments).model_dump(exclude_unset=True)
+        arguments = tool_model(name, "review").model_validate(arguments).model_dump(exclude_unset=True)
+    arguments = content_arguments(arguments)
+    if name == "inspect_bundle":
+        results = []
+        for index, query in enumerate(arguments["queries"]):
+            if query["tool"] == "inspect_bundle":
+                return {"error": "REVIEW_READ_ONLY", "applied": False}
+            result = frozen_read(inputs, query["tool"], query.get("arguments", {}))
+            results.append({**query, "result": result})
+            if "error" in result:
+                return {"error": "INSPECTION_FAILED", "queryIndex": index, "results": results, "applied": False}
+        return {"results": results, "remaining": 0, "positionChanged": False}
     if name in DETAIL_MODELS:
         return project_detail(inputs["observation"], DetailQuery.model_validate({"tool": name, "arguments": arguments}))
     if name == "victory_progress":

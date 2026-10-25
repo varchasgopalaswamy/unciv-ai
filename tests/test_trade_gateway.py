@@ -201,7 +201,7 @@ class HoldingHost(Host):
                 return {"trade": copy.deepcopy(self.trade)}
             if args["op"] == "trade_offer":
                 self.writes.append(copy.deepcopy(args))
-                self.active = True
+                self.active = self.trade.get("mode") == "SHARED"
                 return {"trade": copy.deepcopy(self.trade)}
             if args["op"] == "trade_decide":
                 self.writes.append(copy.deepcopy(args))

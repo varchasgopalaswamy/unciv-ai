@@ -10,6 +10,7 @@ from pydantic import ValidationError
 from civ_agent.agent_history import HISTORY_METHODS
 from civ_agent.agent_settings import codex_thread_settings, valid_setting
 from civ_agent.civilization_state import job_id
+from civ_agent.effort_decisions import base_settings
 from civ_agent.model_status import PROGRESS_METHODS, TOOL_ITEMS
 from civ_agent.observations import overview
 from civ_agent.proposal_gateway import JobAccess, public_result
@@ -205,9 +206,7 @@ class ReviewRuntime:
                 self.store.prepare,
                 parent["activationId"] if parent else job_id(),
                 inputs,
-                parent.get("effectiveSettings", parent["settings"])
-                if parent
-                else service.chat.gameplay_settings or service.chat.settings,
+                base_settings(parent) if parent else service.chat.gameplay_settings or service.chat.settings,
                 service.chat.timeout,
             )
         except Exception as error:
@@ -255,6 +254,10 @@ class ReviewRuntime:
         reads["player_turn"]["recentProgress"] = await service.io.call(service.memory.progress_feedback, snapshot)
         catalogue = [tool for tool in tools if tool["name"] in REVIEW_READ_TOOLS]
         for tool in catalogue:
+            if tool["name"] == "player_details":
+                from civ_agent.tool_schemas import tool_model
+
+                tool["inputSchema"] = tool_model("player_details", "review").model_json_schema()
             if tool["name"] == "player_turn":
                 tool["description"] = "Read the frozen overview being reviewed."
             else:

@@ -8,6 +8,7 @@ dependencies = [
     "aiohttp>=3.12,<4",
     "cryptography>=50.0.1,<51",
     "httpx2>=2.12,<3",
+    "jsonpatch>=1.33,<2",
     "mcp>=2.2,<3",
     "pydantic>=2.13.5,<3",
     "rich>=14,<15",

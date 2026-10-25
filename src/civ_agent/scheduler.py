@@ -23,6 +23,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from civ_agent.agent_results import ResultError, validate_result
 from civ_agent.agent_settings import add_settings_arguments, valid_setting
+from civ_agent.decisions_policy import MAX_DECISIONS_TIMEOUT_SECONDS
 from civ_agent.match_recovery import TurnCoordinator
 from civ_agent.monitoring import MonitorStore, read_record
 from civ_agent.round_review import review_round
@@ -178,6 +179,11 @@ class JsonEndpoint:
                 and fields.get("stage") == "start"
                 else self.timeout
             )
+            if operation == "review_triage":
+                # Triage may reconcile an earlier broker receipt, then submit
+                # when it was never received. Each has its own Decisions bound.
+                # TurnCoordinator renews the host lease throughout this wait.
+                timeout = max(timeout, 2 * MAX_DECISIONS_TIMEOUT_SECONDS + 30)
             if _timeout is not None:
                 timeout = min(timeout, _timeout)
             with self.opener.open(request, timeout=timeout) as response:
@@ -633,6 +639,9 @@ class Scheduler:
         if flight.get("negotiationWait") != status.get("negotiationWait"):
             flight["negotiationWait"] = status.get("negotiationWait")
             changed = True
+        if flight.get("economyWait") != status.get("economyWait"):
+            flight["economyWait"] = status.get("economyWait")
+            changed = True
         if changed:
             self.save()
 
@@ -916,7 +925,7 @@ class Scheduler:
                 leaseId=self.lease,
                 maxInvocations=self.state["limits"]["maxInvocations"],
                 maxConcurrent=self.state["limits"].get("maxConcurrent", 4),
-                maxPerCivilization=self.state["limits"].get("maxPerCivilization", 3),
+                maxPerCivilization=self.state["limits"].get("maxPerCivilization", 4),
             )
             self.connect_services()
             if not self.reconcile(acquired["status"]):
@@ -1311,7 +1320,7 @@ def parser(*, add_help: bool = True) -> argparse.ArgumentParser:
     result.add_argument("--max-seconds", type=positive, help="Wall-time budget including pauses (default: 3600)")
     result.add_argument("--turn-timeout", type=positive, help="Timeout per activation (default: 180 seconds)")
     result.add_argument("--max-concurrent-jobs", type=positive, default=4, help="Match-wide model concurrency")
-    result.add_argument("--jobs-per-civilization", type=int, choices=(1, 2, 3), default=3)
+    result.add_argument("--jobs-per-civilization", type=int, choices=(1, 2, 3, 4), default=4)
     add_settings_arguments(
         result,
         model_help="Optional model override for all players; fixed for this run",

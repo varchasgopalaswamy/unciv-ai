@@ -163,8 +163,10 @@ delivered through normal explicit memory reads with their original dates,
 uncertainty and citations. Preservation candidates and separate version-pinned
 belief notices appear only at normal activations. The player decides what to
 read and save; explicit notebook edits keep their existing behavior. An early
-review requires meaningful recorded evidence, sufficient confidence, three rounds
-since any review, and ten since the last early review. Scheduled reviews due now
+review is checked only at fresh completed-round boundaries reached during play,
+starting after completed turn 10. Startup and resume do not issue new early-review
+classification requests. A check requires meaningful recorded evidence, sufficient
+confidence, three rounds since any review, and ten since the last early review. Scheduled reviews due now
 or next round suppress it. Early reviews use the existing shared barrier and
 reset each reviewed player's periodic anchor. Private player rationales are not sent to the reviewer.
 Recommendations with overlapping subject, treasury, target or destination are

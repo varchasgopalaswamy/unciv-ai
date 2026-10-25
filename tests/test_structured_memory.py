@@ -448,6 +448,29 @@ def test_historical_evidence_is_pinned_without_replacing_current_job_version(tmp
         assert snapshot["delivered"]["observation:border"] == 2
 
 
+@pytest.mark.parametrize("history", [False, True])
+def test_notebook_search_filters_internal_records_before_pagination(tmp_path, history):
+    from civ_agent.memory_store import RecordStore
+
+    memory = setup(tmp_path)
+    try:
+        key = create(memory, {"type": "note", "text": "Remember this useful fact"})
+        with memory.transaction() as db:
+            store = RecordStore(db)
+            for index in range(25):
+                for category in ("routing_input", "routing", "delivery", "notice"):
+                    store.write(f"{category}:{index}", category, {"internal": "Private operational state"})
+        page = memory.search_memory("game", {"state": "all", "history": history})
+        MemorySearchResult.model_validate(page)
+        assert key in {record["id"] for record in page["records"]}
+        assert {record["type"] for record in page["records"]} <= {"note", "observation"}
+        assert not page["hasMore"]
+        assert "Private operational state" not in json.dumps(page)
+        assert not memory.search_memory("game", {"id": "routing_input:0", "history": history})["records"]
+    finally:
+        memory.engine.dispose()
+
+
 def test_intent_is_recorded_and_retirement_does_not_gate_dispatch(tmp_path):
     async def run():
         memory = CivilizationState(tmp_path / "private", "Rome")

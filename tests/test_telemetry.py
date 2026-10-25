@@ -1,5 +1,9 @@
 import asyncio
 import json
+from pathlib import Path
+
+import pytest
+from jsonschema import Draft202012Validator
 
 from civ_agent.civilization_state import CivilizationState
 from civ_agent.proposal_gateway import ProposalGateway
@@ -21,6 +25,38 @@ def record(id="job", **changes):
     }
 
 
+@pytest.mark.parametrize("role_state", ["finished", "waiting_negotiation", "waiting_economy"])
+def test_suspended_role_reports_match_the_native_request_contract(tmp_path, role_state):
+    store = JobAccounting(tmp_path)
+    store.start("role-job", "epoch1", True)
+    store.sample(record("role-job", purpose="economy", roleState=role_state))
+    report = store.pending()[0]
+    schema = Path(__file__).resolve().parents[1] / "src/main/resources/uncivai/schemas/communication.json"
+    validator = Draft202012Validator(json.loads(schema.read_text()))
+    validator.validate(
+        {
+            "op": "job_report",
+            "epoch": "epoch1",
+            "job": report["job"],
+            "telemetry": report["telemetry"],
+            "usage": report["usage"],
+        }
+    )
+    assert report["telemetry"]["endedAtMs"] is None
+
+
+def test_role_wait_time_is_distinct_from_negotiation_and_monotonic(tmp_path):
+    store = JobAccounting(tmp_path)
+    store.start("role-job", "epoch1", True)
+    store.sample(record("role-job", roleState="waiting_economy", roleWaitSeconds=2))
+    report = store.pending()[0]["telemetry"]
+    assert report["phase"] == "WAITING_ROLE"
+    assert report["roleWaitMs"] == 2000 and report["negotiationWaitMs"] == 0
+    store.sample(record("role-job", roleWaitSeconds=1))
+    report = store.pending()[0]["telemetry"]
+    assert report["phase"] == "RUNNING" and report["roleWaitMs"] == 2000
+
+
 def test_reports_survive_lost_acknowledgement_and_do_not_drop_newer_counts(tmp_path):
     store = JobAccounting(tmp_path)
     store.start("job", "epoch1", True)
@@ -37,6 +73,24 @@ def test_reports_survive_lost_acknowledgement_and_do_not_drop_newer_counts(tmp_p
     assert final["usage"]["input_tokens"] + final["usage"]["output_tokens"] == 130
     assert final["telemetry"]["usageComplete"]
     assert final["telemetry"]["modelRequests"] == 2
+
+
+def test_payload_character_counts_survive_restart_without_becoming_provider_tokens(tmp_path):
+    from civ_agent.coordination_updates import payload_characters
+
+    store = JobAccounting(tmp_path)
+    store.start("job", "epoch1", True)
+    reply = {"economyCoordination": {"warState": {"messages": [{"id": "m1", "text": "Private history"}]}}}
+    for _ in range(2):
+        call = store.begin_call("job", "city_details", {})
+        store.end_call(call, "ok", False, payload_characters(reply))
+    store.sample(record(phase="COMPLETED", usageComplete=True))
+    report = JobAccounting(tmp_path).pending()[0]
+    assert report["payloadCharacters"]["responses"] == 2
+    assert report["payloadCharacters"]["characters"] == 2 * payload_characters(reply)["characters"]
+    assert "payloadCharacters" not in report["telemetry"]
+    assert report["usage"]["input_tokens"] == 100
+    assert "Private history" not in json.dumps(report)
 
 
 def test_cumulative_usage_counts_new_responses_but_not_duplicate_notifications():

@@ -231,9 +231,12 @@ class DecisionsBroker:
         except (ValueError, TypeError, KeyError, UnicodeError):
             raise web.HTTPBadRequest() from None
         metadata = request_metadata(body, evidence)
+        from civ_agent.decisions_tasks import acceptance_threshold
+
+        threshold = acceptance_threshold(evidence, settings)
         pending = {
             **metadata,
-            **failed_answers(body, settings.decisions_acceptance_probability, "completion_unknown"),
+            **failed_answers(body, threshold, "completion_unknown"),
             "replayEvidence": json.loads(body["input"]),
         }
         async with self.locks.setdefault(principal, asyncio.Lock()):
@@ -247,9 +250,9 @@ class DecisionsBroker:
                 body, timeout=settings.decisions_timeout_seconds
             )
             parsed = (
-                failed_answers(body, settings.decisions_acceptance_probability, raw["fallback"])
+                failed_answers(body, threshold, raw["fallback"])
                 if raw.get("fallback")
-                else parse_answers(body, raw, settings.decisions_acceptance_probability)
+                else parse_answers(body, raw, threshold)
             )
             result = {
                 **parsed,

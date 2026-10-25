@@ -56,7 +56,7 @@ internal class HostCli(private val launch: (CliOptions) -> Unit) : CliktCommand(
     private val agentPlayers by option("--agent-player", help = "Externally controlled civilization; repeat to replace the default Rome/Greece/France roster.").multiple()
     private val mapSize by option("--map-size", help = "New ordinary game map size (default: Small).").choice("Tiny", "Small", "Medium", "Large", "Huge")
     private val mapRadius by option("--map-radius", help = "Custom hexagonal map radius, instead of --map-size.").int().restrictTo(2, 500)
-    private val scenario by option("--scenario", help = "Create a prepared exercise or verify its identity on resume.").choice("trade-cycle", "war-paid", "war-joint", "agreement-lifecycle", "mixed-diplomacy")
+    private val scenario by option("--scenario", help = "Create a prepared exercise or verify its identity on resume.").choice("economy-manager", "military-manager", "trade-cycle", "war-paid", "war-joint", "agreement-lifecycle", "mixed-diplomacy")
     private val counteroffers by option("--trade-counteroffers", help = "Counteroffer limit per negotiation.").int().restrictTo(0, 100)
     private val timeout by option("--trade-timeout", help = "Negotiation deadline in seconds.").int().restrictTo(1, 86400)
     private val human by option("--human", help = "Open the local desktop for this human-controlled civilization.")
@@ -88,7 +88,7 @@ internal class HostCli(private val launch: (CliOptions) -> Unit) : CliktCommand(
         requireOption(human == null || (players != null && operator != null && scenario == null), "--human requires player/operator credentials and an ordinary game")
         val vanilla = VanillaOptions(mapType, difficulty, speed, startingEra, victories?.split(',')?.map(String::trim), startingPositionSeed)
         requireOption(vanilla == VanillaOptions() || ((newGame || validateSetup) && scenario == null), "Native setup options require a new ordinary game")
-        requireOption(!validateSetup || (players == null && human == null && scenario == null), "Setup validation cannot start services or a scenario")
+        requireOption(!validateSetup || (players == null && human == null && (scenario == null || scenario in ManagerScenarioSetup.variants)), "Setup validation cannot start services or this scenario")
         launch(CliOptions(save, data, players, port ?: 8765, checkpoint, resume, newGame, scenario, seed, operator, tls, counteroffers, timeout, cityStates, builtInAI, agentPlayers, mapSize, mapRadius, human, vanilla, validateSetup))
     }
 }

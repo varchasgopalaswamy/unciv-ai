@@ -39,6 +39,7 @@ class Configuration(BaseModel):
 
 
 class GameSetup(Configuration):
+    scenario: Literal["economy-manager", "military-manager"] | None = None
     master_seed: Seed | None = None
     map_seed: Seed | None = None
     starting_position_seed: Seed | None = None
@@ -78,6 +79,7 @@ class AgentDefaults(Configuration, DecisionsSettings):
     reasoning_effort: str = "medium"
     communication_reasoning_effort: str | None = None
     review_interval: Positive = 5
+    economy_interval: Positive = 5
     review_attempts: Positive = 3
     strategy_guide: bool = False
     civilization_guide: bool = False
@@ -116,6 +118,7 @@ class Player(Configuration):
     name: str
     controller: Literal["agent", "human", "built_in_ai"] = "agent"
     economy_model: EconomyModel | None = None
+    military_model: EconomyModel | None = None
     provider: Provider | None = None
     model: str | None = None
     reasoning_effort: str | None = None
@@ -130,6 +133,8 @@ class Player(Configuration):
 
     @model_validator(mode="after")
     def settings(self):
+        if self.military_model is not None and self.controller != "agent":
+            raise ValueError("Only agent players have military model settings")
         if self.economy_model is not None and self.controller != "agent":
             raise ValueError("Only agent players have economy model settings")
         if self.provider is not None and self.controller != "agent":
@@ -196,6 +201,16 @@ class GameConfig(Configuration):
 
     @model_validator(mode="after")
     def roster(self):
+        if self.game.scenario:
+            if (
+                self.game.randomize
+                or self.game.civilizations != ["Rome", "Greece", "France"]
+                or [p.controller for p in self.players] != ["agent", "agent", "built_in_ai"]
+                or self.game.city_states != 0
+            ):
+                raise ValueError(
+                    "Manager exercises require fixed Rome/Greece agents, native France, no city-states and randomize=false"
+                )
         names = [p.name for p in self.players]
         if len(names) != len(set(names)):
             raise ValueError("Player names must be distinct")
@@ -224,8 +239,18 @@ class GameConfig(Configuration):
             economy.update(player.economy_model.model_dump(exclude_none=True))
         if economy["provider"] == "openrouter" and "/" not in economy["model"]:
             raise ValueError("OpenRouter economy model requires an explicit model ID")
+        military = {
+            "provider": provider,
+            "model": player.model or self.agents.model,
+            "reasoning_effort": gameplay_effort,
+        }
+        if player.military_model is not None:
+            military.update(player.military_model.model_dump(exclude_none=True))
+        if military["provider"] == "openrouter" and "/" not in military["model"]:
+            raise ValueError("OpenRouter military model requires an explicit model ID")
         return {
             **self.agents.model_dump(),
+            "military_model": military,
             "economy_model": economy,
             "provider": provider,
             "model": player.model or self.agents.model,
@@ -314,6 +339,8 @@ class ResolvedGameConfig(GameConfig):
 
     def engine_arguments(self):
         game = self.game
+        if game.scenario:
+            return ["--scenario", game.scenario, "--seed", str(game.map_seed)]
         arguments = [
             "--seed",
             str(game.map_seed),

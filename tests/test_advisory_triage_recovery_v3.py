@@ -12,11 +12,18 @@ from civ_agent.protocol import JsonObject
 from tests.test_advisory_review_delivery import harness as harness
 
 
-def record_overview(harness, turn=4, *, revision="new-version", deficit=True):
+def record_overview(harness, turn=11, *, revision="new-version", deficit=True):
     body: JsonObject = {**copy.deepcopy(harness.native), "turn": turn, "revision": revision}
     body["economy"]["goldPerTurn"] = -3 if deficit else 3
     with harness.memory.transaction() as db:
         return RecordStore(db).write("observation:overview", "observation", body)
+
+
+@pytest.fixture(autouse=True)
+def mature_boundary(harness):
+    harness.native["turn"] = 11
+    harness.service.records["parent"]["gameTurn"] = 10
+    record_overview(harness, turn=10)
 
 
 def accepted(evidence, settings):
@@ -28,6 +35,19 @@ def accepted(evidence, settings):
     }
 
 
+@pytest.mark.parametrize("turn", [0, 3, 9])
+def test_early_triage_before_turn_ten_never_calls_broker(harness, turn):
+    async def run():
+        harness.client.lookup = AsyncMock(side_effect=AssertionError("No opening-turn receipt lookup"))
+        result = await harness.advisory.triage(turn, scheduled_soon=False, next_review_turn=20)
+        assert result == {"earlyReview": False, "reason": "opening_turns"}
+        harness.client.batch.assert_not_awaited()
+        harness.client.lookup.assert_not_awaited()
+        assert not (await harness.advisory.state()).get("attempts")
+
+    asyncio.run(run())
+
+
 async def lose_first_reply(harness):
     original = []
 
@@ -36,7 +56,7 @@ async def lose_first_reply(harness):
         raise TimeoutError()
 
     harness.client.batch = AsyncMock(side_effect=lost)
-    first = await harness.advisory.triage(3, scheduled_soon=False, next_review_turn=20)
+    first = await harness.advisory.triage(10, scheduled_soon=False, next_review_turn=20)
     assert not first["earlyReview"] and first["reason"] == "broker_unavailable"
     return original[0]
 
@@ -58,25 +78,25 @@ def test_receipt_after_routine_churn_schedules_current_turn_with_original_reques
             return accepted(original, harness.settings)
 
         harness.client.lookup = AsyncMock(side_effect=receipt)
-        result = await harness.advisory.triage(4, scheduled_soon=False, next_review_turn=20)
+        result = await harness.advisory.triage(11, scheduled_soon=False, next_review_turn=20)
         assert result["earlyReview"]
         state = await harness.advisory.state()
         assert state["reviewEvidence"] == original
         binding = state["reviewDeliveryEvidence"]
-        assert binding["earlyReview"]["completedTurn"] == 4
+        assert binding["earlyReview"]["completedTurn"] == 11
         assert binding["earlyReview"]["current"]["source"]["version"] == version
         assert request_id(binding) != identifier
-        assert state["earlyRequestTurn"] == 4 and state["reconciliations"][identifier] == 1
+        assert state["earlyRequestTurn"] == 11 and state["reconciliations"][identifier] == 1
         # The actual scheduler acknowledgment is for the later prepared task.
-        harness.service.records["parent"]["gameTurn"] = 4
-        harness.native["turn"] = 5
-        await harness.runtime.phase("g1", 5, "start", True, early_review=True)
+        harness.service.records["parent"]["gameTurn"] = 11
+        harness.native["turn"] = 12
+        await harness.runtime.phase("g1", 12, "start", True, early_review=True)
         deliveries = [row for row in harness.accounting.classifier_reports() if row["direction"] == "advisory_delivery"]
         assert len(deliveries) == 1 and deliveries[0]["requestId"] == identifier
         assert deliveries[0]["deliveryResults"][0]["exposure"] == "scheduler"
         state = await harness.advisory.state()
         assert state["reviewDelivery"][0]["source"]["version"] == version
-        assert state["reviewDeliveryTurn"] == 4
+        assert state["reviewDeliveryTurn"] == 11
         harness.client.batch.assert_awaited_once()
         harness.client.lookup.assert_awaited_once()
 
@@ -104,10 +124,10 @@ def test_receipt_cannot_schedule_after_semantic_context_changes_during_lookup(ha
             else:
                 with harness.memory.transaction() as db:
                     RecordStore(db).write(
-                        "event:4",
+                        "event:11",
                         "statement",
                         {
-                            "turn": 4,
+                            "turn": 11,
                             "kind": "message",
                             "body": {
                                 "author": "Greece",
@@ -118,12 +138,12 @@ def test_receipt_cannot_schedule_after_semantic_context_changes_during_lookup(ha
             return accepted(original, harness.settings)
 
         harness.client.lookup = AsyncMock(side_effect=receipt)
-        result = await harness.advisory.triage(4, scheduled_soon=False, next_review_turn=20)
+        result = await harness.advisory.triage(11, scheduled_soon=False, next_review_turn=20)
         assert result == {"earlyReview": False, "reason": "stale_evidence"}
         state = await harness.advisory.state()
         assert state["earlyRequestTurn"] is None and state["reviewDeliveryEvidence"] is None
         assert state["reviewEvidence"] == original
-        await harness.advisory.review_scheduled(4)
+        await harness.advisory.review_scheduled(11)
         assert not any(row["direction"] == "advisory_delivery" for row in harness.accounting.classifier_reports())
         harness.client.batch.assert_awaited_once()
         harness.client.lookup.assert_awaited_once()
@@ -136,8 +156,8 @@ def test_accepted_current_binding_cannot_be_acknowledged_for_a_different_turn(ha
         original = await lose_first_reply(harness)
         record_overview(harness)
         harness.client.lookup = AsyncMock(return_value=accepted(original, harness.settings))
-        assert (await harness.advisory.triage(4, scheduled_soon=False, next_review_turn=20))["earlyReview"]
-        await harness.advisory.review_scheduled(3)
+        assert (await harness.advisory.triage(11, scheduled_soon=False, next_review_turn=20))["earlyReview"]
+        await harness.advisory.review_scheduled(10)
         assert "reviewDelivery" not in await harness.advisory.state()
         assert not any(row["direction"] == "advisory_delivery" for row in harness.accounting.classifier_reports())
 

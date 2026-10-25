@@ -78,7 +78,7 @@ async def exercise_trade(civilization, communication, view, call):
         else:
             settled = await call("trade_read", {"proposalId": "d1"})
             assert settled["trade"]["status"] == "ENACTED"
-    await call("player_turn", {})
+    await call("player_turn", {"delivery": "full"})
     return await call("player_command", {"kind": "END_TURN"})
 
 
@@ -209,6 +209,29 @@ async def main():
             )
 
         async def play(params):
+            if params.get("outputSchema", {}).get("title") in {"TacticalOverview", "PeaceApproval"}:
+                schema = params["outputSchema"]
+                report = {
+                    name: True
+                    if field.get("type") == "boolean"
+                    else "Frozen tactical assessment and strategic approval."
+                    for name, field in schema["properties"].items()
+                }
+                await websocket.send_json(
+                    dict(
+                        method="item/completed",
+                        params=dict(
+                            threadId=current["thread"],
+                            turnId=current["turn"],
+                            item=dict(
+                                id="peace-review", type="agentMessage", phase="final_answer", text=json.dumps(report)
+                            ),
+                        ),
+                    )
+                )
+                await report_usage()
+                await complete("completed")
+                return
             if params.get("outputSchema", {}).get("title") == "StrategicAdvice":
                 report = {
                     "assessment": "Develop the starting position before choosing a victory path.",
@@ -337,9 +360,18 @@ async def main():
                 view = (
                     await call("chat_read", {"includeContext": True})
                     if communication
-                    else await call("player_turn", {})
+                    # This scripted client does not interpret startup overviews.
+                    # Request explicit recovery rather than pretending a delta
+                    # alone contains its scenario flags and complete position.
+                    else await call("player_turn", {"delivery": "full"})
                 )
                 scenario = view.get("scenario") or view.get("context", {}).get("scenario", {})
+                if scenario.get("testHangGameplay"):
+                    # Leave an unfinished role with a recorded native effect.
+                    # Finishing first races the controller's failing END_TURN
+                    # receipt against the operator pause and tests a different case.
+                    await call("player_command", {"kind": "DISMISS_NOTIFICATIONS", "targets": ["n1"]})
+                    await asyncio.Event().wait()
                 current["slowCompletion"] = scenario.get("testSlowCompletion", False)
                 if scenario.get("testModelRetry"):
                     # Match the real warning which isn't emitted as a protocol event

@@ -70,6 +70,7 @@ data class KnownCivilization(
     val agreements: List<TradeAgreement>,
     val bilateral: JsonObject,
     val native: NativeDiplomacyDetails? = null,
+    val defeated: Boolean = false,
 )
 
 @Serializable
@@ -160,6 +161,7 @@ internal fun observeDiplomacy(player: Civilization, active: Boolean, communicati
                     immutable(peace.activeAgreements(other).mapIndexed { index, trade -> TradeAgreement(terms(trade.ourOffers, other), terms(trade.theirOffers, other), runtime.communication.agreements.reference(player.civID, other.civID, index)) }),
                     bilateralStatus(player, other),
                     nativeDiplomacy(player, other, active),
+                    defeated = other.isDefeated(),
                 )
             },
         ),

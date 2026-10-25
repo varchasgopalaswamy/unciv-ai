@@ -162,10 +162,12 @@ def test_startup_and_command_deltas_include_new_settlers_and_clear_expired_sight
             assert current["units"][2]["protection"]["current"]["protection"] == "UNESCORTED"
             assert current["tacticalReview"]["recentBarbarianSightings"] == []
             assert len(current["tacticalReview"]["knownBarbarianCamps"]) == 1
-            assert [u["handle"] for u in result["stateUpdate"]["collections"]["units"]["upsert"]] == [
+            original_units = {unit["handle"]: unit for unit in initial["units"]}
+            assert [unit["handle"] for unit in current["units"] if unit != original_units.get(unit["handle"])] == [
                 "settler",
                 "new-settler",
             ]
+            assert '"handle": "warrior"' not in json.dumps(result["stateUpdate"])
         finally:
             await io.close()
 

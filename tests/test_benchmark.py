@@ -331,6 +331,40 @@ def batch_runtime(monkeypatch):
     return runtime
 
 
+@pytest.mark.parametrize("flag", [None, "--fast", "--no-fast"])
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_batch_start_priority_override_is_saved_and_previewed(tmp_path, batch_runtime, capsys, flag, dry_run):
+    inputs, root = tmp_path / "inputs", tmp_path / "run"
+    inputs.mkdir()
+    originals = {}
+    for index, fast in enumerate((True, False), 1):
+        path = inputs / f"g{index:04d}.toml"
+        path.write_text(f"[game]\nmaster_seed={index}\n[agents]\nfast={str(fast).lower()}\n")
+        originals[path] = path.read_bytes()
+    arguments = ["batch", "start", "--inputs", str(inputs), "--state-dir", str(root)]
+    if flag:
+        arguments.append(flag)
+    if dry_run:
+        arguments.append("--dry-run")
+    assert cli.main(arguments) == 0
+    output = capsys.readouterr().out
+    configs = (
+        [item["config"] for item in json.loads(output)["inputs"]]
+        if dry_run
+        else [json.loads(path.read_text()) for path in sorted(root.glob("games/*/resolved.json"))]
+    )
+    expected = [True, False] if flag is None else [flag == "--fast"] * 2
+    assert [config["agents"]["fast"] for config in configs] == expected
+    for config, fast in zip(configs, expected, strict=True):
+        resolved = ResolvedGameConfig.model_validate(config)
+        assert all(resolved.settings(player)["fast"] is fast for player in resolved.agent_players)
+    assert all(path.read_bytes() == original for path, original in originals.items())
+    if dry_run:
+        batch_runtime.background.assert_not_called()
+        batch_runtime.preflight.assert_not_called()
+        assert not root.exists()
+
+
 @pytest.mark.parametrize("stage", ["after_read", "during_validation"])
 @pytest.mark.parametrize("change", ["edit", "delete"])
 def test_start_resolves_and_saves_the_same_input_snapshot(tmp_path, monkeypatch, batch_runtime, stage, change):
@@ -547,4 +581,40 @@ def test_resume_existing_batch_preserves_game_state_and_pinned_images(saved_batc
     assert all(path.read_bytes() == content for path, content in original.items())
     batch_runtime.images.assert_not_called()
     batch_runtime.validation.assert_not_called()
+    batch_runtime.background.assert_called_once_with(root, "batch")
+
+
+@pytest.mark.parametrize("flag", [None, "--fast", "--no-fast"])
+@pytest.mark.parametrize("second_status", ["failed", "completed", "budget_exhausted"])
+@pytest.mark.parametrize("retry", [False, True])
+def test_batch_resume_priority_only_changes_selected_games(saved_batch, batch_runtime, flag, second_status, retry):
+    root = saved_batch
+    manifest_path = root / "batch.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["runs"][1]["status"] = second_status
+    manifest_path.write_text(json.dumps(manifest))
+    paths = [root / "games" / run["id"] / "resolved.json" for run in manifest["runs"]]
+    first = json.loads(paths[0].read_text())
+    first["agents"]["fast"] = True
+    paths[0].write_text(json.dumps(first))
+    checkpoints = {}
+    for path in paths:
+        checkpoint = path.parent / "exploration.json"
+        checkpoint.write_bytes(b"Preserved native checkpoint")
+        checkpoints[checkpoint] = checkpoint.read_bytes()
+    originals = {path: path.read_bytes() for path in root.glob("games/*/container.json")}
+    arguments = ["batch", "resume", "--state-dir", str(root)]
+    if flag:
+        arguments.append(flag)
+    if retry:
+        arguments.append("--retry-failed")
+    assert cli.main(arguments) == 0
+    expected = [True, False]
+    if flag:
+        expected[0] = flag == "--fast"
+        if retry and second_status == "failed":
+            expected[1] = flag == "--fast"
+    assert [json.loads(path.read_text())["agents"]["fast"] for path in paths] == expected
+    assert all(path.read_bytes() == original for path, original in {**originals, **checkpoints}.items())
+    batch_runtime.images.assert_not_called()
     batch_runtime.background.assert_called_once_with(root, "batch")

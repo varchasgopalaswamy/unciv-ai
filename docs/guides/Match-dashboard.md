@@ -40,8 +40,7 @@ does not change when you update the checkout or rebuild images.
 - Saved scheduler status, the current turn/player, stop reasons, and the age of the
   most recent records. A saved `running` status does not prove that a process is
   still alive; the record age helps identify a stalled or abandoned run.
-  The turn's wall timer includes pauses; the turn table separately reports native
-  gameplay and bookkeeping measurements.
+  The turn's wall timer includes pauses.
 - Player scores and controllers, including built-in AI and human players when the
   host records them. Agent rows distinguish gameplay from background bookkeeping.
   The player and strategy tables show each agent's reported model beside its
@@ -49,7 +48,7 @@ does not change when you update the checkout or rebuild images.
 - Recorded input, cached-input, output, and reasoning-token counts. Cached tokens
   are part of input; reasoning tokens are part of output. Accounting can remain
   partial while a turn or its bookkeeping is in progress.
-  Selecting a turn shows that turn's token breakdown above the activity feed.
+  Selecting a player shows that player's recorded totals above the activity feed.
 - Assistant messages, confirmed actions, errors, and lifecycle changes. Repeated
   startup context and detailed tool activity are hidden unless verbose mode is on.
 - Concise diplomatic messages, offers, counteroffers and outcomes in Activity,
@@ -108,12 +107,21 @@ does not change when you update the checkout or rebuild images.
   and time without progress. The current player's banner and row show waiting or
   retrying; new model output clears that warning and records recovery in Activity.
   Earlier warnings remain in the saved turn history.
-- A turn table with gameplay/bookkeeping time, calls, tokens, and accounting
-  completeness. Select an older turn to load its saved event history.
-- An API-call breakdown for the selected turn. The Game API total counts host
-  `tool:` calls once; `command:` rows are a breakdown of those calls. Model-request
-  counts come from cumulative app-server usage updates and are reconciled against
-  response IDs in the closed provider trace when that trace is available.
+- Economy and Military tabs showing each civilization's latest specialist job,
+  its separate model, reasoning effort, status, elapsed time and token usage.
+  Select a civilization to follow its assistant output, confirmed actions,
+  failures and connection notices. Verbose mode adds startup context, tools and
+  exposed reasoning summaries. A finished role waiting for its partners and a
+  role suspended for negotiation have distinct statuses. Economy can sleep between
+  event-driven reviews: its tab shows the next periodic review and the reasons
+  for waking, while retaining the last actual
+  job's usage and history. Military activates during
+  wars with other civilizations; its tab retains the latest recorded job between
+  activations. Jobs from discarded timelines are excluded.
+- Recorded Game API and model-request totals. The Game API total counts host
+  `tool:` calls once. Model-request counts come from cumulative app-server usage
+  updates and are reconciled against response IDs in the closed provider trace
+  when that trace is available.
 - The native winner and final player scores when the game finishes.
 
 ## Controls
@@ -121,32 +129,32 @@ does not change when you update the checkout or rebuild images.
 | Control | Effect |
 | --- | --- |
 | Tab / Shift-Tab | Move between controls. |
-| Click a tab | Switch between Activity, Diplomacy, Strategy, Turns, and API calls. |
-| Enter on a player | Filter activity, totals, strategy, and diplomacy involving that player. |
+| Click a tab | Switch between Activity, Diplomacy, Strategy, Economy, and Military. |
+| Enter on a player | Filter activity, totals, strategy, specialists, and diplomacy involving that player. |
 | `d` | Open Diplomacy and focus the conversation list. |
 | Enter on a conversation | Read its messages, proposals and outcomes. |
 | `s` | Open Strategy and focus the civilization list. |
+| `e` / `m` | Open Economy / Military and focus its civilization list. |
 | `[` / `]` | Switch to the previous or next game in a batch. |
 | Enter on a strategy row | Read that civilization's latest completed strategic report. |
-| Enter on a turn | Inspect that player's recorded activity for that turn. |
+| Enter on a specialist row | Read that civilization's latest activity for that role. |
 | `a` | Return to all players and recent activity. |
 | `l` | Return to recent activity for the selected player. |
-| `f` | Toggle following the end of the Activity and Diplomacy logs. Scrolling up also preserves your reading position. |
+| `f` | Toggle following the end of the activity, diplomacy, specialist and strategy trace logs. Scrolling up also preserves your reading position. |
 | Space | Freeze/unfreeze dashboard updates. The game continues. |
 | `v` | Toggle verbose context, tool details, and exposed reasoning summaries. |
 | `q` / Ctrl-C | Close the viewer. The game continues. |
 
 The activity view retains up to 600 recent entries from the latest two recorded
-turns per player, plus ongoing gameplay and bookkeeping attempts. Selecting a turn
-loads that turn's attempts. Long entries are bounded in the display; full records
-remain in `runner/monitoring.sqlite3` and can be exported on demand. Verbose mode can also be selected at launch:
+turns per player, plus ongoing gameplay and bookkeeping attempts. Long entries
+are bounded in the display; full records remain in `runner/monitoring.sqlite3`
+and can be exported on demand. Verbose mode can also be selected at launch:
 
 ```sh
 uv run civ-agent match watch --state-dir /path/to/match --verbose
 ```
 
-Diplomacy retains complete conversation history. A selected turn narrows the list
-to conversations with activity on that turn; their full history is still shown.
+Diplomacy retains complete conversation history.
 The metrics panel is hidden while reading Diplomacy to leave room for messages
 in small terminals. Saved communications have game-turn numbers, but no original
 wall-clock timestamps, so the display does not invent times for them.
@@ -154,10 +162,9 @@ Within a game turn, Activity positions them by database publication time so newl
 arrived communications appear at the live end of the feed.
 
 Strategy also hides the metrics panel and preserves the report's scroll position
-on refresh. It always shows the latest completed report on the current timeline;
-selecting an older activity turn does not select historical advice. The date on
-each report matters: a review may finish several turns after its position was
-captured. A blank `Preloaded turn` means it has not yet appeared in a gameplay
+on refresh. It always shows the latest completed report on the current timeline.
+The date on each report matters: a review may finish several turns after its
+position was captured. A blank `Preloaded turn` means it has not yet appeared in a gameplay
 activation, not that the agent rejected it.
 
 ## Data and validation
@@ -177,8 +184,19 @@ databases on another machine are unavailable to this local viewer until accessib
 at the match's normal local paths. Private notes and frozen review inputs are not
 loaded to display the reports.
 
+Specialist job identities and accounting come from the monitoring database.
+Their latest status and model settings also use the service's
+`agent-services/<civilization>/activations/<job-hash>.json` records. The viewer
+tails each selected role job's existing, credential-redacted
+`history/<job-hash>/events.jsonl` within that service directory. It opens these
+files read-only, ignores an incomplete final append until the next poll, and
+keeps each role's stream separate. Missing local histories are reported in the
+tab; remote job accounting remains visible. Each role retains up to 600 recent
+entries from its latest attempt. The metrics panel is hidden in these tabs to
+leave room for the activity log.
+
 The metrics area also shows accepted/rejected memory edits, batches containing
-rejections, and reason counts for the selected turn, player, or game. These are
+rejections, and reason counts for the selected player or game. These are
 separate from API errors: a successful `memory_update` request can contain failed
 edits. Older reports display unavailable or partial memory accounting rather than
 assuming there were no rejections. The ordinary console includes the same counts
@@ -228,6 +246,10 @@ pending reviews and retries, player/timeline isolation, read-only access, scroll
 preservation, freezing, keyboard selection and small terminals. Existing completed
 reports use the current plan-comparison schema directly; older report formats
 are unsupported. No file export is needed.
+
+`tests/test_specialist_watch.py` covers separate role models and histories,
+redaction, streaming refresh, partial appends, retries, timeline isolation,
+read-only access, player filtering, freezing, scroll following and small terminals.
 
 `tests/test_model_status.py` exercises waits, retries, tool execution, stale event
 filtering, and bounded log parsing without wall-clock delays. The scheduler/service

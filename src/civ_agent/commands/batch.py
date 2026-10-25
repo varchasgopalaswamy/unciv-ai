@@ -67,6 +67,13 @@ def parser(*, add_help=True, action="start"):
             result.add_argument("--retry-failed", action="store_true")
             result.add_argument("--image", help="Explicit runtime image upgrade for unfinished runs")
             result.add_argument("--desktop-image", help="Explicit desktop image upgrade for unfinished runs")
+    if action in {"start", "resume"}:
+        result.add_argument(
+            "--fast",
+            action=argparse.BooleanOptionalAction,
+            default=None,
+            help="Override OpenAI priority for launched games; otherwise retain each input or saved setting",
+        )
     return result
 
 
@@ -260,6 +267,9 @@ def _prepare_batch(
 def _start(args) -> int:
     parallel = _validate_parallel(args.parallel if args.parallel is not None else 1)
     resolved = _resolved_inputs(args.inputs)
+    if args.fast is not None:
+        for item in resolved:
+            item.config.agents.fast = args.fast
     _validate_batch_configs([item.config for item in resolved], parallel)
     if args.dry_run:
         print(json.dumps(_preview(resolved, parallel), indent=2))
@@ -291,7 +301,8 @@ def _resume(args) -> int:
     preflight()
     with locked(root / ".launch.lock"), locked(root / ".supervisor.lock"):
         manifest = _load_manifest(root)
-        _validate_batch_configs([_saved_config(root, run["id"]) for run in manifest["runs"]], parallel)
+        configs = {run["id"]: _saved_config(root, run["id"]) for run in manifest["runs"]}
+        _validate_batch_configs(list(configs.values()), parallel)
         manifest["parallel"] = parallel
         image = resolve_image(args.image) if args.image else None
         desktop_image = resolve_image(args.desktop_image) if args.desktop_image else None
@@ -303,6 +314,10 @@ def _resume(args) -> int:
             run["status"] = "pending"
             run.pop("error", None)
             game_root = root / "games" / run["id"]
+            if args.fast is not None:
+                config = configs[run["id"]]
+                config.agents.fast = args.fast
+                write_private_json(game_root / "resolved.json", config.model_dump())
             if image is not None or desktop_image is not None:
                 record = identity(game_root)
                 if image is not None:

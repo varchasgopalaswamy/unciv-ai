@@ -89,6 +89,7 @@ internal data class JobTelemetry(
     val memoryEdits: MemoryEditCounts? = null,
     val provider: String? = null,
     val modelRequests: Long = 0,
+    val roleWaitMs: Long = 0,
 )
 
 @Serializable
@@ -157,7 +158,7 @@ internal class Telemetry(private val runtime: GameExecutor) {
         }
     }
 
-    private fun belongsToTurn(job: CommunicationJob, turn: TurnMetrics): Boolean = job.purpose in setOf("gameplay", "economy", "review") && job.epoch == turn.epoch && job.civilization == turn.civilization &&
+    private fun belongsToTurn(job: CommunicationJob, turn: TurnMetrics): Boolean = job.purpose in setOf("gameplay", "economy", "military", "consultation", "review") && job.epoch == turn.epoch && job.civilization == turn.civilization &&
         (job.handoff == turn.handoff || (job.purpose == "review" && job.handoff == null && job.gameTurn == 0 && turn.gameTurn == 0))
 
     fun beginTurn(game: GameInfo, activationId: String) {

@@ -216,9 +216,13 @@ class NegotiationSuspensionTests(AgentServiceTestCase):
 
     async def test_command_blocked_by_incoming_negotiation_requires_a_new_decision(self):
         job = await self.start_game()
-        self.models.host.active = True
         gateway = self.service.gateway
-        pending = asyncio.create_task(gateway.invoke(job, "player_command", {"kind": "END_TURN"}, "old-end"))
+        # Accept the command before the monitor announces the negotiation.
+        # Calls submitted after suspension are rejected immediately instead.
+        async with gateway.role_dispatch:
+            self.models.host.active = True
+            pending = asyncio.create_task(gateway.invoke(job, "player_command", {"kind": "END_TURN"}, "old-end"))
+            await self.until(lambda: bool(job.pending_calls))
         await self.suspended()
         self.models.host.active = False
         self.models.host.settled.set()

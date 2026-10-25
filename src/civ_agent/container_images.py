@@ -8,7 +8,7 @@ import tempfile
 from pathlib import Path
 
 from civ_agent.checkout import repository_root
-from civ_agent.container_support import ContainerError, command, podman
+from civ_agent.container_support import ContainerError, command, host_environment, podman
 
 
 def source_revision(root):
@@ -77,6 +77,9 @@ def build_images(*, repo_dir=None, unciv_dir=None, codex="codex", tag="localhost
             subprocess.run(
                 [
                     "podman",
+                    # Build RUN steps need no systemd scope. Avoid sending
+                    # cgroup requests to a system bus from non-login sessions.
+                    "--cgroup-manager=cgroupfs",
                     "build",
                     "--target",
                     target,
@@ -87,6 +90,7 @@ def build_images(*, repo_dir=None, unciv_dir=None, codex="codex", tag="localhost
                     str(context),
                 ],
                 check=True,
+                env=host_environment(),
             )
     return {
         target: json.loads(podman("image", "inspect", f"{tag}:{target}").stdout)[0]["Id"]

@@ -11,6 +11,8 @@ from civ_agent.advisory_answers import parse_answers as parse_answers
 from civ_agent.decisions_backends import BACKENDS
 from civ_agent.decisions_ledger import canonical, fingerprint
 from civ_agent.diplomacy_decisions import MODEL
+from civ_agent.effort_decisions import MAX_FACT_CHARACTERS, EffortEvidence
+from civ_agent.effort_decisions import question as effort_question
 from civ_agent.protocol import JsonObject
 
 TASK_VERSION = "player-advisories-v4"
@@ -54,6 +56,7 @@ class Evidence(BaseModel):
     beliefs: Annotated[list[JsonObject], Field(max_length=6)] = Field(default_factory=list)
     newEvidence: Annotated[list[JsonObject], Field(max_length=16)] = Field(default_factory=list)
     earlyReview: JsonObject | None = None
+    effortSelection: EffortEvidence | None = None
     cities: Annotated[list[CityEvidence], Field(max_length=CITY_LIMIT)] = Field(default_factory=list)
     cityContext: JsonObject = Field(default_factory=dict)
 
@@ -79,6 +82,18 @@ def request_body(evidence, settings):
         if len(evidence[field]) > limit:
             raise ValueError("Decisions candidate limit exceeded")
     questions = []
+    effort = evidence.get("effortSelection")
+    if effort is not None:
+        if len(canonical(effort["facts"])) > MAX_FACT_CHARACTERS:
+            raise ValueError("Effort evidence exceeds classifier context limit")
+        if not settings.decisions_effort_enabled or not set(effort["levels"]) <= set(settings.decisions_effort_levels):
+            raise ValueError("Effort selection is not permitted by operator settings")
+        if any(
+            evidence.get(field)
+            for field in ("retrieval", "preservation", "beliefs", "newEvidence", "earlyReview", "cities")
+        ):
+            raise ValueError("Effort selection requires its own batch")
+        questions.append(effort_question(effort))
     for index, city in enumerate(evidence["cities"]):
         for field, prefix, instruction in (
             (
@@ -187,12 +202,22 @@ def request_body(evidence, settings):
         raise ValueError("Decisions question limit or empty batch")
     body = {
         "model": BACKENDS[settings.decisions_backend].model,
-        "input": canonical(dispatch_evidence(evidence)),
+        "input": canonical(
+            {**effort["facts"], "model": effort["model"]} if effort is not None else dispatch_evidence(evidence)
+        ),
         "questions": questions,
     }
     if len(canonical(body).encode("utf-8")) > settings.decisions_max_request_bytes:
         raise ValueError("Decisions request byte limit exceeded")
     return body
+
+
+def acceptance_threshold(evidence, settings):
+    return (
+        settings.decisions_effort_min_probability
+        if evidence.get("effortSelection") is not None
+        else settings.decisions_acceptance_probability
+    )
 
 
 def dispatch_evidence(evidence):

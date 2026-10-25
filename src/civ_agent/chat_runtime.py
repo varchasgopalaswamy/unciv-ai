@@ -10,6 +10,7 @@ import aiohttp
 from civ_agent.agent_history import HISTORY_METHODS
 from civ_agent.agent_settings import codex_thread_settings, communication_effort
 from civ_agent.civilization_state import StateConflict, job_id, receipt_is_uncertain
+from civ_agent.coordination_updates import context_compacted
 from civ_agent.host_connection import HostConnection
 from civ_agent.protocol import JsonObject
 from civ_agent.provider_usage import reconcile_provider_usage
@@ -252,8 +253,7 @@ class ChatRuntime:
                     continue
                 try:
                     if not self.held:
-                        async with asyncio.timeout(self.timeout):
-                            await self.compute(job)
+                        await self.compute_with_budget(job)
                     self.error = None
                 finally:
                     with contextlib.suppress(OSError, ValueError, TimeoutError, aiohttp.ClientError):
@@ -266,6 +266,25 @@ class ChatRuntime:
                 # The next new event or operator resume can trigger reconsideration.
             finally:
                 self.dispatching = False
+
+    async def compute_with_budget(self, id):
+        """Required internal consultations do not spend the caller's model-time budget."""
+        started = time.monotonic()
+        async with asyncio.timeout(self.timeout) as timeout:
+
+            async def extend_for_waits():
+                while True:
+                    await asyncio.sleep(0.1)
+                    pair = self.jobs.get(id)
+                    if pair:
+                        timeout.reschedule(started + self.timeout + pair[0].waiting_seconds())
+
+            watcher = asyncio.create_task(extend_for_waits())
+            try:
+                await self.compute(id)
+            finally:
+                watcher.cancel()
+                await asyncio.gather(watcher, return_exceptions=True)
 
     async def compute(self, id):
         from civ_agent.agent_service import ProcessDrainError
@@ -300,6 +319,13 @@ class ChatRuntime:
 
         async def notification(method, params):
             nonlocal final, completed
+            if (
+                record["threadId"]
+                and params.get("threadId") == record["threadId"]
+                and context_compacted(method, params)
+            ):
+                async with job.lock:
+                    service.gateway.reset_coordination(job)
             if method == "service/transportStatus":
                 service.diagnostics.emit("codex_transport", activationId=id, purpose="communication", **params)
                 return
@@ -405,6 +431,7 @@ class ChatRuntime:
                 raise ValueError("CODEX_SETTINGS_NOT_APPLIED")
             await service.io.call(service.history.lifecycle, record)
             await service.io.call(write_private_json, record_file, record)
+            service.gateway.commit_startup_coordination(job)
             turn = await process.request(
                 "turn/start",
                 {
@@ -428,9 +455,11 @@ class ChatRuntime:
             deadline = time.monotonic() + self.timeout
             while not done.is_set():
                 try:
-                    await asyncio.wait_for(done.wait(), min(10, max(0.01, deadline - time.monotonic())))
+                    await asyncio.wait_for(
+                        done.wait(), min(10, max(0.01, deadline + job.waiting_seconds() - time.monotonic()))
+                    )
                 except TimeoutError:
-                    if time.monotonic() >= deadline:
+                    if time.monotonic() >= deadline + job.waiting_seconds():
                         break
                     await service.io.call(service.accounting.sample, record, job.waiting_seconds())
                     await service.flush_telemetry()

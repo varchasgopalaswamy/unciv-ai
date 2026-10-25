@@ -4,6 +4,8 @@ from typing import Annotated, Literal
 
 from pydantic import Field, ValidationError, model_validator
 
+from civ_agent.delivery_options import DeliveryOptions
+from civ_agent.memory_delivery import MemoryDelivery
 from civ_agent.model_view import model_view
 from civ_agent.protocol import JsonObject
 from civ_agent.schemas import BoundaryModel, NonnegativeInt, argument_feedback, argument_shape
@@ -108,10 +110,21 @@ class Note(Content):
 
 class CityPlan(Content):
     type: Literal["city_plan"]
-    city: Source
+    city: Source = Field(
+        description="Exact owned city handle from player_turn.cities[].handle, for example city2. "
+        "Use the handle alone, without the city's display name."
+    )
     reasons: dict[Literal["focus", "growth", "citizens", "specialists", "construction", "purchases"], ShortThought]
     expectedBenefits: Thoughts = Field(default_factory=list)
     reconsiderWhen: Thoughts = Field(default_factory=list)
+    reviewTurn: NonnegativeInt | None = Field(
+        default=None,
+        description="Optional specific future decision deadline. The service acknowledges this date when the city is reviewed, without a plan edit. Use native construction/research/purchase events instead of dates for events already watched; omit routine next-turn reminders.",
+    )
+    purchaseTargets: Annotated[list[Source], Field(max_length=10)] = Field(
+        default_factory=list,
+        description="Exact construction names to watch for native purchase availability. No purchase is automatic.",
+    )
     sources: Sources = Field(default_factory=list)
 
 
@@ -139,7 +152,7 @@ class Amend(BoundaryModel):
         Field(
             min_length=1,
             max_length=12,
-            description="Only changed content fields of a belief or note you read. Strategy and handoff require replace. Omitted fields are retained. Lists replace the old list; they never append. Record type, IDs and dates cannot be changed.",
+            description="Only changed content fields of a belief, note or city_plan you read. Strategy and handoff require replace. Omitted fields are retained. Lists replace the old list; they never append. Record type, IDs and dates cannot be changed.",
         ),
     ]
 
@@ -153,6 +166,17 @@ class Replace(BoundaryModel):
 class MemoryUpdate(BoundaryModel):
     changes: Annotated[
         list[Annotated[Create | Retire | Amend | Replace, Field(discriminator="op")]], Field(max_length=20)
+    ]
+
+
+class CityPlanCreate(BoundaryModel):
+    op: Literal["create"]
+    content: CityPlan
+
+
+class EconomyMemoryUpdate(BoundaryModel):
+    changes: Annotated[
+        list[Annotated[CityPlanCreate | Retire | Amend, Field(discriminator="op")]], Field(max_length=20)
     ]
 
 
@@ -187,16 +211,20 @@ def amended_content(previous: JsonObject, fields: JsonObject) -> JsonObject:
         raise MemoryContentError(feedback) from None
 
 
-def memory_argument_error(arguments: JsonObject, error: ValidationError) -> JsonObject:
+def memory_argument_error(arguments: JsonObject, error: ValidationError, model=MemoryUpdate) -> JsonObject:
     shapes = {}
     changes = arguments.get("changes")
     for change in changes if isinstance(changes, list) else []:
         content = change.get("content") if isinstance(change, dict) else None
         kind = content.get("type") if isinstance(content, dict) else None
-        if isinstance(kind, str) and kind in CONTENT_MODELS:
+        if (
+            isinstance(kind, str)
+            and kind in CONTENT_MODELS
+            and (model is not EconomyMemoryUpdate or kind == "city_plan")
+        ):
             schema = CONTENT_MODELS[kind].model_json_schema()
             shapes[kind] = argument_shape(schema, schema.get("$defs", {}))
-    feedback = argument_feedback(error, MemoryUpdate.model_json_schema())
+    feedback = argument_feedback(error, model.model_json_schema())
     return {
         **feedback,
         "error": "INVALID_ARGUMENT",
@@ -210,12 +238,12 @@ def memory_argument_error(arguments: JsonObject, error: ValidationError) -> Json
     }
 
 
-class MemoryRead(BoundaryModel):
+class MemoryRead(DeliveryOptions):
     ids: Annotated[list[Source], Field(max_length=20)]
     includeRetired: bool = False
 
 
-class MemorySearch(BoundaryModel):
+class MemorySearch(DeliveryOptions):
     type: (
         Literal[
             "strategy", "handoff", "belief", "note", "city_plan", "contribution", "decision", "observation", "statement"
@@ -377,6 +405,7 @@ ReadRecord = Annotated[
 
 class MemoryReadResult(BoundaryModel):
     records: Annotated[list[ReadRecord], Field(max_length=20)]
+    memoryDelivery: MemoryDelivery | None = None
 
 
 class MemorySearchResult(MemoryReadResult):
@@ -397,6 +426,7 @@ class ChangeResult(BoundaryModel):
     contribution: bool = False
     version: int | None = None
     record: ReadRecord | None = None
+    recordUpdate: JsonObject | None = None
 
 
 class MemoryUpdateResult(BoundaryModel):
@@ -405,6 +435,9 @@ class MemoryUpdateResult(BoundaryModel):
     recoverable: bool | None = None
     diagnosticId: str | None = None
     instruction: str | None = None
+    recordScope: str | None = None
+    economyCoordination: JsonObject | None = None
+    coordinationUpdate: JsonObject | None = None
 
 
 class SummaryAction(BoundaryModel):

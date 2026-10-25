@@ -236,7 +236,7 @@ class OperatorControl internal constructor(
                     "job_limits" -> {
                         requireLease(request.leaseId)
                         val state = runtime.communicationState
-                        if (checkNotNull(request.maxInvocations) < state.invocations || checkNotNull(request.maxConcurrent) !in 1..64 || checkNotNull(request.maxPerCivilization) !in 1..3) throw OperatorFailure("INVALID_ARGUMENT")
+                        if (checkNotNull(request.maxInvocations) < state.invocations || checkNotNull(request.maxConcurrent) !in 1..64 || checkNotNull(request.maxPerCivilization) !in 1..4) throw OperatorFailure("INVALID_ARGUMENT")
                         state.maxInvocations = request.maxInvocations
                         state.maxConcurrent = request.maxConcurrent
                         state.maxPerCivilization = request.maxPerCivilization

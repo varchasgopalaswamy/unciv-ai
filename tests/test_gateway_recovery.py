@@ -199,13 +199,16 @@ def test_search_does_not_silently_deliver_notices_that_arrived_after_its_result(
             with patch.object(memory, "search_memory", side_effect=then_receive_news):
                 found = await gateway.call(job, "memory_search", {"type": "strategy"}, "search")
             assert not found["records"][0]["needsReview"]
+            changes = [replacement(memory, key, reasons=["Bring reinforcements"])]
             revised = await gateway.call(
                 job,
                 "memory_update",
-                {"changes": [replacement(memory, key, reasons=["Bring reinforcements"])]},
+                {"changes": changes},
                 "amend",
             )
-            assert revised["changes"][0]["record"]["needsReview"]
+            from civ_agent.payload_updates import apply_memory_receipt
+
+            assert apply_memory_receipt(changes, revised, {})["changes"][0]["record"]["needsReview"]
             assert current(memory, key)["needsReview"]
         finally:
             await io.close()

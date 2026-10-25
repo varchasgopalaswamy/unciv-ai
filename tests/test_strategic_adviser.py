@@ -486,8 +486,8 @@ class StrategicAdviserServiceTests(AgentServiceTestCase):
             "pendingReview"
         ] is None
         assert (
-            self.factory.native_reads == 2 and len(self.factory.instances) == 1
-        )  # Both role preloads; no review process.
+            self.factory.native_reads == 1 and len(self.factory.instances) == 1
+        )  # Main's rankings preload; economy can request rankings. No review process.
 
     async def test_review_includes_final_arrival_without_advancing_paused_inbox(self):
         await self.handoff()

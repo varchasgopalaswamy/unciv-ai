@@ -3,7 +3,7 @@
 from typing import Literal
 
 
-def tool_discovery_instructions(purpose: Literal["gameplay", "economy", "communication"]) -> str:
+def tool_discovery_instructions(purpose: Literal["gameplay", "economy", "military", "communication"]) -> str:
     names = (
         ("chat_read", "chat_send", "memory_search", "memory_update")
         if purpose == "communication"

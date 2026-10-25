@@ -152,6 +152,7 @@ def change_key(job, objectives):
                     },
                 }
                 for city in observation.get("cities", [])
+                if getattr(job, "city_scope", None) is None or city["handle"] in job.city_scope
             ],
             "economy": {
                 k: observation.get("economy", {}).get(k)
@@ -194,6 +195,7 @@ async def capture(gateway, job, objectives) -> tuple[list[JsonObject], JsonObjec
         c
         for c in observation.get("cities", [])
         if not c.get("puppet")
+        and (getattr(job, "city_scope", None) is None or c["handle"] in job.city_scope)
         and any(o.get("action", {}).get("available") for o in (c.get("management") or {}).get("focusOptions", []))
     ]
     candidates.sort(key=lambda c: (bool(c.get("constructionQueue")), c["handle"]))

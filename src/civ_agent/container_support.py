@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import re
+import stat
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -16,6 +17,7 @@ from civ_agent.tls import private_directory, write_private_json
 LABEL = "local.civ-agent.game"
 DEFAULT_AUTH = Path.home() / ".local/state/unciv-host/auth"
 IN_CONTAINER = os.environ.get("CIV_AGENT_CONTAINER") == "1"
+USER_RUNTIME_ROOT = Path("/run/user")
 
 
 class ContainerError(RuntimeError):
@@ -26,7 +28,29 @@ class LockBusy(ContainerError):
     pass
 
 
+def host_environment():
+    """Recover an existing user session when a non-login shell omits its address."""
+    environment = dict(os.environ)
+    if environment.get("CIV_AGENT_CONTAINER") == "1":
+        return environment
+    runtime = Path(environment.get("XDG_RUNTIME_DIR") or USER_RUNTIME_ROOT / str(os.getuid()))
+    try:
+        directory = runtime.stat()
+        if not stat.S_ISDIR(directory.st_mode) or directory.st_uid != os.getuid():
+            return environment
+        if not environment.get("XDG_RUNTIME_DIR"):
+            environment["XDG_RUNTIME_DIR"] = str(runtime)
+        bus = (runtime / "bus").stat()
+        if stat.S_ISSOCK(bus.st_mode) and bus.st_uid == os.getuid() and not environment.get("DBUS_SESSION_BUS_ADDRESS"):
+            environment["DBUS_SESSION_BUS_ADDRESS"] = "unix:path=" + str(runtime / "bus")
+    except OSError:
+        pass  # No existing session to recover; retain the native diagnostic.
+    return environment
+
+
 def command(arguments, *, check=True, timeout=60, **kwargs):
+    if "env" not in kwargs:
+        kwargs["env"] = host_environment()
     result = subprocess.run(arguments, text=True, capture_output=True, timeout=timeout, **kwargs)
     if check and result.returncode:
         raise ContainerError(f"{arguments[0]} failed: {(result.stderr or result.stdout).strip()[-3000:]}")
@@ -231,8 +255,11 @@ def stop_containers(names):
 def cleanup(game_id):
     result = podman("ps", "--all", "--filter", f"label={LABEL}={game_id}", "--format", "{{.Names}}")
     names = result.stdout.split()
-    stop_containers(names)
     if names:
+        # Normal shutdown has already stopped these. Avoid another stop process
+        # for every exited player, while still draining live orphaned services.
+        running = podman("ps", "--filter", f"label={LABEL}={game_id}", "--format", "{{.Names}}")
+        stop_containers(running.stdout.split())
         podman("rm", *names)
     result = podman("network", "ls", "--filter", f"label={LABEL}={game_id}", "--format", "{{.Name}}")
     for name in result.stdout.split():

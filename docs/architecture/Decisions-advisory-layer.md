@@ -9,6 +9,7 @@ prerequisites, conflicts and limitations. Separate city questions compare legal
 native menus against saved objectives; they do not filter or replace the native
 advisor's suggestions.
 Retired `diplomacy_routing_enabled` settings and CLI flags are rejected explicitly.
+Adaptive reasoning effort additionally requires `decisions_effort_enabled=true`.
 
 The service never adds gameplay restrictions. All advice can be rejected without
 an override. Native legality and player-visible information remain authoritative.
@@ -30,8 +31,9 @@ guarantees. Old confidence-named configuration controls are rejected.
 
 The trusted broker alone chooses the model, task instructions, question types,
 choices, policy versions, acceptance threshold, limits and prices. Clients send
-frozen memory/review/city evidence to `/batch`; unknown top-level controls and
-arbitrary gameplay tasks are rejected. Every request identifies its player, which
+frozen memory/review/city or typed effort-selection evidence to `/batch`;
+unknown top-level controls and arbitrary gameplay tasks are rejected.
+Every request identifies its player, which
 must match the authenticated principal. The task policy is
 `player-advisories-v4`, broker protocol 3; routing uses `diplomacy-routing-v4`.
 These are the only supported versions. Enabling Decisions selects the current
@@ -132,6 +134,54 @@ fits the context budget. Keep/defer city advice counts as exposed advice, never
 as an executed action. These records stay outside model-facing notices, carry no
 source prose or token usage, and do not add classifier calls or spending.
 Acceptance, exposure, model adoption and gameplay effects are separate outcomes.
+
+## Reasoning effort
+
+`decisions_effort_enabled` defaults to false and requires `decisions_enabled`.
+When enabled, each OpenAI Main or Economy activation may select its reasoning
+effort after ordinary startup preparation and before the model's first turn.
+Other roles and providers retain their configured settings. The existing
+`reasoning_effort`, including player and role overrides, remains the default;
+there is no separate Decisions default. Unresolved or model-specific defaults
+are preserved rather than replaced.
+
+`decisions_effort_levels` controls the alternatives. It defaults to
+`["low", "medium", "high", "xhigh", "max"]`, requires at least two distinct values
+and rejects `none`. The service intersects these values with the selected
+model's advertised `model/list` reasoning options. An unavailable catalogue,
+unknown model or fewer than two remaining alternatives retains the default.
+
+The fixed `reasoning-effort-v1` question uses a bounded brief of that role's
+prepared facts and exactly its delivered strategy, city plans and handoff.
+Current decisions, constraints, unit work, visible threats, settlement and
+pending coordination inform the choice. Whole optional plans can be omitted
+with coverage notices; prose is never clipped. If the remaining brief exceeds
+the classifier bound, the default is retained. The target model is evidence,
+not interpolated into question instructions. The gameplay prompt itself is
+unchanged.
+
+Effort selection has its own `/batch` request and uses the same trusted ledger,
+budget, metadata validation and lost-reply reconciliation as other advisories.
+The operator's effort probability threshold applies only to this task; it does
+not relax memory, city, review or routing thresholds. A complete probability
+vector is required. The controller takes its argmax only when both
+`decisions_effort_min_probability` (default 0.50) and
+`decisions_effort_min_margin` over the runner-up (default 0.15) are satisfied.
+These are conditional choice scores, not calibrated quality guarantees.
+Ambiguity, refusal, errors, exhausted budget or a changed startup position
+retain the role's configured effort.
+
+The activation records `effortSelection`, including default, candidate, selected
+effort, probabilities, margin, reason and request identity. Its decision is
+persisted before inference and reused on recovery. The selected value is applied
+to the actual Codex thread and turns. It cannot become the next activation's
+default or propagate into another role or strategic review. Effort control
+diagnostics do not appear in model-facing context.
+
+The benchmark templates enable this experiment with medium as their ordinary
+default. Runtime support and fallback behavior are tested; gameplay quality at
+reduced effort still requires paired evaluation. Earlier shadow studies used
+six choices, including `none`; the runtime's minimum is now `low`.
 
 ## City choices
 
@@ -256,6 +306,12 @@ Triage compares that baseline with current recorded facts, explicit deltas,
 committed baseline; missing, invalid or hash-only baselines cause no request.
 A regular completed review supplies the baseline. Incomplete comparisons remain
 explicit.
+
+Early-review classification starts after completed turn 10. The scheduler skips
+new triage requests on startup or resume and checks only fresh round boundaries
+reached during play. The service independently enforces the opening-turn gate
+before any broker request or receipt lookup. Already prepared reviews retain
+their recorded participants when resuming.
 
 The scheduler supplies authoritative `nextReviewTurn` in completed-round units.
 `sourceTurn`, `completedTurn` and `boundaryTurn` distinguish observation age from

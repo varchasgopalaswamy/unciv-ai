@@ -14,9 +14,11 @@ from civ_agent.commands import (
     history,
     host,
     inspect,
+    manager_test,
     runtime,
     trade,
     verify_agreement_scenario,
+    verify_manager_scenario,
     verify_trade_cycle,
     verify_war_scenario,
 )
@@ -32,11 +34,22 @@ def parser() -> argparse.ArgumentParser:
         command = games.add_parser(action, parents=[game.parser(add_help=False, action=action)])
         command.set_defaults(handler=game.run)
 
+    manager_tests = games.add_parser(
+        "test-managers",
+        parents=[manager_test.parser(add_help=False)],
+        help="Run controlled economy and military acceptance games",
+    )
+    manager_tests.set_defaults(handler=manager_test.run)
+
     batches = groups.add_parser("batch", help="Run isolated benchmark games from TOML").add_subparsers(required=True)
     for action in ("generate", "start", "resume", "stop", "status"):
         command = batches.add_parser(action, parents=[batch.parser(add_help=False, action=action)])
         command.set_defaults(handler=batch.run)
-    for group, actions in (("runtime", ("setup",)), ("image", ("build",)), ("auth", ("login", "status", "restart"))):
+    for group, actions in (
+        ("runtime", ("setup",)),
+        ("image", ("build",)),
+        ("auth", ("login", "status", "stop", "restart")),
+    ):
         commands = groups.add_parser(group).add_subparsers(required=True)
         for action in actions:
             command = commands.add_parser(action, parents=[runtime.parser(add_help=False, group=group, action=action)])
@@ -84,6 +97,13 @@ def parser() -> argparse.ArgumentParser:
     for action, description in descriptions.items():
         command = matches.add_parser(action, parents=[scheduler.parser(add_help=False)], help=description)
         command.set_defaults(handler=scheduler.run, action=action)
+    verify_managers = matches.add_parser(
+        "verify-manager-scenario",
+        parents=[verify_manager_scenario.parser(add_help=False)],
+        help="Audit controlled economy and military manager exercises",
+    )
+    verify_managers.set_defaults(handler=verify_manager_scenario.run)
+
     verify_trade = matches.add_parser(
         "verify-trade-cycle",
         parents=[verify_trade_cycle.parser(add_help=False)],

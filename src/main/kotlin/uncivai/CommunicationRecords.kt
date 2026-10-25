@@ -14,6 +14,7 @@ internal data class CommunicationRequest(
     val op: String,
     val epoch: String,
     val requestId: String? = null,
+    val expectedRevision: String? = null,
     val cursor: Int = 0,
     val limit: Int = 50,
     val waitSeconds: Int = 0,
@@ -77,6 +78,7 @@ internal data class CommunicationJob(
     val reportedUsage: ModelUsage? = null,
     val parentJob: String? = null,
     val computing: Boolean = true,
+    val militaryPartnerRequired: Boolean = false,
 )
 
 @Serializable

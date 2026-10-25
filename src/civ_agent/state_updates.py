@@ -5,9 +5,11 @@ import hashlib
 import json
 from typing import Literal
 
+import jsonpatch
 from pydantic import Field
 
 from civ_agent.observations import EXTERNAL_DETAIL_TOOLS, DetailQuery, project_detail
+from civ_agent.payload_updates import encoded, exact_patch
 from civ_agent.protocol import JsonObject
 from civ_agent.schemas import BoundaryModel
 
@@ -39,6 +41,7 @@ class OverviewDelta(BoundaryModel):
     removed: list[str] = Field(default_factory=list)
     collections: dict[str, CollectionUpdate] = Field(default_factory=dict)
     invalidatedDetails: list[DetailQuery] = Field(default_factory=list)
+    patch: list[JsonObject] = Field(default_factory=list, exclude_if=lambda value: not value)
 
 
 def stamp(overview: JsonObject, job: str, epoch: str, revision: str) -> JsonObject:
@@ -62,11 +65,29 @@ def indexed(rows, key):
     return result if len(result) == len(rows) else None
 
 
-def overview_update(previous: JsonObject | None, current: JsonObject, invalidated: list[DetailQuery]) -> JsonObject:
+def overview_update(
+    previous: JsonObject | None,
+    current: JsonObject,
+    invalidated: list[DetailQuery],
+    *,
+    collection_keys: dict[str, str] | None = None,
+    compact_nested: bool = False,
+    allow_unchanged: bool = False,
+) -> JsonObject:
     if previous is None:
         return {
             "kind": "full",
             "overview": copy.deepcopy(current),
+            "invalidatedDetails": [q.model_dump() for q in invalidated],
+        }
+    if allow_unchanged and same_json(
+        {k: v for k, v in previous.items() if k != "stateId"},
+        {k: v for k, v in current.items() if k != "stateId"},
+    ):
+        return {
+            "kind": "unchanged",
+            "baseStateId": previous["stateId"],
+            "stateId": current["stateId"],
             "invalidatedDetails": [q.model_dump() for q in invalidated],
         }
     update = OverviewDelta(baseStateId=previous["stateId"], stateId=current["stateId"], invalidatedDetails=invalidated)
@@ -74,7 +95,19 @@ def overview_update(previous: JsonObject | None, current: JsonObject, invalidate
     for field in sorted(current.keys() - {"stateId"}):
         if field in previous and same_json(current[field], previous[field]):
             continue
-        key = COLLECTION_KEYS.get(field)
+        if (
+            not compact_nested
+            and field in {"decisionFeedback", "recentProgress"}
+            and isinstance(previous.get(field), dict)
+            and isinstance(current[field], dict)
+        ):
+            patch = jsonpatch.make_patch({field: previous[field]}, {field: current[field]}).patch
+            if len(json.dumps(patch)) < len(json.dumps(current[field])) and same_json(
+                jsonpatch.apply_patch({field: previous[field]}, patch), {field: current[field]}
+            ):
+                update.patch.extend(patch)
+                continue
+        key = (COLLECTION_KEYS if collection_keys is None else collection_keys).get(field)
         before = indexed(previous.get(field), key) if key else None
         after = indexed(current[field], key) if key else None
         if key is None or before is None or after is None:
@@ -88,22 +121,57 @@ def overview_update(previous: JsonObject | None, current: JsonObject, invalidate
         if list(before) != list(after):
             patch.order = list(after)
         update.collections[field] = patch
-    return update.model_dump(exclude_none=True)
+    result = update.model_dump(exclude_none=True)
+    if compact_nested:
+        for field in sorted(set(result["set"]) | set(result["collections"])):
+            if field not in previous or not isinstance(previous[field], (dict, list)):
+                continue
+            if not isinstance(current[field], (dict, list)):
+                continue
+            patch = exact_patch({field: previous[field]}, {field: current[field]})
+            if patch is None:
+                continue
+            prefix = "/" + field.replace("~", "~0").replace("/", "~1")
+            if any(
+                not (operation[path] == prefix or operation[path].startswith(prefix + "/"))
+                for operation in patch
+                for path in ("path", "from")
+                if path in operation
+            ):
+                continue
+            candidate = copy.deepcopy(result)
+            candidate["set"].pop(field, None)
+            candidate["collections"].pop(field, None)
+            candidate.setdefault("patch", []).extend(patch)
+            if len(encoded(candidate)) < len(encoded(result)):
+                result = candidate
+    return result
 
 
 def apply_overview_update(previous: JsonObject | None, update: JsonObject) -> JsonObject:
     """Reference reducer for consumers/tests. A replay never reapplies an old delta."""
+    from civ_agent.response_compaction import expand_response
+
+    previous = expand_response(previous) if previous is not None else None
+    update = expand_response(update)
     if previous is not None:
-        previous = {key: value for key, value in previous.items() if key not in {"memoryUpdates", "invalidatedDetails"}}
+        previous = {
+            key: value
+            for key, value in previous.items()
+            if key not in {"memoryUpdates", "invalidatedDetails", "economyCoordination", "coordinationUpdate"}
+        }
     if update["kind"] == "full":
         return copy.deepcopy(update["overview"])
-    if update["kind"] != "delta" or previous is None:
+    if update["kind"] not in {"delta", "unchanged"} or previous is None:
         raise ValueError("FULL_OVERVIEW_REQUIRED")
     if previous.get("stateId") == update["stateId"]:
         return copy.deepcopy(previous)
     if previous.get("stateId") != update["baseStateId"]:
-        raise ValueError("BASE_STATE_MISMATCH: read player_turn for a full overview")
+        raise ValueError("BASE_STATE_MISMATCH: read player_turn(delivery=full)")
     current = copy.deepcopy(previous)
+    if update["kind"] == "unchanged":
+        current["stateId"] = update["stateId"]
+        return current
     for field in update.get("removed", []):
         current.pop(field, None)
     current.update(copy.deepcopy(update.get("set", {})))
@@ -113,8 +181,26 @@ def apply_overview_update(previous: JsonObject | None, update: JsonObject) -> Js
             rows.pop(id, None)
         rows.update({row[patch["key"]]: copy.deepcopy(row) for row in patch["upsert"]})
         current[field] = [rows[id] for id in patch.get("order", list(rows))]
+    if update.get("patch"):
+        current = jsonpatch.apply_patch(current, update["patch"])
     current["stateId"] = update["stateId"]
     return current
+
+
+def apply_player_turn(previous: JsonObject | None, result: JsonObject) -> JsonObject:
+    """Consume either a complete overview or a compact explicit refresh."""
+    from civ_agent.response_compaction import expand_response
+
+    result = expand_response(result)
+    if "stateUpdate" in result:
+        return apply_overview_update(previous, result["stateUpdate"])
+    if "stateId" not in result:
+        raise ValueError("FULL_OVERVIEW_REQUIRED")
+    return {
+        key: value
+        for key, value in result.items()
+        if key not in {"memoryUpdates", "invalidatedDetails", "economyCoordination", "coordinationUpdate"}
+    }
 
 
 def changed_details(previous: JsonObject | None, current: JsonObject, reads: list[DetailQuery]) -> list[DetailQuery]:

@@ -19,7 +19,7 @@ from civ_agent.model_status import status_text
 from civ_agent.strategy_view import progress_text, report_text, trace_text
 from civ_agent.terminal_output import player_style, visible_text
 from civ_agent.turn_display import api_calls, memory_edits_text, number, seconds
-from civ_agent.watch_state import WatchReader, WatchSnapshot, event_time
+from civ_agent.watch_state import SPECIALIST_ROLES, WatchReader, WatchSnapshot, event_time
 
 
 def count(value):
@@ -85,12 +85,12 @@ class MatchWatch(App):
     TabbedContent { height: 1fr; margin: 0 1; }
     TabPane { padding: 0; }
     RichLog { height: 1fr; padding: 0 1; }
-    #turns, #calls { height: 1fr; }
     #conversations { height: auto; max-height: 8; }
     #diplomacy-help { height: auto; padding: 0 1; color: $text-muted; }
     #strategies { height: auto; max-height: 7; }
     #strategy-status { height: auto; max-height: 7; padding: 0 1; }
-    #call-help { height: auto; padding: 0 1; color: $text-muted; }
+    .specialists { height: auto; max-height: 7; }
+    .specialist-status { height: auto; max-height: 7; padding: 0 1; }
     Footer { background: $panel; }
     """
     BINDINGS = [
@@ -98,11 +98,13 @@ class MatchWatch(App):
         Binding("ctrl+c", "quit", show=False, priority=True),
         Binding("space", "freeze", "Freeze view", priority=True),
         Binding("a", "all_players", "All players"),
-        Binding("l", "live", "Live turn"),
+        Binding("l", "live", "Live activity"),
         Binding("f", "follow", "Follow log"),
         Binding("v", "verbose", "Verbose"),
         Binding("d", "diplomacy", "Diplomacy"),
         Binding("s", "strategy", "Strategy"),
+        Binding("e", "economy", "Economy"),
+        Binding("m", "military", "Military"),
         Binding("left_square_bracket", "previous_game", "Previous game", priority=True),
         Binding("right_square_bracket", "next_game", "Next game", priority=True),
     ]
@@ -120,20 +122,20 @@ class MatchWatch(App):
         self.frozen = False
         self.follow_log = True
         self.civilization: str | None = None
-        self.selected: tuple[str, int] | None = None
         self.snapshot = WatchSnapshot({}, {}, (), (), (), None)
         self.table_values = {}
         self.last_activity = None
         self.read_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="match-watch")
         self.reading = False
         self.poll_pending = False
-        self.turn_rows: dict[str, tuple[str, int]] = {}
         self.conversation: str | None = None
         self.last_diplomacy = None
         self.strategy_civilization: str | None = None
         self.last_strategy_selection = None
         self.last_strategy = None
         self.last_strategy_trace = None
+        self.specialist_civilizations: dict[str, str | None] = dict.fromkeys(SPECIALIST_ROLES)
+        self.last_specialists = {}
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -160,26 +162,24 @@ class MatchWatch(App):
                         yield RichLog(id="strategy", wrap=True, min_width=1, markup=False)
                     with TabPane("Live trace", id="strategy-trace-tab"):
                         yield RichLog(id="strategy-trace", wrap=True, min_width=1, markup=False)
-            with TabPane("Turns · Enter to inspect", id="turns-tab"):
-                yield DataTable(id="turns", cursor_type="row", zebra_stripes=True)
-            with TabPane("API calls", id="calls-tab"):
-                yield Static(
-                    "Host calls for the selected turn. Game API totals count tool: rows; command: rows are a breakdown.",
-                    id="call-help",
-                    markup=False,
-                )
-                yield DataTable(id="calls", cursor_type="row", zebra_stripes=True)
+            for role in SPECIALIST_ROLES:
+                with TabPane(role.capitalize(), id=f"{role}-tab"):
+                    yield DataTable(id=f"{role}-agents", classes="specialists", cursor_type="row", zebra_stripes=True)
+                    yield Static(id=f"{role}-status", classes="specialist-status", markup=False)
+                    yield RichLog(id=f"{role}-activity", wrap=True, min_width=1, max_lines=6000, markup=False)
         yield Footer()
 
     async def on_mount(self):
         for identity, columns in {
             "players": ("Player", "Status", "Turn", "Score", "Input", "Cached", "Output", "Game API"),
-            "turns": ("Turn", "Player", "Status", "Gameplay", "Bookkeeping", "Game API", "Input", "Output", "Usage"),
-            "calls": ("API", "Calls", "Errors", "Replays", "Time"),
             "conversations": ("Participants", "Status", "Latest turn"),
             "strategies": ("Player", "Review status", "Report turn", "Preloaded turn", "Attempt time"),
         }.items():
             self.query_one(f"#{identity}", DataTable).add_columns(*columns)
+        for role in SPECIALIST_ROLES:
+            self.query_one(f"#{role}-agents", DataTable).add_columns(
+                "Player / model", "Status", "Input", "Output", "Time"
+            )
         self.query_one("#players", DataTable).border_title = "Players · Enter to filter"
         self.render_game_switcher()
         self.query_one("#activity", RichLog).focus()
@@ -193,10 +193,10 @@ class MatchWatch(App):
             self.poll_pending = True
             return
         self.reading = True
-        selection, reader = self.selected, self.reader
+        reader = self.reader
         try:
-            snapshot = await asyncio.get_running_loop().run_in_executor(self.read_executor, reader.read, selection)
-            if reader is self.reader and selection == self.selected and not self.frozen:
+            snapshot = await asyncio.get_running_loop().run_in_executor(self.read_executor, reader.read)
+            if reader is self.reader and not self.frozen:
                 self.snapshot = snapshot
                 self.render_records()
         except (OSError, ValueError, TypeError, KeyError) as error:
@@ -224,13 +224,14 @@ class MatchWatch(App):
             self.call_after_refresh(self.render_activity, follow_override=follow)
             self.call_after_refresh(self.render_diplomacy, force=True)
             self.call_after_refresh(self.render_strategy, force=True)
+            self.call_after_refresh(self.render_specialists, force=True)
 
     def on_tabbed_content_tab_activated(self, event: TabbedContent.TabActivated):
         if event.pane.id in {"strategy-report-tab", "strategy-trace-tab"}:
             self.call_after_refresh(self.render_strategy, force=True)
             return
         diplomatic = event.pane.id == "diplomacy-tab"
-        reading = diplomatic or event.pane.id == "strategy-tab"
+        reading = diplomatic or event.pane.id in {"strategy-tab", *(f"{role}-tab" for role in SPECIALIST_ROLES)}
         self.resize_player_table()
         self.query_one("#metrics", Static).display = not reading
         self.query_one("#scope", Static).display = not reading
@@ -240,9 +241,14 @@ class MatchWatch(App):
             self.call_after_refresh(self.render_activity)
         elif event.pane.id == "strategy-tab":
             self.call_after_refresh(self.render_strategy, force=True)
+        else:
+            self.call_after_refresh(self.render_specialists, force=True)
 
     def resize_player_table(self):
-        compact = self.size.height < 30 and self.query_one("#main-tabs", TabbedContent).active == "strategy-tab"
+        compact = self.size.height < 30 and self.query_one("#main-tabs", TabbedContent).active in {
+            "strategy-tab",
+            *(f"{role}-tab" for role in SPECIALIST_ROLES),
+        }
         self.query_one("#players", DataTable).styles.height = min(
             4 if compact else 10, max(4, len(self.snapshot.players) + 3)
         )
@@ -263,18 +269,6 @@ class MatchWatch(App):
         if rows:
             table.move_cursor(row=cursor, animate=False, scroll=False)
         table.scroll_to(x=offset.x, y=offset.y, animate=False)
-
-    def selected_record(self):
-        if self.selected:
-            return next(
-                (
-                    r
-                    for r in reversed(self.snapshot.turns)
-                    if (r["turn"]["civilization"], r["turn"]["gameTurn"]) == self.selected
-                ),
-                None,
-            )
-        return self.snapshot.latest_turn(self.civilization)
 
     def render_records(self):
         self.render_game_switcher()
@@ -382,6 +376,8 @@ class MatchWatch(App):
                         if flight["negotiationWait"]["state"] == "waiting"
                         else "Suspending for negotiation"
                     )
+                elif phase == "Running" and flight.get("economyWait"):
+                    phase = "Waiting for economy"
                 elif phase == "Running" and model_status.get("state") in {"waiting", "retrying"}:
                     phase = "Model " + model_status["state"]
                 if run.get("status") != "running":
@@ -414,11 +410,6 @@ class MatchWatch(App):
         usage = accounting.get("usage", {}) or (run.get("usage", {}) if self.civilization is None else {})
         complete = usage.get("complete") is True
         label = f"Recorded totals · {scope}"
-        if self.selected:
-            accounting = self.selected_record() or {}
-            usage = accounting.get("usage", {})
-            complete = accounting.get("accountingComplete") is True
-            label = f"Turn {self.selected[1]} · {scope}"
         metrics = f"{label}:  {usage_text(usage)}\n"
         metrics += (
             f"Game API {count(api_calls(accounting.get('hostCalls')))} · "
@@ -428,66 +419,122 @@ class MatchWatch(App):
         metrics += " · Cached and reasoning tokens are included in input and output."
         metrics += "\n" + memory_edits_text(accounting.get("memoryEdits"))
         self.query_one("#metrics", Static).update(Text(metrics))
-        inspection = f"Turn {self.selected[1]} · {scope}" if self.selected else f"Recent activity · {scope}"
+        inspection = f"Recent activity · {scope}"
         self.query_one("#scope", Static).update(
             Text(
                 f"{inspection}  |  {'Verbose' if self.verbose else 'Concise'}  |  Follow {'on' if self.follow_log else 'off'}  |  — = unavailable"
             )
         )
 
-        turn_rows = []
-        self.turn_rows = {}
-        for record in reversed(snapshot.turns):
-            turn = record["turn"]
-            if self.civilization and turn["civilization"] != self.civilization:
-                continue
-            key = str(turn["handoff"])
-            self.turn_rows[key] = (turn["civilization"], turn["gameTurn"])
-            turn_rows.append(
-                (
-                    key,
-                    (
-                        str(turn["gameTurn"]),
-                        player_text(turn["civilization"], self.no_color),
-                        str(turn.get("status", "—")),
-                        seconds(record.get("gameplayElapsedMs")),
-                        seconds(record.get("finalizationElapsedMs")),
-                        count(api_calls(record.get("hostCalls"))),
-                        count(record.get("usage", {}).get("input_tokens")),
-                        count(record.get("usage", {}).get("output_tokens")),
-                        "Complete" if record.get("accountingComplete") else "Partial",
-                    ),
-                )
-            )
-        self.update_table("turns", turn_rows)
-        selected = self.selected_record() or {}
-        calls = selected.get("hostCalls", {})
-        self.update_table(
-            "calls",
-            [
-                (
-                    name,
-                    (
-                        visible_text(name),
-                        count(value.get("calls")),
-                        count(value.get("errors")),
-                        count(value.get("replayed")),
-                        seconds(value.get("elapsedMs")),
-                    ),
-                )
-                for name, value in sorted(calls.items())
-                if isinstance(value, dict)
-            ],
-        )
-        turn = selected.get("turn", {})
-        self.query_one("#call-help", Static).update(
-            Text(
-                f"Turn {turn.get('gameTurn', '—')} · {visible_text(turn.get('civilization', '—'))}. Host tool: calls count toward Game API; command: rows are a breakdown."
-            )
-        )
         self.render_activity()
         self.render_diplomacy()
         self.render_strategy()
+        self.render_specialists()
+
+    def render_specialists(self, *, force=False):
+        for role in SPECIALIST_ROLES:
+            views = [
+                view
+                for view in self.snapshot.specialists
+                if view.role == role and (self.civilization is None or view.civilization == self.civilization)
+            ]
+            rows = []
+            for view in views:
+                job = view.job or {}
+                telemetry, usage = job.get("telemetry") or {}, job.get("usage") or {}
+                rows.append(
+                    (
+                        view.civilization,
+                        (
+                            player_text(view.civilization, self.no_color, model=telemetry.get("model")),
+                            view.status,
+                            count(usage.get("input_tokens")),
+                            count(usage.get("output_tokens")),
+                            seconds(telemetry.get("elapsedMs")),
+                        ),
+                    )
+                )
+            self.update_table(f"{role}-agents", rows)
+            self.query_one(f"#{role}-agents", DataTable).styles.height = min(
+                4 if self.size.height < 30 else 7, len(views) + 2
+            )
+            if not any(view.civilization == self.specialist_civilizations[role] for view in views):
+                self.specialist_civilizations[role] = views[0].civilization if views else None
+            view = next((view for view in views if view.civilization == self.specialist_civilizations[role]), None)
+            heading = Text()
+            if view:
+                heading.append_text(player_text(view.civilization, self.no_color))
+                heading.append(f" · {role.capitalize()} · {view.status}")
+                if view.schedule and view.schedule.get("reasons"):
+                    heading.append("\n" + visible_text("; ".join(view.schedule["reasons"])), style="dim")
+                job = view.job or {}
+                telemetry = job.get("telemetry") or {}
+                if telemetry.get("model"):
+                    heading.append(
+                        "\n"
+                        + visible_text(
+                            f"{telemetry.get('provider') or 'unknown provider'} / {telemetry['model']} · "
+                            f"{telemetry.get('reasoningEffort') or 'default'} reasoning"
+                        ),
+                        style="dim",
+                    )
+                if view.job:
+                    heading.append("\n" + usage_text(job.get("usage") or {}), style="dim")
+                    heading.append(
+                        " · Usage " + ("complete" if telemetry.get("usageComplete") else "partial"), style="dim"
+                    )
+                notice = job.get("modelStatus") or {}
+                if telemetry.get("phase") not in {
+                    "ROLE_FINISHED",
+                    "WAITING_NEGOTIATION",
+                    "WAITING_ROLE",
+                    "COMPLETED",
+                } and notice.get("state") in {"waiting", "retrying", "warning", "failed"}:
+                    heading.append("\n" + visible_text(status_text(notice)), style="yellow")
+                for error in (job.get("error"), view.error):
+                    if error:
+                        heading.append("\n" + visible_text(error), style="yellow")
+            else:
+                heading.append(f"No {role} agents for this selection.", style="dim")
+            status = self.query_one(f"#{role}-status", Static)
+            status.styles.max_height = 5 if self.size.height < 30 else 7
+            status.update(heading)
+            if self.query_one("#main-tabs", TabbedContent).active != f"{role}-tab":
+                continue
+            selection = (
+                self.snapshot.epoch,
+                view.civilization if view else None,
+                (view.job or {}).get("id") if view else None,
+            )
+            entries = tuple(entry for entry in view.activity if self.verbose or not entry.verbose) if view else ()
+            content = (selection, entries)
+            previous = self.last_specialists.get(role)
+            if content == previous and not force:
+                continue
+            self.last_specialists[role] = content
+            log = self.query_one(f"#{role}-activity", RichLog)
+            offset = log.scroll_y
+            changed = previous is None or previous[0] != selection
+            follow = self.follow_log and (changed or log.is_vertical_scroll_end)
+            text = Text()
+            for entry in entries:
+                text.append(
+                    f"{event_time(entry.time)} · T{entry.turn} · {visible_text(entry.label)}\n", style="bold cyan"
+                )
+                text.append(visible_text(entry.text) + "\n\n")
+            if not entries:
+                text.append(
+                    "Waiting for recorded specialist activity. Military activates during wars."
+                    if role == "military"
+                    else "Waiting for recorded economy activity.",
+                    style="dim",
+                )
+            log.clear()
+            log.write(text, scroll_end=False)
+            if follow:
+                self.call_after_refresh(log.scroll_end, animate=False)
+            else:
+                self.call_after_refresh(log.scroll_to, y=0 if changed else offset, animate=False)
 
     def render_strategy(self, *, force=False):
         views = [
@@ -601,7 +648,7 @@ class MatchWatch(App):
             self.call_after_refresh(log.scroll_to, y=0 if new_attempt else offset, animate=False)
 
     def render_diplomacy(self, *, force=False):
-        groups = conversations(self.snapshot.diplomacy, self.civilization, self.selected[1] if self.selected else None)
+        groups = conversations(self.snapshot.diplomacy, self.civilization)
         self.update_table(
             "conversations",
             [
@@ -625,8 +672,6 @@ class MatchWatch(App):
         help_text = "Select a conversation · shared statements and confirmed game outcomes · social promises are labeled separately."
         if not self.snapshot.diplomacy_available:
             help_text = "Diplomacy records unavailable. Restart the host with the current build to publish saved communications."
-        elif self.selected:
-            help_text = f"Conversations active on turn {self.selected[1]}; full conversation history shown."
         self.query_one("#diplomacy-help", Static).update(Text(help_text))
         if self.query_one("#main-tabs", TabbedContent).active != "diplomacy-tab":
             return
@@ -671,7 +716,6 @@ class MatchWatch(App):
             for e in self.snapshot.activity
             if (self.civilization is None or e.civilization == self.civilization or self.civilization in e.participants)
             and (self.verbose or not e.verbose)
-            and (self.selected is None or e.turn == self.selected[1])
         )
         if entries == self.last_activity and follow_override is None:
             return
@@ -697,7 +741,7 @@ class MatchWatch(App):
             )
             text.append(visible_text(entry.text) + "\n\n")
         if not entries:
-            text.append("Waiting for recorded activity. Select a player or a turn to inspect its history.", style="dim")
+            text.append("Waiting for recorded activity. Select a player to filter its history.", style="dim")
         log.clear()
         log.write(text, scroll_end=False)
         if follow:
@@ -706,6 +750,11 @@ class MatchWatch(App):
             self.call_after_refresh(log.scroll_to, y=offset, animate=False)
 
     async def on_data_table_row_selected(self, event: DataTable.RowSelected):
+        for role in SPECIALIST_ROLES:
+            if event.data_table.id == f"{role}-agents":
+                self.specialist_civilizations[role] = str(event.row_key.value)
+                self.render_specialists()
+                return
         if event.data_table.id == "strategies":
             self.strategy_civilization = str(event.row_key.value)
             self.render_strategy()
@@ -716,11 +765,6 @@ class MatchWatch(App):
             return
         if event.data_table.id == "players":
             self.civilization = str(event.row_key.value)
-            self.selected = None
-        elif event.data_table.id == "turns":
-            self.selected = self.turn_rows[str(event.row_key.value)]
-            self.civilization = self.selected[0]
-            self.query_one("#main-tabs", TabbedContent).active = "activity-tab"
         else:
             return
         self.last_activity = None
@@ -728,15 +772,17 @@ class MatchWatch(App):
         await self.poll_records()
 
     async def action_all_players(self):
-        self.civilization, self.selected, self.last_activity = None, None, None
+        self.civilization, self.last_activity = None, None
         self.render_records()
         await self.poll_records()
 
     async def action_live(self):
-        self.selected, self.last_activity = None, None
+        self.last_activity = None
         self.follow_log = True
         self.query_one("#activity", RichLog).scroll_end(animate=False)
         self.query_one("#strategy-trace", RichLog).scroll_end(animate=False)
+        for role in SPECIALIST_ROLES:
+            self.query_one(f"#{role}-activity", RichLog).scroll_end(animate=False)
         await self.poll_records()
 
     async def action_freeze(self):
@@ -750,6 +796,8 @@ class MatchWatch(App):
             self.query_one("#activity", RichLog).scroll_end(animate=False)
             self.query_one("#diplomacy", RichLog).scroll_end(animate=False)
             self.query_one("#strategy-trace", RichLog).scroll_end(animate=False)
+            for role in SPECIALIST_ROLES:
+                self.query_one(f"#{role}-activity", RichLog).scroll_end(animate=False)
         self.render_records()
 
     def action_verbose(self):
@@ -764,6 +812,14 @@ class MatchWatch(App):
     def action_strategy(self):
         self.query_one("#main-tabs", TabbedContent).active = "strategy-tab"
         self.query_one("#strategies", DataTable).focus()
+
+    def action_economy(self):
+        self.query_one("#main-tabs", TabbedContent).active = "economy-tab"
+        self.query_one("#economy-agents", DataTable).focus()
+
+    def action_military(self):
+        self.query_one("#main-tabs", TabbedContent).active = "military-tab"
+        self.query_one("#military-agents", DataTable).focus()
 
     def game_subtitle(self):
         prefix = f"[{self.game_index + 1}/{len(self.games)}] {self.game_id} · " if len(self.games) > 1 else ""
@@ -801,12 +857,13 @@ class MatchWatch(App):
         self.game_id, self.game_directory = self.games[self.game_index]
         self.reader = WatchReader(self.game_directory)
         self.sub_title = self.game_subtitle()
-        self.civilization = self.selected = self.conversation = self.strategy_civilization = None
+        self.civilization = self.conversation = self.strategy_civilization = None
         self.snapshot = WatchSnapshot({}, {}, (), (), (), None)
         self.table_values.clear()
-        self.turn_rows.clear()
         self.last_activity = self.last_diplomacy = self.last_strategy_selection = None
         self.last_strategy = self.last_strategy_trace = None
+        self.specialist_civilizations = dict.fromkeys(SPECIALIST_ROLES)
+        self.last_specialists.clear()
         self.frozen = False
         self.render_records()
         await self.poll_records()

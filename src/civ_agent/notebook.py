@@ -40,6 +40,16 @@ class Notebook:
         kind = (change.get("content") or {}).get("type") or (old or {}).get("category")
         if kind == "city_plan" and self.city_owners is not None:
             city = (change.get("content") or {}).get("city") or (old or {}).get("body", {}).get("city")
+            if city not in self.city_owners:
+                return {
+                    "id": key,
+                    "accepted": False,
+                    "reason": "OWNED_CITY_HANDLE_REQUIRED",
+                    "recoverable": True,
+                    "recovery": {"reads": [{"tool": "player_turn", "arguments": {}}]},
+                    "instruction": "Use the exact owned city handle from player_turn.cities[].handle, "
+                    "for example city2, without the city's display name. No memory edit was applied.",
+                }
             if self.city_owners.get(city) != self.purpose:
                 return {"id": key, "accepted": False, "reason": "CITY_OWNED_BY_OTHER_ROLE"}
         if self.purpose == "economy" and kind != "city_plan":
@@ -59,7 +69,9 @@ class Notebook:
                     "reason": "MEMORY_CONFLICT",
                     "recoverable": True,
                     "recovery": {
-                        "reads": [{"tool": "memory_read", "arguments": {"ids": [key], "includeRetired": True}}]
+                        "reads": [
+                            {"tool": "memory_read", "arguments": {"ids": [key], "includeRetired": True, "full": True}}
+                        ]
                     },
                     "instruction": "Read the current entry before editing it. The proposed edit was not applied.",
                 }

@@ -16,6 +16,15 @@ def options(root, *flags, action="start"):
     return game.parser(action=action).parse_args(["--state-dir", str(root), *flags])
 
 
+def test_economy_review_interval_defaults_and_cli_override(tmp_path):
+    assert GameConfig().agents.economy_interval == 5
+    config = game.resolve_options(options(tmp_path, "--economy-interval", "3"))
+    assert config.agents.economy_interval == 3
+    assert all(config.settings(player)["economy_interval"] == 3 for player in config.agent_players)
+    with pytest.raises(ValueError):
+        game.resolve_options(options(tmp_path, "--economy-interval", "0"))
+
+
 def test_toml_cli_precedence_and_human_seat(tmp_path):
     source = tmp_path / "input.toml"
     source.write_text("""

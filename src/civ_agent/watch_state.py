@@ -1,6 +1,7 @@
 """Read an operator's saved match records without contacting or changing the game."""
 
 import datetime as dt
+import hashlib
 import json
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -14,6 +15,8 @@ from civ_agent.protocol import JsonObject
 from civ_agent.runner_history import HistoryError, LiveOutput
 from civ_agent.strategy_view import StrategyReader, StrategyView
 from civ_agent.terminal_output import visible_text
+from civ_agent.tls import regular_file
+from civ_agent.turn_archive import civilization_directory_name
 
 MAX_EVENT_BATCH = 1000
 MAX_MESSAGE_CHARS = 16000
@@ -116,6 +119,189 @@ def activities(path: Path, source: JsonObject, lines: list[JsonObject]) -> tuple
     return tuple(output.entries[-MAX_ACTIVITY:])
 
 
+SPECIALIST_ROLES = ("economy", "military")
+
+
+@dataclass(frozen=True)
+class SpecialistView:
+    civilization: str
+    role: str
+    job: JsonObject | None = None
+    activity: tuple[Activity, ...] = ()
+    error: str | None = None
+    schedule: JsonObject | None = None
+
+    @property
+    def status(self):
+        if self.schedule:
+            phase = self.schedule.get("phase")
+            turn, due = self.schedule["gameTurn"], self.schedule.get("nextReviewTurn")
+            if phase == "sleeping":
+                return (
+                    f"Sleeping · review in {max(0, due - turn)} turns"
+                    if due is not None
+                    else "Sleeping · waiting for first city"
+                )
+            if phase == "finished" and (self.job or {}).get("gameTurn") == turn:
+                failed = ((self.job or {}).get("telemetry") or {}).get("phase") in {"FAILED", "INTERRUPTED"}
+                if not failed:
+                    return f"Finished T{turn} · next review T{due}"
+            if phase == "running" and (self.job or {}).get("gameTurn") != turn:
+                return f"Starting T{turn}"
+        if self.job is None:
+            return "No job yet" if self.role == "economy" else "Inactive · activates during wars"
+        phase = (self.job.get("telemetry") or {}).get("phase") or "Waiting for telemetry"
+        state = (self.job.get("modelStatus") or {}).get("state")
+        if phase in {"STARTING", "RUNNING"} and state in {"waiting", "retrying"}:
+            phase = "Model " + state
+        return f"{visible_text(phase).replace('_', ' ').capitalize()} T{self.job['gameTurn']}"
+
+
+class SpecialistReader:
+    """Tail existing, redacted service histories without constructing their writers."""
+
+    def __init__(self, root):
+        self.root = root
+        self.epoch = None
+        self.previous = {}
+        self.cache = {}
+
+    def read(self, civilizations, epoch, jobs):
+        if self.epoch != epoch:
+            self.epoch, self.previous, self.cache = epoch, {}, {}
+        result = []
+        used = set()
+        for civilization in civilizations:
+            for role in SPECIALIST_ROLES:
+                key = (civilization, role)
+                matching = [
+                    job
+                    for job in jobs
+                    if job.get("epoch") == epoch
+                    and job.get("civilization") == civilization
+                    and job.get("purpose") == role
+                ]
+                job = max(matching, key=lambda j: (j["gameTurn"], j["claimedAtMs"]), default=None)
+                view = SpecialistView(civilization, role, job)
+                if job is not None:
+                    used.add(job["id"])
+                    try:
+                        view = self.player(view)
+                        self.previous[key] = view
+                    except (OSError, ValueError, TypeError, KeyError, HistoryError) as error:
+                        previous = self.previous.get(key)
+                        if previous and previous.job and previous.job["id"] == job["id"]:
+                            view = previous
+                        view = replace(view, error=f"Cannot read {role} activity ({type(error).__name__}); retrying.")
+                if role == "economy":
+                    path = (
+                        self.root / "agent-services" / civilization_directory_name(civilization) / "economy-status.json"
+                    )
+                    try:
+                        if path.is_file():
+                            regular_file(path, private=True)
+                            schedule = json.loads(path.read_text())
+                            if (
+                                not isinstance(schedule, dict)
+                                or schedule.get("phase") not in {"sleeping", "running", "finished"}
+                                or (
+                                    schedule.get("nextReviewTurn") is not None
+                                    and type(schedule["nextReviewTurn"]) is not int
+                                )
+                                or not isinstance(schedule.get("reasons", []), list)
+                                or any(not isinstance(reason, str) for reason in schedule.get("reasons", []))
+                            ):
+                                raise ValueError("Invalid economy schedule")
+                            latest = max(
+                                (
+                                    j["gameTurn"]
+                                    for j in jobs
+                                    if j.get("epoch") == epoch and j.get("civilization") == civilization
+                                ),
+                                default=-1,
+                            )
+                            if (
+                                schedule.get("epoch") == epoch
+                                and type(schedule.get("gameTurn")) is int
+                                and schedule["gameTurn"] >= latest
+                            ):
+                                view = replace(view, schedule=schedule)
+                    except (OSError, ValueError, TypeError, KeyError):
+                        view = replace(view, error="Cannot read economy schedule; retrying.")
+                result.append(view)
+        self.cache = {key: value for key, value in self.cache.items() if key in used}
+        return tuple(result)
+
+    def player(self, view):
+        assert view.job is not None
+        job = dict(view.job)
+        base = self.root / "agent-services" / civilization_directory_name(view.civilization)
+        digest = hashlib.sha256(job["id"].encode()).hexdigest()
+        record_path = base / "activations" / (digest + ".json")
+        if record_path.is_file():
+            regular_file(record_path, private=True)
+            record = json.loads(record_path.read_text())
+            if any(
+                record.get(field) != value
+                for field, value in (
+                    ("epoch", self.epoch),
+                    ("civilization", view.civilization),
+                    ("purpose", view.role),
+                    ("activationId", job["id"]),
+                )
+            ):
+                raise ValueError("Specialist records belong to another job, player or timeline")
+            telemetry = dict(job.get("telemetry") or {})
+            telemetry.update(record.get("effectiveSettings", record.get("settings", {})))
+            phase = record["phase"]
+            if phase not in {"COMPLETED", "FAILED", "INTERRUPTED"}:
+                phase = {
+                    "finished": "ROLE_FINISHED",
+                    "waiting_negotiation": "WAITING_NEGOTIATION",
+                    "waiting_economy": "WAITING_ROLE",
+                }.get(record.get("roleState"), phase)
+            if telemetry.get("phase") not in {"COMPLETED", "FAILED", "INTERRUPTED"}:
+                telemetry["phase"] = phase
+            if record.get("usageComplete"):
+                telemetry["usageComplete"] = True
+            usage = dict(job.get("usage") or {})
+            for key, value in record.get("usage", {}).items():
+                usage[key] = max(usage.get(key, 0), value)
+            job.update(telemetry=telemetry, usage=usage)
+            job["modelStatus"] = record.get("modelStatus")
+            job["error"] = record.get("error")
+        view = replace(view, job=job)
+        path = base / "history" / digest / "events.jsonl"
+        if not path.is_file():
+            raise FileNotFoundError("Local specialist history is unavailable")
+        regular_file(path, private=True)
+        stat = path.stat()
+        identity = (stat.st_dev, stat.st_ino)
+        cached = self.cache.get(job["id"])
+        if cached is None or cached[0] != identity or stat.st_size < cached[1]:
+            output = ActivityOutput(job["id"], view.civilization, job["gameTurn"])
+            cached = (identity, 0, 0, output, LiveOutput(view.civilization, verbose=True, renderer=output))
+        self.cache[job["id"]] = cached
+        _, offset, cursor, output, decoder = cached
+        with path.open("rb") as stream:
+            stream.seek(offset)
+            for _ in range(MAX_EVENT_BATCH):
+                line = stream.readline(64 * 1024 + 1)
+                if len(line) > 64 * 1024 and not line.endswith(b"\n"):
+                    raise HistoryError("Specialist history event exceeds the size limit")
+                if not line or not line.endswith(b"\n"):
+                    break  # Retry an append in progress on the next poll.
+                event = json.loads(line)
+                if not isinstance(event, dict) or not isinstance(event.get("data"), dict):
+                    raise ValueError("Invalid specialist history event")
+                if event.get("sequence") != cursor:
+                    raise HistoryError("Specialist history sequence has a gap")
+                consume_activity(output, decoder, event)
+                offset, cursor = stream.tell(), cursor + 1
+                self.cache[job["id"]] = (identity, offset, cursor, output, decoder)
+        return replace(view, activity=tuple(output.entries))
+
+
 @dataclass(frozen=True)
 class WatchSnapshot:
     run: JsonObject
@@ -128,6 +314,7 @@ class WatchSnapshot:
     negotiation: JsonObject | None = None
     diplomacy_available: bool = False
     strategies: tuple[StrategyView, ...] = ()
+    specialists: tuple[SpecialistView, ...] = ()
 
     @property
     def epoch(self):
@@ -169,8 +356,9 @@ class WatchReader:
         self.turns = {}
         self.streams = {}
         self.diplomacy = {}
-        self.review_jobs = {}
+        self.observed_jobs = {}
         self.strategy_reader = StrategyReader(root)
+        self.specialist_reader = SpecialistReader(root)
         self.cache = {}
         self.errors = []
         self.updated_at = None
@@ -223,8 +411,9 @@ class WatchReader:
                 self.updated_at = None
                 self.documents, self.turns, self.streams, self.cache = {}, {}, {}, {}
                 self.diplomacy = {}
-                self.review_jobs = {}
+                self.observed_jobs = {}
                 self.strategy_reader = StrategyReader(self.root)
+                self.specialist_reader = SpecialistReader(self.root)
             with read_database(self.path) as db:
                 snapshot = self._read(db, selected)
             # Opening reviews precede gameplay sessions. Include the native
@@ -235,12 +424,12 @@ class WatchReader:
                 for row in snapshot.result.get("scores", [])
                 if row.get("controller") == "AGENT"
             )
+            jobs = [{"id": value["jobId"], **value["job"]} for value in self.observed_jobs.values()]
             strategies = self.strategy_reader.read(
-                agents,
-                snapshot.epoch,
-                [{"id": value["jobId"], **value["job"]} for value in self.review_jobs.values()],
+                agents, snapshot.epoch, [job for job in jobs if job["purpose"] == "review"]
             )
-            self.previous = replace(snapshot, strategies=strategies)
+            specialists = self.specialist_reader.read(agents, snapshot.epoch, jobs)
+            self.previous = replace(snapshot, strategies=strategies, specialists=specialists)
             return self.previous
         except FileNotFoundError:
             return WatchSnapshot({}, {}, (), (), (), None)
@@ -257,7 +446,7 @@ class WatchReader:
                     records.c.collection.in_(["state", "turns", "streams", "diplomacy"]),
                     and_(
                         records.c.collection == "jobs",
-                        func.json_extract(records.c.payload, "$.job.purpose") == "review",
+                        func.json_extract(records.c.payload, "$.job.purpose").in_(["review", *SPECIALIST_ROLES]),
                     ),
                 ),
                 records.c.revision > self.revision,
@@ -270,7 +459,7 @@ class WatchReader:
                 "turns": self.turns,
                 "streams": self.streams,
                 "diplomacy": self.diplomacy,
-                "jobs": self.review_jobs,
+                "jobs": self.observed_jobs,
             }[row["collection"]]
             value = json.loads(row["payload"])
             if not isinstance(value, dict):

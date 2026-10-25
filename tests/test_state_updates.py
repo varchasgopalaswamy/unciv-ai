@@ -122,6 +122,7 @@ class UpdatingHost(Host):
         super().__init__()
         self.reads = 0
         self.fail_refresh = False
+        self.fail_refresh_tool = "player_turn"
         self.after_command = lambda: None
         self.view["map"]["units"].append({**copy.deepcopy(self.view["map"]["units"][0]), "handle": "unit2"})
         self.view["map"]["tiles"] = [{"position": {"x": 0, "y": 0}, "visible": True, "terrain": "Grassland"}]
@@ -130,7 +131,10 @@ class UpdatingHost(Host):
     async def tool(self, name, args):
         if name == "player_turn":
             self.reads += 1
+        if name == self.fail_refresh_tool and (name != "player_communication" or args["op"] == "state"):
             if self.fail_refresh:
+                if isinstance(self.fail_refresh, Exception):
+                    raise self.fail_refresh
                 raise TimeoutError("Post-command refresh failed")
         result = await super().tool(name, args)
         if name == "player_command":
@@ -227,11 +231,12 @@ def test_scout_identifies_settler_destination_blocker_in_action_update_without_r
             host.after_command = lambda: settler["movementOrder"].update(settlement=blocked)
             result = await gateway.call(job, "player_command", MOVE, "scout")
             update = result["stateUpdate"]
-            changed = next(row for row in update["collections"]["units"]["upsert"] if row["handle"] == "unit2")
+            current = apply_overview_update(base, update)
+            changed = next(row for row in current["units"] if row["handle"] == "unit2")
             assert changed["movementOrder"]["settlement"] == blocked
             assert changed["position"] == shown["position"] and changed["settlementStatus"] == "BLOCKED"
             assert detail["query"] in update["invalidatedDetails"]
-            assert apply_overview_update(base, update) == job.delivered_overview
+            assert current == job.delivered_overview
             assert host.reads == 2 and len(host.executed) == 1
 
             host.after_command = lambda: None
@@ -240,10 +245,12 @@ def test_scout_identifies_settler_destination_blocker_in_action_update_without_r
             )
             unchanged = await gateway.call(job, "player_command", MOVE, "scout-again")
             assert "unit2" not in json.dumps(unchanged["stateUpdate"])  # Unchanged destination not repeated.
+            current = apply_overview_update(current, unchanged["stateUpdate"])
 
             host.after_command = lambda: settler.update(movementOrder=None)
             arrived = await gateway.call(job, "player_command", MOVE, "arrival")
-            row = arrived["stateUpdate"]["collections"]["units"]["upsert"][0]
+            current = apply_overview_update(current, arrived["stateUpdate"])
+            row = next(row for row in current["units"] if row["handle"] == "unit2")
             assert row["handle"] == "unit2" and "movementOrder" not in row
             assert job.delivered_overview is not None
             assert "movementOrder" not in job.delivered_overview["units"][1]
@@ -300,9 +307,10 @@ def test_successive_actions_use_updates_and_only_changed_inspections_expire(tmp_
             delta = receipt["stateUpdate"]
             assert receipt["feedback"] == {"paragraphs": ["Native outcome"]}
             assert delta["invalidatedDetails"] == [detail["query"]]
-            assert delta["collections"]["units"]["upsert"][0]["position"] == MOVE["destination"]
+            current = apply_overview_update(base, delta)
+            assert next(row for row in current["units"] if row["handle"] == "unit1")["position"] == MOVE["destination"]
             assert [q.model_dump() for q in job.details_read] == [other["query"]]
-            assert apply_overview_update(base, delta) == job.delivered_overview
+            assert current == job.delivered_overview
             assert host.reads == 2  # One explicit read, one internal read.
             create(memory, strategy(sources=["observation:overview"]), job=job.id)
             # Earlier delivered detail remains citeable as historical evidence,
@@ -440,26 +448,29 @@ def test_new_alerts_and_decisions_arrive_without_repeating_old_alert_content(tmp
                 "content": {"paragraphs": ["Full greeting and decisions"]},
             }
             host.view["alerts"] = [old]
-            await gateway.call(job, "player_turn", {}, "start")
+            base = await gateway.call(job, "player_turn", {}, "start")
             await inspect(gateway, job)
             host.after_command = lambda: host.view.update(alerts=[old, new], pending=[{"kind": "ChooseTechnology"}])
             receipt = await gateway.call(job, "player_command", MOVE, "move")
             update = receipt["stateUpdate"]
-            assert update["collections"]["alerts"]["upsert"] == [
+            current = apply_overview_update(base, update)
+            assert current["alerts"] == [
+                *base["alerts"],
                 {
                     **new,
                     "content": {"kind": "FirstContact", "paragraphs": []},
                     "command": {"kind": "ACKNOWLEDGE_ALERT", "target": "alert-new"},
-                }
+                },
             ]
-            assert update["set"]["pending"] == [{"kind": "ChooseTechnology"}]
+            assert current["pending"] == [{"kind": "ChooseTechnology"}]
             assert "Old long text" not in json.dumps(update)
             host.after_command = lambda: None
             acknowledged = await gateway.call(
                 job, "player_command", {"kind": "ACKNOWLEDGE_ALERT", "target": "alert-new"}, "ack"
             )
             assert acknowledged["done"] and host.executed[-1]["revision"] == "rev2"
-            assert acknowledged["stateUpdate"]["collections"]["alerts"]["removed"] == ["alert-new"]
+            assert apply_overview_update(current, acknowledged["stateUpdate"])["alerts"] == base["alerts"]
+            assert "Old long text" not in json.dumps(acknowledged["stateUpdate"])
 
     asyncio.run(run())
 
@@ -467,7 +478,7 @@ def test_new_alerts_and_decisions_arrive_without_repeating_old_alert_content(tmp
 def test_visibility_changes_expire_regions_without_inventing_destruction_or_hidden_movement(tmp_path):
     async def run():
         async with session(tmp_path) as (gateway, job, host, _):
-            await gateway.call(job, "player_turn", {}, "start")
+            base = await gateway.call(job, "player_turn", {}, "start")
             await inspect(gateway, job)
             query = {"center": {"x": 0, "y": 0}, "radius": 2}
             region = await gateway.call(job, "map_region", query, "region")
@@ -480,28 +491,41 @@ def test_visibility_changes_expire_regions_without_inventing_destruction_or_hidd
             host.after_command = reveal
             result = await gateway.call(job, "player_command", MOVE, "move")
             update = result["stateUpdate"]
+            current = apply_overview_update(base, update)
             assert region["query"] in update["invalidatedDetails"]
-            assert update["set"]["mapSummary"]["exploredTiles"] == 2
-            assert update["collections"]["units"]["removed"] == ["unit2"]
+            assert current["mapSummary"]["exploredTiles"] == 2
+            assert {row["handle"] for row in base["units"]} - {row["handle"] for row in current["units"]} == {"unit2"}
             assert "destroyed" not in json.dumps(update)
-            fresh = await gateway.call(job, "map_region", query, "new-region")
+            fresh = await gateway.call(job, "map_region", {**query, "full": True}, "new-region")
             assert [tile["visible"] for tile in fresh["data"]["tiles"]] == [False, True]
             assert not (await gateway.call(job, "map_region", {"center": {"x": 99, "y": 99}}, "unknown"))["available"]
 
     asyncio.run(run())
 
 
-def test_refresh_failure_keeps_receipt_and_does_not_deliver_partial_evidence(tmp_path):
+@pytest.mark.parametrize(
+    ("tool", "failure"),
+    [
+        ("player_turn", TimeoutError()),
+        ("player_turn", StateConflict("HOST_UNAVAILABLE")),
+        ("player_communication", StateConflict("HOST_UNAVAILABLE")),
+    ],
+)
+def test_refresh_failure_keeps_receipt_and_does_not_deliver_partial_evidence(tmp_path, tool, failure):
     async def run():
         async with session(tmp_path) as (gateway, job, host, memory):
             await gateway.call(job, "player_turn", {}, "start")
             await inspect(gateway, job)
             before = stored_records(memory)["observation:overview"]
-            host.after_command = lambda: setattr(host, "fail_refresh", True)
+            communication_before = stored_records(memory)["observation:communication"]
+            host.fail_refresh_tool = tool
+            host.after_command = lambda: setattr(host, "fail_refresh", failure)
             receipt = await gateway.call(job, "player_command", MOVE, "move")
             assert receipt["done"] and receipt["stateUpdate"]["kind"] == "unavailable"
             assert stored_records(memory)["observation:overview"] == before
+            assert stored_records(memory)["observation:communication"] == communication_before
             assert job.observation is None and not memory.pending()
+            assert not gateway.failed.is_set()
             assert await gateway.call(job, "player_command", MOVE, "move") == receipt
             assert len(host.executed) == 1
             rejected = await gateway.call(job, "player_command", MOVE, "new-id")
@@ -515,7 +539,7 @@ def test_refresh_failure_keeps_receipt_and_does_not_deliver_partial_evidence(tmp
     asyncio.run(run())
 
 
-@pytest.mark.parametrize("failure", ["invalid_view", "save_response"])
+@pytest.mark.parametrize("failure", ["invalid_view", "save_response", "protocol_error", "social_protocol_error"])
 def test_invalid_state_update_stops_for_inspection_and_keeps_committed_receipt(tmp_path, failure):
     async def run():
         async with session(tmp_path) as (gateway, job, host, memory):
@@ -530,6 +554,10 @@ def test_invalid_state_update_stops_for_inspection_and_keeps_committed_receipt(t
             plan_before = stored_records(memory)[key]
             if failure == "invalid_view":
                 host.after_command = lambda: host.view.update(turn="malformed")
+            elif failure in {"protocol_error", "social_protocol_error"}:
+                if failure == "social_protocol_error":
+                    host.fail_refresh_tool = "player_communication"
+                host.after_command = lambda: setattr(host, "fail_refresh", StateConflict("HOST_PROTOCOL_ERROR"))
             else:
                 original = memory._call_record
                 fail_once = True
@@ -538,7 +566,7 @@ def test_invalid_state_update_stops_for_inspection_and_keeps_committed_receipt(t
                     nonlocal fail_once
                     if fail_once and result and result.get("stateUpdate", {}).get("kind") == "delta":
                         assert "memoryUpdates" not in result
-                        assert "strategyReview" not in result["stateUpdate"]["set"]
+                        assert "strategyReview" not in json.dumps(result["stateUpdate"])
                         fail_once = False
                         raise OSError("Interrupted response write")
                     return original(db, job, id, name, arguments, result)
@@ -557,8 +585,14 @@ def test_invalid_state_update_stops_for_inspection_and_keeps_committed_receipt(t
                     db.exec_driver_sql("SELECT snapshot FROM jobs WHERE id=?", (job.id,)).scalar_one()
                 )
                 assert snapshot["delivered"][key] == plan_before["version"]
-            assert memory.run_failure()["exceptionType"] == (
-                "ValidationError" if failure == "invalid_view" else "OSError"
+            assert (
+                memory.run_failure()["exceptionType"]
+                == {
+                    "invalid_view": "ValidationError",
+                    "save_response": "OSError",
+                    "protocol_error": "StateConflict",
+                    "social_protocol_error": "StateConflict",
+                }[failure]
             )
             with pytest.raises(StateConflict, match="STATE_UPDATE_FAILED"):
                 await gateway.call(job, "player_command", MOVE, "retry")
@@ -612,7 +646,7 @@ def test_interrupted_refresh_replays_the_committed_action_as_a_full_resync(tmp_p
 def test_terminal_result_and_notifications_are_delivered_even_when_no_further_action_is_possible(tmp_path):
     async def run():
         async with session(tmp_path) as (gateway, job, host, _):
-            await gateway.call(job, "player_turn", {}, "start")
+            base = await gateway.call(job, "player_turn", {}, "start")
             await inspect(gateway, job)
 
             def victory():
@@ -632,8 +666,9 @@ def test_terminal_result_and_notifications_are_delivered_even_when_no_further_ac
             host.after_command = victory
             result = await gateway.call(job, "player_command", MOVE, "victory")
             update = result["stateUpdate"]
-            assert update["set"]["result"] == host.view["result"] and update["set"]["canEndTurn"] is False
-            assert update["collections"]["notifications"]["upsert"] == host.view["notifications"]
+            current = apply_overview_update(base, update)
+            assert current["result"] == host.view["result"] and current["canEndTurn"] is False
+            assert current["notifications"] == host.view["notifications"]
 
     asyncio.run(run())
 

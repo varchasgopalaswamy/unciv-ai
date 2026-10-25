@@ -88,16 +88,18 @@ def test_opening_settlement_report_can_cite_rich_read_without_inventing_fact_pat
     assert delivered["data"] == settlement
 
 
-@pytest.mark.parametrize("kind", ["unknown", "undelivered", "other_job", "duplicate"])
+@pytest.mark.parametrize("kind", ["unknown", "undelivered", "other_job", "duplicate", "memory_evidence"])
 def test_report_rejects_sources_not_delivered_to_this_review(kind):
     evidence = ReviewEvidence({"observation": position()})
-    ours = evidence.deliver("player_turn", {"cities": []})["source"]
+    observation_id = "observation:detail/bf945872283986ad"
+    ours = evidence.deliver("player_turn", {"cities": [], "evidence": observation_id})["source"]
     foreign = ReviewEvidence({"observation": position()}).deliver("player_turn", {"cities": []})["source"]
     refs = {
         "unknown": ["invented"],
         "undelivered": ["settlement/candidates/0/score"],
         "other_job": [foreign],
         "duplicate": [ours, ours],
+        "memory_evidence": [observation_id],
     }[kind]
     with pytest.raises(ValueError, match="STRATEGIC_REVIEW_SOURCE"):
         parse_advice(json.dumps(assumption_report(refs)), position(), evidence=evidence)

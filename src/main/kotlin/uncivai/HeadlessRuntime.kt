@@ -100,6 +100,8 @@ class HeadlessRuntime private constructor(
          */
         fun load(saveFile: Path, dataDirectory: Path): HeadlessRuntime = open(saveFile, dataDirectory, null)
 
+        fun createManagerExercise(dataDirectory: Path, variant: String, seed: Long = 416L): HeadlessRuntime = create(dataDirectory) { ManagerScenarioSetup.create(variant, seed) }.also { ManagerScenarioSetup.seedHistory(it.executor, variant) }
+
         fun createTradeCycleExercise(dataDirectory: Path, seed: Long = 412L): HeadlessRuntime = create(dataDirectory) { TradeCycleScenarioSetup.create(seed) }
 
         fun createWarExercise(dataDirectory: Path, variant: String, seed: Long = 413L): HeadlessRuntime = create(dataDirectory) { WarScenarioMap.create(seed, WarScenarioSetup.mapName(variant)) }.also { WarScenarioSetup.seedHistory(it.executor, variant) }

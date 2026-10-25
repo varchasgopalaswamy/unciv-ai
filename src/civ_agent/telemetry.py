@@ -438,6 +438,7 @@ class JobAccounting:
             "endedAtMs": None,
             "elapsedMs": 0,
             "negotiationWaitMs": 0,
+            "roleWaitMs": 0,
             "usageReported": False,
             "usageComplete": False,
             "model": None,
@@ -462,7 +463,7 @@ class JobAccounting:
             db.execute(insert(calls).values(id=id, job=job, keys=json.dumps(keys), started=time.monotonic()))
         return id
 
-    def end_call(self, id: str, outcome: str, replayed: bool):
+    def end_call(self, id: str, outcome: str, replayed: bool, payload: dict[str, int] | None = None):
         with self.connect() as db:
             started = db.execute(select(calls.c.started).where(calls.c.id == id)).scalar_one()
             db.execute(
@@ -472,6 +473,15 @@ class JobAccounting:
                     outcome=outcome, replayed=int(replayed), elapsed=max(0, int((time.monotonic() - started) * 1000))
                 )
             )
+            if payload is not None:
+                job = db.execute(select(calls.c.job).where(calls.c.id == id)).scalar_one()
+                saved = db.execute(select(jobs.c.payload).where(jobs.c.id == job)).scalar_one_or_none()
+                if saved is not None:
+                    row = json.loads(saved)
+                    sizes = row.setdefault("payloadCharacters", {})
+                    for key, value in payload.items():
+                        sizes[key] = sizes.get(key, 0) + value
+                    db.execute(jobs.update().where(jobs.c.id == job).values(payload=json.dumps(row)))
 
     def sample(self, record: JsonObject, wait_seconds: float = 0):
         id = record["activationId"]
@@ -493,15 +503,21 @@ class JobAccounting:
             # describes the work that actually ran. Completion evidence survives.
             if not report["usageComplete"]:
                 report["phase"] = (
-                    {"finished": "ROLE_FINISHED", "waiting_negotiation": "WAITING_NEGOTIATION"}.get(
-                        str(record.get("roleState", "")), record["phase"]
-                    )
+                    {
+                        "finished": "ROLE_FINISHED",
+                        "waiting_negotiation": "WAITING_NEGOTIATION",
+                        "waiting_economy": "WAITING_ROLE",
+                    }.get(str(record.get("roleState", "")), record["phase"])
                     if record["phase"] not in TERMINAL
                     else record["phase"]
                 )
             if id in self.starts and not terminal:
                 report["elapsedMs"] = max(report["elapsedMs"], int((time.monotonic() - self.starts[id]) * 1000))
             report["negotiationWaitMs"] = max(report["negotiationWaitMs"], int(wait_seconds * 1000))
+            role_wait_ms = int(record.get("roleWaitSeconds", 0) * 1000)
+            if record.get("roleWaitStartedAtMs") is not None:
+                role_wait_ms += max(0, int(time.time() * 1000) - record["roleWaitStartedAtMs"])
+            report["roleWaitMs"] = max(report.get("roleWaitMs", 0), role_wait_ms)
             settings = record.get("effectiveSettings", record.get("settings", {}))
             report.update(
                 provider=settings.get("provider"),

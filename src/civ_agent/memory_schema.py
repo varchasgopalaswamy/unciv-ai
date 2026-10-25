@@ -2,7 +2,7 @@
 
 from sqlalchemy import Column, ForeignKey, Index, Integer, MetaData, Table, Text, and_, literal_column, select
 
-FORMAT_VERSION = 12
+FORMAT_VERSION = 13
 
 metadata = MetaData()
 meta = Table(

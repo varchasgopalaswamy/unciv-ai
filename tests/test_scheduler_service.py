@@ -209,13 +209,14 @@ class SchedulerServiceTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual([play["civ"] for play in self.host.plays], ["Rome", "Greece", "Rome", "Greece"])
         self.assertEqual(self.saved()["handoffs"], 4)
-        self.assertEqual(self.saved()["usage"]["input_tokens"], 80)
+        self.assertEqual(self.saved()["usage"]["input_tokens"], 40)
         records = self.records()
         starts = [record for record in records if record["method"] == "thread/start"]
         resumes = [record for record in records if record["method"] == "thread/resume"]
         self.assertEqual((len(starts), len(resumes)), (6, 0))  # Two opening reviews and four turns.
         self.assertEqual(4, len({play["thread"] for play in self.host.plays}))
-        self.assertEqual(len({record["tokenHash"] for record in records}), 10)
+        self.assertEqual(len({record["tokenHash"] for record in records}), 6)
+        self.assertFalse(any(record["method"].startswith("economy/") for record in records))
         for record in starts + resumes:
             self.assertFalse(record["operatorTokenPresent"])
             self.assertIn("mcp_servers.civ", " ".join(record["argv"]))
@@ -338,7 +339,14 @@ class SchedulerServiceTest(unittest.TestCase):
         self.assertEqual(paused.returncode, 0, paused.stdout + paused.stderr)
         output, error = process.communicate(timeout=10)
         self.assertEqual(process.returncode, 0, output + error)
-        self.assertEqual(self.saved()["inFlight"]["agentPhase"], "INTERRUPTED")
+        # Operator pause revokes the native token before the service receives
+        # its interrupt. An in-flight negotiation poll may observe that first.
+        # Both outcomes must still roll back and retry in a fresh conversation.
+        stopped = self.saved()["inFlight"]["agentPhase"]
+        self.assertIn(stopped, {"INTERRUPTED", "FAILED"})
+        if stopped == "FAILED":
+            self.assertEqual(self.gameplay_records("Rome")[-1]["error"], "NEGOTIATION_MONITOR_FAILED")
+        previous_thread = self.gameplay_records("Rome")[-1]["threadId"]
         resumed = self.run_cli("resume")
         self.assertEqual(resumed.returncode, 0, resumed.stdout + resumed.stderr)
         self.assertEqual([play["civ"] for play in self.host.plays], ["Rome", "Rome", "Greece"])
@@ -346,6 +354,7 @@ class SchedulerServiceTest(unittest.TestCase):
         self.assertEqual(0, self.host.plays[1]["effectsBefore"])
         self.assertEqual(1, len(self.host.restores))
         records = self.gameplay_records("Rome")
+        self.assertNotEqual(previous_thread, records[0]["threadId"])
         self.assertEqual(0, sum(record.get("aborted", False) for record in records))
         self.assertEqual(self.saved()["handoffs"], 2)
 
@@ -368,8 +377,8 @@ class SchedulerServiceTest(unittest.TestCase):
         sources = list((self.state_dir / "agent-services").glob("*/history/*/events.jsonl"))
         streams = read_collection(path_for(self.state_dir), "streams")
         self.assertEqual(
-            (len(sources), len(streams)), (4, 1)
-        )  # Economy and review histories are separate from gameplay.
+            (len(sources), len(streams)), (3, 1)
+        )  # Two opening reviews and one gameplay job; economy sleeps without cities.
         source_events = [json.loads(line) for line in self.source_history(streams[0]).read_text().splitlines()]
         mirror_events = read_collection(path_for(self.state_dir), "events")
         self.assertGreater(len(source_events), 100)
@@ -543,7 +552,9 @@ class SchedulerServiceTest(unittest.TestCase):
             [("Rome", True, "trade_offer"), ("Greece", False, "trade_offer"), ("Rome", False, "trade_decide")],
         )
         # Each opening review captures its player's position before gameplay.
-        self.assertEqual(2, sum(name == "player_turn" and not gameplay for _, gameplay, name, _ in trade.reads))
+        self.assertEqual(
+            6 if peace else 2, sum(name == "player_turn" and not gameplay for _, gameplay, name, _ in trade.reads)
+        )
         records = self.records()
         failures = [
             r["params"]["result"] for r in records if r["method"] == "test/tool" and r["params"]["result"].get("error")
@@ -553,8 +564,12 @@ class SchedulerServiceTest(unittest.TestCase):
             self.assertEqual(json.loads(path.read_text())["phase"], "COMPLETED")
         starts = [r for r in records if r["method"] == "turn/start"]
         # Two opening reviews, four turns, two chat jobs and one gameplay continuation.
-        self.assertEqual(len(starts), 9)
-        self.assertEqual(2, sum("outputSchema" in r["params"] for r in starts))
+        self.assertEqual(len(starts), 15 if peace else 9)
+        self.assertEqual(8 if peace else 2, sum("outputSchema" in r["params"] for r in starts))
+        if peace:
+            titles = [r["params"].get("outputSchema", {}).get("title") for r in starts]
+            self.assertEqual(titles.count("TacticalOverview"), 3)
+            self.assertEqual(titles.count("PeaceApproval"), 3)
         interruptions = [r for r in records if r["method"] == "turn/interrupt"]
         thread = next(
             r["params"]["threadId"]
