@@ -1,5 +1,6 @@
 package uncivai
 
+import com.unciv.logic.map.MapSize
 import com.unciv.logic.map.MapType
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertThrows
@@ -8,6 +9,55 @@ import org.junit.Test
 import java.nio.file.Files
 
 class VanillaSetupTest {
+    @Test
+    fun `civilization starts survive reassignment between human agent and native slots`() {
+        val directory = Files.createTempDirectory("independent-assignments-")
+        try {
+            val rosters = listOf(
+                listOf("Greece", "France", "Egypt") to listOf("Rome"),
+                listOf("Rome", "Greece", "Egypt") to listOf("France"),
+                listOf("Egypt", "Rome", "Greece") to listOf("France"),
+            )
+            val openings = rosters.mapIndexed { index, (external, native) ->
+                HeadlessRuntime.createVanillaGame(
+                    directory.resolve("game-$index"),
+                    422L,
+                    cityStates = 2,
+                    builtInAI = native,
+                    agentPlayers = external,
+                    mapSize = MapSize.Tiny,
+                    options = VanillaOptions(difficulty = "King", startingPositionSeed = 17L),
+                ).use { runtime ->
+                    val game = runtime.game
+                    assertEquals(external + native, game.civilizations.filter { it.isMajorCiv() }.map { it.civID })
+                    assertEquals(external.first(), game.currentPlayer)
+                    val starts = game.civilizations.filter { !it.isBarbarian && !it.isSpectator() }.associate { civ ->
+                        civ.civID to civ.units.getCivUnits().single { it.baseUnit.isCityFounder() }.getTile().position
+                    }
+                    val tiles = game.tileMap.values.map {
+                        "${it.position}:${it.baseTerrain}:${it.terrainFeatures}:${it.naturalWonder}:" +
+                            "${it.resource}:${it.resourceAmount}:${it.improvement}:" +
+                            "${it.hasBottomRiver}:${it.hasBottomLeftRiver}:${it.hasBottomRightRiver}"
+                    }
+                    val difficulty = game.getDifficulty()
+                    assertTrue(difficulty.aiMajorCivBonusStartingUnits.isNotEmpty())
+                    for (name in native + external) {
+                        val civ = game.getCivilization(name)
+                        assertEquals(name in native, civ.isAI())
+                        val bonuses = if (civ.isAI()) difficulty.aiMajorCivBonusStartingUnits else difficulty.playerBonusStartingUnits
+                        val expected = game.ruleset.eras.getValue(game.gameParameters.startingEra).getStartingUnits(game.ruleset) + bonuses
+                        assertEquals(expected.size, civ.units.getCivUnits().count())
+                    }
+                    starts to tiles
+                }
+            }
+            assertEquals(openings[0], openings[1])
+            assertEquals(openings[0], openings[2])
+        } finally {
+            deleteTreeWithoutFollowingLinks(directory)
+        }
+    }
+
     @Test
     fun `assigned built in opponents play after all externally controlled civilizations`() {
         val directory = Files.createTempDirectory("assigned-players-")

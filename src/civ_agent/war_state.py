@@ -110,11 +110,12 @@ class EscortAssignment(BoundaryModel):
 
 class MilitaryOperation(BoundaryModel):
     id: Text
-    opponents: list[str] = Field(min_length=1, max_length=20)
+    opponents: list[str] = Field(default_factory=list, max_length=20)
     plan: Text
     progress: Text
     reconsiderWhen: Text
     sources: list[str] = Field(default_factory=list, max_length=20)
+    reviewTurn: int | None = Field(default=None, ge=0)
 
 
 class RoleMessage(BoundaryModel):

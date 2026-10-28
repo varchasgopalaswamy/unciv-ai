@@ -1,17 +1,76 @@
+import hashlib
 import json
+import sqlite3
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from civ_agent.monitoring import MonitorStore, path_for
 from tests import live_strategy_positions as suite
+from tests.live_saved_position import copy_position_checkpoint
 from tests.live_strategy_positions import (
     evaluation_status,
+    freeze_memory_seeds,
     provider_usage_exhausted,
     reported_model_tokens,
     trial_schedule,
     validate_case,
 )
+from tests.report_strategy_positions import native_position
+
+
+@pytest.mark.parametrize(
+    "location,expected",
+    [
+        (None, {"x": 0, "y": 0}),
+        ({"x": -6}, {"x": -6, "y": 0}),
+        ({"y": 3}, {"x": 0, "y": 3}),
+        ({"x": -2, "y": 1}, {"x": -2, "y": 1}),
+    ],
+)
+def test_native_report_restores_omitted_default_city_coordinates(tmp_path, location, expected):
+    city = {"id": "captured-capital", "name": "Paris"}
+    if location is not None:
+        city["location"] = location
+    game = {
+        "civilizations": [{"civID": "Persia", "cities": [city], "tech": {}}],
+        "tileMap": {"tileList": []},
+    }
+    path = tmp_path / "checkpoint.json"
+    path.write_text(json.dumps({"gameJson": json.dumps(game)}))
+    position = native_position(path, ["Persia"])[0]
+    assert position["cities"][0]["name"] == "Paris"
+    assert position["cities"][0]["position"] == expected
+
+
+def test_saved_position_copy_preserves_checkpoint_accounting_and_committed_wal(tmp_path):
+    source = tmp_path / "prepared" / "exploration.json"
+    source.parent.mkdir()
+    source.write_text(json.dumps({"formatVersion": 9, "accountingId": "fixture-account"}))
+    accounting = source.with_name(source.name + ".accounting.sqlite3")
+    with sqlite3.connect(accounting) as writer:
+        writer.execute("PRAGMA journal_mode=WAL")
+        writer.execute("CREATE TABLE evidence (value TEXT)")
+        writer.execute("INSERT INTO evidence VALUES ('retained committed receipt')")
+        writer.commit()
+        target = tmp_path / "isolated"
+        target.mkdir()
+        copied = copy_position_checkpoint(source, target)
+        assert copied["accountingId"] == "fixture-account"
+        assert json.loads((target / "exploration.json").read_text()) == copied
+        with sqlite3.connect(target / "exploration.json.accounting.sqlite3") as reader:
+            assert reader.execute("SELECT value FROM evidence").fetchone()[0] == "retained committed receipt"
+
+
+def test_saved_position_refuses_a_modern_checkpoint_without_its_accounting(tmp_path):
+    source = tmp_path / "prepared.json"
+    source.write_text(json.dumps({"formatVersion": 9, "accountingId": "fixture-account"}))
+    target = tmp_path / "isolated"
+    target.mkdir()
+    with pytest.raises(ValueError, match="missing its checkpoint accounting"):
+        copy_position_checkpoint(source, target)
+    assert not (target / "exploration.json").exists()
 
 
 def test_successful_process_exit_does_not_hide_an_agent_stopping_without_handoff(tmp_path):
@@ -46,6 +105,29 @@ def test_trials_rotate_implementations_and_keep_every_repetition():
         "full",
     ]
     assert trial_schedule([{"id": "science"}], ["current"], 1)[0]["id"] == "science"
+
+
+def test_suite_freezes_one_seed_for_all_variants_and_retains_original_provenance(tmp_path):
+    manifest = tmp_path / "prepared" / "manifest.json"
+    manifest.parent.mkdir()
+    source = manifest.parent / "prior-war.json"
+    raw = b'{"civilization":"Rome","records":[],"wars":[]}'
+    source.write_bytes(raw)
+    case = {"id": "counteroffensive", "civilization": "Rome", "memorySeed": "prior-war.json"}
+    frozen = freeze_memory_seeds([case], manifest, tmp_path / "suite")[case["id"]]
+    assert frozen["source"] == str(source.resolve())
+    assert frozen["sha256"] == hashlib.sha256(raw).hexdigest()
+    source.write_text('{"civilization":"Rome","records":["changed after freeze"]}')
+    assert Path(frozen["path"]).read_bytes() == raw
+
+
+def test_suite_rejects_memory_seed_for_a_different_civilization(tmp_path):
+    source = tmp_path / "seed.json"
+    source.write_text('{"civilization":"France","records":[]}')
+    case = {"id": "counteroffensive", "civilization": "Rome", "memorySeed": "seed.json"}
+    with pytest.raises(ValueError, match="another civilization"):
+        freeze_memory_seeds([case], tmp_path / "manifest.json", tmp_path / "suite")
+    assert not (tmp_path / "suite").exists()
 
 
 def test_case_preflight_does_not_mistake_a_queued_conversion_for_current_output():

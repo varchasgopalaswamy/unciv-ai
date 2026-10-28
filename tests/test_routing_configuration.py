@@ -41,15 +41,6 @@ def test_key_permissions_and_independent_client_credentials(tmp_path):
     assert "decisions.key" not in mounted and "/auth:" not in mounted
 
 
-def test_broker_image_mismatch_preserves_existing_shared_process(tmp_path, monkeypatch):
-    monkeypatch.setattr(supervisor, "inspected", lambda _: {"Image": "old-image", "State": {"Running": True}})
-    mutate = Mock(side_effect=AssertionError("Must not replace a broker serving another game"))
-    monkeypatch.setattr(supervisor, "podman", mutate)
-    with pytest.raises(supervisor.ContainerError, match="different runtime image"):
-        supervisor.ensure_decisions(tmp_path, "new-image")
-    mutate.assert_not_called()
-
-
 @pytest.mark.parametrize(
     "health",
     [

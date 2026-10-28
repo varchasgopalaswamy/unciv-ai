@@ -3,6 +3,8 @@
 import asyncio
 import json
 
+import pytest
+
 from civ_agent.protocol import JsonObject
 from civ_agent.review_store import ReviewStore
 from tests.test_review_responses import complete, message, reviewing
@@ -39,6 +41,52 @@ def test_invalid_opening_advice_becomes_unavailable_and_releases_gameplay(tmp_pa
             assert memory["strategicAdvice"] is None
             assert memory["strategicReviewStatus"]["status"] == "UNAVAILABLE"
             assert process.closed
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("method", ["service/modelStatus", "service/requestFailed"])
+def test_quota_exhaustion_preserves_pending_review_without_spending_repair_attempts(tmp_path, method):
+    async def run():
+        async with reviewing(tmp_path, attempts=2) as (service, process):
+            notice = {
+                "reason": "usageLimitExceeded",
+                "state": "failed",
+                "threadId": process.thread_id,
+                "turnId": process.turn_id,
+                "rpcMethod": "turn/start",
+            }
+            await process.notification(method, notice)
+            quota = service.health()["quotaFailure"]
+            assert quota is not None and quota["purpose"] == "review"
+            await complete(process, "failed")
+            async with asyncio.timeout(3):
+                while service.reviews.active:
+                    await asyncio.sleep(0.01)
+            pending = review_task(service)
+            assert pending["status"] == "PENDING" and pending["attempts"] == 0
+            assert service.health()["runFailure"] is None
+            quota = service.health()["quotaFailure"]
+            assert quota is not None and quota["reason"] == "usageLimitExceeded"
+            assert len([p for m, p in process.factory.calls if m == "turn/start" and "outputSchema" in p]) == 1
+
+    asyncio.run(run())
+
+
+def test_review_rpc_failure_keeps_private_diagnostics_and_lifecycle_record(tmp_path):
+    async def run():
+        detail = {"rpcMethod": "turn/start", "rpcId": 4, "rpcCode": -32602, "reason": "invalidParams"}
+        async with reviewing(tmp_path) as (service, process):
+            await process.notification("service/requestFailed", detail)
+            record = next(r for r in service.records.values() if r.get("purpose") == "review")
+            assert record["requestFailure"] == detail
+            files = [json.loads(p.read_text()) for p in service.records_dir.glob("*.json")]
+            assert any(r.get("requestFailure") == detail for r in files)
+            await message(process, json.dumps(assessment()))
+            await complete(process)
+            await settled(service)
+        entries = [json.loads(line) for line in service.diagnostics.path.read_text().splitlines()]
+        assert any(e["event"] == "codex_request_failed" and e["purpose"] == "review" for e in entries)
 
     asyncio.run(run())
 

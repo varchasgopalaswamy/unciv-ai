@@ -65,6 +65,104 @@ to select cases. It retains logs and checkpoints and verifies completed rounds:
 a clean driver exit after an agent stops prematurely is an incomplete evaluation.
 Infrastructure completion does not mean the strategy was good.
 
+For constructed early military opportunities and defended-city controls, generate
+the native positions with `generateDominationPositions`. Its manifest includes
+`persia-opportunity` (damaged capital and existing army),
+`persia-strong-defense` (healthy walled capital and strong defenders),
+`greece-damaged-capital` (Hoplites and Archers with ordinary movement), and
+`greece-hill-fortress` (the same Greek force against a fortified hill city).
+The fixtures validate visible facts and checkpoint reload; they do not supply
+desired decisions to the player.
+
+```bash
+./gradlew generateDominationPositions -PdominationOutput="$PWD/build/military-positions"
+
+.venv/bin/python -m tests.live_strategy_positions \
+  --prepared "$PWD/build/military-positions" \
+  --manifest "$PWD/build/military-positions/manifest.json" \
+  --state-dir "$PWD/build/military-live" --port 19841 \
+  --case persia-opportunity --case persia-strong-defense \
+  --case greece-damaged-capital --case greece-hill-fortress \
+  --rounds 2 --model gpt-6-luna --reasoning-effort medium
+```
+
+Use `--variant NAME=SOURCE_ROOT` for each frozen Python source directory containing
+`civ_agent`, and `--repetitions N` for repeated trials. Keep model settings and
+native positions identical across source variants. Record military recommendations,
+Main's decisions, declaration and capture turns, and actual losses separately;
+a declaration alone does not demonstrate useful aggression. Short trials diagnose
+opportunity recognition and execution, not overall win rate.
+
+### Campaign initiative comparisons
+
+`generateCampaignInitiativePositions` prepares constructed native positions for
+longer military decisions. These compare the current proactive military manager
+with changes to wartime initiative and campaign persistence. The archived v0–v2
+games predate both; their outcomes are motivation for these cases, not the
+comparison's baseline.
+
+| Position | What to assess |
+| --- | --- |
+| `campaign-reconnaissance` | Whether peacetime reconnaissance resolves missing target information and leads to a concrete decision |
+| `campaign-siege` | Whether a campaign continues or adapts when useful progress outlasts its initial review date |
+| `campaign-counteroffensive` | Whether an existing defensive objective is reconsidered when the current board permits an advance |
+| `campaign-counteroffensive-control` | Whether stronger opposing defenses still produce justified restraint |
+
+The player is Greece and France is its neighboring opponent. The native board
+and ordinary opponents determine subsequent outcomes. Reconnaissance and the
+counteroffensive run seven own turns, the sustained siege nine, and the stronger
+defense control four. The siege starts with two Catapults against a healthy walled
+city; the other positions use one. Peace is available in all wartime starts.
+The wartime cases add
+explicit operator-authored prior goals and operation records to otherwise fresh
+private stores. These represent prior intentions to reconsider, not instructions
+to pass the evaluation. They do not supply the expected test outcome or hidden
+defender information. Current permitted observations take precedence over prior
+plans.
+
+A case's optional `memorySeed` is resolved relative to its manifest. The suite
+copies and hashes the seed before launching trials and shares those exact bytes
+across implementation variants. The seed's civilization and current native
+opponents are checked; prior records and war start dates must precede the evaluated
+turn. This seeds the existing war-goal and operation mechanisms rather than adding
+a production behavior switch. Inspect the retained `memory-seed.json` when judging
+how inherited goals affected a decision.
+
+```bash
+./gradlew generateCampaignInitiativePositions \
+  -PcampaignOutput="$PWD/build/campaign-positions"
+
+./gradlew probeCampaignInitiative \
+  -PcampaignSource="$PWD/build/campaign-positions" \
+  -PcampaignProbeOutput="$PWD/build/campaign-native-probe"
+
+.venv/bin/python -m tests.live_strategy_positions \
+  --prepared "$PWD/build/campaign-positions" \
+  --manifest "$PWD/build/campaign-positions/manifest.json" \
+  --state-dir "$PWD/build/campaign-comparison" --port 20041 \
+  --variant before="$PWD/build/campaign-before-src" \
+  --variant after="$PWD/build/campaign-after-src" \
+  --model gpt-6-luna --reasoning-effort medium \
+  --strategy-guide --no-civilization-guide --review-interval 5 \
+  --parallel 2
+```
+
+Use fresh output directories and frozen source directories containing `civ_agent`.
+The manifest supplies each case's duration; overriding all cases with a short
+`--rounds` can cut off a siege before the behavior under study occurs. Native
+probes check that a candidate sequence can work from the position. They neither
+provide that sequence to the models nor establish that all other decisions are
+wrong.
+
+Evaluate the sequence of decisions: military's recommendation, Main's response
+and accepted goals, actual reconnaissance/staging/attacks, then territorial
+results, losses and peace. A formal goal revision is evidence of changed intent,
+not evidence of a successful invasion. An absent revision alone does not establish
+inaction. Keep consultation recommendations and Main's exact-terms peace decisions
+with the action trace. The stronger-defense control matters: increased attack
+frequency is not by itself an improvement. Single paired runs diagnose behavior;
+they do not establish a reliable effect size or overall win rate.
+
 Select the September 23 failures with:
 
 ```bash

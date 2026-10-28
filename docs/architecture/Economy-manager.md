@@ -11,11 +11,12 @@ drain, negotiations close, and a fresh native turn review permits advancement.
 
 The economy manager owns focus, citizen and specialist allocation, growth flags,
 construction queues, purchases, building sales, city tiles, and shared-city tile
-allocation. The main player owns strategy, research, policies, workers, movement,
-combat, capture decisions, and upgrades. Both can spend available treasury gold.
+allocation. Main owns strategy, research, policies, workers, civilian and escort
+movement, declarations and capture decisions. Military owns other combat-unit
+movement, combat and upgrades in peace and war. All roles can spend available treasury gold.
 Purchasing units belongs to economy management; deploying them belongs to the
-main player. A newly purchased unit with movement reopens an already completed
-main role. A newly owned city reopens a completed economy role.
+appropriate unit controller. A newly purchased unit with movement reopens its
+controller if needed. A newly owned city reopens a completed economy role.
 
 `economy_request` records a priority, optional city, and request text. Requests
 arriving during an active review join that pass and expand its city scope.
@@ -245,6 +246,8 @@ Review-scope metadata is additive within format 13: older schedule records use
 their saved review turn as the last full review until new per-city stamps are
 written. Updating the runtime does not itself trigger a review.
 
-Military coordination extends this barrier during wars; see [Military manager](Military-manager.md) for unit ownership, war goals and peace consultation.
+Military joins this barrier whenever a planning or execution pass is required;
+see [Military manager](Military-manager.md) for scheduling, unit ownership, war
+goals and peace consultation. Sleeping military does not hold advancement.
 
 See [controlled manager acceptance](../scenarios/Manager-acceptance.md) for the live economy and war exercises.

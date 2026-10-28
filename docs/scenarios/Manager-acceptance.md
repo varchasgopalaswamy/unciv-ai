@@ -87,12 +87,13 @@ changed after startup.
 3. From round two Rome offers mutual native peace to Greece. Each binding action
    requires a military tactical overview followed by main's exact-terms approval;
    Greece's acceptance exercises the off-turn path.
-4. After peace, military retires and main resumes all unit control. Remaining
-   rounds exercise peaceful continuation and durable notes following restart.
+4. After peace, military retains combat-unit control and assesses peacetime
+   readiness; main retains civilians and assigned escorts. Remaining rounds
+   exercise peaceful continuation and durable notes following restart.
 
 The audit checks military jobs, discussed goal revisions, operation notes,
 main's control of both escort units, escort survival, stored military overviews
-and main approvals, native peace, retirement, later peaceful jobs and the shared
+and main approvals, native peace, later peacetime military planning and the shared
 turn barrier. It reports surviving units for inspection.
 
 This opening tests activation into an existing war, not an offensive declaration

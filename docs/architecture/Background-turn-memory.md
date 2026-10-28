@@ -83,8 +83,21 @@ Frozen `victory_progress` accepts the same section, victory, metric, civilizatio
 and chart-range filters as gameplay. The service captures all permitted chart
 pages at the shared boundary; subsequent reads filter that snapshot. Native
 visibility, missing values, ranking scope and metric
-order are preserved. The initial review preload includes own/global status and
-rankings; chart history and demographics remain on demand to limit context size.
+order are preserved. The initial review preload includes rankings; own/global
+status, chart history and demographics remain on demand to limit context size.
+The overview and communication context include `eraProgress`: our current era,
+the highest era among our civilization and known majors, and whether that era
+has reached the ruleset's Modern threshold. The enabled strategy reference combines
+a short permanent core with the player's own-era briefing; the adviser receives
+its strategic, economic, military and diplomatic sections. Live specialist roles
+receive only their relevant section. More advanced known majors add a warning
+without replacing the player's developmental context. Before the Modern threshold,
+the reference omits Apollo/spaceship guidance and preloads defer distant
+research-based project surveillance. Explicit current supply penalties, negative
+happiness/income and negative-food cities are surfaced before old plans, without
+inferring shortages from missing observations. Frozen reviews use the era and
+constraint facts captured at their boundary. All permitted victory details remain
+available through explicit reads.
 
 The frozen `player_turn` also contains two compact review-only summaries:
 

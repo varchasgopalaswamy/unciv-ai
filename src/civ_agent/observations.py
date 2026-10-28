@@ -243,6 +243,7 @@ class TurnOverview(BoundaryModel):
     rules: JsonObject = Field(default_factory=dict)
     productionPolicy: JsonObject | None = None
     civilizationProfile: JsonObject | None = None
+    eraProgress: JsonObject | None = None
     scenario: JsonObject | None = None
     result: JsonObject | None = None
     victory: JsonObject = Field(default_factory=dict)
@@ -327,6 +328,52 @@ def wonder_summary(wonder: JsonObject, cities: list[JsonObject]) -> JsonObject:
     return result
 
 
+def military_readiness_summary(snapshot: JsonObject) -> JsonObject | None:
+    """Include peaceful opportunities from permitted tiles, with explicit bounds."""
+    readiness = copy.deepcopy(snapshot.get("militaryReadiness") or {})
+    civilization = (snapshot.get("civilizationProfile") or {}).get("name") or snapshot.get("civilization")
+    if not civilization:
+        return readiness or None
+    cities, units = [], []
+    for tile in snapshot.get("map", {}).get("tiles", []):
+        if not tile.get("visible"):
+            continue
+        position = tile["position"]
+        if tile.get("cityName") and tile.get("owner") not in (None, civilization):
+            cities.append(
+                {
+                    "name": tile["cityName"],
+                    "civilization": tile["owner"],
+                    "position": copy.deepcopy(position),
+                    **{
+                        key: tile[source]
+                        for key, source in (
+                            ("health", "cityHealth"),
+                            ("maxHealth", "cityMaxHealth"),
+                            ("defensiveStrength", "cityDefensiveStrength"),
+                            ("population", "cityPopulation"),
+                            ("originalMajorCapital", "cityIsOriginalMajorCapital"),
+                        )
+                        if tile.get(source) is not None
+                    },
+                    "inspection": {"tool": "map_region", "arguments": {"center": copy.deepcopy(position), "radius": 3}},
+                }
+            )
+        for unit in tile.get("units", []):
+            if unit.get("civilization") not in (None, civilization):
+                units.append({**copy.deepcopy(unit), "position": copy.deepcopy(position)})
+    cities.sort(key=lambda c: (c["civilization"], c["position"]["x"], c["position"]["y"]))
+    units.sort(key=lambda u: (u["civilization"], u["position"]["x"], u["position"]["y"], u.get("name", "")))
+    readiness.update(
+        visibleForeignCities=cities[:24],
+        visibleForeignUnits=units[:48],
+        omittedVisibleForeignCities=max(0, len(cities) - 24),
+        omittedVisibleForeignUnits=max(0, len(units) - 48),
+        foreignObservationLimits="Currently visible foreign cities and units, including peaceful neighbors. Presence does not establish intent or reveal unseen forces. Use map_region for terrain, staging and additional visible details; hex positions are not travel times.",
+    )
+    return readiness
+
+
 def overview(snapshot: JsonObject) -> JsonObject:
     """No legal-offer lists, map tiles, yield breakdowns or repeated receipt bodies."""
     value = {
@@ -336,6 +383,8 @@ def overview(snapshot: JsonObject) -> JsonObject:
     }
     if snapshot.get("civilizationProfile") is not None:
         value["civilizationProfile"] = civilization_profile_summary(snapshot["civilizationProfile"])
+    if readiness := military_readiness_summary(snapshot):
+        value["militaryReadiness"] = readiness
     value["wonderOpportunities"] = [
         wonder_summary(wonder, snapshot.get("cities", [])) for wonder in snapshot.get("wonderOpportunities", [])
     ]

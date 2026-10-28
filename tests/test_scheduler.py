@@ -15,6 +15,8 @@ from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+import pytest
+
 from civ_agent.monitoring import MonitorStore, path_for, read_collection, read_record
 from civ_agent.protocol import JsonObject
 from civ_agent.scheduler import (
@@ -59,6 +61,69 @@ def test_subscription_health_warnings_are_visible_and_not_repeated(capsys, tmp_p
         agent.subscription.update(failures=3)
         scheduler.check_agent_health()
         assert "3 failures, 0 consecutive" in capsys.readouterr().out
+    finally:
+        scheduler.finalizer.shutdown()
+
+
+def test_background_quota_failure_is_saved_for_automatic_recovery(tmp_path):
+    from types import SimpleNamespace
+
+    from civ_agent.scheduler import QuotaExhausted
+
+    class QuotaAgent:
+        def call(self, operation):
+            assert operation == "health"
+            return {
+                "civilization": "Rome",
+                "runFailure": None,
+                "quotaFailure": {
+                    "reason": "usageLimitExceeded",
+                    "epoch": "g1",
+                    "purpose": "review",
+                    "activationId": "review-job",
+                },
+            }
+
+    store = SimpleNamespace(
+        root=tmp_path, save=lambda state: MonitorStore(path_for(tmp_path)).put("state", "run", state)
+    )
+    scheduler = Scheduler(store, None, {"Rome": QuotaAgent()}, {}, color="never")
+    scheduler.state = {"epoch": "g1"}
+    try:
+        with pytest.raises(QuotaExhausted, match="quota exhausted"):
+            scheduler.check_agent_health()
+        saved = read_record(path_for(tmp_path), "state", "run")
+        assert saved is not None
+        assert saved["quotaFailure"]["civilization"] == "Rome"
+        assert saved["quotaFailure"]["purpose"] == "review"
+        assert saved["quotaFailure"]["activationId"] == "review-job"
+        scheduler.state["epoch"] = "g2"
+        scheduler.check_agent_health()  # An earlier timeline must not pause a recovered game.
+    finally:
+        scheduler.finalizer.shutdown()
+
+
+def test_quota_recovery_does_not_override_another_services_fatal_failure(tmp_path):
+    from types import SimpleNamespace
+
+    class HealthAgent:
+        def __init__(self, civilization, **health):
+            self.health = {"civilization": civilization, "runFailure": None, **health}
+
+        def call(self, operation):
+            assert operation == "health"
+            return self.health
+
+    agents = {
+        "Rome": HealthAgent("Rome", quotaFailure={"reason": "usageLimitExceeded", "epoch": "g1"}),
+        "Greece": HealthAgent("Greece", runFailure={"error": "STOP_UNCONFIRMED", "diagnosticId": "d1", "job": "j1"}),
+    }
+    scheduler = Scheduler(SimpleNamespace(root=tmp_path), None, agents, {}, color="never")
+    scheduler.state = {"epoch": "g1"}
+    try:
+        with pytest.raises(RunnerError, match="STOP_UNCONFIRMED"):
+            scheduler.check_agent_health()
+        assert "quotaFailure" not in scheduler.state
     finally:
         scheduler.finalizer.shutdown()
 
@@ -746,6 +811,40 @@ class SchedulerTest(unittest.TestCase):
         self.assertEqual(self.saved()["handoffs"], 6)
         streams = read_collection(path_for(self.state), "streams")
         self.assertEqual({row["gameTurn"] for row in streams if row["civilization"] == "France"}, {0, 1})
+
+    def test_adaptive_effort_changes_between_turns_keep_configured_start_settings(self):
+        from tests.test_scheduler_effort import report
+
+        original = self.host.agent_request
+
+        def adaptive(civilization, body):
+            code, response = original(civilization, body)
+            status = response.get("status", {})
+            if "activationId" in status:
+                status.update(report("low" if status["gameTurn"] % 2 == 0 else "high"))
+            return code, response
+
+        self.host.agent_request = adaptive
+        first = self.run_cli("--max-turns", "1", "--max-seconds", "60")
+        self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
+        # Reproduce a durable boundary written by the old scheduler: its pinned
+        # effort was the selected low, with no configured baseline recorded.
+        state = self.saved()
+        for session in state["sessions"].values():
+            session.pop("configuredSettings")
+            session["effectiveSettings"]["reasoningEffort"] = "low"
+        MonitorStore(path_for(self.state)).put("state", "run", state)
+        resumed = self.run_cli("resume", "--max-turns", "2")
+        self.assertEqual(resumed.returncode, 0, resumed.stdout + resumed.stderr)
+        self.assertEqual(self.saved()["handoffs"], 4)
+        self.assertTrue(all(play["request"]["reasoningEffort"] is None for play in self.host.plays))
+        again = self.run_cli("resume", "--max-turns", "3")
+        self.assertEqual(again.returncode, 0, again.stdout + again.stderr)
+        self.assertEqual(self.saved()["handoffs"], 6)
+        self.assertTrue(all(play["request"]["reasoningEffort"] == "medium" for play in self.host.plays[-2:]))
+        self.assertTrue(
+            all(s["configuredSettings"]["reasoningEffort"] == "medium" for s in self.saved()["sessions"].values())
+        )
 
     def assert_human_interruption(self, halted):
         self.host.controllers = {"France": "HUMAN", "Rome": "AGENT", "Greece": "AGENT"}

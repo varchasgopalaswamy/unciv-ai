@@ -107,6 +107,7 @@ def parser(*, add_help=True, action="start"):
         add_decisions_arguments(result, defaults=False)
         result.add_argument("--review-interval", type=int)
         result.add_argument("--economy-interval", type=int)
+        result.add_argument("--military-interval", type=int)
         result.add_argument("--review-attempts", type=int)
     return result
 
@@ -145,6 +146,7 @@ def resolve_options(args):
             *DECISIONS_FIELDS,
             "review_interval",
             "economy_interval",
+            "military_interval",
             "review_attempts",
         ),
         "limits": ("max_turns", "max_invocations", "max_seconds", "turn_timeout", "startup_timeout"),

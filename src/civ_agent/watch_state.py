@@ -149,7 +149,7 @@ class SpecialistView:
             if phase == "running" and (self.job or {}).get("gameTurn") != turn:
                 return f"Starting T{turn}"
         if self.job is None:
-            return "No job yet" if self.role == "economy" else "Inactive · activates during wars"
+            return "No job yet"
         phase = (self.job.get("telemetry") or {}).get("phase") or "Waiting for telemetry"
         state = (self.job.get("modelStatus") or {}).get("state")
         if phase in {"STARTING", "RUNNING"} and state in {"waiting", "retrying"}:
@@ -268,6 +268,7 @@ class SpecialistReader:
             for key, value in record.get("usage", {}).items():
                 usage[key] = max(usage.get(key, 0), value)
             job.update(telemetry=telemetry, usage=usage)
+            job["configuredSettings"] = record.get("settings", {})
             job["modelStatus"] = record.get("modelStatus")
             job["error"] = record.get("error")
         view = replace(view, job=job)
@@ -315,6 +316,7 @@ class WatchSnapshot:
     diplomacy_available: bool = False
     strategies: tuple[StrategyView, ...] = ()
     specialists: tuple[SpecialistView, ...] = ()
+    container_status: JsonObject | None = None
 
     @property
     def epoch(self):
@@ -429,7 +431,16 @@ class WatchReader:
                 agents, snapshot.epoch, [job for job in jobs if job["purpose"] == "review"]
             )
             specialists = self.specialist_reader.read(agents, snapshot.epoch, jobs)
-            self.previous = replace(snapshot, strategies=strategies, specialists=specialists)
+            container = self.root / "container-status.json"
+            container_status = None
+            if container.is_file():
+                regular_file(container, private=True)
+                container_status = json.loads(container.read_text())
+                if not isinstance(container_status, dict):
+                    raise ValueError("Expected container status object")
+            self.previous = replace(
+                snapshot, strategies=strategies, specialists=specialists, container_status=container_status
+            )
             return self.previous
         except FileNotFoundError:
             return WatchSnapshot({}, {}, (), (), (), None)

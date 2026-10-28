@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 import shutil
+import sqlite3
 import subprocess
 from pathlib import Path
 
@@ -22,6 +23,22 @@ from tests.support import services
 DEFAULT_MODEL = "gpt-6-luna"
 DEFAULT_EFFORT = "medium"
 PLAYERS = ("Rome", "Greece", "France")
+
+
+def copy_position_checkpoint(source: Path, root: Path):
+    checkpoint = json.loads(source.read_text())
+    if checkpoint.get("formatVersion", 0) >= 9:
+        accounting = source.with_name(source.name + ".accounting.sqlite3")
+        if not accounting.is_file():
+            raise ValueError("Prepared position is missing its checkpoint accounting database")
+        destination = root / "exploration.json.accounting.sqlite3"
+        # Include committed WAL records without changing the prepared fixture.
+        with sqlite3.connect(accounting.as_uri() + "?mode=ro", uri=True) as reader:
+            with sqlite3.connect(destination) as writer:
+                reader.backup(writer)
+        destination.chmod(0o600)
+    write_private_json(root / "exploration.json", checkpoint)
+    return checkpoint
 
 
 def source_fingerprint(repository: Path) -> str:
@@ -85,7 +102,7 @@ def main() -> int:
         if checkpoint["communication"].get("jobs") or checkpoint.get("handoff", 0):
             parser.error("Position must have a fresh host ledger")
         players = tuple(humans)
-        write_private_json(root / "exploration.json", checkpoint)
+        copy_position_checkpoint(args.position.resolve() / "exploration.json", root)
         write_private_json(root / "initial-game.json", game)
         write_private_json(root / "position.json", preflight)
         ensure_players(root / "players.json", False, players)
@@ -167,7 +184,14 @@ def main() -> int:
 
             active_checkpoint = json.loads((root / "exploration.json").read_text())
             active_game = json.loads(active_checkpoint["gameJson"])
-            seed_memory(root, args.memory_seed, players[0], active_checkpoint["epoch"], active_game["turns"])
+            seed_memory(
+                root,
+                args.memory_seed,
+                players[0],
+                active_checkpoint["epoch"],
+                active_game["turns"],
+                position=json.loads((args.position / "initial-turn.json").read_text()),
+            )
         for offset, civilization in enumerate(players, 1):
             start(
                 [

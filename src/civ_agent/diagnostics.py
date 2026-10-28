@@ -1,5 +1,6 @@
 """Operator diagnostics: bounded files, background writes, and input-free failures."""
 
+import hashlib
 import json
 import logging
 import os
@@ -15,6 +16,7 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
+from civ_agent.model_status import MAX_LOG_LINE, error_fields
 from civ_agent.protocol import JsonObject
 from civ_agent.tls import private_directory
 
@@ -66,6 +68,60 @@ def exception_details(error: BaseException) -> JsonObject:
         return detail
 
     return describe(error)
+
+
+def codex_request_error(method: str, request_id: int, error: object) -> JsonObject:
+    """Retain control-error metadata without copying provider text or payloads."""
+    fields: JsonObject = {"rpcMethod": method, "rpcId": request_id}
+    if not isinstance(error, dict):
+        fields["reason"] = "malformedRpcError"
+        return fields
+    code = error.get("code")
+    if type(code) is int:
+        fields["rpcCode"] = code
+    candidates = [error]
+    data = error.get("data")
+    if isinstance(data, dict):
+        candidates.append(data)
+        if isinstance(data.get("error"), dict):
+            candidates.append(data["error"])
+    fields["reason"] = "other"
+    for candidate in candidates:
+        detail = error_fields(candidate)
+        if detail["reason"] != "other" and fields["reason"] != "usageLimitExceeded":
+            fields["reason"] = detail["reason"]
+        if "httpStatus" in detail:
+            fields["httpStatus"] = detail["httpStatus"]
+        for name in ("httpStatusCode", "httpStatus"):
+            status = candidate.get(name)
+            if type(status) is int and 100 <= status <= 599:
+                fields["httpStatus"] = status
+    message = error.get("message")
+    if isinstance(message, str):
+        fields["messageCharacters"] = len(message)
+        fields["messageSha256"] = hashlib.sha256(message.encode("utf-8", errors="replace")).hexdigest()
+        text = message[:MAX_LOG_LINE].lower()
+        if fields["reason"] == "other":
+            for reason, phrases in (
+                (
+                    "turnNotActive",
+                    ("no active turn", "turn is not active", "turn not active", "turn already completed"),
+                ),
+                ("threadNotFound", ("thread not found", "unknown thread")),
+                ("unsupportedReasoningEffort", ("unsupported reasoning effort", "reasoning effort is not supported")),
+            ):
+                if any(phrase in text for phrase in phrases):
+                    fields["reason"] = reason
+                    break
+    if fields["reason"] == "other" and type(code) is int:
+        fields["reason"] = {
+            -32700: "parseError",
+            -32600: "invalidRequest",
+            -32601: "methodNotFound",
+            -32602: "invalidParams",
+            -32603: "internalError",
+        }.get(code, "other")
+    return fields
 
 
 class _PrivateRotatingFileHandler(RotatingFileHandler):

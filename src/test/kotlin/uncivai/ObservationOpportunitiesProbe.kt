@@ -21,6 +21,7 @@ object ObservationOpportunitiesProbe {
                 "settlement-before-settler" -> settlementBeforeSettler(root)
                 "automation" -> UnitAutomationProbe.run(root)
                 "mechanics" -> MechanicsOverviewProbe.run(root)
+                "era-progress" -> EraProgressProbe.run(root)
                 "coverage-controls" -> CoverageCompletionProbe.controls(root)
                 "coverage-information" -> CoverageCompletionProbe.information(root)
                 "civilization-profile" -> CivilizationProfileProbe.vanilla(root)

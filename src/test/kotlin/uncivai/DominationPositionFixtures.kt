@@ -23,6 +23,7 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import uncivai.player.PlayerHost
 import uncivai.player.PlayerTurnJson
+import uncivai.player.PlayerTurnSnapshot
 import java.nio.file.Files
 import java.nio.file.Path
 import java.security.MessageDigest
@@ -30,7 +31,10 @@ import java.security.MessageDigest
 /** Operator-authored positions, not instructions: subsequent play uses ordinary native rules. */
 object DominationPositionFixtures {
     private val json = Json { prettyPrint = true }
-    private val cases = listOf("greece-build-up", "persia-ready", "persia-strong-defense")
+    private val cases = listOf(
+        "greece-build-up", "persia-ready", "persia-strong-defense", "persia-opportunity",
+        "greece-damaged-capital", "greece-hill-fortress",
+    )
 
     @JvmStatic fun main(args: Array<String>) {
         val root = Path.of(args.single())
@@ -38,7 +42,7 @@ object DominationPositionFixtures {
         Files.createDirectories(root)
         val positions = buildJsonArray {
             for (id in cases) {
-                val civilization = if (id == "greece-build-up") "Greece" else "Persia"
+                val civilization = if (id.startsWith("greece-")) "Greece" else "Persia"
                 val output = root.resolve(id)
                 Files.createDirectories(output)
                 HeadlessRuntime.create(output.resolve("runtime")) { create(civilization, id) }.use { runtime ->
@@ -51,6 +55,7 @@ object DominationPositionFixtures {
                     check(turn.diplomacy.knownCivilizations.single { it.civilizationId == "France" }.let { !it.atWar && it.declareWar.available })
                     check(turn.map.tiles.any { it.cityName == "Paris" && it.visible }) { "Target must be currently visible" }
                     check(turn.map.units.count { it.military } == if (id == "greece-build-up") 3 else 5)
+                    validateVariation(id, turn)
                     val savedGame = UncivFiles.gameInfoToString(game, forceZip = false)
                     Files.writeString(output.resolve("game.json"), savedGame)
                     Files.writeString(output.resolve("initial-turn.json"), PlayerTurnJson.json.encodeToString(turn))
@@ -71,6 +76,7 @@ object DominationPositionFixtures {
                     val turn = PlayerHost(runtime).bindPlayer(civilization).turn()
                     check(turn.phase == "ACTIVE" && turn.map.tiles.any { it.cityName == "Paris" && it.visible })
                     check(turn.diplomacy.knownCivilizations.single { it.civilizationId == "France" }.declareWar.available)
+                    validateVariation(id, turn)
                 }
                 println("DOMINATION_POSITION_READY $id")
             }
@@ -79,7 +85,7 @@ object DominationPositionFixtures {
     }
 
     private fun create(subject: String, id: String): GameInfo {
-        val nations = listOf(subject, "France", "China", "Arabia", "The Inca", if (subject == "Greece") "Persia" else "Greece")
+        val nations = listOf(subject, "France", "China", "Arabia", "Inca", if (subject == "Greece") "Persia" else "Greece")
         val starts = listOf(HexCoord(-6, 0), HexCoord(0, 0), HexCoord(8, 3), HexCoord(0, 10), HexCoord(-9, -10), HexCoord(4, -7))
         val parameters = GameParameters().apply {
             baseRuleset = BaseRuleset.Civ_V_Vanilla.fullName
@@ -153,17 +159,39 @@ object DominationPositionFixtures {
         val player = game.getCivilization(subject)
         val france = game.getCivilization("France")
         player.diplomacyFunctions.makeCivilizationsMeet(france)
-        if (subject == "Greece") {
+        if (id == "greece-build-up") {
             place(game, player, "Hoplite", HexCoord(-2, 0))
             place(game, player, "Archer", HexCoord(-3, -1))
             place(game, player, "Warrior", HexCoord(-5, 0))
+        } else if (subject == "Greece") {
+            for (position in listOf(HexCoord(-2, 0), HexCoord(-2, -1), HexCoord(-3, -2))) place(game, player, "Hoplite", position)
+            for (position in listOf(HexCoord(-2, -2), HexCoord(-3, -1))) place(game, player, "Archer", position)
         } else {
             player.goldenAges.enterGoldenAge()
             for (position in listOf(HexCoord(-2, 0), HexCoord(-2, -1), HexCoord(-3, -2))) place(game, player, "Persian Immortal", position)
             for (position in listOf(HexCoord(-3, -1), HexCoord(-4, -1))) place(game, player, "Archer", position)
         }
         place(game, player, "Worker", HexCoord(-6, 1))
-        if (id == "persia-strong-defense") {
+        if (id == "persia-opportunity") {
+            // Prepared damage from earlier fighting. Native healing and all
+            // later diplomatic/combat actions proceed normally after startup.
+            france.getCapital()!!.health = 50
+            france.units.getCivUnits().single().health = 20
+        }
+        if (id == "greece-damaged-capital") {
+            france.getCapital()!!.health = 35
+            france.units.getCivUnits().single().health = 30
+            // This army has ordinary two-point movement rather than Persia's
+            // Golden Age movement. Keep the short western approaches open.
+            for (position in listOf(HexCoord(-1, 0), HexCoord(-1, -1))) {
+                game.tileMap[position].apply {
+                    setTerrainFeatures(emptyList())
+                    setImprovement("Farm", france)
+                    setTerrainTransients()
+                }
+            }
+        }
+        if (id == "persia-strong-defense" || id == "greece-hill-fortress") {
             france.units.getCivUnits().toList().forEach { it.destroy() }
             france.tech.addTechnology("Iron Working", false)
             france.getCapital()!!.apply {
@@ -175,6 +203,24 @@ object DominationPositionFixtures {
             }
             for (position in listOf(HexCoord(0, 0), HexCoord(-1, 0), HexCoord(0, 1), HexCoord(-1, -1))) place(game, france, "Swordsman", position)
             place(game, france, "Archer", HexCoord(1, 1))
+        }
+        if (id == "greece-hill-fortress") {
+            game.tileMap[HexCoord(0, 0)].apply {
+                setTerrainFeatures(arrayListOf("Hill"))
+                setTerrainTransients()
+            }
+            game.tileMap[HexCoord(-1, -1)].apply {
+                setTerrainFeatures(arrayListOf("Hill", "Forest"))
+                setImprovement(null, france)
+                setTerrainTransients()
+            }
+            // Leave a sightline to the city and its defenders. The agent can
+            // assess the fortification rather than receiving an unseen target.
+            game.tileMap[HexCoord(-1, 0)].apply {
+                setTerrainFeatures(emptyList())
+                setImprovement("Farm", france)
+                setTerrainTransients()
+            }
         }
         players.forEach { civ ->
             civ.popupAlerts.clear()
@@ -189,6 +235,24 @@ object DominationPositionFixtures {
             civ.updateStatsForNextTurn()
         }
         return game
+    }
+
+    private fun validateVariation(id: String, turn: PlayerTurnSnapshot) {
+        if (id !in setOf("greece-damaged-capital", "greece-hill-fortress")) return
+        check(turn.economy!!.goldenAge.turnsRemaining == 0)
+        check(turn.map.units.count { it.name == "Hoplite" } == 3)
+        check(turn.map.units.count { it.name == "Archer" } == 2)
+        check(turn.map.units.filter { it.military }.all { it.health == 100 && it.movement == "2/2" })
+        val capital = turn.map.tiles.single { it.cityName == "Paris" && it.visible }
+        val visibleDefenders = turn.map.tiles.filter { it.visible }.flatMap { it.units }.filter { it.civilization == "France" && it.military }
+        if (id == "greece-damaged-capital") {
+            check(capital.cityHealth == 35 && capital.cityMaxHealth == 200)
+            check(visibleDefenders.single().let { it.name == "Warrior" && it.health == 30 })
+        } else {
+            check(capital.cityHealth == capital.cityMaxHealth && capital.cityMaxHealth == 250)
+            check("Hill" in capital.features.orEmpty())
+            check(visibleDefenders.count { it.name == "Swordsman" } >= 3)
+        }
     }
 
     private fun place(game: GameInfo, player: Civilization, name: String, position: HexCoord) = checkNotNull(game.tileMap.placeUnitNearTile(position, name, player)).also {

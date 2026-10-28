@@ -6,6 +6,7 @@ in the operator manifest; the agents receive only ordinary authorized reads.
 
 import argparse
 import concurrent.futures
+import hashlib
 import json
 import os
 import re
@@ -48,6 +49,26 @@ def validate_case(case, position):
     minimum = case.get("minimumCulturePerTurn")
     if minimum is not None and float((position.get("culture") or {}).get("culturePerTurn", 0)) < minimum:
         raise ValueError(f"{case['id']}: cultural specialization is missing")
+
+
+def freeze_memory_seeds(cases, manifest_path, root):
+    """Keep one operator seed snapshot per case, shared by every source variant."""
+    seeds = {}
+    for case in cases:
+        if not case.get("memorySeed"):
+            continue
+        source = (manifest_path.resolve().parent / case["memorySeed"]).resolve()
+        raw = source.read_bytes()
+        payload = json.loads(raw)
+        if payload.get("civilization") != case["civilization"]:
+            raise ValueError(f"{case['id']}: memory seed belongs to another civilization")
+        digest = hashlib.sha256(raw).hexdigest()
+        destination = root / "memory-seeds" / f"{digest}.json"
+        destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        destination.write_bytes(raw)
+        destination.chmod(0o600)
+        seeds[case["id"]] = {"source": str(source), "path": str(destination), "sha256": digest}
+    return seeds
 
 
 def evaluation_status(root, expected_rounds, exit_code):
@@ -138,6 +159,7 @@ def main():
     if root.exists() and any(root.iterdir()):
         parser.error("Use a fresh suite directory; failed attempts are retained")
     root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    memory_seeds = freeze_memory_seeds(cases, args.manifest, root)
     processes = []
     lock = threading.Lock()
     stopping = threading.Event()
@@ -151,6 +173,7 @@ def main():
         "reviewInterval": args.review_interval,
         "fast": args.fast,
         "freshPrivateMemory": True,
+        "memorySeeds": memory_seeds,
         "positions": cases,
         "manifest": manifest,
         "sources": {
@@ -198,6 +221,8 @@ def main():
             str(args.review_interval),
             *(["--fast"] if args.fast else []),
         ]
+        if case["id"] in memory_seeds:
+            command += ["--memory-seed", memory_seeds[case["id"]]["path"]]
         started = time.monotonic()
         environment = {
             **os.environ,

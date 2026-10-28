@@ -29,6 +29,56 @@ def query(tool, **arguments):
     return DetailQuery.model_validate({"tool": tool, "arguments": arguments})
 
 
+def test_military_overview_includes_peaceful_opportunities_without_fogged_or_owned_units():
+    snapshot = reviewed()
+    snapshot["civilizationProfile"] = {"name": "Rome"}
+    foreign = {
+        "position": {"x": 2, "y": 0},
+        "visible": True,
+        "owner": "Greece",
+        "cityName": "Sparta",
+        "cityHealth": 150,
+        "cityMaxHealth": 200,
+        "cityDefensiveStrength": 13,
+        "units": [{"name": "Warrior", "civilization": "Greece", "military": True, "atWar": False}],
+    }
+    own = {
+        "position": {"x": 0, "y": 0},
+        "visible": True,
+        "owner": "Rome",
+        "cityName": "Rome",
+        "units": [{"name": "Archer", "civilization": "Rome", "military": True}],
+    }
+    hidden = {**copy.deepcopy(foreign), "visible": False, "cityName": "Hidden city"}
+    snapshot["map"]["tiles"] = [foreign, own, hidden]
+    readiness = overview(snapshot)["militaryReadiness"]
+    assert [c["name"] for c in readiness["visibleForeignCities"]] == ["Sparta"]
+    assert readiness["visibleForeignCities"][0]["defensiveStrength"] == 13
+    assert readiness["visibleForeignCities"][0]["inspection"]["arguments"]["center"] == {"x": 2, "y": 0}
+    assert [u["civilization"] for u in readiness["visibleForeignUnits"]] == ["Greece"]
+    foreign["visible"] = False
+    refreshed = overview(snapshot)["militaryReadiness"]
+    assert refreshed["visibleForeignCities"] == [] and refreshed["visibleForeignUnits"] == []
+
+
+def test_foreign_opportunity_overview_reports_omissions_at_its_bounds():
+    snapshot = reviewed()
+    snapshot["civilizationProfile"] = {"name": "Rome"}
+    snapshot["map"]["tiles"] = [
+        {
+            "position": {"x": i, "y": 0},
+            "visible": True,
+            "owner": "Greece",
+            "cityName": f"City {i}",
+            "units": [{"name": "Archer", "civilization": "Greece"}] * 2,
+        }
+        for i in range(30)
+    ]
+    readiness = overview(snapshot)["militaryReadiness"]
+    assert len(readiness["visibleForeignCities"]) == 24 and readiness["omittedVisibleForeignCities"] == 6
+    assert len(readiness["visibleForeignUnits"]) == 48 and readiness["omittedVisibleForeignUnits"] == 12
+
+
 def test_attack_choices_do_not_change_attack_allowance_and_abilities_count_only_available():
     snapshot = reviewed()
     units = snapshot["map"]["units"]

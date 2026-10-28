@@ -56,6 +56,7 @@ class Evidence(BaseModel):
     beliefs: Annotated[list[JsonObject], Field(max_length=6)] = Field(default_factory=list)
     newEvidence: Annotated[list[JsonObject], Field(max_length=16)] = Field(default_factory=list)
     earlyReview: JsonObject | None = None
+    militaryReview: JsonObject | None = None
     effortSelection: EffortEvidence | None = None
     cities: Annotated[list[CityEvidence], Field(max_length=CITY_LIMIT)] = Field(default_factory=list)
     cityContext: JsonObject = Field(default_factory=dict)
@@ -90,7 +91,15 @@ def request_body(evidence, settings):
             raise ValueError("Effort selection is not permitted by operator settings")
         if any(
             evidence.get(field)
-            for field in ("retrieval", "preservation", "beliefs", "newEvidence", "earlyReview", "cities")
+            for field in (
+                "retrieval",
+                "preservation",
+                "beliefs",
+                "newEvidence",
+                "earlyReview",
+                "militaryReview",
+                "cities",
+            )
         ):
             raise ValueError("Effort selection requires its own batch")
         questions.append(effort_question(effort))
@@ -196,6 +205,22 @@ def request_body(evidence, settings):
                 "against another review's cost. Routine progress is not enough. Missing or shortened comparisons "
                 "leave uncertainty.",
                 {"review": "Meaningful new evidence warrants an early review.", "wait": "Wait for the normal review."},
+            )
+        )
+    if evidence.get("militaryReview"):
+        questions.append(
+            choice(
+                "military_review",
+                "Would a full military planning pass likely change deployments, military investment or the "
+                "assessment of an opportunity before the next scheduled military review? Compare militaryReview's "
+                "current observations with its completed planning baseline, objectives and reconsideration criteria. "
+                "Weigh another review's cost against missed opportunities and the cost of waiting. Routine progress "
+                "alone is insufficient. Decide whether to review, not whether to declare war or take any game action. "
+                "Unseen forces and missing information remain unknown.",
+                {
+                    "review": "Changed evidence warrants military planning now.",
+                    "wait": "Keep the periodic and immediate-event schedule.",
+                },
             )
         )
     if not questions or len(questions) > settings.decisions_max_questions:

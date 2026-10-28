@@ -71,6 +71,12 @@ either service; stale images fail with a rebuild instruction. Run
 games before upgrading their shared services; saved games retain their pinned
 runtime images.
 
+Game-only image updates can reuse an already running Decisions broker when the
+selected image and the authenticated broker health endpoint both match the
+launcher's complete version contract. This permits updating a stopped game
+alongside other active games. A protocol or policy mismatch still requires
+rebuilding and explicitly restarting the shared services.
+
 ## Start and watch
 
 ```sh
@@ -84,6 +90,11 @@ and two city-states on Small Pangaea, Ancient, Quick/Prince. Victory conditions
 are the native defaults. Games start with concurrent opening reviews; later
 reviews run after every fifth complete round. Quitting the TUI leaves play running.
 The TUI is an operator view and exposes all players' private information.
+
+Model quota exhaustion waits for recovery instead of ending the game. The TUI
+shows the affected player and counts down to the next attempt. The supervisor
+retries from the interrupted turn's checkpoint every five minutes, without the
+model-capacity retry limit. Operator stop and configured game budgets still apply.
 
 The launcher returns after starting a background supervisor. `game status` and
 `container-status.json` report eventual startup failures or stops; the launch
@@ -110,7 +121,7 @@ names. Mod content is out of scope. Choose `map_size` or a custom `map_radius`.
 | Section | Settings |
 | --- | --- |
 | `[game]` | `civilizations`, `randomize`, `master_seed`, `map_seed`, `starting_position_seed`, `assignment_seed`, `map_type`, `map_size`/`map_radius`, `difficulty`, `speed`, `starting_era`, `city_states`, `victories` |
-| `[agents]` | `provider` (`openai` or `openrouter`), `model`, `reasoning_effort`, `communication_reasoning_effort`, `review_interval`, `review_attempts`, `economy_interval` (default 5 own turns, with earlier event-driven reviews), `strategy_guide`, `civilization_guide`, `fast` |
+| `[agents]` | `provider` (`openai` or `openrouter`), `model`, `reasoning_effort`, `communication_reasoning_effort`, `review_interval`, `review_attempts`, `economy_interval` and `military_interval` (each default 5 own turns, with earlier event-driven reviews), `strategy_guide`, `civilization_guide`, `fast` |
 | `[[players]]` | Unique `name`, `controller` (`agent`, `human`, `built_in_ai`; defaults to `agent`); optional agent `provider`/`model`/`reasoning_effort`/`communication_reasoning_effort` |
 | `[limits]` | `max_turns`, `max_invocations`, `max_seconds`, `turn_timeout`, `startup_timeout`, `max_concurrent_jobs`, `model_capacity_retries`, `model_capacity_retry_delay` |
 | `[resources.controller]`, `[resources.desktop]`, `[resources.agent]` | `memory_mib`, `cpus`, `pids` |
@@ -178,15 +189,22 @@ the launcher chooses and records it. All seeds are signed 64-bit integers;
 valid for the master, starting-position and assignment seeds.
 
 `map_seed` controls native terrain generation. `starting_position_seed` controls
-native civilization/city-state selection, starting positions, start normalization
-and resource placement. The same seeds, settings, roster order and engine version
-reproduce the opening map and positions. Each game still has a unique engine ID;
-these seeds do not promise identical later combat, AI or model decisions.
+native civilization/city-state selection, which civilization occupies each start,
+start normalization and resource placement. `assignment_seed` independently
+controls which player controls each civilization when `randomize = true`.
+Changing only `assignment_seed` preserves civilization start locations and map
+resources, including when humans, agents and built-in AI exchange civilizations.
+Native civilization start biases and controller-dependent difficulty bonuses still
+apply; a civilization's starting unit inventory can change when its controller
+changes between an external player and built-in AI.
+The same map/starting-position seeds, settings, civilization roster and engine
+version reproduce the opening map and positions. Each game still has a unique
+engine ID; these seeds do not promise identical later combat, AI or model decisions.
 
 **After assigning civilizations**, turns are ordered human first, then agents,
 then all built-in AI players. Each group retains civilization-list order; this
-does not change which civilization anyone controls. `game status` shows the
-resolved players in turn order.
+does not change civilization placement or which civilization anyone controls.
+`game status` shows the resolved players in turn order.
 
 CLI options override corresponding TOML fields. `--player-model "Luna 1=gpt-6-sol"`
 and `--player-reasoning-effort "Luna 2=high"` select players by stable names.
@@ -316,6 +334,16 @@ model/game retry loop. Host reboot requires explicit resume; lingering covers lo
 not automatic boot-time relaunch of games.
 
 ## Benchmark batches
+
+For fixed openings screened for comparable starting conditions, use
+[Pangaea](../../examples/balanced-maps/pangaea.toml) or
+[Two Continents](../../examples/balanced-maps/two-continents.toml). Each uses a
+Medium map, twelve city-states, one built-in AI, four `gpt-6-luna` players and one
+`gpt-6.1-terra` player. Both pin the map and starting-position seeds while leaving
+player assignments randomized. The accompanying
+[assessment](../../examples/balanced-maps/assessment.json) records per-civilization
+opening metrics, natural-wonder access and the remaining differences. These are
+heuristically comparable starts, not a guarantee of equal winning chances.
 
 Use an ordinary single-game TOML as the template. Batch size and concurrency are
 command options, not a second configuration format. Generate twenty reusable

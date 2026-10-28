@@ -11,7 +11,8 @@ from civ_agent.agent_history import HISTORY_METHODS
 from civ_agent.agent_settings import codex_thread_settings, valid_setting
 from civ_agent.civilization_state import job_id
 from civ_agent.effort_decisions import base_settings
-from civ_agent.model_status import PROGRESS_METHODS, TOOL_ITEMS
+from civ_agent.llm_metrics import record_llm_metrics
+from civ_agent.model_status import PROGRESS_METHODS, TOOL_ITEMS, quota_failure
 from civ_agent.observations import overview
 from civ_agent.proposal_gateway import JobAccess, public_result
 from civ_agent.protocol import JsonObject
@@ -325,6 +326,8 @@ class ReviewRuntime:
             while True:
                 await self.pending.wait()
                 self.pending.clear()
+                if any(value["epoch"] == service.chat.epoch for value in service.quota_failures.values()):
+                    continue
                 async with service.gateway.admit(review=True):
                     task = await self.persist(self.store.pending)
                 if task is None:
@@ -359,9 +362,14 @@ class ReviewRuntime:
                         "strategic_review_failed", error=error, job=attempt_id, gameTurn=task["turn"]
                     )
                     async with service.gateway.admit(review=True):
-                        await self.persist(self.store.failed, task["job"], str(error) or type(error).__name__)
+                        quota = attempt_id in service.quota_failures
+                        await self.persist(
+                            self.store.failed, task["job"], str(error) or type(error).__name__, quota=quota
+                        )
                         latest = await self.persist(self.store.at_turn, task["turn"])
-                        if latest["attempts"] >= self.attempts:
+                        if quota:
+                            continue  # The supervisor retries after its quota cooldown, preserving the pending review.
+                        elif latest["attempts"] >= self.attempts:
                             await self.persist(self.store.unavailable, task["job"], str(error) or type(error).__name__)
                         else:
                             self.pending.set()
@@ -459,8 +467,18 @@ class ReviewRuntime:
 
         async def notification(method, params):
             nonlocal completed
+            if method == "service/llmMetrics":
+                await record_llm_metrics(service, record, params)
+                return
             if method == "service/transportStatus":
                 service.diagnostics.emit("codex_transport", activationId=id, **params)
+                return
+            if method == "service/requestFailed":
+                record["requestFailure"] = params
+                if quota := quota_failure(record, params):
+                    service.quota_failures[id] = quota
+                service.diagnostics.emit("codex_request_failed", activationId=id, purpose="review", **params)
+                await save()
                 return
             if method == "service/transportFailure":
                 record["transportError"] = str(params.get("reason", "CODEX_TRANSPORT_FAILED"))[:200]
@@ -480,6 +498,8 @@ class ReviewRuntime:
                 done.set()
             if params.get("threadId") != record["threadId"]:
                 return
+            if method == "service/modelStatus" and (quota := quota_failure(record, params)):
+                service.quota_failures[id] = quota
             if not closing and (expected is None or params.get("turnId") == expected):
                 progress.observe(method, params)
             if method == "thread/tokenUsage/updated":

@@ -169,7 +169,7 @@ def test_exact_retries_do_not_duplicate_proposals_and_state_reopens(tmp_path):
 
 
 @run_async
-async def test_dynamic_activation_escort_fencing_and_retirement(tmp_path):
+async def test_dynamic_activation_escort_fencing_and_peacetime_ownership(tmp_path):
     memory = CivilizationState(tmp_path, "Rome")
     memory.bind("e1")
     io = ServiceIO()
@@ -225,21 +225,22 @@ async def test_dynamic_activation_escort_fencing_and_retirement(tmp_path):
         )
         roles.ready["gameplay"] = True
         await roles.synchronize_war(position(war=False))
-        assert not roles.military_active and roles.ready["military"]
-        assert jobs["military"].gameplay_ended.is_set()
+        assert not roles.military_active and not roles.ready["military"]
+        assert not jobs["military"].gameplay_ended.is_set()
         assert not roles.ready["gameplay"]
-        # A post-peace notification is durable, but the retired conversation
-        # cannot acknowledge it or participate in the native turn barrier.
+        # The same manager retains the army and can review peacetime priorities.
         message = await roles.role_tool(
             jobs["gameplay"],
             "role_message",
-            {"to": "military", "text": "Peace was enacted; retire your role."},
+            {"to": "military", "text": "Peace was enacted; review readiness and staging."},
             "peace-notification",
         )
         assert "error" not in message
-        assert roles.war_state["messages"][-1]["text"] == "Peace was enacted; retire your role."
-        assert roles.ready["military"]
-        assert not roles.resumes["military"].is_set()
+        assert roles.war_state["messages"][-1]["text"] == "Peace was enacted; review readiness and staging."
+        assert not roles.ready["military"]
+        assert roles.resumes["military"].is_set()
+        assert roles.unit_owner({"handle": "scout", "military": True}) == "military"
+        await roles.tool(jobs["military"], "finish_role", {})
         await roles.tool(jobs["economy"], "finish_role", {})
         await roles.tool(jobs["gameplay"], "finish_role", {})
         assert all(roles.ready.values())

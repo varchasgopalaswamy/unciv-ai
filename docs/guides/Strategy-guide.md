@@ -1,10 +1,50 @@
 # Optional player strategy guide
 
-The [strategy reference](../../src/civ_agent/strategy_guide.md) covers exploration
-and expansion, city economics, research and policies, diplomacy and combat, and
-completing a victory. It explicitly
-labels itself as suggestions that players may ignore or adapt. It sets no build
-order, city count, mandatory diplomatic response, or gameplay restrictions.
+The [permanent core](../../src/civ_agent/strategy_guide.md) covers economic
+discipline, investment timing, diplomacy, victory alternatives and player agency.
+An enabled guide adds one [era briefing](../../src/civ_agent/strategy_eras/)
+selected by our civilization's current era. These are suggestions players may
+ignore or adapt; they set no build order, city count, mandatory diplomatic
+response or gameplay restrictions.
+
+| Vanilla era | Briefing emphasis |
+| --- | --- |
+| Ancient | Useful exploration, settlement, food, improvements and civilian protection |
+| Classical | Productive settlements, happiness, National College timing and practical borders |
+| Medieval | Universities, workshops, city roles and attainable military opportunities |
+| Renaissance | Public Schools, observatories, specialist tradeoffs and promising victory directions |
+| Industrial | Factories, transport, useful modern forces and relative benefits of cooperation |
+| Modern | Credible victory routes, Research Labs, feasible intervention and verified project evidence |
+| Future | Timely completion, coordinated production, protection and concrete coalition contributions |
+
+Main, interactive play and the strategic adviser receive all four sections of
+the current-era briefing. Economy receives only its economic section, military
+only its military section, and communication only its diplomatic section. The
+era briefing is about 200–220 words for main and 50–70 for a focused role, in
+addition to the roughly 300-word permanent core. An unknown or legacy missing
+era falls back to the core without assuming an opening or a late-game capability.
+
+Preloads also surface explicit current unit-supply production penalties, negative
+happiness or income, and owned cities with negative food before older strategic
+plans. These are summaries of already supplied observations, not new forecasts
+or instructions to discard useful units. Missing values are not shortages, and
+the summary makes no claim that unobserved workers or production are idle.
+
+A known major civilization in a later era adds a threat warning; it does not
+replace our developmental briefing. The Apollo and spaceship reference is included
+only after our civilization or a known major reaches the Modern era or later.
+Before then, preloads discourage routine reports about distant research-based
+victory projects. Earlier military, cultural or diplomatic opportunities remain
+relevant. Reaching Modern still does not justify repeated unchanged project
+reports or imply that a rival has started construction.
+
+Era context, the threat warning, current constraints and reporting guidance also
+apply when the optional guide is disabled; detailed era briefings follow the
+existing `strategy_guide` setting. The Modern threshold uses the native ruleset's
+era order and the same known-player era information available in the politics
+overview; unmet rivals and city-states do not trigger it. Explicit victory and
+research reads remain available at every era. Existing messages, notebook entries
+and strategic advice retain their text.
 
 ## Enable or disable
 
@@ -70,13 +110,19 @@ labeled as optional reference suggestions, before private memory and observation
 The order is general strategy, own-civilization advice, then dynamic context.
 The developer message contains the operational contract and tool definitions.
 Interactive startup likewise places the reference before changing context.
-When disabled, the preexisting prompt
-text is unchanged.
+Disabling the optional references leaves the operational instructions and the
+current era/constraint context in place.
 
 Reference size changes as the advice is edited; use the recorded character counts
 and provider usage for current measurements. Prefix placement permits cache reuse,
 but does not guarantee cache hits; cached tokens still occupy context. See
 [prompt caching](../architecture/Prompt-caching.md) for context layout and the measured client limitations.
+
+The permanent core and briefings are cached package text; selection uses fresh
+era facts supplied with that job. A frozen review retains its captured era even
+if live play later advances. Only the selected era and role sections enter the
+preload; the other era files are not appended. Existing `startup.strategyGuide`
+fingerprints therefore change when the supplied era or role changes.
 
 Each job's `startup.strategyGuide` and `startup.civilizationGuide` record
 `enabled`, `characters`, and a SHA-256 fingerprint of the exact reference.

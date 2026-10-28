@@ -186,6 +186,9 @@ class NegotiationSuspensionTests(AgentServiceTestCase):
     async def test_completed_sibling_action_and_its_state_are_not_lost(self):
         job = await self.start_game()
         gateway = self.service.gateway
+        # Main retains civilian movement; military owns combat units in peace too.
+        self.models.host.view["map"]["units"][0].update(name="Worker", military=False)
+        await gateway.invoke(job, "player_turn", {}, "civilian-position")
         arguments = {"kind": "MOVE_UNIT", "target": "unit1", "destination": {"x": 1, "y": 0}}
         # This call could finish inside a JS batch before the offer starts.
         await gateway.invoke(job, "unit_details", {"target": "unit1"}, "inspect")
@@ -274,7 +277,7 @@ class NegotiationSuspensionTests(AgentServiceTestCase):
         await self.suspended()
         await self.until(lambda: self.service.records[economy.id].get("negotiationWait") == {"state": "waiting"})
         assert self.service.turn_roles is not None
-        assert self.service.turn_roles.ready == {"gameplay": False, "economy": False}
+        assert self.service.turn_roles.ready == {"gameplay": False, "economy": False, "military": True}
         assert runtime.turn_id == "economy-pass-1" and not economy.model_stopped.is_set()
         self.models.host.active = False
         self.models.host.settled.set()

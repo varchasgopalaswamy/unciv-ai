@@ -219,6 +219,7 @@ class AdaptiveEffortServiceTests(AgentServiceTestCase):
         self.assertEqual("COMPLETED", first["phase"])
         self.assertEqual("medium", first["settings"]["reasoningEffort"])
         self.assertEqual("low", first["effectiveSettings"]["reasoningEffort"])
+        self.assertEqual("medium", first["configuredSettings"]["reasoningEffort"])
         assert self.service.match is not None
         self.assertEqual("medium", self.service.match["effectiveSettings"]["reasoningEffort"])
         economies = [r for r in self.service.records.values() if r.get("purpose") == "economy"]
@@ -236,6 +237,7 @@ class AdaptiveEffortServiceTests(AgentServiceTestCase):
         self.assertEqual("COMPLETED", second["phase"])
         self.assertEqual("medium", second["settings"]["reasoningEffort"])
         self.assertEqual("medium", second["effectiveSettings"]["reasoningEffort"])
+        self.assertEqual(first["configuredSettings"], second["configuredSettings"])
         second_turn = next(p for method, p in self.factory.calls if method == "turn/start")
         self.assertEqual("medium", second_turn["effort"])
 

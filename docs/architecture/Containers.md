@@ -28,7 +28,10 @@ master and retries collisions deterministically; generation writes no resolved
 configuration or run state. Batch start reads the files in filename order and
 never enumerates rotations or a Cartesian product. Random assignment includes
 every controller type. Turn order is applied afterward: human, agents, built-in
-AI. Native setup validation runs the packaged engine before model work.
+AI. Seeded native placement uses a stable civilization order, so assigning a
+different player or controller type does not move a civilization's start or
+change map resources. Native AI difficulty bonuses still follow controller type.
+Native setup validation runs the packaged engine before model work.
 `container_supervisor.py` owns lifecycle, resource sampling, health checks and
 the batch scheduler;
 `container_runtime.py` runs services inside images. The existing scheduler still

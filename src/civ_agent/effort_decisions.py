@@ -46,7 +46,7 @@ def question(evidence):
     role = "main" if evidence["role"] == "gameplay" else "economy"
     responsibility = (
         "Handle research, scouting, civilians, settlement and diplomacy. Economy owns city management; "
-        "an active Military role owns unescorted combat units during wars."
+        "Military owns unescorted combat units in peace and war, including military reconnaissance."
         if role == "main"
         else "Handle city production, purchases, citizen focus, growth and saved city plans, "
         "considering empire constraints and requests."
@@ -158,7 +158,7 @@ def brief(prepared, plans, role):
     coordination = prepared.get("economyCoordination") or {}
     value["coordination"] = {
         key: copy.deepcopy(coordination[key])
-        for key in ("militaryActive", "cityOverrides", "rolesFinished")
+        for key in ("militaryActive", "militaryAtWar", "militarySchedule", "cityOverrides", "rolesFinished")
         if key in coordination
     }
     value["coordination"]["requests"] = [

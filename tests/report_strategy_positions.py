@@ -59,7 +59,7 @@ def native_position(checkpoint_path, civilizations):
                         "foodStored": c.get("population", {}).get("foodStored", 0),
                         "buildings": c.get("cityConstructions", {}).get("builtBuildings", []),
                         "queue": c.get("cityConstructions", {}).get("constructionQueue", []),
-                        "position": c["location"],
+                        "position": {axis: c.get("location", {}).get(axis, 0) for axis in ("x", "y")},
                     }
                     for c in civ.get("cities", [])
                 ],

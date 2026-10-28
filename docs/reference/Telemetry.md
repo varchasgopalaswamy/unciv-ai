@@ -43,6 +43,16 @@ the exact response-ID count from that thread's local Codex usage records. Only
 usage records are read; conversation content is not copied into telemetry. A
 missing or malformed trace leaves the live counters and incomplete label intact.
 
+Codex control RPC rejections produce `codex_request_failed` records in the owning
+player service's private `diagnostics.jsonl`. Gameplay, economy, military,
+communication and review jobs also retain `requestFailure` in their lifecycle
+record. Details identify the activation, purpose, RPC method and ID, numeric error
+code, known error category, structured HTTP status when supplied, and available
+thread/turn IDs. The provider message's length and SHA-256 fingerprint distinguish
+repeated failures without copying free-form error text, request inputs, headers or
+credentials. Error reporting drains during process shutdown even when a request
+fails before the thread or model turn has been established.
+
 Strategic reviewers have separate `review` jobs. Periodic reviews link to their
 source gameplay job; opening reviews have no parent and count toward their owner's
 turn 0. Every attempt's tokens, calls and duration count toward that source turn,
@@ -99,6 +109,47 @@ Delayed provider reports or an unfinished strategic review can leave the source
 turn's accounting incomplete after gameplay has advanced. Completion, interruption
 and unavailable usage remain distinguishable. Game shutdown stops remaining work
 and flushes accounting, preserving the native result independently of advice.
+
+## Model and host latency profiles
+
+New agent services collect selected Codex OpenTelemetry timing histograms through
+a per-process collector bound to loopback inside the service container. Only
+allowlisted numeric histograms and bounded success/status attributes are retained
+in the service's `telemetry/accounting.sqlite3`, in `llm_metrics`. Prompts,
+messages, tool arguments/results, credentials, and arbitrary OTel attributes are
+not recorded. Cumulative exports replace earlier samples; duplicate or reordered
+exports cannot add the same spending or timing twice. Profiling does not change
+native token accounting or game checkpoints. Periodic export limits loss on an
+interrupted process, but the last unexported observations can still be missing.
+
+Inspect one game or aggregate batch directories without contacting any service:
+
+```sh
+.venv/bin/civ-agent match profile --state-dir PATH --since-restart
+.venv/bin/civ-agent match profile --state-dir BATCH_A BATCH_B --since-restart --json
+```
+
+The report keeps provider-reported inference time, API transport, time to first
+token, full Codex turns, and tool latency separate. These are the runner's
+[documented metrics](https://learn.chatgpt.com/docs/config-file/config-advanced#runtime-and-model-transport).
+An HTTP request timer does not include the entire streamed response; a Codex turn
+can include several model requests and tools. Provider inference measurements are
+shown only when supplied by the upstream transport. No residual job time is
+presented as measured inference. Counts, sums, means and histogram percentile
+upper bounds are available by model and role in JSON output.
+
+Host round trips come from service diagnostics, excluding idle communication
+subscription reads. They include network and service overhead and have the
+diagnostic files' bounded retention. Decision latency comes from classifier
+records, with repeated advisory receipts deduplicated. Completed model-job elapsed
+time is reported separately. Calls/jobs can overlap across roles, civilizations
+and games: these cumulative timings are not percentages of match wall time.
+`--since-restart` excludes cumulative histogram series that began before that
+launch, since a histogram cannot be sliced accurately at an arbitrary timestamp.
+
+Existing images and historical jobs have no retroactive LLM timing measurements.
+Build a new runtime image and resume games with that image to begin collection;
+older databases remain readable and missing measurements are marked unavailable.
 
 ## Partial memory rejections
 

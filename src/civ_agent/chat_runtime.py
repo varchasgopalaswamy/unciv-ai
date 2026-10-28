@@ -12,6 +12,8 @@ from civ_agent.agent_settings import codex_thread_settings, communication_effort
 from civ_agent.civilization_state import StateConflict, job_id, receipt_is_uncertain
 from civ_agent.coordination_updates import context_compacted
 from civ_agent.host_connection import HostConnection
+from civ_agent.llm_metrics import record_llm_metrics
+from civ_agent.model_status import quota_failure
 from civ_agent.protocol import JsonObject
 from civ_agent.provider_usage import reconcile_provider_usage
 from civ_agent.schemas import ConnectRequest, validate
@@ -319,6 +321,9 @@ class ChatRuntime:
 
         async def notification(method, params):
             nonlocal final, completed
+            if method == "service/llmMetrics":
+                await record_llm_metrics(service, record, params)
+                return
             if (
                 record["threadId"]
                 and params.get("threadId") == record["threadId"]
@@ -328,6 +333,14 @@ class ChatRuntime:
                     service.gateway.reset_coordination(job)
             if method == "service/transportStatus":
                 service.diagnostics.emit("codex_transport", activationId=id, purpose="communication", **params)
+                return
+            if method == "service/requestFailed":
+                record["requestFailure"] = params
+                if quota := quota_failure(record, params):
+                    service.quota_failures[id] = quota
+                    self.held = True
+                service.diagnostics.emit("codex_request_failed", activationId=id, purpose="communication", **params)
+                await service.io.call(write_private_json, record_file, record)
                 return
             if method == "service/transportFailure":
                 if params.get("reason") in {
@@ -343,6 +356,13 @@ class ChatRuntime:
             if method in HISTORY_METHODS:
                 await service.io.call(service.history.notify, id, record["threadId"], method, params)
             if method == "service/modelStatus" and params.get("threadId") == record["threadId"]:
+                record["modelStatus"] = {
+                    key: value for key, value in params.items() if key not in {"threadId", "turnId"}
+                }
+                if quota := quota_failure(record, params):
+                    service.quota_failures[id] = quota
+                    self.held = True
+                await service.io.call(write_private_json, record_file, record)
                 service.diagnostics.emit("model_status", activationId=id, purpose="communication", **params)
             if params.get("threadId") == record["threadId"]:
                 if method == "turn/completed":

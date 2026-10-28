@@ -960,6 +960,7 @@ internal class TurnSession(private val runtime: GameExecutor, private val civili
             },
             previousTurnReview = state.previousTurnReview,
             rules = observeGameRules(game),
+            eraProgress = observeEraProgress(player),
             civilizationProfile = observeCivilizationProfile(player),
             scenario = communicationScenario(runtime, game, player),
             combatReports = immutable(state.combatReports.values.drop(state.deliveredCombatReports)),

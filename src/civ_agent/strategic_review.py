@@ -6,9 +6,11 @@ from typing import Annotated, Self
 from pydantic import Field, model_validator
 
 from civ_agent.player_prompts import (
+    CAMPAIGN_GUIDANCE,
     DIPLOMACY_GUIDANCE,
     EVIDENCE_GUIDANCE,
     INVESTMENT_GUIDANCE,
+    PREWAR_GUIDANCE,
     STRATEGY_GUIDANCE,
     VICTORY_HORIZON_GUIDANCE,
 )
@@ -28,7 +30,7 @@ class StrategicPlan(BoundaryModel):
     )
     firstActions: Annotated[list[ReviewText], Field(min_length=1, max_length=3)]
     relativeOutcome: ReviewText = Field(
-        description="Likely gains and costs for us and rivals, including rival responses."
+        description="Likely gains and costs for us and rivals, compared with continuing our current policy over the same horizon; include rival responses and the cost of waiting."
     )
     risks: ReviewText = Field(description="Assumptions, failure costs and information that could change this choice.")
 
@@ -119,11 +121,16 @@ ADVISOR_INSTRUCTIONS = (
     "You are this civilization's strategic adviser. Recommend how it can win from the position shown. "
     "The player will decide whether to follow your advice.\n\n"
     "Compare two or three credible plans over the same number of turns, or one if only one is realistic. "
-    "Consider development, expansion, diplomacy and limited military action. Include preparation, costs, "
+    "Consider development, expansion, diplomacy, limited raids and sustained conquest. Include preparation, costs, "
     "travel, what each plan delays, likely rival responses and gains to uninvolved rivals. A military plan "
-    "can aim to take a useful city, pillage or force defensive spending; say when to seek peace. "
+    "can aim to take useful cities, pillage or force defensive spending; say when to continue, revise its "
+    "objectives or seek peace. "
     "Check whether we can act before the opportunity passes.\n\n"
     + STRATEGY_GUIDANCE
+    + "\n\n"
+    + PREWAR_GUIDANCE
+    + "\n\n"
+    + CAMPAIGN_GUIDANCE
     + "\n\n"
     + VICTORY_HORIZON_GUIDANCE
     + "\n\n"
@@ -140,8 +147,9 @@ ADVISOR_INSTRUCTIONS = (
     + "\nSuggest at most two worthwhile diplomatic approaches tied to these plans. Explain who to approach, "
     "why they might cooperate, proposed terms and the next step. Built-in AI players respond to game "
     "diplomacy and trades rather than chat.\n\n"
-    "Give your preferred plan, first actions, expected results and reasons to reconsider. If the evidence "
-    "does not favor a plan, say so and suggest useful scouting or a choice that keeps options open. "
+    "Give your preferred plan, first actions, expected results and reasons to reconsider. If the choice "
+    "remains close after assessing feasible actions, say which missing fact could change it and whether "
+    "learning that fact is worth the delay. Otherwise recommend the best supported action despite remaining uncertainty. "
     "Use the supplied position and read-only tools. Their descriptions are below; call them directly "
     "with tools.<name>(arguments) in functions.exec. Return a concise report in the requested format, "
     "preferably under 6000 characters."
@@ -151,13 +159,15 @@ ADVISOR_INSTRUCTIONS = (
 def advice_prompt(inputs, *, evidence=None, strategy_guide=False, civilization_guide=False):
     from civ_agent.civilization_guide import civilization_reference
     from civ_agent.startup_context import StartupPrompt, encoded, reference_sections, tool_definitions
-    from civ_agent.strategy_guide import strategy_reference
+    from civ_agent.strategy_guide import era_guidance, player_strategy_reference
 
     definitions = tool_definitions(inputs["catalogue"])
     evidence = evidence if evidence is not None else ReviewEvidence(inputs)
-    reference = strategy_reference() if strategy_guide else ""
+    reference = player_strategy_reference(inputs["reads"], "review") if strategy_guide else ""
     civ_reference = civilization_reference(inputs["civilization"]) if civilization_guide else ""
     sections = reference_sections(reference, civ_reference)
+    if guidance := era_guidance(inputs["reads"]):
+        sections.append(guidance)
 
     def deliver(name, data, arguments=None):
         return evidence.deliver(name, data, arguments)

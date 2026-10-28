@@ -311,6 +311,46 @@ def test_dashboard_distinguishes_negotiation_suspension_from_model_stall(tmp_pat
     asyncio.run(check())
 
 
+def test_dashboard_shows_quota_retry_countdown_and_clears_on_recovery(tmp_path, monkeypatch):
+    from civ_agent.tls import write_private_json
+
+    run, _ = fixture(tmp_path)
+    run["status"] = "paused"
+    run["inFlight"].update(agentPhase="FAILED", modelStatus={"state": "failed", "reason": "usageLimitExceeded"})
+    put_state(tmp_path, "run", run)
+    now = [1000]
+    monkeypatch.setattr(match_watch.time, "time", lambda: now[0])
+    write_private_json(
+        tmp_path / "container-status.json",
+        {
+            "status": "retrying",
+            "recovery": {"reason": "usageLimitExceeded", "civilization": "Rome", "attempt": 6, "nextRetryAt": 1300},
+        },
+    )
+
+    async def check():
+        app = match_watch.MatchWatch(tmp_path, refresh=60)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            banner = str(app.query_one("#status", Static).render())
+            assert "Quota exhausted" in banner and "5m 00s" in banner and "Attempt 6" in banner
+            assert str(app.query_one("#players", DataTable).get_row("Rome")[1]) == "Quota exhausted"
+            now[0] += 120
+            await app.poll_records()
+            await pilot.pause()
+            assert "3m 00s" in str(app.query_one("#status", Static).render())
+            run["status"] = "running"
+            run["inFlight"].update(agentPhase="RUNNING", modelStatus=None)
+            put_state(tmp_path, "run", run)
+            write_private_json(tmp_path / "container-status.json", {"status": "running"})
+            await app.poll_records()
+            await pilot.pause()
+            assert "Quota exhausted" not in str(app.query_one("#status", Static).render())
+            assert str(app.query_one("#players", DataTable).get_row("Rome")[1]) == "Running"
+
+    asyncio.run(check())
+
+
 def test_dashboard_navigation_live_refresh_freeze_and_quit(tmp_path):
     run, _ = fixture(tmp_path)
     run["pendingFinalizations"] = [{"civilization": "Greece", "gameTurn": 1, "activationId": "job1"}]
@@ -371,6 +411,33 @@ def test_dashboard_navigation_live_refresh_freeze_and_quit(tmp_path):
     assert not list(tmp_path.rglob("*.jsonl")) and not list(tmp_path.rglob("*.md"))
 
 
+def test_dashboard_shows_selected_effort_and_pending_without_substituting_default(tmp_path):
+    run, _ = fixture(tmp_path)
+    run["sessions"]["Rome"]["configuredSettings"] = {
+        "provider": "openai",
+        "model": "gpt-6-luna",
+        "reasoningEffort": "medium",
+    }
+    run["inFlight"]["effectiveSettings"] = {"provider": "openai", "model": "gpt-6-luna", "reasoningEffort": "low"}
+    put_state(tmp_path, "run", run)
+
+    async def check():
+        app = match_watch.MatchWatch(tmp_path, refresh=60)
+        async with app.run_test(size=(140, 40)) as pilot:
+            await pilot.pause()
+            row = app.query_one("#players", DataTable).get_row("Rome")
+            assert str(row[2]) == "low (default medium)"
+            assert "Effort low (default medium)" in str(app.query_one("#status", Static).render())
+            run["inFlight"].pop("effectiveSettings")
+            run["inFlight"]["agentPhase"] = "STARTING"
+            put_state(tmp_path, "run", run)
+            await app.poll_records()
+            await pilot.pause()
+            assert str(app.query_one("#players", DataTable).get_row("Rome")[2]) == "pending (default medium)"
+
+    asyncio.run(check())
+
+
 def test_empty_and_completed_matches(tmp_path):
     async def check():
         app = match_watch.MatchWatch(tmp_path, refresh=60)
@@ -387,7 +454,7 @@ def test_empty_and_completed_matches(tmp_path):
                 },
             )
             await app.poll_records()
-            assert str(app.query_one("#players", DataTable).get_row("Egypt")[3]) == "999"
+            assert str(app.query_one("#players", DataTable).get_row("Egypt")[4]) == "999"
             assert "Winner: Egypt" in str(app.query_one("#status", Static).render())
             await pilot.press("q")
 

@@ -25,6 +25,8 @@ class ObservationOpportunitiesIntegrationTest {
 
     @Test fun `mechanics overview uses native research culture and great person progress`() = run("mechanics")
 
+    @Test fun `era progress follows own and known major eras without revealing unmet research`() = run("era-progress")
+
     @Test fun `expansion resources and happiness respect knowledge and native rules`() = run("expansion")
 
     @Test fun `settlement recommendations distinguish a crowded explored map`() = run("settlement")

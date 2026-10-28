@@ -277,6 +277,50 @@ def test_transport_failure_during_close_cannot_finalize_communication_as_complet
     asyncio.run(run())
 
 
+def test_communication_rpc_error_is_durable_when_the_request_raises(tmp_path, monkeypatch):
+    async def run():
+        host = MailboxHost()
+        monkeypatch.setattr("civ_agent.chat_runtime.HostConnection", lambda *args, **kwargs: host)
+        jobs = Jobs()
+        detail = {"rpcMethod": "thread/start", "rpcId": 3, "rpcCode": -32602, "reason": "invalidParams"}
+
+        def process_factory(executable, workspace, url, ca, notification):
+            process = jobs(executable, workspace, url, ca, notification)
+
+            async def fail(*args, **kwargs):
+                await notification("service/requestFailed", detail)
+                raise ServiceError("CODEX_REQUEST_FAILED", 502)
+
+            process.request = fail
+            return process
+
+        service = AgentService(
+            "Rome",
+            tmp_path / "Rome",
+            tmp_path / "private",
+            "S" * 43,
+            "https://localhost:8765/mcp",
+            None,
+            process_factory=process_factory,
+            connection_factory=lambda *args, **kwargs: StartupHost(jobs),
+        )
+        jobs.service = service
+        try:
+            await service.chat.connect(
+                {"epoch": "g1", "playerToken": "P" * 43, "model": None, "reasoningEffort": None, "timeoutSeconds": 10}
+            )
+            with pytest.raises(ServiceError, match="^CODEX_REQUEST_FAILED$"):
+                await service.chat.compute("chat-rpc")
+            path = service.state_dir / "chat-jobs" / (hashlib.sha256(b"chat-rpc").hexdigest() + ".json")
+            assert json.loads(path.read_text())["requestFailure"] == detail
+        finally:
+            await service.close()
+        entries = [json.loads(line) for line in service.diagnostics.path.read_text().splitlines()]
+        assert any(e["event"] == "codex_request_failed" and e["purpose"] == "communication" for e in entries)
+
+    asyncio.run(run())
+
+
 def test_chat_history_drain_retains_process_and_io_until_a_later_close_succeeds(tmp_path, monkeypatch):
     from civ_agent.agent_service import ProcessDrainError
 

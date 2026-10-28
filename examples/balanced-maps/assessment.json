@@ -1,0 +1,701 @@
+{
+  "createdAt": "2026-10-27T23:53:42.355459+00:00",
+  "rules": {
+    "baseRuleset": "Civ V - Vanilla",
+    "mapSize": "Medium",
+    "mapShape": "Hexagonal",
+    "worldWrap": false,
+    "cityStates": 12,
+    "difficulty": "Prince",
+    "speed": "Standard",
+    "startingEra": "Ancient era",
+    "civilizations": [
+      "Inca",
+      "France",
+      "Greece",
+      "Arabia",
+      "China",
+      "Persia"
+    ]
+  },
+  "players": {
+    "builtInAI": 1,
+    "gpt-6-luna": 4,
+    "gpt-6.1-terra": 1,
+    "randomize": true,
+    "assignmentSeed": "Omitted: derived from each game master seed; map and placement seeds remain pinned."
+  },
+  "provenance": {
+    "engineRevision": "ad015da013828153d74accac9a71b6cc842e0bcb",
+    "engineWorkingTreeDiffSha256": "27a7e17e6f769d4e7f8aeb0f40e272ceb79b2fbafa4e88a92117e538720dcad1",
+    "engineWorkingTreeRequired": true,
+    "searchSource": "src/test/kotlin/uncivai/MapBalanceSearch.kt",
+    "searchSourceSha256": "052a0581c288c34021f6d4158d657927bdb48f94800d3f0d84517ccaf5b211bb",
+    "searchSourceRequired": "Includes stable seeded placement order from the preceding change."
+  },
+  "search": {
+    "distinctAttemptedPairs": 9682,
+    "distinctGeneratedPairs": 9644,
+    "rejectedGenerationPairs": 38,
+    "scoredEvaluationsIncludingRechecks": 13162,
+    "mapSeedsScanned": "Existing example seed 19238721 and seeds 2 through 2500, followed by starting-position refinements on shortlisted terrain seeds.",
+    "selection": "Require all eligibility criteria below, then choose low heuristic loss among screened candidates. No model or gameplay simulations were run."
+  },
+  "eligibility": {
+    "geography": "Pangaea: all six majors on one continent; Two Continents: three majors on each of two continents.",
+    "nativeScoreMinimum": 55,
+    "nativeScoreSpreadMaximum": 0.25,
+    "maximumSpreadAcrossCoreMetrics": 0.35,
+    "luxuryTypesWithin3Minimum": 2,
+    "earlyStrategicsWithin5": "At least Iron or Horses for every major.",
+    "naturalWonders": "Exclude El Dorado and Fountain of Youth anywhere. No natural wonder within four hexes of any major. Reject ordinary-wonder overland access <=8 steps when the closest major leads the next closest by four or more steps.",
+    "ancientRuins": "Every major has at least one ruin within eight land steps; nearest ruin at least three land steps away; nearby ruin counts differ by at most two; each major has >=0.5 expected closest-ruin share within ten land steps, with shares differing by at most 1.5."
+  },
+  "metricDefinitions": {
+    "spread": "(maximum - minimum) / mean across six civilizations.",
+    "nativeScore": "Native TileStatFunctions.getTileStartScore after normalization and resource placement.",
+    "bestSixFoodAndProduction": "Separate sums of the six highest unimproved food and production yields within radius two, excluding the center; these are alternative specializations, not simultaneous yields.",
+    "expansion": "Walkable land within ten land steps assigned to the closest major; ties split fractionally. Excludes potential city sites inside the native city-state city-distance exclusion. A geographic proxy, not a count of buildable cities.",
+    "fertility": "Native nonnegative terrain fertility summed over the same expansion proxy.",
+    "ruinShare": "Each ruin within ten land steps is assigned to the nearest major, with equal-distance ties split. Ignores fog and player exploration choices.",
+    "wonderAccess": "Land steps to any tile adjacent to the wonder; null means no land route, not inaccessibility by sea.",
+    "strategics8": "Distinct strategic resource types within eight hexes; prospective access, not guaranteed ownership."
+  },
+  "remainingDifferences": [
+    "Fresh-water and coastal access differ between civilizations.",
+    "Civilization abilities, navigation, exploration choices, ruin rewards, late-game resource control and buildable world-wonder races are not simulated.",
+    "Native capital score and the geographic proxies do not establish equal win probabilities."
+  ],
+  "maps": [
+    {
+      "mapType": "Pangaea",
+      "mapSeed": 1124,
+      "startingPositionSeed": 570664587982060430,
+      "loss": 0.4539229353933384,
+      "validGeography": true,
+      "wonderSafe": true,
+      "ruinSafe": true,
+      "comparable": true,
+      "wonders": [
+        {
+          "name": "Old Faithful",
+          "aerialDistanceByCivilization": {
+            "Inca": 13,
+            "France": 15,
+            "Greece": 7,
+            "Arabia": 16,
+            "China": 21,
+            "Persia": 6
+          },
+          "landAccessByCivilization": {
+            "Inca": 12,
+            "France": 14,
+            "Greece": 6,
+            "Arabia": 15,
+            "China": 20,
+            "Persia": 5
+          }
+        },
+        {
+          "name": "Barringer Crater",
+          "aerialDistanceByCivilization": {
+            "Inca": 6,
+            "France": 13,
+            "Greece": 6,
+            "Arabia": 20,
+            "China": 10,
+            "Persia": 14
+          },
+          "landAccessByCivilization": {
+            "Inca": 5,
+            "France": 12,
+            "Greece": 5,
+            "Arabia": 19,
+            "China": 9,
+            "Persia": 13
+          }
+        },
+        {
+          "name": "Grand Mesa",
+          "aerialDistanceByCivilization": {
+            "Inca": 10,
+            "France": 9,
+            "Greece": 18,
+            "Arabia": 15,
+            "China": 6,
+            "Persia": 19
+          },
+          "landAccessByCivilization": {
+            "Inca": 9,
+            "France": 8,
+            "Greece": 17,
+            "Arabia": 14,
+            "China": 5,
+            "Persia": 18
+          }
+        }
+      ],
+      "continentSplit": [
+        6
+      ],
+      "nativeScoreSpread": 0.16296296296296298,
+      "foodSpread": 0.08108108108108107,
+      "productionSpread": 0.2448979591836735,
+      "expansionSpread": 0.16,
+      "fertilitySpread": 0.1985611510791367,
+      "starts": [
+        {
+          "civilization": "Inca",
+          "x": 4,
+          "y": 5,
+          "continent": 0,
+          "nativeScore": 65.0,
+          "bestSixFood": 12.0,
+          "bestSixProduction": 7.0,
+          "foodTiles2": 11,
+          "productionTiles2": 1,
+          "workableLand3": 37,
+          "freshWater": false,
+          "coastal": false,
+          "luxuries3": [
+            "Cotton",
+            "Gems"
+          ],
+          "earlyStrategics5": [
+            "Horses"
+          ],
+          "nearestMajorLandDistance": 7,
+          "nearbyCityStates8": 1,
+          "naturalWonders3": [],
+          "ruinsWithin8": 2,
+          "nearestRuinLandDistance": 4,
+          "closestRuinShare10": 1.0,
+          "strategics8": [
+            "Aluminum",
+            "Coal",
+            "Horses",
+            "Iron",
+            "Uranium"
+          ],
+          "expansionLand": 62.0,
+          "expansionFertility": 219.0
+        },
+        {
+          "civilization": "France",
+          "x": -3,
+          "y": 5,
+          "continent": 0,
+          "nativeScore": 66.0,
+          "bestSixFood": 13.0,
+          "bestSixProduction": 9.0,
+          "foodTiles2": 10,
+          "productionTiles2": 3,
+          "workableLand3": 37,
+          "freshWater": true,
+          "coastal": false,
+          "luxuries3": [
+            "Cotton",
+            "Ivory"
+          ],
+          "earlyStrategics5": [
+            "Iron"
+          ],
+          "nearestMajorLandDistance": 7,
+          "nearbyCityStates8": 2,
+          "naturalWonders3": [],
+          "ruinsWithin8": 2,
+          "nearestRuinLandDistance": 4,
+          "closestRuinShare10": 0.5,
+          "strategics8": [
+            "Aluminum",
+            "Coal",
+            "Iron",
+            "Oil"
+          ],
+          "expansionLand": 63.5,
+          "expansionFertility": 234.5
+        },
+        {
+          "civilization": "Greece",
+          "x": 6,
+          "y": -1,
+          "continent": 0,
+          "nativeScore": 67.0,
+          "bestSixFood": 12.0,
+          "bestSixProduction": 8.0,
+          "foodTiles2": 9,
+          "productionTiles2": 2,
+          "workableLand3": 31,
+          "freshWater": false,
+          "coastal": true,
+          "luxuries3": [
+            "Cotton",
+            "Spices"
+          ],
+          "earlyStrategics5": [
+            "Horses",
+            "Iron"
+          ],
+          "nearestMajorLandDistance": 8,
+          "nearbyCityStates8": 2,
+          "naturalWonders3": [],
+          "ruinsWithin8": 1,
+          "nearestRuinLandDistance": 6,
+          "closestRuinShare10": 2.0,
+          "strategics8": [
+            "Coal",
+            "Horses",
+            "Iron",
+            "Oil",
+            "Uranium"
+          ],
+          "expansionLand": 59.0,
+          "expansionFertility": 254.5
+        },
+        {
+          "civilization": "Arabia",
+          "x": -10,
+          "y": -1,
+          "continent": 0,
+          "nativeScore": 70.0,
+          "bestSixFood": 12.0,
+          "bestSixProduction": 9.0,
+          "foodTiles2": 13,
+          "productionTiles2": 3,
+          "workableLand3": 36,
+          "freshWater": true,
+          "coastal": false,
+          "luxuries3": [
+            "Gold Ore",
+            "Sugar"
+          ],
+          "earlyStrategics5": [
+            "Iron"
+          ],
+          "nearestMajorLandDistance": 7,
+          "nearbyCityStates8": 1,
+          "naturalWonders3": [],
+          "ruinsWithin8": 2,
+          "nearestRuinLandDistance": 5,
+          "closestRuinShare10": 1.5,
+          "strategics8": [
+            "Aluminum",
+            "Coal",
+            "Horses",
+            "Iron",
+            "Oil"
+          ],
+          "expansionLand": 58.5,
+          "expansionFertility": 228.0
+        },
+        {
+          "civilization": "China",
+          "x": 8,
+          "y": 13,
+          "continent": 0,
+          "nativeScore": 74.0,
+          "bestSixFood": 13.0,
+          "bestSixProduction": 7.0,
+          "foodTiles2": 10,
+          "productionTiles2": 1,
+          "workableLand3": 36,
+          "freshWater": false,
+          "coastal": false,
+          "luxuries3": [
+            "Cotton",
+            "Wine"
+          ],
+          "earlyStrategics5": [
+            "Iron"
+          ],
+          "nearestMajorLandDistance": 8,
+          "nearbyCityStates8": 2,
+          "naturalWonders3": [],
+          "ruinsWithin8": 2,
+          "nearestRuinLandDistance": 5,
+          "closestRuinShare10": 1.5,
+          "strategics8": [
+            "Aluminum",
+            "Coal",
+            "Horses",
+            "Iron",
+            "Oil",
+            "Uranium"
+          ],
+          "expansionLand": 63.5,
+          "expansionFertility": 208.5
+        },
+        {
+          "civilization": "Persia",
+          "x": -4,
+          "y": -5,
+          "continent": 0,
+          "nativeScore": 63.0,
+          "bestSixFood": 12.0,
+          "bestSixProduction": 9.0,
+          "foodTiles2": 11,
+          "productionTiles2": 3,
+          "workableLand3": 36,
+          "freshWater": true,
+          "coastal": false,
+          "luxuries3": [
+            "Cotton",
+            "Incense"
+          ],
+          "earlyStrategics5": [
+            "Horses",
+            "Iron"
+          ],
+          "nearestMajorLandDistance": 10,
+          "nearbyCityStates8": 2,
+          "naturalWonders3": [],
+          "ruinsWithin8": 1,
+          "nearestRuinLandDistance": 8,
+          "closestRuinShare10": 1.5,
+          "strategics8": [
+            "Aluminum",
+            "Coal",
+            "Horses",
+            "Iron",
+            "Oil",
+            "Uranium"
+          ],
+          "expansionLand": 68.5,
+          "expansionFertility": 245.5
+        }
+      ],
+      "configuration": "pangaea.toml",
+      "mapSha256": "b8067a634b650dd1e757d65ea1e087fdca81b768872008fc03951560edd5cabd",
+      "verification": {
+        "mapSeed": 1124,
+        "startingPositionSeed": 570664587982060430,
+        "deterministicRegeneration": true,
+        "nativeCivilizationsChecked": [
+          "Inca",
+          "France",
+          "Greece",
+          "Arabia",
+          "China",
+          "Persia"
+        ],
+        "mapAndCivilizationStartsPreserved": true,
+        "externalTurnOrderReversed": true
+      },
+      "regenerate": "./gradlew searchBalancedMaps -PmapSearchCount=1 -PmapSearchFirstSeed=1124 -PmapSearchStartingPositionSeed=570664587982060430 '-PmapSearchType=Pangaea' -PmapSearchDir=/tmp/verify-pangaea",
+      "preview": "pangaea.svg"
+    },
+    {
+      "mapType": "Two Continents",
+      "mapSeed": 150,
+      "startingPositionSeed": 4641693942395003123,
+      "loss": 0.510554676962697,
+      "validGeography": true,
+      "wonderSafe": true,
+      "ruinSafe": true,
+      "comparable": true,
+      "wonders": [
+        {
+          "name": "Great Barrier Reef",
+          "aerialDistanceByCivilization": {
+            "Inca": 18,
+            "France": 19,
+            "Greece": 23,
+            "Arabia": 16,
+            "China": 11,
+            "Persia": 6
+          },
+          "landAccessByCivilization": {
+            "Inca": null,
+            "France": null,
+            "Greece": null,
+            "Arabia": null,
+            "China": null,
+            "Persia": null
+          }
+        },
+        {
+          "name": "Krakatoa",
+          "aerialDistanceByCivilization": {
+            "Inca": 23,
+            "France": 11,
+            "Greece": 20,
+            "Arabia": 8,
+            "China": 20,
+            "Persia": 13
+          },
+          "landAccessByCivilization": {
+            "Inca": null,
+            "France": null,
+            "Greece": null,
+            "Arabia": null,
+            "China": null,
+            "Persia": null
+          }
+        },
+        {
+          "name": "Mount Fuji",
+          "aerialDistanceByCivilization": {
+            "Inca": 31,
+            "France": 9,
+            "Greece": 9,
+            "Arabia": 20,
+            "China": 35,
+            "Persia": 30
+          },
+          "landAccessByCivilization": {
+            "Inca": null,
+            "France": 8,
+            "Greece": 9,
+            "Arabia": 19,
+            "China": null,
+            "Persia": null
+          }
+        }
+      ],
+      "continentSplit": [
+        3,
+        3
+      ],
+      "nativeScoreSpread": 0.2058047493403694,
+      "foodSpread": 0.08,
+      "productionSpread": 0.3157894736842105,
+      "expansionSpread": 0.181651376146789,
+      "fertilitySpread": 0.24006195147134746,
+      "starts": [
+        {
+          "civilization": "Inca",
+          "x": -15,
+          "y": -2,
+          "continent": 0,
+          "nativeScore": 55.0,
+          "bestSixFood": 13.0,
+          "bestSixProduction": 8.0,
+          "foodTiles2": 8,
+          "productionTiles2": 2,
+          "workableLand3": 34,
+          "freshWater": true,
+          "coastal": false,
+          "luxuries3": [
+            "Marble",
+            "Silk"
+          ],
+          "earlyStrategics5": [
+            "Horses"
+          ],
+          "nearestMajorLandDistance": 12,
+          "nearbyCityStates8": 3,
+          "naturalWonders3": [],
+          "ruinsWithin8": 2,
+          "nearestRuinLandDistance": 5,
+          "closestRuinShare10": 2.0,
+          "strategics8": [
+            "Aluminum",
+            "Coal",
+            "Horses",
+            "Uranium"
+          ],
+          "expansionLand": 89.0,
+          "expansionFertility": 343.5
+        },
+        {
+          "civilization": "France",
+          "x": 8,
+          "y": -6,
+          "continent": 1,
+          "nativeScore": 64.0,
+          "bestSixFood": 12.0,
+          "bestSixProduction": 10.0,
+          "foodTiles2": 10,
+          "productionTiles2": 4,
+          "workableLand3": 37,
+          "freshWater": false,
+          "coastal": false,
+          "luxuries3": [
+            "Cotton",
+            "Marble"
+          ],
+          "earlyStrategics5": [
+            "Horses",
+            "Iron"
+          ],
+          "nearestMajorLandDistance": 11,
+          "nearbyCityStates8": 3,
+          "naturalWonders3": [],
+          "ruinsWithin8": 2,
+          "nearestRuinLandDistance": 5,
+          "closestRuinShare10": 2.0,
+          "strategics8": [
+            "Aluminum",
+            "Coal",
+            "Horses",
+            "Iron",
+            "Oil",
+            "Uranium"
+          ],
+          "expansionLand": 87.5,
+          "expansionFertility": 330.5
+        },
+        {
+          "civilization": "Greece",
+          "x": -6,
+          "y": -15,
+          "continent": 1,
+          "nativeScore": 67.0,
+          "bestSixFood": 13.0,
+          "bestSixProduction": 11.0,
+          "foodTiles2": 6,
+          "productionTiles2": 5,
+          "workableLand3": 33,
+          "freshWater": true,
+          "coastal": false,
+          "luxuries3": [
+            "Furs",
+            "Ivory"
+          ],
+          "earlyStrategics5": [
+            "Iron"
+          ],
+          "nearestMajorLandDistance": 14,
+          "nearbyCityStates8": 2,
+          "naturalWonders3": [],
+          "ruinsWithin8": 2,
+          "nearestRuinLandDistance": 6,
+          "closestRuinShare10": 2.0,
+          "strategics8": [
+            "Aluminum",
+            "Iron",
+            "Oil"
+          ],
+          "expansionLand": 91.5,
+          "expansionFertility": 278.5
+        },
+        {
+          "civilization": "Arabia",
+          "x": 16,
+          "y": 5,
+          "continent": 1,
+          "nativeScore": 68.0,
+          "bestSixFood": 12.0,
+          "bestSixProduction": 9.0,
+          "foodTiles2": 8,
+          "productionTiles2": 3,
+          "workableLand3": 35,
+          "freshWater": true,
+          "coastal": false,
+          "luxuries3": [
+            "Furs",
+            "Wine"
+          ],
+          "earlyStrategics5": [
+            "Horses"
+          ],
+          "nearestMajorLandDistance": 11,
+          "nearbyCityStates8": 0,
+          "naturalWonders3": [],
+          "ruinsWithin8": 3,
+          "nearestRuinLandDistance": 4,
+          "closestRuinShare10": 2.0,
+          "strategics8": [
+            "Aluminum",
+            "Horses",
+            "Oil",
+            "Uranium"
+          ],
+          "expansionLand": 100.0,
+          "expansionFertility": 356.0
+        },
+        {
+          "civilization": "China",
+          "x": -7,
+          "y": 10,
+          "continent": 0,
+          "nativeScore": 64.0,
+          "bestSixFood": 13.0,
+          "bestSixProduction": 9.0,
+          "foodTiles2": 10,
+          "productionTiles2": 3,
+          "workableLand3": 37,
+          "freshWater": false,
+          "coastal": false,
+          "luxuries3": [
+            "Dyes",
+            "Sugar"
+          ],
+          "earlyStrategics5": [
+            "Horses"
+          ],
+          "nearestMajorLandDistance": 12,
+          "nearbyCityStates8": 1,
+          "naturalWonders3": [],
+          "ruinsWithin8": 1,
+          "nearestRuinLandDistance": 4,
+          "closestRuinShare10": 1.0,
+          "strategics8": [
+            "Aluminum",
+            "Coal",
+            "Horses",
+            "Iron",
+            "Uranium"
+          ],
+          "expansionLand": 83.5,
+          "expansionFertility": 334.0
+        },
+        {
+          "civilization": "Persia",
+          "x": 5,
+          "y": 15,
+          "continent": 0,
+          "nativeScore": 61.0,
+          "bestSixFood": 12.0,
+          "bestSixProduction": 10.0,
+          "foodTiles2": 5,
+          "productionTiles2": 4,
+          "workableLand3": 36,
+          "freshWater": true,
+          "coastal": false,
+          "luxuries3": [
+            "Dyes",
+            "Incense"
+          ],
+          "earlyStrategics5": [
+            "Horses",
+            "Iron"
+          ],
+          "nearestMajorLandDistance": 12,
+          "nearbyCityStates8": 0,
+          "naturalWonders3": [],
+          "ruinsWithin8": 2,
+          "nearestRuinLandDistance": 5,
+          "closestRuinShare10": 2.0,
+          "strategics8": [
+            "Aluminum",
+            "Coal",
+            "Horses",
+            "Iron"
+          ],
+          "expansionLand": 93.5,
+          "expansionFertility": 294.5
+        }
+      ],
+      "configuration": "two-continents.toml",
+      "mapSha256": "b07236d0ddfa9edb16153af1567789e95cbb8824109fd09ee4fd114fc688bd43",
+      "verification": {
+        "mapSeed": 150,
+        "startingPositionSeed": 4641693942395003123,
+        "deterministicRegeneration": true,
+        "nativeCivilizationsChecked": [
+          "Inca",
+          "France",
+          "Greece",
+          "Arabia",
+          "China",
+          "Persia"
+        ],
+        "mapAndCivilizationStartsPreserved": true,
+        "externalTurnOrderReversed": true
+      },
+      "regenerate": "./gradlew searchBalancedMaps -PmapSearchCount=1 -PmapSearchFirstSeed=150 -PmapSearchStartingPositionSeed=4641693942395003123 '-PmapSearchType=Two Continents' -PmapSearchDir=/tmp/verify-two-continents",
+      "preview": "two-continents.svg"
+    }
+  ]
+}

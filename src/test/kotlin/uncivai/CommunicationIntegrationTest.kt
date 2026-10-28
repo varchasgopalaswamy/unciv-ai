@@ -8,6 +8,11 @@ import java.util.concurrent.TimeUnit
 
 class CommunicationIntegrationTest {
     @Test
+    fun `peacetime military planning reserves partner capacity and charges only claimed jobs`() {
+        runProbe("uncivai.MilitaryCapacityProbe")
+    }
+
+    @Test
     fun `private groups validate audiences preserve privacy and survive queued restart and rewind`() {
         runProbe("uncivai.GroupChatProbe")
     }

@@ -135,6 +135,73 @@ async def setup(tmp_path, *, native_enabled=True, **options):
         memory.engine.dispose()
 
 
+def test_checkpoint_interrupts_optional_classifier_and_reconciles_original_request(tmp_path):
+    from unittest.mock import AsyncMock
+
+    from tests.test_effort_decisions import evidence
+
+    async def run():
+        async with setup(tmp_path, decisions_effort_enabled=True) as (_, gateway, _, client):
+            runtime = gateway.advisories
+            assert runtime is not None
+            entered = asyncio.Event()
+            submitted = []
+            original = client.batch
+
+            async def slow(value, *, timeout):
+                submitted.append(value)
+                entered.set()
+                await asyncio.Event().wait()
+
+            client.batch = AsyncMock(side_effect=slow)
+
+            async def admitted():
+                async with gateway.admit():
+                    return await runtime.evaluate(evidence())
+
+            pending = asyncio.create_task(admitted())
+            await asyncio.wait_for(entered.wait(), 1)
+            assert gateway.calls_in_flight == 1
+            gateway.request_checkpoint()
+            interrupted = await asyncio.wait_for(pending, 1)
+            assert interrupted["fallback"] == "completion_unknown"
+            assert gateway.calls_in_flight == 0 and not runtime.requests
+            gateway.release_checkpoint()
+
+            async def receipt(identifier, *, timeout):
+                assert identifier == interrupted["requestId"]
+                return await original(submitted[0], timeout=timeout)
+
+            client.lookup = AsyncMock(side_effect=receipt)
+            reconciled = await runtime.evaluate(evidence())
+            assert reconciled["requestId"] == interrupted["requestId"]
+            assert reconciled["brokerReconciliation"]
+            assert len(submitted) == 1 and client.lookup.await_count == 1
+
+    asyncio.run(run())
+
+
+def test_classifier_owner_cancellation_still_stops_the_job(tmp_path):
+    async def run():
+        async with setup(tmp_path) as (_, gateway, _, _):
+            runtime = gateway.advisories
+            assert runtime is not None
+            entered = asyncio.Event()
+
+            async def slow():
+                entered.set()
+                await asyncio.Event().wait()
+
+            pending = asyncio.create_task(runtime.request(slow))
+            await entered.wait()
+            pending.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await pending
+            assert not runtime.requests
+
+    asyncio.run(run())
+
+
 def test_defaults_validation_retired_flags_and_service_container_arguments(tmp_path, capsys):
     config_file = tmp_path / "game.toml"
     config_file.write_text("[agents]\ndecisions_enabled = true\nadditional_decisions_budget_usd = 0.02\n")

@@ -234,8 +234,9 @@ def verify(root, *, save_baseline=False):
             if v[0].get("nativeRequestId") and v[0].get("author") == "Rome" and v[0].get("partner") == "France"
         ]
         checks["preparedOfferWithdrawn"] = len(seeded) == 1 and seeded[0]["status"] == "WITHDRAWN"
-        checks["noMilitaryInPeace"] = all(
-            j["purpose"] != "military" for m in memories.values() for j in m["jobs"].values()
+        checks["militaryPlanningInPeace"] = all(
+            any(j["purpose"] == "military" and j["status"] == "COMPLETED" for j in m["jobs"].values())
+            for m in memories.values()
         )
         evidence["expectedRejection"] = [code(a["result"]) for a in blocked]
     else:
@@ -258,7 +259,11 @@ def verify(root, *, save_baseline=False):
             checks[player + ":peacefulContinuation"] = any(
                 j["purpose"] == "gameplay" and j["game_turn"] >= 3 and j["status"] == "COMPLETED"
                 for j in m["jobs"].values()
-            ) and not any(j["purpose"] == "military" and j["game_turn"] >= 3 for j in m["jobs"].values())
+            )
+            checks[player + ":militaryContinuesAfterPeace"] = any(
+                j["purpose"] == "military" and j["game_turn"] >= 3 and j["status"] == "COMPLETED"
+                for j in m["jobs"].values()
+            )
         assignments = [
             c
             for c in rome["calls"]

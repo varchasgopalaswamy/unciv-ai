@@ -54,7 +54,7 @@ class ComputingCapacityTest {
         assertFalse(invocationCapacityAvailable(mapOf("main" to main, "economy" to economy.copy(expires = 0)), "economy", "main", 1, 2, 2))
     }
 
-    @Test fun `war reserves three roles but peace reserves only two`() {
+    @Test fun `military partner reserves three roles before the partner starts`() {
         assertFalse(computingCapacityAvailable(emptyMap(), "main", "Rome", "gameplay", null, 1, 2, 4, true))
         assertTrue(computingCapacityAvailable(emptyMap(), "main", "Rome", "gameplay", null, 1, 3, 3, true))
         val jobs = mapOf("main" to main.copy(militaryPartnerRequired = true))

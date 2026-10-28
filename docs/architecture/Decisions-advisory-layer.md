@@ -2,7 +2,7 @@
 
 `agents.decisions_enabled=false` is the default. The single switch controls
 diplomacy scheduling, optional memory rankings, preservation candidates, belief
-notices, early strategic-review triage and city focus/construction questions. Native gameplay recommendations are
+notices, early strategic-review and military-planning triage, and city focus/construction questions. Native gameplay recommendations are
 controlled independently by `native_advice_enabled`. They go directly to the
 gameplay model through `native_advice`, with original commands, costs,
 prerequisites, conflicts and limitations. Separate city questions compare legal
@@ -18,6 +18,18 @@ adjudicate breaches or impose penalties. Explicit notebook writes keep their
 existing validation and lifecycle; classification never filters those writes.
 
 ## Execution and budget authority
+
+Military planning uses the additive `militaryReview` evidence field and binary
+`military_review` question in the existing advisory protocol. It compares the
+completed full planning baseline with changed player-visible force capabilities,
+contacts, resources, supply penalties, goals and operation criteria. It chooses
+whether a full planning pass is worth its cost before the periodic review, never
+whether to declare war. Original evidence and request identities survive restart,
+unchanged completed judgments are not reclassified, and a fresh native view
+discards stale replies. The existing broker ledger, budget, confidence validation
+and uncertain-receipt reconciliation apply. Periodic and immediate military
+wakeups remain independent of classifier availability. See
+[Military manager](Military-manager.md#planning-and-execution-schedule).
 
 The Decisions API has selectable `luna` and `jev` backends. Jev uses local
 Winnow-12B and is the default. Both adapters normalize their complete answer
@@ -135,6 +147,12 @@ as an executed action. These records stay outside model-facing notices, carry no
 source prose or token usage, and do not add classifier calls or spending.
 Acceptance, exposure, model adoption and gameplay effects are separate outcomes.
 
+Checkpoint requests interrupt optional advisory HTTP waits so a slow classifier
+does not retain gateway admission past the checkpoint deadline. Submitted
+requests keep their immutable IDs and `completion_unknown` state. Later work
+reconciles the broker receipt before considering a submission, preserving the
+existing ledger and preventing duplicate classification spending.
+
 ## Reasoning effort
 
 `decisions_effort_enabled` defaults to false and requires `decisions_enabled`.
@@ -177,6 +195,14 @@ persisted before inference and reused on recovery. The selected value is applied
 to the actual Codex thread and turns. It cannot become the next activation's
 default or propagate into another role or strategic review. Effort control
 diagnostics do not appear in model-facing context.
+
+Agent status exposes `configuredSettings` separately from the activation's
+`effectiveSettings`. The scheduler keeps the provider and model fixed and records
+effort changes without treating them as conversation identity errors. The agent
+service owns effort selection and validation. Selected effort never becomes the
+next start request's default. Older scheduler sessions that saved an adaptive
+effort in place of the default adopt the service's explicit configured baseline;
+provider and model must still match.
 
 The benchmark templates enable this experiment with medium as their ordinary
 default. Runtime support and fallback behavior are tested; gameplay quality at

@@ -92,9 +92,13 @@ class ReviewStore:
             )
             return {**row, "attempts": row["attempts"] + 1}
 
-    def failed(self, parent, error):
+    def failed(self, parent, error, *, quota=False):
         with self.memory.transaction() as db:
-            db.execute(tables.reviews.update().where(tables.reviews.c.job == parent).values(error=error))
+            db.execute(
+                tables.reviews.update()
+                .where(tables.reviews.c.job == parent)
+                .values(error=error, attempts=tables.reviews.c.attempts - int(quota))
+            )
 
     def unavailable(self, parent, error):
         """Retain failed input for inspection without blocking play on missing advice."""

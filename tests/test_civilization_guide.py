@@ -80,13 +80,13 @@ def test_only_own_advice_appears_once_after_general_guide(civilization, purpose,
     original = baseline if isinstance(baseline, str) else baseline.user
     reference = civilization_reference(civilization)
     assert text.endswith(original)
-    assert text.count(strategy_reference()) == int(strategy_guide)
+    assert text.count(strategy_reference(include_space_race=False)) == int(strategy_guide)
     assert text.count(reference) == int(civilization_guide)
     assert all(civilization_reference(other) not in text for other in CIVILIZATIONS if other != civilization)
     if civilization_guide:
         assert text.index(reference) < text.index("PRIVATE_CHAT")
         if strategy_guide:
-            assert text.index(strategy_reference()) < text.index(reference)
+            assert text.index(strategy_reference(include_space_race=False)) < text.index(reference)
     if not isinstance(prompt, str):
         assert not isinstance(baseline, str)
         assert prompt.instructions == baseline.instructions
@@ -260,7 +260,11 @@ def test_interactive_session_forwards_service_advice_without_model_calls(tmp_pat
             text = session["context"]
             reference = civilization_reference("France")
             assert text.count(reference) == 1
-            assert text.index(strategy_reference()) < text.index(reference) < text.index("Current game information")
+            assert (
+                text.index(strategy_reference(include_space_race=False))
+                < text.index(reference)
+                < text.index("Current game information")
+            )
             assert factory.calls == []
             assert await interactive_session.close_session(service, {"jobId": session["jobId"]}) == {"closed": True}
         finally:

@@ -39,6 +39,10 @@ class RunnerError(Exception):
     pass
 
 
+class QuotaExhausted(RunnerError):
+    pass
+
+
 class OperatorError(RunnerError):
     def __init__(self, message, code=None, status=None):
         super().__init__(message)
@@ -599,26 +603,7 @@ class Scheduler:
             if session.get("threadId") != thread:
                 session["threadId"] = thread
                 changed = True
-        settings = status.get("effectiveSettings")
-        if settings is not None and (
-            not isinstance(settings, dict)
-            or set(settings) != {"provider", "model", "reasoningEffort"}
-            or settings["provider"] not in {"openai", "openrouter"}
-            or not valid_setting(settings["model"])
-            or (settings["reasoningEffort"] is not None and not valid_setting(settings["reasoningEffort"]))
-        ):
-            raise RunnerError("Agent service returned invalid model or reasoning settings.")
-        if settings is not None and session.get("effectiveSettings") != settings:
-            if "effectiveSettings" in session:
-                raise RunnerError("Agent service changed the conversation's model or reasoning effort.")
-            session["effectiveSettings"] = settings
-            changed = True
-            self.output.line(
-                "Model",
-                f"{settings['provider']}: {settings.get('model') or 'Codex config'}; "
-                f"reasoning: {settings.get('reasoningEffort') or 'Codex default'}.",
-                civilization=flight["civilization"],
-            )
+        changed = self.record_settings(status, flight, session) or changed
         usage = status.get("usage", {})
         if not isinstance(usage, dict):
             raise RunnerError("Invalid agent usage response.")
@@ -636,6 +621,9 @@ class Scheduler:
         if flight.get("modelStatus") != status.get("modelStatus"):
             flight["modelStatus"] = status.get("modelStatus")
             changed = True
+        if flight.get("requestFailure") != status.get("requestFailure"):
+            flight["requestFailure"] = status.get("requestFailure")
+            changed = True
         if flight.get("negotiationWait") != status.get("negotiationWait"):
             flight["negotiationWait"] = status.get("negotiationWait")
             changed = True
@@ -644,6 +632,39 @@ class Scheduler:
             changed = True
         if changed:
             self.save()
+
+    def record_settings(self, status, flight, session):
+        """Pin provider/model identity, recording effort separately from its default."""
+        actual = status.get("effectiveSettings")
+        if actual is None:
+            return False
+        configured = status.get("configuredSettings", actual)
+        for value in (actual, configured):
+            if (
+                not isinstance(value, dict)
+                or set(value) != {"provider", "model", "reasoningEffort"}
+                or value["provider"] not in {"openai", "openrouter"}
+                or not valid_setting(value["model"])
+                or (value["reasoningEffort"] is not None and not valid_setting(value["reasoningEffort"]))
+            ):
+                raise RunnerError("Agent service returned invalid model or reasoning settings.")
+        for previous in (configured, session.get("effectiveSettings"), flight.get("effectiveSettings")):
+            if previous is not None and any(previous[key] != actual[key] for key in ("provider", "model")):
+                raise RunnerError("Agent service changed the conversation's provider or model.")
+        changed = session.get("configuredSettings") != configured or flight.get("effectiveSettings") != actual
+        session["configuredSettings"] = dict(configured)
+        session["effectiveSettings"] = dict(configured)
+        if flight.get("effectiveSettings") != actual:
+            flight["effectiveSettings"] = dict(actual)
+            self.output.line(
+                "Model",
+                f"{actual['provider']}: {actual['model']}; reasoning: "
+                f"{actual['reasoningEffort'] or 'Codex default'}"
+                + (f" (configured default: {configured['reasoningEffort']})" if actual != configured else "")
+                + ".",
+                civilization=flight["civilization"],
+            )
+        return changed
 
     def interrupt_agent(self, flight):
         agent = self.agent_for(flight)
@@ -892,6 +913,7 @@ class Scheduler:
         self.save()
 
     def _run(self):
+        self.state.pop("quotaFailure", None)
         try:
             initial = self.operator.call("status")["status"]
             flight = self.state.get("inFlight")
@@ -952,6 +974,9 @@ class Scheduler:
                     continue
                 if not self.invoke(status):
                     return 0 if self.state["status"] in {"paused", "stopped", "budget_exhausted", "complete"} else 2
+        except QuotaExhausted as failure:
+            self.note("paused", str(failure))
+            return 0
         except (RunnerError, OSError, ValueError, HistoryError, SQLAlchemyError) as failure:
             self.note("needs_inspection", str(failure))
             return 2
@@ -1145,7 +1170,12 @@ class Scheduler:
             playerToken=token,
             prompt=prompt,
             model=selected["model"],
-            reasoningEffort=selected["reasoningEffort"],
+            # A legacy session may contain an adaptive choice rather than its
+            # configured default. Let the service resolve its configured default
+            # until the new configuredSettings contract has been observed.
+            reasoningEffort=session.get("configuredSettings", {}).get(
+                "reasoningEffort", self.state.get("reasoningEffort")
+            ),
             timeoutSeconds=timeout,
             leaseSeconds=30,
         )
@@ -1254,6 +1284,7 @@ class Scheduler:
 
     def check_agent_health(self):
         """Report subscription health and stop on fatal failures, including off-turn jobs."""
+        pending_quota = None
         for civilization, agent in self.agents.items():
             health = agent.call("health")
             if health.get("civilization") != civilization or "runFailure" not in health:
@@ -1282,6 +1313,17 @@ class Scheduler:
                 raise RunnerError(
                     f"{civilization}: {failure['error']}; diagnostic {failure['diagnosticId']}. Run stopped for inspection."
                 )
+            quota = health.get("quotaFailure")
+            if isinstance(quota, dict) and quota.get("reason") == "usageLimitExceeded":
+                if quota.get("epoch") != self.state.get("epoch"):
+                    continue
+                pending_quota = {**quota, "civilization": civilization}
+        if pending_quota is not None:
+            self.state["quotaFailure"] = pending_quota
+            self.save()
+            raise QuotaExhausted(
+                f"{pending_quota['civilization']}: model quota exhausted; retrying automatically every five minutes."
+            )
 
 
 def parser(*, add_help: bool = True) -> argparse.ArgumentParser:

@@ -60,12 +60,14 @@ class FakeCodex:
         self.closed = False
         self.thread_id = None
         self.economy = "economy" in workspace.name
+        self.military = "military" in workspace.name
+        self.subordinate = self.economy or self.military
         self.job = None
 
     async def start(self, token, settings):
         self.settings = dict(settings)
         self.job = self.factory.service.gateway.jobs[token]
-        if self.economy:
+        if self.subordinate:
             return
         self.factory.tokens.append(token)
         if self.factory.hold == "startup":
@@ -86,9 +88,9 @@ class FakeCodex:
                 ],
                 "nextCursor": None,
             }
-        if self.economy:
+        if self.subordinate:
             if method == "thread/start":
-                self.thread_id = "economy-" + self.workspace.name
+                self.thread_id = ("military-" if self.military else "economy-") + self.workspace.name
                 return {
                     "thread": {"id": self.thread_id},
                     "modelProvider": payload["modelProvider"],
@@ -233,7 +235,7 @@ class FakeCodex:
         raise AssertionError(method)
 
     async def close(self):
-        if self.factory.close_failure and not self.economy:
+        if self.factory.close_failure and not self.subordinate:
             raise ServiceError("TEST_STOP_FAILED")
         self.closed = True
         await self.notification("service/disconnected", {})
@@ -287,7 +289,7 @@ class FakeFactory:
 
     def __call__(self, executable, workspace, mcp_url, ca_file, notification):
         process = FakeCodex(self, workspace, notification)
-        if not process.economy:
+        if not process.subordinate:
             self.instances.append(process)
         return process
 

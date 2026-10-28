@@ -10,7 +10,8 @@ import aiohttp
 import pytest
 
 from civ_agent.agent_history import HISTORY_METHODS, HistoryStore
-from civ_agent.agent_service import CodexProcess, ProcessDrainError, ServiceError
+from civ_agent.agent_service import AgentService, CodexProcess, ProcessDrainError, ServiceError
+from civ_agent.diagnostics import Diagnostics
 
 
 def test_request_timeout_identifies_method_and_clears_pending_state(tmp_path, monkeypatch):
@@ -55,6 +56,86 @@ class Socket:
 
     async def close(self):
         self.closed = True
+
+
+def test_rpc_error_metadata_survives_pending_request_cleanup_and_shutdown(tmp_path):
+    async def run():
+        seen = []
+        blocked, release = asyncio.Event(), asyncio.Event()
+
+        async def notification(method, params):
+            if method == "service/requestFailed":
+                blocked.set()
+                await release.wait()
+            seen.append((method, params))
+
+        process = CodexProcess("codex", tmp_path, "", None, notification)
+        socket = Socket()
+        process.socket = cast(aiohttp.ClientWebSocketResponse, socket)
+        process.reader_task = asyncio.create_task(process._read())
+        request = asyncio.create_task(
+            process.request("turn/interrupt", {"threadId": "thread-1", "turnId": "turn-1", "token": "PRIVATE_TOKEN"})
+        )
+        command = await asyncio.wait_for(socket.outgoing.get(), 1)
+        socket.feed(
+            {
+                "id": command["id"],
+                "error": {
+                    "code": -32000,
+                    "message": "No active turn PRIVATE_TOKEN",
+                    "data": {"prompt": "PRIVATE_PROMPT"},
+                },
+            }
+        )
+        with pytest.raises(ServiceError, match="^CODEX_REQUEST_FAILED$"):
+            await asyncio.wait_for(request, 1)
+        await asyncio.wait_for(blocked.wait(), 1)
+        assert not process.pending and not process.requests
+        # Diagnostics must not block the socket reader or independent control replies.
+        other = asyncio.create_task(process.request("thread/read", {}))
+        next_command = await asyncio.wait_for(socket.outgoing.get(), 1)
+        socket.feed({"id": next_command["id"], "result": {"thread": {"id": "thread-1"}}})
+        assert await asyncio.wait_for(other, 1) == {"thread": {"id": "thread-1"}}
+        close = asyncio.create_task(process.close())
+        release.set()
+        await asyncio.wait_for(close, 1)
+        failures = [params for method, params in seen if method == "service/requestFailed"]
+        assert len(failures) == 1
+        assert {k: failures[0][k] for k in ["rpcMethod", "rpcId", "rpcCode", "reason", "threadId", "turnId"]} == {
+            "rpcMethod": "turn/interrupt",
+            "rpcId": command["id"],
+            "rpcCode": -32000,
+            "reason": "turnNotActive",
+            "threadId": "thread-1",
+            "turnId": "turn-1",
+        }
+        assert "PRIVATE" not in json.dumps(seen)
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("purpose", ["gameplay", "economy", "military"])
+def test_rpc_failure_before_thread_creation_is_logged_and_saved_by_owning_role(tmp_path, purpose):
+    async def run():
+        record = {"activationId": "job-1", "purpose": purpose, "threadId": None}
+        diagnostics = Diagnostics(tmp_path, "Rome")
+        service = SimpleNamespace(
+            active_id="job-1", records={"job-1": record}, diagnostics=diagnostics, _save=AsyncMock()
+        )
+        detail = {"rpcMethod": "account/login/start", "rpcId": 2, "rpcCode": -32000, "reason": "unauthorized"}
+        try:
+            await AgentService._notification(cast(AgentService, service), "service/requestFailed", detail)
+            assert record["requestFailure"] == detail
+            service._save.assert_awaited_once_with(record)
+        finally:
+            diagnostics.close()
+        entries = [json.loads(line) for line in diagnostics.path.read_text().splitlines()]
+        errors = [entry for entry in entries if entry["event"] == "codex_request_failed"]
+        assert len(errors) == 1
+        assert errors[0]["activationId"] == "job-1" and errors[0]["purpose"] == purpose
+        assert all(errors[0][key] == value for key, value in detail.items())
+
+    asyncio.run(run())
 
 
 def test_thousands_of_tiny_deltas_are_coalesced_without_losing_text_or_event_order(tmp_path):

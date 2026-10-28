@@ -20,7 +20,7 @@ from civ_agent.response_compaction import compact_response
 from civ_agent.schema_briefs import schema_brief
 from civ_agent.shared_values import INSTRUCTIONS as SHARED_VALUE_INSTRUCTIONS
 from civ_agent.state_updates import same_json
-from civ_agent.strategy_guide import strategy_reference
+from civ_agent.strategy_guide import era_guidance, player_strategy_reference
 
 CORE_TOOLS = {
     "gameplay": (
@@ -383,9 +383,11 @@ def startup_prompt(
     prepared = compact_response(compact_startup(prepared), startup=True)
     reads = dict(prepared["reads"])
     capabilities = reads.pop("player_capabilities", None)
-    reference = strategy_reference() if strategy_guide else ""
+    reference = player_strategy_reference(reads, purpose) if strategy_guide else ""
     civ_reference = civilization_reference(civilization) if civilization_guide else ""
     sections = reference_sections(reference, civ_reference)
+    if guidance := era_guidance(reads):
+        sections.append(guidance)
     if prepared.get("constructionExplanations"):
         sections.append("Construction estimate explanations:\n" + encoded(prepared["constructionExplanations"]))
     if prepared.get("sharedValues"):
@@ -478,9 +480,10 @@ def startup_text(
     """Plain-text variant for interactive clients, with definitions before data."""
     prepared = compact_response(compact_startup(prepared), startup=True)
     return (
-        (strategy_reference() + "\n\n" if strategy_guide else "")
+        (player_strategy_reference(prepared["reads"]) + "\n\n" if strategy_guide else "")
         + (civilization_reference(civilization) + "\n\n" if civilization_guide else "")
         + startup_instructions(prepared)
+        + ("\n\n" + guidance if (guidance := era_guidance(prepared["reads"])) else "")
         + (
             "\n\nConstruction estimate explanations:\n" + encoded(prepared["constructionExplanations"])
             if prepared.get("constructionExplanations")

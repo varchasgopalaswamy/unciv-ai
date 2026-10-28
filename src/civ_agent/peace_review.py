@@ -12,6 +12,7 @@ from pydantic import Field
 
 from civ_agent.agent_history import HISTORY_METHODS
 from civ_agent.agent_settings import codex_thread_settings
+from civ_agent.player_prompts import CAMPAIGN_GUIDANCE
 from civ_agent.proposal_gateway import JobAccess
 from civ_agent.provider_usage import reconcile_provider_usage
 from civ_agent.review_grounding import ReviewEvidence
@@ -239,6 +240,8 @@ class PeaceReviews:
                         if role == "military"
                         else "As main, approve or decline the exact peace terms after considering military's overview and current strategic goals. Explain your decision, including any disagreement."
                     )
+                    + "\n\n"
+                    + CAMPAIGN_GUIDANCE
                 )
                 snapshot = await service.io.call(service.memory.snapshot, role, inputs["position"].get("turn"))
                 inputs = {**inputs, "privateMemory": service.memory.context(snapshot)}

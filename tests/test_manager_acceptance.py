@@ -199,8 +199,9 @@ def evidence(player, *, war=False, turns=2) -> JsonObject:
         for r in ({"error": "OPTION_UNAVAILABLE"}, {})
     ]
     meta = {"epoch": "e1", "civilization": player, "storeId": player}
+    jobs["army"] = {"purpose": "military", "game_turn": 0, "status": "COMPLETED"}
     if war:
-        jobs["army"] = {"purpose": "military", "game_turn": 0, "status": "COMPLETED"}
+        jobs["peace-army"] = {"purpose": "military", "game_turn": 3, "status": "COMPLETED"}
         meta["war:state"] = {
             "episodes": {
                 "war1": {"active": False, "version": 2, "history": [{"responses": {"gameplay": {"agree": True}}}]}

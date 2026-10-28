@@ -53,6 +53,15 @@ def test_rome_timeout_timeline_ignores_usage_updates_and_recovers_once():
     assert status.poll() is None
 
 
+def test_terminal_completion_retains_quota_category_when_error_was_reported_separately():
+    status = ModelStatus()
+    status.begin("thread-1", "turn-1")
+    status.observe(*notification("error", willRetry=False, error={"codexErrorInfo": "usageLimitExceeded"}))
+    terminal = required(status.observe(*notification("turn/completed", turn={"id": "turn-1", "status": "failed"})))
+    assert terminal["state"] == "failed" and terminal["reason"] == "usageLimitExceeded"
+    assert "usage limit" in terminal["message"]
+
+
 def test_pending_parallel_tools_are_not_reported_as_model_stalls():
     now = [0.0]
     status = ModelStatus(lambda: now[0])
@@ -106,6 +115,10 @@ def test_notices_cannot_leak_across_threads_turns_or_shutdown(terminal):
             "idle_timeout",
         ),
         ("contextWindowExceeded", "secret prompt", "contextWindowExceeded"),
+        ("usageLimitExceeded", "rate limit exceeded: SECRET", "usageLimitExceeded"),
+        ({"usageLimitExceeded": {"httpStatusCode": 429}}, "SECRET", "usageLimitExceeded"),
+        ({"httpConnectionFailed": {"httpStatusCode": 429}}, "insufficient_quota SECRET", "usageLimitExceeded"),
+        ("other", "You've hit your usage limit. SECRET", "usageLimitExceeded"),
         ("unknown_private_value", "arbitrary secret", "other"),
     ],
 )

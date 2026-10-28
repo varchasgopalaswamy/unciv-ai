@@ -103,7 +103,7 @@ class TurnRoles:
         self.record = record
         self.key = (record["epoch"], record["gameTurn"], record["activationId"])
         self.jobs = {}
-        self.ready = {"gameplay": False, "economy": False}
+        self.ready = {"gameplay": False, "economy": False, "military": True}
         self.resumes = {role: asyncio.Event() for role in self.ready}
         self.messages = {}
         self.lock = asyncio.Lock()
@@ -139,6 +139,11 @@ class TurnRoles:
         self.military_active = False
         self.military_tasks = []
         self.start_military = None
+        self.military_requested = False
+        self.military_schedule = None
+        self.military_status = {}
+        self.military_revision = None
+        self.military_observation = None
         self.known_units = None
         self.economy_start = asyncio.Event()
         self.economy_schedule = None
@@ -160,7 +165,9 @@ class TurnRoles:
             "key": list(self.key),
             "committed": self.committed,
             "deferral": self.deferral,
-            "militaryActive": self.military_active,
+            "militaryActive": True,
+            "militaryAtWar": self.military_active,
+            "militarySchedule": copy.deepcopy(self.military_status),
             "warState": copy.deepcopy(self.war_state),
             "economySchedule": copy.deepcopy(self.economy_status),
             "economyCompletions": self.economy_completions,
@@ -172,7 +179,9 @@ class TurnRoles:
             "rolesFinished": dict(self.ready),
             "requests": copy.deepcopy(self.requests),
             "cityOverrides": dict(self.overrides),
-            "militaryActive": self.military_active,
+            "militaryActive": True,
+            "militaryAtWar": self.military_active,
+            "militarySchedule": copy.deepcopy(self.military_status),
             "warState": copy.deepcopy(self.war_state),
             "economySchedule": copy.deepcopy(self.economy_status),
         }
@@ -389,6 +398,74 @@ class TurnRoles:
             # masquerade as a second request after the first pass finishes.
             self.resumes["economy"].clear()
             self.messages.pop("economy", None)
+        elif job.purpose == "military":
+            self.military_observation = None
+            self.resumes["military"].clear()
+            self.messages.pop("military", None)
+
+    async def initialize_military(self, view):
+        from civ_agent.military_schedule import MilitarySchedule
+
+        self.military_schedule = MilitarySchedule(self.service.memory, self.service.military_interval)
+        await self.synchronize_war(view)
+        advisories = self.service.gateway.advisories
+        if advisories is not None and self.military_status:
+            evidence = await self.service.io.call(
+                self.military_schedule.triage_input, view, self.key[1], self.war_state, self.military_status
+            )
+            if evidence is not None:
+                result = await advisories.evaluate(evidence)
+                latest = await self.jobs["gameplay"].connection.tool("player_turn", {})
+                if (
+                    "error" in latest
+                    or latest.get("phase") != "ACTIVE"
+                    or latest.get("epoch") != self.key[0]
+                    or latest.get("turn") != self.key[1]
+                    or (latest.get("negotiation") or {}).get("active")
+                ):
+                    return
+                await self.synchronize_war(latest)
+                accepted = await self.service.io.call(
+                    self.military_schedule.triage_result, evidence, result, latest, self.war_state
+                )
+                if accepted:
+                    self.military_status["fullReview"] = True
+                    self.resume("military", "Changed evidence warrants a military planning review.")
+        await self.save()
+
+    def start_military_if_needed(self):
+        if not self.ready["military"] and not self.military_requested and self.start_military is not None:
+            self.military_requested = True
+            self.military_tasks.append(self.start_military())
+
+    async def synchronize_military(self, view):
+        if self.military_schedule is None or self.committed or self.committing:
+            return
+        if (
+            view.get("phase") != "ACTIVE"
+            or view.get("epoch") != self.key[0]
+            or view.get("turn") != self.key[1]
+            or (view.get("negotiation") or {}).get("active")
+        ):
+            return
+        from civ_agent.decisions_ledger import fingerprint
+
+        revision = (view.get("epoch"), view.get("turn"), view.get("revision"), fingerprint(self.war_state))
+        if revision == self.military_revision:
+            return
+        self.military_revision = revision
+        status = await self.service.io.call(self.military_schedule.assess, view, self.key[1], self.war_state)
+        if not self.ready["military"]:
+            self.military_status["fullReview"] = self.military_status.get("fullReview", False) or status["fullReview"]
+            self.military_status["reasons"] = list(
+                dict.fromkeys(self.military_status.get("reasons", []) + status["reasons"])
+            )
+            return
+        status["phase"] = "sleeping"
+        self.military_status = status
+        if status["reasons"]:
+            self.resume("military", "; ".join(status["reasons"]))
+            await self.save()
 
     async def synchronize_war(self, view):
         if self.committed or self.committing or self.wars is None or "diplomacy" not in view:
@@ -406,38 +483,29 @@ class TurnRoles:
                     self.resume(owner, "A new unit has remaining actions. Read its fresh facts before issuing orders.")
         self.known_units = set(units)
         active = bool(war_opponents(view))
-        if active == self.military_active:
-            return
+        changed = active != self.military_active
         self.military_active = active
-        if active:
-            self.ready["military"] = False
-            self.resumes["military"] = asyncio.Event()
-            if self.start_military is not None:
-                self.military_tasks.append(self.start_military())
-        else:
-            self.ready["military"] = True
-            if "military" in self.jobs:
-                self.jobs["military"].gameplay_ended.set()
+        if self.military_schedule is not None:
+            await self.synchronize_military(view)
+        elif changed:
+            self.resume("military", "War started or ended; review military plans and remaining actions.")
+        if changed:
             if self.needs_attention("gameplay"):
-                self.resume("gameplay", "The final war ended. You now control all units; review remaining actions.")
-        self.changed.set()
-        await self.save()
+                self.resume("gameplay", "War status changed; review strategic priorities and current agreements.")
+            self.changed.set()
+            await self.save()
 
     def unit_owner(self, unit):
-        return (
-            "military"
-            if self.military_active and unit.get("military") and unit["handle"] not in self.war_state["escorts"]
-            else "gameplay"
-        )
+        return "military" if unit.get("military") and unit["handle"] not in self.war_state["escorts"] else "gameplay"
 
     def unit_problem(self, job, arguments):
         role, kind = job.purpose, arguments["kind"]
-        if role == "military" and (not self.military_active or kind not in MILITARY_COMMANDS):
+        if role == "military" and kind not in MILITARY_COMMANDS:
             return {"error": "ROLE_ACTION_NOT_PERMITTED", "applied": False}
         if kind in {"AUTOPLAY", "MOVE_AUTOMATED_UNITS"}:
             return {"error": "ROLE_ACTION_NOT_PERMITTED", "applied": False}
         if kind == "CITY_ATTACK":
-            owner = "military" if self.military_active else "gameplay"
+            owner = "military"
             return {"error": "ACTION_OWNED_BY_OTHER_ROLE", "owner": owner, "applied": False} if role != owner else None
         units = {
             u["handle"]: u
@@ -537,7 +605,7 @@ class TurnRoles:
                 )
             )
             for role in targets:
-                if (role in self.jobs or role == "economy") and self.needs_attention(role):
+                if (role in self.jobs or role in {"economy", "military"}) and self.needs_attention(role):
                     self.resume(
                         role,
                         "New internal coordination requires attention. Apply the next coordinationUpdate or full "
@@ -702,6 +770,38 @@ class TurnRoles:
                         )
                 if job.purpose == "economy":
                     self.economy_completions += 1
+                if job.purpose == "military" and self.military_schedule is not None:
+                    view = await job.connection.tool("player_turn", {})
+                    if (
+                        "error" in view
+                        or view.get("phase") != "ACTIVE"
+                        or view.get("epoch") != self.key[0]
+                        or view.get("turn") != self.key[1]
+                        or (view.get("negotiation") or {}).get("active")
+                    ):
+                        return {"error": "MILITARY_REFRESH_REQUIRED", "applied": False}
+                    await self.synchronize_war(view)
+                    if self.military_observation is None or not await self.service.io.call(
+                        self.military_schedule.complete,
+                        view,
+                        self.key[1],
+                        self.war_state,
+                        self.military_observation,
+                        full=self.military_status.get("fullReview", False),
+                    ):
+                        return {
+                            "error": "MILITARY_OBSERVATION_CHANGED",
+                            "applied": False,
+                            "recoverable": True,
+                            "recovery": {
+                                "reads": [{"tool": "player_turn", "arguments": {}}],
+                                "instruction": "Military facts or requests changed. Read the current position and coordination before finishing.",
+                            },
+                        }
+                    updated = await self.service.io.call(
+                        self.military_schedule.assess, view, self.key[1], self.war_state
+                    )
+                    self.military_status = {**updated, "phase": "finished"}
                 if not self.known_cities:
                     self.known_cities = {city["handle"] for city in (job.observation or {}).get("cities", [])}
                 self.ready[job.purpose] = True
@@ -769,15 +869,17 @@ class TurnRoles:
             self.resume("economy", "An urgent economic request requires another pass.", scoped=True)
 
     def resume(self, role, message, *, reasons=None, scoped=False):
-        if role == "military" and not self.military_active:
-            # Durable war records retain messages for the next activation. An
-            # exited military conversation cannot satisfy this turn's barrier.
-            return
         self.ready[role] = False
         if role == "gameplay":
             self.main_attention += 1
         if role in self.jobs:
             self.jobs[role].role_finished.clear()
+        if role == "military":
+            self.military_observation = None
+            self.military_status["phase"] = "running"
+            if message not in self.military_status.get("reasons", []):
+                self.military_status.setdefault("reasons", []).append(message)
+            self.start_military_if_needed()
         if role == "economy":
             self.economy_requested = True
             self.economy_start.set()
@@ -823,11 +925,7 @@ class TurnRoles:
                             "The economy manager purchased a unit. Read its fresh facts and consider its remaining actions.",
                         )
                         changed = True
-            if (
-                self.military_active
-                and self.needs_attention("gameplay")
-                and "CAPTURE" in str((job.observation or {}).get("alerts", {})).upper()
-            ):
+            if self.needs_attention("gameplay") and "CAPTURE" in str((job.observation or {}).get("alerts", {})).upper():
                 self.resume("gameplay", "A capture requires your city disposition decision. Read the alerts.")
                 changed = True
             if changed:
@@ -882,7 +980,10 @@ class TurnRoles:
             while any(job.pending_calls for job in self.jobs.values()):
                 await asyncio.sleep(0.01)
             async with self.lock:
-                required = self.ready.keys() - ({"economy"} if not self.economy_requested else set())
+                dormant = ({"economy"} if not self.economy_requested else set()) | (
+                    {"military"} if not self.military_requested else set()
+                )
+                required = self.ready.keys() - dormant
                 if not all(self.ready.values()) or not required <= self.jobs.keys():
                     continue
             job = self.jobs["gameplay"]

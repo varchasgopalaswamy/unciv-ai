@@ -246,6 +246,8 @@ class ProposalGateway:
             self.routing.suspend()
         self.checkpoint_requested = True
         self.checkpoint_released.clear()
+        if self.advisories is not None:
+            self.advisories.suspend()
 
     def release_checkpoint(self):
         self.checkpoint_requested = False
@@ -589,7 +591,7 @@ class ProposalGateway:
         for role_tool, description in {
             "war_goals": "Read private war episodes, goals, operations, escort assignments and messages. For initial, main must supply opponent, nonempty goals and a reason, including when already at war. For propose, supply the current version, replacement goals and a reason. The counterpart uses respond with proposal, version, agree and reason before either role finalizes. Main breaks disagreement with a reason. Priority 1 is highest. Use the current version and proposal IDs.",
             "escort_assignment": "Main assigns a military unit to escort duty with an owned civilian, or releases it after unpairing. Main controls both units for the duration of the assignment.",
-            "military_operation": "Military stores the reasoning, goal opponents, progress assessment and reconsideration conditions for an operation. Notes do not establish factual outcomes.",
+            "military_operation": "Military stores peacetime or wartime plans, opponents (empty is valid for general readiness), progress assessment, reconsideration conditions and an optional concrete reviewTurn. Notes do not establish factual outcomes. Use role_message to request main's attention or economy_request for supplies.",
             "role_message": "Send a durable private message to another internal role. A finished role is reopened. Messages to an inactive military role are retained for its next activation.",
         }.items():
             if role_tool == "war_goals" or purpose in {"gameplay", "economy", "military"}:
@@ -1368,6 +1370,8 @@ class ProposalGateway:
                     if job.city_scope is None or city["handle"] in job.city_scope
                 ],
             }
+        if self.role_coordinator is not None and job.purpose == "military":
+            self.role_coordinator.military_observation = copy.deepcopy(value)
         self.accept_coordination(job, result)
         expanded = expand_response(result)
         job.delivered_overview = (

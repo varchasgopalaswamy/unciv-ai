@@ -6,6 +6,7 @@ for current behavior.
 
 ## Reports
 
+- [Decisions model replay — October 25, 2026](reports/Decisions-model-8091-comparison-2026-10-25.md): port 8091 exactly reproduces 39 historical effort probability vectors; current prompts, fallback behavior, latency under changing load, and broader historical fixture replay.
 - [Live token followup — October 25, 2026](reports/Token-live-followup-2026-10-25.md): nine completed trials; five delivery changes used 33.85% fewer total tokens at fixed effort, and the current configuration used 69.82% fewer tokens and 82.49% less time. Treasury choices differed and all arms missed an escort-case bombardment, so preserved quality remains unproven.
 - [Token delivery and effort triage — October 25, 2026](reports/Token-delivery-and-effort-triage-2026-10-25.md): five additional delivery improvements, 10.03% incremental replay character reduction, and a 39-start Decisions effort-choice study with probabilities, provenance corrections and quality limits.
 - [Token efficiency followup — October 25, 2026](reports/Token-efficiency-followup-2026-10-25.md): implemented waiting and lossless payload improvements; 6.30% replay character reduction and 33.46% fewer total tokens across three successful live pairs after a harness deadline fix. Results vary by case; quota stopped further testing and broader quality preservation remains unverified.

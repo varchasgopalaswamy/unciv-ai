@@ -41,9 +41,10 @@ from civ_agent.chat_runtime import ChatRuntime
 from civ_agent.civilization_guide import civilization_reference
 from civ_agent.civilization_state import CivilizationState, StateConflict
 from civ_agent.coordination_updates import context_compacted
-from civ_agent.diagnostics import Diagnostics
+from civ_agent.diagnostics import Diagnostics, codex_request_error
 from civ_agent.host_connection import HostConnection
-from civ_agent.model_status import LogLines, ModelStatus
+from civ_agent.llm_metrics import LlmMetricsCollector, record_llm_metrics
+from civ_agent.model_status import LogLines, ModelStatus, quota_failure
 from civ_agent.proposal_gateway import ProposalGateway
 from civ_agent.protocol import AgentProcess, JsonObject, Notification
 from civ_agent.provider_usage import ProviderUsageReader, reconcile_provider_usage
@@ -150,6 +151,7 @@ class CodexProcess:
         self.sequence = 0
         self.auth_client = None
         self.output_guard: ReviewOutputGuard | None = None
+        self.metrics = LlmMetricsCollector(notification)
 
     @property
     def process_exited(self) -> bool:
@@ -187,6 +189,10 @@ class CodexProcess:
         # Some automatic provider retries have no app-server notification. Only
         # enable their warning target; never copy arbitrary child logs to history.
         environment["RUST_LOG"] = "off,codex_core::responses_retry=warn"
+        # Periodic export also retains timings when an interrupted runner cannot
+        # flush on exit. This overrides only this child's export interval.
+        environment["OTEL_METRIC_EXPORT_INTERVAL"] = "1000"
+        await self.metrics.start()
         config = player_mcp_configuration(self.mcp_url, tool_timeout_seconds=86400)
         # Models use player tools and private memory tools. Disable general host
         # inspection/execution surfaces in these narrowly scoped jobs.
@@ -195,6 +201,7 @@ class CodexProcess:
             "-c",
             config,
             *provider_config,
+            *self.metrics.arguments(),
             *player_tool_arguments(),
             *scheduled_prompt_arguments(),
             "app-server",
@@ -456,7 +463,14 @@ class CodexProcess:
                     future = self.pending.get(response_id)
                     if future is not None and not future.done():
                         if "error" in message:
-                            future.set_exception(ServiceError("CODEX_REQUEST_FAILED", 502))
+                            method, params = self.requests.get(response_id, ("unknown", {}))
+                            detail = codex_request_error(method, response_id, message["error"])
+                            for key in ("threadId", "turnId"):
+                                if identifier(params.get(key)):
+                                    detail[key] = params[key]
+                            self._queue_notification("service/requestFailed", detail)
+                            if not future.done():
+                                future.set_exception(ServiceError("CODEX_REQUEST_FAILED", 502))
                         else:
                             result = message.get("result", {})
                             method, params = self.requests.get(response_id, (None, {}))
@@ -502,6 +516,7 @@ class CodexProcess:
             self.reader_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self.reader_task
+        await self.metrics.close()
         self._end_notifications()
         # Preserve already received usage/tool/lifecycle events before the
         # caller publishes a terminal record. Keep timed-out workers owned by
@@ -541,6 +556,7 @@ class AgentService:
         economy_model: JsonObject | None = None,
         economy_interval: int = 5,
         military_model: JsonObject | None = None,
+        military_interval: int = 5,
         memory_context_chars: int = 12000,
         review_interval: int = 5,
         review_attempts: int = 3,
@@ -577,6 +593,9 @@ class AgentService:
         self.economy_interval = economy_interval
         self.economy_runtime = None
         self.military_model = EconomyModel.model_validate(military_model or {}).model_dump(exclude_none=True)
+        if type(military_interval) is not int or military_interval <= 0:
+            raise ServiceError("INVALID_MILITARY_INTERVAL")
+        self.military_interval = military_interval
         self.military_runtime = None
         from civ_agent.peace_review import PeaceReviews
 
@@ -621,6 +640,7 @@ class AgentService:
             os.close(self.lock)
             raise ServiceError("SERVICE_ALREADY_RUNNING", 409) from None
         self.records: dict[str, JsonObject] = {}
+        self.quota_failures: dict[str, JsonObject] = {}
         self.known_threads: set[str] = set()
         self.match: JsonObject | None = None
         self.match_file = self.state_dir / "match.json"
@@ -981,6 +1001,10 @@ class AgentService:
             for key, value in record.items()
             if key != "fingerprint"
         }
+        if "effectiveSettings" in record:
+            from civ_agent.effort_decisions import base_settings
+
+            result["configuredSettings"] = base_settings(record)
         task = self.finalization_tasks.get(activation_id)
         result["finalizationState"] = (
             "RUNNING"
@@ -1058,6 +1082,14 @@ class AgentService:
         return {
             "civilization": self.civilization,
             "runFailure": {key: failure[key] for key in ("error", "diagnosticId", "job")} if failure else None,
+            "quotaFailure": next(
+                (
+                    value
+                    for value in self.quota_failures.values()
+                    if self.match is None or value["epoch"] == self.match["epoch"]
+                ),
+                None,
+            ),
             "communicationSubscription": self.chat.subscription_health(),
             "communicationJobError": self.chat.error,
         }
@@ -1292,6 +1324,9 @@ class AgentService:
     async def _notification(self, method: str, params: JsonObject) -> None:
         assert self.active_id is not None
         record = self.records[self.active_id]
+        if method == "service/llmMetrics":
+            await record_llm_metrics(self, record, params)
+            return
         model_record = record
         thread_id = model_record.get("threadId")
         if thread_id and params.get("threadId") == thread_id and context_compacted(method, params):
@@ -1311,6 +1346,18 @@ class AgentService:
         if method == "service/transportStatus":
             self.diagnostics.emit("codex_transport", activationId=self.active_id, **params)
             return
+        if method == "service/requestFailed":
+            record["requestFailure"] = params
+            if quota := quota_failure(record, params):
+                self.quota_failures[record["activationId"]] = quota
+            self.diagnostics.emit(
+                "codex_request_failed",
+                activationId=self.active_id,
+                purpose=record.get("purpose", "gameplay"),
+                **params,
+            )
+            await self._save(record)
+            return
         try:
             if method in HISTORY_METHODS:
                 await self.io.call(self.history.notify, self.active_id, thread_id, method, params)
@@ -1322,6 +1369,8 @@ class AgentService:
                 record["modelStatus"] = {
                     key: value for key, value in params.items() if key not in {"threadId", "turnId"}
                 }
+                if quota := quota_failure(record, params):
+                    self.quota_failures[record["activationId"]] = quota
                 self.diagnostics.emit("model_status", activationId=self.active_id, **params)
                 await self._save(record)
         except (OSError, ValueError):
@@ -1867,15 +1916,19 @@ class AgentService:
             def start_military():
                 nonlocal military_generation
                 military_generation += 1
-                military_payload = {**payload, "activationId": payload["activationId"] + f":war{military_generation}"}
+                military_payload = {
+                    **payload,
+                    "activationId": payload["activationId"] + f":military{military_generation}",
+                }
                 self.military_runtime = RoleRuntime(self, self.turn_roles, military_payload, role="military")
                 return asyncio.create_task(run_role(self, self.turn_roles, military_payload, record, "military"))
 
-            self.turn_roles.start_military = start_military
             initial_view = await job.connection.tool("player_turn", {})
             if "error" in initial_view:
                 raise ServiceError("WAR_STATE_UNAVAILABLE", 503)
-            await self.turn_roles.synchronize_war(initial_view)
+            await self.turn_roles.initialize_military(initial_view)
+            self.turn_roles.start_military = start_military
+            self.turn_roles.start_military_if_needed()
             self.economy_runtime = None
             await self.turn_roles.initialize_economy(initial_view)
             economy_task = asyncio.create_task(run_scheduled_economy(self, self.turn_roles, payload, record))

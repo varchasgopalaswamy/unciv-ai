@@ -19,6 +19,7 @@ internal fun communicationContext(runtime: GameExecutor, game: GameInfo, player:
     return obj(
         "turn" to game.turns,
         "rules" to Json.encodeToJsonElement(GameRules.serializer(), observeGameRules(game)),
+        "eraProgress" to Json.encodeToJsonElement(EraProgress.serializer(), observeEraProgress(player)),
         "finished" to gameFinished(game),
         "defeated" to player.isDefeated(),
         "communicationAvailable" to !runtime.communicationPaused,

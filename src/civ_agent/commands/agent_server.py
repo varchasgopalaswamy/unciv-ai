@@ -107,6 +107,12 @@ def parser(*, add_help: bool = True) -> argparse.ArgumentParser:
     )
     result.add_argument("--military-model", type=json.loads, default=None, help="Military role model JSON overrides")
     result.add_argument(
+        "--military-interval",
+        type=positive,
+        default=5,
+        help="Maximum own turns between full military planning reviews (default: 5; events can wake it sooner)",
+    )
+    result.add_argument(
         "--economy-interval",
         type=positive,
         default=5,
@@ -192,6 +198,7 @@ def run(args: argparse.Namespace) -> int:
             economy_model=args.economy_model,
             economy_interval=args.economy_interval,
             military_model=args.military_model,
+            military_interval=args.military_interval,
             review_interval=args.review_interval,
             review_attempts=args.review_attempts,
             strategy_guide=args.strategy_guide,

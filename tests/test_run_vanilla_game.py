@@ -25,6 +25,15 @@ def test_economy_review_interval_defaults_and_cli_override(tmp_path):
         game.resolve_options(options(tmp_path, "--economy-interval", "0"))
 
 
+def test_military_planning_interval_defaults_and_cli_override(tmp_path):
+    assert GameConfig().agents.military_interval == 5
+    config = game.resolve_options(options(tmp_path, "--military-interval", "3"))
+    assert config.agents.military_interval == 3
+    assert all(config.settings(player)["military_interval"] == 3 for player in config.agent_players)
+    with pytest.raises(ValueError):
+        game.resolve_options(options(tmp_path, "--military-interval", "0"))
+
+
 def test_toml_cli_precedence_and_human_seat(tmp_path):
     source = tmp_path / "input.toml"
     source.write_text("""
@@ -152,6 +161,35 @@ def test_assignment_randomness_is_independent_of_map_seed_and_global_rng():
     assert [a.player for a in first.assignments] != [p.name for p in config.players]
     config.game.randomize = False
     assert [a.player for a in config.resolved().assignments] == [p.name for p in config.players]
+
+
+def test_player_assignment_and_civilization_placement_seeds_are_independent():
+    config = GameConfig(
+        game={"master_seed": 42, "assignment_seed": 7, "randomize": True},
+        players=[
+            {"name": "Human", "controller": "human"},
+            {"name": "Agent 1"},
+            {"name": "Agent 2"},
+            {"name": "Native", "controller": "built_in_ai"},
+        ],
+    )
+    first = config.resolved()
+    config.game.assignment_seed = 8
+    reassigned = config.resolved()
+    assert first.assignments != reassigned.assignments
+    assert first.human != reassigned.human
+    assert first.turn_order != reassigned.turn_order
+    assert first.game.map_seed == reassigned.game.map_seed
+    assert first.game.starting_position_seed == reassigned.game.starting_position_seed
+
+    config.game.starting_position_seed = 99
+    repositioned = config.resolved()
+    assert repositioned.assignments == reassigned.assignments
+    assert repositioned.game.map_seed == reassigned.game.map_seed
+    assert repositioned.game.starting_position_seed != reassigned.game.starting_position_seed
+    expected = reassigned.engine_arguments()
+    expected[expected.index("--starting-position-seed") + 1] = "99"
+    assert repositioned.engine_arguments() == expected
 
 
 def test_resolved_assignments_require_every_player_once():
@@ -452,7 +490,7 @@ def test_noncapacity_model_failure_stays_paused_without_automatic_retry(tmp_path
             "status": "paused",
             "inFlight": {
                 "agentPhase": "FAILED",
-                "modelStatus": {"state": "failed", "reason": "usageLimitExceeded"},
+                "modelStatus": {"state": "failed", "reason": "contextWindowExceeded"},
             },
         },
     )
@@ -465,6 +503,97 @@ def test_noncapacity_model_failure_stays_paused_without_automatic_retry(tmp_path
     monkeypatch.setattr(run, "stop", lambda: None)
     monkeypatch.setattr(run.stop_event, "wait", lambda _: False)
     assert run.run() == "paused"
+
+
+@pytest.mark.parametrize("source", ["modelStatus", "requestFailure", "quotaFailure"])
+def test_quota_failures_retry_every_five_minutes_without_capacity_retry_limit(tmp_path, monkeypatch, source):
+    from civ_agent import container_supervisor
+    from civ_agent.container_supervisor import GameRun
+    from civ_agent.monitoring import MonitorStore, path_for
+
+    root = tmp_path / "game"
+    game.initialize(
+        root,
+        GameConfig(limits={"model_capacity_retries": 0, "model_capacity_retry_delay": 17}).resolved(),
+        tmp_path / "auth",
+        images={"runtime": "fixed"},
+        validation={"maxTurns": 330},
+    )
+    monitor = MonitorStore(path_for(root))
+    run = GameRun(root)
+    launches, retries = [], []
+    monkeypatch.setattr(container_supervisor.time, "time", lambda: 1000)
+
+    def once():
+        launches.append(True)
+        if len(launches) > 7:
+            run.status("completed")
+            return "completed"
+        state = {
+            "status": "paused",
+            "inFlight": {
+                "civilization": "Rome",
+                "agentPhase": "FAILED",
+                source: {"state": "failed", "reason": "usageLimitExceeded"},
+            },
+        }
+        if source == "quotaFailure":
+            state = {
+                "status": "paused",
+                "epoch": "g1",
+                "quotaFailure": {
+                    "reason": "usageLimitExceeded",
+                    "epoch": "g1",
+                    "civilization": "Rome",
+                    "purpose": "review",
+                },
+            }
+        monitor.put("state", "run", state)
+        run.status("paused")
+        return "paused"
+
+    def wait(delay):
+        saved = json.loads((root / "container-status.json").read_text())
+        assert saved["status"] == "retrying"
+        assert saved["recovery"]["nextRetryAt"] == 1300
+        assert saved["recovery"]["civilization"] == "Rome"
+        retries.append((delay, saved["recovery"]["attempt"]))
+        return False
+
+    monkeypatch.setattr(run, "run_once", once)
+    monkeypatch.setattr(run.stop_event, "wait", wait)
+    assert run.run() == "completed"
+    assert retries == [(300, attempt) for attempt in range(1, 8)]
+    assert len(launches) == 8
+    assert json.loads((root / "container-status.json").read_text())["status"] == "completed"
+
+
+def test_operator_can_stop_automatic_quota_recovery(tmp_path, monkeypatch):
+    from civ_agent.container_supervisor import GameRun
+    from civ_agent.monitoring import MonitorStore, path_for
+
+    root = tmp_path / "game"
+    game.initialize(
+        root, GameConfig().resolved(), tmp_path / "auth", images={"runtime": "fixed"}, validation={"maxTurns": 330}
+    )
+    MonitorStore(path_for(root)).put(
+        "state",
+        "run",
+        {
+            "status": "paused",
+            "inFlight": {"agentPhase": "FAILED", "modelStatus": {"state": "failed", "reason": "usageLimitExceeded"}},
+        },
+    )
+    run = GameRun(root)
+    once = Mock(return_value="paused")
+    monkeypatch.setattr(run, "run_once", once)
+    monkeypatch.setattr(run.stop_event, "wait", lambda delay: True)
+    assert run.run() == "paused"
+    once.assert_called_once()
+    saved = json.loads((root / "container-status.json").read_text())
+    assert saved["status"] == "paused"
+    assert "Operator stopped" in saved["reason"]
+    assert "recovery" not in saved
 
 
 def test_stop_reports_cleanup_failure_without_retrying_it(tmp_path, monkeypatch):

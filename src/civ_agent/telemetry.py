@@ -368,8 +368,36 @@ classifier_calls = Table(
     Column("payload", Text, nullable=False),
 )
 
+# Private profiling data is independent of native usage/billing reports and is
+# retained across game recovery, like the classifier ledger.
+llm_metrics = Table(
+    "llm_metrics",
+    metadata,
+    Column("id", Text, primary_key=True),
+    Column("job", Text, nullable=False),
+    Column("payload", Text, nullable=False),
+)
+
 
 class JobAccounting:
+    def record_llm_metrics(self, job, context, samples):
+        with self.connect() as db:
+            for sample in samples:
+                previous = db.scalar(select(llm_metrics.c.payload).where(llm_metrics.c.id == sample["id"]))
+                if previous is not None:
+                    old = json.loads(previous)
+                    if sample["endNs"] <= old["endNs"] or sample["count"] < old["count"]:
+                        continue
+                    db.execute(
+                        llm_metrics.update()
+                        .where(llm_metrics.c.id == sample["id"])
+                        .values(payload=json.dumps({**context, **sample}))
+                    )
+                else:
+                    db.execute(
+                        insert(llm_metrics).values(id=sample["id"], job=job, payload=json.dumps({**context, **sample}))
+                    )
+
     def classifier(self, direction, result):
         with self.connect() as db:
             db.execute(

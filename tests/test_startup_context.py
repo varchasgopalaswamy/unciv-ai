@@ -722,7 +722,7 @@ def test_prompt_prefix_excludes_state_memory_identity_and_capability_changes(str
 def test_strategy_reference_is_optional_once_and_before_dynamic_context(tmp_path, monkeypatch, purpose):
     # The reference must be available to installed services outside the checkout.
     monkeypatch.chdir(tmp_path)
-    reference = strategy_reference()
+    reference = strategy_reference(include_space_race=False)
     prepared = {
         "coreTools": [],
         "readInstructions": {},

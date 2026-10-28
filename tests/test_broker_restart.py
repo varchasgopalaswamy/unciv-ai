@@ -218,15 +218,26 @@ def test_restart_recreates_existing_container_with_selected_image(fake_runtime, 
     assert fake.containers[name] == {"Image": "new-image", "State": {"Running": True}}
 
 
-def test_default_ensure_preserves_running_auth_and_rejects_decisions_image_change(fake_runtime):
+def test_default_ensure_preserves_compatible_running_brokers_on_image_change(fake_runtime):
     fake = fake_runtime
     configure(fake.root, "auth", "decisions")
     fake.existing("auth")
     fake.existing("decisions")
     supervisor.ensure_auth(fake.root, "new-image")
-    with pytest.raises(supervisor.ContainerError, match="different runtime image"):
+    report = supervisor.ensure_decisions(fake.root, "new-image")
+    assert report["image"] == "old-image" and report["requestedImage"] == "new-image"
+    assert [args[0] for args, _ in fake.calls] == ["run"]
+
+
+def test_different_game_image_still_requires_matching_broker_protocol(fake_runtime):
+    fake = fake_runtime
+    configure(fake.root, "decisions")
+    name = fake.existing("decisions")
+    fake.image_contract["protocolVersion"] -= 1
+    with pytest.raises(supervisor.ContainerError, match="incompatible"):
         supervisor.ensure_decisions(fake.root, "new-image")
-    assert fake.calls == []
+    assert fake.containers[name]["Image"] == "old-image"
+    assert [args[0] for args, _ in fake.calls] == ["run"]
 
 
 @pytest.mark.parametrize("role", ["auth", "decisions"])

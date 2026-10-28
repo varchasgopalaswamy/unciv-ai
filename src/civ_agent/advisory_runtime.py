@@ -27,10 +27,34 @@ from civ_agent.decisions_tasks import (
 from civ_agent.protocol import JsonObject
 
 
+class CheckpointInterrupted(Exception):
+    """The broker owns any submitted request; its durable ID can be reconciled."""
+
+
 class AdvisoryRuntime:
     def __init__(self, gateway, client, settings):
         self.gateway, self.client, self.settings = gateway, client, settings
         self.store = AdvisoryStore(gateway.memory)
+        self.requests: set[asyncio.Task] = set()
+
+    def suspend(self):
+        for task in self.requests:
+            task.cancel()
+
+    async def request(self, operation, *args, **kwargs):
+        if getattr(self.gateway, "checkpoint_requested", False):
+            raise CheckpointInterrupted()
+        task = asyncio.create_task(operation(*args, **kwargs))
+        self.requests.add(task)
+        try:
+            return await task
+        except asyncio.CancelledError:
+            owner = asyncio.current_task()
+            if getattr(self.gateway, "checkpoint_requested", False) and owner is not None and not owner.cancelling():
+                raise CheckpointInterrupted() from None
+            raise
+        finally:
+            self.requests.discard(task)
 
     async def state(self):
         return await self.gateway.io.call(self.store.state)
@@ -77,9 +101,13 @@ class AdvisoryRuntime:
                 raw: JsonObject
                 try:
                     if previous is None:
-                        raw = await self.client.batch(evidence, timeout=self.settings.decisions_timeout_seconds)
+                        raw = await self.request(
+                            self.client.batch, evidence, timeout=self.settings.decisions_timeout_seconds
+                        )
                     else:
-                        raw = await self.client.lookup(stable_id, timeout=self.settings.decisions_timeout_seconds)
+                        raw = await self.request(
+                            self.client.lookup, stable_id, timeout=self.settings.decisions_timeout_seconds
+                        )
                         if (
                             isinstance(raw, dict)
                             and raw.get("requestId") == stable_id
@@ -87,7 +115,11 @@ class AdvisoryRuntime:
                         ):
                             # A second delivery of the same immutable request is
                             # serialized and deduplicated by the broker ledger.
-                            raw = await self.client.batch(evidence, timeout=self.settings.decisions_timeout_seconds)
+                            raw = await self.request(
+                                self.client.batch, evidence, timeout=self.settings.decisions_timeout_seconds
+                            )
+                except CheckpointInterrupted:
+                    raw = {**metadata, **failed_answers(body, threshold, "completion_unknown")}
                 except (TimeoutError, OSError, ValueError, aiohttp.ClientError):
                     raw = {"answers": [], "fallback": "broker_unavailable", "requestId": stable_id}
                 if (

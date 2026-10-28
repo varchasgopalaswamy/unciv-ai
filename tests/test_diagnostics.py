@@ -6,7 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 import pytest
 from pydantic import BaseModel, ValidationError
 
-from civ_agent.diagnostics import Diagnostics, exception_details
+from civ_agent.diagnostics import Diagnostics, codex_request_error, exception_details
 
 
 def test_private_rotation_concurrent_records_and_restart_append(tmp_path):
@@ -64,3 +64,41 @@ def test_diagnostics_refuse_unsafe_files(tmp_path, unsafe):
     with pytest.raises(OSError):
         Diagnostics(tmp_path, "Rome")
     assert target.read_text() == "DO-NOT-TOUCH"
+
+
+@pytest.mark.parametrize(
+    ("error", "reason", "http_status"),
+    [
+        ({"code": -32602, "message": "Invalid parameters: PRIVATE_PROMPT"}, "invalidParams", None),
+        ({"code": -32000, "message": "No active turn PRIVATE_TOKEN"}, "turnNotActive", None),
+        (
+            {
+                "code": -32000,
+                "message": "PRIVATE_PROMPT",
+                "data": {"error": {"codexErrorInfo": {"httpConnectionFailed": {"httpStatusCode": 503}}}},
+            },
+            "httpConnectionFailed",
+            503,
+        ),
+        (
+            {"code": -32000, "message": "PRIVATE_TOKEN", "data": {"codexErrorInfo": "unauthorized"}},
+            "unauthorized",
+            None,
+        ),
+        ({"code": True, "message": "PRIVATE_BODY", "data": {"httpStatus": True}}, "other", None),
+        ("PRIVATE_BODY", "malformedRpcError", None),
+    ],
+)
+def test_codex_rpc_errors_preserve_typed_causes_without_provider_text(error, reason, http_status):
+    detail = codex_request_error("turn/interrupt", 7, error)
+    assert detail["rpcMethod"] == "turn/interrupt" and detail["rpcId"] == 7
+    assert detail["reason"] == reason
+    assert detail.get("httpStatus") == http_status
+    assert "PRIVATE" not in json.dumps(detail)
+    if isinstance(error, dict) and type(error.get("code")) is int:
+        assert detail["rpcCode"] == error["code"]
+    else:
+        assert "rpcCode" not in detail
+    if isinstance(error, dict) and isinstance(error.get("message"), str):
+        assert len(detail["messageSha256"]) == 64
+        assert detail["messageCharacters"] == len(error["message"])

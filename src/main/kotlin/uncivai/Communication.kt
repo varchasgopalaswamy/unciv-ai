@@ -269,9 +269,9 @@ internal class Communication(private val runtime: GameExecutor) {
     private fun job(civilization: String, request: CommunicationRequest): JsonObject {
         val id = checkNotNull(request.job)
         val now = System.currentTimeMillis()
-        val militaryRequired = runtime.accessGame { game ->
-            game.getCivilization(civilization).getCivsAtWarWith().any { !it.isBarbarian && !it.isDefeated() }
-        }
+        // Military also plans and controls combat units during peace. Reserve
+        // its partner capacity before main/economy can occupy the other slots.
+        val militaryRequired = true
         state.jobs.replaceAll { _, job ->
             if (job.civilization == civilization && job.purpose == "gameplay") job.copy(militaryPartnerRequired = militaryRequired) else job
         }

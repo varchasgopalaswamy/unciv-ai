@@ -80,6 +80,7 @@ class AgentDefaults(Configuration, DecisionsSettings):
     communication_reasoning_effort: str | None = None
     review_interval: Positive = 5
     economy_interval: Positive = 5
+    military_interval: Positive = 5
     review_attempts: Positive = 3
     strategy_guide: bool = False
     civilization_guide: bool = False

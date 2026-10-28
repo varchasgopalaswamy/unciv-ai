@@ -11,7 +11,7 @@ from unittest.mock import Mock
 import pytest
 
 from civ_agent import cli, scheduler
-from civ_agent.commands import agent, agent_server, game, history, host, inspect
+from civ_agent.commands import agent, agent_server, game, history, host, inspect, profile
 
 COMMANDS = [
     ("game start", game),
@@ -22,6 +22,7 @@ COMMANDS = [
     ("agent-server start", agent_server),
     *((f"match {action}", scheduler) for action in ("start", "resume", "status", "pause", "stop", "manual")),
     ("history export", history),
+    ("match profile", profile),
 ]
 
 
@@ -48,7 +49,7 @@ def test_dispatch_preserves_options_and_exit_status(
     if command.startswith(("agent ", "agent-server ")):
         args.append("Rome")
     args.extend(["--state-dir", str(tmp_path / "match with spaces")])
-    settings = command.startswith(("agent ", "agent-server ", "match "))
+    settings = command != "match profile" and command.startswith(("agent ", "agent-server ", "match "))
     if settings:
         args.extend(["--model", "test-model", "--reasoning-effort", "high"])
     if command == "agent-server start":
@@ -56,8 +57,11 @@ def test_dispatch_preserves_options_and_exit_status(
     assert cli.main(args) == 7
     run.assert_called_once()
     options = run.call_args.args[0]
-    assert Path(options.state_dir) == tmp_path / "match with spaces"
-    if command.startswith("match "):
+    if command == "match profile":
+        assert options.state_dir == [tmp_path / "match with spaces"]
+    else:
+        assert Path(options.state_dir) == tmp_path / "match with spaces"
+    if command.startswith("match ") and command != "match profile":
         assert options.action == command.split()[1]
     if settings:
         assert (options.model, options.reasoning_effort) == ("test-model", "high")

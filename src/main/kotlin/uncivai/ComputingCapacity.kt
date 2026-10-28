@@ -41,7 +41,7 @@ internal fun computingCapacityAvailable(
         active.values.none { it.civilization == civilization && it.purpose == purpose }
 }
 
-/** Role invocations are reserved without charging for a peacetime military conversation. */
+/** Reserve partner capacity; charge invocations only when a job is actually claimed. */
 internal fun invocationCapacityAvailable(
     jobs: Map<String, CommunicationJob>,
     purpose: String,

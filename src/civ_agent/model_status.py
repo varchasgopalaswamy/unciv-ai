@@ -52,7 +52,20 @@ def error_fields(error: JsonObject) -> JsonObject:
         if type(status) is int and 100 <= status <= 599:
             fields["httpStatus"] = status
     message = str(error.get("message", ""))[:MAX_LOG_LINE].lower()
-    if "idle timeout" in message:
+    if fields["reason"] == "usageLimitExceeded" or any(
+        phrase in message
+        for phrase in (
+            "insufficient_quota",
+            "quota exhausted",
+            "quota exceeded",
+            "exceeded your current quota",
+            "usage limit",
+            "insufficient credits",
+            "credit balance is too low",
+        )
+    ):
+        fields["reason"] = "usageLimitExceeded"
+    elif "idle timeout" in message:
         fields["reason"] = "idle_timeout"
     elif "timed out" in message or "timeout" in message:
         fields["reason"] = "timeout"
@@ -87,6 +100,20 @@ def status_text(data: JsonObject) -> str:
     if data.get("state") in {"waiting", "retrying"}:
         message += f" No model progress for {data.get('elapsedSeconds', 0)}s."
     return message
+
+
+def quota_failure(record: JsonObject, notice: JsonObject) -> JsonObject | None:
+    """Retain only the job identity needed to recover a terminal quota failure."""
+    if notice.get("reason") != "usageLimitExceeded" or not (
+        notice.get("state") == "failed" or notice.get("rpcMethod") in {"turn/start", "thread/start", "thread/resume"}
+    ):
+        return None
+    return {
+        "reason": "usageLimitExceeded",
+        "epoch": record["epoch"],
+        "activationId": record["activationId"],
+        "purpose": record.get("purpose", "gameplay"),
+    }
 
 
 class LogLines:
@@ -187,7 +214,11 @@ class ModelStatus:
                 result = self.event("failed", REASONS[fields["reason"]] + ".", source="protocol", **fields)
             elif self.issue is not None:
                 status = turn.get("status") if turn.get("status") in {"completed", "failed"} else "interrupted"
-                result = self.event(status, f"Model turn {status}.", source="protocol")
+                result = (
+                    {**self.issue, "state": status}
+                    if status == "failed"
+                    else self.event(status, f"Model turn {status}.", source="protocol")
+                )
             self.turn = None
             self.issue = None
             return result

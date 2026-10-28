@@ -120,10 +120,21 @@ def test_economy_model_inheritance_and_per_player_override():
 
 
 @run_async
+async def test_capture_during_peacetime_military_work_reopens_main_for_disposition():
+    roles, jobs = coordinator()
+    roles.ready["gameplay"] = True
+    assert not roles.military_active
+    jobs["gameplay"].observation["alerts"] = [{"kind": "CAPTURED_CIVILIAN"}]
+    await roles.after_action(jobs["gameplay"], {"kind": "ATTACK"}, {})
+    assert not roles.ready["gameplay"]
+    assert "capture requires" in roles.messages["gameplay"]
+
+
+@run_async
 async def test_roles_finish_independently_and_old_attempt_cannot_finish():
     roles, jobs = coordinator()
     await roles.tool(jobs["gameplay"], "finish_role", {})
-    assert roles.ready == {"gameplay": True, "economy": False}
+    assert roles.ready == {"gameplay": True, "economy": False, "military": True}
     jobs["economy"].epoch = "abandoned"
     result = await roles.tool(jobs["economy"], "finish_role", {})
     assert result["error"] == "STALE_TURN_ATTEMPT"
@@ -316,7 +327,7 @@ async def test_both_real_role_lifecycles_share_one_native_handoff(tmp_path):
         assert service.turn_roles is not None and service.turn_roles.committed
         assert len(factory.instances) == 2
         assert {record.get("purpose", "gameplay") for record in service.records.values()} == {"gameplay", "economy"}
-        assert service.records["turn1"]["roles"]["ready"] == {"gameplay": True, "economy": True}
+        assert service.records["turn1"]["roles"]["ready"] == {"gameplay": True, "economy": True, "military": True}
     finally:
         await asyncio.wait_for(service.close(), 3)
 
@@ -335,7 +346,7 @@ async def test_new_city_reopens_economy_and_routine_requests_survive_next_turn()
     roles.service.records = {"attempt1": roles.record}
     following = TurnRoles(roles.service, {"epoch": "e1", "gameTurn": 5, "activationId": "next"})
     assert following.requests[0]["id"] == request["request"]["id"]
-    assert following.overrides == {} and not any(following.ready.values())
+    assert following.overrides == {} and following.ready == {"gameplay": False, "economy": False, "military": True}
 
 
 @run_async

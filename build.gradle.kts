@@ -181,6 +181,80 @@ tasks.register<JavaExec>("generateDominationPositions") {
     doFirst { args(providers.gradleProperty("dominationOutput").get()) }
 }
 
+tasks.register<JavaExec>("generateCampaignInitiativePositions") {
+    group = "verification"
+    description = "Creates native reconnaissance, siege and counteroffensive positions for isolated live evaluation."
+    dependsOn(tasks.testClasses)
+    classpath = sourceSets.test.get().runtimeClasspath
+    mainClass = "uncivai.CampaignInitiativeFixtures"
+    doFirst { args(providers.gradleProperty("campaignOutput").get()) }
+}
+
+tasks.register<JavaExec>("probeCampaignInitiative") {
+    group = "verification"
+    description = "Checks fixed native campaign sequences from isolated positions without model calls."
+    dependsOn(tasks.testClasses)
+    classpath = sourceSets.test.get().runtimeClasspath
+    mainClass = "uncivai.CampaignInitiativeProbe"
+    doFirst {
+        args(providers.gradleProperty("campaignSource").get(), providers.gradleProperty("campaignProbeOutput").get())
+    }
+}
+
+tasks.register<JavaExec>("evaluateMilitaryOpportunity") {
+    group = "verification"
+    description = "Compares native attack, reconnaissance and development from isolated saved positions without model calls."
+    dependsOn(tasks.testClasses)
+    classpath = sourceSets.test.get().runtimeClasspath
+    mainClass = "uncivai.MilitaryOpportunityEvaluation"
+    maxHeapSize = "2g"
+    doFirst {
+        systemProperty("uncivai.engineRevision", uncivRevision.get())
+        args(
+            providers.gradleProperty("opportunitySource").get(),
+            providers.gradleProperty("opportunityOutput").get(),
+            providers.gradleProperty("opportunityRounds").getOrElse("20"),
+            providers.gradleProperty("opportunityVariants").getOrElse("base,reserves,strong-defense"),
+            providers.gradleProperty("opportunityPolicies").getOrElse("attack,recon,develop"),
+        )
+    }
+}
+
+tasks.register<JavaExec>("searchBalancedMaps") {
+    group = "verification"
+    description = "Searches native Medium maps for comparable six-civilization openings with twelve city-states."
+    dependsOn(tasks.testClasses)
+    classpath = sourceSets.test.get().runtimeClasspath
+    mainClass = "uncivai.MapBalanceSearch"
+    maxHeapSize = "2g"
+    doFirst {
+        systemProperty("uncivai.engineRevision", uncivRevision.get())
+        args(
+            providers.gradleProperty("mapSearchDir").getOrElse(layout.buildDirectory.dir("map-balance-search").get().asFile.absolutePath),
+            providers.gradleProperty("mapSearchCount").getOrElse("500"),
+            providers.gradleProperty("mapSearchFirstSeed").getOrElse("1"),
+            providers.gradleProperty("mapSearchPlacementSeed").getOrElse("20261027"),
+        )
+        val type = providers.gradleProperty("mapSearchType").orNull
+        val placementSeed = providers.gradleProperty("mapSearchStartingPositionSeed").orNull
+        val candidates = providers.gradleProperty("mapSearchCandidates").orNull
+        if (candidates != null) args(type ?: "both", placementSeed ?: "0", candidates)
+        else if (placementSeed != null) args(type ?: "Pangaea", placementSeed)
+        else type?.let { args(it) }
+    }
+}
+
+tasks.register<JavaExec>("assessBenchmarkStarts") {
+    group = "verification"
+    description = "Compares copied historical benchmark maps at their archived starting coordinates."
+    dependsOn(tasks.testClasses)
+    classpath = sourceSets.test.get().runtimeClasspath
+    mainClass = "uncivai.BenchmarkStartAssessment"
+    doFirst {
+        args(providers.gradleProperty("benchmarkStartManifest").get(), providers.gradleProperty("benchmarkStartDir").get())
+    }
+}
+
 tasks.register<JavaExec>("generateVictoryLiveFixtures") {
     group = "verification"
     description = "Creates fresh late-game checkpoints for opt-in live spaceship and election acceptance."

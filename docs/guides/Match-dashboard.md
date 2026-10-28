@@ -41,10 +41,23 @@ does not change when you update the checkout or rebuild images.
   most recent records. A saved `running` status does not prove that a process is
   still alive; the record age helps identify a stalled or abandoned run.
   The turn's wall timer includes pauses.
+- Quota exhaustion appears as `Waiting for quota`, with the affected player, retry
+  attempt and a live countdown. The supervisor retries every five minutes without
+  a quota retry limit. It uses ordinary checkpoint recovery for the interrupted
+  turn. Operator stop and the configured game budgets still apply. The warning
+  clears when play resumes. This covers gameplay, specialist roles, communication
+  and strategy reviews; a quota-blocked review remains pending without consuming
+  its report-repair attempts.
 - Player scores and controllers, including built-in AI and human players when the
   host records them. Agent rows distinguish gameplay from background bookkeeping.
   The player and strategy tables show each agent's reported model beside its
   civilization, including opening reviews before the first gameplay turn.
+  An Effort column shows the active selected reasoning level in the player,
+  strategy and specialist tables. The active-turn banner also shows effort;
+  differing configured defaults appear as `low (default medium)`. Before
+  selection finishes the player shows `pending`, rather than presenting the
+  configured default as an actual selection. Waiting players show no active
+  effort alongside their configured default.
 - Recorded input, cached-input, output, and reasoning-token counts. Cached tokens
   are part of input; reasoning tokens are part of output. Accounting can remain
   partial while a turn or its bookkeeping is in progress.

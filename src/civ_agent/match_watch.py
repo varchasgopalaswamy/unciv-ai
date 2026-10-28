@@ -3,6 +3,7 @@
 import argparse
 import asyncio
 import json
+import math
 import os
 import sys
 import time
@@ -24,6 +25,17 @@ from civ_agent.watch_state import SPECIALIST_ROLES, WatchReader, WatchSnapshot, 
 
 def count(value):
     return "—" if value is None else number(value)
+
+
+def effort_text(settings, configured=None, *, pending="—"):
+    default = (configured or {}).get("reasoningEffort")
+    if not settings or "reasoningEffort" not in settings:
+        return pending + (f" (default {visible_text(default)})" if default else "")
+    actual = settings.get("reasoningEffort")
+    text = visible_text(actual) if actual else "model default"
+    if default is not None and actual != default:
+        text += f" (default {visible_text(default)})"
+    return text
 
 
 def player_text(name, no_color=False, *, model=None):
@@ -171,14 +183,14 @@ class MatchWatch(App):
 
     async def on_mount(self):
         for identity, columns in {
-            "players": ("Player", "Status", "Turn", "Score", "Input", "Cached", "Output", "Game API"),
+            "players": ("Player", "Status", "Effort", "Turn", "Score", "Input", "Cached", "Output", "Game API"),
             "conversations": ("Participants", "Status", "Latest turn"),
-            "strategies": ("Player", "Review status", "Report turn", "Preloaded turn", "Attempt time"),
+            "strategies": ("Player", "Review status", "Effort", "Report turn", "Preloaded turn", "Attempt time"),
         }.items():
             self.query_one(f"#{identity}", DataTable).add_columns(*columns)
         for role in SPECIALIST_ROLES:
             self.query_one(f"#{role}-agents", DataTable).add_columns(
-                "Player / model", "Status", "Input", "Output", "Time"
+                "Player / model", "Status", "Effort", "Input", "Output", "Time"
             )
         self.query_one("#players", DataTable).border_title = "Players · Enter to filter"
         self.render_game_switcher()
@@ -278,10 +290,26 @@ class MatchWatch(App):
         review_wait = run.get("reviewPhase") or {}
         current = flight or review_wait or (snapshot.latest_turn() or {}).get("turn", {})
         status = str(run.get("status") or result.get("status") or "Waiting for match records").replace("_", " ")
+        container = snapshot.container_status or {}
+        recovery = container.get("recovery") or {}
+        quota_wait = container.get("status") == "retrying" and recovery.get("reason") == "usageLimitExceeded"
+        if quota_wait:
+            status = "waiting for quota"
         title = Text(
             f"{status.capitalize()}  ·  Turn {current.get('gameTurn', '—')}  ·  {visible_text(current.get('civilization', '—'))}",
             style="bold",
         )
+        if flight and flight.get("controller") != "HUMAN":
+            session = run.get("sessions", {}).get(flight.get("civilization"), {})
+            title.append(
+                "  ·  Effort "
+                + effort_text(
+                    flight.get("effectiveSettings"),
+                    session.get("configuredSettings", session.get("effectiveSettings")),
+                    pending="pending",
+                ),
+                style="dim",
+            )
         if review_wait:
             title.append(
                 "  ·  "
@@ -301,6 +329,14 @@ class MatchWatch(App):
             title.append("  ·  VIEW FROZEN", style="bold yellow")
         if run.get("reason"):
             title.append("\n" + visible_text(run["reason"]), style="yellow")
+        if quota_wait:
+            remaining = max(0, math.ceil(recovery.get("nextRetryAt", time.time()) - time.time()))
+            title.append(
+                f"\nQuota exhausted · {visible_text(recovery.get('civilization') or current.get('civilization', '—'))}"
+                f" · Next retry in {remaining // 60}m {remaining % 60:02d}s"
+                f" · Attempt {recovery.get('attempt', 1)} · repeats every five minutes",
+                style="bold yellow",
+            )
         if review_wait:
             title.append(
                 f"\nShared review after round {review_wait['reviewTurn']}; "
@@ -312,6 +348,12 @@ class MatchWatch(App):
                 style="yellow",
             )
         model_status = flight.get("modelStatus") or {}
+        if not quota_wait and (
+            model_status.get("reason") == "usageLimitExceeded"
+            or (flight.get("requestFailure") or {}).get("reason") == "usageLimitExceeded"
+            or (run.get("quotaFailure") or {}).get("reason") == "usageLimitExceeded"
+        ):
+            title.append("\nModel quota exhausted; awaiting automatic recovery.", style="yellow")
         if (
             run.get("status") == "running"
             and flight.get("agentPhase") not in {"COMPLETED", "FAILED", "INTERRUPTED"}
@@ -386,6 +428,8 @@ class MatchWatch(App):
                 phase = "Human"
             if score.get("defeated"):
                 phase = "Defeated"
+            elif quota_wait and name == (recovery.get("civilization") or flight.get("civilization")):
+                phase = "Quota exhausted"
             usage = accounting.get("usage", {})
             rows.append(
                 (
@@ -393,6 +437,13 @@ class MatchWatch(App):
                     (
                         player_text(name, self.no_color, model=snapshot.player_model(name)),
                         phase,
+                        effort_text(
+                            flight.get("effectiveSettings") if flight.get("civilization") == name else None,
+                            run.get("sessions", {})
+                            .get(name, {})
+                            .get("configuredSettings", run.get("sessions", {}).get(name, {}).get("effectiveSettings")),
+                            pending="pending" if flight.get("civilization") == name else "—",
+                        ),
                         str(latest["turn"]["gameTurn"]) if latest else "—",
                         count(score.get("score")),
                         count(usage.get("input_tokens")),
@@ -448,6 +499,7 @@ class MatchWatch(App):
                         (
                             player_text(view.civilization, self.no_color, model=telemetry.get("model")),
                             view.status,
+                            effort_text(telemetry, job.get("configuredSettings")),
                             count(usage.get("input_tokens")),
                             count(usage.get("output_tokens")),
                             seconds(telemetry.get("elapsedMs")),
@@ -524,7 +576,7 @@ class MatchWatch(App):
                 text.append(visible_text(entry.text) + "\n\n")
             if not entries:
                 text.append(
-                    "Waiting for recorded specialist activity. Military activates during wars."
+                    "Waiting for recorded specialist activity. Military wakes for planning, events and wartime actions."
                     if role == "military"
                     else "Waiting for recorded economy activity.",
                     style="dim",
@@ -548,6 +600,7 @@ class MatchWatch(App):
                     (
                         player_text(v.civilization, self.no_color, model=self.snapshot.player_model(v.civilization)),
                         v.status,
+                        effort_text((v.job or {}).get("telemetry")),
                         v.report["turn"] if v.report else "—",
                         v.delivered_turn if v.delivered_turn is not None else "—",
                         seconds(((v.job or {}).get("telemetry") or {}).get("elapsedMs")),

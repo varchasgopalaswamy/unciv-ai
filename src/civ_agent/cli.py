@@ -15,6 +15,7 @@ from civ_agent.commands import (
     host,
     inspect,
     manager_test,
+    profile,
     runtime,
     trade,
     verify_agreement_scenario,
@@ -86,6 +87,10 @@ def parser() -> argparse.ArgumentParser:
         "watch", parents=[match_watch.parser(add_help=False)], help="Open a live terminal dashboard for a saved match"
     )
     watch.set_defaults(handler=match_watch.run)
+    timing = matches.add_parser(
+        "profile", parents=[profile.parser(add_help=False)], help="Inspect recorded host and model latency"
+    )
+    timing.set_defaults(handler=profile.run)
     descriptions = {
         "start": "Start automatic turn scheduling",
         "resume": "Resume scheduling and recover an interrupted turn",

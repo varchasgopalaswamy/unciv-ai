@@ -239,6 +239,7 @@ def test_construction_startup_and_replies_share_exact_guidance_with_full_recover
 def test_crossquery_detail_reuse_requires_fresh_inspection_and_keeps_native_preview_guard(tmp_path):
     async def run():
         async with managed(tmp_path) as m:
+            m.host.view["map"]["units"][0].update(name="Worker", military=False)
             m.host.view["cities"][0]["development"].update(
                 tiles=[{"position": {"x": 1, "y": 0}, "description": "Known tile detail " * 300}],
                 yields=[{"stat": "Gold", "amount": "5"}],

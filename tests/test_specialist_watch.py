@@ -178,7 +178,7 @@ def test_specialists_clear_old_timeline_and_report_unavailable_local_history(tmp
     remote = view(reader.read())
     assert remote.job is not None and remote.job["telemetry"]["model"] == "economy-model"
     assert remote.error and not remote.activity
-    assert view(reader.read(), role="military").status == "Inactive · activates during wars"
+    assert view(reader.read(), role="military").status == "No job yet"
 
 
 def test_specialist_history_batches_decode_chunked_events_and_recover_after_truncation(tmp_path, monkeypatch):

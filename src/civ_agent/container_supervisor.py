@@ -42,6 +42,7 @@ from civ_agent.tls import private_directory, write_private_json
 from civ_agent.turn_archive import civilization_directory_name
 
 RECOVERABLE_MODEL_FAILURES = frozenset({"serverOverloaded", "internalServerError"})
+QUOTA_RETRY_SECONDS = 300
 logger = logging.getLogger(__name__)
 
 
@@ -51,14 +52,24 @@ def recoverable_model_failure(root: Path) -> str | None:
     if not path.exists():
         return None
     state = read_record(path, "state", "run") or {}
+    quota = state.get("quotaFailure") or {}
+    if (
+        state.get("status") == "paused"
+        and quota.get("reason") == "usageLimitExceeded"
+        and quota.get("epoch") == state.get("epoch")
+    ):
+        return "usageLimitExceeded"
     flight = state.get("inFlight") or {}
     model = flight.get("modelStatus") or {}
+    request = flight.get("requestFailure") or {}
     reason = model.get("reason")
+    if request.get("reason") == "usageLimitExceeded":
+        reason = "usageLimitExceeded"
     if (
         state.get("status") == "paused"
         and flight.get("agentPhase") == "FAILED"
-        and model.get("state") == "failed"
-        and reason in RECOVERABLE_MODEL_FAILURES
+        and (model.get("state") == "failed" or request.get("reason") == "usageLimitExceeded")
+        and reason in RECOVERABLE_MODEL_FAILURES | {"usageLimitExceeded"}
     ):
         return reason
     return None
@@ -251,10 +262,10 @@ def ensure_decisions(root, image, *, restart=False):
             podman("rm", name)
             current = None
         if current and current["State"]["Running"] and current.get("Image") != image:
-            raise ContainerError(
-                "The shared Decisions broker uses a different runtime image. "
-                "Rebuild with 'civ-agent image build' and replace it with 'civ-agent auth restart'."
-            )
+            # Game-only fixes need not interrupt other games sharing a broker.
+            # Both the selected image and authenticated running service must
+            # match this launcher's complete version contract.
+            _check_decisions_image(image)
         if not current or not current["State"]["Running"]:
             if current:
                 podman("rm", name)
@@ -283,7 +294,13 @@ def ensure_decisions(root, image, *, restart=False):
         health = routing_broker_health(root, timeout=5)
         if health["status"] != "ready":
             raise _decisions_preflight_error("Decisions broker preflight failed", health)
-        report = {**health, "checkedAtMs": int(time.time() * 1000), "image": image}
+        running = inspected(name)
+        report = {
+            **health,
+            "checkedAtMs": int(time.time() * 1000),
+            "image": running.get("Image", image) if running else image,
+            "requestedImage": image,
+        }
         write_private_json(root / "decisions-preflight.json", report)
         return report
 
@@ -482,6 +499,7 @@ class GameRun:
             self.record["decisionsAuthority"] = authority
         cleanup(self.game_id)
         self.record["launch"] = secrets.token_hex(6)
+        self.record["launchStartedAtMs"] = int(time.time() * 1000)
         write_private_json(self.root / "container.json", self.record)
         self.launch_dir = private_directory(self.root / "launches" / self.record["launch"])
         private_directory(self.root / "control")
@@ -654,11 +672,35 @@ class GameRun:
     def run(self):
         with locked(self.root / ".supervisor.lock"):
             retries = 0
+            quota_retries = 0
             while True:
                 status = self.run_once()
+                if self.stop_event.is_set():
+                    return status
                 reason = recoverable_model_failure(self.root) if status == "paused" else None
                 if reason is None:
                     return status
+                if reason == "usageLimitExceeded":
+                    quota_retries += 1
+                    state = read_record(path_for(self.root), "state", "run") or {}
+                    flight = state.get("inFlight") or {}
+                    quota = state.get("quotaFailure") or {}
+                    self.status(
+                        "retrying",
+                        reason="Model quota exhausted; retrying every five minutes until available.",
+                        recovery={
+                            "reason": reason,
+                            "civilization": quota.get("civilization", flight.get("civilization")),
+                            "purpose": quota.get("purpose", "gameplay"),
+                            "attempt": quota_retries,
+                            "retryDelaySeconds": QUOTA_RETRY_SECONDS,
+                            "nextRetryAt": time.time() + QUOTA_RETRY_SECONDS,
+                        },
+                    )
+                    if self.stop_event.wait(QUOTA_RETRY_SECONDS):
+                        self.status("paused", reason="Operator stopped automatic quota recovery.")
+                        return "paused"
+                    continue
                 if retries >= self.config.limits.model_capacity_retries:
                     self.status(
                         "paused",

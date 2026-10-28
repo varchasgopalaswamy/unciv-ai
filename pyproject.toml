@@ -10,6 +10,7 @@ dependencies = [
     "httpx2>=2.12,<3",
     "jsonpatch>=1.33,<2",
     "mcp>=2.2,<3",
+    "opentelemetry-proto>=1.45.1",
     "pydantic>=2.13.5,<3",
     "rich>=14,<15",
     "sqlalchemy>=2.0,<3",
