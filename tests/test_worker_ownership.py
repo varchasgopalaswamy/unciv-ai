@@ -74,6 +74,22 @@ async def test_gateway_advertises_worker_commands_and_preloads_work_in_targeted_
 
 
 @run_async
+async def test_new_worker_after_full_review_starts_a_worker_only_pass(tmp_path):
+    async with managed(tmp_path) as m:
+        m.host.view["diplomacy"] = {"knownCivilizations": [], "cityStates": []}
+        await m.roles.synchronize_war(await m.host.tool("player_turn", {}))
+        m.roles.economy_status.update(phase="finished", fullReview=True, cities=["city1", "city2"])
+        m.roles.ready["economy"] = True
+        m.economy.city_scope = None
+        m.host.view["map"]["units"].append({"handle": "new-worker", "military": False, "worker": {}, "movement": "2/2"})
+        await m.roles.synchronize_war(await m.host.tool("player_turn", {}))
+        assert not m.roles.ready["economy"]
+        assert not m.roles.economy_status["fullReview"]
+        assert m.roles.economy_arguments() == {"cities": []}
+        assert m.economy.city_scope == []
+
+
+@run_async
 async def test_worker_handoff_reopens_roles_and_replayed_assignment_preserves_authority(tmp_path):
     wars = store(tmp_path)
     io = ServiceIO()

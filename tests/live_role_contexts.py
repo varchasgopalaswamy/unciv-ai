@@ -9,6 +9,7 @@ import concurrent.futures
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -24,6 +25,13 @@ def main():
     for field in ("prepared", "manifest", "baseline-source", "candidate-source", "state-dir", "auth-root"):
         parser.add_argument("--" + field, required=True, type=Path)
     parser.add_argument("--port", type=int, default=21041)
+    parser.add_argument("--repetitions", type=int, choices=range(1, 11), default=2)
+    parser.add_argument(
+        "--additional-source",
+        action="append",
+        default=[],
+        help="NAME=SOURCE_ROOT for a separately frozen follow-up variant",
+    )
     parser.add_argument(
         "--completed-suite",
         type=Path,
@@ -36,6 +44,13 @@ def main():
     if any(root.iterdir()):
         parser.error("Use a fresh state directory; previous attempts must remain available")
     sources = {"baseline": args.baseline_source.resolve(), "candidate": args.candidate_source.resolve()}
+    for value in args.additional_source:
+        name, separator, source = value.partition("=")
+        if not separator or not re.fullmatch(r"[a-zA-Z0-9_-]+", name) or name in sources:
+            parser.error("Additional sources require a unique simple NAME=SOURCE_ROOT")
+        sources[name] = Path(source).resolve()
+    if any(not (path / "civ_agent").is_dir() for path in sources.values()):
+        parser.error("Every source must contain civ_agent")
     source_hashes = {name: tree_hash(path / "civ_agent") for name, path in sources.items()}
     prior_suites = [path.resolve() for path in args.completed_suite]
     for previous in prior_suites:
@@ -58,6 +73,7 @@ def main():
                 "civilizationGuide": True,
                 "reviewInterval": 10,
                 "fast": False,
+                "repetitions": args.repetitions,
             }
             if any(suite.get(key) != value for key, value in expected.items()):
                 parser.error("Completed trials must use the same model, effort, guides and review schedule")
@@ -92,7 +108,7 @@ def main():
             "--rounds",
             "10",
             "--repetitions",
-            "2",
+            str(args.repetitions),
             "--model",
             model,
             "--reasoning-effort",

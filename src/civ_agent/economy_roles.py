@@ -492,7 +492,11 @@ class TurnRoles:
             for handle in units.keys() - self.known_units:
                 owner = self.unit_owner(units[handle])
                 if self.needs_attention(owner) and _has_movement(units[handle]):
-                    self.resume(owner, "A new unit has remaining actions. Read its fresh facts before issuing orders.")
+                    self.resume(
+                        owner,
+                        "A new unit has remaining actions. Read its fresh facts before issuing orders.",
+                        workers_only=owner == "economy",
+                    )
         self.known_units = set(units)
         active = bool(war_opponents(view))
         changed = active != self.military_active
@@ -569,6 +573,7 @@ class TurnRoles:
         return None
 
     async def role_tool(self, job, name, arguments, call_id) -> JsonObject:
+        prior_workers = set()
         if self.wars is None:
             return {"error": "WAR_STORE_UNAVAILABLE", "applied": False}
         if self.jobs.get(job.purpose) is not job or self.committed or self.committing:
@@ -594,6 +599,7 @@ class TurnRoles:
                     "units", ((job.observation or {}).get("map") or {}).get("units", [])
                 )
             }
+            prior_workers = {handle for handle, unit in units.items() if self.unit_owner(unit) == "economy"}
             if not units.get(arguments["unit"], {}).get("military"):
                 return {"error": "OWNED_MILITARY_UNIT_REQUIRED", "applied": False}
             if not arguments.get("release") and (
@@ -606,6 +612,13 @@ class TurnRoles:
             self.wars.apply, job.epoch, job.purpose, name, arguments, job.id + ":" + call_id, self.key[1]
         )
         self.war_state = await self.service.io.call(self.wars.state)
+        worker_handoff = name == "escort_assignment" and prior_workers != {
+            unit["handle"]
+            for unit in (job.observation or {}).get(
+                "units", ((job.observation or {}).get("map") or {}).get("units", [])
+            )
+            if self.unit_owner(unit) == "economy"
+        }
         if "error" not in result:
             targets = (
                 (
@@ -622,7 +635,7 @@ class TurnRoles:
                     [
                         r
                         for r in ("gameplay", "military", "economy")
-                        if r != job.purpose and (r != "economy" or name == "escort_assignment")
+                        if r != job.purpose and (r != "economy" or worker_handoff)
                     ]
                     if name in {"war_goals", "escort_assignment"}
                     else []
@@ -635,8 +648,9 @@ class TurnRoles:
                         "New internal coordination requires attention. Apply the next coordinationUpdate or full "
                         "economyCoordination snapshot before choosing an action. Read war_goals for additional history.",
                         scoped=name == "escort_assignment",
+                        workers_only=role == "economy" and worker_handoff,
                     )
-            if name == "escort_assignment":
+            if worker_handoff:
                 self.economy_revision = None
                 self.economy_observation = None
             await self.save()
@@ -917,7 +931,11 @@ class TurnRoles:
         if self.ready["economy"]:
             self.resume("economy", "An urgent economic request requires another pass.", scoped=True)
 
-    def resume(self, role, message, *, reasons=None, scoped=False):
+    def resume(self, role, message, *, reasons=None, scoped=False, workers_only=False):
+        if role == "economy" and workers_only and self.ready[role]:
+            self.economy_status.update(fullReview=False, cities=[], reasons=[])
+            if role in self.jobs:
+                self.jobs[role].city_scope = []
         self.ready[role] = False
         if role == "gameplay":
             self.main_attention += 1
@@ -933,7 +951,7 @@ class TurnRoles:
             self.economy_requested = True
             self.economy_start.set()
             self.economy_status.update(phase="running")
-            if reasons is None and not scoped:
+            if reasons is None and not scoped and not workers_only:
                 view = (self.jobs.get("gameplay").observation if self.jobs.get("gameplay") else {}) or {}
                 self.extend_economy_scope([city["handle"] for city in view.get("cities", [])], full=True)
             if reasons is not None:
@@ -972,6 +990,7 @@ class TurnRoles:
                         self.resume(
                             owner,
                             "The economy manager purchased a unit. Read its fresh facts and consider its remaining actions.",
+                            workers_only=owner == "economy",
                         )
                         changed = True
             if self.needs_attention("gameplay") and "CAPTURE" in str((job.observation or {}).get("alerts", {})).upper():
