@@ -471,6 +471,8 @@ class TurnSummary(BoundaryModel):
 
 
 class HistoryReadResult(BoundaryModel):
+    review: JsonObject | None = None
+    reviewSources: list[str] | None = None
     turn: NonnegativeInt
     actions: Annotated[list[SummaryAction], Field(max_length=20)]
     hasMore: bool

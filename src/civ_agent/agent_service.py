@@ -86,6 +86,7 @@ USAGE_KEYS = {
 class ServiceError(Exception):
     def __init__(self, code: str, status: int = 400) -> None:
         self.code, self.status = code, status
+        self.request_failure: JsonObject | None = None
         super().__init__(code)
 
 
@@ -470,7 +471,12 @@ class CodexProcess:
                                     detail[key] = params[key]
                             self._queue_notification("service/requestFailed", detail)
                             if not future.done():
-                                future.set_exception(ServiceError("CODEX_REQUEST_FAILED", 502))
+                                failure = ServiceError("CODEX_REQUEST_FAILED", 502)
+                                # A rejected request may unwind its caller before
+                                # the queued notification is delivered. Preserve
+                                # the same sanitized detail on that exception.
+                                failure.request_failure = copy.deepcopy(detail)
+                                future.set_exception(failure)
                         else:
                             result = message.get("result", {})
                             method, params = self.requests.get(response_id, (None, {}))
@@ -672,6 +678,9 @@ class AgentService:
             write_private_json(binding_file, binding)
         self.memory = CivilizationState(self.state_dir / "civilization", civilization, memory_context_chars)
         self.gateway = ProposalGateway(self.memory, self.io, self.workspace)
+        # Upgrade every civilization before serving requests, including players
+        # whose next model activation is several turns away.
+        self.gateway.wars.state()
         self.gateway.peace_reviews = self.peace_reviews
         self.gateway.native_advice_enabled = self.native_advice_enabled
         if routing_client is not None:
@@ -1001,6 +1010,10 @@ class AgentService:
             for key, value in record.items()
             if key != "fingerprint"
         }
+        if "roles" in result:
+            from civ_agent.coordination_context import control_roles
+
+            result["roles"] = control_roles(result["roles"])
         if "effectiveSettings" in record:
             from civ_agent.effort_decisions import base_settings
 

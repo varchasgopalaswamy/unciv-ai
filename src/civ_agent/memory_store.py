@@ -114,7 +114,7 @@ class RecordStore:
         missing = []
         for source in sources:
             advice = snapshot.get("strategicAdvice")
-            if advice:
+            if advice and snapshot.get("reviewDelivery") != "on_request":
                 assumption = next(
                     (a for a in advice["review"]["materialAssumptions"] if a.get("source") == source), None
                 )
@@ -356,9 +356,16 @@ def select_context(snapshot, limit):
         value = snapshot.get("advisoryRanking", {}).get(key, {})
         return value if isinstance(value, dict) else {}
 
-    candidates = [
+    active = [
         (key, value)
         for key, value in snapshot["records"].items()
+        if value["category"] in MEMORY_TYPES | {"contribution"}
+        and value["body"].get("state") == "active"
+        and not expired_at(value, turn)
+    ]
+    candidates = [
+        (key, value)
+        for key, value in active
         if value["category"] in MEMORY_TYPES | {"contribution"}
         and value["body"].get("state") == "active"
         and (
@@ -369,7 +376,7 @@ def select_context(snapshot, limit):
         and not expired_at(value, snapshot.get("gameTurn"))
         and (value["category"] != "handoff" or snapshot["purpose"] == "gameplay" and handoff_eligible(value, turn))
     ]
-    available = len(candidates)
+    available = len(active)
     # A spare character budget is not a reason to repeat old notes. Strategies,
     # next-turn handoffs and unhandled contributions have explicit lifecycles;
     # historical knowledge needs recency, a current subject, or a review notice.
@@ -377,6 +384,12 @@ def select_context(snapshot, limit):
         (key, record)
         for key, record in candidates
         if (
+            snapshot["purpose"] not in {"economy", "military"}
+            or record["category"] in {"strategy", "city_plan"}
+            or relevant(record)
+            or record["body"].get("basis", {}).get("purpose") == snapshot["purpose"]
+        )
+        and (
             record["category"] not in {"belief", "note"}
             or rank(key).get("include") is not False
             or record["body"].get("needsReview")
@@ -402,9 +415,16 @@ def select_context(snapshot, limit):
         )
     )
     chosen, used = {}, 2  # JSON array brackets, then commas between chosen records.
+    supporting_used = 0
+    supporting_limit = min(limit, 3000) if "contextTopics" in snapshot else limit
     for key, record in candidates:
         size = len(encode(public_record(key, record))) + bool(chosen)
-        if used + size <= limit:
+        supporting = record["category"] in {"contribution", "belief", "note"}
+        if supporting and supporting_used + size > supporting_limit:
+            continue
+        if used + size <= limit or record["category"] == "strategy" and "contextTopics" in snapshot:
             chosen[key] = record
             used += size
+            if supporting:
+                supporting_used += size
     return chosen, available - len(chosen)

@@ -12,6 +12,8 @@ from typing import Annotated, Literal
 
 from pydantic import Field, RootModel, model_validator
 
+from civ_agent.coordination_context import history_page, working_context
+from civ_agent.protocol import JsonObject
 from civ_agent.schemas import BoundaryModel
 
 Text = Annotated[str, Field(min_length=1, max_length=2000)]
@@ -48,6 +50,16 @@ class WarGoal(BoundaryModel):
 
 class ReadWarGoals(BoundaryModel):
     action: Literal["read"] = "read"
+    section: Literal[
+        "current", "episodes", "drafts", "escorts", "operations", "operation_history", "messages", "requests"
+    ] = "current"
+    ids: list[Text] = Field(default_factory=list, max_length=20)
+    cursor: int = Field(default=0, ge=0)
+    limit: int = Field(default=10, ge=1, le=20)
+    status: Literal[
+        "all", "active", "completed", "abandoned", "superseded", "legacy", "unread", "open", "acknowledged", "resolved"
+    ] = "all"
+    role: Literal["gameplay", "economy", "military"] | None = None
 
 
 class InitialWarGoals(BoundaryModel):
@@ -108,19 +120,68 @@ class EscortAssignment(BoundaryModel):
     release: bool = False
 
 
-class MilitaryOperation(BoundaryModel):
-    id: Text
+class UpdateMilitaryOperation(BoundaryModel):
+    action: Literal["upsert"] = "upsert"
+    id: Text = Field(description="Stable operation ID. Update this ID across turns; do not create a turn journal.")
     opponents: list[str] = Field(default_factory=list, max_length=20)
     plan: Text
     progress: Text
     reconsiderWhen: Text
     sources: list[str] = Field(default_factory=list, max_length=20)
     reviewTurn: int | None = Field(default=None, ge=0)
+    status: Literal["active", "completed", "abandoned", "superseded"] = "active"
+    supersedes: list[Text] = Field(default_factory=list, max_length=20)
 
 
-class RoleMessage(BoundaryModel):
+class SetOperationStatus(BoundaryModel):
+    action: Literal["set_status"]
+    ids: list[Text] = Field(min_length=1, max_length=20)
+    status: Literal["active", "completed", "abandoned", "superseded"]
+    reason: Text
+
+
+class MilitaryOperation(
+    RootModel[Annotated[UpdateMilitaryOperation | SetOperationStatus, Field(discriminator="action")]]
+):
+    model_config = {"json_schema_extra": {"type": "object"}}
+
+    @model_validator(mode="before")
+    @classmethod
+    def default_update(cls, value):
+        if isinstance(value, dict) and "action" not in value:
+            return {"action": "upsert", **value}
+        return value
+
+
+class SendRoleMessage(BoundaryModel):
+    action: Literal["send"] = "send"
     to: Literal["gameplay", "military", "economy"]
     text: Text
+    kind: Literal["notice", "request"] = "notice"
+
+
+class AcknowledgeRoleMessages(BoundaryModel):
+    action: Literal["acknowledge"]
+    ids: list[Text] = Field(min_length=1, max_length=50)
+
+
+class ResolveRoleMessages(BoundaryModel):
+    action: Literal["resolve"]
+    ids: list[Text] = Field(min_length=1, max_length=50)
+    reason: Text
+
+
+class RoleMessage(
+    RootModel[Annotated[SendRoleMessage | AcknowledgeRoleMessages | ResolveRoleMessages, Field(discriminator="action")]]
+):
+    model_config = {"json_schema_extra": {"type": "object"}}
+
+    @model_validator(mode="before")
+    @classmethod
+    def default_send(cls, value):
+        if isinstance(value, dict) and "action" not in value:
+            return {"action": "send", **value}
+        return value
 
 
 def war_opponents(view):
@@ -157,7 +218,7 @@ def tactical_basis(view, state, terms):
 
 
 def goal_versions(state):
-    return {key: episode["version"] for key, episode in state["episodes"].items() if episode["active"]}
+    return {key: episode["version"] for key, episode in state["episodes"].items() if episode.get("active", True)}
 
 
 class WarStore:
@@ -165,7 +226,7 @@ class WarStore:
         self.memory = memory
 
     def _load(self, db):
-        return self.memory._meta(
+        state = self.memory._meta(
             db,
             "war:state",
             {
@@ -177,12 +238,73 @@ class WarStore:
                 "receipts": {},
             },
         )
+        for name in ("episodes", "drafts", "escorts", "operations", "receipts"):
+            state.setdefault(name, {})
+        state.setdefault("messages", [])
+        if state.get("schemaVersion", 1) < 2:
+            # Legacy notes have no lifecycle. Preserve them for explicit model
+            # reconciliation; elapsed time never establishes their disposition.
+            for key, operation in state["operations"].items():
+                operation.setdefault("id", key)
+                operation.setdefault("status", "legacy")
+                operation.setdefault("revision", 1)
+            state["operationHistory"] = {}
+            state["schemaVersion"] = 2
+            self.memory._set(db, "war:state", state)
+        return state
 
     def state(self):
         with self.memory.transaction() as db:
             value = self._load(db)
             value.pop("receipts", None)
             return value
+
+    def read(self, role, arguments, requests=()) -> JsonObject:
+        with self.memory.transaction() as db:
+            return self._read(self._load(db), role, arguments, requests)
+
+    @staticmethod
+    def _read(state, role, arguments, requests=()) -> JsonObject:
+        section = arguments.get("section", "current")
+        if section == "current":
+            projected = working_context({"warState": state, "requests": list(requests)}, role)
+            return {**projected["warState"], "history": projected["history"]}
+        if section == "requests":
+            rows = list(requests)
+        elif section == "messages":
+            rows = list(state["messages"])
+        elif section == "operation_history":
+            rows = [
+                {"id": key, **revision}
+                for key, revisions in sorted(state.get("operationHistory", {}).items())
+                for revision in revisions
+            ]
+        else:
+            rows = [{"id": key, **value} for key, value in sorted(state[section].items())]
+        ids, status, recipient = arguments.get("ids", []), arguments.get("status", "all"), arguments.get("role")
+        if ids:
+            rows = [r for r in rows if r.get("id") in ids]
+        if recipient:
+            rows = [r for r in rows if r.get("to") == recipient or r.get("author") == recipient]
+        if status != "all":
+
+            def matches(row):
+                if section == "messages":
+                    return {
+                        "unread": not row.get("acknowledged", False),
+                        "open": row.get("kind") == "request" and not row.get("resolved", False),
+                        "acknowledged": row.get("acknowledged", False),
+                        "resolved": row.get("resolved", False),
+                    }.get(status, False)
+                if section == "episodes":
+                    return {"active": row.get("active", False), "completed": not row.get("active", False)}.get(
+                        status, False
+                    )
+                return row.get("status", "legacy") == status
+
+            rows = [r for r in rows if matches(r)]
+        page = history_page(rows, arguments.get("cursor", 0), arguments.get("limit", 10))
+        return {"section": section, **page}
 
     def synchronize(self, epoch, view):
         with self.memory.transaction() as db:
@@ -221,7 +343,7 @@ class WarStore:
             self.memory._set(db, "war:state", state)
         return self.state()
 
-    def apply(self, epoch, role, name, args, identity):
+    def apply(self, epoch, role, name, args, identity, turn=None) -> JsonObject:
         """A tool receipt and its mutation commit together, including exact retries."""
         with self.memory.transaction() as db:
             if self.memory._meta(db, "epoch") != epoch:
@@ -233,20 +355,20 @@ class WarStore:
                 if receipt["fingerprint"] != fingerprint:
                     return {"error": "REQUEST_ID_CONFLICT", "applied": False}
                 return receipt["result"]
-            result = self._apply(state, role, name, args)
+            result = self._apply(state, role, name, args, turn)
             if "error" not in result:
                 state["receipts"][identity] = {"fingerprint": fingerprint, "result": copy.deepcopy(result)}
                 self.memory._set(db, "war:state", state)
             return result
 
-    def _apply(self, state, role, name, args):
+    def _apply(self, state, role, name, args, turn=None) -> JsonObject:
         def error(code):
             return {"error": code, "applied": False}
 
         if name == "war_goals":
             action = args.get("action", "read")
             if action == "read":
-                return {k: copy.deepcopy(v) for k, v in state.items() if k != "receipts"}
+                return self._read(state, role, args)
             if role not in {"gameplay", "military"}:
                 return error("MAIN_OR_MILITARY_REQUIRED")
             opponent = args.get("opponent")
@@ -314,15 +436,60 @@ class WarStore:
         if name == "military_operation":
             if role != "military":
                 return error("MILITARY_REQUIRED")
-            state["operations"][args["id"]] = args
-            return {"operation": args}
+            if args.get("action") == "set_status":
+                if any(key not in state["operations"] for key in args["ids"]):
+                    return error("UNKNOWN_OPERATION")
+                for key in args["ids"]:
+                    self._operation(
+                        state,
+                        {**state["operations"][key], "status": args["status"], "statusReason": args["reason"]},
+                        turn,
+                    )
+                return {"updated": args["ids"], "status": args["status"]}
+            supersedes = args.get("supersedes", [])
+            if args["id"] in supersedes or any(key not in state["operations"] for key in supersedes):
+                return error("UNKNOWN_SUPERSEDED_OPERATION")
+            operation = {k: copy.deepcopy(v) for k, v in args.items() if k not in {"action", "supersedes"}}
+            operation.setdefault("status", "active")
+            self._operation(state, operation, turn)
+            for key in supersedes:
+                self._operation(
+                    state, {**state["operations"][key], "status": "superseded", "supersededBy": args["id"]}, turn
+                )
+            return {"operation": copy.deepcopy(state["operations"][args["id"]])}
         if name == "role_message":
+            if args.get("action") in {"acknowledge", "resolve"}:
+                selected = [m for m in state["messages"] if m["id"] in args["ids"]]
+                if {m["id"] for m in selected} != set(args["ids"]):
+                    return error("UNKNOWN_ROLE_MESSAGE")
+                if any(m.get("to") != role for m in selected):
+                    return error("MESSAGE_RECIPIENT_REQUIRED")
+                for message in selected:
+                    message["acknowledged"] = True
+                    if args["action"] == "resolve":
+                        message.update(resolved=True, resolution=args["reason"])
+                return {"messageIds": args["ids"], "action": args["action"]}
             if role not in {"gameplay", "military", "economy"} or args["to"] == role:
                 return error("OTHER_ROLE_REQUIRED")
-            message = {"id": "msg" + secrets.token_hex(6), "author": role, **args}
+            message = {
+                "id": "msg" + secrets.token_hex(6),
+                "author": role,
+                **{k: v for k, v in args.items() if k != "action"},
+                "createdTurn": turn,
+            }
             state["messages"].append(message)
             return {"message": message}
         return error("ROLE_ACTION_NOT_PERMITTED")
+
+    @staticmethod
+    def _operation(state, operation, turn):
+        key = operation["id"]
+        previous = state["operations"].get(key)
+        if previous is not None:
+            state.setdefault("operationHistory", {}).setdefault(key, []).append(copy.deepcopy(previous))
+        operation["revision"] = (previous or {}).get("revision", 0) + 1
+        operation["updatedTurn"] = turn
+        state["operations"][key] = operation
 
 
 def declaration_targets(civilization, name, payload, selected, view):

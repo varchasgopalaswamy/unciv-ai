@@ -122,7 +122,11 @@ def military_facts(view: JsonObject, state: JsonObject, civilization: str | None
                 for field in ("id", "opponents", "plan", "reconsiderWhen", "reviewTurn")
             }
             for key, operation in state.get("operations", {}).items()
+            if operation.get("status", "legacy") == "active"
         },
+        "legacyOperations": sum(
+            operation.get("status", "legacy") == "legacy" for operation in state.get("operations", {}).values()
+        ),
     }
     attacks_available = any(city.get("attacks") for city in view.get("cities", [])) or any(
         (unit.get("combat") or {}).get("attacks") for unit in _units(view) if unit.get("handle") in units

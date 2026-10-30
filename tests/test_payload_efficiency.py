@@ -162,7 +162,7 @@ def test_gateway_revalidates_unchanged_details_resets_baselines_and_keeps_full_r
         async with managed(tmp_path) as m:
             prepared = await prepare_startup(m.gateway, m.economy)
             assert "chat_read" not in prepared["reads"] and "victory_progress" not in prepared["reads"]
-            assert prepared["reads"]["player_turn"]["economyBrief"]["fullRead"]["arguments"] == {"view": "full"}
+            assert prepared["reads"]["player_turn"]["roleBrief"]["fullRead"]["arguments"] == {"view": "full"}
             m.gateway.commit_startup_coordination(m.economy)
             args = {"target": "city2"}
             first = await m.gateway.call(m.economy, "city_details", args, "d1")

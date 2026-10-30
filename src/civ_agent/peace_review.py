@@ -3,7 +3,6 @@
 import asyncio
 import contextlib
 import copy
-import json
 import secrets
 import time
 from contextlib import nullcontext
@@ -12,6 +11,9 @@ from pydantic import Field
 
 from civ_agent.agent_history import HISTORY_METHODS
 from civ_agent.agent_settings import codex_thread_settings
+from civ_agent.coordination_context import encoded
+from civ_agent.peace_context import INSTRUCTIONS as PEACE_CONTEXT_INSTRUCTIONS
+from civ_agent.peace_context import peace_prompt_inputs
 from civ_agent.player_prompts import CAMPAIGN_GUIDANCE
 from civ_agent.proposal_gateway import JobAccess
 from civ_agent.provider_usage import reconcile_provider_usage
@@ -71,6 +73,8 @@ class PeaceReviews:
             return memory._meta(db, "peace:" + key)
 
     async def authorize(self, job, name, payload, selected=None):
+        from civ_agent.agent_service import ServiceError
+
         terms = peace_terms(name, payload, selected)
         if terms is None:
             return None
@@ -119,10 +123,19 @@ class PeaceReviews:
                         )
                         record["status"] = "complete"
                         await persist()
-                    except (ValueError, TimeoutError) as error:
-                        record.update(status="failed", error=str(error))
+                    except (ValueError, TimeoutError, ServiceError) as error:
+                        record.update(
+                            status="failed",
+                            error=error.code if isinstance(error, ServiceError) else "PEACE_REVIEW_FAILED",
+                        )
                         await persist()
-                        return {"error": "PEACE_CONSULTATION_UNAVAILABLE", "applied": False, "consultation": record}
+                        return {
+                            "error": "PEACE_CONSULTATION_UNAVAILABLE",
+                            "applied": False,
+                            "consultation": record,
+                            "recoverable": True,
+                            "instruction": "No peace action was applied. Reconsider the current position; you may retry consultation, decline a pending offer, or continue your other decisions. This failure does not finish your role.",
+                        }
                 if not record["approval"]["approve"]:
                     return {"error": "MAIN_DECLINED_PEACE", "applied": False, "consultation": record}
                 latest = await job.connection.tool("player_turn", {})
@@ -155,6 +168,8 @@ class PeaceReviews:
 
     async def compute(self, caller, role, inputs, schema):
         """A fresh bounded conversation with no live connection or mutation tools."""
+        from civ_agent.agent_service import ServiceError
+
         service = self.service
         identifier = "peace" + secrets.token_hex(10)
         main_record = service.records.get(service.active_id, {})
@@ -201,6 +216,15 @@ class PeaceReviews:
         granted = False
 
         async def notification(method, params):
+            if method == "service/requestFailed":
+                record["requestFailure"] = copy.deepcopy(params)
+                record.setdefault("error", "CODEX_REQUEST_FAILED")
+                service.diagnostics.emit(
+                    "peace_model_request_failed", activationId=identifier, purpose=record["modelPhase"], **params
+                )
+                await service._save(record)
+                done.set()
+                return
             if method in HISTORY_METHODS:
                 await service.io.call(service.history.notify, identifier, record.get("threadId"), method, params)
             if method == "thread/tokenUsage/updated":
@@ -215,7 +239,7 @@ class PeaceReviews:
                     answers[params.get("turnId")] = item.get("text", "")
             elif method in {"service/disconnected", "service/transportFailure", "service/approvalRequired"}:
                 if record["phase"] != "COMPLETED":
-                    record["error"] = "CONSULTATION_PROCESS_FAILED"
+                    record.setdefault("error", "CONSULTATION_PROCESS_FAILED")
                     done.set()
 
         try:
@@ -242,10 +266,20 @@ class PeaceReviews:
                     )
                     + "\n\n"
                     + CAMPAIGN_GUIDANCE
+                    + "\n\n"
+                    + PEACE_CONTEXT_INSTRUCTIONS
                 )
                 snapshot = await service.io.call(service.memory.snapshot, role, inputs["position"].get("turn"))
                 inputs = {**inputs, "privateMemory": service.memory.context(snapshot)}
-                prompt = json.dumps(inputs, ensure_ascii=False)
+                prepared = peace_prompt_inputs(inputs, role)
+                prompt = encoded(prepared)
+                record["startup"] = {
+                    "format": prepared["format"],
+                    "characters": len(prompt),
+                    "instructionCharacters": len(instruction),
+                    "sectionCharacters": {key: len(encoded(value)) for key, value in prepared.items()},
+                }
+                await service._save(record)
                 await service.io.call(service.history.startup_context, identifier, instruction, role="developer")
                 await service.io.call(service.history.startup_context, identifier, prompt)
                 workspace = private_directory(service.workspace / "consultations" / identifier)
@@ -302,6 +336,17 @@ class PeaceReviews:
                 merge_model_usage(record, usages.get(turn, {}), USAGE_KEYS)
                 record.update(phase="COMPLETED", answer=answer)
                 return answer
+        except ServiceError as error:
+            record.update(phase="FAILED", error=error.code)
+            if error.request_failure is not None:
+                record["requestFailure"] = copy.deepcopy(error.request_failure)
+                service.diagnostics.emit(
+                    "peace_model_request_failed",
+                    activationId=identifier,
+                    purpose=record["modelPhase"],
+                    **error.request_failure,
+                )
+            raise
         finally:
             job.closed = True
             service.gateway.jobs.pop(job.token, None)

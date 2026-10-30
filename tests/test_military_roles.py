@@ -286,7 +286,8 @@ def test_binding_peace_paths(tool, payload, selected, required):
 
 @run_async
 @pytest.mark.parametrize(
-    "failure,approve,stale", [(False, True, False), (True, True, False), (False, False, False), (False, True, True)]
+    "failure,approve,stale",
+    [(False, True, False), (True, True, False), ("rpc", True, False), (False, False, False), (False, True, True)],
 )
 async def test_peace_requires_overview_then_main_exact_terms(tmp_path, failure, approve, stale):
     wars = store(tmp_path)
@@ -307,6 +308,10 @@ async def test_peace_requires_overview_then_main_exact_terms(tmp_path, failure, 
         calls.append(role)
         assert not hold.is_set()
         if failure:
+            if failure == "rpc":
+                from civ_agent.agent_service import ServiceError
+
+                raise ServiceError("CODEX_REQUEST_FAILED", 502)
             raise ValueError("MODEL_FAILED")
         if stale and role == "gameplay":
             view["map"]["units"][0]["health"] = 50
@@ -326,6 +331,7 @@ async def test_peace_requires_overview_then_main_exact_terms(tmp_path, failure, 
         assert hold.is_set()
         if failure:
             assert calls == ["military"] and result["error"] == "PEACE_CONSULTATION_UNAVAILABLE"
+            assert result["recoverable"] and not result["applied"]
         else:
             assert calls == ["military", "gameplay"]
             if not approve:
@@ -615,6 +621,9 @@ async def test_military_reconsiders_new_goals_before_spending_movement(tmp_path)
         move = {"kind": "MOVE_UNIT", "target": "soldier", "destination": {"x": 1, "y": 0}}
         blocked = roles.command_problem(job, move)
         assert blocked["error"] == "WAR_GOALS_CHANGED" and not blocked["applied"]
+        # Only goals actually delivered by a reply/read establish the baseline.
+        assert roles.command_problem(job, move)["error"] == "WAR_GOALS_CHANGED"
+        job.war_versions.update(goal_versions(blocked["warState"]))
         assert roles.command_problem(job, move) is None
         episode = next(iter(roles.war_state["episodes"].values()))
         episode["version"] += 1

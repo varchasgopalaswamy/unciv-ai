@@ -138,6 +138,21 @@ def test_service_restore_preserves_history_and_rejects_a_waiting_old_job_write(t
         service.history.begin({"activationId": "game", "phase": "RUNNING"}, "Before capture", "P" * 43)
         try:
             job = await service.gateway.open("game", "gameplay", "g1", Host(), {}, 0)
+            # An old checkpoint must be upgraded before restore admits any jobs,
+            # even if this civilization has no immediate model activation.
+            with service.memory.transaction() as db:
+                service.memory._set(
+                    db,
+                    "war:state",
+                    {
+                        "episodes": {},
+                        "drafts": {},
+                        "escorts": {},
+                        "operations": {"old": {"id": "old", "plan": "Exact legacy instructions"}},
+                        "messages": [],
+                        "receipts": {},
+                    },
+                )
             await service.gateway.call(job, "player_turn", {}, "read")
             await service.gateway.call(job, "memory_update", note("Before capture"), "before")
             await service_recovery.barrier(service, True)
@@ -153,6 +168,11 @@ def test_service_restore_preserves_history_and_rejects_a_waiting_old_job_write(t
                 service, {"id": saved["id"], "sha256": saved["sha256"], "epoch": "g2"}
             )
             assert result["pendingReviews"] == []
+            with service.memory.transaction() as db:
+                restored_war = service.memory._meta(db, "war:state")
+            assert restored_war["schemaVersion"] == 2
+            assert restored_war["operations"]["old"]["status"] == "legacy"
+            assert restored_war["operations"]["old"]["plan"] == "Exact legacy instructions"
             history = (service.history.path("game") / "events.jsonl").read_text()
             assert "Before capture" in history and "ABANDONED FUTURE" not in history
             await service_recovery.barrier(service, False)

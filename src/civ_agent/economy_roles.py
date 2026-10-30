@@ -237,14 +237,22 @@ class TurnRoles:
                 message["id"]: message
                 for message in ((getattr(job, "economy_seen", None) or {}).get("warState") or {}).get("messages", [])
             }
+            from civ_agent.coordination_context import working_context
+
+            current_messages = working_context(self.context(), "gameplay")["warState"]["messages"]
             if any(
-                message.get("to") == "gameplay" and seen_messages.get(message["id"]) != message
-                for message in self.war_state.get("messages", [])
+                message.get("to") == "gameplay"
+                and seen_messages.get(message["id"]) != message
+                and not message.get("acknowledged", False)
+                for message in current_messages
             ):
                 # The wait receipt carries fresh coordination. Let Main read a
                 # question that arrived before registration instead of sleeping
                 # while economy is waiting for its answer.
-                return {"economyWait": {"id": call_id, "state": "attention", "requestIds": list(ids)}}
+                return {
+                    "economyWait": {"id": call_id, "state": "attention", "requestIds": list(ids)},
+                    "instruction": "You are still running; this call did not suspend inference. Read the newly delivered coordination, respond or acknowledge addressed messages, then call economy_wait again if you still need economy's result. Otherwise use finish_role.",
+                }
             wait = {
                 "id": call_id,
                 "requestIds": list(ids),
@@ -253,7 +261,10 @@ class TurnRoles:
             }
             outcome = self.economy_wait_outcome(wait)
             if outcome is not None:
-                return {"economyWait": {"id": call_id, "state": outcome, "requestIds": list(ids)}}
+                return {
+                    "economyWait": {"id": call_id, "state": outcome, "requestIds": list(ids)},
+                    "instruction": "This call did not suspend inference. Reconsider the returned wait outcome and current coordination; continue your work or use finish_role when your decisions are complete.",
+                }
             self.economy_wait_record = wait
             self.economy_wait_deadline = time.monotonic() + ECONOMY_WAIT_SECONDS
             await self.save()
@@ -591,12 +602,20 @@ class TurnRoles:
             if arguments.get("release") and (units[arguments["unit"]].get("escort") or {}).get("active"):
                 return {"error": "UNPAIR_ESCORT_BEFORE_RELEASE", "applied": False}
         result = await self.service.io.call(
-            self.wars.apply, job.epoch, job.purpose, name, arguments, job.id + ":" + call_id
+            self.wars.apply, job.epoch, job.purpose, name, arguments, job.id + ":" + call_id, self.key[1]
         )
         self.war_state = await self.service.io.call(self.wars.state)
         if "error" not in result:
             targets = (
-                [arguments["to"]]
+                (
+                    [arguments["to"]]
+                    if arguments.get("action", "send") == "send"
+                    else [
+                        m["author"] for m in self.war_state.get("messages", []) if m["id"] in arguments.get("ids", [])
+                    ]
+                    if arguments.get("action") == "resolve"
+                    else []
+                )
                 if name == "role_message"
                 else (
                     [r for r in ("gameplay", "military") if r != job.purpose]
@@ -618,17 +637,30 @@ class TurnRoles:
         return "gameplay" if city in self.overrides else "economy"
 
     def command_problem(self, job, arguments):
-        role, kind = job.purpose, arguments["kind"]
+        role = job.purpose
         if self.ready[role]:
             return {"error": "ROLE_FINISHED", "applied": False}
-        if role == "military" and getattr(job, "war_versions", {}) != goal_versions(self.war_state):
-            job.war_versions = goal_versions(self.war_state)
+        if role == "military" and any(
+            getattr(job, "war_versions", {}).get(key) != version
+            for key, version in goal_versions(self.war_state).items()
+        ):
+            from civ_agent.coordination_context import working_context
+
             return {
                 "error": "WAR_GOALS_CHANGED",
                 "applied": False,
-                "warState": copy.deepcopy(self.war_state),
-                "instruction": "Reconsider your next action using these current accepted goals before issuing it again.",
+                "warState": working_context({"warState": self.war_state}, role)["warState"],
+                "instruction": "Read war_goals section=episodes status=active (following nextCursor) and reconsider these current accepted goals before issuing the action again.",
             }
+        return self.ownership_problem(job, arguments)
+
+    def ownership_problem(self, job, arguments):
+        """Shared authority check for execution and model-facing command labels.
+
+        Readiness and unread coordination are transient execution fences, not
+        ownership; command_problem checks them before reaching this method.
+        """
+        role, kind = job.purpose, arguments["kind"]
         problem = self.unit_problem(job, arguments)
         if problem:
             return problem

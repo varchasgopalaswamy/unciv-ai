@@ -7,16 +7,18 @@ from dataclasses import dataclass, field
 
 from civ_agent.civilization_guide import civilization_reference
 from civ_agent.construction_explanations import INSTRUCTIONS as EXPLANATION_INSTRUCTIONS
+from civ_agent.coordination_context import INSTRUCTIONS as WORKING_COORDINATION_INSTRUCTIONS
+from civ_agent.coordination_context import working_context
 from civ_agent.coordination_updates import INSTRUCTIONS as COORDINATION_INSTRUCTIONS
 from civ_agent.coordination_updates import content as coordination_content
 from civ_agent.coordination_updates import snapshot as coordination_snapshot
-from civ_agent.economy_view import INSTRUCTIONS as ECONOMY_VIEW_INSTRUCTIONS
 from civ_agent.feedback_view import INSTRUCTIONS as FEEDBACK_INSTRUCTIONS
 from civ_agent.memory_delivery import INSTRUCTIONS as MEMORY_DELIVERY_INSTRUCTIONS
 from civ_agent.payload_updates import INSTRUCTIONS as PAYLOAD_INSTRUCTIONS
 from civ_agent.player_prompts import job_instructions
 from civ_agent.protocol import JsonObject
 from civ_agent.response_compaction import compact_response
+from civ_agent.role_view import INSTRUCTIONS as ROLE_VIEW_INSTRUCTIONS
 from civ_agent.schema_briefs import schema_brief
 from civ_agent.shared_values import INSTRUCTIONS as SHARED_VALUE_INSTRUCTIONS
 from civ_agent.state_updates import same_json
@@ -65,6 +67,8 @@ CORE_TOOLS = {
         "player_inspect",
         "memory_read",
         "memory_update",
+        "war_goals",
+        "role_message",
         "finish_role",
     ),
 }
@@ -164,6 +168,8 @@ def decision_queries(view: JsonObject, purpose: str = "gameplay") -> list[tuple[
     """Select bounded, action-enabling local details advertised by the overview."""
     unit_sections: dict[str, list[str]] = {}
     for unit in view.get("units", []) if purpose != "economy" else []:
+        if unit.get("owner", purpose) != purpose:
+            continue
         inspections = unit.get("inspections") or {}
         if not isinstance(inspections, dict):
             continue
@@ -193,6 +199,8 @@ def decision_queries(view: JsonObject, purpose: str = "gameplay") -> list[tuple[
     ]
     construction_count = 0
     for city in view.get("cities", []) if purpose != "military" else []:
+        if city.get("owner", purpose) != purpose:
+            continue
         choice = city.get("constructionChoice") or {}
         names = choice.get("availableSinceChoice") or []
         target = city.get("handle")
@@ -214,7 +222,7 @@ async def prepare_startup(gateway, job, *, call_prefix: str = STARTUP_CALL_PREFI
         if job.purpose in {"gameplay", "economy", "military"}
         else ("chat_read",)
     )
-    if job.purpose == "economy":
+    if job.purpose in {"economy", "military"}:
         names = ("player_turn", "player_capabilities")
     reads = {}
     if job.purpose in {"gameplay", "economy", "military"} and gateway.native_advice_enabled:
@@ -227,6 +235,8 @@ async def prepare_startup(gateway, job, *, call_prefix: str = STARTUP_CALL_PREFI
             arguments = {**gateway.role_coordinator.economy_arguments(), "view": "economy"}
         elif name == "player_turn" and job.purpose == "economy":
             arguments = {"view": "economy"}
+        elif name == "player_turn":
+            arguments = {"view": "main" if job.purpose == "gameplay" else "military"}
         elif name == "chat_read" and job.purpose == "communication":
             arguments = {"includeContext": True}
         elif name == "victory_progress":
@@ -243,7 +253,7 @@ async def prepare_startup(gateway, job, *, call_prefix: str = STARTUP_CALL_PREFI
     # Select using fresh permitted facts, without admitting contributions that
     # arrived after dispatch. Explicit reads below deliver the chosen records;
     # selection alone does not deliver cached evidence.
-    topics = memory_topics(reads, job.memory.get("strategicAdvice"))
+    topics = memory_topics(reads)
     if gateway.advisories is not None:
         async with gateway.admit(), job.lock:
             gateway.check(job)
@@ -267,19 +277,19 @@ async def prepare_startup(gateway, job, *, call_prefix: str = STARTUP_CALL_PREFI
         war_state = await gateway.io.call(gateway.wars.state)
         context = gateway.role_coordinator.context() if gateway.role_coordinator is not None else {}
         context["warState"] = war_state
-        coordination = coordination_snapshot(context, job.id, job.epoch, job.coordination_scope, 1)
+        coordination = coordination_snapshot(
+            working_context(context, job.purpose), job.id, job.epoch, job.coordination_scope, 1
+        )
         job.coordination_pending = coordination
         memory_context = gateway.startup_memory_context(job)
         job.coordination_preparing = False
     return {
-        "warState": war_state,
         "coreTools": core_definitions(catalogue, job.purpose),
         "reads": reads,
         "decisionDetails": decision_details,
         "memoryContext": memory_context,
         "advisories": job.memory.get("advisories", {}),
         "economyCoordination": coordination,
-        **({"strategicAdvice": job.memory["strategicAdvice"]} if job.memory.get("strategicAdvice") else {}),
         **(
             {"strategicReviewStatus": job.memory["strategicReviewStatus"]}
             if job.memory.get("strategicReviewStatus")
@@ -306,7 +316,11 @@ def startup_instructions(prepared: JsonObject) -> str:
         "without another schema read; use command_help(kinds=[...]) when you need its full argument schema. "
         "Bundle independent inspections with inspect_bundle; apply its ordered results before deciding.\n"
         + encoded({key: prepared[key] for key in ("coreTools", "readInstructions")})
-        + ("\n\n" + COORDINATION_INSTRUCTIONS if prepared.get("economyCoordination") else "")
+        + (
+            "\n\n" + COORDINATION_INSTRUCTIONS + " " + WORKING_COORDINATION_INSTRUCTIONS
+            if prepared.get("economyCoordination")
+            else ""
+        )
         + "\n\n"
         + PAYLOAD_INSTRUCTIONS
         + "\n\n"
@@ -317,7 +331,7 @@ def startup_instructions(prepared: JsonObject) -> str:
         + SHARED_VALUE_INSTRUCTIONS
         + "\n\n"
         + FEEDBACK_INSTRUCTIONS
-        + ("\n\n" + ECONOMY_VIEW_INSTRUCTIONS if prepared.get("overviewView") == "economy" else "")
+        + ("\n\n" + ROLE_VIEW_INSTRUCTIONS if prepared.get("overviewView") in {"main", "economy", "military"} else "")
     )
 
 
@@ -331,7 +345,7 @@ class StartupPrompt:
 
     def metadata(self):
         return {
-            "layoutVersion": 9,
+            "layoutVersion": 11,
             "payloadCharacters": dict(self.payload_characters),
             "instructionsSha256": hashlib.sha256(self.instructions.encode()).hexdigest(),
             "instructionCharacters": len(self.instructions),
@@ -467,6 +481,8 @@ def startup_sizes(prepared: JsonObject) -> dict[str, int]:
         "coordinationMessages": len(encoded(messages)) if messages else 0,
         "reads": len(encoded(prepared.get("reads", {}))),
         "preloadedDetails": len(encoded(prepared.get("decisionDetails", []))),
+        "memory": len(prepared.get("memoryContext", "")),
+        "review": len(encoded(prepared.get("reads", {}).get("player_turn", {}).get("strategicReview"))),
     }
 
 

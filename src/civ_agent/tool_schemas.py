@@ -23,16 +23,16 @@ from civ_agent.memory_records import (
 )
 from civ_agent.observations import DETAIL_MODELS, DetailResult, EntityDetails
 from civ_agent.schemas import BoundaryModel, NonnegativeInt
-from civ_agent.war_state import EscortAssignment, MilitaryOperation, RoleMessage, WarGoals
+from civ_agent.war_state import EscortAssignment, MilitaryOperation, ReadWarGoals, RoleMessage, WarGoals
 
 ShortReference = Annotated[str, Field(min_length=1, max_length=16, pattern=r"^[A-Za-z0-9_-]+$")]
 PlayerName = Annotated[str, Field(min_length=1, max_length=128, pattern=r"\S")]
 
 
 class PlayerTurn(DeliveryOptions):
-    view: Literal["current", "full", "economy"] = Field(
+    view: Literal["current", "full", "main", "economy", "military"] = Field(
         default="current",
-        description="Keep the current view (default), request the full overview, or select a focused economy brief. All owned details remain readable in every view.",
+        description="Keep the selected view (default), expand to full, or select main/economy/military. Omitted facts remain retrievable through detail tools and view=full.",
     )
     cities: Annotated[list[Annotated[str, Field(min_length=1, max_length=128)]], Field(max_length=500)] | None = Field(
         default=None,
@@ -143,6 +143,7 @@ class TradeDecision(Proposal, WithIntent):
 class HistoryRead(BoundaryModel):
     turn: NonnegativeInt
     offset: NonnegativeInt = 0
+    includeReview: bool = False
 
 
 class ChatHistory(BoundaryModel):
@@ -298,6 +299,8 @@ TOOL_MODELS: dict[str, type[BaseModel]] = {
 
 
 def tool_model(name: str, purpose: str) -> type[BaseModel]:
+    if name == "war_goals" and purpose == "economy":
+        return ReadWarGoals
     if name == "finish_role" and purpose in {"economy", "military"}:
         return SpecialistFinishRole
     if name == "player_details" and purpose == "review":

@@ -34,7 +34,6 @@ from civ_agent.coordination_updates import (
 )
 from civ_agent.delivery_options import content_arguments, full_delivery
 from civ_agent.diplomacy_tools import argument_error, commitment_problem, unavailable
-from civ_agent.economy_view import economy_overview
 from civ_agent.feedback_view import compact_feedback
 from civ_agent.game_commands import add_combat_commands, command_arguments, command_error, command_schema
 from civ_agent.inspection_bundle import run_bundle
@@ -71,7 +70,9 @@ from civ_agent.payload_updates import (
 )
 from civ_agent.protocol import JsonObject
 from civ_agent.response_compaction import compact_response, expand_response
+from civ_agent.review_delivery import review_brief
 from civ_agent.review_grounding import ReviewEvidence, source_catalogue
+from civ_agent.role_view import label_commands, role_overview
 from civ_agent.schemas import validate
 from civ_agent.service_io import ServiceIO
 from civ_agent.social_context import social_context
@@ -165,6 +166,7 @@ class JobAccess:
     coordination_sequence: int = 0
     coordination_preparing: bool = False
     coordination_pending: JsonObject | None = None
+    # Exact terms inspected by this job, independent of native board revisions.
     trades: dict[str, JsonObject] = field(default_factory=dict)
     closed: bool = False
     verified: bool = False
@@ -388,7 +390,7 @@ class ProposalGateway:
                     allowed_kinds = {
                         kind
                         for kind in kinds
-                        if kind not in {"END_TURN", "AUTOPLAY"}
+                        if kind not in {"END_TURN", "AUTOPLAY", "MOVE_AUTOMATED_UNITS"}
                         and (job.purpose != "economy" or kind in CITY_COMMANDS)
                         and (job.purpose != "military" or kind in MILITARY_COMMANDS)
                     }
@@ -511,8 +513,8 @@ class ProposalGateway:
                     "selection=candidate civilizationId from victory.ballot. ABSTAIN_DIPLOMATIC_VOTE and "
                     "ACKNOWLEDGE_DIPLOMATIC_RESULTS need only kind and optional intent; read victory.votingResults "
                     "before acknowledging.\n"
-                    "Before END_TURN, review your units and pending decisions. Idle units and tactical warnings do not "
-                    "block it. Optional deferReason explains unused actions. After END_TURN succeeds, finish immediately."
+                    "Review pending decisions before finish_role. Idle units and tactical warnings are advisory. "
+                    "Use finish_role when your work is complete; only the host advances the native turn."
                 )
                 tools.append(entry)
 
@@ -591,10 +593,12 @@ class ProposalGateway:
         for role_tool, description in {
             "war_goals": "Read private war episodes, goals, operations, escort assignments and messages. For initial, main must supply opponent, nonempty goals and a reason, including when already at war. For propose, supply the current version, replacement goals and a reason. The counterpart uses respond with proposal, version, agree and reason before either role finalizes. Main breaks disagreement with a reason. Priority 1 is highest. Use the current version and proposal IDs.",
             "escort_assignment": "Main assigns a military unit to escort duty with an owned civilian, or releases it after unpairing. Main controls both units for the duration of the assignment.",
-            "military_operation": "Military stores peacetime or wartime plans, opponents (empty is valid for general readiness), progress assessment, reconsideration conditions and an optional concrete reviewTurn. Notes do not establish factual outcomes. Use role_message to request main's attention or economy_request for supplies.",
-            "role_message": "Send a durable private message to another internal role. A finished role is reopened. Messages to an inactive military role are retained for its next activation.",
+            "military_operation": "Maintain an ongoing peacetime or wartime operation under a stable ID. Update it across turns; do not create per-turn journals. Set status to active, completed, abandoned or superseded; supersedes lists replaced IDs. action=set_status changes dispositions of existing IDs with a reason, including explicit reconciliation of legacy notes. Read older revisions with war_goals section=operation_history. Notes do not establish factual outcomes. Use role_message for attention or economy_request for supplies.",
+            "role_message": "Send a durable private notice or request to another internal role; a finished recipient is reopened. Acknowledge read messages with action=acknowledge and ids. Requests remain open until the recipient uses action=resolve with ids and a reason. Acknowledgement alone does not resolve a request. History is available with war_goals section=messages, role and cursor. Record lasting instructions in current goals, active operations or economy requests.",
         }.items():
             if role_tool == "war_goals" or purpose in {"gameplay", "economy", "military"}:
+                if role_tool == "war_goals" and purpose == "economy":
+                    description = "Read accepted war goals, active operations, escort assignments and role requests. Main and Military own goal changes; use role_message to request reconsideration. Older records are available by section, IDs and cursor."
                 add(role_tool, description)
 
         for name, description in {
@@ -696,7 +700,7 @@ class ProposalGateway:
         )
         add(
             "history_read",
-            "Inspect confirmed actions and detailed receipts from one earlier game turn when needed. Turn numbers are those shown by player_turn.",
+            "Inspect confirmed actions and detailed receipts for a game turn. includeReview=true retrieves the exact completed strategic review for that turn, including its dated assumptions; a null review means none completed at that turn.",
         )
         add(
             "chat_read",
@@ -951,8 +955,14 @@ class ProposalGateway:
     def coordination_delivery(self, job: JobAccess, *, full: bool = False) -> JsonObject:
         if self.role_coordinator is None or job.coordination_preparing:
             return {}
+        from civ_agent.coordination_context import working_context
+
         current = coordination_snapshot(
-            self.role_coordinator.context(), job.id, job.epoch, job.coordination_scope, job.coordination_sequence + 1
+            working_context(self.role_coordinator.context(), job.purpose),
+            job.id,
+            job.epoch,
+            job.coordination_scope,
+            job.coordination_sequence + 1,
         )
         return coordination_response(job.coordination_seen, current, full=full)
 
@@ -971,7 +981,7 @@ class ProposalGateway:
             job.coordination_sequence = current["sequence"]
             job.economy_seen = coordination_content(current)
             if "warState" in current:
-                job.war_versions = goal_versions(current["warState"])
+                job.war_versions.update(goal_versions(current["warState"]))
 
     def commit_startup_coordination(self, job: JobAccess) -> None:
         job.compact_overviews = True
@@ -1045,6 +1055,8 @@ class ProposalGateway:
             if ended:
                 job.gameplay_fenced = True
             visible = result if name == "native_advice" else public_result(result)
+            if name == "history_read" and "review" in result:
+                visible["review"] = copy.deepcopy(result["review"])
             if source == "tool":
                 sizes = {**payload_characters(visible), "replayedResponses": int(replayed)}
             if name == "native_advice":
@@ -1186,8 +1198,13 @@ class ProposalGateway:
                     if arguments.get("kind") in CITY_COMMANDS and arguments.get("target"):
                         self.role_coordinator.extend_economy_scope([arguments["target"]])
                 result = await self.update_after_action(job, name, arguments, call_id, result)
-                if self.role_coordinator is not None and self.changes_game(name, result) and "error" not in result:
-                    await self.role_coordinator.after_action(job, arguments, result)
+                if (
+                    self.role_coordinator is not None
+                    and (self.changes_game(name, result) or name in {"city_override", "escort_assignment"})
+                    and "error" not in result
+                ):
+                    if self.changes_game(name, result):
+                        await self.role_coordinator.after_action(job, arguments, result)
                     for sibling in self.role_coordinator.jobs.values():
                         if sibling is not job:
                             observed = sibling.observation is not None or sibling.role_refresh_required
@@ -1206,6 +1223,10 @@ class ProposalGateway:
                     # carry their own delivery. Other replies attach only changes.
                     if "economyCoordination" not in result and "coordinationUpdate" not in result:
                         result = {**result, **self.coordination_delivery(job)}
+                if self.role_coordinator is not None and name in DETAIL_MODELS.keys() | READ_TOOLS:
+                    # Overview labels were committed with their state ID already.
+                    if name != "player_turn":
+                        result = label_commands(result, self.role_coordinator, job.purpose, job.observation)
                 if name in DETAIL_MODELS and isinstance(result.get("data"), dict) and "query" in result:
                     key = detail_scope(DetailQuery.model_validate(result["query"]))
                     result = detail_response(
@@ -1233,7 +1254,6 @@ class ProposalGateway:
         job.delivered_overview = None
         job.detail_revision = None
         job.details_read.clear()
-        job.trades.clear()
         job.role_refresh_required = False
 
     async def refresh_role_observation(self, job: JobAccess, call_id: str) -> JsonObject:
@@ -1280,8 +1300,16 @@ class ProposalGateway:
         if "map" in value and "combatReports" in value:
             value = {"tacticalReview": tactical_review(value).model_dump(exclude_none=True), **value}
         compact = public_result(overview(value))
-        if job.overview_view == "economy":
-            compact = economy_overview(compact, job.social)
+        compact = role_overview(
+            compact, job.overview_view, roles=self.role_coordinator, purpose=job.purpose, social=job.social
+        )
+        advice = job.memory.get("strategicAdvice")
+        if brief := review_brief(
+            {**advice, "_contextFacts": job.memory.get("reviewFacts")} if advice else None, value, job.purpose
+        ):
+            compact["strategicReview"] = brief
+        if self.role_coordinator is not None:
+            compact = label_commands(compact, self.role_coordinator, job.purpose, value)
         if job.city_scope is not None:
             compact["cityScope"] = {
                 "included": list(job.city_scope),
@@ -1305,9 +1333,7 @@ class ProposalGateway:
 
         def respond(records, changed):
             presented = copy.deepcopy(compact)
-            if job.overview_view == "economy":
-                presented = economy_overview(presented, job.social)
-            elif isinstance(presented.get("decisionFeedback"), dict):
+            if isinstance(presented.get("decisionFeedback"), dict):
                 presented["decisionFeedback"] = compact_feedback(presented["decisionFeedback"])
             current = stamp(
                 {**presented, "strategyReview": strategy_review(records).model_dump()}, job.id, job.epoch, revision
@@ -1385,9 +1411,9 @@ class ProposalGateway:
         )
         job.details_read = [query for query in job.details_read if query not in invalidated]
         job.pending_invalidated.clear()
-        for query in invalidated:
-            if query.tool == "trade_read":
-                job.trades.pop(query.arguments["proposalId"], None)
+        # Availability can change with the board, but the terms this job read
+        # remain its selected version. The engine checks that version and current
+        # legality when a decision arrives; another role's move cannot erase it.
         job.detail_revision = revision
         return result
 
@@ -1470,8 +1496,11 @@ class ProposalGateway:
             return result
         social_change = name in {"commitment_offer", "commitment_decide"}
         changes_game = self.changes_game(name, result)
-        if not changes_game and not social_change:
+        ownership_change = name in {"city_override", "escort_assignment"}
+        if not changes_game and not social_change and not ownership_change:
             return result
+        if ownership_change:
+            job.pending_invalidated.extend(query for query in job.details_read if query not in job.pending_invalidated)
         if job.purpose not in {"gameplay", "economy", "military"}:
             self.forget_observation(job)
             invalidated = [query.model_dump() for query in job.pending_invalidated]
@@ -1759,8 +1788,13 @@ class ProposalGateway:
                 return {"error": "ROLE_ACTION_NOT_PERMITTED", "applied": False}
         if name in ROLE_TOOLS:
             if name == "war_goals" and arguments.get("action", "read") == "read":
-                state = await self.io.call(self.wars.state)
-                job.war_versions = goal_versions(state)
+                state = await self.io.call(
+                    self.wars.read, job.purpose, arguments, coordinator.requests if coordinator is not None else ()
+                )
+                episodes = state.get("episodes", {})
+                if state.get("section") == "episodes":
+                    episodes = {row["id"]: row for row in state["items"]}
+                job.war_versions.update(goal_versions({"episodes": episodes}))
                 return state
             if coordinator is None:
                 return {"error": "ACTIVE_ROLE_REQUIRED", "applied": False}
@@ -1833,9 +1867,17 @@ class ProposalGateway:
                 raise StateConflict("DIPLOMACY_ROUTING_DISABLED")
             return await self.routing.control(job, arguments)
         if name == "history_read":
-            return public_result(
-                await self.io.call(self.memory.history, arguments["turn"], arguments.get("offset", 0), job=job.id)
+            value = await self.io.call(
+                self.memory.history,
+                arguments["turn"],
+                arguments.get("offset", 0),
+                job=job.id,
+                include_review=arguments.get("includeReview", False),
             )
+            result = public_result(value)
+            if "review" in value:
+                result["review"] = value["review"]  # Preserve the authored report exactly.
+            return result
         self.check(job)
         if name in DETAIL_MODELS:
             if job.observation is None:
@@ -1917,6 +1959,8 @@ class ProposalGateway:
                 selected_view = arguments.get("view", "current")
                 if selected_view != "current":
                     job.overview_view = selected_view
+                if previous_scope != (job.overview_view, job.city_scope):
+                    job.delivered_overview = None
                 if "delivery" in arguments:
                     job.compact_overviews = True
                 return await self.deliver_turn(
@@ -1956,6 +2000,12 @@ class ProposalGateway:
                             )
                         ),
                     }
+                    if self.role_coordinator is not None:
+                        catalogue = await self._tools(job)
+                        command = next((tool for tool in catalogue if tool["name"] == "player_command"), None)
+                        if command is not None:
+                            allowed = command["inputSchema"]["properties"]["kind"]["enum"]
+                            value["commands"] = [kind for kind in value.get("commands", []) if kind in allowed]
                 await self.io.call(self.memory.observe, name, value, job.id)
                 if name in EXTERNAL_DETAIL_TOOLS:
                     value = self.register_external_read(job, name, arguments, value)
@@ -2223,6 +2273,18 @@ class ProposalGateway:
                 raise
             finally:
                 self.in_flight -= 1
+            if (
+                name in {"trade_offer", "trade_decide", "friendship_offer"}
+                and "error" not in value
+                and value.get("trade")
+            ):
+                for proposal in (
+                    arguments.get("proposalId"),
+                    arguments.get("counterofferTo"),
+                    value["trade"].get("proposal"),
+                ):
+                    if proposal:
+                        job.trades.pop(proposal, None)
             if job.suspend_for_negotiation and "error" not in value:
                 task = asyncio.current_task()
                 assert task is not None

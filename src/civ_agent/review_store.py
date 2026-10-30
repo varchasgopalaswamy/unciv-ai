@@ -7,6 +7,7 @@ from sqlalchemy import insert, select
 from civ_agent import memory_schema as tables
 from civ_agent.memory_store import encode
 from civ_agent.review_context import review_position
+from civ_agent.review_delivery import factual_baseline
 
 
 class ReviewStore:
@@ -130,6 +131,7 @@ class ReviewStore:
             frozen = json.loads(inputs)
             observation = frozen["observation"]
             self.memory._set(db, "reviewPosition", review_position(observation))
+            self.memory._set(db, "reviewFacts:" + str(frozen["turn"]), factual_baseline(observation))
             from civ_agent.advisory_review import completed_baseline
 
             state = self.memory._meta(db, "advisories", {})
@@ -144,7 +146,12 @@ class ReviewStore:
             db.execute(
                 tables.reviews.update()
                 .where(tables.reviews.c.job == parent, tables.reviews.c.status == "PENDING")
-                .values(status="COMPLETED", inputs=None, advice=encode(advice), error=None)
+                .values(
+                    status="COMPLETED",
+                    inputs=None,
+                    advice=encode(advice),
+                    error=None,
+                )
             )
 
 

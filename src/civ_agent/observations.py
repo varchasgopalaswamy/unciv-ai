@@ -143,6 +143,7 @@ EXTERNAL_DETAIL_TOOLS = {
 
 
 class CitySummary(BoundaryModel):
+    owner: str | None = None
     borderExpansion: JsonObject = Field(default_factory=dict)
     resistanceTurns: int = 0
     beingRazed: bool = False
@@ -171,6 +172,7 @@ class CitySummary(BoundaryModel):
 
 
 class UnitSummary(BoundaryModel):
+    owner: str | None = None
     statuses: list[JsonObject] = Field(default_factory=list)
     handle: str
     name: str
@@ -218,6 +220,10 @@ class PlayerNotification(BoundaryModel):
 
 
 class TurnOverview(BoundaryModel):
+    availableWonders: list[str] | None = None
+    roleBrief: JsonObject | None = None
+    roleCompletion: JsonObject | None = None
+    strategicReview: JsonObject | None = None
     constructionExplanations: dict[str, str] | None = None
     explanationRefs: dict[str, str] | None = None
     economyBrief: JsonObject | None = None
@@ -512,7 +518,8 @@ def overview(snapshot: JsonObject) -> JsonObject:
         {
             key: item
             for key, item in relation.items()
-            if key in {"civilizationId", "civilizationName", "status", "atWar", "peaceTreatyTurns", "native"}
+            if key
+            in {"civilizationId", "civilizationName", "status", "atWar", "peaceTreatyTurns", "bilateral", "native"}
         }
         for relation in snapshot.get("diplomacy", {}).get("knownCivilizations", [])
     ]

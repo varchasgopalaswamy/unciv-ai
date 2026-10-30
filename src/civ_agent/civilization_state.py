@@ -326,9 +326,10 @@ class CivilizationState:
             events = [json.loads(row["body"]) for row in rows]
             records.update(RecordStore(db).all(keys=[f"event:{event['id']}" for event in events]))
             high = max((row["id"] for row in rows), default=cursor)
-            snapshot = {
+            snapshot: JsonObject = {
                 "epoch": self._meta(db, "epoch"),
                 "purpose": purpose,
+                "reviewDelivery": "on_request",
                 "gameTurn": game_turn if game_turn is not None else self._meta(db, "gameTurn"),
                 "strategicAdvice": latest_advice(
                     db, game_turn if game_turn is not None else self._meta(db, "gameTurn")
@@ -342,6 +343,8 @@ class CivilizationState:
                 "cursor": max(cursor, high),
                 **({"routingEventIds": [row["id"] for row in rows]} if self.routing_enabled else {}),
             }
+            if snapshot["strategicAdvice"]:
+                snapshot["reviewFacts"] = self._meta(db, "reviewFacts:" + str(snapshot["strategicAdvice"]["asOfTurn"]))
             selected, omitted = select_context(snapshot, self.context_limit)
             snapshot["contextIds"] = list(selected)
             snapshot["omitted"] = omitted
@@ -565,6 +568,21 @@ class CivilizationState:
         """Commit delivered evidence and its replayable response in one transaction."""
         with self.transaction() as db:
             purpose = db.scalar(select(tables.jobs.c.purpose).where(tables.jobs.c.id == job))
+            brief = compact.get("strategicReview")
+            if brief:
+                reconsiderations = self._meta(db, "reviewReconsiderations", {})
+                key = str(brief["asOfTurn"])
+                if brief["status"] == "RECONSIDER" and key not in reconsiderations:
+                    reconsiderations[key] = {"observedTurn": body["turn"], "changedFacts": brief["changedFacts"]}
+                    self._set(db, "reviewReconsiderations", reconsiderations)
+                if key in reconsiderations:
+                    compact["strategicReview"] = {
+                        key: value for key, value in brief.items() if key in {"asOfTurn", "read", "basis"}
+                    } | {
+                        "status": "RECONSIDER",
+                        "firstChange": reconsiderations[key],
+                        "instruction": "Reconsider this historical review against current observations. Its recommendations remain withheld until a new review; accepted plans remain authored decisions and legal actions remain available.",
+                    }
             if purpose == "gameplay" and body.get("phase") == "ACTIVE":
                 baseline = self._meta(db, "turnChangeBaseline")
                 if baseline and baseline["turn"] != body["turn"]:
@@ -587,7 +605,8 @@ class CivilizationState:
                 and snapshot["delivered"][key] != record["version"]
             }
             RecordStore.deliver(snapshot, changed)
-            compact["decisionFeedback"] = self._decision_feedback(db, body)
+            if (compact.get("roleBrief") or {}).get("view", "full") in {"main", "full"}:
+                compact["decisionFeedback"] = self._decision_feedback(db, body)
             # strategyReview delivers advisory notices, without delivering a new
             # notebook revision or the contents of the referenced observations.
             for key, record in records.items():
@@ -622,7 +641,8 @@ class CivilizationState:
                 self._set(db, "openingProgress", opening)
             # Historical context stays stable within a turn. Otherwise every
             # receipt resends unrelated units, cities and prior-turn evidence.
-            compact["recentProgress"] = opening
+            if "roleBrief" not in compact:
+                compact["recentProgress"] = opening
         body = native_observation(body)
         compact = native_observation(compact)
         scopes = {
@@ -897,6 +917,27 @@ class CivilizationState:
                     and not expired_at(r, snapshot.get("gameTurn"))
                     for r in snapshot["records"].values()
                 ),
+                "omittedPendingWork": {
+                    "contributions": sum(
+                        r["category"] == "contribution"
+                        for k, r in snapshot["records"].items()
+                        if k not in selected
+                        and r["body"].get("state") == "active"
+                        and not expired_at(r, snapshot.get("gameTurn"))
+                    ),
+                    "reviewNotices": sum(
+                        bool(r["body"].get("needsReview"))
+                        for k, r in snapshot["records"].items()
+                        if k not in selected
+                        and r["body"].get("state") == "active"
+                        and not expired_at(r, snapshot.get("gameTurn"))
+                    ),
+                },
+                "retrieval": {
+                    "tool": "memory_search",
+                    "arguments": {},
+                    "instruction": "Filter by type or subjects; follow nextOffset. Use history=true for older versions. Omitted work remains pending.",
+                },
             }
         )
 
@@ -1575,7 +1616,7 @@ class CivilizationState:
         with self.transaction() as db:
             return conversation_context(db, self.civilization, seeds)
 
-    def history(self, game_turn: int, offset: int = 0, *, job: str | None = None):
+    def history(self, game_turn: int, offset: int = 0, *, job: str | None = None, include_review: bool = False):
         if type(game_turn) is not int or game_turn < 0 or type(offset) is not int or offset < 0:
             raise ValueError("INVALID_ARGUMENT")
         with self.transaction() as db:
@@ -1590,7 +1631,36 @@ class CivilizationState:
                 .offset(offset)
             ).fetchall()
             records = RecordStore(db).all(keys=[row[0] for row in rows[:20]])
-            return HistoryReadResult.model_validate(
+            review = None
+            if include_review:
+                saved = db.execute(
+                    select(tables.reviews.c.advice).where(
+                        tables.reviews.c.turn == game_turn, tables.reviews.c.status == "COMPLETED"
+                    )
+                ).scalar_one_or_none()
+                if saved is not None:
+                    review = {key: value for key, value in json.loads(saved).items() if key != "_contextFacts"}
+                    if job is not None:
+                        snapshot = load_snapshot(
+                            db, db.execute(select(tables.jobs.c.snapshot).where(tables.jobs.c.id == job)).scalar_one()
+                        )
+                        read_reviews = snapshot.setdefault("readReviews", [])
+                        if game_turn not in read_reviews:
+                            read_reviews.append(game_turn)
+                        for index, assumption in enumerate(review.get("review", {}).get("materialAssumptions", []), 1):
+                            source = f"review:{game_turn}:{index}"
+                            snapshot.setdefault("historicalEvidence", {})[source] = {
+                                "key": source,
+                                "category": "review_assumption",
+                                "reviewTurn": game_turn,
+                                "assessment": assumption,
+                            }
+                        db.execute(
+                            tables.jobs.update()
+                            .where(tables.jobs.c.id == job)
+                            .values(snapshot=dump_snapshot(db, snapshot))
+                        )
+            result = HistoryReadResult.model_validate(
                 {
                     "turn": game_turn,
                     "actions": [
@@ -1601,6 +1671,15 @@ class CivilizationState:
                     "nextOffset": offset + min(len(rows), 20),
                 }
             ).model_dump()
+            result.pop("review", None)
+            result.pop("reviewSources", None)
+            if include_review:
+                result["review"] = review
+                result["reviewSources"] = [
+                    f"review:{game_turn}:{index}"
+                    for index, _ in enumerate((review or {}).get("review", {}).get("materialAssumptions", []), 1)
+                ]
+            return result
 
     def summary(self, game_turn=None, *, job=None):
         with self.transaction() as db:

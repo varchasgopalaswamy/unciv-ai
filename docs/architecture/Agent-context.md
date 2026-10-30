@@ -7,10 +7,12 @@ plans and their measurements are in the [archive](../archive/README.md).
 
 Each scheduled turn starts a fresh conversation. The service prepares permitted
 observations through the same gateway used for explicit reads, selects private
-memory using their current subjects and players named in proposed diplomatic
-initiatives, and then reads the chosen records. Received message participants
+memory using the role and current subjects, and then reads the chosen records. Received message participants
 also select relevant notes; prose is never mined for implied facts. Selection
-stays within the memory budget and the dispatch snapshot's contribution boundary.
+keeps accepted strategy and relevant city plans alongside a bounded supporting
+notebook and the dispatch snapshot's contribution boundary. Omitted pending
+contributions and review notices have counts and `memory_search` retrieval
+instructions; omission never acknowledges or resolves them.
 Selection freezes the current versions of eligible dispatched records, including
 review notices; startup memory reads deliver those exact versions. Concurrent
 notebook edits cannot enlarge the prepared context. Later explicit reads obtain
@@ -23,6 +25,23 @@ Gameplay prepares `player_turn`, `player_capabilities`, `victory_progress` and
 memory context. Gameplay chat omits economic/scenario context already covered by
 the overview; communication prepares `chat_read(includeContext=true)`. Core tool definitions come
 from the current permitted catalogue:
+
+Managed Main, Economy and Military start with `player_turn(view="main")`,
+`view="economy"` and `view="military"` respectively. These projections apply to
+startup, subsequent reads, command updates and recovery. Main gets empire choices,
+diplomacy, victory progress, civilians and escorts, city summaries and specialist
+coordination. Economy gets selected cities, economic constraints, worker activity,
+threats and current intent. Military gets its units, bombardment, opponents,
+protection needs, supply constraints and active operations. Detailed options are
+preloaded only for entities the receiving role can act on.
+
+Every view retains pending decisions, relevant threats, native constraints and
+uncertainty. `roleBrief` identifies omissions and focused retrieval tools;
+`view="full"` retains all permitted observations. Missing information is unknown,
+not evidence of absence. Ordinary role ownership checks also generate command
+labels: metadata sits beside copyable command arguments and identifies direct
+actions, requests to another role and Main's existing `city_override`. Workers,
+role concurrency, native advice and gameplay legality keep their existing rules.
 
 | Job | Prepared definitions |
 | --- | --- |
@@ -45,18 +64,18 @@ that depend on combat, scouting or fresh previews use another model pass.
 The player reviews the results before ending the turn.
 
 In managed gameplay, each role uses `finish_role`; the host advances the native
-turn after both roles finish. See [economy management](Economy-manager.md).
-Native `END_TURN` ends all gameplay and memory-tool access. Optional `memory_update`
+turn after all required roles finish. See [economy management](Economy-manager.md).
+Managed catalogues omit native turn advancement. Optional `memory_update`
 remains discoverable during play. Scheduled reviews run concurrently at a shared
 round boundary after all players finish; gameplay and communication wait for the
-reports. The latest completed report is supplied once as dated advice before
-historical memory and need not be rewritten as a memory entry. It compares concrete
-plans, an optional preference and reconsideration conditions, alongside next steps,
-diplomatic initiatives and brief outlooks for each enabled victory.
+reports. Main receives a compact dated review summary; specialists receive current
+accepted strategy and relevant requests. `history_read(turn=T, includeReview=true)`
+retrieves the exact completed review and its evidence references. Reviews compare
+concrete plans and retain their original recommendations in history.
 
 Gameplay can initiate useful diplomatic contact without an incoming message.
 Communication jobs pursue the civilization's objectives through questions,
-counteroffers and further contacts when worthwhile. Both receive dated advice
+counteroffers and further contacts when worthwhile. Both receive dated review summaries
 and relevant private notes. Negotiation guidance covers cooperation, gathering
 information, threats, concealment, bluffs and breaking nonbinding promises,
 weighing incentives, relative gains, credibility and retaliation. Silence is
@@ -78,8 +97,9 @@ include strength and role. Tactical review adds risks and opportunities, while
 turn review retains only its confirmed-action count. Chat owns versioned social
 promises and trade summaries; the overview does not repeat them.
 
-Inactive unit capabilities and empty optional lists are omitted; every owned
-unit remains in the roster. City health/defense and worker job time are included.
+Inactive unit capabilities and empty optional lists are omitted; the full view
+retains every owned unit, while role views select relevant units and identify the
+omitted roster. City health/defense and worker job time are included.
 `changesSincePreviousTurn` compares the previous gameplay observation with the
 opening observation, then remains stable throughout that turn. It references
 existing notifications/reports instead of repeating their contents, and lists
@@ -129,7 +149,10 @@ separate unclaimed potential, overlap with existing cities, and foreign ownershi
 Candidate happiness budgets use native calculations on a detached map of known
 terrain. Missing surrounding tiles qualify site-dependent building requirements
 without suppressing city/population costs or the whole building list.
-Wonder estimates appear only under `wonderOpportunities` in the overview.
+Economy receives `availableWonders`, a names-only list of wonders available to
+queue in at least one city. `construction_details(target=<city>, names=[<wonder>])`
+retrieves costs, benefits, prerequisites and estimates on demand. The full view's
+`wonderOpportunities` also retains queued and blocked wonders.
 Compact completion estimates omit zero yield changes (including formatted zeros);
 omitted changes mean zero at displayed precision. Named construction reads retain
 the complete native estimates.
@@ -156,9 +179,17 @@ Private notes, old strategy, action rationales and model deliberation are exclud
 The reviewer cannot act, communicate or write
 memory, and cannot query the advancing game.
 
-At dispatch, gameplay receives the latest completed report once, dated with its
-source turn, before historical memory. It checks the advice against fresh facts,
-chooses its own actions and can reject the recommendation. Reports arrive before
+New reviews record a private factual baseline of war relationships, native treaty
+status and owned city/unit identities. Changed facts replace automatic
+recommendations with a dated reconsideration notice and retrieval reference. The
+notice persists across restarts until a new review; checkpoint rewind restores
+the earlier boundary. Older reviews without baselines remain retrievable with an
+explicit unknown-baseline notice. A factual change does not adjudicate an authored
+assessment, retire accepted plans or constrain native-legal actions. Exact social
+promises retain their existing nonbinding semantics.
+
+Main checks the summary against fresh facts, chooses its own actions and can
+reject the recommendation. Reports arrive before
 the next own gameplay turn starts, rather than midway through its conversation.
 Players need not copy them into a strategy entry. Only one review can be pending
 for each civilization.
@@ -212,17 +243,23 @@ responses. Native research and policy responses retain their observed turn numbe
 
 ## Compact payload delivery
 
-Startup layout 9 describes the following formats. Native observations, legality,
+Startup layout 11 describes the following formats. Native observations, legality,
 inspection registration and durable action receipts retain their existing
 checks. Compression affects delivery, not which facts the engine returns.
 `player_turn` preserves the current view when `view` is omitted or `current`;
-`view="full"` explicitly expands a focused economy brief. Recovery reads therefore
+`view="full"` explicitly expands any focused role view. Recovery reads therefore
 preserve the selected presentation. On observation and notebook reads,
 `delivery="auto"` chooses the transport and `delivery="full"` recovers a missing
 baseline with complete inline data. Sections, construction names, map format,
 overview view and city scope independently select the information. The legacy
 `full` boolean remains accepted but is omitted from advertised input schemas;
 contradictory explicit recovery options are rejected.
+
+New activations select their role's default view. Switching views resets delivery
+baselines; archived history, existing checkpoints and exact replayed receipts stay
+readable. Recoverable, unapplied commands require reconsideration against fresh
+observations. Confirmed actions must never be repeated; uncertain execution must
+be reconciled before retrying.
 
 After a prepared conversation starts, an explicit `player_turn` still fetches
 fresh native state, but may return `stateUpdate` instead of a complete root
@@ -321,8 +358,13 @@ communication writes and recursive bundles are excluded.
 
 Managed Main can call `economy_wait` alone when its next choice depends on
 economic work. Empty `requestIds` waits for the current pass; otherwise IDs must
-be unique, known requests (at most 100). The durable receipt is followed by a
-controller suspension; no gateway lock remains held. Main remains unfinished
+be unique, known requests (at most 100). Only a receipt with state `waiting` arms
+controller suspension; `attention`, `resolved`, `idle` and `not_running` return
+immediately and Main must continue its decisions. Unread coordination messages
+trigger immediate attention only when they are newly delivered in the bounded
+working set. New inbox messages precede older messages, so archived messages
+omitted from that set cannot prevent suspension indefinitely. The durable
+waiting receipt is followed by controller suspension; no gateway lock remains held. Main remains unfinished
 and cannot end the native turn while suspended. Dispositions, pass completion,
 attention or new actionable events, negotiation, and a bounded 300-second wait
 wake it. Resume retains the conversation and model settings, supplies a fresh

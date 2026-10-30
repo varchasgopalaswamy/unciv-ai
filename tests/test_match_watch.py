@@ -461,7 +461,8 @@ def test_empty_and_completed_matches(tmp_path):
     asyncio.run(check())
 
 
-def test_batch_dashboard_switches_games(tmp_path):
+@pytest.mark.parametrize("individually_resumed", [False, True])
+def test_batch_dashboard_switches_games(tmp_path, individually_resumed):
     batch = tmp_path / "batch"
     first, second = batch / "games/g0001", batch / "games/g0002"
     first.mkdir(parents=True)
@@ -475,10 +476,15 @@ def test_batch_dashboard_switches_games(tmp_path):
             {
                 "format": 2,
                 "parallel": 2,
-                "runs": [{"id": "g0001", "status": "running"}, {"id": "g0002", "status": "paused"}],
+                "runs": [
+                    {"id": "g0001", "status": "paused" if individually_resumed else "running"},
+                    {"id": "g0002", "status": "paused"},
+                ],
             }
         )
     )
+    if individually_resumed:
+        (first / "container-status.json").write_text(json.dumps({"status": "running"}))
 
     async def check():
         app = match_watch.MatchWatch(batch, refresh=60)

@@ -11,7 +11,7 @@ META = {"stateId", "scopeId", "sequence"}
 MESSAGE_PATH = "warState.messages"
 COLLECTIONS = {"requests": "id", MESSAGE_PATH: "id"}
 INSTRUCTIONS = (
-    "economyCoordination is a complete coordination snapshot, including history. "
+    "economyCoordination is a complete snapshot of your bounded working context; history remains retrievable. "
     "Keep its scopeId, sequence and stateId. coordinationUpdate contains subsequent changes: "
     "set replaces named fields, removed deletes fields, and collections upserts/removes rows by their key; "
     "order, when present, gives the complete resulting row order. warState.messages is a separate keyed "
@@ -19,7 +19,7 @@ INSTRUCTIONS = (
     "Omitted coordination stays unchanged. Ignore an already applied sequence; never apply an older response "
     "over newer state. If the scope or baseStateId does not match, read player_turn for a full snapshot. "
     "Current goals, request dispositions, overrides and role ownership remain authoritative. "
-    "war_goals remains available for an explicit full history read."
+    "war_goals provides filtered, paginated history reads."
 )
 
 

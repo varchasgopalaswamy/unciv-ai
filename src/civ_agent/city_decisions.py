@@ -123,7 +123,7 @@ def change_key(job, objectives):
     return fingerprint(
         {
             "objectives": objectives,
-            "reviewAdvice": job.memory.get("strategicAdvice"),
+            "reviewAdvice": (getattr(job, "delivered_overview", None) or {}).get("strategicReview"),
             "cities": [
                 {
                     **{k: city.get(k) for k in ("handle", "puppet", "constructionQueue", "constructionOptions")},
@@ -211,7 +211,7 @@ async def capture(gateway, job, objectives) -> tuple[list[JsonObject], JsonObjec
         ],
         "researchQueue": copy.deepcopy(observation.get("researchQueue", [])),
         "visibleHostiles": copy.deepcopy((observation.get("tacticalReview") or {}).get("visibleHostiles", [])),
-        "reviewAdvice": copy.deepcopy(job.memory.get("strategicAdvice")),
+        "reviewAdvice": copy.deepcopy((getattr(job, "delivered_overview", None) or {}).get("strategicReview")),
         "adoptedDecisions": adopted_decisions(objectives),
     }
     context["economy"]["resources"] = [

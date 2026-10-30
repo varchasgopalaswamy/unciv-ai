@@ -87,8 +87,14 @@ def test_rpc_error_metadata_survives_pending_request_cleanup_and_shutdown(tmp_pa
                 },
             }
         )
-        with pytest.raises(ServiceError, match="^CODEX_REQUEST_FAILED$"):
+        with pytest.raises(ServiceError, match="^CODEX_REQUEST_FAILED$") as caught:
             await asyncio.wait_for(request, 1)
+        # The request owner can persist the reason even while notification delivery is blocked.
+        detail = caught.value.request_failure
+        assert detail is not None
+        assert detail["reason"] == "turnNotActive"
+        assert detail["rpcMethod"] == "turn/interrupt"
+        assert "PRIVATE" not in json.dumps(detail)
         await asyncio.wait_for(blocked.wait(), 1)
         assert not process.pending and not process.requests
         # Diagnostics must not block the socket reader or independent control replies.

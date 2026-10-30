@@ -8,6 +8,7 @@ from unittest.mock import Mock
 
 import pytest
 
+from civ_agent.coordination_context import working_context
 from civ_agent.economy_roles import TurnRoles
 from tests.test_agent_service import AgentServiceTestCase, FakeCodex, FakeFactory
 from tests.test_economy_roles import coordinator, run_async
@@ -126,6 +127,59 @@ async def test_question_arriving_before_registration_is_delivered_without_suspen
     jobs["gameplay"].economy_seen = {"warState": {"messages": [message]}}
     result = await roles.economy_wait(jobs["gameplay"], {}, "wait2")
     assert result["economyWait"]["state"] == "waiting"
+
+
+def archive_messages():
+    return [
+        {
+            "id": f"old{i}",
+            "author": "military",
+            "to": "gameplay",
+            "text": "Historical notice " + "x" * 600,
+            "createdTurn": 0,
+        }
+        for i in range(100)
+    ]
+
+
+@run_async
+async def test_omitted_archived_notices_do_not_prevent_a_real_economy_wait():
+    roles, jobs = waiting_roles()
+    main = jobs["gameplay"]
+    roles.war_state["messages"] = archive_messages()
+    main.economy_seen = working_context(roles.context(), "gameplay")
+    assert main.economy_seen["history"]["omitted"]["messages"] > 90
+    result = await roles.economy_wait(main, {"requestIds": ["r1"]}, "wait")
+    assert result["economyWait"]["state"] == "waiting"
+    roles.arm_economy_wait(main, result)
+    assert main.role_wait_pending.is_set()
+    assert not any(m.get("acknowledged") for m in roles.war_state["messages"])
+
+
+@run_async
+async def test_new_question_displaces_archived_notices_and_attention_is_not_an_endless_gate():
+    roles, jobs = waiting_roles()
+    main = jobs["gameplay"]
+    roles.war_state["messages"] = archive_messages()
+    main.economy_seen = working_context(roles.context(), "gameplay")
+    question = {
+        "id": "new",
+        "author": "economy",
+        "to": "gameplay",
+        "text": "Which city should receive the reinforcement?",
+        "createdTurn": 4,
+    }
+    roles.war_state["messages"].append(question)
+    result = await roles.economy_wait(main, {}, "first")
+    assert result["economyWait"]["state"] == "attention"
+    assert "did not suspend" in result["instruction"]
+    assert not main.role_wait_pending.is_set()
+    delivered = working_context(roles.context(), "gameplay")
+    assert delivered["warState"]["messages"][0] == question
+    main.economy_seen = delivered
+    result = await roles.economy_wait(main, {}, "second")
+    assert result["economyWait"]["state"] == "waiting"
+    assert len(roles.war_state["messages"]) == 101
 
 
 class WorkingEconomy(FakeCodex):

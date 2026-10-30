@@ -6,6 +6,14 @@ it for execution without creating a diplomatic war episode.
 Main and economy continue concurrently, and only the host issues native END_TURN
 after every active role finishes and accepted actions settle.
 
+Military starts with `player_turn(view="military")`: controlled units, bombardment,
+visible opponents, civilian protection needs, supply constraints, accepted goals
+and active operations. Detailed options preload only for its own units. The same
+projection applies to action updates and recovery; omitted `view` preserves it.
+`roleBrief` identifies omitted information and retrieval tools, and `view="full"`
+remains available. Historical reviews are retrieved with
+`history_read(turn=T, includeReview=true)`; they do not replace accepted objectives.
+
 ## Control and lifecycle
 
 Military controls combat units (including scouts), conventional missions, city
@@ -105,8 +113,11 @@ its conversation waits for another pass or turn completion.
 
 ## Goals and private coordination
 
-`war_goals` reads war episodes, accepted goals, revisions, proposals, operation
-notes, escort assignments and private messages. Main uses `action=initial` with
+`war_goals` defaults to bounded current state. Filtered, paginated historical
+reads select `section` (`episodes`, `drafts`, `escorts`, `operations`,
+`operation_history`, `messages` or `requests`), optional `ids`, `status` or `role`,
+and `cursor`/`limit`; follow `nextCursor` until it is null. Original accepted
+wording, revisions and messages remain stored. Main uses `action=initial` with
 an opponent and a nonempty goal list before voluntary declarations, including
 trade commitments and native diplomatic replies. Each goal records outcome,
 priority (1 highest), completion criterion, acceptable costs and reconsideration
@@ -149,7 +160,8 @@ Goal priority 1 is highest. Missing arguments receive field-specific recovery
 instructions before dispatch. Escort assignment requires a current observation;
 an invalidated observation requests `player_turn` before checking unit ownership.
 
-`military_operation` stores military's plan, opponent references, progress
+`military_operation` updates an ongoing operation under a stable ID across
+turns. It stores military's plan, opponent references, progress
 assessment, evidence references, reconsideration conditions and an optional
 `reviewTurn` for a concrete decision deadline. Peacetime readiness or reconnaissance
 operations can have an empty opponents list. These are authored
@@ -157,6 +169,17 @@ assessments, not service-confirmed game outcomes. `escort_assignment` belongs to
 main. `role_message` exchanges private internal messages and reopens a finished
 recipient; messages for inactive military remain available for its next activation.
 Military can also send `economy_request` for production and spending support.
+Operations have explicit `active`, `completed`, `abandoned` or `superseded`
+dispositions. Updates retain exact older revisions in `operation_history`;
+`supersedes` retires replaced IDs. `action="set_status"` changes existing IDs
+with a reason. New turn journals must not become new active operations.
+
+Schema-2 migration preserves pre-existing operation notes as `legacy`; it never
+infers that a plan is completed from its age. Military reads the legacy queue
+and explicitly classifies applicable and obsolete plans. Legacy and closed
+operations remain available through historical reads while routine startup
+contains active plans only. Read messages are explicitly acknowledged; requests
+remain open until resolved. See [coordination delivery](Economy-manager.md#coordination-delivery).
 
 A changed strategic recommendation or proposed campaign needs a `role_message`
 to main; storing an operation alone does not request main's attention.
@@ -182,6 +205,14 @@ separate main conversation then approves or declines those exact terms using its
 private strategic memory and the military overview. Main may disagree with the
 recommendation but cannot waive a missing overview.
 
+Each frozen brief is capped at 64,000 serialized characters. It preserves exact
+terms, current accepted goals and the military assessment, while projecting
+native economic and battlefield facts without construction catalogs, executable
+offers or historical journals. Collection coverage and omitted counts are
+explicit; remembered cities retain their observation dates. The brief never
+infers unseen foreign forces. Mandatory records that exceed the budget produce
+an unavailable consultation instead of silently truncated terms or goals.
+
 These independent consultation conversations receive the same campaign guidance
 as gameplay and strategic advice. Reaching a review date or completing the initial
 objective does not by itself favor peace; both roles assess what continuing can
@@ -192,6 +223,10 @@ have no live engine connection or mutation tools and run sequentially in slots
 released by suspended gameplay. The caller's pending request is allowed to settle
 before its normal conversation resumes. Capacity/invocation failures are visible;
 consultation admission is time-bounded.
+Model request failures preserve sanitized RPC diagnostics even when the request
+fails before notification delivery. A confirmed consultation failure returns a
+recoverable receipt to the caller, with no peace action applied; the caller may
+retry, decline the offer or continue other decisions.
 
 Reports and approvals are bound to the permitted tactical evidence, war episode
 and revisions, and exact terms. The service checks freshness before dispatch;

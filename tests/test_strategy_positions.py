@@ -157,6 +157,10 @@ def test_usage_limit_detection_includes_reviews_and_ignores_failure_prose(tmp_pa
         )
     )
     assert provider_usage_exhausted(tmp_path)
+    activation.write_text(
+        json.dumps({"phase": "FAILED", "modelStatus": {"state": "failed", "reason": "usageLimitExceeded"}})
+    )
+    assert provider_usage_exhausted(tmp_path)
     store.engine.dispose()
 
 
@@ -244,3 +248,47 @@ def test_suite_stops_launching_trials_after_provider_limit_and_retains_schedule(
     assert results["first"]["providerFailure"] == "usageLimitExceeded"
     assert results["second"]["notStarted"] and not results["second"]["completedEvaluation"]
     assert "usageLimitExceeded" in results["second"]["reason"]
+
+
+def test_suite_skips_completed_ids_without_relabeling_remaining_trials(tmp_path, monkeypatch):
+    prepared, root, manifest = tmp_path / "prepared", tmp_path / "runs", tmp_path / "manifest.json"
+    cases = [{"id": "first", "rounds": 1}, {"id": "second", "rounds": 1}]
+    manifest.write_text(json.dumps({"positions": cases}))
+    for case in cases:
+        directory = prepared / case["id"]
+        directory.mkdir(parents=True)
+        (directory / "initial-turn.json").write_text("{}")
+    launched = []
+
+    def launch(command, **kwargs):
+        trial = Path(command[command.index("--state-dir") + 1])
+        launched.append(trial.name)
+        store = MonitorStore(path_for(trial))
+        store.put("state", "run", {"status": "budget_exhausted"})
+        store.put("turns", "t1", {"turnId": "t1", "turn": {"status": "completed"}, "accountingComplete": True})
+        store.engine.dispose()
+        return SimpleNamespace(returncode=0, poll=lambda: 0)
+
+    monkeypatch.setattr(suite.subprocess, "Popen", launch)
+    monkeypatch.setattr(
+        suite.sys,
+        "argv",
+        [
+            "suite",
+            "--prepared",
+            str(prepared),
+            "--state-dir",
+            str(root),
+            "--manifest",
+            str(manifest),
+            "--port",
+            "13401",
+            "--skip-trial",
+            "first",
+        ],
+    )
+    assert suite.main() == 0
+    assert launched == ["second"]
+    assert json.loads((root / "suite.json").read_text())["previouslyCompletedTrials"] == ["first"]
+    result = json.loads((root / "results.json").read_text())
+    assert len(result) == 1 and result[0]["id"] == "second" and result[0]["completedEvaluation"]

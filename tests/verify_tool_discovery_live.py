@@ -52,8 +52,9 @@ def discovery_metrics(path: Path):
         if item.get("type") != "custom_tool_call_output" or item["call_id"] not in lookups:
             continue
         lookup = lookups[item["call_id"]]
-        for block in item.get("output", []):
-            text = block.get("text", "")
+        output = item.get("output", [])
+        for block in [output] if isinstance(output, str) else output:
+            text = block if isinstance(block, str) else block.get("text", "")
             if text.startswith("Script completed\n"):
                 continue
             lookup["truncated"] |= "truncated output" in text

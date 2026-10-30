@@ -137,6 +137,14 @@ not implicitly approve new terms. An uninspected decision returns a copyable
 read command without acting; a diagnostic lookup never registers terms as read.
 A stale response requires another inspection and decision.
 
+The inspected version survives unrelated native actions and overview refreshes,
+including moves made by another role. Those changes may invalidate the displayed
+availability, but do not erase which exact terms this job read. The engine still
+checks the proposal version, status and current legality before applying a
+decision. A successful trade mutation consumes the caller's inspection of the
+affected proposal unless a subsequent read delivers its exact terms again;
+other inspected proposals remain independent.
+
 A counteroffer or revision creates a new immutable version, superseding the
 pending version and recording only its new author's consent. Accepted versions
 cannot be amended or withdrawn retroactively. Each negotiation allows three

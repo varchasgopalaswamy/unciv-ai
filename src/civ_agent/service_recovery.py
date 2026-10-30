@@ -201,6 +201,9 @@ async def _restore(service, payload):
                     remaining -= len(block)
             target.chmod(0o600)
         pending = service.memory.restore(path, payload["sha256"], payload["epoch"])
+        # The checkpoint may predate the current coordination schema. Upgrade
+        # it inside the quiesced restore, before any job can be admitted.
+        service.gateway.wars.state()
         service.match = {**(saved["service"]["match"] or {}), "epoch": payload["epoch"]}
         write_private_json(service.match_file, service.match)
         service.history = HistoryStore(service.state_dir / "history", service.token)

@@ -1,0 +1,67 @@
+Role context isolation: completed live screening — 2026-10-29
+
+All 32 planned trials completed: four frozen positions, two variants, two repetitions, and two models, each for ten own turns (320 completed rounds). Four completed trials were retained from the first retry; this continuation completed the remaining 28 from identical prepared boards and empty private memory. Earlier quota-interrupted attempts remain available and are excluded from matched comparisons.
+
+The candidate reduced all-role model usage and eliminated the observed ownership rejections. Gameplay results were mixed: it added more improvements and technologies, but growth and military preservation were not uniformly better. These ten-turn screens do not establish gameplay equivalence or win rates. Elapsed time is operational only and has no weight in the conclusions.
+
+All-role usage includes Main, Economy, Military and reviews. Percentages are candidate change from baseline; total tokens = input + output, with cached input included in input and reasoning included in output.
+
+| Model | Baseline total tokens | Candidate total tokens | Total change | Cached input | Uncached input | Output | Requests |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| gpt-6-luna | 73,135,131 | 53,952,308 | -26.23% | -26.22% | -26.41% | -20.99% | 1,315 → 1,228 (-6.62%) |
+| gpt-6.1-terra | 142,548,589 | 113,813,070 | -20.16% | -19.72% | -24.81% | +4.62% | 2,330 → 2,346 (+0.69%) |
+
+Outcome counts below sum eight trials per variant for each model. Each cell is baseline → candidate. Buildings and technologies are unweighted counts; acquired-city population and improvements are excluded from growth and new-improvement counts. Pair-specific production/science rates and treasury changes appear in the detailed report.
+
+| Model | Growth in retained cities | New improvements on retained land | Buildings added in retained cities | Technologies acquired | Military losses | Cities gained, net |
+|---|---:|---:|---:|---:|---:|---:|
+| gpt-6-luna | 20 → 18 | 5 → 7 | 34 → 32 | 15 → 20 | 2 → 2 | 0 → 0 |
+| gpt-6.1-terra | 22 → 21 | 21 → 24 | 41 → 43 | 18 → 19 | 2 → 3 | 4 → 4 |
+
+The earlier population advantage was a specific city-management tradeoff. In the first Inca position, Machu grew from 9 to 10 for both first-repetition baselines. Luna’s candidate enabled avoid growth; Terra’s candidate selected ProductionFocus. Both reduced food surplus from about 6 to 1 per turn and finished Machu’s University earlier. Their final native science rates were 82 versus 75 (Luna) and 78 versus 75 (Terra). The growth and happiness data were present in the candidate context. Luna later saw empire happiness +5 and retained avoid growth; the records establish no reversal, not whether it silently reconsidered. The second repetition repeated Luna’s one-citizen gap; Terra had no growth in either variant. Detailed dated evidence is in paired-retry-1/growth-analysis.json and growth-analysis.txt.
+
+Across all 16 matched pairs, candidate retained-city growth was lower in four, equal in eleven, and higher in one. Terra’s final Arabia candidate gained one more citizen than its baseline. This is a recurring tradeoff in particular positions, not a universal growth outcome.
+
+Luna’s first Arabia baseline added a Public School, Lighthouse and Great Lighthouse in Medina that its candidate did not, while its candidate retained 950 more gold. Their second Arabia repetition had equal building counts, and the candidate acquired one extra technology. Treasury choices and the value of individual technologies/buildings limit comparisons based on counts alone.
+
+Terra gained two cities in the later Inca position in every variant/repetition. Its first-repetition candidate lost two military units versus one for baseline; the second repetition lost one each. Luna’s first candidate lost an exposed Pikeman that its baseline withdrew. The candidate’s startup explicitly contained that unit’s health, nearby enemies, movement availability and Military ownership. In China, Luna’s first baseline declared war and upgraded units, lost a Warrior and gained no city; its candidate stayed at peace. Different action volume and strategic choices contribute to token differences.
+
+Ownership and argument checks:
+
+| Model | Ownership/role rejections, baseline → candidate | Invalid command/tool arguments, baseline → candidate |
+|---|---:|---:|
+| gpt-6-luna | 14 → 0 | 17 → 16 |
+| gpt-6.1-terra | 0 → 0 | 12 → 27 |
+
+These are model calls rejected safely by the host, not evidence that an advertised command schema was invalid. Some Economy argument rejections omitted the required intent.reason while supplying intent.cityPlan. OBSERVATION_REQUIRED and revision conflicts are reported separately; concurrent-role refreshes are expected and are not automatically projection defects.
+
+Matched replay and live startup character measurements:
+
+| Role | Matched replay reduction | Luna live median reduction | Terra live median reduction |
+|---|---:|---:|---:|
+| Main | 36.74% | 29.32% | 30.55% |
+| Economy | 36.79% | 29.12% | 28.56% |
+| Military | 47.76% | 43.54% | 45.56% |
+
+The 35% per-role target is met in the matched captured-context replay. Live medians include different later gameplay and activation mixes and are not a controlled serialization comparison. The candidate replay checked 12 contexts and 87 offered commands, with zero schema errors, ownership-label errors, mandatory-information changes or subsequent-read errors. Full permitted observations and deferred detail/history surfaces remain retrievable. The wonder preload contains available names; details are retrieved on demand.
+
+Endpoint evidence is deliberately conservative. All population, city, unit, technology, building and improvement changes use the original saved native states. Combat evidence combines in-run observations with player combat reports retained in the original final checkpoints. Twenty-one isolated endpoint reads passed strict native-state equality after normalizing technology order and explored-tile bookkeeping; eleven did not. Differences included a legacy Great General field, road-owner fields on captured territory, and a capital-connectivity cache field. These are recorded in endpoint-reload-differences.json; this check does not establish that every difference affects gameplay. The original runs and saves were not changed. A pair uses native endpoint rates only when both reads pass; otherwise both use their dated last-agent observations. All compared pairs have matching rate-observation turns. Rates are not cumulative science or production.
+
+Configuration and verification: gpt-6-luna and gpt-6.1-terra, medium effort, both guides enabled, review interval 10, Economy/Military intervals 5, native advice and adaptive effort disabled. All other civilizations used native AI. The exact 32-case schedule, initial checkpoint hashes, frozen source hashes, engine revision and effective settings were verified across 851 activations. Both suites exited 0, and the temporary evaluator authorization was removed.
+
+2478 passed, 12 skipped, 76 subtests passed in 407.99s (0:06:47)
+Ruff lint and formatting passed; Pyrefly reported 0 errors; git diff --check passed. The 24 targeted continuation/report tests also passed. The complete original source tree, including its initial uncommitted changes, remains preserved as baseline-source.tar.gz (5,076 files verified).
+
+Worker ownership, role concurrency, native-advice settings and gameplay rules remain as configured. Existing benchmark runtimes remain pinned. Worker ownership and sequential execution remain separate follow-up experiments; this screen supplies their frozen context-change comparison, with the gameplay limitations above.
+
+Artifacts:
+/home/vgopalas/project/unciv-ai/build/context-isolation-20261029/paired-retry-2/evaluation-report.json — complete per-role accounting, matched outcomes, omissions, command/error evidence and provenance
+/home/vgopalas/project/unciv-ai/build/context-isolation-20261029/paired-retry-2/evaluation-report.txt — generated per-pair summary and reproduction command
+/home/vgopalas/project/unciv-ai/build/context-isolation-20261029/paired-retry-2/live-verification.json — settings, checkpoints, schedule, source and cleanup audit
+/home/vgopalas/project/unciv-ai/build/context-isolation-20261029/paired-retry-2/endpoint-reload-differences.json — exact strict-reload differences
+/home/vgopalas/project/unciv-ai/build/context-isolation-20261029/paired-retry-1/growth-analysis.json — dated growth decisions and city plans
+/home/vgopalas/project/unciv-ai/build/context-isolation-20261029/paired-retry-1 — retained completed trials and earlier interrupted attempts
+/home/vgopalas/project/unciv-ai/build/context-isolation-20261029/paired — initial quota-limited attempt
+/home/vgopalas/project/unciv-ai/build/context-isolation-20261029/retry2-full-python-suite.log — final complete test run
+
+No runtime-speed conclusion is drawn. This is screening evidence, not win-rate evidence.

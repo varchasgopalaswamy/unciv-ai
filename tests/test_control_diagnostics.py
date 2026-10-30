@@ -110,3 +110,13 @@ class ControlDiagnosticsTest(unittest.TestCase):
         self.assertIn("host operator heartbeat rejected: HTTP 409 LEASE_LOST", str(caught.exception))
         self.assertEqual((caught.exception.code, caught.exception.status), ("LEASE_LOST", 409))
         self.assertNotIn("private-", str(caught.exception))
+
+    def test_oversized_control_response_is_identified_before_json_parsing(self):
+        endpoint = JsonEndpoint(self.url, self.secret, None)
+        endpoint.opener = Mock()
+        endpoint.opener.open.return_value = io.BytesIO(json.dumps({"status": {"history": "x" * 70000}}).encode())
+        with self.assertRaises(OperatorError) as caught:
+            endpoint.call("interrupt")
+        self.assertEqual(caught.exception.code, "RESPONSE_TOO_LARGE")
+        self.assertIn("65536-byte limit", str(caught.exception))
+        self.assertNotIn("JSONDecodeError", str(caught.exception))

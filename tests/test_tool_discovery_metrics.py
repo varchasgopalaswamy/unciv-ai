@@ -75,3 +75,26 @@ def test_cache_statistics_distinguish_opening_reuse_and_reported_writes(tmp_path
 
 def test_no_followup_requests_means_zero_cache_writes_not_missing_measurements():
     assert request_usage([])["cache_write_input_tokens"] == 0
+
+
+def test_plain_text_tool_abort_retains_usage_without_block_parsing(tmp_path):
+    output = "aborted by user after 0.4s"
+    usage = {"input_tokens": 100, "cached_input_tokens": 80, "output_tokens": 10, "reasoning_output_tokens": 3}
+    events = [
+        {
+            "type": "response_item",
+            "payload": {"type": "custom_tool_call", "call_id": "lookup", "input": "text(ALL_TOOLS)"},
+        },
+        {
+            "type": "response_item",
+            "payload": {"type": "custom_tool_call_output", "call_id": "lookup", "output": output},
+        },
+        {"type": "token_usage_record", "payload": {"response_id": "one", "usage": usage}},
+    ]
+    path = tmp_path / "trace.jsonl"
+    path.write_text("\n".join(map(json.dumps, events)))
+    metrics = discovery_metrics(path)
+    assert metrics["usage"]["input_tokens"] == 100
+    assert metrics["modelRequests"] == 1
+    assert metrics["lookups"][0]["otherChars"] == len(output)
+    assert metrics["indexChars"] == metrics["definitionChars"] == 0

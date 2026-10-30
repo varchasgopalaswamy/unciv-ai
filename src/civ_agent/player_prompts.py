@@ -87,6 +87,13 @@ PLANNING_GUIDANCE = (
     "strategy reasons, uncertainties and reconsiderWhen each accept at most 5 entries. " + INVESTMENT_GUIDANCE
 )
 
+RECOVERY_GUIDANCE = (
+    "Check each command's structured result. A recoverable rejection with applied=false did not execute. "
+    "Follow recovery reads, reconsider against fresh observations and submit a new call if still useful. "
+    "Never repeat confirmed actions. Reconcile uncertain execution before retrying. If repeated changes "
+    "prevent useful action, report what remains unresolved."
+)
+
 GAMEPLAY_WORKFLOW = (
     "Follow the scenario's instructions; otherwise play to win. Advice is yours to accept, change or reject.\n\n"
     + EVIDENCE_GUIDANCE
@@ -110,11 +117,9 @@ GAMEPLAY_WORKFLOW = (
     "relevant cities, units or options rather than inspecting everything. Read warnings, terms and required "
     "previews before acting. Build-time estimates start now and may leave out waiting or research.\n\n"
     "Group independent inspections and actions where useful. Check each action's result before continuing, "
-    "and pause when that result could change your next choice. Never repeat an action that already succeeded. "
-    "Follow recovery advice after errors; refresh and reconsider after a stale position, and stop if it "
-    "happens again or an action's outcome is uncertain.\n\n"
-    "End the turn once you have made your choices and resolved required decisions. Finish immediately "
-    "after ending it. Stop if the game has ended, is unavailable or needs a decision you cannot make. "
+    "and pause when that result could change your next choice.\n\n"
+    "Use finish_role once you have made your choices and resolved required decisions. Only the host advances "
+    "the native turn. Stop if the game has ended, is unavailable or needs a decision you cannot make. "
     "No closing summary is needed."
 )
 
@@ -198,8 +203,6 @@ def job_instructions(purpose):
             "Send main a role_message when a planning result changes strategic choices, proposes a campaign or needs main's action; saving an operation alone does not request main's attention. "
             "Give a clear recommendation: attack now with the assessed force and timing, take a specified preparation action with a decision deadline, or decline for a concrete reason. Include the decisive evidence and likely losses instead of handing main an unresolved list of possibilities. "
             "Inspect militaryReadiness.visibleForeignCities and visibleForeignUnits during planning, including peaceful neighbors; assess concrete opportunities using map_region when useful. "
-            "Check each command's structured result. A recoverable rejection with applied=false did not execute the action. Follow the returned recovery, reconsider against its updated state and submit a new call if the action is still useful; do not finish merely because another role changed the observation. "
-            "If repeated changes prevent useful action, tell main what remains unresolved. Reconcile an uncertain execution before retrying it. "
             "Current facts supersede notes. Use finish_role when done; only the host advances the turn. "
         )
         + EVIDENCE_GUIDANCE
@@ -217,4 +220,5 @@ def job_instructions(purpose):
         + tool_discovery_instructions(purpose)
         + "\n\n"
         + workflow
+        + ("\n\n" + RECOVERY_GUIDANCE if purpose in {"gameplay", "economy", "military"} else "")
     )

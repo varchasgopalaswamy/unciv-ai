@@ -2,11 +2,13 @@ import asyncio
 import copy
 import json
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
 from civ_agent.chat_runtime import ChatRuntime
 from civ_agent.civilization_state import CivilizationState, StateConflict
+from civ_agent.economy_roles import TurnRoles
 from civ_agent.proposal_gateway import ProposalGateway
 from civ_agent.protocol import JsonObject
 from civ_agent.service_io import ServiceIO
@@ -477,6 +479,73 @@ class TradeHost(Host):
                 self.seen[args["requestId"]] = result
                 return result
         return await super().tool(name, args)
+
+
+@pytest.mark.parametrize("board_change", ["own_command", "sibling_command", "overview_refresh"])
+@pytest.mark.parametrize("counteroffer", [False, True])
+def test_inspected_trade_terms_survive_position_changes_with_native_version_checks(
+    tmp_path, board_change, counteroffer
+):
+    async def run():
+        io = ServiceIO()
+        memory = CivilizationState(tmp_path / "private", "Rome")
+        gateway = ProposalGateway(memory, io, tmp_path / "workspace")
+        host = TradeHost()
+        try:
+            main = await gateway.open("main", "gameplay", "g1", host, {}, 0)
+            service = SimpleNamespace(records={}, _save=AsyncMock())
+            roles = TurnRoles(service, {"epoch": "g1", "gameTurn": 0, "activationId": main.id})
+            gateway.role_coordinator = roles
+            roles.register(main)
+            military = await gateway.open("military", "military", "g1", host, {}, 0)
+            roles.register(military)
+            roles.ready["military"] = False
+            await gateway.call(main, "player_turn", {}, "main-start")
+            await gateway.call(military, "player_turn", {}, "military-start")
+            await gateway.call(main, "trade_read", {"proposalId": "d1"}, "terms")
+            if counteroffer:
+                host.trade["version"] = 2
+                host.trade["clauses"][0]["item"]["amount"] = 40
+            if board_change == "sibling_command":
+                moved = await gateway.call(
+                    military,
+                    "player_command",
+                    {"kind": "MOVE_UNIT", "target": "unit1", "destination": {"x": 1, "y": 0}},
+                    "move",
+                )
+                assert "error" not in moved, moved
+                assert moved["done"]
+                # Board commands remain fenced until Main receives a fresh view.
+                assert main.observation is None and main.role_refresh_required
+            elif board_change == "own_command":
+                changed = await gateway.call(
+                    main, "player_command", {"kind": "DISMISS_NOTIFICATIONS", "targets": ["n1"]}, "dismiss"
+                )
+                assert changed["done"]
+            else:
+                host.revision = "another-native-change"
+                changed = await gateway.call(main, "player_turn", {}, "refresh")
+                assert {"tool": "trade_read", "arguments": {"proposalId": "d1"}} in changed["invalidatedDetails"]
+
+            choice = {"proposalId": "d1", "decision": "accept"}
+            result = await gateway.call(main, "trade_decide", choice, "decide")
+            assert result.get("error") != "PROPOSAL_NOT_OBSERVED"
+            assert host.writes[-1]["version"] == 1
+            if counteroffer:
+                assert result == {"error": "STALE_REVISION"}
+                await gateway.call(main, "trade_read", {"proposalId": "d1"}, "counter-terms")
+                result = await gateway.call(main, "trade_decide", choice, "counter-decision")
+                assert host.writes[-1]["version"] == 2
+            assert result["outcome"]["confirmation"]["source"] == "engine"
+            assert await gateway.call(main, "trade_decide", choice, "decide") == (
+                {"error": "STALE_REVISION"} if counteroffer else result
+            )
+            assert len(host.writes) == (2 if counteroffer else 1)
+        finally:
+            await io.close()
+            memory.engine.dispose()
+
+    asyncio.run(run())
 
 
 def test_war_consent_uses_host_validation_despite_other_jobs_cached_relations(tmp_path):

@@ -169,6 +169,8 @@ def test_exact_source_archive_and_compact_adopted_evidence_survive_checkpoint(tm
     assert "siteStatus" not in json.dumps(snapshot["strategicAdvice"])
     memory.finish_job("game", True)
     memory.start_job("adopt", "gameplay", {}, game_turn=21)
+    read = memory.history(20, job="adopt", include_review=True)
+    assert read["reviewSources"] == ["review:20:1"]
     result = memory.patch(
         "adopt",
         [

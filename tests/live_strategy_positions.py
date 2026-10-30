@@ -91,6 +91,7 @@ def provider_usage_exhausted(root):
     for path in root.glob("agent-services/*/activations/*.json"):
         record = json.loads(path.read_text())
         if record.get("phase") == "FAILED":
+            statuses.append(record.get("modelStatus") or {})
             statuses.append((record.get("reviewProgress") or {}).get("modelStatus") or {})
     return any(status.get("state") == "failed" and status.get("reason") == "usageLimitExceeded" for status in statuses)
 
@@ -119,6 +120,9 @@ def main():
     parser.add_argument("--review-interval", type=positive, default=5)
     parser.add_argument("--rounds", type=positive, help="Override case length, e.g. 5 to screen or 25 for outcomes")
     parser.add_argument("--repetitions", type=positive, default=1)
+    parser.add_argument(
+        "--skip-trial", action="append", default=[], help="Previously completed trial ID to retain elsewhere"
+    )
     parser.add_argument(
         "--variant", action="append", help="NAME=SOURCE_ROOT containing civ_agent; default: current checkout"
     )
@@ -155,6 +159,9 @@ def main():
             parser.error("Each variant needs a unique simple name and a source directory containing civ_agent")
         sources[name] = Path(path).resolve()
     trials = trial_schedule(cases, list(sources), args.repetitions)
+    if set(args.skip_trial) - {trial["id"] for trial in trials}:
+        parser.error("Unknown skipped trial ID")
+    trials = [trial for trial in trials if trial["id"] not in args.skip_trial]
     root = args.state_dir.resolve()
     if root.exists() and any(root.iterdir()):
         parser.error("Use a fresh suite directory; failed attempts are retained")
@@ -180,6 +187,7 @@ def main():
             name: {"path": str(path), "sha256": tree_hash(path / "civ_agent")} for name, path in sources.items()
         },
         "repetitions": args.repetitions,
+        "previouslyCompletedTrials": args.skip_trial,
         "limits": {
             "invocations": args.max_invocations,
             "seconds": args.max_seconds,

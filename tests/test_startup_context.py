@@ -291,7 +291,7 @@ def test_memory_topics_use_only_structured_delivered_facts_and_current_social_re
 
 
 @pytest.mark.parametrize("purpose", ["gameplay", "communication"])
-def test_diplomatic_advice_selects_private_notes_without_automatically_sending_them(tmp_path, purpose):
+def test_historical_advice_and_notes_remain_retrievable_without_automatic_delivery(tmp_path, purpose):
     async def run():
         memory, io = CivilizationState(tmp_path / "memory", "Rome"), ServiceIO()
         gateway = ProposalGateway(memory, io, tmp_path / "workspace")
@@ -324,18 +324,21 @@ def test_diplomatic_advice_selects_private_notes_without_automatically_sending_t
             job = await gateway.open("job", purpose, "g1", host, {}, 10)
             assert not job.memory["events"]
             prepared = await prepare_startup(gateway, job)
-            assert set(job.memory["contextIds"]) == {relevant}
+            assert not job.memory["contextIds"]
             assert unrelated not in job.memory["delivered"]
             prompt = startup_prompt(prepared, purpose, "Consider diplomacy")
-            assert private in prompt.user
-            assert prompt.user.count(assessment()["review"]["diplomacy"]["initiatives"][0]["approach"]) == 1
+            assert private not in prompt.user
+            assert assessment()["review"]["diplomacy"]["initiatives"][0]["approach"] not in prompt.user
             for plan in assessment()["review"]["plans"]:
                 for field in ("objective", "investment", "relativeOutcome", "risks"):
-                    assert prompt.user.count(plan[field]) == 1
+                    assert plan[field] not in prompt.user
                 for field in ("expectedObservations", "firstActions"):
                     for entry in plan[field]:
-                        assert prompt.user.count(entry) == 1
-            assert prompt.user.count(assessment()["review"]["reconsiderWhen"]) == 1
+                        assert entry not in prompt.user
+            review = await gateway.call(job, "history_read", {"turn": 5, "includeReview": True}, "old-review")
+            assert review["review"] == assessment()
+            note = await gateway.call(job, "memory_read", {"ids": [relevant]}, "private-note")
+            assert note["records"][0]["text"] == private
             assert "PRIVATE" not in prompt.instructions and host.sent == []
             result = await gateway.call(
                 job,
@@ -472,9 +475,9 @@ def test_prepared_reads_establish_evidence_and_update_base_without_model_calls(t
             assert view["settlement"]["eligibleSites"] == 4 and len(view["settlement"]["candidates"]) == 3
             assert view["settlement"]["settlers"] == host.view["settlement"]["settlers"]
             assert view["units"][0]["settlementStatus"] == "CAN_FOUND_NOW"
-            assert view["militaryReadiness"] == host.view["militaryReadiness"]
-            assert view["wonderOpportunities"][0]["benefits"] == host.view["wonderOpportunities"][0]["benefits"]
-            assert view["wonderOpportunities"][0]["cities"] == [{"city": "city1", "turns": 8}]
+            assert "wonderOpportunities" in view["roleBrief"]["omitted"]
+            assert any(item.startswith("militaryReadiness:") for item in view["roleBrief"]["omitted"])
+            assert view["militaryReadiness"]["visibleBorderForces"] == []
             assert view["cities"][0]["constructionConversion"]["yieldPerTurn"] == "9.2"
             assert {tool["name"] for tool in prepared["coreTools"]} == {
                 "mcp__civ__player_turn",
@@ -520,9 +523,7 @@ def test_prepared_reads_establish_evidence_and_update_base_without_model_calls(t
             assert "settlement" not in result["stateUpdate"]["set"]
             assert "wonderOpportunities" not in result["stateUpdate"]["set"]
             assert len(host.executed) == 1
-            assert view["endTurn"]["command"] == {"kind": "END_TURN"}
-            assert "deferReason" not in view["endTurn"]["command"]
-            assert "deferReason is optional" in view["endTurn"]["instruction"]
+            assert "endTurn" not in view
             settlement = view["units"][0]["inspections"]["FOUND_CITY"]
             args = {"kind": "FOUND_CITY", "target": "unit1", "intent": {"reason": "Settle here"}}
             assert settlement["arguments"]["sections"] == ["settlement"]
@@ -535,7 +536,7 @@ def test_prepared_reads_establish_evidence_and_update_base_without_model_calls(t
             assert calls["startup:unit_details"]["calls"] == 1
             assert calls["startup:construction_details"]["calls"] == 1
             assert calls["tool:player_command"]["calls"] == 2
-            assert memory.call("job", "startup:player_turn", "player_turn", {}) == view
+            assert memory.call("job", "startup:player_turn", "player_turn", {"view": "main"}) == view
         finally:
             await io.close()
 

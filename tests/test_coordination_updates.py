@@ -6,6 +6,7 @@ import json
 
 import pytest
 
+from civ_agent.coordination_context import working_context
 from civ_agent.coordination_updates import apply_coordination_update, content, response, snapshot
 from civ_agent.protocol import JsonObject
 from civ_agent.startup_context import compact_startup, prepare_startup, startup_prompt
@@ -98,7 +99,7 @@ def test_startup_keeps_one_copy_without_changing_native_or_authored_data():
     prompt = startup_prompt(prepared, "gameplay", "Play")
     assert prompt.user.count("HISTORY_SENTINEL") == 200
     assert "native" in prompt.user and "preserved" in prompt.user
-    assert prompt.metadata()["layoutVersion"] == 9
+    assert prompt.metadata()["layoutVersion"] == 11
     assert prompt.metadata()["payloadCharacters"]["coordinationMessages"] > 0
     assert prepared == original
     prepared["decisionDetails"][0]["data"]["economyCoordination"] = state
@@ -114,7 +115,9 @@ def test_startup_captures_late_messages_and_commits_only_when_conversation_start
 
             async def select(*args):
                 await original(*args)
-                m.roles.war_state["messages"] = [{"id": "late", "text": "Arrived during startup"}]
+                m.roles.war_state["messages"] = [
+                    {"id": "late", "author": "gameplay", "to": "economy", "text": "Arrived during startup"}
+                ]
                 # Synchronize the durable source read at the end of preparation.
                 with m.memory.transaction() as db:
                     m.memory._set(db, "war:state", copy.deepcopy(m.roles.war_state))
@@ -140,7 +143,7 @@ def test_startup_captures_late_messages_and_commits_only_when_conversation_start
             assert await m.gateway.call(m.economy, "city_details", {"target": "city2"}, "detail") == unchanged
             assert m.economy.coordination_seen == restored
             full = await m.gateway.call(m.economy, "player_turn", {}, "full")
-            assert content(full["economyCoordination"]) == m.roles.context()
+            assert content(full["economyCoordination"]) == working_context(m.roles.context(), "economy")
             m.gateway.reset_coordination(m.economy)
             fresh = await m.gateway.call(m.economy, "city_details", {"target": "city2"}, "new-conversation")
             assert "economyCoordination" in fresh and fresh["economyCoordination"]["scopeId"] != before["scopeId"]

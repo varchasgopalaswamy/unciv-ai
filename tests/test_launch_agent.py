@@ -104,7 +104,7 @@ class LaunchAgentTest(unittest.TestCase):
             self.assertNotIn("CLOSE_START_DIPLOMACY", prompt)
             self.assertNotIn("Rome declares war", prompt)
             self.assertNotIn("reviewId=", prompt)
-            self.assertIn("End the turn once you have made your choices and resolved required decisions", prompt)
+            self.assertIn("Use finish_role once you have made your choices and resolved required decisions", prompt)
             self.assertEqual(prompt.count("Civ tool discovery:"), 1)
             self.assertIn('"mcp__civ__player_turn"', prompt)
 

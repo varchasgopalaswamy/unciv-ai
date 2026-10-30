@@ -695,7 +695,7 @@ def test_adopted_city_intent_is_distinct_from_optional_review_and_equal_yield_po
 
             host.tool = tool
             job = await gateway.open("job", "gameplay", "g1", host, {}, 0)
-            job.memory["strategicAdvice"] = {"assessment": "Consider a production plan"}
+            job.memory["strategicAdvice"] = {"asOfTurn": 0, "assessment": "Consider a production plan"}
             await gateway.call(job, "player_turn", {}, "initial")
             objectives = [
                 {
@@ -715,7 +715,9 @@ def test_adopted_city_intent_is_distinct_from_optional_review_and_equal_yield_po
                 }
             ]
             cities, context, _ = await capture(gateway, job, objectives)
-            assert context["reviewAdvice"] == job.memory["strategicAdvice"]
+            assert job.delivered_overview is not None
+            assert context["reviewAdvice"] == job.delivered_overview["strategicReview"]
+            assert context["reviewAdvice"]["status"] == "BASELINE_UNAVAILABLE"
             adopted = context["adoptedDecisions"][0]
             assert adopted["source"] == {"key": "chosen", "version": 2}
             assert adopted["objective"] == "Grow capital"

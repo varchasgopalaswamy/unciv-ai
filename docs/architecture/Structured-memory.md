@@ -87,8 +87,15 @@ read tools, known foreign cities and recent factual actions. Chosen objectives
 and expectations are supplied as dated hypotheses through feedback. The rest of
 the private strategy, handoffs and action rationales are excluded. It cannot act, communicate
 or edit memory. All reviewers must finish before gameplay and communication resume.
-Subsequent jobs include the latest report as dated advice at dispatch. Following
-the advice is optional, and it need not be copied into the notebook.
+Main receives a compact dated summary at dispatch; specialists receive accepted
+strategy and relevant requests. `history_read(turn=T, includeReview=true)` retrieves
+the exact completed report and its evidence references. New reports store a
+private baseline of native relationships, treaties and owned identities. Changes
+withhold automatic recommendations until a new review, replacing them with a
+factual reconsideration notice and retrieval reference. Older reports without a
+baseline remain available with an explicit notice. Authored assessments and
+accepted plans are not automatically invalidated or retired.
+Following advice is optional, and it need not be copied into the notebook.
 
 Command history uses the receipt's `actionSummary`, generated from native results
 and permitted before/after observations. An acknowledged attack that stopped en
@@ -198,11 +205,14 @@ immutable contributions; the reviewer only publishes its separate advisory repor
 Contributions arriving after dispatch become available to the next activation.
 
 Expiry runs at the next gameplay writer boundary so it cannot race the outgoing
-writer. Startup selects complete records within `--memory-context-chars`
-(default 12,000), prioritizing the strategy and eligible handoff, then relevant
-knowledge. Equally relevant, equally prioritized records favor recent updates.
+writer. Startup prioritizes complete accepted strategy and relevant city plans.
+Supporting notebook material is bounded by `--memory-context-chars` (default
+12,000) and a 3,000-character supporting-record budget for prepared role contexts;
+mandatory strategy remains whole. Equally relevant, equally prioritized records favor recent updates.
 Historical notes/beliefs are eligible when updated in the last two turns, related
-to current subjects, or carrying a review notice. Subject matching ignores case.
+to current subjects, or carrying a review notice. Specialists select their own
+contributions or records matching current subjects. Omitted pending work remains
+pending and has counts and `memory_search` retrieval instructions. Subject matching ignores case.
 Startup uses the fresh permitted opening reads to identify owned cities/units,
 current research/construction, wars and visible nearby forces, growth/economic
 problems, resource use/losses, active expansion, and current social counterparts.

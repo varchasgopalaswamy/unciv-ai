@@ -893,6 +893,15 @@ class MatchWatch(App):
             }
         except (OSError, ValueError, TypeError):
             pass
+        # Individual resumes have their own supervisor; the batch manifest
+        # retains the outcome of its earlier launch.
+        for game_id, directory in self.games:
+            try:
+                current = json.loads((directory / "container-status.json").read_text())["status"]
+                if isinstance(current, str):
+                    statuses[game_id] = current
+            except (OSError, ValueError, TypeError, KeyError):
+                pass
         text = Text(f"Game {self.game_index + 1}/{len(self.games)} · {self.game_id}", style="bold")
         text.append("  ·  [ previous  ] next", style="dim")
         text.append("\n")

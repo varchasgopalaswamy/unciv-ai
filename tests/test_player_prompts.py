@@ -66,7 +66,7 @@ def test_review_compares_limited_intervention_with_relative_development():
         "over the same number of turns",
         "or one if only one is realistic",
         "gains to uninvolved rivals",
-        "say when to seek peace",
+        "say when to continue, revise its objectives or seek peace",
     ):
         assert principle in ADVISOR_INSTRUCTIONS
 

@@ -200,7 +200,9 @@ def test_all_independent_reads_expire_without_requerying_them_after_action(tmp_p
                 "player_communication",
             ]
             assert [q.tool for q in job.details_read] == ["city_details"]
-            assert not job.trades
+            # Board-dependent availability expired, but the inspected terms
+            # still select this exact version for native consent validation.
+            assert job.trades["d1"]["version"] == 1
             fresh = await gateway.call(job, "research_details", {"names": ["Mining"]}, "reread")
             assert fresh["researchQueue"] == ["Mining"] and fresh["turn"] == 0
             host.revision = "external-change"

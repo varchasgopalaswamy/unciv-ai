@@ -464,7 +464,7 @@ class StrategicAdviserServiceTests(AgentServiceTestCase):
         next_record = await self.terminal()
         assert next_record["phase"] == "COMPLETED"
         main_prompt = [p for m, p in self.factory.calls if m == "turn/start"][-1]["input"][0]["text"]
-        assert main_prompt.count("Previous strategic advice") == 1
+        assert main_prompt.count('"strategicReview"') == 1
         assert '"asOfTurn":5' in main_prompt
         proof = {"activationId": "next-turn", "epoch": record["epoch"], "gameTurn": 6, "committedHandoff": 2}
         await self.service.finish_handoff(proof)
@@ -474,7 +474,7 @@ class StrategicAdviserServiceTests(AgentServiceTestCase):
         )
         await self.terminal()
         later_prompt = [p for m, p in self.factory.calls if m == "turn/start"][-1]["input"][0]["text"]
-        assert later_prompt.count("Previous strategic advice") == 1
+        assert later_prompt.count('"strategicReview"') == 1
         assert '"asOfTurn":5' in later_prompt
 
     async def test_turn_before_interval_has_no_review_inputs_or_extra_process(self):

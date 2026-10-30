@@ -192,8 +192,13 @@ class JsonEndpoint:
                 timeout = min(timeout, _timeout)
             with self.opener.open(request, timeout=timeout) as response:
                 body = response.read(maximum + 1)
+            if len(body) > maximum:
+                raise OperatorError(
+                    f"HTTPS {diagnostic} response exceeds the {maximum}-byte limit; stopped for inspection.",
+                    "RESPONSE_TOO_LARGE",
+                )
             value = json.loads(body)
-            if len(body) > maximum or not isinstance(value, dict):
+            if not isinstance(value, dict):
                 raise ValueError()
             return value
         except urllib.error.HTTPError as failure:

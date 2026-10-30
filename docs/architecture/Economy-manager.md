@@ -103,14 +103,18 @@ do not prove the decision's expected benefit occurred.
 Each economy preload includes fresh empire constraints, selected city facts,
 the main player's strategy, saved reasons for the selected cities, outstanding
 requests, and explicit overrides. Detailed options and older evidence remain
-available on demand. Lost-city plans are historical private knowledge, not
+available on demand. The default `economy` view lists available wonder names;
+`construction_details` retrieves details when needed, and `player_turn(view="full")`
+retains the complete catalog. Reviews appear as dated retrieval references;
+accepted strategy and city plans remain the current intent. Lost-city plans are historical private knowledge, not
 current authority. Inherited choices without a known rationale must be described
 as inherited. Keeping a suitable allocation or queue is a valid decision.
 It requires only `finish_role`: leave the plan unchanged unless a decision,
 rationale, expectation or specific deadline changes. Progress figures and
 countdowns belong to fresh observations rather than repeated plan rewrites.
 `player_turn.cities` can select city handles; `cityScope.ownedCities` retains the
-owned-city index. Omit the selector for a full overview. Other cities' details,
+owned-city index. Omit the city selector for all cities in the selected view;
+omitting `view` preserves that view. Other cities' details,
 plans and native-legal actions remain available on demand; review scope guides
 attention rather than defining a gameplay permission boundary.
 
@@ -130,10 +134,16 @@ a duplicate batch.
 
 ## Coordination delivery
 
-Startup layout 7 delivers one complete `economyCoordination` snapshot per fresh
-conversation, including the full internal message history. Exact service-owned
-copies are removed from prepared reads and details; native facts and authored
-text are retained. Startup takes its final coordination snapshot after the
+Startup layout 10 delivers a role-specific `economyCoordination` working set per
+fresh conversation, bounded to 12,000 serialized characters including delivery
+metadata. It contains current goals and active operations for main/military,
+economic requests and ownership relevant to each role, and addressed unread
+messages or unresolved requests. Collection budgets keep a message backlog from
+crowding out goals and requests. Exact rows are retained when they fit;
+`history.omitted` identifies additional records available through filtered,
+paginated `war_goals` reads. No omission completes or acknowledges a record.
+Exact service-owned copies are removed from prepared reads and details; native
+facts and authored text are retained. Startup takes its final coordination snapshot after the
 preloads. Preparing a snapshot does not acknowledge it: the service commits the
 delivery baseline when the model conversation starts.
 
@@ -146,11 +156,20 @@ Requests and `warState.messages` use keyed collection updates. Replacing other
 reducer reconstructs the complete original state without interpreting messages.
 Native `stateUpdate` remains a separate channel.
 
-An explicit `player_turn` read returns full coordination; `war_goals` retains its
-full history read. Context compaction, a fresh conversation or a restored job
+An explicit `player_turn` read returns the complete bounded working set.
+`war_goals` defaults to current state; historical reads select `section`, optional
+`ids`, `status` or `role`, and follow `nextCursor`. A single record larger than a
+history page is returned exactly with `oversizedRecord`, never silently cut.
+Context compaction, a fresh conversation or a restored job
 clears the delivery baseline. An absent/mismatched baseline requires a full
 snapshot. Durable responses precede cursor advancement, and replaying an older
 call cannot acknowledge newer messages or rewind an already delivered state.
+Delivery tracking is separate from durable message acknowledgement:
+`role_message(action="acknowledge", ids=[...])` records that a recipient read a
+message. A message sent with `kind="request"` remains open until its recipient
+uses `action="resolve"` with a reason. Lasting instructions belong in current
+goals, ongoing operations or economic requests rather than an unread transcript.
+Supervisor status reports role lifecycle and counts, not these stored histories.
 
 Operator-only `payloadCharacters` counters in the local accounting ledger and
 startup metadata measure serialized payloads and coordination overhead. They are

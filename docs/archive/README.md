@@ -6,6 +6,8 @@ for current behavior.
 
 ## Reports
 
+- [Role context live followup — October 29, 2026](reports/Role-context-live-followup-2026-10-29.txt): all 32 trials and 320 rounds completed; all-role tokens fell 26.23% for Luna and 20.16% for Terra. Ownership errors fell, while growth, construction and military outcomes were mixed. Includes the population-gap analysis and final verification.
+- [Role context isolation — October 29, 2026](reports/Role-context-screening-2026-10-29.txt): role views, names-only wonder catalog, historical review retrieval and ownership labels; 36.74–47.76% median startup character reduction. The initial live attempts stopped on quota; the completed followup above supplies gameplay and total-usage results.
 - [Decisions model replay — October 25, 2026](reports/Decisions-model-8091-comparison-2026-10-25.md): port 8091 exactly reproduces 39 historical effort probability vectors; current prompts, fallback behavior, latency under changing load, and broader historical fixture replay.
 - [Live token followup — October 25, 2026](reports/Token-live-followup-2026-10-25.md): nine completed trials; five delivery changes used 33.85% fewer total tokens at fixed effort, and the current configuration used 69.82% fewer tokens and 82.49% less time. Treasury choices differed and all arms missed an escort-case bombardment, so preserved quality remains unproven.
 - [Token delivery and effort triage — October 25, 2026](reports/Token-delivery-and-effort-triage-2026-10-25.md): five additional delivery improvements, 10.03% incremental replay character reduction, and a 39-start Decisions effort-choice study with probabilities, provenance corrections and quality limits.

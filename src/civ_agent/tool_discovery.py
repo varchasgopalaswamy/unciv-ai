@@ -18,5 +18,5 @@ def tool_discovery_instructions(purpose: Literal["gameplay", "economy", "militar
         "Look up other tool descriptions only as needed. To find tool names:\n"
         'text(ALL_TOOLS.filter(t => t.name.startsWith("mcp__civ__")).map(t => t.name));\n'
         "Read the relevant descriptions rather than the whole catalogue. "
-        "Follow error recovery instructions. Stop if an action's outcome is uncertain or recoverable=false."
+        "Follow error recovery instructions. Reconcile uncertain execution before retrying; stop on recoverable=false."
     )

@@ -578,7 +578,7 @@ class AgentServiceTests(AgentServiceTestCase):
         self.assertNotEqual(starts[0]["cwd"], starts[-1]["cwd"])
         self.assertIn("Do not access the filesystem", instructions)
         self.assertNotIn("files: turn_", prompt)
-        self.assertIn("Finish immediately after ending it", instructions)
+        self.assertIn("use finish_role", instructions)
         self.assertNotIn("Previous strategy, next-turn handoff and historical knowledge", instructions)
         self.assertNotIn("Civ tool discovery:", prompt)
         metadata = self.service.records[second["activationId"]]["startup"]
