@@ -165,7 +165,9 @@ def test_gateway_revalidates_unchanged_details_resets_baselines_and_keeps_full_r
             assert prepared["reads"]["player_turn"]["roleBrief"]["fullRead"]["arguments"] == {"view": "full"}
             m.gateway.commit_startup_coordination(m.economy)
             args = {"target": "city2"}
-            first = await m.gateway.call(m.economy, "city_details", args, "d1")
+            # Startup can seed a compatible query; obtain a full base for this
+            # unchanged/recovery test rather than assuming no preload exists.
+            first = await m.gateway.call(m.economy, "city_details", {**args, "delivery": "full"}, "d1")
             state = apply_value(None, first["detailUpdate"], first["data"])
             m.economy.details_read.clear()
             second = await m.gateway.call(m.economy, "city_details", args, "d2")

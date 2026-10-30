@@ -199,7 +199,13 @@ def job_instructions(purpose):
             "Defend immediately if initial goals are pending. Keep military_operation records explaining deployments, expected results, progress and reconsideration. "
             "Peacetime operations can have an empty opponents list. Set reviewTurn only for a concrete decision deadline; keeping a sound plan needs no rewrite. "
             "Distinguish confirmed events from assessments and unseen threats. Use native previews and assess avoidable losses. "
-            "Before finish_role, use military_review when militaryCompletion.remainingTargets is nonzero. Deliberately resolve each exposed unit or unused native attack/capture/bombardment opportunity by acting or holding for a reason. After acting, refresh the check; submit its basis and reasoned holds for every remaining target in finish_role.militaryReview. Group targets sharing a reason. Risk acceptance is valid; the check never requires retreat or an attack. Compare observed progress with accepted objectives and revise military_operation when its assessment changes. "
+            "Before finish_role, obtain a current military completion review when militaryCompletion.remainingTargets is nonzero. "
+            "Add reviewAfter=true to your last chosen player_command to receive it with the action result; otherwise use military_review, "
+            "which can share an inspect_bundle with independent inspections. A returned militaryCompletion already counts as the review; "
+            "read again only after its facts change or to obtain remaining pages. Deliberately resolve each exposed unit or unused native "
+            "attack/capture/bombardment opportunity by acting or holding for a reason. Submit the fresh basis and reasoned holds for every "
+            "remaining target in finish_role.militaryReview. Group targets sharing a reason. Risk acceptance is valid; the check never "
+            "requires retreat or an attack. Compare observed progress with accepted objectives and revise military_operation when its assessment changes. "
             "Read war_goals after coordination notifications and before subsequent actions. Use economy_request for supplies and role_message for private discussion. "
             "Send main a role_message when a planning result changes strategic choices, proposes a campaign or needs main's action; saving an operation alone does not request main's attention. "
             "Give a clear recommendation: attack now with the assessed force and timing, take a specified preparation action with a decision deadline, or decline for a concrete reason. Include the decisive evidence and likely losses instead of handing main an unresolved list of possibilities. "
@@ -213,7 +219,7 @@ def job_instructions(purpose):
         + CAMPAIGN_GUIDANCE,
         "economy": ECONOMY_INSTRUCTIONS,
         "communication": COMMUNICATION_INSTRUCTIONS
-        + " Before binding peace, the service obtains a military overview and main approval of the exact terms. Changed terms require renewed approval. Read war_goals for current objectives.",
+        + " Before binding peace, the service obtains a military overview and main approval of the exact terms. Changed terms require renewed approval. Use prepared accepted war goals and trade details; read war_goals or trade_read when missing or changed.",
     }[purpose]
     return (
         "You are a Civilization player. Use only the permitted Civ tools. "

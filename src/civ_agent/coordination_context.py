@@ -21,6 +21,12 @@ INSTRUCTIONS = (
     "Only economyWait.state=waiting arms inference suspension. attention, resolved, idle and not_running "
     "are immediate replies: continue handling the result rather than returning a final waiting message."
 )
+COMMUNICATION_INSTRUCTIONS = (
+    "Coordination preloads bounded accepted war goals. pendingGoalRevisions identifies proposed changes, "
+    "which do not replace accepted objectives. Compare dated plans with current native relationships. history.omitted counts records "
+    "left out; war_goals action=read with section, IDs and cursor retrieves them. Omission never completes or "
+    "acknowledges work. Main and Military own goal changes."
+)
 
 
 def encoded(value: object) -> str:
@@ -63,6 +69,14 @@ def working_context(context: JsonObject, role: str) -> JsonObject:
     """
     state = context.get("warState") or {}
     episodes = {k: current_episode(v) for k, v in state.get("episodes", {}).items() if v.get("active", True)}
+    if role == "communication":
+        for key, episode in episodes.items():
+            proposals = episode.pop("proposals")
+            if proposals:
+                episode["pendingGoalRevisions"] = {
+                    "count": len(proposals),
+                    "read": {"tool": "war_goals", "arguments": {"action": "read", "section": "episodes", "ids": [key]}},
+                }
     operations = {k: v for k, v in state.get("operations", {}).items() if v.get("status", "legacy") == "active"}
     messages = relevant_messages(state, role)
     requests = [r for r in context.get("requests", []) if role != "military" or r.get("author") == "military"]
@@ -71,7 +85,7 @@ def working_context(context: JsonObject, role: str) -> JsonObject:
         requests, key=lambda r: (r.get("status") not in {"pending", "deferred"}, r.get("priority") != "urgent")
     )
     collections = {
-        "episodes": episodes if role in {"gameplay", "military"} else {},
+        "episodes": episodes if role in {"gameplay", "military", "communication"} else {},
         "drafts": state.get("drafts", {}) if role in {"gameplay", "military"} else {},
         "requests": requests,
         "messages": messages,

@@ -469,6 +469,9 @@ def test_social_advisories_are_shown_without_staling_native_evidence(tmp_path, n
                 strategy(assumptions=[{"text": "The native situation is unchanged", "source": source}]),
                 job=game.id,
             )
+            # Freeze this reader's projection before changing only annotations.
+            # Different role views are distinct delivered overview evidence.
+            await gateway.call(chat, name, arguments, "initial-chat")
             before = stored_records(memory)[source]
             advisories.append(
                 {

@@ -1,7 +1,8 @@
 """Opt-in paired role-context screening through the saved-position harness.
 
 Both variants use identical prepared boards and empty initial private memory.
-Native AI plays opponents. This runs billed/live model jobs for both models.
+Native AI plays opponents. This runs billed/live model jobs for both models;
+matching completed controls can be reused without additional inference.
 """
 
 import argparse
@@ -17,6 +18,7 @@ from pathlib import Path
 from civ_agent.container_supervisor import authorize_agent
 from civ_agent.container_support import locked
 from civ_agent.tls import private_directory, write_private_json
+from tests.evaluation_reuse import reusable_controls
 from tests.evaluation_sources import tree_hash
 
 
@@ -26,6 +28,10 @@ def main():
         parser.add_argument("--" + field, required=True, type=Path)
     parser.add_argument("--port", type=int, default=21041)
     parser.add_argument("--repetitions", type=int, choices=range(1, 11), default=2)
+    parser.add_argument(
+        "--reuse-control-suite", type=Path, help="Reuse matching completed controls without paid reruns"
+    )
+    parser.add_argument("--reuse-control-variant", default="candidate", help="Variant in the older control suite")
     parser.add_argument(
         "--additional-source",
         action="append",
@@ -61,9 +67,22 @@ def main():
                 prior_suites.append(path)
         if {name: source["sha256"] for name, source in metadata["sources"].items()} != source_hashes:
             parser.error("Completed trials must use the same frozen source variants")
-    commands = {}
+    commands, reused = {}, {}
+    engine = subprocess.check_output(["git", "-C", "vendor/Unciv", "rev-parse", "HEAD"], text=True).strip()
     for index, model in enumerate(("gpt-6-luna", "gpt-6.1-terra")):
         completed = set()
+        if args.reuse_control_suite:
+            reused[model] = reusable_controls(
+                args.reuse_control_suite.resolve(),
+                variant=args.reuse_control_variant,
+                source=sources["baseline"],
+                prepared=args.prepared,
+                manifest=json.loads(args.manifest.read_text()),
+                model=model,
+                repetitions=args.repetitions,
+                engine=engine,
+            )
+            completed.update(row["id"] for row in reused[model])
         for previous in prior_suites:
             suite = json.loads((previous / model / "suite.json").read_text())
             expected = {
@@ -139,6 +158,8 @@ def main():
             "roleSchedules": {"economy": 5, "military": 5, "review": 10},
             "deployment": False,
             "completedSuites": [str(path) for path in prior_suites],
+            "reusedControls": reused,
+            "reuseLimitations": "Historical controls, not concurrent reruns. Source, engine, prepared boards, initial memory and settings match; provider cache conditions and stochastic decisions can differ.",
         },
     )
     auth = args.auth_root.resolve()

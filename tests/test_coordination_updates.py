@@ -99,7 +99,7 @@ def test_startup_keeps_one_copy_without_changing_native_or_authored_data():
     prompt = startup_prompt(prepared, "gameplay", "Play")
     assert prompt.user.count("HISTORY_SENTINEL") == 200
     assert "native" in prompt.user and "preserved" in prompt.user
-    assert prompt.metadata()["layoutVersion"] == 11
+    assert prompt.metadata()["layoutVersion"] == 13
     assert prompt.metadata()["payloadCharacters"]["coordinationMessages"] > 0
     assert prepared == original
     prepared["decisionDetails"][0]["data"]["economyCoordination"] = state

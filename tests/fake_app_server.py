@@ -16,7 +16,7 @@ from typing import Any
 from aiohttp import ClientSession, web
 
 
-async def exercise_trade(civilization, communication, view, call):
+async def exercise_trade(civilization, communication, view, call, preloaded_trades):
     """Script reasoning choices, while the real gateway owns all concurrency checks."""
     silk = {"type": "Luxury_Resource", "name": "Silk", "amount": 1, "duration": 25}
     gpt = {"type": "Gold_Per_Turn", "name": "Gold per turn", "amount": 2, "duration": 25}
@@ -35,7 +35,8 @@ async def exercise_trade(civilization, communication, view, call):
     }
     if communication:
         await call("memory_search", {"type": "strategy"})
-        await call("trade_read", {"proposalId": "d1"})
+        if "d1" not in preloaded_trades:
+            await call("trade_read", {"proposalId": "d1"})
         if civilization == "Greece":
             await call(
                 "memory_update",
@@ -399,7 +400,17 @@ async def main():
                     result = await call("player_command", {"kind": "END_TURN"})
                 elif scenario.get("name") == "CONCURRENT_TRADE_TEST":
                     assert "Follow error recovery instructions" in current["instructions"]
-                    result = await exercise_trade(match.group(1), communication, view, call)
+                    preloaded_trades = {}
+                    if communication and "Details already available:\n" in text:
+                        details = json.JSONDecoder().raw_decode(text.split("Details already available:\n", 1)[1])[0]
+                        preloaded_trades = {
+                            detail["trade"]["proposalId"]: detail["trade"]
+                            for detail in details
+                            if "error" not in detail and (detail.get("query") or {}).get("tool") == "trade_read"
+                        }
+                        for proposal, trade in preloaded_trades.items():
+                            record("test/preloaded_trade", {"proposalId": proposal, "version": trade["version"]})
+                    result = await exercise_trade(match.group(1), communication, view, call, preloaded_trades)
                 else:
                     assert not communication
                     result = await call("player_command", {"kind": "END_TURN", "deferReason": current["thread"]})

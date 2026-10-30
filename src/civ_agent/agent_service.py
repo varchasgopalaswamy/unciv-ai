@@ -1556,7 +1556,10 @@ class AgentService:
                 if job.gameplay_ended.is_set():
                     return
                 arguments = self.gateway.role_coordinator.economy_arguments() if job.purpose == "economy" else {}
-                arguments = {**arguments, "delivery": "full"}
+                arguments = {
+                    **arguments,
+                    "delivery": self.gateway.resume_delivery(job),
+                }
                 fresh = await self.gateway.call(
                     job, "player_turn", arguments, f"resume:{record.get('modelRequests', 0)}"
                 )

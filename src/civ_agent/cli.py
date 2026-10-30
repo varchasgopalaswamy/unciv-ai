@@ -10,6 +10,7 @@ from civ_agent.commands import (
     agent_server,
     batch,
     chat,
+    failures,
     game,
     history,
     host,
@@ -91,6 +92,10 @@ def parser() -> argparse.ArgumentParser:
         "profile", parents=[profile.parser(add_help=False)], help="Inspect recorded host and model latency"
     )
     timing.set_defaults(handler=profile.run)
+    failed_tools = matches.add_parser(
+        "failures", parents=[failures.parser(add_help=False)], help="Group tool failures and inspect exact receipts"
+    )
+    failed_tools.set_defaults(handler=failures.run)
     descriptions = {
         "start": "Start automatic turn scheduling",
         "resume": "Resume scheduling and recover an interrupted turn",

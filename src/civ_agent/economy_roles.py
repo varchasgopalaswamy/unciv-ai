@@ -684,6 +684,8 @@ class TurnRoles:
         ownership; command_problem checks them before reaching this method.
         """
         role, kind = job.purpose, arguments["kind"]
+        if role not in {"gameplay", "economy", "military"}:
+            return {"error": "ROLE_ACTION_NOT_PERMITTED", "applied": False}
         problem = self.unit_problem(job, arguments)
         if problem:
             return problem

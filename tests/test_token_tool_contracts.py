@@ -63,7 +63,8 @@ def test_specialist_completion_keeps_request_dispositions_without_main_fields(ro
 
 @pytest.mark.parametrize("allowed", [CITY_COMMANDS, MILITARY_COMMANDS])
 def test_reduced_command_schemas_preserve_every_allowed_variant_and_its_optional_fields(allowed):
-    schema = command_schema(allowed)
+    military = allowed == MILITARY_COMMANDS
+    schema = command_schema(allowed, military_review=military)
     validator = Draft202012Validator(schema)
     complete = COMMANDS.json_schema()
     values = {
@@ -86,7 +87,8 @@ def test_reduced_command_schemas_preserve_every_allowed_variant_and_its_optional
         args = {"kind": kind, **{key: values[key] for key in variant["required"] if key != "kind"}}
         validator.validate(args)
         assert command_arguments(args) == args
-        assert set(variant["properties"]) <= schema["properties"].keys()
+        assert set(variant["properties"]) - {"reviewAfter"} <= schema["properties"].keys()
+    assert ("reviewAfter" in schema["properties"]) == military
     assert set(schema["properties"]["kind"]["enum"]) == allowed
     for unused in ("queue", "targets", "deferReason", "deferChoices", "initiativeDecisions"):
         assert unused not in schema["properties"]

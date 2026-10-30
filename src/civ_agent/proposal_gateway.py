@@ -142,8 +142,12 @@ class JobAccess:
     memory: JsonObject
     token: str = field(default_factory=lambda: secrets.token_urlsafe(32))
     observation: JsonObject | None = None
+    # Retain the last observed facts solely for exact invalidation comparisons.
+    # observation=None still fences decisions until the native position is read.
+    prior_role_observation: JsonObject | None = None
     delivered_overview: JsonObject | None = None
     compact_overviews: bool = False
+    resume_delta_available: bool = False
     overview_view: str = "full"
     detail_seen: dict[str, JsonObject] = field(default_factory=dict)
     detail_pending: dict[str, JsonObject] = field(default_factory=dict)
@@ -309,6 +313,8 @@ class ProposalGateway:
             await self.sync_failure()
             raise
         job = JobAccess(id, purpose, epoch, connection, snapshot, owns_connection=owns_connection)
+        if purpose == "communication":
+            job.overview_view = "communication"
         job.outgoing_start = await self.io.call(self.memory.outgoing_position)
         self.jobs[job.token] = job
         return job
@@ -395,10 +401,13 @@ class ProposalGateway:
                         and (job.purpose != "economy" or kind in CITY_COMMANDS | WORKER_COMMANDS)
                         and (job.purpose != "military" or kind in MILITARY_COMMANDS)
                     }
-                    entry["inputSchema"] = command_schema(allowed_kinds)
-                    entry["description"] += (
-                        " In this managed turn, use finish_role; the host advances the game. City economic commands require economy ownership or a main-player city_override."
-                    )
+                    entry["inputSchema"] = command_schema(allowed_kinds, military_review=job.purpose == "military")
+                    entry["description"] += " City economic commands require economy ownership or Main's city_override."
+                    if job.purpose == "military":
+                        entry["description"] += (
+                            " Add reviewAfter=true to receive a fresh militaryCompletion with the successful action's "
+                            "state update, avoiding a separate military_review call. Failed actions do not run the review."
+                        )
         if self.role_coordinator is not None and job.purpose in {"economy", "military"}:
             from civ_agent.economy_roles import ECONOMY_TOOLS
 
@@ -423,34 +432,29 @@ class ProposalGateway:
                 if tool["name"] == "player_turn":
                     entry["inputSchema"] = TOOL_MODELS["player_turn"].model_json_schema()
                     entry["description"] = (
-                        "Read your current position, units, cities, decisions, alerts and strategic review. Use detail "
-                        "tools to inspect options and consequences; chat_read includes social promises.\n"
-                        "After an action, use stateUpdate rather than repeating this read:\n"
-                        "- delta: baseStateId must match your stateId. set replaces sections; top-level removed deletes "
-                        "fields. In collections, upsert replaces rows by key, removed deletes rows and order sets their "
-                        "order. Unmentioned sections and rows stay unchanged. Each supplied row replaces the old row: "
-                        "fields absent from that replacement are removed. Adopt the new stateId; ignore an update already "
-                        "at that ID. Read player_turn if the base is missing or mismatched. A removed entity may still exist "
-                        "outside your view.\n"
-                        "- full: replace the overview. unavailable: keep the successful receipt and read player_turn. "
-                        "A failed refresh does not undo the action; never repeat it to refresh state.\n"
-                        "- turn_ended: finish this conversation.\n"
-                        "Check new alerts and decisions. native.availableDemandsToSend lists demands you may send. "
-                        "Incoming messages are in alerts.nativeDiplomacy: copy the offered RESPOND_CITY_STATE_ALERT "
-                        "command for city-states, or use responseTool with chat_send/nativeAction for major players.\n"
-                        "Read invalidatedDetails again only when needed; other inspections remain valid. This list may "
-                        "also accompany full reads or communication actions. In managed turns, detail reads may include "
-                        "a stateUpdate reflecting another role's actions; apply it before using those details. "
-                        "Research, policy, victory, result, trade, "
-                        "agreement and chat reads are independent: replacing the overview does not refresh them. "
-                        "An argument error with applied=false needs no refresh unless recovery.reads says otherwise.\n"
-                        "For private memoryUpdates, replace older records by ID and keep newer versions if an update "
-                        "repeats. Review notices are suggestions; they require neither a memory edit nor a change of action."
-                    )
-                    entry["description"] += (
-                        " Prepared conversations also return stateUpdate on explicit refreshes. unchanged retains "
-                        "all overview data and adopts stateId; apply invalidatedDetails even when unchanged. "
-                        "Use delivery=full only to recover a missing or mismatched baseline."
+                        "Read the current position, decisions, alerts and review; details expose options/consequences, "
+                        "and chat_read supplies social promises. Use returned stateUpdate before requesting another overview.\n"
+                        "stateUpdate: full replaces the overview; delta requires matching baseStateId, applies set and "
+                        "top-level removed, then collections (upsert replaces rows by key, removed deletes rows, order "
+                        "sets order). Unmentioned sections/rows remain; fields absent from that replacement are removed. "
+                        "unchanged keeps data. Adopt stateId; ignore an update already at that ID. Recover missing/mismatched "
+                        "bases with player_turn(delivery=full). Removal does not prove an entity ceased to exist. "
+                        "unavailable requires a read while retaining the successful receipt; never repeat that action. "
+                        "turn_ended ends the conversation.\n"
+                        "Apply invalidatedDetails even with full/unchanged replies or communication results; reread only "
+                        "needed invalidated inspections. Other inspections remain valid. Detail replies can carry sibling "
+                        "stateUpdate: apply it first. Separate research/policy/victory/result/trade/agreement/chat reads "
+                        "are not refreshed by an overview. applied=false argument errors need no refresh unless recovery.reads says so.\n"
+                        + (
+                            "Communication starts with a focused view. Use view=full or roleBrief's focused reads for "
+                            "missing facts; omitting view keeps the selection. Gameplay handles native alerts and decisions. "
+                            if purpose == "communication"
+                            else "Check alerts/decisions: native.availableDemandsToSend lists outgoing demands; alerts.nativeDiplomacy "
+                            "contains incoming messages. Copy RESPOND_CITY_STATE_ALERT for city-states or responseTool with "
+                            "chat_send/nativeAction for majors. "
+                        )
+                        + "memoryUpdates replace records by ID only with newer versions. "
+                        "Review notices suggest reconsideration without requiring edits or changed actions."
                     )
                     entry["outputSchema"] = TurnOverview.model_json_schema()
                     entry["outputSchema"]["properties"]["sharedValues"] = {"type": "object"}
@@ -482,24 +486,32 @@ class ProposalGateway:
                         "Interception is automatic; preserve readiness by leaving the unit unused or skipping it."
                     )
                 elif tool["name"] == "movement_preview":
-                    entry["description"] += (
-                        " Copy this preview's SET_UNIT_DESTINATION command; intent is optional. "
-                        "Refresh the preview after another action before using its command. "
-                        "Read unit_details sections=[movement] to inspect or cancel orders. "
-                        "Each turn stop's afterMove estimates remaining movement, attack/founding availability and "
-                        "visible endpoint threats/own military. Context is current proximity within its radius, "
-                        "not enemy reachability or guaranteed protection; unseenTiles marks incomplete visibility. "
-                        "Civilian stops include civilianExposure: protection, visible capture assessment, surrounding "
-                        "visibility gaps and references to known camps/recent sightings in tacticalReview. "
-                        "NO_VISIBLE_CAPTURE_THREAT does not mean safe. Same-tile military travels with a civilian "
-                        "only after ESCORT pairing. "
-                        "For settlers, inspect settlement separately from route availability: waiting for movement "
-                        "does not fix city spacing or foreign ownership. Reconsider repeatedly blocked sites."
+                    entry["description"] = (
+                        "Preview an owned unit's destination x/y using native pathfinding. Paths group adjacent steps by "
+                        "estimated turns; unexploredTiles counts uncharted tiles, tilesOutsideCurrentSight includes them. "
+                        "Terrain/units discovered later can change arrival estimates. Each stop's afterMove estimates remaining "
+                        "movement, attack/founding availability and nearby visible threats/own military. Proximity is not "
+                        "enemy reach or guaranteed protection; unseenTiles marks incomplete visibility.\n"
+                        "Civilian captureRisk identifies visible enemies able to capture the unguarded stop. First-stop risk "
+                        "requires confirmAction=true; later turns recheck danger and stop for a new decision. Confirmation "
+                        "covers only this move. civilianExposure adds protection, visibility gaps and references to known "
+                        "camps/recent tacticalReview sightings. NO_VISIBLE_CAPTURE_THREAT does not mean safe. Same-tile "
+                        "units travel together only after ESCORT pairing; escort names the partner, afterMove.escort its "
+                        "movement at shared stops. Use unit orders ESCORT/STOP_ESCORT to pair/separate.\n"
+                        "For settlers, settlement.siteStatus is ELIGIBLE/BLOCKED on explored destinations using native "
+                        "restrictions, including undiscovered cities without revealing their identities; UNKNOWN means "
+                        "unexplored. unitBlockers (e.g. NO_MOVEMENT) are separate; canFoundNow requires occupying the site. "
+                        "Movement availability does not imply settlement eligibility. Check before choosing a site and "
+                        "recheck unit_details sections=[settlement] on arrival. Waiting does not fix spacing/foreign ownership. "
+                        "Reconsider repeatedly blocked sites.\n"
+                        "Copy SET_UNIT_DESTINATION for this exact target/destination; refresh the preview after another "
+                        "action. It moves now and retains the native order for later turns, without promising arrival. "
+                        "Inspect unit.movementOrder or unit_details sections=[movement]; CANCEL_UNIT_MOVEMENT stops it. Intent is optional."
                     )
                 tools.append(entry)
             elif tool["name"] == "player_command" and purpose in {"gameplay", "economy", "military"}:
                 entry = copy.deepcopy(tool)
-                entry["inputSchema"] = command_schema()
+                entry["inputSchema"] = command_schema(military_review=purpose == "military")
                 entry["description"] = (
                     "Take one game action using kind, such as FOUND_CITY. Copy offered commands when useful. "
                     "Intent and routine detail reads are optional; required previews still apply. SET_UNIT_DESTINATION "
@@ -529,6 +541,7 @@ class ProposalGateway:
                         in set(DETAIL_MODELS)
                         | {
                             "inspect_bundle",
+                            "military_review",
                             "command_help",
                             "history_read",
                             "chat_read",
@@ -603,8 +616,16 @@ class ProposalGateway:
             "role_message": "Send a durable private notice or request to another internal role; a finished recipient is reopened. Acknowledge read messages with action=acknowledge and ids. Requests remain open until the recipient uses action=resolve with ids and a reason. Acknowledgement alone does not resolve a request. History is available with war_goals section=messages, role and cursor. Record lasting instructions in current goals, active operations or economy requests.",
         }.items():
             if role_tool == "war_goals" or purpose in {"gameplay", "economy", "military"}:
-                if role_tool == "war_goals" and purpose == "economy":
-                    description = "Read accepted war goals, active operations, escort assignments and role requests. Main and Military own goal changes; use role_message to request reconsideration. Older records are available by section, IDs and cursor."
+                if role_tool == "war_goals" and purpose in {"economy", "communication"}:
+                    description = (
+                        "Read current accepted war goals; use section, IDs and cursor for operations, escort assignments, "
+                        "role requests and older records. Main and Military own goal changes. "
+                        + (
+                            "Use role_message to request reconsideration."
+                            if purpose == "economy"
+                            else "Prepared goals already count as read; reread when missing or changed."
+                        )
+                    )
                 add(role_tool, description)
 
         for name, description in {
@@ -900,6 +921,7 @@ class ProposalGateway:
         job.memory_read_pending.clear()
         job.payload_sequence = 0
         job.compact_overviews = False
+        job.resume_delta_available = False
 
     @staticmethod
     def accept_payloads(job: JobAccess, name: str, arguments: JsonObject, result: JsonObject, *, replayed=False):
@@ -991,6 +1013,7 @@ class ProposalGateway:
 
     def commit_startup_coordination(self, job: JobAccess) -> None:
         job.compact_overviews = True
+        job.resume_delta_available = job.delivered_overview is not None
         if job.coordination_pending is not None:
             self.accept_coordination(job, {"economyCoordination": job.coordination_pending})
             job.coordination_pending = None
@@ -1040,6 +1063,12 @@ class ProposalGateway:
             result, replayed = await self._call_once(
                 job, name, arguments, call_id, startup=source == "startup", host_handoff=source == "host"
             )
+            if source == "host":
+                # Controller reads are not model messages and can advance delivery
+                # cursors. A subsequent resume must re-establish a full baseline.
+                job.resume_delta_available = False
+            elif source == "tool" and not replayed and name == "player_turn" and full_delivery(arguments):
+                job.resume_delta_available = "stateId" in result
             outcome = "error" if "error" in result else "success"
             if result.get("error") == "STATE_UPDATE_FAILED":
                 await self.sync_failure()
@@ -1214,13 +1243,12 @@ class ProposalGateway:
                         await self.role_coordinator.after_action(job, arguments, result)
                     for sibling in self.role_coordinator.jobs.values():
                         if sibling is not job:
-                            observed = sibling.observation is not None or sibling.role_refresh_required
-                            baseline = sibling.delivered_overview
-                            self.forget_observation(sibling)
-                            # Keep the delivered baseline for a small update;
-                            # observation=None still fences choices made from it.
-                            sibling.delivered_overview = baseline
-                            sibling.role_refresh_required = observed
+                            self.invalidate_role_observation(sibling)
+                            if name in {"city_override", "escort_assignment"}:
+                                # Ownership labels are outside native detail projections.
+                                sibling.pending_invalidated.extend(
+                                    query for query in sibling.details_read if query not in sibling.pending_invalidated
+                                )
                 if (
                     self.role_coordinator is not None
                     and job.purpose in {"gameplay", "economy", "military"}
@@ -1258,10 +1286,29 @@ class ProposalGateway:
     def forget_observation(job: JobAccess) -> None:
         job.pending_invalidated.extend(query for query in job.details_read if query not in job.pending_invalidated)
         job.observation = None
+        job.prior_role_observation = None
         job.delivered_overview = None
         job.detail_revision = None
         job.details_read.clear()
         job.role_refresh_required = False
+        job.resume_delta_available = False
+
+    @staticmethod
+    def invalidate_role_observation(job: JobAccess) -> None:
+        """Fence decisions, retaining delivered facts for selective revalidation."""
+        if job.observation is not None:
+            job.prior_role_observation = job.observation
+        job.role_refresh_required = job.prior_role_observation is not None
+        job.observation = None
+        job.detail_revision = None
+
+    @staticmethod
+    def resume_delivery(job: JobAccess) -> str:
+        return (
+            "auto"
+            if job.compact_overviews and job.resume_delta_available and job.delivered_overview is not None
+            else "full"
+        )
 
     async def refresh_role_observation(self, job: JobAccess, call_id: str) -> JsonObject:
         """Deliver a sibling's changes with the next read, without retrying a choice."""
@@ -1301,7 +1348,7 @@ class ProposalGateway:
         revision = value.get("revision")
         if not isinstance(revision, str) or value.get("epoch") != job.epoch:
             raise StateConflict("INVALID_HOST_REVISION")
-        previous, baseline = job.observation, job.delivered_overview
+        previous, baseline = job.observation or job.prior_role_observation, job.delivered_overview
         value = {**value, "communication": await self.read_social(job, delivered=False)}
         add_combat_commands(value)
         if "map" in value and "combatReports" in value:
@@ -1401,6 +1448,7 @@ class ProposalGateway:
             raise
         job.memory["records"].update(observed)
         job.observation = value
+        job.prior_role_observation = None
         job.role_refresh_required = False
         if self.role_coordinator is not None and job.purpose == "economy":
             self.role_coordinator.economy_observation = {
@@ -1553,6 +1601,21 @@ class ProposalGateway:
                 return {**result, "stateUpdate": {"kind": "turn_ended"}}
             if name == "player_command" and arguments.get("kind") == "SET_RESEARCH_QUEUE":
                 result = {**result, "researchChange": research_change(job.observation, value)}
+            if name == "player_command" and arguments.get("reviewAfter") and job.purpose == "military":
+                from civ_agent.military_completion import completion_review, review_page
+
+                coordinator = self.role_coordinator
+                if coordinator is not None:
+                    await coordinator.synchronize_war(value)
+                    saved = (
+                        await self.io.call(coordinator.military_schedule.saved)
+                        if coordinator.military_schedule is not None
+                        else {}
+                    )
+                    result = {
+                        **result,
+                        "militaryCompletion": review_page(completion_review(value, coordinator.war_state, saved)),
+                    }
             if (
                 name == "player_command"
                 and arguments.get("kind") in {"MOVE_UNIT", "SET_UNIT_DESTINATION", "ATTACK", "REBASE_UNIT", "PARADROP"}
@@ -1787,6 +1850,9 @@ class ProposalGateway:
             except ValidationError as error:
                 return command_error(arguments, error)
         coordinator = self.role_coordinator
+        if name == "player_command" and arguments.pop("reviewAfter", False):
+            if coordinator is None or job.purpose != "military":
+                return {"error": "ACTIVE_MILITARY_ROLE_REQUIRED", "applied": False}
         if name == "economy_wait":
             if coordinator is None:
                 return {"error": "ACTIVE_ROLE_REQUIRED", "applied": False}
@@ -1880,7 +1946,12 @@ class ProposalGateway:
             kinds = set(arguments["kinds"])
             if command is None or not kinds <= set(command["inputSchema"]["properties"]["kind"]["enum"]):
                 return {"error": "COMMAND_NOT_PERMITTED", "applied": False}
-            return {"description": command["description"], "inputSchema": command_schema(kinds)}
+            return {
+                "description": command["description"],
+                "inputSchema": command_schema(
+                    kinds, military_review=job.purpose == "military" and coordinator is not None
+                ),
+            }
         if name == "native_advice":
             if not self.native_advice_enabled or job.purpose not in {"gameplay", "economy", "military"}:
                 raise StateConflict("NATIVE_ADVICE_DISABLED")
@@ -2348,7 +2419,7 @@ class ProposalGateway:
                 and "error" not in value
                 and job.purpose != "gameplay"
             ):
-                self.forget_observation(job)
+                self.invalidate_role_observation(job)
             # Controller routing (including native AI versus shared trades) uses
             # the raw receipt. The outgoing boundary projects the model response.
             return {**value, **({"intentFeedback": request["intentFeedback"]} if "intentFeedback" in request else {})}

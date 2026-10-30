@@ -26,6 +26,34 @@ memory context. Gameplay chat omits economic/scenario context already covered by
 the overview; communication prepares `chat_read(includeContext=true)`. Core tool definitions come
 from the current permitted catalogue:
 
+Communication starts with `view="communication"` selected for subsequent
+`player_turn` reads. Its opening still uses the small social context rather than
+preloading an empire overview. The communication view retains empire constraints,
+native relationships, pending decisions, threats, uncertainty, every owned city
+and unit in summary form, and visible foreign forces and cities. Settlement and
+construction catalogs, recruitment menus, city management details and old progress
+logs remain available through focused reads or `view="full"`. Omitting `view`
+preserves the selection; switching it resets the delivered overview baseline.
+Gameplay commands shown in permitted observations remain unavailable to the
+communication role, with ordinary role ownership identified separately.
+
+Communication also prepares exact `trade_read` results for up to two pending
+shared offers associated with new event proposal IDs or participants. Explicit
+proposal references take priority. Old conversation excerpts, own message echoes
+and the full audience of a public message do not trigger extra trade inspections.
+Every unprepared offer retains its inspection command in the pending index.
+Successful preloads establish the same inspected version as an explicit read;
+failed reads do not authorize decisions, and changed terms require reconsideration.
+The relevant trade tool definitions accompany these preloads.
+
+The existing bounded coordination snapshot supplies active accepted war goals to
+communication. Pending goal revisions have counts and exact retrieval commands;
+they do not replace accepted objectives. Oversized or omitted episodes retain
+history counts and `war_goals` retrieval. This read-only tool's definition is
+prepared when active episodes exist. Native peace can end an episode without
+rewriting its authored history. Communication startup omits instructions for
+gameplay-only command discovery, role completion and internal requests.
+
 Managed Main, Economy and Military start with `player_turn(view="main")`,
 `view="economy"` and `view="military"` respectively. These projections apply to
 startup, subsequent reads, command updates and recovery. Main gets empire choices,
@@ -34,6 +62,10 @@ coordination. Economy gets selected cities, economic constraints, worker activit
 threats and current intent. Military gets its units, bombardment, opponents,
 protection needs, supply constraints and active operations. Detailed options are
 preloaded only for entities the receiving role can act on.
+Economy also preloads citizen and production details for up to two selected
+cities with an empty queue, starvation or unassigned citizens. Existing unit
+and construction preloads remain; ongoing city work keeps its overview, and
+other details remain explicitly readable. Worker-only passes preload no cities.
 
 Every view retains pending decisions, relevant threats, native constraints and
 uncertainty. `roleBrief` identifies omissions and focused retrieval tools;
@@ -48,7 +80,7 @@ Role concurrency, native advice and gameplay legality keep their existing rules.
 | Job | Prepared definitions |
 | --- | --- |
 | Gameplay | `player_turn`, `player_command`, `unit_details`, `movement_preview`, `construction_details`, `map_region`, `chat_send` |
-| Communication | `chat_read`, `chat_send`, `memory_update` |
+| Communication | `chat_read`, `chat_send`, `memory_update`; conditional `trade_read`, `trade_decide`, `war_goals` |
 | Review | All permitted read-only tools: `player_turn`, `victory_progress`, `research_details`, `policy_details`, `city_details`, `unit_details`, `construction_details`, `player_details`, `map_region`, `chat_read` |
 
 The model can call prepared tools directly. For additional tools, the shared
@@ -91,8 +123,8 @@ The command schema is a compact envelope of possible
 fields; inspected choices supply copyable arguments. The server still validates
 each action's exact required/permitted fields and confirmations before dispatch.
 
-The gameplay catalogue has 30 tools; communication has 24. The older `player_summary`, `owned_cities` and `free_great_person_choice`
-reads are not exposed. Capabilities list available queries and commands directly,
+Tool catalogues follow the job's permissions. The older `player_summary`,
+`owned_cities` and `free_great_person_choice` reads are not exposed. Capabilities list available queries and commands directly,
 without a hash wrapper, protocol version or recovery/coverage flags.
 `player_turn.units` is the single overview unit roster; its military entries
 include strength and role. Tactical review adds risks and opportunities, while
@@ -232,6 +264,26 @@ the agent does not need a new overview after every successful command. A movemen
 preview expires with native revision changes, so unrelated commands should finish
 before fetching the preview for the next movement action.
 
+Another role's action fences the old observation until a fresh native read.
+The service retains the previous facts for an exact comparison, preserving
+unchanged projected detail inspections and invalidating changed ones. Native
+previews and external reads still expire conservatively with revisions;
+ownership transfers invalidate detail authority. This does not automatically
+retry a rejected action or approve a choice made before changed facts arrived.
+Economy and Military retain the same comparison baseline across their own
+successful actions, allowing exact overview deltas instead of a full overview
+after each command. Refresh failure still discards the baseline and keeps the
+confirmed receipt.
+
+Military can add `reviewAfter=true` to a `player_command` to receive a fresh,
+paginated `militaryCompletion` with its successful receipt and state update.
+This host option never reaches the native command. A failed action has no review;
+a failed subsequent refresh retains the confirmed action and requires recovery,
+never repetition. The returned review supplies the same basis and hold-decision
+contract as `military_review`. That read is also available in `inspect_bundle`.
+Completion-recovery replies already supply the first page; only remaining pages
+or changed facts require another read.
+
 Cached detail projections refresh only while a running reader or an active
 strategic assumption needs them. Historical queries retain their last evidence
 until explicitly read again. Region and section dependencies exclude unrelated
@@ -245,7 +297,7 @@ responses. Native research and policy responses retain their observed turn numbe
 
 ## Compact payload delivery
 
-Startup layout 11 describes the following formats. Native observations, legality,
+Startup layout 12 describes the following formats. Native observations, legality,
 inspection registration and durable action receipts retain their existing
 checks. Compression affects delivery, not which facts the engine returns.
 `player_turn` preserves the current view when `view` is omitted or `current`;
@@ -270,7 +322,10 @@ overview. `unchanged` retains its data, adopts the new `stateId` and still appli
 service chooses the smaller complete alternative. Startup, a new conversation,
 view/scope changes and `delivery="full"` supply a complete overview. Clients
 without prepared context retain full root responses until explicitly opting in
-through a delivery option. Host review and role-resume reads request full data.
+through a delivery option. Host review uses full data. A role resume uses compact
+delivery only while the conversation retains its model-delivered baseline.
+Host-only reads, missing baselines, context resets and view/scope changes require
+full recovery. Replaying an old full receipt cannot restore this eligibility.
 `apply_player_turn` consumes both root and update forms.
 
 Projected detail reads (`unit_details`, `city_details`, `construction_details`,

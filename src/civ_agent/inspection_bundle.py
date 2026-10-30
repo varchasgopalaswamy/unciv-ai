@@ -31,6 +31,7 @@ class InspectionQuery(BoundaryModel):
         "player_inspect",
         "memory_read",
         "memory_search",
+        "military_review",
     ]
     arguments: JsonObject = Field(default_factory=dict)
 

@@ -1,0 +1,350 @@
+Decision efficiency screening — October 30, 2026
+
+All four new ten-turn trials completed with complete all-role accounting, paired
+with four reused controls. Total tokens fell 30.80% for Luna and 9.13% for Terra;
+uncached input fell 19.19% and 15.63%. Growth and confirmed military losses matched
+in every pair. Other outcomes varied, with an additional Terra conquest and an
+earlier Luna peace. These results support retaining the delivery improvements,
+but do not prove equal gameplay quality or isolate the effect of each change.
+
+Purpose
+
+Reduce repeated input and avoidable inspections while retaining useful preloads,
+native action checks and independent Main, Economy and Military agents. This
+change follows the worker-ownership, Military-completion and plan-intent changes
+already committed at ed72e4275a7cee570478a4bd63e1344351eeca8d.
+
+Implemented changes
+
+1. Keep unchanged inspected details across sibling actions, while fencing stale
+   decisions until a fresh observation arrives. Compare the exact requested
+   projection; invalidate changed details, all affected ownership labels and
+   revision-dependent previews. Economy and Military also retain the delivered
+   overview across their own successful actions, allowing exact state deltas.
+2. Military may request its completion review with the last chosen action using
+   reviewAfter=true, or combine military_review with independent inspections.
+   Completion-recovery replies already contain the first page. Native actions,
+   authored holds and freshness checks are unchanged. Failed refreshes preserve
+   confirmed receipts and never cause automatic reexecution.
+3. Consolidate repeated protocol instructions and use compact role resumes only
+   when the model has a known delivered baseline. Host-only reads, restart,
+   compaction recovery and lost baselines still require full delivery.
+4. Preserve existing decision preloads. Add citizens/production detail for up to
+   two selected Economy cities with an empty construction queue, starvation or
+   unassigned citizens. Routine city passes and worker-only passes do not gain
+   those details. Wonders retain the available names and optional detail reads.
+
+Worker ownership, concurrency, native advice, game rules and model effort were
+not changed by this stage. Existing benchmark runtimes were not replaced.
+
+Baseline and reproduction
+
+Artifact root: build/decision-efficiency-20261030
+Baseline source: baseline.tar and baseline/; the working tree was clean at capture.
+Baseline Python SHA256:
+  462751428a1298da9a992ea3f9d96d3f83fa9c4aaf0dc6cc60a69a4b40207570
+Candidate Python SHA256:
+  4d9664ef70bdd02764000f6fa51a8056717d1d1604a39ed06e51d1a882668a58
+Pinned engine: 63e4bee9e6cefff0be88abd2c5ec4f6e0b6793dd
+
+The four controls are the completed candidate trials from
+build/gameplay-followups-20261029/live-corrected. Their source hash exactly
+matches the new baseline. Before starting model calls, the harness checked the
+prepared checkpoint hashes, engine, model, effort, guides, role/review schedules,
+empty initial private memory, completed ten rounds and complete all-role usage.
+Original control artifacts were read in place, preserving their source trial IDs.
+Only four new candidate trials were launched; no controls were rerun.
+The 14 bundled guide resources also match byte for byte (combined SHA256
+dfec76ef4b20c565fac20cc13583d268a8b0f6f02c0f6454e58f3fc6d3a75ca0).
+The reuse guard checks those resources as well as the Python implementation.
+The reused trials contain 1,034 previously paid model requests and 52,067,912
+input-plus-output tokens. New validation used 936 reported requests and
+42,494,073 tokens, including cached input. Replays and endpoint reads used no models.
+
+The paired positions are Pangaea g1 Inca (turns 135–145) and g4 Inca (156–166),
+one repetition each with Luna and Terra. Both guides are enabled, effort is medium,
+strategic review interval is ten, Economy/Military intervals are five, native
+advice and adaptive effort are disabled, and native AI controls other civilizations.
+Historical controls are not concurrent controls: provider cache conditions and
+stochastic choices may differ. This is a small screen, not win-rate evidence or
+proof of equal gameplay quality. Elapsed time has no weight in conclusions.
+
+Communication coverage: these trials had zero dedicated communication-agent
+activations. Main's native-AI trades and occasional consultations are included,
+but agent-to-agent dialogue is absent. "All-role accounting" means every role
+actually invoked in these trials; the reported savings do not establish savings
+for communication or for complete multi-agent games with communication enabled.
+
+A subsequent read-only accounting check at 2026-10-30 14:30 UTC examined the
+eight existing pangaea-v3-20261028 and two-continents-v3-20261028 benchmark games.
+Communication recorded 2,385 activations and 9,849 model requests: 268,115,450
+input tokens (220,642,048 cached; 47,473,402 uncached), plus 1,398,430 output.
+That is 4.13% of recorded total tokens, 5.96% of uncached input and 8.33% of model
+requests across those games. It averages 4.13 requests per activation and 27,223
+input tokens per request. Both communication models used medium effort.
+
+Those are cumulative counters from the existing pinned runtimes, not results
+from this candidate. Service usage matched all corresponding retained native job
+counters. There were 53 usage-incomplete communication jobs with no reported
+usage, plus one native communication reservation absent from service accounting;
+unreported work is not assumed to be free. Provider traces were not rescanned.
+No new model calls were made. The evidence is recorded in
+build/decision-efficiency-20261030/communication-accounting.json and its adjacent
+communication_audit.py script. No communication savings or quality claim follows
+from the gameplay screening.
+
+No-call replay evidence
+
+The same four captured contexts were replayed for each of the three roles:
+12 contexts and 137 offered commands per implementation. Both implementations
+had zero schema errors, ownership errors, mandatory-information changes or
+subsequent-read errors. Median startup characters fell 0.63% for Main, 0.67% for
+Economy and 0.18% for Military. The existing preload was deliberately retained;
+the expected savings are mainly in repeated responses and requests.
+
+An additional replay used the exact successful specialist action outcomes from
+the reused live controls. Retaining each delivered baseline reduced 159 serialized
+receipts from 5,770,820 to 333,025 characters (94.23%). Every resulting overview
+reconstructed exactly, including the original invalidation lists; no updates
+failed reconstruction and no eligible full action lacked a baseline. This is
+receipt serialization evidence, not a 94% total-token saving. It makes no model
+calls and does not assume that future models choose the same actions.
+
+Live usage
+
+Each row aggregates two completed ten-turn trials and every role, including
+strategic reviews and consultations. Cached input is a subset of input; reasoning
+is a subset of output. Neither subset is added again to total tokens. Token counts
+are not dollar costs, and historical cache conditions may differ.
+
+Model / variant       Input        Cached input   Uncached input  Output   Requests
+Luna control          22,155,802   19,541,888      2,613,914       80,887   438
+Luna candidate        15,314,998   13,202,688      2,112,310       72,325   343
+Terra control         29,768,941   26,879,744      2,889,197       62,282   596
+Terra candidate       27,047,576   24,609,920      2,437,656       59,174   593
+
+                     Total tokens       Uncached input    Output      Requests
+Luna change          -30.80%            -19.19%           -10.59%     -21.69%
+Terra change          -9.13%            -15.63%            -4.99%      -0.50%
+
+Input by role, in millions (control -> candidate):
+                     Main        Economy       Military      Review      Consultation
+Luna                 6.65->4.52   8.59->8.15     6.45->2.19    .399->.416  .068->.033
+Terra                6.59->7.19   8.48->9.23    14.51->10.35   .184->.281  none
+
+Military accounts for most of the input reduction. Economy remains a substantial
+cost and is not consistently cheaper: Terra's Economy input increased while its
+uncached input decreased. Whole-run requests also did not fall uniformly. In the
+g1 pair, Luna used 9.07% more tokens and 149 rather than 140 requests; Economy
+requests rose from 61 to 70. Terra g1 used 14.86% fewer tokens. In g4, Luna made
+194 rather than 298 requests, while Terra made 361 rather than 348.
+
+Delivery evidence from durable calls
+
+- The controls' 159 confirmed specialist action replies contained full overview
+  updates. All 193 confirmed candidate native commands across Main, Economy and
+  Military returned delta updates; none returned full or unavailable updates.
+- Separate military_review reads fell from 48 to 6. The candidate also returned
+  26 reviews with successful actions and performed 16 bundled review reads.
+  Four reviewAfter requests were rejected before applying an action; they did not
+  produce reviews or duplicate an action.
+- Completion-review rejections increased from 5 to 16. Recovery remained active,
+  and every trial completed. Fewer separate reads do not mean that review
+  requirements or fresh-basis checks were removed.
+- Stale-observation rejections fell from 79 to 65, but native STALE_REVISION errors
+  rose from 5 to 10. Concurrency still causes reconsideration work. No automatic
+  command retry was introduced.
+- There were 16 compact automatic resumes, compared with 25 full resumes in the
+  controls. Counts differ because the models made different decisions.
+- Eight triggered city-detail preloads occurred in the candidate (five Luna,
+  three Terra). Existing useful preloads remained present.
+
+These are durable tool counts, not model-request counts. Bundled children are
+counted once, and enclosing wrappers and host-only reads are excluded.
+
+Gameplay
+
+Values are control -> candidate. Growth is population added in retained starting
+cities; improvements count new improvements on retained land, excluding territory
+acquired by conquest. Buildings are additions in retained cities; counts are
+unweighted and can include purchases and wonders. Losses are confirmed military
+loss reports, not units missing from a roster.
+
+Model / position   Growth  Improvements  Buildings  Technologies  Losses  Cities gained
+Luna g1            1->1    3->3          1->1       4->4          0->0    0->0
+Luna g4            4->4    4->3          7->9       1->2          1->1    0->0
+Terra g1           1->1    4->4          1->1       4->4          0->0    0->0
+Terra g4           6->6    5->6          7->8       1->1          1->1    1->2
+
+Luna g4 accepted peace with France on turn 157 for 275 gold; its control continued
+to turn 161 and received 88 gold. The candidate completed Porcelain Tower and
+Hagia Sophia and acquired Banking as well as Acoustics. It completed one fewer
+retained-land improvement. This different strategy accounts for some of the
+reduced military workload and prevents attributing all usage savings to delivery.
+
+Terra g4 captured Paris and Orleans; its control captured Paris. Its retained-city
+growth matched, with one more improvement and one more building. Population
+including newly gained cities rose by 21 versus 14; that difference is not extra
+growth in the starting cities. Both lost one military unit in observed combat.
+
+Changes in dated production/science rates (control -> candidate):
+                     Production per turn   Science per turn
+Luna g1              +3 -> +3               +6 -> +6
+Luna g4             +47 -> +1               +5 -> +13
+Terra g1             +6 -> +6               +6 -> +6
+Terra g4            +28 -> +32              +8 -> +9
+
+The g1 comparisons use verified native endpoints at turn 145. The g4 comparisons
+use the last agent observations at turn 165 for both sides: reloading the control
+checkpoints changed native state beyond accepted bookkeeping, so their endpoint
+rates were rejected. The Terra candidate endpoint was also rejected. All original
+checkpoints remain intact; growth, buildings and other native endpoint counts use
+those original saves rather than the rejected reloaded copies.
+
+The low Luna g4 production snapshot needs context: the candidate started its
+eight-turn Golden Age on turn 156, while the control started on turn 158. On turn
+165 the candidate's Golden Age had ended and the control had one turn remaining.
+The production-rate difference therefore cannot be read as a cumulative production
+loss. Treasury changes also reflect peace terms, spending and agreements, not
+just economic productivity.
+
+The matched growth/loss results and additional construction/conquest are promising
+for this screen. The sample is too small to establish quality preservation across
+games. Useful follow-up work is to reduce unnecessary repeated overview reads and
+completion recoveries while preserving fresh-state checks; no additional paid
+trials were run to select a favorable outcome or estimate individual feature effects.
+
+Verification
+
+uv run --locked pytest -q: 2,524 passed, 12 skipped, 76 subtests passed.
+Focused final regression checks, including guide-resource reuse: 33 passed.
+Ruff lint and format checks passed; Pyrefly reported zero errors; diff checks passed.
+Coverage includes sibling refreshes, ownership changes, native-preview expiry,
+receipt replay, failed refreshes, resume baselines and resets, bounded selected-city
+preloads, wrong-role arguments and rejection of incompatible reused controls.
+The skipped tests require optional installed-model or container environments.
+All four endpoint inspection commands succeeded. Three of the four new endpoint
+copies passed native-state equivalence checks; the other was excluded as above.
+Frozen source hashes remained unchanged, the temporary auth client was removed,
+and evaluation server ports were released.
+
+Detailed results: build/decision-efficiency-20261030/evaluation-report.json
+Role totals: build/decision-efficiency-20261030/role-tables.json
+Receipt replay: build/decision-efficiency-20261030/action-delivery-replay.json
+Reproduce the report without model calls:
+  .venv/bin/python -m tests.report_decision_efficiency build/decision-efficiency-20261030
+
+
+Communication follow-up: focused observations and conditional preloads
+
+This is a separate offline screen. The live trials above had native-AI opponents
+and did not exercise communication jobs. No paid model calls were made for this
+follow-up, and the previous live results are unchanged.
+
+Implementation
+
+New communication activations default to player_turn(view="communication").
+Startup still begins with chat_read; an empire overview is not added to every
+message. When requested, the focused overview retains native relationships,
+treaties, economic constraints, pending decisions, threats, visibility limits,
+research, victory progress and summaries of every owned city and unit. It omits
+unrelated construction, settlement and wonder menus. Omitted information is named
+with retrieval instructions; full permitted observations remain available. View
+changes reset delivery baselines, and refreshes, recovery and receipt replay use
+the same projection. Communication gains no gameplay command authority.
+
+Up to two pending shared offers are inspected through ordinary trade_read calls
+when new events identify the proposal or its counterparty. Historical thread
+excerpts, own-message echoes, native-AI offers and a public message's whole
+audience do not trigger unrelated preloads. Successful prepared details provide
+the same exact version and evidence as an explicit read. Failed or subsequently
+changed offers still require inspection; unchanged freshness and decision checks
+reject unobserved or stale acceptance. All other pending offers keep their exact
+inspection commands.
+
+Active accepted war goals now enter communication's existing bounded working
+context. Unaccepted revisions appear as counts and exact retrieval references;
+they do not replace the accepted goals. Oversized or omitted episodes remain
+retrievable through the read-only war_goals tool. Exact authored history and
+nonbinding social promises are preserved. Relevant tool definitions are prepared
+only when needed. Chat deltas and repeated-chat suppression remain follow-up work.
+
+Saved-context replay
+
+Source: retained Pangaea and Two Continents October 28 benchmark databases, opened
+read-only. The replay examined 2,384 communication startups and 6,562 model tool
+results. Of 779 overview reads, 735 contained full observations that could be
+reprojected. Thirty-five already-scoped observations and nine non-full/error/delta
+reads were excluded. Both full and focused observations use the same current
+serializer; this isolates the projection rather than comparing serializer eras.
+
+                                    Full              Communication view
+Overview characters, total         39,781,936         13,730,420
+Overview characters, median            55,517             18,472
+
+Aggregate overview character reduction: 65.49%.
+Median individual overview reduction: 65.81%.
+Replay validation errors: zero.
+
+Replay checks cover exact retained facts, owned identities, mandatory constraints,
+reachable retrieval tool names, schemas and lossless serialization. These are
+response characters, not provider input tokens or savings across whole jobs.
+
+Conditional selection would have prepared one offer in each of 244 startups
+(10.2%). In 242 cases, the agent later made a successful explicit read for that
+same offer. This 99.2% overlap supports the trigger's relevance; it does not prove
+242 requests would be eliminated. Selection uses only identities already visible
+at startup. Later trade terms are never inserted into earlier contexts. Accepted
+war-goal delivery is covered by gateway regressions rather than reconstructed
+from future saved state.
+
+Source preservation
+
+The baseline archive preserves the complete nonignored host source tree, including
+all preceding uncommitted changes (831 files). The engine revision is recorded
+separately. Existing benchmark runtimes were only read and remain pinned.
+
+Artifacts: build/communication-efficiency-20261030/
+Baseline host HEAD: ed72e4275a7cee570478a4bd63e1344351eeca8d
+Baseline Python source SHA256:
+  4d9664ef70bdd02764000f6fa51a8056717d1d1604a39ed06e51d1a882668a58
+Baseline archive SHA256:
+  30bc11628a73d0b9d6e85e0ef3c82f7ab2333ac04baebe75c89e32e90d5fd37e
+Candidate Python source SHA256:
+  caa155e67394ead094d34d891177411b1ceb8b99c28cd4780c213fd0c1ff5486
+Candidate archive SHA256:
+  ac5c41d68a22a4a9a1c659ff5d1c82d4be2b485b62949040fc20abbeeacb1d0f
+Engine revision, unchanged:
+  63e4bee9e6cefff0be88abd2c5ec4f6e0b6793dd
+
+The frozen candidate archive predates this report appendix. Its runtime source
+matches the tested working tree and the isolated candidate source copy.
+
+Verification and limits
+
+Focused communication, social-advisory and negotiation regressions: 26 passed.
+Coverage includes default and explicit views, sibling updates, reset/recovery,
+replayed receipts, native offer-version changes, failed preloads, pending-goal
+revisions, bounded omissions and peace preserving authored history. The fake-model
+negotiation fixture consumes actual prepared trade versions; its timed and peace
+flows complete without duplicate communication trade reads. This checks delivery
+and protocol behavior, not model negotiation quality.
+
+Full Python suite: 2,532 passed, 12 skipped, 76 subtests passed. The skipped tests
+require optional installed-model or container environments. Ruff lint and
+formatting checks passed; Pyrefly reported zero errors; diff checks passed. Two
+older fixtures were aligned with the new default view and actual preloaded offer
+evidence before the final passing run. No runtime source changed after freezing
+the candidate, and the engine checkout remains clean at the recorded revision.
+
+This screen demonstrates smaller observations and relevant conditional preloads.
+Actual cached/uncached token savings, request counts and diplomacy outcomes remain
+unmeasured for the candidate. No live gameplay-quality conclusion follows from
+this replay, and no fresh paid trials were used to produce it.
+
+Detailed results: build/communication-efficiency-20261030/replay.json
+Reproduce without engine or model calls:
+  .venv/bin/python -m tests.replay_communication_contexts \
+    benchmarks/pangaea-v3-20261028/games \
+    benchmarks/two-continents-v3-20261028/games \
+    --output build/communication-efficiency-20261030/replay.json

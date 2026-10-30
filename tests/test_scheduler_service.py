@@ -540,10 +540,10 @@ class SchedulerServiceTest(unittest.TestCase):
         trade = ConcurrentTradeHost(self.host, peace=peace, settlement_delay=settlement_delay)
         result = self.run_cli("--max-turns", "2", "--max-seconds", "60", "--turn-timeout", str(turn_timeout))
         diagnostics = ""
-        if result.returncode:
+        if result.returncode or self.host.handoff != 4:
             diagnostics = "\n".join(path.read_text() for path in self.state_dir.rglob("diagnostics.jsonl"))
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr + diagnostics)
-        self.assertEqual(self.host.handoff, 4, result.stdout + result.stderr)
+        self.assertEqual(self.host.handoff, 4, result.stdout + result.stderr + diagnostics)
         self.assertEqual(self.saved()["status"], "budget_exhausted")
         self.assertEqual(trade.enacted, {"civilization": "Rome", "activeCivilization": "Rome", "handoff": 0})
         self.assertTrue(trade.gameplay_waiting)
@@ -556,6 +556,16 @@ class SchedulerServiceTest(unittest.TestCase):
             6 if peace else 2, sum(name == "player_turn" and not gameplay for _, gameplay, name, _ in trade.reads)
         )
         records = self.records()
+        preloaded = [r["params"] for r in records if r["method"] == "test/preloaded_trade"]
+        self.assertEqual(preloaded, [{"proposalId": "d1", "version": 1}, {"proposalId": "d1", "version": 2}])
+        self.assertFalse(
+            any(
+                r["method"] == "test/tool"
+                and r["params"].get("purpose") == "communication"
+                and r["params"].get("tool") == "trade_read"
+                for r in records
+            )
+        )
         failures = [
             r["params"]["result"] for r in records if r["method"] == "test/tool" and r["params"]["result"].get("error")
         ]

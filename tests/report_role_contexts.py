@@ -417,6 +417,8 @@ def live_report(root, paired=None) -> JsonObject:
         results_path = paired / model / "results.json"
         previous_failures = []
         selected = {}
+        for row in setup.get("reusedControls", {}).get(model, []):
+            selected[row["id"]] = (row, Path(row["sourceSuite"]))
         for previous in setup.get("completedSuites", []):
             prior = Path(previous)
             for row in read(prior / model / "results.json"):
@@ -437,7 +439,7 @@ def live_report(root, paired=None) -> JsonObject:
         for row, source_suite in selected.values():
             trial = {"sourceSuite": str(source_suite), **row}
             if not row.get("notStarted"):
-                path = source_suite / model / row["id"]
+                path = source_suite / model / row.get("sourceTrialId", row["id"])
                 trial["allRoleAccounting"] = job_accounting(path)
                 trial["outcomes"] = None
                 run = read(path / "live-run.json")
@@ -446,7 +448,8 @@ def live_report(root, paired=None) -> JsonObject:
                 trial["checkpointSha256"] = run["checkpointSha256"]
                 if row["completedEvaluation"]:
                     details = analyze(path, source_suite / "codex/sessions")
-                    (path / "evaluation.json").write_text(json.dumps(details, indent=2) + "\n")
+                    if not row.get("reused"):
+                        (path / "evaluation.json").write_text(json.dumps(details, indent=2) + "\n")
                     trial["toolErrors"] = dict(Counter(tool_error_code(error) for error in details["errors"]))
                     civ = next(case["civilization"] for case in suite["positions"] if case["id"] == row["case"])
                     trial["outcomes"] = {
@@ -467,6 +470,8 @@ def live_report(root, paired=None) -> JsonObject:
         models[model] = {
             "scheduledTrials": len(suite["positions"]) * suite["repetitions"] * len(suite["sources"]),
             "attemptedTrials": sum(not r.get("notStarted") for r in rows),
+            "reusedTrials": sum(bool(r.get("reused")) for r in rows),
+            "newlyAttemptedTrials": sum(not r.get("notStarted") and not r.get("reused") for r in rows),
             "completedTrials": sum(r["completedEvaluation"] for r in rows),
             "verifiedEndpointObservations": sum(
                 bool((trial.get("outcomes") or {}).get("summary", {}).get("finalNativeObservation")) for trial in trials

@@ -81,7 +81,7 @@ def report(root, paired):
     for name, model in result["models"].items():
         for trial in model["trials"]:
             if not trial.get("notStarted"):
-                directory = Path(trial["sourceSuite"]) / name / trial["id"]
+                directory = Path(trial["sourceSuite"]) / name / trial.get("sourceTrialId", trial["id"])
                 trial["protocolAudit"] = protocol_audit(directory)
         model["followupComparisons"] = comparisons(model["trials"])
     return result

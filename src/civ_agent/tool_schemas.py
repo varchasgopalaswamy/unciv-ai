@@ -31,9 +31,9 @@ PlayerName = Annotated[str, Field(min_length=1, max_length=128, pattern=r"\S")]
 
 
 class PlayerTurn(DeliveryOptions):
-    view: Literal["current", "full", "main", "economy", "military"] = Field(
+    view: Literal["current", "full", "main", "economy", "military", "communication"] = Field(
         default="current",
-        description="Keep the selected view (default), expand to full, or select main/economy/military. Omitted facts remain retrievable through detail tools and view=full.",
+        description="Keep the selected view (default), expand to full, or select main/economy/military/communication. Omitted facts remain retrievable through detail tools and view=full.",
     )
     cities: Annotated[list[Annotated[str, Field(min_length=1, max_length=128)]], Field(max_length=500)] | None = Field(
         default=None,
@@ -305,7 +305,7 @@ TOOL_MODELS: dict[str, type[BaseModel]] = {
 
 
 def tool_model(name: str, purpose: str) -> type[BaseModel]:
-    if name == "war_goals" and purpose == "economy":
+    if name == "war_goals" and purpose in {"economy", "communication"}:
         return ReadWarGoals
     if name == "finish_role" and purpose == "military":
         return MilitaryFinishRole

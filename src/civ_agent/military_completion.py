@@ -156,7 +156,8 @@ def completion_problem(review, supplied):
         "recoverable": True,
         "militaryCompletion": review_page(review),
         "recovery": {
-            "reads": [{"tool": "military_review", "arguments": {}}],
-            "instruction": "Reconsider the current completion review. Issue any chosen actions, then use a fresh basis and reasoned holds for the remaining targets. Do not repeat confirmed actions.",
+            "instruction": "Use the returned completion review; retrieve remaining pages if nextCursor is present. "
+            "Issue any chosen actions, then use a fresh basis and reasoned holds for the remaining targets. "
+            "Do not repeat confirmed actions.",
         },
     }

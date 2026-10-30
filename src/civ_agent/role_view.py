@@ -15,6 +15,12 @@ INSTRUCTIONS = (
     "reads for omitted information. Ownership labels beside commands describe role authority, not native legality; "
     "copy only the command arguments. Requests go to the named role; Main may use city_override for an emergency."
 )
+COMMUNICATION_INSTRUCTIONS = (
+    "player_turn defaults to a communication view: empire constraints, diplomacy, city and force summaries, "
+    "visible threats and uncertainty. roleBrief lists omitted information and focused reads; omitted facts are "
+    "unknown, not absent. Omit view to keep the selection, or use view=full for all permitted observations. "
+    "These observations do not grant authority to execute gameplay commands."
+)
 
 # Decisions, threats, constraints and uncertainty survive every view.
 COMMON = frozenset(
@@ -34,6 +40,8 @@ FIELDS = {
         "productionPolicy researchQueue research culture settlement wonderOpportunities constructionEstimateBasis".split()
     ),
     "military": COMMON | frozenset("militaryReadiness researchQueue".split()),
+    "communication": COMMON
+    | frozenset("civilizationProfile eraProgress victory researchQueue research militaryReadiness".split()),
 }
 CITY_SUMMARY = frozenset(
     "handle name position population health maxHealth defensiveStrength foodPerTurn turnsToGrowth "
@@ -44,6 +52,13 @@ UNIT_SUMMARY = frozenset(
     "handle name position health movement military idle movementSupported legalDestinations attackOptionCount "
     "attacksRemaining canBuildImprovements workerJob workerJobTurnsRemaining movementOrder protection escort statuses".split()
 )
+COMMUNICATION_UNIT_SUMMARY = UNIT_SUMMARY | frozenset(
+    "strength rangedStrength role transported carriedUnits interceptionReady".split()
+)
+COMMUNICATION_READINESS = frozenset(
+    "roleCounts unitsExcludingRecon visibleBorderForces visibleForeignCities visibleForeignUnits "
+    "omittedVisibleForeignCities omittedVisibleForeignUnits foreignObservationLimits limits".split()
+)
 
 
 def select(value, fields):
@@ -51,6 +66,7 @@ def select(value, fields):
 
 
 def role_overview(value, view, *, roles=None, purpose="gameplay", social=None):
+    unmanaged_owner = "gameplay" if purpose == "communication" else purpose
     if view == "full":
         result = copy.deepcopy(value)
     else:
@@ -59,17 +75,22 @@ def role_overview(value, view, *, roles=None, purpose="gameplay", social=None):
         roster = value.get("units", [])
         result["units"] = []
         for unit in roster:
-            owner = roles.unit_owner(unit) if roles is not None else purpose
+            owner = roles.unit_owner(unit) if roles is not None else unmanaged_owner
             actionable = owner == {"main": "gameplay", "economy": "economy", "military": "military"}.get(view)
-            if actionable or not unit.get("military"):
-                row = copy.deepcopy(unit) if actionable else select(unit, UNIT_SUMMARY)
+            if actionable or not unit.get("military") or view == "communication":
+                fields = COMMUNICATION_UNIT_SUMMARY if view == "communication" else UNIT_SUMMARY
+                row = copy.deepcopy(unit) if actionable else select(unit, fields)
                 row["owner"] = owner
                 result["units"].append(row)
         if result["units"] != roster:
-            omitted.append("units: other-role roster/options")
+            omitted.append(
+                "units: detailed orders, upgrades and action options"
+                if view == "communication"
+                else "units: other-role roster/options"
+            )
         result["cities"] = []
         for city in value.get("cities", []):
-            owner = roles.owner(city["handle"]) if roles is not None else purpose
+            owner = roles.owner(city["handle"]) if roles is not None else unmanaged_owner
             actionable = owner == {"main": "gameplay", "economy": "economy"}.get(view)
             row = copy.deepcopy(city) if actionable else select(city, CITY_SUMMARY)
             row["owner"] = owner
@@ -92,7 +113,7 @@ def role_overview(value, view, *, roles=None, purpose="gameplay", social=None):
                 for row in value.get("cityStates", [])
             ]
             omitted.extend(["diplomacy.native", "cityStates options"])
-        elif view == "main":
+        elif view in {"main", "communication"}:
             result["cityStates"] = [
                 select(
                     row,
@@ -126,7 +147,17 @@ def role_overview(value, view, *, roles=None, purpose="gameplay", social=None):
             omitted.append(
                 "wonderOpportunities: available names only; construction_details target=<city> names=[<wonder>] has details; full also includes queued and blocked wonders"
             )
-        if view != "military" and value.get("militaryReadiness") is not None:
+        if view == "communication":
+            if "development" in result.get("economy", {}):
+                result["economy"].pop("development")
+                omitted.append("economy.development (player_details section=economy)")
+            if value.get("militaryReadiness") is not None:
+                result["militaryReadiness"] = select(value["militaryReadiness"], COMMUNICATION_READINESS)
+                omitted.extend(
+                    "militaryReadiness." + field
+                    for field in sorted(set(value["militaryReadiness"]) - COMMUNICATION_READINESS)
+                )
+        elif view != "military" and value.get("militaryReadiness") is not None:
             result["militaryReadiness"] = select(
                 value["militaryReadiness"], {"visibleBorderForces", "foreignObservationLimits"}
             )
@@ -146,6 +177,14 @@ def role_overview(value, view, *, roles=None, purpose="gameplay", social=None):
                 "history": {"tool": "history_read", "arguments": {"turn": "<turn>"}},
                 "victory": {"tool": "victory_progress", "arguments": {}},
                 "social": {"tool": "chat_read", "arguments": {}},
+                **(
+                    {
+                        "economy": {"tool": "player_details", "arguments": {"section": "economy"}},
+                        "objectives": {"tool": "war_goals", "arguments": {"action": "read"}},
+                    }
+                    if view == "communication"
+                    else {}
+                ),
             },
         }
         if view == "economy":
@@ -154,12 +193,13 @@ def role_overview(value, view, *, roles=None, purpose="gameplay", social=None):
                 "militaryUnitCount": sum(bool(u.get("military")) for u in roster),
                 "agreements": select(social or {}, {"agreements", "offers", "consents", "trades"}),
             }
-    if roles is not None:
+    if roles is not None or purpose == "communication":
         result.pop("endTurn", None)
         controls = result.get("turnControls") or {}
         for key in ("deferChoicesCommand", "moveAutomatedCommand", "autoplayCommands"):
             controls.pop(key, None)
-        result["roleCompletion"] = {"tool": "finish_role", "arguments": {}}
+        if purpose != "communication":
+            result["roleCompletion"] = {"tool": "finish_role", "arguments": {}}
     return result
 
 
@@ -187,10 +227,14 @@ def label_commands(value, roles, purpose, observation):
                 ),
                 None,
             )
-        result = {"mode": "request" if owner else "unavailable", "reason": problem["error"]}
+        result = {
+            "mode": "request" if owner and purpose != "communication" else "unavailable",
+            "reason": problem["error"],
+        }
         if owner:
             result["owner"] = owner
-            result["tool"] = "economy_request" if owner == "economy" else "role_message"
+            if purpose != "communication":
+                result["tool"] = "economy_request" if owner == "economy" else "role_message"
         if purpose == "gameplay" and owner == "economy" and command["kind"] in CITY_COMMANDS:
             result["emergencyOverride"] = {"tool": "city_override", "city": command.get("target")}
         return result

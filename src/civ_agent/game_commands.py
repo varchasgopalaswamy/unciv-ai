@@ -18,6 +18,11 @@ class Position(BoundaryModel):
 
 class Command(BoundaryModel):
     intent: Intent | None = None
+    reviewAfter: StrictBool = Field(
+        default=False,
+        description="Military only: include a fresh military completion review after this action succeeds. "
+        "The receipt remains authoritative if the subsequent refresh fails.",
+    )
 
 
 class ResearchQueue(Command):
@@ -269,7 +274,9 @@ PlayerCommand = Annotated[
 COMMANDS = TypeAdapter(PlayerCommand)
 
 
-def command_schema(allowed_kinds: set[str] | frozenset[str] | None = None) -> JsonObject:
+def command_schema(
+    allowed_kinds: set[str] | frozenset[str] | None = None, *, military_review: bool = False
+) -> JsonObject:
     """Compact transport envelope; COMMANDS enforces the selected action's shape.
 
     Inspected options provide complete commands. Keep the accepted field types
@@ -292,6 +299,10 @@ def command_schema(allowed_kinds: set[str] | frozenset[str] | None = None) -> Js
                 name, {k: v for k, v in shape.items() if k not in {"title", "description", "default"}}
             )
     properties["kind"] = {"type": "string", "enum": sorted(kinds)}
+    if military_review:
+        properties["reviewAfter"]["description"] = Command.model_fields["reviewAfter"].description
+    else:
+        properties.pop("reviewAfter", None)
     if "initiativeDecisions" in properties:
         properties["initiativeDecisions"]["description"] = (
             "END_TURN only. Optional private decisions about the delivered strategic report's numbered initiatives."

@@ -358,7 +358,7 @@ def test_startup_defers_only_command_schema_and_preserves_complete_role_index(tm
             assert len(encoded(brief)) < len(encoded(complete)) / 2 and catalogue == saved
             prepared = await prepare_startup(m.gateway, m.economy)
             prompt = startup_prompt(prepared, "economy", "")
-            assert prompt.metadata()["layoutVersion"] == 11 and "commandIndex" in prompt.instructions
+            assert prompt.metadata()["layoutVersion"] == 13 and "commandIndex" in prompt.instructions
 
     asyncio.run(run())
 

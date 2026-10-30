@@ -6,6 +6,7 @@ for current behavior.
 
 ## Reports
 
+- [Decision efficiency — October 30, 2026](reports/Decision-efficiency-screening-2026-10-30.txt): retained useful preloads and reduced repeated state delivery; four new trials paired with four reused controls. Total tokens fell 30.80% for Luna and 9.13% for Terra, with matched growth and military losses; different peace/conquest decisions limit causal conclusions. A separate communication replay reduced overview characters by 65.49% and checked conditional offer/goal preloads without new paid calls; live communication savings remain unmeasured.
 - [Role context live followup — October 29, 2026](reports/Role-context-live-followup-2026-10-29.txt): all 32 trials and 320 rounds completed; all-role tokens fell 26.23% for Luna and 20.16% for Terra. Ownership errors fell, while growth, construction and military outcomes were mixed. Includes the population-gap analysis and final verification.
 - [Role context isolation — October 29, 2026](reports/Role-context-screening-2026-10-29.txt): role views, names-only wonder catalog, historical review retrieval and ownership labels; 36.74–47.76% median startup character reduction. The initial live attempts stopped on quota; the completed followup above supplies gameplay and total-usage results.
 - [Decisions model replay — October 25, 2026](reports/Decisions-model-8091-comparison-2026-10-25.md): port 8091 exactly reproduces 39 historical effort probability vectors; current prompts, fallback behavior, latency under changing load, and broader historical fixture replay.
