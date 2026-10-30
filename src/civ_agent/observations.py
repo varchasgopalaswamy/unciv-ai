@@ -224,6 +224,7 @@ class TurnOverview(BoundaryModel):
     availableWonders: list[str] | None = None
     roleBrief: JsonObject | None = None
     roleCompletion: JsonObject | None = None
+    militaryCompletion: JsonObject | None = None
     strategicReview: JsonObject | None = None
     constructionExplanations: dict[str, str] | None = None
     explanationRefs: dict[str, str] | None = None

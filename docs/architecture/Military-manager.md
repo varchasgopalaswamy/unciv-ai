@@ -17,7 +17,8 @@ remains available. Historical reviews are retrieved with
 ## Control and lifecycle
 
 Military controls combat units (including scouts), conventional missions, city
-bombardment, promotions, upgrades, pillage and disbanding. Main keeps civilians,
+bombardment, promotions, upgrades, pillage and disbanding. Economy owns ordinary
+unescorted workers. Main keeps other civilians,
 war declarations, nuclear strikes, diplomatic gifts, captured-city disposition,
 and military units assigned to escort duty. Main controls both the civilian and
 its escort, including their independent moves. An escort assignment survives
@@ -103,6 +104,27 @@ native view rejects a stale answer. The last full review, execution baseline,
 planning baseline and triage state live in checkpointed civilization memory.
 Finishing a military pass verifies the latest facts against its delivered view;
 unseen changes require a fresh read before completion.
+
+The overview's `militaryCompletion` reports how many exposed units or unused
+native attack, capture and bombardment opportunities remain. `military_review`
+refreshes the position and returns a paginated checklist, a factual `basis`,
+observed changes since the previous completed pass, and an active-operation
+retrieval reference. Follow `nextCursor` to retrieve every remaining target.
+Proximity does not predict enemy reach, and absent visible threats do not imply safety.
+
+Military can resolve a checklist item with native actions or include a reasoned
+hold in `finish_role.militaryReview`: `{basis, decisions: [{targets, reason}]}`.
+One reason may cover multiple targets. Deliberate risk, conserving an attack and
+holding position are all valid choices. The host checks coverage and freshness;
+it does not choose tactics or require retreat. Successful actions are never
+reissued just to satisfy this review. Changed relevant facts require reconsideration.
+Holds are retained with the completed schedule and exact tool receipt, and rewind
+restores them as historical decisions rather than authorization for a new position.
+
+Observed progress counts distinguish unit loss/reassignment from confirmed combat
+losses. Military compares those facts with accepted objectives and updates an
+operation only when its assessment or plan changes. The host never declares an
+authored objective achieved from movement, spending or these counts alone.
 
 `economyCoordination.militarySchedule` reports `fullReview`, `atWar`, wake reasons
 and review dates. `militaryActive` now indicates the manager's continuing role;

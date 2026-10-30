@@ -405,7 +405,7 @@ class ProposalGateway:
             allowed = (
                 ECONOMY_TOOLS | {"war_goals", "role_message"}
                 if job.purpose == "economy"
-                else ECONOMY_TOOLS | ROLE_TOOLS | {"economy_request"}
+                else ECONOMY_TOOLS | ROLE_TOOLS | {"economy_request", "military_review"}
             )
             catalogue = [entry for entry in catalogue if entry["name"] in allowed]
         job.catalogue = catalogue
@@ -569,7 +569,12 @@ class ProposalGateway:
             )
             add(
                 "finish_role",
-                "Finish your work for this role. The host waits for every active role and advances the native turn. Economy reports a disposition for each urgent request; deferred requests may set a future reviewTurn. Stop issuing actions after success; another pass may be requested.",
+                "Finish your work for this role. The host waits for every active role and advances the native turn. Economy reports a disposition for each urgent request; deferred requests may set a future reviewTurn. Military supplies militaryReview with a current basis and reasoned holds for remaining completion-review targets. Stop issuing actions after success; another pass may be requested.",
+            )
+        if purpose == "military":
+            add(
+                "military_review",
+                "Read a fresh, paginated completion check of exposed units and remaining native attack/capture/bombardment opportunities, plus observed progress and active-operation references. Resolve them with actions or reasoned holds in finish_role.militaryReview. All native-legal choices, including accepting risk, remain available. Follow nextCursor until all targets are reviewed.",
             )
         if purpose in {"gameplay", "military"}:
             add(
@@ -1116,6 +1121,7 @@ class ProposalGateway:
             in {
                 "player_command",
                 "finish_role",
+                "military_review",
                 "economy_wait",
                 "city_override",
                 "economy_request",
@@ -1311,6 +1317,14 @@ class ProposalGateway:
             compact["strategicReview"] = brief
         if self.role_coordinator is not None:
             compact = label_commands(compact, self.role_coordinator, job.purpose, value)
+            if job.purpose == "military":
+                from civ_agent.military_completion import completion_review
+
+                check = completion_review(value, self.role_coordinator.war_state)
+                compact["militaryCompletion"] = {
+                    "remainingTargets": len(check["items"]),
+                    "read": {"tool": "military_review", "arguments": {}},
+                }
         if job.city_scope is not None:
             compact["cityScope"] = {
                 "included": list(job.city_scope),
@@ -1783,10 +1797,40 @@ class ProposalGateway:
             allowed = (
                 ECONOMY_TOOLS | {"war_goals", "role_message"}
                 if job.purpose == "economy"
-                else ECONOMY_TOOLS | ROLE_TOOLS | {"economy_request"}
+                else ECONOMY_TOOLS | ROLE_TOOLS | {"economy_request", "military_review"}
             )
             if name not in allowed:
                 return {"error": "ROLE_ACTION_NOT_PERMITTED", "applied": False}
+        if name == "military_review":
+            from civ_agent.military_completion import completion_review, review_page
+
+            if coordinator is None or job.purpose != "military":
+                return {"error": "ACTIVE_MILITARY_ROLE_REQUIRED", "applied": False}
+            view = await job.connection.tool("player_turn", {})
+            if (
+                view.get("epoch") != job.epoch
+                or view.get("turn") != coordinator.key[1]
+                or view.get("phase") != "ACTIVE"
+                or (view.get("negotiation") or {}).get("active")
+            ):
+                return self.reobserve_after_negotiation()
+            await coordinator.synchronize_war(view)
+            saved = (
+                await self.io.call(coordinator.military_schedule.saved)
+                if coordinator.military_schedule is not None
+                else {}
+            )
+            review = completion_review(view, coordinator.war_state, saved)
+            return await self.deliver_turn(
+                job,
+                view,
+                name,
+                arguments,
+                call_id,
+                {
+                    "militaryCompletion": review_page(review, arguments.get("cursor", 0), arguments.get("limit", 20)),
+                },
+            )
         if name in ROLE_TOOLS:
             if name == "war_goals" and arguments.get("action", "read") == "read":
                 state = await self.io.call(

@@ -812,6 +812,8 @@ class TurnRoles:
                 if job.purpose == "economy":
                     self.economy_completions += 1
                 if job.purpose == "military" and self.military_schedule is not None:
+                    from civ_agent.military_completion import completion_problem, completion_review
+
                     view = await job.connection.tool("player_turn", {})
                     if (
                         "error" in view
@@ -822,6 +824,11 @@ class TurnRoles:
                     ):
                         return {"error": "MILITARY_REFRESH_REQUIRED", "applied": False}
                     await self.synchronize_war(view)
+                    review = completion_review(
+                        view, self.war_state, await self.service.io.call(self.military_schedule.saved)
+                    )
+                    if problem := completion_problem(review, arguments.get("militaryReview")):
+                        return problem
                     if self.military_observation is None or not await self.service.io.call(
                         self.military_schedule.complete,
                         view,
@@ -829,6 +836,7 @@ class TurnRoles:
                         self.war_state,
                         self.military_observation,
                         full=self.military_status.get("fullReview", False),
+                        completion=arguments.get("militaryReview"),
                     ):
                         return {
                             "error": "MILITARY_OBSERVATION_CHANGED",

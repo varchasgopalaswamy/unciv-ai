@@ -21,6 +21,7 @@ from civ_agent.memory_records import (
     MemoryUpdate,
     MemoryUpdateResult,
 )
+from civ_agent.military_completion import MilitaryCompletion, MilitaryReviewRead
 from civ_agent.observations import DETAIL_MODELS, DetailResult, EntityDetails
 from civ_agent.schemas import BoundaryModel, NonnegativeInt
 from civ_agent.war_state import EscortAssignment, MilitaryOperation, ReadWarGoals, RoleMessage, WarGoals
@@ -42,6 +43,10 @@ class PlayerTurn(DeliveryOptions):
 
 class SpecialistFinishRole(BoundaryModel):
     requests: list[RequestDisposition] = Field(default_factory=list, max_length=100)
+
+
+class MilitaryFinishRole(SpecialistFinishRole):
+    militaryReview: MilitaryCompletion | None = None
 
 
 class EconomyWait(BoundaryModel):
@@ -267,6 +272,7 @@ TOOL_MODELS: dict[str, type[BaseModel]] = {
     "war_goals": WarGoals,
     "escort_assignment": EscortAssignment,
     "military_operation": MilitaryOperation,
+    "military_review": MilitaryReviewRead,
     "role_message": RoleMessage,
     "finish_role": FinishRole,
     "economy_wait": EconomyWait,
@@ -301,7 +307,9 @@ TOOL_MODELS: dict[str, type[BaseModel]] = {
 def tool_model(name: str, purpose: str) -> type[BaseModel]:
     if name == "war_goals" and purpose == "economy":
         return ReadWarGoals
-    if name == "finish_role" and purpose in {"economy", "military"}:
+    if name == "finish_role" and purpose == "military":
+        return MilitaryFinishRole
+    if name == "finish_role" and purpose == "economy":
         return SpecialistFinishRole
     if name == "player_details" and purpose == "review":
         return ReviewPlayerDetails

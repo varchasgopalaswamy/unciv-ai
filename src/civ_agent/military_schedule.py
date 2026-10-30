@@ -5,6 +5,7 @@ import copy
 from civ_agent.decisions_ledger import fingerprint
 from civ_agent.decisions_tasks import TASK_VERSION
 from civ_agent.protocol import JsonObject
+from civ_agent.unit_ownership import unit_owner
 from civ_agent.war_state import goal_versions, war_opponents
 
 
@@ -18,10 +19,9 @@ def _needs_orders(unit):
 
 def military_facts(view: JsonObject, state: JsonObject, civilization: str | None = None) -> JsonObject:
     """No world access, inferred enemy totals, turn clocks or stored research progress."""
-    escorts = state.get("escorts", {})
     units = {}
     for unit in _units(view):
-        if not unit.get("military") or unit["handle"] in escorts:
+        if unit_owner(unit, state) != "military":
             continue
         combat = unit.get("combat") or {}
         upgrades = (unit.get("economy") or {}).get("upgrades", unit.get("upgrades", []))
@@ -215,7 +215,7 @@ class MilitarySchedule:
             "materialChanged": bool(saved.get("planningBaseline") and saved["planningBaseline"] != facts["material"]),
         }
 
-    def complete(self, view, turn, state, observed=None, *, full=True):
+    def complete(self, view, turn, state, observed=None, *, full=True, completion=None):
         facts = military_facts(view, state, self.memory.civilization)
         if observed is not None and facts != military_facts(observed, state, self.memory.civilization):
             return False
@@ -223,7 +223,7 @@ class MilitarySchedule:
             if self.memory._meta(db, "epoch") != view.get("epoch"):
                 raise ValueError("STALE_EPOCH")
             saved = self.memory._meta(db, "military:schedule", {})
-            saved.update(lastReviewTurn=turn, baseline=facts)
+            saved.update(lastReviewTurn=turn, baseline=facts, completionReview=copy.deepcopy(completion))
             if full:
                 saved.update(lastFullReviewTurn=turn, planningBaseline=facts["material"])
                 saved.pop("triage", None)

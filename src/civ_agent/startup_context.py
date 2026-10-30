@@ -51,6 +51,7 @@ CORE_TOOLS = {
         "unit_details",
         "movement_preview",
         "military_operation",
+        "military_review",
         "war_goals",
         "role_message",
         "economy_request",

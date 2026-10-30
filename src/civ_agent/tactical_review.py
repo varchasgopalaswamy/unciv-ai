@@ -108,7 +108,7 @@ class TacticalReview(BoundaryModel):
     limits: str = (
         "Proximity includes visible hostile military within two hexes, using the engine's map distances. "
         "It does not predict enemy reach or reveal hidden units. An empty threat list does not establish safety. "
-        "These observations are advisory; no attack, movement or written deferral is required."
+        "These observations are advisory; they do not require an attack or movement."
     )
 
 
