@@ -162,7 +162,7 @@ ECONOMY_INSTRUCTIONS = (
     "choices as inherited; never invent a reason or record a failed command as a completed change. "
     "Read or create that city's plan before making changes; plans delivered at startup already count as read. "
     "Reread only when missing, changed or recovery requires it. Cite its returned memory ID in intent.cityPlan "
-    "on meaningful city commands. A plan written after an action cannot establish which plan motivated it. "
+    "on meaningful city commands; this citation alone is sufficient. Add intent.reason only for action-specific rationale. A plan written after an action cannot establish which plan motivated it. "
     "Retain a sensible plan when its reasons still hold. Leave its notebook record unchanged unless a decision, "
     "rationale, expectation or specific deadline changes. Do not rewrite current production progress, countdowns "
     "or treasury figures merely to show that you reviewed them. A no-change review needs only finish_role; "

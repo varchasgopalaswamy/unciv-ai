@@ -1204,6 +1204,8 @@ class CivilizationState:
                         "version": city_record["version"],
                         "reason": intent["reason"],
                     }
+                elif city_plan:
+                    pinned["unverifiedCityPlan"] = city_plan
                 key = intent.get("strategy")
                 chosen = intent.get("decision")
                 if chosen:

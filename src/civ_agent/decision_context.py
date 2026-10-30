@@ -14,7 +14,7 @@ MAX_CHOICES = 6
 def intent_feedback(pinned: JsonObject) -> JsonObject:
     unverified = {
         key: pinned[key]
-        for key in ("unverifiedStrategy", "unverifiedDecision", "unverifiedInitiatives")
+        for key in ("unverifiedCityPlan", "unverifiedStrategy", "unverifiedDecision", "unverifiedInitiatives")
         if key in pinned
     }
     if not unverified:
@@ -23,7 +23,7 @@ def intent_feedback(pinned: JsonObject) -> JsonObject:
         "intentFeedback": {
             "linked": False,
             **unverified,
-            "instruction": "These references could not be verified; this does not affect the action. Copy saved strategy/decision IDs and review initiative numbers, or omit them. Do not repeat an action to change its annotations.",
+            "instruction": "These references could not be verified; this does not affect the action. Copy a delivered plan ID for this city, saved strategy/decision IDs and review initiative numbers, or omit them. Do not repeat an action to change its annotations.",
         }
     }
 

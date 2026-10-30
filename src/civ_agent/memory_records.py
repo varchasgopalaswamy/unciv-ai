@@ -269,10 +269,26 @@ class RecordedInitiativeDecision(InitiativeDecision):
 
 
 class Intent(BoundaryModel):
+    model_config = {
+        "json_schema_extra": {
+            "anyOf": [
+                {"required": ["reason"], "properties": {"reason": {"minLength": 1, "pattern": r"\S"}}},
+                {"required": ["cityPlan"], "properties": {"cityPlan": {"minLength": 1, "pattern": r"\S"}}},
+            ]
+        }
+    }
     cityPlan: str = Field(
-        default="", max_length=160, description="Optional delivered city_plan memory ID explaining this city action."
+        default="",
+        max_length=160,
+        pattern=r"^$|\S",
+        description="Delivered city_plan memory ID explaining this city action. A citation alone is sufficient; reason is optional when supplied.",
     )
-    reason: Annotated[str, Field(min_length=1, max_length=1000, pattern=r"\S")]
+    reason: str = Field(
+        default="",
+        max_length=1000,
+        pattern=r"^$|\S",
+        description="Private action rationale. Required unless cityPlan supplies the rationale; omitted prose is not inferred.",
+    )
     strategy: str = Field(
         default="",
         max_length=160,
@@ -285,6 +301,12 @@ class Intent(BoundaryModel):
     )
     expectedOutcome: str = Field(default="", max_length=1000)
     assumptions: Annotated[list[Assumption], Field(max_length=20)] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def rationale_or_plan(self):
+        if not self.reason.strip() and not self.cityPlan.strip():
+            raise ValueError("Supply intent.reason or a delivered intent.cityPlan memory ID")
+        return self
 
 
 def public_record(key, record):
@@ -444,6 +466,7 @@ class SummaryAction(BoundaryModel):
     decision: str
     action: str
     reason: str
+    cityPlan: JsonObject | None = None
     outcome: Literal["pending", "confirmed", "rejected", "uncertain"]
     command: JsonObject
     receipt: JsonObject | None = None

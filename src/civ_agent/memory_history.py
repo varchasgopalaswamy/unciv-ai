@@ -6,6 +6,7 @@ from civ_agent import memory_schema as tables
 from civ_agent.memory_records import MEMORY_TYPES, TurnSummary, record_text
 from civ_agent.memory_snapshots import load_snapshot, record_bodies
 from civ_agent.memory_store import RecordStore
+from civ_agent.protocol import JsonObject
 
 
 def action_text(command, receipt, settlement=None, *, transport):
@@ -33,15 +34,17 @@ def action_text(command, receipt, settlement=None, *, transport):
     return f"Requested {label}" if native or not confirmed else label
 
 
-def action_record(key, decision, *, transport):
+def action_record(key, decision, *, transport) -> JsonObject:
     intent = decision.get("intent") or {}
     reason = intent.get("reason", "")
+    plan = (decision.get("_pinned") or {}).get("cityPlan")
     return {
         "decision": key,
         "action": action_text(
             decision["command"], decision["receipt"], decision.get("settlement"), transport=transport
         ),
         "reason": reason,
+        **({"cityPlan": {"id": plan["key"], "version": plan["version"]}} if plan else {}),
         "outcome": decision["outcome"],
         "command": decision["command"],
         "receipt": decision["receipt"],

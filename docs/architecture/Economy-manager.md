@@ -21,6 +21,13 @@ Purchasing units belongs to economy management; deploying them belongs to the
 appropriate unit controller. A newly purchased unit with movement reopens its
 controller if needed. A newly owned city reopens a completed economy role.
 
+City commands may cite a delivered plan with `intent: {cityPlan: "<memory ID>"}`.
+Repeating `intent.reason` is optional when the plan supplies the rationale. The
+audit stores the exact delivered plan version and leaves omitted prose blank;
+only a confirmed native receipt links a completed action to that plan. Unknown,
+undelivered or wrong-city references produce `intentFeedback` and are not linked.
+Intent annotations do not change native legality or require replaying an action.
+
 `economy_request` records a priority, optional city, and request text. Requests
 arriving during an active review join that pass and expand its city scope.
 Routine requests arriving after completion wait for a scheduled review; urgent

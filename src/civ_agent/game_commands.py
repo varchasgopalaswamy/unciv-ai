@@ -335,7 +335,7 @@ class InvalidCommandArguments(BoundaryModel):
     invalidFields: list[JsonObject]
     expectedArguments: JsonObject
     instruction: str = (
-        'Copy an offered command; optional intent is an object, e.g. {"reason":"your reason"}. '
+        'Copy an offered command; optional intent is an object, e.g. {"reason":"your reason"} or {"cityPlan":"delivered plan ID"}. '
         "Otherwise use expectedArguments for this kind. Supply confirmations only after reading consequences. "
         "Nothing was dispatched; this argument error alone does not require another player_turn."
     )
