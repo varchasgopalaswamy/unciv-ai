@@ -42,7 +42,7 @@ CITY_SUMMARY = frozenset(
 )
 UNIT_SUMMARY = frozenset(
     "handle name position health movement military idle movementSupported legalDestinations attackOptionCount "
-    "attacksRemaining worker workerJob workerJobTurnsRemaining movementOrder protection escort statuses".split()
+    "attacksRemaining canBuildImprovements workerJob workerJobTurnsRemaining movementOrder protection escort statuses".split()
 )
 
 

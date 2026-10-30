@@ -68,7 +68,7 @@ def add_overview_commands(value: JsonObject) -> None:
         }
     for unit in value.get("units", []):
         add_protection_inspections(unit)
-        if unit.get("worker"):
+        if unit.get("canBuildImprovements"):
             unit.setdefault("inspections", {})["START_WORKER_JOB"] = {
                 "tool": "unit_details",
                 "arguments": {"target": unit["handle"], "sections": ["work"]},

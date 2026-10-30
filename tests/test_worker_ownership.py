@@ -39,7 +39,7 @@ def test_worker_details_follow_handoffs_in_focused_views():
     worker = {
         "handle": "worker",
         "military": False,
-        "worker": True,
+        "canBuildImprovements": True,
         "inspections": {
             "START_WORKER_JOB": {"tool": "unit_details", "arguments": {"target": "worker", "sections": ["work"]}}
         },
@@ -67,7 +67,7 @@ async def test_gateway_advertises_worker_commands_and_preloads_work_in_targeted_
         assert {"START_WORKER_JOB", "STOP_WORKER_JOB", "CONNECT_ROAD", "MOVE_UNIT"} <= set(kinds)
         prepared = await prepare_startup(m.gateway, m.economy)
         brief = prepared["reads"]["player_turn"]
-        assert brief["units"][0]["worker"] and brief["units"][0]["owner"] == "economy"
+        assert brief["units"][0]["canBuildImprovements"] and brief["units"][0]["owner"] == "economy"
         assert any(
             name == "unit_details" and "work" in args["sections"] for name, args in decision_queries(brief, "economy")
         )
@@ -87,6 +87,32 @@ async def test_new_worker_after_full_review_starts_a_worker_only_pass(tmp_path):
         assert not m.roles.economy_status["fullReview"]
         assert m.roles.economy_arguments() == {"cities": []}
         assert m.economy.city_scope == []
+
+
+@run_async
+async def test_compact_worker_capability_can_be_saved_in_a_completed_strategic_review(tmp_path):
+    from civ_agent.review_store import ReviewStore
+    from civ_agent.startup_context import prepare_startup
+    from tests.test_strategic_review import assessment
+
+    async with managed(tmp_path) as m:
+        worker = m.host.view["map"]["units"][0]
+        worker.update(name="Worker", military=False, worker={"currentJob": "Farm", "remainingTurns": 2})
+        m.host.revision = "worker-review"
+        prepared = await prepare_startup(m.gateway, m.economy)
+        brief = prepared["reads"]["player_turn"]
+        assert "worker" not in brief["units"][0]
+        assert brief["units"][0]["canBuildImprovements"]
+        review = ReviewStore(m.memory)
+        review.prepare(
+            "worker-review", {"turn": 0, "observation": m.economy.observation, "reads": {"player_turn": brief}}, {}, 60
+        )
+        review.complete("worker-review", assessment())
+        completed = review.at_turn(0)
+        assert completed is not None and completed["status"] == "COMPLETED"
+        with m.memory.transaction() as db:
+            baseline = m.memory._meta(db, "advisories")["reviewMaterialBaseline"]
+        assert baseline["facts"]["units"][0] == ["unit1", "Worker", "Farm"]
 
 
 @run_async

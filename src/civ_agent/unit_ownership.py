@@ -32,6 +32,6 @@ def unit_owner(unit, state):
         return "military"
     # Raw observations contain the native worker picker; compact rosters retain
     # its presence as a boolean. Names, current jobs and movement are not proof.
-    if isinstance(unit.get("worker"), dict) or unit.get("worker") is True:
+    if isinstance(unit.get("worker"), dict) or unit.get("canBuildImprovements") is True:
         return "economy"
     return "gameplay"

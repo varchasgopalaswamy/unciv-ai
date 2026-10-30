@@ -192,7 +192,7 @@ class UnitSummary(BoundaryModel):
     settlementStatus: str | None = None
     order: str | None = None
     automated: bool = False
-    worker: bool = False
+    canBuildImprovements: bool = False
     workerJob: str | None = None
     workerJobTurnsRemaining: int | None = None
     promotions: JsonObject | None = None
@@ -470,7 +470,7 @@ def overview(snapshot: JsonObject) -> JsonObject:
                 "attacksRemaining": combat["attacksRemaining"],
                 "order": (combat.get("order") or {}).get("action"),
                 "automated": (combat.get("order") or {}).get("automated", False),
-                "worker": unit.get("worker") is not None,
+                "canBuildImprovements": unit.get("worker") is not None,
                 "workerJob": (unit.get("worker") or {}).get("currentJob"),
                 "workerJobTurnsRemaining": (unit.get("worker") or {}).get("remainingTurns"),
                 "promotions": promotion_summary(combat.get("promotions")),
