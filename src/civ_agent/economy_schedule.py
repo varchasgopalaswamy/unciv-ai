@@ -5,6 +5,7 @@ import json
 
 from civ_agent.memory_store import RecordStore, expired_at
 from civ_agent.protocol import JsonObject
+from civ_agent.unit_ownership import unit_owner
 from civ_agent.war_state import war_opponents
 
 
@@ -13,8 +14,32 @@ def _position(tile):
     return f"{position.get('x', 0)},{position.get('y', 0)}"
 
 
-def economic_facts(view, plans, interval):
-    """Omit clocks, stored work, unit movement and ordinary treasury growth."""
+def worker_facts(view, state):
+    """Track decisions and visible danger, not ordinary job countdowns."""
+    result = {}
+    for unit in (view.get("map") or {}).get("units", view.get("units", [])):
+        if unit_owner(unit, state) != "economy":
+            continue
+        worker = unit.get("worker") or {}
+        destination = (unit.get("movementOrder") or {}).get("destination")
+        order = ((unit.get("combat") or {}).get("order") or {}).get("action")
+        result[unit["handle"]] = {
+            "job": worker.get("currentJob"),
+            "queue": [step["name"] for step in worker.get("queue", [])],
+            "destination": destination,
+            "position": unit.get("position"),
+            "health": unit.get("health"),
+            "needsOrders": not worker.get("currentJob")
+            and not destination
+            and not order
+            and float(str(unit.get("movement", "0")).partition("/")[0]) > 0,
+            "nearbyHostiles": unit.get("nearbyHostiles", []),
+        }
+    return result
+
+
+def economic_facts(view, plans, interval, state=None):
+    """Omit clocks, stored work and ordinary treasury growth."""
     economy = view.get("economy") or {}
     income = economy.get("goldPerTurn", 0)
     gold = economy.get("availableGold", economy.get("treasury", 0))
@@ -60,6 +85,7 @@ def economic_facts(view, plans, interval):
         }
     facts: JsonObject = {
         "cities": cities,
+        "workers": worker_facts(view, state or {}),
         # These are wakeup bands, never gameplay restrictions or calculations.
         "happinessBand": sum(happiness < threshold for threshold in (0, -10, -20)),
         "deficit": income < 0,
@@ -137,10 +163,11 @@ class EconomySchedule:
         with self.memory.transaction() as db:
             saved = self.memory._meta(db, "economy:schedule", {})
             plans = self._plans(db, turn)
+            state = self.memory._meta(db, "war:state", {})
         last = saved.get("lastReviewTurn")
         full_turn = saved.get("lastFullReviewTurn", last)
         due = full_turn + self.interval if full_turn is not None else None
-        facts = economic_facts(view, plans, self.interval)
+        facts = economic_facts(view, plans, self.interval, state)
         baseline = saved.get("baseline") or {}
         old_cities = baseline.get("cities", {})
         reviewed = saved.get("cityReviewTurns", {})
@@ -148,6 +175,20 @@ class EconomySchedule:
         pending = wake_reasons(baseline, facts) if baseline else []
         dirty = {handle for handle, city in facts["cities"].items() if city != old_cities.get(handle)}
         full = False
+        worker_turn = saved.get("workerReviewTurn")
+        previous_workers = baseline.get("workers", {})
+        for handle, worker in facts["workers"].items():
+            old = previous_workers.get(handle)
+            if old is None:
+                reasons.append("New worker under Economy control: " + handle)
+            elif worker["needsOrders"] and (worker_turn != turn or worker != old):
+                reasons.append("Worker needs orders: " + handle)
+            elif (old.get("job") and not worker["job"]) or (old.get("destination") and not worker["destination"]):
+                reasons.append("Worker job or movement completed or interrupted: " + handle)
+            elif worker["health"] != old.get("health") or worker["nearbyHostiles"] != old.get("nearbyHostiles", []):
+                reasons.append("Worker health or visible threats changed: " + handle)
+        if previous_workers.keys() - facts["workers"].keys():
+            reasons.append("Worker lost or reassigned")
         if facts["cities"]:
             if not baseline or full_turn is None:
                 reasons.append("First economy review")
@@ -231,6 +272,8 @@ class EconomySchedule:
         return {
             "lastReviewTurn": last,
             "lastFullReviewTurn": full_turn,
+            "workerReviewTurn": worker_turn,
+            "workers": sorted(facts["workers"]),
             "cityReviewTurns": {
                 handle: reviewed.get(handle, last if handle in old_cities else None) for handle in facts["cities"]
             },
@@ -247,10 +290,11 @@ class EconomySchedule:
             if self.memory._meta(db, "epoch") != view.get("epoch"):
                 raise ValueError("STALE_EPOCH")
             plans = self._plans(db, turn)
-            facts = economic_facts(view, plans, self.interval)
+            state = self.memory._meta(db, "war:state", {})
+            facts = economic_facts(view, plans, self.interval, state)
             selected = set(facts["cities"]) if full else set(cities or [])
             if observed is not None:
-                delivered = economic_facts(observed, plans, self.interval)
+                delivered = economic_facts(observed, plans, self.interval, state)
                 if full and facts != delivered:
                     return False
                 if not full and (
@@ -284,7 +328,8 @@ class EconomySchedule:
                     if full
                     else saved.get("lastFullReviewTurn", saved.get("lastReviewTurn")),
                     "cityReviewTurns": reviewed,
-                    "baseline": facts if full else {**previous, "cities": acknowledged},
+                    "workerReviewTurn": turn,
+                    "baseline": facts if full else {**previous, "cities": acknowledged, "workers": facts["workers"]},
                 },
             )
             return True

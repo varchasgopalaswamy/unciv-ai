@@ -42,7 +42,7 @@ CITY_SUMMARY = frozenset(
 )
 UNIT_SUMMARY = frozenset(
     "handle name position health movement military idle movementSupported legalDestinations attackOptionCount "
-    "attacksRemaining workerJob workerJobTurnsRemaining movementOrder protection escort statuses".split()
+    "attacksRemaining worker workerJob workerJobTurnsRemaining movementOrder protection escort statuses".split()
 )
 
 
@@ -60,7 +60,7 @@ def role_overview(value, view, *, roles=None, purpose="gameplay", social=None):
         result["units"] = []
         for unit in roster:
             owner = roles.unit_owner(unit) if roles is not None else purpose
-            actionable = owner == {"main": "gameplay", "military": "military"}.get(view)
+            actionable = owner == {"main": "gameplay", "economy": "economy", "military": "military"}.get(view)
             if actionable or not unit.get("military"):
                 row = copy.deepcopy(unit) if actionable else select(unit, UNIT_SUMMARY)
                 row["owner"] = owner
@@ -167,6 +167,8 @@ def label_commands(value, roles, purpose, observation):
     """Add metadata at offer wrappers, never inside copyable argument objects."""
     from types import SimpleNamespace
 
+    from civ_agent.economy_roles import CITY_COMMANDS
+
     job = SimpleNamespace(purpose=purpose, observation=observation)
 
     def access(command):
@@ -189,7 +191,7 @@ def label_commands(value, roles, purpose, observation):
         if owner:
             result["owner"] = owner
             result["tool"] = "economy_request" if owner == "economy" else "role_message"
-        if purpose == "gameplay" and owner == "economy":
+        if purpose == "gameplay" and owner == "economy" and command["kind"] in CITY_COMMANDS:
             result["emergencyOverride"] = {"tool": "city_override", "city": command.get("target")}
         return result
 

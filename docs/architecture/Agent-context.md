@@ -40,8 +40,10 @@ uncertainty. `roleBrief` identifies omissions and focused retrieval tools;
 `view="full"` retains all permitted observations. Missing information is unknown,
 not evidence of absence. Ordinary role ownership checks also generate command
 labels: metadata sits beside copyable command arguments and identifies direct
-actions, requests to another role and Main's existing `city_override`. Workers,
-role concurrency, native advice and gameplay legality keep their existing rules.
+actions, requests to another role and Main's existing `city_override` for cities.
+Economy receives actionable details for ordinary unescorted workers. Assigning
+escort duty transfers both units to Main; release returns their ordinary roles.
+Role concurrency, native advice and gameplay legality keep their existing rules.
 
 | Job | Prepared definitions |
 | --- | --- |

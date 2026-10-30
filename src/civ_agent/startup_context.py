@@ -167,7 +167,7 @@ def memory_topics(reads: JsonObject, advice: JsonObject | None = None) -> set[st
 def decision_queries(view: JsonObject, purpose: str = "gameplay") -> list[tuple[str, JsonObject]]:
     """Select bounded, action-enabling local details advertised by the overview."""
     unit_sections: dict[str, list[str]] = {}
-    for unit in view.get("units", []) if purpose != "economy" else []:
+    for unit in view.get("units", []):
         if unit.get("owner", purpose) != purpose:
             continue
         inspections = unit.get("inspections") or {}

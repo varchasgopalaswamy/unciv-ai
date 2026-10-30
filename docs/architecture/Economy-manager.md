@@ -11,8 +11,11 @@ drain, negotiations close, and a fresh native turn review permits advancement.
 
 The economy manager owns focus, citizen and specialist allocation, growth flags,
 construction queues, purchases, building sales, city tiles, and shared-city tile
-allocation. Main owns strategy, research, policies, workers, civilian and escort
-movement, declarations and capture decisions. Military owns other combat-unit
+allocation, plus ordinary unescorted workers identified by the native worker picker.
+Main owns strategy, research, policies, other civilians, both units in an escort
+assignment, declarations and capture decisions. Assigning worker escort duty
+transfers the worker to Main; releasing it returns the worker to Economy. Ownership
+checks cover linked native moves and swaps as well as individual commands. Military owns other combat-unit
 movement, combat and upgrades in peace and war. All roles can spend available treasury gold.
 Purchasing units belongs to economy management; deploying them belongs to the
 appropriate unit controller. A newly purchased unit with movement reopens its
@@ -46,7 +49,12 @@ full economy pass. Urgent city events start a targeted review; they do not reset
 the full-review clock. Each pass retains fresh empire constraints, while its
 preload and city advice focus on the selected cities and their plans. A full
 review covers every owned city. `1` requests a full review every own turn with cities.
-Before founding the first city the economy role sleeps. Restarting a service or
+Without cities or workers needing attention the economy role sleeps. New workers,
+idle workers with movement on each own turn, completed or interrupted jobs/travel,
+and changed worker health or visible threats trigger worker reviews. A deliberate
+hold is acknowledged once per turn; ongoing jobs do not wake Economy just because
+their remaining time decreases. Worker-only passes may select zero cities and do
+not reset the full city-review clock. Restarting a service or
 resuming a checkpoint is not itself a wakeup: the saved baseline and review turn
 are restored with private memory.
 

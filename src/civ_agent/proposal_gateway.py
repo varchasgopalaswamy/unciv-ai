@@ -383,6 +383,7 @@ class ProposalGateway:
         catalogue = copy.deepcopy(job.catalogue)
         if self.role_coordinator is not None and job.purpose in {"gameplay", "economy", "military"}:
             from civ_agent.economy_roles import CITY_COMMANDS
+            from civ_agent.unit_ownership import WORKER_COMMANDS
 
             for entry in catalogue:
                 if entry["name"] == "player_command":
@@ -391,7 +392,7 @@ class ProposalGateway:
                         kind
                         for kind in kinds
                         if kind not in {"END_TURN", "AUTOPLAY", "MOVE_AUTOMATED_UNITS"}
-                        and (job.purpose != "economy" or kind in CITY_COMMANDS)
+                        and (job.purpose != "economy" or kind in CITY_COMMANDS | WORKER_COMMANDS)
                         and (job.purpose != "military" or kind in MILITARY_COMMANDS)
                     }
                     entry["inputSchema"] = command_schema(allowed_kinds)

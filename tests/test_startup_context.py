@@ -36,6 +36,7 @@ def test_startup_details_follow_role_responsibilities():
         "units": [
             {
                 "handle": "unit1",
+                "owner": "economy",
                 "inspections": {
                     "SET_UNIT_ORDER": {
                         "tool": "unit_details",
@@ -48,9 +49,9 @@ def test_startup_details_follow_role_responsibilities():
     }
     unit = ("unit_details", {"target": "unit1", "sections": ["orders"]})
     city = ("construction_details", {"target": "city1", "names": ["Granary"]})
-    assert decision_queries(view, "economy") == [city]
-    assert decision_queries(view, "military") == [unit]
-    assert decision_queries(view) == [unit, city]
+    assert decision_queries(view, "economy") == [unit, city]
+    assert decision_queries(view, "military") == []
+    assert decision_queries(view) == [city]
 
 
 def test_victory_comparison_is_preloaded_once_and_chart_queries_pass_through(tmp_path):

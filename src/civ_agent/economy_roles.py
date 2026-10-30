@@ -13,6 +13,7 @@ from civ_agent.memory_records import InitiativeDecision
 from civ_agent.protocol import JsonObject
 from civ_agent.schemas import BoundaryModel
 from civ_agent.tls import write_private_json
+from civ_agent.unit_ownership import WORKER_COMMANDS, unit_owner
 from civ_agent.war_state import MILITARY_COMMANDS, WarStore, goal_versions, war_opponents
 
 ECONOMY_WAIT_SECONDS = 300
@@ -507,7 +508,7 @@ class TurnRoles:
             await self.save()
 
     def unit_owner(self, unit):
-        return "military" if unit.get("military") and unit["handle"] not in self.war_state["escorts"] else "gameplay"
+        return unit_owner(unit, self.war_state)
 
     def unit_problem(self, job, arguments):
         role, kind = job.purpose, arguments["kind"]
@@ -524,7 +525,7 @@ class TurnRoles:
         }
         affected = set()
         target = units.get(arguments.get("target"))
-        if kind in MILITARY_COMMANDS and kind != "CITY_ATTACK" and target is None:
+        if kind in MILITARY_COMMANDS | WORKER_COMMANDS and kind != "CITY_ATTACK" and target is None:
             return {"error": "OWNED_UNIT_REQUIRED", "applied": False}
         if target:
             affected.add(target["handle"])
@@ -618,7 +619,11 @@ class TurnRoles:
                 )
                 if name == "role_message"
                 else (
-                    [r for r in ("gameplay", "military") if r != job.purpose]
+                    [
+                        r
+                        for r in ("gameplay", "military", "economy")
+                        if r != job.purpose and (r != "economy" or name == "escort_assignment")
+                    ]
                     if name in {"war_goals", "escort_assignment"}
                     else []
                 )
@@ -629,7 +634,11 @@ class TurnRoles:
                         role,
                         "New internal coordination requires attention. Apply the next coordinationUpdate or full "
                         "economyCoordination snapshot before choosing an action. Read war_goals for additional history.",
+                        scoped=name == "escort_assignment",
                     )
+            if name == "escort_assignment":
+                self.economy_revision = None
+                self.economy_observation = None
             await self.save()
         return result
 
@@ -664,7 +673,7 @@ class TurnRoles:
         problem = self.unit_problem(job, arguments)
         if problem:
             return problem
-        if kind == "AUTOPLAY" or (role == "economy" and kind not in CITY_COMMANDS):
+        if kind == "AUTOPLAY" or (role == "economy" and kind not in CITY_COMMANDS | WORKER_COMMANDS):
             return {"error": "ROLE_ACTION_NOT_PERMITTED", "applied": False}
         if kind == "REASSIGN_CITY_TILE":
             city = next(

@@ -9,6 +9,7 @@ import pytest
 
 from civ_agent.economy_roles import TurnRoles
 from civ_agent.economy_schedule import EconomySchedule
+from civ_agent.protocol import JsonObject
 from civ_agent.service_io import ServiceIO
 from tests.test_structured_memory import create, setup
 
@@ -86,6 +87,67 @@ def test_ordinary_progress_and_transport_changes_do_not_wake(scheduled):
     assert not status["reasons"] and not status["pendingReasons"] and not status["cities"]
     assert not EconomySchedule(schedule.memory, 5).assess(view, 5, [])["reasons"]
     assert schedule.assess(view, 9, [])["reasons"] == ["Periodic economy review due"]
+
+
+def test_workers_wake_without_resetting_city_clock_and_holds_are_acknowledged(scheduled, tmp_path):
+    schedule, view = scheduled
+    worker = {"handle": "worker1", "worker": {"currentJob": None}, "movement": "2/2", "health": 100}
+    view["map"] = {"units": [worker]}
+    status = schedule.assess(view, 5, [])
+    assert status["reasons"] == ["New worker under Economy control: worker1"]
+    assert status["cities"] == [] and not status["fullReview"]
+    assert schedule.complete(view, 5, view, cities=[], full=False)
+    assert not schedule.assess(view, 5, [])["reasons"]
+    status = schedule.assess(view, 6, [])
+    assert status["reasons"] == ["Worker needs orders: worker1"]
+    assert status["lastFullReviewTurn"] == 4 and status["nextReviewTurn"] == 9
+    checkpoint = tmp_path / "workers.json"
+    checksum = schedule.memory.backup(checkpoint)
+    schedule.complete(view, 6, view, cities=[], full=False)
+    schedule.memory.restore(checkpoint, checksum, "g2")
+    view["epoch"] = "g2"
+    assert not EconomySchedule(schedule.memory, 5).assess(view, 5, [])["reasons"]
+    assert EconomySchedule(schedule.memory, 5).assess(view, 6, [])["reasons"] == status["reasons"]
+
+
+def test_worker_jobs_routes_threats_and_unseen_changes(scheduled):
+    schedule, view = scheduled
+    worker: JsonObject = {"handle": "w1", "worker": {"currentJob": "Farm", "remainingTurns": 4}, "movement": "2/2"}
+    view["map"] = {"units": [worker]}
+    schedule.complete(view, 4)
+    worker["worker"]["remainingTurns"] = 3
+    assert not schedule.assess(view, 5, [])["reasons"]
+    observed = copy.deepcopy(view)
+    worker["worker"]["currentJob"] = None
+    assert schedule.assess(view, 5, [])["reasons"]
+    assert not schedule.complete(view, 5, observed, cities=[], full=False)
+    worker["movementOrder"] = {"destination": {"x": 3, "y": 1}}
+    schedule.complete(view, 5, cities=[], full=False)
+    worker["position"] = {"x": 2, "y": 1}
+    assert not schedule.assess(view, 6, [])["reasons"]
+    worker["movementOrder"] = None
+    worker["movement"] = "0/2"
+    assert "completed or interrupted" in schedule.assess(view, 6, [])["reasons"][0]
+    schedule.complete(view, 6, cities=[], full=False)
+    worker["nearbyHostiles"] = [{"name": "Barbarian Warrior", "distance": 1}]
+    assert "visible threats changed" in schedule.assess(view, 6, [])["reasons"][0]
+
+
+def test_workers_before_cities_and_explicit_escort_handoff(scheduled):
+    schedule, view = scheduled
+    view["cities"] = []
+    worker = {"handle": "w1", "worker": {}, "movement": "2/2"}
+    view["map"] = {"units": [worker]}
+    assert schedule.assess(view, 5, [])["reasons"] == ["New worker under Economy control: w1"]
+    schedule.complete(view, 5, cities=[], full=False)
+    with schedule.memory.transaction() as db:
+        schedule.memory._set(db, "war:state", {"escorts": {"soldier": {"civilian": "w1"}}})
+    assert schedule.assess(view, 5, [])["reasons"] == ["Worker lost or reassigned"]
+    schedule.complete(view, 5, cities=[], full=False)
+    assert not schedule.assess(view, 6, [])["reasons"]
+    with schedule.memory.transaction() as db:
+        schedule.memory._set(db, "war:state", {"escorts": {}})
+    assert schedule.assess(view, 6, [])["reasons"] == ["New worker under Economy control: w1"]
 
 
 @pytest.mark.parametrize(
