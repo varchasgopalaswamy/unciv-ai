@@ -30,7 +30,9 @@ def protocol_audit(path):
                     confirmed = bool(result.get("actionSummary")) and not code
                     if kind in {"START_WORKER_JOB", "STOP_WORKER_JOB", "CONNECT_ROAD"} and confirmed:
                         jobs[(role, kind)] += 1
-                    intent = arguments.get("intent") or {}
+                    intent = arguments.get("intent")
+                    # Durable calls also include rejected model arguments.
+                    intent = intent if isinstance(intent, dict) else {}
                     if intent.get("cityPlan") and not intent.get("reason"):
                         citation_only += confirmed
                         rejected_citations += code in {"INVALID_TOOL_ARGUMENTS", "INVALID_COMMAND_ARGUMENTS"}

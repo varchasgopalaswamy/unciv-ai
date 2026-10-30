@@ -29,6 +29,12 @@ def test_protocol_audit_counts_only_confirmed_orders_and_retains_exact_holds(tmp
                 {"kind": "SET_CITY_FOCUS", "intent": {"cityPlan": "mem1"}},
                 {"error": "INVALID_TOOL_ARGUMENTS"},
             ),
+            (
+                "e",
+                "player_command",
+                {"kind": "SET_CITY_FOCUS", "intent": "Prioritize food"},
+                {"error": "INVALID_TOOL_ARGUMENTS"},
+            ),
             ("m", "military_review", {}, {"militaryCompletion": {"items": []}}),
             ("m", "finish_role", {}, {"error": "MILITARY_COMPLETION_REVIEW_REQUIRED"}),
             (
@@ -49,6 +55,7 @@ def test_protocol_audit_counts_only_confirmed_orders_and_retains_exact_holds(tmp
     audit = protocol_audit(tmp_path)
     assert audit["confirmedWorkerOrders"] == [{"role": "economy", "kind": "START_WORKER_JOB", "count": 1}]
     assert audit["confirmedPlanOnlyCommands"] == audit["rejectedPlanOnlyArguments"] == 1
+    assert audit["toolErrors"]["INVALID_TOOL_ARGUMENTS"] == 2
     assert audit["completionReads"] == audit["completionRecoveries"] == 1
     assert audit["acceptedHoldDecisions"] == [
         {"turn": 4, "targets": ["unit1"], "reason": "Accept the risk to protect our city."}
