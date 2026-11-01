@@ -45,6 +45,33 @@ def test_invalid_opening_advice_becomes_unavailable_and_releases_gameplay(tmp_pa
     asyncio.run(run())
 
 
+def test_terminal_policy_rejection_does_not_restart_review(tmp_path):
+    async def run():
+        async with reviewing(tmp_path, attempts=3) as (service, process):
+            await process.notification(
+                "turn/completed",
+                {
+                    "threadId": process.thread_id,
+                    "turn": {
+                        "id": process.turn_id,
+                        "status": "failed",
+                        "error": {
+                            "message": "Invalid prompt: your prompt was flagged as potentially violating our usage policy. PRIVATE",
+                        },
+                    },
+                },
+            )
+            await settled(service)
+            task = review_task(service)
+            assert task["status"] == "UNAVAILABLE" and task["attempts"] == 1
+            record = next(row for row in service.records.values() if row.get("purpose") == "review")
+            assert record["error"] == "ValueError: PROMPT_POLICY_REJECTED"
+            assert process.closed
+            assert service.health()["runFailure"] is None
+
+    asyncio.run(run())
+
+
 @pytest.mark.parametrize("method", ["service/modelStatus", "service/requestFailed"])
 def test_quota_exhaustion_preserves_pending_review_without_spending_repair_attempts(tmp_path, method):
     async def run():
@@ -112,8 +139,8 @@ def test_invalid_report_gets_one_same_thread_correction(tmp_path, monkeypatch):
             await asyncio.wait_for(repaired.wait(), 3)
             assert len(process.factory.instances) == 1
             assert starts[0]["threadId"] == starts[1]["threadId"]
-            assert "review" in starts[1]["input"][0]["text"].lower()
-            assert "correct" in starts[1]["input"][0]["text"].lower()
+            assert "review" in starts[1]["toolOutput"]["output"].lower()
+            assert "correct" in starts[1]["toolOutput"]["output"].lower()
             assert starts[0]["input"] != starts[1]["input"]
             await message(process, json.dumps(assessment()))
             await complete(process)
@@ -121,6 +148,50 @@ def test_invalid_report_gets_one_same_thread_correction(tmp_path, monkeypatch):
             assert review_task(service)["attempts"] == 2
             assert review_task(service)["status"] == "COMPLETED"
             assert service.memory.snapshot("gameplay", 0)["strategicAdvice"] is not None
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("second_failure", [False, True])
+def test_whitespace_recovery_uses_existing_review_attempt_allowance(tmp_path, monkeypatch, second_failure):
+    async def run():
+        repaired = asyncio.Event()
+        original = ReviewCodex.request
+        starts = []
+
+        async def request(process, method, payload):
+            result = await original(process, method, payload)
+            if method == "turn/start" and "outputSchema" in payload:
+                starts.append(payload)
+                if len(starts) == 2:
+                    repaired.set()
+            return result
+
+        monkeypatch.setattr(ReviewCodex, "request", request)
+        async with reviewing(tmp_path, attempts=2) as (service, process):
+
+            async def stall():
+                await process.notification(
+                    "service/generationFailed",
+                    {"threadId": process.thread_id, "turnId": process.turn_id, "reason": "REVIEW_OUTPUT_STALLED"},
+                )
+                await complete(process, "interrupted")
+
+            await stall()
+            await asyncio.wait_for(repaired.wait(), 3)
+            if second_failure:
+                await stall()
+            else:
+                await message(process, json.dumps(assessment()))
+                await complete(process)
+            await settled(service)
+            assert review_task(service)["attempts"] == 2
+            assert review_task(service)["status"] == ("UNAVAILABLE" if second_failure else "COMPLETED")
+            assert len(starts) == 2 and len(process.factory.instances) == 1
+            assert starts[0]["threadId"] == starts[1]["threadId"]
+            assert starts[0]["outputSchema"] == starts[1]["outputSchema"]
+            record = next(row for row in service.records.values() if row.get("purpose") == "review")
+            assert record["generationRetries"] == 1 and not record["usageComplete"]
 
     asyncio.run(run())
 

@@ -15,6 +15,7 @@ from civ_agent.agent_service import AgentService, ServiceError, server_ssl_conte
 from civ_agent.protocol import JsonObject
 from civ_agent.telemetry import jobs
 from civ_agent.tls import client_ssl_context, ensure_server_certificate, write_private
+from tests.structured_helpers import decision_text
 from tests.test_proposal_gateway import Host
 
 
@@ -124,8 +125,26 @@ class FakeCodex:
                     for r in self.factory.service.turn_roles.requests
                     if r["status"] == "pending" and r.get("priority") == "urgent"
                 ]
-                await self.factory.service.gateway.invoke(
-                    self.job, "finish_role", {"requests": requests}, "economy-finish"
+                arguments = {"requests": requests}
+                if self.economy:
+                    assert self.job is not None
+                    workers = (self.job.delivered_overview or {}).get("roleCompletion", {}).get("idleWorkers", [])
+                    if workers:
+                        arguments["workerSkips"] = [
+                            {"targets": workers, "reason": "Deliberate hold in this lifecycle fixture."}
+                        ]
+                await self.notification(
+                    "item/completed",
+                    {
+                        "threadId": self.thread_id,
+                        "turnId": "economy-turn",
+                        "item": {
+                            "id": "decision",
+                            "type": "agentMessage",
+                            "phase": "final_answer",
+                            "text": decision_text(payload["outputSchema"], {"kind": "finish", "arguments": arguments}),
+                        },
+                    },
                 )
                 await self.notification(
                     "turn/completed",
@@ -182,8 +201,6 @@ class FakeCodex:
                 },
             )
             if getattr(self, "complete", self.factory.complete):
-                if self.factory.service.gateway.role_coordinator is not None:
-                    await self.factory.service.gateway.invoke(self.job, "finish_role", {}, "finish:" + turn_id)
                 common = {"threadId": self.thread_id, "turnId": turn_id}
                 await self.notification(
                     "item/started",
@@ -218,7 +235,7 @@ class FakeCodex:
                             "id": "summary",
                             "type": "agentMessage",
                             "phase": "final_answer",
-                            "text": getattr(self, "summary", self.factory.summary),
+                            "text": decision_text(payload["outputSchema"], {"kind": "finish", "arguments": {}}),
                         },
                     },
                 )
@@ -271,7 +288,19 @@ class FakeFactory:
                     and not service.gateway.run_failure
                     and not job.pending_calls
                 ):
-                    await service.gateway.invoke(job, "finish_role", {}, "fixture:finish:" + service.turn_id)
+                    await original(
+                        "item/completed",
+                        {
+                            "threadId": params["threadId"],
+                            "turnId": service.turn_id,
+                            "item": {
+                                "id": "manual-finish",
+                                "type": "agentMessage",
+                                "phase": "final_answer",
+                                "text": service.decision_loop.contract.encode({"kind": "finish", "arguments": {}}),
+                            },
+                        },
+                    )
             await original(method, params)
 
         service._notification = notification
@@ -411,6 +440,116 @@ class AgentServiceTests(AgentServiceTestCase):
         await self.service.start(self.payload())
         result = await self.terminal()
         self.assertEqual((result["phase"], result["error"]), ("FAILED", "STATE_STORE_FAILED"))
+
+    async def test_host_state_failure_is_not_reported_as_a_model_disconnect(self):
+        from unittest.mock import AsyncMock
+
+        from civ_agent.civilization_state import StateConflict
+
+        self.service._model_turn = AsyncMock(side_effect=StateConflict("private exception text"))
+        await self.service.start(self.payload())
+        result = await self.terminal()
+        self.assertEqual((result["phase"], result["error"]), ("FAILED", "HOST_STATE_CONFLICT"))
+        self.service.diagnostics.close()
+        text = self.service.diagnostics.path.read_text()
+        event = next(row for row in map(json.loads, text.splitlines()) if row["event"] == "gameplay_failed")
+        self.assertEqual(event["activationId"], result["activationId"])
+        self.assertEqual(event["exception"]["type"], "civ_agent.civilization_state.StateConflict")
+        self.assertNotIn("private exception text", text)
+
+    async def test_malformed_host_state_is_not_reported_as_a_model_disconnect(self):
+        from unittest.mock import AsyncMock
+
+        self.service._model_turn = AsyncMock(side_effect=KeyError("private exception text"))
+        await self.service.start(self.payload())
+        result = await self.terminal()
+        self.assertEqual((result["phase"], result["error"]), ("FAILED", "HOST_PROTOCOL_ERROR"))
+
+    async def test_disconnect_preserves_guard_reason_before_failure_callback_arrives(self):
+        self.factory.complete = False
+        await self.service.start(self.payload())
+        async with asyncio.timeout(2):
+            while self.service.status()["phase"] == "STARTING":
+                await asyncio.sleep(0.001)
+        await self.service._notification("service/disconnected", {"reason": "REVIEW_OUTPUT_STALLED"})
+        await self.service._notification("service/transportFailure", {"reason": "REVIEW_OUTPUT_STALLED"})
+        result = await self.terminal()
+        self.assertEqual((result["phase"], result["error"]), ("FAILED", "REVIEW_OUTPUT_STALLED"))
+
+    async def assert_whitespace_recovery(self, stalls):
+        from unittest.mock import patch
+
+        original = FakeCodex.request
+        starts = []
+
+        async def request(process, method, payload):
+            if method == "turn/start" and not process.subordinate:
+                starts.append(payload)
+                if len(starts) <= stalls:
+                    process.factory.count += 1
+                    turn = "turn-" + str(process.factory.count)
+                    await process.notification(
+                        "service/generationFailed",
+                        {"threadId": process.thread_id, "turnId": turn, "reason": "REVIEW_OUTPUT_STALLED"},
+                    )
+                    await process.notification(
+                        "turn/completed", {"threadId": process.thread_id, "turn": {"id": turn, "status": "interrupted"}}
+                    )
+                    return {"turn": {"id": turn}}
+            return await original(process, method, payload)
+
+        with patch.object(FakeCodex, "request", request):
+            await self.service.start(self.payload())
+            result = await self.terminal()
+        self.assertEqual(len(starts), 2)
+        self.assertEqual(starts[0]["threadId"], starts[1]["threadId"])
+        self.assertEqual(starts[0]["outputSchema"], starts[1]["outputSchema"])
+        self.assertEqual(len(self.factory.instances), 1)
+        self.assertIn("REVIEW_OUTPUT_STALLED", starts[1]["toolOutput"]["output"])
+        self.assertEqual(result["generationRetries"], 1)
+        self.assertFalse(result["mainUsageComplete"])
+        return result
+
+    async def test_whitespace_recovery_continues_main_without_watchdog_failure(self):
+        result = await self.assert_whitespace_recovery(1)
+        self.assertEqual(result["phase"], "COMPLETED")
+
+    async def test_repeated_whitespace_failure_pauses_main_after_one_retry(self):
+        result = await self.assert_whitespace_recovery(2)
+        self.assertEqual((result["phase"], result["error"]), ("FAILED", "STRUCTURED_GENERATION_RECOVERY_LIMIT"))
+
+    async def test_terminal_prompt_policy_rejection_does_not_start_another_main_turn(self):
+        from unittest.mock import patch
+
+        original = FakeCodex.request
+        starts = []
+
+        async def request(process, method, payload):
+            if method == "turn/start" and not process.subordinate:
+                starts.append(payload)
+                turn = "policy-rejected"
+                await process.notification(
+                    "turn/completed",
+                    {
+                        "threadId": process.thread_id,
+                        "turn": {
+                            "id": turn,
+                            "status": "failed",
+                            "error": {
+                                "message": "Invalid prompt: your prompt was flagged as potentially violating our usage policy. PRIVATE",
+                            },
+                        },
+                    },
+                )
+                return {"turn": {"id": turn}}
+            return await original(process, method, payload)
+
+        with patch.object(FakeCodex, "request", request):
+            await self.service.start(self.payload())
+            result = await self.terminal()
+        self.assertEqual(len(starts), 1)
+        self.assertEqual((result["phase"], result["error"]), ("FAILED", "PROMPT_POLICY_REJECTED"))
+        self.assertNotIn("PRIVATE", json.dumps(result))
 
     async def test_failed_terminal_save_is_visible_to_the_scheduler(self):
         from unittest.mock import patch
@@ -578,7 +717,7 @@ class AgentServiceTests(AgentServiceTestCase):
         self.assertNotEqual(starts[0]["cwd"], starts[-1]["cwd"])
         self.assertIn("Do not access the filesystem", instructions)
         self.assertNotIn("files: turn_", prompt)
-        self.assertIn("use finish_role", instructions)
+        self.assertIn("use the finish decision", instructions)
         self.assertNotIn("Previous strategy, next-turn handoff and historical knowledge", instructions)
         self.assertNotIn("Civ tool discovery:", prompt)
         metadata = self.service.records[second["activationId"]]["startup"]

@@ -8,7 +8,7 @@ from jsonschema import Draft202012Validator
 from pydantic import ValidationError
 
 from civ_agent.economy_roles import CITY_COMMANDS
-from civ_agent.game_commands import COMMANDS, command_arguments, command_schema
+from civ_agent.game_commands import COMMANDS, command_arguments, command_kinds, command_schema
 from civ_agent.observations import ConstructionDetails
 from civ_agent.proposal_gateway import ProposalGateway
 from civ_agent.strategic_review import frozen_read
@@ -87,11 +87,13 @@ def test_reduced_command_schemas_preserve_every_allowed_variant_and_its_optional
         args = {"kind": kind, **{key: values[key] for key in variant["required"] if key != "kind"}}
         validator.validate(args)
         assert command_arguments(args) == args
-        assert set(variant["properties"]) - {"reviewAfter"} <= schema["properties"].keys()
-    assert ("reviewAfter" in schema["properties"]) == military
-    assert set(schema["properties"]["kind"]["enum"]) == allowed
-    for unused in ("queue", "targets", "deferReason", "deferChoices", "initiativeDecisions"):
-        assert unused not in schema["properties"]
+        actual = schema["$defs"][reference.rsplit("/", 1)[1]]["properties"]
+        assert set(variant["properties"]) - {"reviewAfter"} <= actual.keys()
+        assert ("reviewAfter" in actual) == military
+        assert not validator.is_valid({**args, "invented": True})
+        for required in set(variant["required"]) - {"kind"}:
+            assert not validator.is_valid({key: value for key, value in args.items() if key != required})
+    assert command_kinds(schema) == allowed
     assert len(json.dumps(schema)) < len(json.dumps(command_schema()))
 
 
@@ -101,8 +103,8 @@ def test_gateway_uses_managed_schema_but_main_retains_city_override_commands(tmp
             economy = {t["name"]: t for t in await fixture.gateway.tools(fixture.economy)}
             main = {t["name"]: t for t in await fixture.gateway.tools(fixture.main)}
             assert "economy_wait" in main and "economy_wait" not in economy
-            assert "queue" not in economy["player_command"]["inputSchema"]["properties"]
-            assert CITY_COMMANDS <= set(main["player_command"]["inputSchema"]["properties"]["kind"]["enum"])
+            assert "SET_RESEARCH_QUEUE" not in command_kinds(economy["player_command"]["inputSchema"])
+            assert CITY_COMMANDS <= command_kinds(main["player_command"]["inputSchema"])
             assert "city_override" in main
 
     asyncio.run(run())

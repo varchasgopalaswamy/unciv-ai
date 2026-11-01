@@ -312,6 +312,7 @@ class ChatRuntime:
         expected_turn = None
         early = {}
         early_usage = {}
+        answers = {}
 
         def record_usage(usage):
             from civ_agent.agent_service import USAGE_KEYS
@@ -321,6 +322,19 @@ class ChatRuntime:
 
         async def notification(method, params):
             nonlocal final, completed
+            from civ_agent.structured_decisions import generation_event
+
+            if method in {
+                "service/providerRequest",
+                "service/providerRejection",
+                "thread/tokenUsage/updated",
+                "turn/completed",
+                "service/requestFailed",
+                "service/transportFailure",
+                "service/approvalRequired",
+                "service/generationFailed",
+            }:
+                await generation_event(service.gateway, record, method, params)
             if method == "service/llmMetrics":
                 await record_llm_metrics(service, record, params)
                 return
@@ -343,15 +357,10 @@ class ChatRuntime:
                 await service.io.call(write_private_json, record_file, record)
                 return
             if method == "service/transportFailure":
-                if params.get("reason") in {
-                    "CODEX_NOTIFICATION_OVERFLOW",
-                    "CODEX_NOTIFICATION_FAILED",
-                    "CODEX_DISCONNECTED",
-                }:
-                    record["transportError"] = params["reason"]
-                    record["error"] = record.get("error") or params["reason"]
-                    completed = False
-                    done.set()
+                record["transportError"] = params.get("reason", "CODEX_TRANSPORT_FAILED")
+                record["error"] = record.get("error") or record["transportError"]
+                completed = False
+                done.set()
                 return
             if method in HISTORY_METHODS:
                 await service.io.call(service.history.notify, id, record["threadId"], method, params)
@@ -367,11 +376,10 @@ class ChatRuntime:
             if params.get("threadId") == record["threadId"]:
                 if method == "turn/completed":
                     turn = params.get("turn", {})
+                    early[turn.get("id")] = turn.get("status")
                     if turn.get("id") == expected_turn:
                         completed = turn.get("status") == "completed"
                         done.set()
-                    else:
-                        early[turn.get("id")] = turn.get("status")
                 elif method == "thread/tokenUsage/updated":
                     usage = params.get("tokenUsage", {})
                     if isinstance(usage, dict):
@@ -381,9 +389,9 @@ class ChatRuntime:
                             record_usage(usage)
                             await service.io.call(service.accounting.sample, record)
                 elif method == "item/completed":
-                    item = params.get("item", {})
-                    if item.get("type") == "agentMessage":
-                        final = item.get("text", "")
+                    from civ_agent.structured_decisions import capture_answer
+
+                    capture_answer(answers, params)
             if method in {"service/disconnected", "service/approvalRequired"}:
                 done.set()
 
@@ -405,8 +413,15 @@ class ChatRuntime:
 
         failure_monitor = asyncio.create_task(stop_on_failure())
 
+        from civ_agent.structured_decisions import DecisionLoop, GenerationRecoveryError
+
         try:
+            from civ_agent.decision_contracts import DecisionContract
+
             prepared = await prepare_startup(service.gateway, job)
+            decisions = DecisionLoop(
+                service.gateway, job, DecisionContract("communication", await service.gateway.tools(job)), record
+            )
             startup = startup_prompt(
                 prepared,
                 "communication",
@@ -434,6 +449,7 @@ class ChatRuntime:
                 "cwd": str(workspace),
                 "approvalPolicy": "never",
                 "sandbox": "workspace-write",
+                "dynamicTools": [],
                 "developerInstructions": startup.instructions,
                 **codex_thread_settings(self.settings, fast=service.fast),
             }
@@ -452,40 +468,68 @@ class ChatRuntime:
             await service.io.call(service.history.lifecycle, record)
             await service.io.call(write_private_json, record_file, record)
             service.gateway.commit_startup_coordination(job)
-            turn = await process.request(
-                "turn/start",
-                {
-                    "threadId": record["threadId"],
-                    "input": [{"type": "text", "text": startup.user}],
-                    "approvalPolicy": "never",
-                    "summary": "auto",
-                    **({"serviceTier": "fast"} if service.fast else {}),
-                    **({"effort": self.settings["reasoningEffort"]} if self.settings.get("reasoningEffort") else {}),
-                },
-            )
-            expected_turn = turn["turn"]["id"]
-            await service.io.call(service.history.bind_turn, id, expected_turn)
-            record["phase"] = "RUNNING"
-            if expected_turn in early_usage:
-                record_usage(early_usage[expected_turn])
-            await service.io.call(service.accounting.sample, record)
-            if expected_turn in early:
-                completed = early[expected_turn] == "completed"
-                done.set()
+            message = startup.user
             deadline = time.monotonic() + self.timeout
-            while not done.is_set():
-                try:
-                    await asyncio.wait_for(
-                        done.wait(), min(10, max(0.01, deadline + job.waiting_seconds() - time.monotonic()))
-                    )
-                except TimeoutError:
-                    if time.monotonic() >= deadline + job.waiting_seconds():
-                        break
-                    await service.io.call(service.accounting.sample, record, job.waiting_seconds())
-                    await service.flush_telemetry()
-                    grant = await self.social("job_heartbeat", job=id, usage=record["usage"])
-                    if not grant["granted"]:
-                        break
+            while True:
+                await service.io.call(service.history.next_conversation, id, "communication")
+                expected_turn = None
+                completed = False
+                done.clear()
+                turn = await process.request(
+                    "turn/start",
+                    {
+                        "threadId": record["threadId"],
+                        **await decisions.begin(message),
+                        "approvalPolicy": "never",
+                        "summary": "auto",
+                        **({"serviceTier": "fast"} if service.fast else {}),
+                        **(
+                            {"effort": self.settings["reasoningEffort"]} if self.settings.get("reasoningEffort") else {}
+                        ),
+                    },
+                )
+                expected_turn = turn["turn"]["id"]
+                await decisions.bind(expected_turn)
+                await service.io.call(service.history.bind_turn, id, expected_turn)
+                record["phase"] = "RUNNING"
+                if expected_turn in early_usage:
+                    record_usage(early_usage[expected_turn])
+                await service.io.call(service.accounting.sample, record)
+                if expected_turn in early:
+                    completed = early[expected_turn] == "completed"
+                    done.set()
+                while not done.is_set():
+                    try:
+                        await asyncio.wait_for(
+                            done.wait(), min(10, max(0.01, deadline + job.waiting_seconds() - time.monotonic()))
+                        )
+                    except TimeoutError:
+                        if time.monotonic() >= deadline + job.waiting_seconds():
+                            break
+                        await service.io.call(service.accounting.sample, record, job.waiting_seconds())
+                        await service.flush_telemetry()
+                        grant = await self.social("job_heartbeat", job=id, usage=record["usage"])
+                        if not grant["granted"]:
+                            break
+                if (
+                    decisions.generation_failed
+                    and expected_turn in early
+                    and not record.get("error")
+                    and time.monotonic() < deadline + job.waiting_seconds()
+                ):
+                    continue
+                if not completed:
+                    break
+                final = answers.pop(expected_turn, "")
+                message = await decisions.complete(final)
+                decisions.delivered(message)
+                completed = bool(message.get("roleFinished"))
+                if completed:
+                    break
+
+        except GenerationRecoveryError as error:
+            record["error"] = str(error)
+            raise
         except asyncio.CancelledError:
             if not service.gateway.run_failure:
                 raise
@@ -525,7 +569,12 @@ class ChatRuntime:
         trace_complete = await service.io.call(reconcile_provider_usage, record, service.provider_usage)
         await service.gateway.close(job, completed)
         record["phase"] = "FAILED" if record.get("error") else "COMPLETED" if completed else "INTERRUPTED"
-        record["usageComplete"] = trace_complete or (completed and record.get("usageReported", False))
+        record["usageComplete"] = trace_complete or (
+            completed
+            and record.get("usageReported", False)
+            and not record.get("generationFailures")
+            and not record.get("providerRejections")
+        )
         await service.io.call(service.accounting.sample, record, job.waiting_seconds())
         await service.io.call(service.history.lifecycle, record)
         await service.io.call(write_private_json, record_file, record)

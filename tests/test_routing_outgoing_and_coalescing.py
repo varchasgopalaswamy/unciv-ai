@@ -145,6 +145,7 @@ def test_urgent_message_is_not_hidden_behind_fifty_younger_batch_messages(tmp_pa
     "purpose,routing,available", [("gameplay", True, True), ("gameplay", False, False), ("communication", True, False)]
 )
 def test_acknowledgement_is_advertised_only_when_supported(purpose, routing, available):
+    from civ_agent.decision_contracts import DecisionContract
     from civ_agent.proposal_gateway import ProposalGateway
 
     tool = next(
@@ -154,6 +155,13 @@ def test_acknowledgement_is_advertised_only_when_supported(purpose, routing, ava
     )
     assert ("handledMessages" in tool["inputSchema"]["properties"]) is available
     assert ("handledMessages" in tool["description"]) is available
+    contract = DecisionContract(purpose, [tool])
+    decision = {"kind": "inspect", "operations": [{"tool": "chat_read", "arguments": {"handledMessages": ["m1"]}}]}
+    if available:
+        assert contract.parse(contract.encode(decision)) == decision
+    else:
+        with pytest.raises(ValueError):
+            contract.encode(decision)
 
 
 @pytest.mark.parametrize("remaining", [0, 8, 28])

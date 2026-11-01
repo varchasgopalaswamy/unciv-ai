@@ -10,6 +10,7 @@ import pytest
 from civ_agent.agent_service import AgentService
 from civ_agent.civilization_state import CivilizationState
 from civ_agent.coordination_context import MAX_COORDINATION_CHARACTERS, encoded, working_context
+from civ_agent.decision_contracts import DecisionContract
 from civ_agent.decisions_policy import DecisionsSettings
 from civ_agent.war_state import WarStore
 
@@ -168,6 +169,49 @@ def test_acknowledged_notices_do_not_repeat_on_next_activation(wars):
     wars.apply("epoch", "gameplay", "role_message", {"action": "acknowledge", "ids": [sent["message"]["id"]]}, "ack")
     assert not WarStore(wars.memory).read("gameplay", {})["messages"]
     assert wars.read("gameplay", {"section": "messages"})["items"][0]["text"] == "Patrol finished"
+
+
+@pytest.mark.parametrize("action", ["acknowledge", "resolve"])
+def test_request_id_confusion_returns_valid_recovery_without_changing_sibling_messages(wars, action):
+    message = wars.apply(
+        "epoch", "gameplay", "role_message", {"to": "economy", "kind": "request", "text": "Review production"}, "send"
+    )["message"]
+    before = wars.state()
+    arguments = {"action": action, "ids": [message["id"], "request451109b9b2"]}
+    if action == "resolve":
+        arguments["reason"] = "Production assessed"
+    result = wars.apply("epoch", "economy", "role_message", arguments, "confused")
+    assert result["error"] == "UNKNOWN_ROLE_MESSAGE"
+    assert result["unknownIds"] == ["request451109b9b2"]
+    assert "arguments.requests" in result["instruction"]
+    assert result["applied"] is False and wars.state() == before
+    contract = DecisionContract("economy", [{"name": "war_goals"}])
+    recovery = contract.parse(contract.encode({"kind": "inspect", "operations": result["recovery"]["reads"]}))
+    page = wars.read("economy", recovery["operations"][0]["arguments"])
+    assert page["items"] == [message]
+    corrected = {**arguments, "ids": [message["id"]]}
+    receipt = wars.apply("epoch", "economy", "role_message", corrected, "corrected")
+    assert receipt["messageIds"] == [message["id"]]
+    assert wars.apply("epoch", "economy", "role_message", corrected, "corrected") == receipt
+
+
+@pytest.mark.parametrize("action", ["acknowledge", "resolve"])
+def test_wrong_recipient_reports_ownership_and_does_not_partially_change_messages(wars, action):
+    incoming = wars.apply(
+        "epoch", "military", "role_message", {"to": "gameplay", "kind": "request", "text": "Arrange an escort"}, "in"
+    )["message"]
+    outgoing = wars.apply(
+        "epoch", "gameplay", "role_message", {"to": "military", "kind": "request", "text": "Assess readiness"}, "out"
+    )["message"]
+    before = wars.state()
+    arguments = {"action": action, "ids": [incoming["id"], outgoing["id"]]}
+    if action == "resolve":
+        arguments["reason"] = "Reviewed"
+    result = wars.apply("epoch", "gameplay", "role_message", arguments, "wrong-role")
+    assert result["error"] == "MESSAGE_RECIPIENT_REQUIRED"
+    assert result["recipients"] == {incoming["id"]: "gameplay", outgoing["id"]: "military"}
+    assert "addressed recipient" in result["instruction"]
+    assert result["applied"] is False and wars.state() == before
 
 
 def test_control_status_does_not_copy_authored_history_or_mutate_durable_record():

@@ -99,7 +99,7 @@ def provider_usage_exhausted(root):
 def reported_model_tokens(root):
     """Count each job once, including reviews, chat, failures and cached input."""
     return sum(
-        row["job"].get("usage", {}).get(key, 0)
+        (row["job"].get("usage") or {}).get(key, 0)
         for row in read_collection(path_for(root), "jobs")
         for key in ("input_tokens", "output_tokens")
     )
@@ -127,6 +127,11 @@ def main():
         "--variant", action="append", help="NAME=SOURCE_ROOT containing civ_agent; default: current checkout"
     )
     parser.add_argument("--max-invocations", type=positive, default=60)
+    parser.add_argument(
+        "--max-model-requests",
+        type=positive,
+        help="Hard shared limit of Codex provider attempts across this suite, including failed requests and compaction; requires the provider gate in every variant",
+    )
     parser.add_argument("--max-seconds", type=positive, default=14400)
     parser.add_argument("--turn-timeout", type=positive, default=1200)
     parser.add_argument(
@@ -166,6 +171,13 @@ def main():
     if root.exists() and any(root.iterdir()):
         parser.error("Use a fresh suite directory; failed attempts are retained")
     root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    request_budget = None
+    if args.max_model_requests:
+        if any(not (source / "civ_agent" / "provider_gate.py").exists() for source in sources.values()):
+            parser.error("Every variant must implement the provider gate to enforce --max-model-requests")
+        from civ_agent.provider_gate import RequestBudget
+
+        request_budget = RequestBudget(root / "provider-requests.sqlite", args.max_model_requests)
     memory_seeds = freeze_memory_seeds(cases, args.manifest, root)
     processes = []
     lock = threading.Lock()
@@ -190,6 +202,7 @@ def main():
         "previouslyCompletedTrials": args.skip_trial,
         "limits": {
             "invocations": args.max_invocations,
+            "providerRequests": args.max_model_requests,
             "seconds": args.max_seconds,
             "turnSeconds": args.turn_timeout,
             "tokens": args.max_tokens,
@@ -236,8 +249,16 @@ def main():
             **os.environ,
             "PYTHONPATH": str(sources[trial["variant"]]) + os.pathsep + os.environ.get("PYTHONPATH", ""),
         }
+        if args.max_model_requests:
+            environment.update(
+                CIV_MODEL_REQUEST_BUDGET=str(root / "provider-requests.sqlite"),
+                CIV_MODEL_REQUEST_LIMIT=str(args.max_model_requests),
+            )
         with (root / f"{label}.log").open("w") as log:
             with lock:
+                if request_budget is not None and request_budget.used() >= request_budget.limit:
+                    stop_reason = "Suite provider request budget exhausted; no further trials launched"
+                    stopping.set()
                 if stopping.is_set():
                     return {
                         "id": label,
@@ -280,6 +301,7 @@ def main():
             **evaluation_status(root / label, case["rounds"], code),
             "tokenBudgetStop": token_stop,
             "providerFailure": "usageLimitExceeded" if provider_limit else None,
+            "suiteProviderAttempts": request_budget.used() if request_budget is not None else None,
         }
         print(
             f"Finished {label}: {result['completedRounds']}/{result['expectedRounds']} rounds with complete accounting, "

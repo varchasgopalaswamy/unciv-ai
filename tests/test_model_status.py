@@ -120,11 +120,20 @@ def test_notices_cannot_leak_across_threads_turns_or_shutdown(terminal):
         ({"httpConnectionFailed": {"httpStatusCode": 429}}, "insufficient_quota SECRET", "usageLimitExceeded"),
         ("other", "You've hit your usage limit. SECRET", "usageLimitExceeded"),
         ("unknown_private_value", "arbitrary secret", "other"),
+        ("invalid_prompt", "Invalid prompt", "invalidPrompt"),
+        ({"invalid_prompt": {"httpStatusCode": 400}}, "Invalid prompt", "invalidPrompt"),
+        (
+            "other",
+            "Invalid prompt: your prompt was flagged as potentially violating our usage policy. SECRET",
+            "promptPolicyRejected",
+        ),
     ],
 )
 def test_errors_keep_only_known_categories_and_numeric_status(info, message, reason):
     fields = error_fields({"codexErrorInfo": info, "message": message, "additionalDetails": "SECRET_HEADERS"})
     assert fields["reason"] == reason
+    if info == {"invalid_prompt": {"httpStatusCode": 400}}:
+        assert fields["httpStatus"] == 400
     assert "secret" not in json.dumps(fields).lower()
     status = ModelStatus()
     status.begin("thread-1", "turn-1")
@@ -163,3 +172,26 @@ def test_repeated_retries_and_nonfatal_warnings_remain_visible():
     warning = status.observe("warning", {"message": "rate limit exceeded", "threadId": "thread-1"})
     assert warning is not None
     assert warning["state"] == "warning" and warning["reason"] == "rateLimitExceeded"
+
+
+@pytest.mark.parametrize(
+    "message,reason",
+    [
+        ("Code Mode is unavailable because code-mode host is disabled. PRIVATE", "codeModeDisabled"),
+        ("Model metadata for `PRIVATE` not found. Defaulting to fallback metadata", "modelMetadataMissing"),
+        ("PRIVATE unknown runtime notice", "runtimeWarning"),
+    ],
+)
+def test_runtime_warnings_do_not_invent_connection_recovery_or_erase_retries(message, reason):
+    status = ModelStatus()
+    status.begin("thread-1", "turn-1")
+    notice = required(status.observe("warning", {"threadId": "thread-1", "message": message}))
+    assert notice["state"] == "warning" and notice["reason"] == reason
+    assert "PRIVATE" not in json.dumps(notice)
+    assert status.issue is None
+    assert status.observe(*notification("item/agentMessage/delta", delta="progress")) is None
+    retry = status.retry(required(retry_log(RETRY_LINE)), "stderr")
+    status.observe("warning", {"threadId": "thread-1", "message": message})
+    assert status.issue == retry
+    recovered = required(status.observe(*notification("item/agentMessage/delta", delta="progress")))
+    assert recovered["state"] == "responding"

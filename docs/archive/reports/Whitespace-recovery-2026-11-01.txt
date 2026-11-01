@@ -1,0 +1,111 @@
+Whitespace recovery and nullable argument guidance — November 1, 2026
+
+Implemented and verified a bounded recovery for structured responses that stall
+on whitespace. This establishes recovery behavior, not that the prompt change
+eliminates the underlying model/provider failure. No paid model requests were
+made during this implementation. Both current games remain paused.
+
+The prior investigation found Terra responses stopping after an object opening,
+including Main's finish.arguments and Military's inspection arguments, then
+streaming thousands of spaces. Native-optional arguments are required nullable
+keys in the provider schema. Descriptions saying "omit" could conflict with that
+wire requirement. This is a plausible prompt ambiguity, not a proven decoder
+diagnosis. The earlier eight-request probe passed with both original and clarified
+wording and therefore did not reproduce the problem or establish improvement.
+Its evidence remains in build/whitespace-investigation-20261101.
+
+The shared decision instructions now explicitly require every key in the selected
+variant. To leave an optional argument unspecified, the model sends null;
+otherwise it supplies a value. The host converts the former to native omission.
+The existing {value: null} wrapper still distinguishes explicit clearing from
+omission. Optional memory patch fields set to plain null remain unchanged.
+Ordinary inspections explicitly use recoverBaseline: null. Compact JSON is a
+style instruction, not an additional JSON Schema requirement. No required fields,
+operation variants, legality checks or ownership constraints were removed.
+
+On REVIEW_OUTPUT_STALLED, CodexProcess rejects the whole response, sends
+turn/interrupt, and waits for both the interrupt acknowledgment and a terminal
+interrupted/completed event. The next provider window cannot open before this
+finishes. Late text and completed message items from the rejected turn are
+discarded, even after a subsequent turn starts. The interruption path does not
+wait for blocked history writes. Failed or unconfirmed interruption stops
+recovery; transport, authorization, request-budget and uncertain execution errors
+do not qualify. The existing output-size guard remains fatal.
+
+The host journals a distinct replacement decision with retryOf and repair=true
+before asking for another response. The allowance is one recovery per activation
+and epoch, including across controller reconstruction. It is not replenished
+after a successful recovery. An uncertain reservation cannot be refunded. A
+rewind rejects the old epoch. Confirmed action receipts and delivered inspection
+credit remain intact; the retry uses the same conversation and strict schema,
+without replaying the startup prompt or executing the failed response.
+
+Main, Economy and Military share the recovery path. Specialist activation retries
+cannot multiply an exhausted recovery allowance. Communication and both peace
+consultation roles have the same one-recovery limit. Strategic reviews consume
+their existing two-attempt allowance, shared with semantic report corrections.
+Exhausted advisory work retains its existing unavailable-report behavior;
+repeated gameplay stalls stop the activation for operator recovery.
+
+Failed generation identity, schema fingerprint, failure category, provider request
+identities and the replacement link remain retrievable in the decision journal.
+Recovery usage is counted as repair cost. A later successful response cannot make
+an interrupted request's missing usage complete. Closed-trace reconciliation must
+cover every admitted provider request; otherwise the known totals remain partial.
+
+The common decision instructions increased from 1,322 to 1,592 characters (+270).
+These are text sizes, not billed tokens. The schema change only clarifies the
+recoverBaseline description. Representative local fixture schema sizes are:
+  Main/gameplay:          80,210 characters
+  Economy:                38,708 characters
+  Military:               48,363 characters
+  Communication:          46,585 characters
+  Strategic review:       72,529 characters
+  Main consultation:         439 characters
+  Military consultation:     827 characters
+These fixtures are not measurements of live-game input usage. Fingerprints and
+fixture context are in provider-validation.json. Normal successful decisions add
+no extra call. A whitespace recovery can add at most one generation per activation,
+subject also to the existing request budget. Live token savings and changes in
+stall frequency remain unmeasured.
+
+Verification:
+  - Full Python collection excluding the separate provider-capture module:
+    2,630 passed, 8 skipped, 76 subtests passed.
+  - Installed Codex 0.164.0 against local fake Responses providers: 66 passed.
+    This includes 21 whitespace-recovery cases across seven call families and
+    OpenAI Luna/Terra settings plus the OpenRouter fixture. The 129 synthetic
+    provider requests all retained strict schemas, tools=[], and tool_choice=none;
+    no MCP requests occurred. This is protocol evidence, not live model behavior.
+  - Final focused verification after the interruption and wording review:
+    151 passed, 14 subtests passed, including two additional failure cases.
+    Coverage includes late output, early failure before turn binding, blocked
+    history, unconfirmed/failed interruption, subsequent transport failure,
+    one retry across restart, rewind, preserved native receipts and communication
+    messages, review attempt sharing, specialist retry limits, both consultation
+    roles, nullable contracts and incomplete usage accounting.
+  - Ruff check passed; Ruff format checked 471 files; Pyrefly reported zero errors
+    and 41 existing warnings.
+  - Runtime/desktop image build passed, including Gradle installDist and
+    prepareDesktopAssets. No engine edits were needed.
+The eight optional skips comprise five container checks and three native timing,
+retry and prompt-cache checks. No full game, paid model replay, or gameplay-quality
+comparison was performed for this change.
+
+The earlier worktree was preserved in
+build/whitespace-recovery-20261101/before.tar, SHA256
+7c75c27aa2edcfa987420722086e74404a20b0b43a90b1e4379c6a2cc120f4bf.
+Existing evaluation evidence was retained in place. implementation.patch isolates
+this work from the preexisting uncommitted changes; validation.json, the JUnit
+files, provider-validation.json and provider-fixtures hold the validation evidence.
+
+Candidate images, built under a separate tag:
+  localhost/civ-agent-whitespace-recovery-20261101:runtime
+  8eb7d65860313ebef1106bc9309e8fc518bec029f22b7fe799c0553a1e741e07
+  localhost/civ-agent-whitespace-recovery-20261101:desktop
+  efcac9aa46a150dff999f7e9e8d9a0e74acd7bef8395030ecdd90b70447bc073
+The Python source digest and its exact algorithm are recorded in validation.json.
+The engine remains pinned at 63e4bee9e6cefff0be88abd2c5ec4f6e0b6793dd.
+Two Continents remains paused at handoff 34, epoch g0156925bd21f41b3; Pangaea
+remains paused at handoff 43, epoch g8f082d2a345c47b1. Their pinned runtime images
+were not changed. The candidate is ready for a separately observed live trial.

@@ -26,7 +26,7 @@ def test_communication_preserves_notes_without_overwriting_the_writer(tmp_path):
     result = memory.patch(
         "chat",
         [
-            {"op": "amend", "id": "mem1", "fields": {"assessment": "Peace accepted"}},
+            {"op": "amend", "id": "mem1", "fields": {"subjects": ["Peace accepted"]}},
             {"op": "create", "content": {"type": "note", "text": "Peace accepted; redeploy to the west"}},
         ],
     )

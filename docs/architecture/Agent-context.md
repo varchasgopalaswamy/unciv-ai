@@ -5,7 +5,8 @@ plans and their measurements are in the [archive](../archive/README.md).
 
 ## Startup and discovery
 
-Each scheduled turn starts a fresh conversation. The service prepares permitted
+Each scheduled activation starts a conversation and retains that thread across
+structured decisions, including receipt-based continuations. The service prepares permitted
 observations through the same gateway used for explicit reads, selects private
 memory using the role and current subjects, and then reads the chosen records. Received message participants
 also select relevant notes; prose is never mined for implied facts. Selection
@@ -23,8 +24,15 @@ merely because it is in the service database.
 Gameplay prepares `player_turn`, `player_capabilities`, `victory_progress` and
 `chat_read`. Incoming events appear only in the chat read, not again in private
 memory context. Gameplay chat omits economic/scenario context already covered by
-the overview; communication prepares `chat_read(includeContext=true)`. Core tool definitions come
-from the current permitted catalogue:
+the overview; communication prepares `chat_read(includeContext=true)`. The stable decision schema contains the complete permitted catalogue; startup
+text supplies consequences, prerequisites and observation guidance.
+
+Every key required by the selected strict-schema variant must appear. To leave
+a native optional argument unspecified, send `null`; otherwise supply its value.
+The host removes null optional arguments before dispatch. For optional arguments that themselves
+accept null, `{ "value": null }` explicitly clears the value. Optional memory
+patch fields set to plain `null` remain unchanged. Instructions request compact
+JSON and `recoverBaseline: null` for ordinary inspections.
 
 Communication starts with `view="communication"` selected for subsequent
 `player_turn` reads. Its opening still uses the small social context rather than
@@ -44,13 +52,12 @@ and the full audience of a public message do not trigger extra trade inspections
 Every unprepared offer retains its inspection command in the pending index.
 Successful preloads establish the same inspected version as an explicit read;
 failed reads do not authorize decisions, and changed terms require reconsideration.
-The relevant trade tool definitions accompany these preloads.
+The decision schema always includes the permitted trade operations.
 
 The existing bounded coordination snapshot supplies active accepted war goals to
 communication. Pending goal revisions have counts and exact retrieval commands;
 they do not replace accepted objectives. Oversized or omitted episodes retain
-history counts and `war_goals` retrieval. This read-only tool's definition is
-prepared when active episodes exist. Native peace can end an episode without
+history counts and `war_goals` retrieval. The read operation remains in the stable schema even when no episode is active. Native peace can end an episode without
 rewriting its authored history. Communication startup omits instructions for
 gameplay-only command discovery, role completion and internal requests.
 
@@ -77,30 +84,82 @@ Economy receives actionable details for ordinary unescorted workers. Assigning
 escort duty transfers both units to Main; release returns their ordinary roles.
 Role concurrency, native advice and gameplay legality keep their existing rules.
 
-| Job | Prepared definitions |
-| --- | --- |
-| Gameplay | `player_turn`, `player_command`, `unit_details`, `movement_preview`, `construction_details`, `map_region`, `chat_send` |
-| Communication | `chat_read`, `chat_send`, `memory_update`; conditional `trade_read`, `trade_decide`, `war_goals` |
-| Review | All permitted read-only tools: `player_turn`, `victory_progress`, `research_details`, `policy_details`, `city_details`, `unit_details`, `construction_details`, `player_details`, `map_region`, `chat_read` |
+All scheduled Main, Economy, Military, Communication, strategic review and peace
+consultation `turn/start` calls carry an `outputSchema`. Models choose an envelope
+with `inspect`, `act`, `finish`, `wait`, or phase-specific `submit_report`. Read and
+action batches contain 1–12 already-decided operations; waits and completion stand
+alone. Command variants, inspections, memory amendments, coordination and diplomacy
+arguments derive from canonical typed contracts. There is no program or arbitrary
+JSON argument escape. Schema objects are closed; wire optionals are explicit nulls.
+For nullable optional values, `{value: null}` clears and null omits; defaults are
+applied by canonical validation. Shared definitions and removed titles reduce schema
+size without removing constraints or descriptive gameplay guidance.
 
-The model can call prepared tools directly. For additional tools, the shared
-discovery guidance uses exact-name lookup, small relevant definition lookups,
-and names-only catalogue exploration. Previously read definitions are
-reused. All tools permitted for that job remain discoverable.
-Reviewers receive their complete catalogue and can call those tools without discovery.
-Gameplay memory reads and writes remain available on demand; selected startup
-records are still delivered automatically.
+The host validates the complete response before dispatching any child. It executes
+ordered actions through the existing gateway, stops on failure, uncertain outcomes,
+changed ownership/prerequisites or required observations, and identifies unexecuted
+children. Host observations inside a batch cannot grant unseen preview credit.
+Receipts return through retained `toolOutput` on the same thread. No operation
+selection/discovery request is required and state-dependent options stay in reads.
 
-Gameplay batches already-chosen independent actions in one script, awaiting each
-command sequentially and retaining every receipt. Errors or unavailable state
-updates stop the batch; successful earlier commands remain applied. Decisions
-that depend on combat, scouting or fresh previews use another model pass.
-The player reviews the results before ending the turn.
+Scheduled Codex processes use game decision base instructions and disable execution,
+MCP, plugins and skill injection. Inherited MCP servers are explicitly disabled on
+thread start/resume; an empty configuration table alone does not erase them.
+A secret loopback provider gate preserves Codex authentication and forwards each
+generation with its exact strict schema, `tools=[]` and `tool_choice="none"`.
+The gate normally permits one generation attempt per host decision. A disabled-tool
+continuation, connection retry, or stream retry cannot spend a second request
+inside that decision. Blocking fails the activation without dispatching an action;
+it does not initiate another repair turn. One automatic compaction attempt is
+separately allowed and counted. Only completed, validated decisions reach the game.
+Incomplete/refused output cannot dispatch.
 
-In managed gameplay, each role uses `finish_role`; the host advances the native
+A terminal HTTP 400 containing the provider's specific prompt-policy rejection
+can receive one unchanged retry per activation workspace. The gate reserves this
+extra attempt durably before forwarding; it also spends the ordinary request
+budget. The rejected response is never delivered as model output. The schema,
+instructions, conversation and disabled tools remain identical. A second rejection
+ends the affected work; specialist restarts and strategic-review retries cannot
+multiply the allowance. Other HTTP errors, model-authored refusals, partial
+streams and uncertain execution do not qualify. This transport exception does not
+grant another host decision or alter confirmed game receipts.
+
+The gate uses HTTP streaming through a custom Codex provider configuration with
+`supports_websockets=false` and automatic request/stream retries disabled. OpenAI
+uses an internal `civ_openai` transport alias with Codex-managed OpenAI authentication
+and the same model catalog; durable settings continue to name `openai`. Thread
+start and resume both select this configuration. The built-in provider's model
+metadata can prefer WebSockets despite disabled feature flags; its rejected probes
+previously caused five retries before HTTP fallback. Real Codex tests use Luna and
+Terra and reject any WebSocket probe, including after a process restart.
+Threads, receipts, models, priority and reasoning settings remain unchanged. Provider bodies
+and credentials pass through memory and are not logged by the gate. The existing
+Codex trace and usage handling retain their own behavior.
+
+Each activation workspace has a durable ceiling of 128 provider attempts. For an
+isolated evaluation, set `CIV_MODEL_REQUEST_BUDGET` to an absolute SQLite path and
+`CIV_MODEL_REQUEST_LIMIT` to the total allowed attempts across all roles and
+processes. Reservations precede forwarding, survive restarts and are never refunded
+after uncertain execution. Reusing the file with a different limit fails.
+`tests.live_strategy_positions --max-model-requests N` creates a shared suite
+budget and refuses variants without the gate. This is distinct from the admitted
+job limit and the periodically checked token threshold. Failed attempts and
+compactions spend the request budget; blocked continuations do not reach the
+provider. Reserving a request that is interrupted before transmission may count
+an unsent attempt conservatively.
+These limits cover Codex generation and compaction. The separate Decisions
+backends retain their existing closed-choice contracts and cost budgets.
+
+Independent memory edits, operation notes and Economy requests continue in one
+batch. Revising the same memory record or operation again requires its receipt;
+newly created memory cannot authorize an unseen citation. Ownership transfers,
+changed accepted war goals, failed actions and stale observations retain their
+execution fences. No intermediate host observation grants inspection credit.
+
+In managed gameplay, each role submits `finish`; the host advances the native
 turn after all required roles finish. See [economy management](Economy-manager.md).
 Managed catalogues omit native turn advancement. Optional `memory_update`
-remains discoverable during play. Scheduled reviews run concurrently at a shared
+remains available in the schema during play. Scheduled reviews run concurrently at a shared
 round boundary after all players finish; gameplay and communication wait for the
 reports. Main receives a compact dated review summary; specialists receive current
 accepted strategy and relevant requests. `history_read(turn=T, includeReview=true)`
@@ -119,9 +178,10 @@ or mandatory message count is added. Private plans enter the player's context,
 not outgoing messages. Useful unresolved questions and intentions use the
 existing notebook; routine receipts and acknowledgements need no duplicate notes.
 
-The command schema is a compact envelope of possible
-fields; inspected choices supply copyable arguments. The server still validates
-each action's exact required/permitted fields and confirmations before dispatch.
+The command schema contains exact role-filtered variants with common action
+metadata outside the command union. Server validation and native legality checks
+still apply. Decisions backends retain their separate closed-choice contracts;
+they are not counted as strict generative responses.
 
 Tool catalogues follow the job's permissions. The older `player_summary`,
 `owned_cities` and `free_great_person_choice` reads are not exposed. Capabilities list available queries and commands directly,
@@ -302,9 +362,12 @@ inspection registration and durable action receipts retain their existing
 checks. Compression affects delivery, not which facts the engine returns.
 `player_turn` preserves the current view when `view` is omitted or `current`;
 `view="full"` explicitly expands any focused role view. Recovery reads therefore
-preserve the selected presentation. On observation and notebook reads,
-`delivery="auto"` chooses the transport and `delivery="full"` recovers a missing
-baseline with complete inline data. Sections, construction names, map format,
+preserve the selected presentation. Structured observation and notebook reads
+leave transport selection to the host. Their operation-level `recoverBaseline`
+field accepts `missing` or `mismatched` to request complete inline recovery data;
+null leaves transport automatic. Recovery does not change the selected content
+or inspection freshness. The gateway maps explicit recovery to `delivery="full"`
+and retains `delivery="auto"` for other clients. Sections, construction names, map format,
 overview view and city scope independently select the information. The legacy
 `full` boolean remains accepted but is omitted from advertised input schemas;
 contradictory explicit recovery options are rejected.
@@ -402,18 +465,12 @@ failed edits never update the baseline. Receipts are committed in the same
 transaction as the edits. Missing record baselines require
 `memory_read(delivery="full")`.
 
-`inspect_bundle(queries=[{tool,arguments},...])` accepts up to 12 independent
-read-only inspections with already-known arguments. It validates every child
-schema and role permission before reading, then returns ordered results. Each
-child retains its ordinary visibility, inspection evidence, freshness checks
-and durable receipt. A failed child stops the bundle and reports `remaining`.
-`positionChanged` signals an observation-revision change; a bundle is not an
-atomic snapshot. Parent and child receipts make replay idempotent, and an
-accepted bundle drains through checkpointing or a disconnected caller. Review
-bundles use frozen review evidence and cannot read notebook state. Actions,
-communication writes and recursive bundles are excluded.
+The scheduled interface uses `inspect` batches. Every child retains ordinary
+visibility, evidence and freshness checks, and a failure stops remaining reads.
+Review reads use frozen evidence. The internal gateway's `inspect_bundle` endpoint
+remains available to host code; it is absent from the model decision schema.
 
-Managed Main can call `economy_wait` alone when its next choice depends on
+Managed Main can submit `wait` alone when its next choice depends on
 economic work. Empty `requestIds` waits for the current pass; otherwise IDs must
 be unique, known requests (at most 100). Only a receipt with state `waiting` arms
 controller suspension; `attention`, `resolved`, `idle` and `not_running` return
@@ -429,19 +486,32 @@ full overview/coordination state and accepted outcomes, and never repeats a
 successful action. `WAITING_ROLE` releases compute capacity and is accounted
 separately from negotiation wait. Routine requests retain their priority.
 
+Economy completion requires an explicit choice for each remaining idle worker.
+`roleCompletion.idleWorkers` lists Economy-owned workers with movement remaining
+and no current job, destination or standing order. After choosing work or travel,
+Economy lists any workers it deliberately leaves idle in `finish.arguments.workerSkips`,
+with `targets` and a nonblank `reason` for each group. The host requires exact,
+unique coverage against the current native position and retains the existing
+observation-freshness checks. Workers under Main's escort control are excluded.
+When none remain, an empty finish needs no skip entries.
+
+A skip records the decision for the current pass without issuing a native order;
+deliberate holds remain permitted. Missing, duplicate or inapplicable entries
+return `ECONOMY_WORKER_SKIPS_REQUIRED` and the current idle-worker list without
+marking the review complete. Confirmed completion receipts replay without
+re-execution. Unchanged skipped workers do not repeatedly wake Economy that turn;
+idle workers are reconsidered on a later turn or when relevant facts change.
+
 Managed command schemas contain only the role's allowed variants and their
 fields. Specialist `finish_role` exposes request dispositions without Main-only
 fields; review `player_details` omits `turn_history`. Construction horizons
 require at least one construction name in both the advertised schema and runtime
 validation. These contracts retain native legality and action checks.
 
-Startup tool definitions omit JSON Schema title annotations while preserving
-constraints and literal data. The startup `player_command` description retains
-its complete role-filtered `commandIndex` and defers argument schemas to
-`command_help(kinds=[...])`. Offered complete commands can be copied directly;
-help returns the full schema and description for requested permitted kinds.
-Actual MCP discovery retains complete schemas. This reduces repeated startup
-documentation while keeping every allowed command discoverable.
+Startup text no longer repeats schema listings. Stable role schemas share identical
+`$defs`, omit wire defaults and redundant titles, and preserve readable field names.
+Unsupported schema constructs fail compilation. `command_help` and execution-tool
+discovery are absent from the scheduled interface.
 
 The private accounting ledger additionally counts full detail characters, delta
 characters, unchanged-detail replies and compact memory updates. These counters
@@ -473,9 +543,9 @@ The controller retains raw routing and recovery data in its receipts and save
 records. In particular, it distinguishes built-in-AI offers from shared
 negotiations before projecting the response for the model; interrupted receipt
 replay follows the same path. Fresh responses, historical evidence and cached
-responses use the same model projection. This is a presentation change, with no
-checkpoint or database format change. Already-running services pick up the code
-on restart; historical agent-authored advice remains as written.
+responses use the same model projection. The structured decision journal uses memory format 14 and requires a fresh state
+directory. Existing games retain their pinned runtime; do not upgrade them in place.
+Historical agent-authored advice remains as written.
 
 ## Native flavor and player-authored language
 
@@ -517,12 +587,69 @@ version checks; [background reviews](Background-turn-memory.md) describes the
 post-turn tools, frozen evidence and checkpoint behavior.
 
 The host validates gameplay revisions and proposal versions against authoritative
-state. Python cache updates never gate commands or count toward a terminal
-stale-retry limit. Partial memory batches require checking each edit's `accepted`
+state. Delivery caches cannot authorize commands against newer native state or
+grant inspection credit for unseen results. Partial memory batches require checking each edit's `accepted`
 field. See the [recovery guide](../guides/Chat-memory-and-recovery.md#interruption-and-emergency-restore).
+
+Decision identity and all child operation IDs are durable before dispatch. Restart
+replays confirmed receipts and reconciles pending native receipts before proceeding;
+uncertainty cannot trigger a new action identity. A rewind fences the old epoch.
+Each role/negotiation resume and final handoff review obtains a new host observation
+ID. These reads cannot use model-usage counters or handoff-pass numbers: both can
+remain unchanged while the position or delivery options change. The shared helper
+only reads `player_turn`; it cannot assign replacement identities to actions.
+Economy-wait refreshes remain bound to their distinct durable wait-operation IDs.
+Military completion binds dispositions to delivered review pages; zero remaining
+targets needs no invented review basis. Social promises remain exact, nonbinding
+player text.
+
+Excessive whitespace rejects the entire generation. The process interrupts that
+turn and withholds its terminal notification until interruption is acknowledged
+and completion is confirmed. Late text from the rejected turn cannot become a
+decision. The controller may then reserve one recovery request per activation
+and epoch, durably before generation, using the same thread, strict schema and
+delivered receipts. A second whitespace stall stops the activation; specialist
+restarts cannot multiply the allowance. Strategic reviews share their existing
+two-attempt allowance with semantic corrections. Failed advisory reports retain
+their existing unavailable-report behavior. Unconfirmed interruption, transport
+failure, and uncertain action execution do not qualify for this recovery.
+
+The failed decision and recovery retain distinct identities linked by `retryOf`;
+recovery usage is marked as repair cost. Confirmed actions are never replayed as
+new operations. A successful retry does not establish complete usage for the
+interrupted request: reconciliation must cover every admitted provider request.
+
+Chat acknowledgment uses `messages[].body.message`, not an event's numeric `id`.
+It is advertised only for Main gameplay with message routing enabled.
+Unknown or undelivered message IDs produce durable, recoverable rejection receipts
+and stop the rest of the batch. A rejected acknowledgment changes no handled-message
+state. Host reads and earlier reads in the same batch cannot grant acknowledgment
+credit until their results reach the model. Unexpected host/store errors still stop
+execution as uncertain, with their cause distinguished from model transport failures.
+
+`civ-agent match failures` correlates generation, validation, gateway and native receipt
+failures, schema fingerprints and operation identities. Its detail view retrieves
+arguments and native evidence without credentials or raw reasoning. Partial batches
+are separate incidents, not duplicate failed child calls. Usage by role and model phase uses thread
+total differences, includes internal continuations, and reports missing usage as
+unknown. Schema/instruction/observation characters are sizes, not billed tokens;
+provider metrics distinguish transport attempts from completed inference responses.
+The decision journal also records gate reservations by provider request identity, including
+compactions and failed attempts. Reports distinguish these counts from unknown
+historical attempts and from billed tokens; request budget failures have their
+own category.
+Prompt-policy rejections and retry reservations retain separate provider request
+IDs in the decision journal. Reports count each rejected attempt once, including
+recovered attempts, and exclude the duplicate terminal wrapper. Unreported usage
+for rejected requests stays explicitly unknown. Runtime configuration warnings
+are categorized separately from connection failures and do not manufacture a
+subsequent connection-recovery notice.
+See the [structured decision report](../archive/reports/Strict-structured-decisions-2026-10-30.txt)
+for enforcement evidence, the live screen's request-budget overrun and rollout limits.
 
 ## Implementation entry points
 
+- [Decision contracts](../../src/civ_agent/decision_contracts.py), [strict schema codec](../../src/civ_agent/strict_schema.py) and [host loop](../../src/civ_agent/structured_decisions.py)
 - [Startup preparation](../../src/civ_agent/startup_context.py)
 - [Job workflows](../../src/civ_agent/player_prompts.py) and [discovery guidance](../../src/civ_agent/tool_discovery.py)
 - [MCP result normalization](../../src/civ_agent/mcp_results.py)

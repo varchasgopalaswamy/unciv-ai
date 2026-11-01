@@ -63,7 +63,7 @@ def test_replacement_drops_omitted_content_and_preserves_history(tmp_path):
     key = create(
         memory, strategy(reasons=["Libraries are ready"], uncertainties=["Egypt may invade"], subjects=["science"])
     )
-    assert memory.patch("game", [{"op": "amend", "id": key, "fields": {"assessment": "Defend"}}])["changes"][0][
+    assert memory.patch("game", [{"op": "amend", "id": key, "fields": {"subjects": ["Defend"]}}])["changes"][0][
         "reason"
     ].startswith("REPLACEMENT_REQUIRED")
     replacement = {
@@ -190,6 +190,19 @@ def test_singletons_do_not_multiply_and_strategy_is_not_a_summary_obligation(tmp
     ]
     create(memory, {"type": "handoff", "text": "Inspect a possible settlement"})
     assert memory.summary(4)["unresolved"] == []
+
+
+@pytest.mark.parametrize("content", [strategy(), {"type": "handoff", "text": "Inspect a possible settlement"}])
+def test_duplicate_brief_identifies_the_existing_record_for_recovery(tmp_path, content):
+    memory = setup(tmp_path)
+    key = create(memory, content)
+    result = memory.patch("game", [{"op": "create", "content": content}])
+    MemoryUpdateResult.model_validate(result)
+    change = result["changes"][0]
+    assert not change["accepted"] and change["recoverable"]
+    assert change["recovery"]["reads"] == [{"tool": "memory_read", "arguments": {"ids": [key]}}]
+    assert len(memory.search_memory("game", {"type": content["type"]})["records"]) == 1
+    memory.engine.dispose()
 
 
 def test_command_reference_requires_a_current_reason_and_legacy_types_are_absent():

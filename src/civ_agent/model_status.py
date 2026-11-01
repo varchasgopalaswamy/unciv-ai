@@ -30,6 +30,11 @@ REASONS = {
     "sessionBudgetExceeded": "Model session budget exceeded",
     "responseTooManyFailedAttempts": "Model retry limit reached",
     "badRequest": "Model request rejected",
+    "invalidPrompt": "Model prompt rejected by provider",
+    "promptPolicyRejected": "Model prompt rejected by provider policy filter",
+    "codeModeDisabled": "Codex Code Mode is disabled",
+    "modelMetadataMissing": "Codex model metadata is unavailable; using fallback settings",
+    "runtimeWarning": "Codex runtime warning",
     "other": "Model service reported an issue",
 }
 TOOL_ITEMS = {"mcpToolCall", "dynamicToolCall", "commandExecution", "fileChange"}
@@ -46,13 +51,16 @@ def error_fields(error: JsonObject) -> JsonObject:
     """Select a known category and numeric status; never retain free-form text."""
     info = error.get("codexErrorInfo")
     code = info if isinstance(info, str) else next(iter(info), "other") if isinstance(info, dict) else "other"
-    fields: JsonObject = {"reason": code if code in REASONS else "other"}
+    reason = {"invalid_prompt": "invalidPrompt"}.get(code, code)
+    fields: JsonObject = {"reason": reason if reason in REASONS else "other"}
     if isinstance(info, dict) and isinstance(info.get(code), dict):
         status = info[code].get("httpStatusCode")
         if type(status) is int and 100 <= status <= 599:
             fields["httpStatus"] = status
     message = str(error.get("message", ""))[:MAX_LOG_LINE].lower()
-    if fields["reason"] == "usageLimitExceeded" or any(
+    if "invalid prompt: your prompt was flagged as potentially violating our usage policy" in message:
+        fields["reason"] = "promptPolicyRejected"
+    elif fields["reason"] == "usageLimitExceeded" or any(
         phrase in message
         for phrase in (
             "insufficient_quota",
@@ -193,6 +201,20 @@ class ModelStatus:
     def observe(self, method: str, params: JsonObject) -> JsonObject | None:
         if method == "warning" and self.turn is not None and params.get("threadId") in {None, self.thread}:
             fields = error_fields(params)
+            if fields["reason"] == "other":
+                message = str(params.get("message", ""))[:MAX_LOG_LINE]
+                fields["reason"] = (
+                    "codeModeDisabled"
+                    if message.startswith("Code Mode is unavailable because code-mode host is disabled.")
+                    else "modelMetadataMissing"
+                    if message.startswith("Model metadata for `")
+                    and "not found. Defaulting to fallback metadata" in message
+                    else "runtimeWarning"
+                )
+                # Configuration/runtime warnings are not connection failures.
+                # Keep them visible without manufacturing a later recovery or
+                # overwriting a real pending retry/timeout.
+                return self.event("warning", REASONS[fields["reason"]] + ".", source="protocol", **fields)
             self.issue = self.event("warning", REASONS[fields["reason"]] + ".", source="protocol", **fields)
             return self.issue
         if self.turn is None or params.get("threadId") != self.thread:

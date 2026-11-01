@@ -1,0 +1,238 @@
+Structured decision efficiency fixes — 2026-10-30
+
+Status: implementation, offline verification and the subsequently authorized
+bounded live comparison are complete. Reported tokens and requests fell, but
+equivalent gameplay quality is not established. Offline verification itself
+used no paid model requests or native game actions.
+Earlier work remains committed at 714364f; this candidate remains uncommitted.
+The source before these fixes is preserved in
+build/structured-efficiency-fixes-20261030/before.tar with hashes in before.json.
+Earlier gameplay evidence and the four pinned game images were preserved.
+
+Changes
+
+Scheduled threads now replace Codex's inherited coding instructions with a
+480-character game decision base instruction. Role instructions, strategic
+guidance, model selection, reasoning effort, authentication and concurrent role
+scheduling retain their existing behavior. Every initial/resumed generation
+still supplies its complete strict role schema and uses the same thread for
+receipts and decisions.
+
+A local provider gate verifies the exact strict schema and forwards generation
+requests with tools=[] and tool_choice=none. It admits at most one generation
+attempt and one separately counted compaction attempt per host decision.
+Internal disabled-tool continuations and transport retries are blocked before
+another upstream request. Blocked continuation fails the activation, without
+dispatching an incomplete decision or automatically starting another repair.
+This deliberately bounds spending; its effect on gameplay completion still
+needs live validation. Codex retains authentication; synthetic ChatGPT-token
+and OpenRouter-key captures verify header preservation. The gate uses HTTP
+streaming; the built-in OpenAI provider's WebSocket probe falls back locally
+after HTTP 405. Provider headers and bodies are not written by the gate.
+
+Reservations persist before forwarding, include failed/uncertain attempts, and
+are never refunded. The default ceiling is 128 per activation workspace.
+CIV_MODEL_REQUEST_BUDGET (an absolute SQLite path) and CIV_MODEL_REQUEST_LIMIT
+share a finite ceiling across concurrent roles, processes, restarts and trials.
+Reopening a budget with a different ceiling fails. The saved-position harness
+exposes --max-model-requests for a shared suite budget and rejects unsupported
+variants. These are Codex inference/compaction ceilings; the separate Decisions
+backends retain their own closed-choice enforcement and cost budgets.
+
+Routine structured inspections now let the host choose full/unchanged/delta
+delivery. The optional recoverBaseline field requests full transport recovery
+only for a missing or mismatched baseline. Content selection (including full
+overview views) remains explicit. Detail projection/evidence checks still run;
+no compact response grants stale or unseen inspection credit.
+
+Independent memory writes, military operation notes and Economy requests can
+continue within one action batch. Repeated edits to the same record/operation,
+unseen intent citations, changed war goals, ownership transfers, invalidated
+previews, failed actions and uncertain execution retain their fences.
+Confirmed action receipts remain replayable without re-execution. Promises
+remain exact authored, nonbinding text.
+
+The decision journal correlates provider reservation IDs with decisions and
+schema fingerprints. Failure reports separate request-budget failures from
+argument, transport and gameplay failures. Attempt counts, provider usage,
+Codex transport metrics and character sizes are separate; rejected local
+requests and WebSocket probes are not counted as forwarded inference.
+
+Offline results
+
+Thirty local real-Codex capture cases cover Main, Economy, Military,
+Communication, strategic review and both peace consultation phases, initial
+and resumed turns, on OpenAI and OpenRouter transports. Every forwarded
+generation has the intended strict schema, no advertised tools, tool choice
+disabled and a stable thread cache key. MCP execution is absent. A forced
+disabled exec response reaches the provider once; its continuation is blocked.
+The pre-fix capture forwarded that automatic continuation.
+
+The inherited runner prompt shrinks from 16,979 to 480 characters in these
+synthetic captures. The unchanged 31-character test instruction brings total
+instruction characters to 17,010 before and 511 after. Tool advertisement
+shrinks from 1,357 to 2 serialized characters. Gameplay role guidance is not
+represented by that test stub and was not cut. Full role schemas remain
+complete and shrink slightly (roughly 246–249 characters); consultation
+schemas are unchanged. These are character measurements, not billed tokens.
+
+Saved gameplay delivery replay reconstructs every compared payload exactly:
+
+  Terra unit details: 25 reads, 324,175 -> 231,445 serialized characters
+    (28.6% smaller); full deliveries 25 -> 11.
+  Terra map regions: 8 reads, 148,598 characters in both representations.
+  Terra city details: 4 reads, 73,084 characters in both representations.
+  Luna unit details: 1 read, 18,202 -> 16,998 characters (6.6% smaller).
+
+This replay treats the saved model's explicit full reads as future routine
+automatic reads. A future model can request baseline recovery. The figures
+establish lossless payload-size opportunities, not live cost or decision
+quality. Audit code and JSON evidence are in
+build/structured-efficiency-fixes-20261030/audit.py and audit.json.
+
+Verification
+
+Focused batch, contract, delivery, recovery and harness checks passed. Atomic
+admission tests exposed a concurrency race while parsing simultaneous request
+bodies; the reservation check now occurs immediately before claiming the
+window, with no intervening await. The regression fails before the fix and
+passes after it. Shared SQLite ceilings, restart, interruption, redirects,
+compaction and malformed formats are tested against local providers.
+
+The initial full-suite attempt used a temporary directory under build/. That
+made Unix socket paths too long and changed checkout discovery. Its failed
+log is retained as full-suite.log. The clean run uses a short /tmp directory
+and the virtualenv on PATH. Fake app-server fixtures now understand account
+metadata and the explicit baseline recovery operation; scheduler assertions
+check preserved model/effort plus the new request gate.
+
+The corrected full Python suite passed: 2,611 tests and 76 subtests, with eight
+skips (five container requirements and three opt-in installed-model checks).
+The final focused run passed 80 tests after the admission race fix, including
+all 30 real-Codex/local-provider capture cases. Ruff lint and formatting passed
+(467 files); Pyrefly reported zero errors and 40 warnings; git diff --check
+passed. Full and focused logs are retained as full-suite-verified.log and
+final-focused.log. The engine checkout remains clean at the pinned revision.
+
+Limits and rollout
+
+The local synthetic tests cover Codex 0.164.0 and both provider transports. The
+live comparison below additionally exercises the real ChatGPT backend. Live
+OpenRouter behavior, dedicated Communication and review/consultation quality
+remain untested. The gate's conservative treatment of uncertainty and HTTP
+fallback may affect recovery or timing. An activation that tries a disabled
+tool fails instead of buying an automatic self-correction.
+
+The four current games retain their pinned images. Acceptance must compare
+gameplay progress, semantic failures and total provider usage, not schema
+validity or runtime alone. This candidate has not established equal-quality
+efficiency and was not deployed to those games.
+
+Protocol references: https://learn.chatgpt.com/docs/app-server and
+https://learn.chatgpt.com/docs/config-file/config-reference. The installed
+protocol and local captures take precedence over assumptions about optional
+configuration. outputSchema constrains the final response; the request gate
+provides the independent cost and tool-choice enforcement.
+
+Authorized live comparison
+
+After offline verification, the user authorized considering comparable live
+games. Two new isolated trials each completed one round from the retained
+pangaea-g4-inca checkpoint at turn 156. The checkpoint hash, pinned engine,
+medium effort, guides, review interval 10 and empty initial private memory
+match both historical comparisons. Other civilizations used native AI. No
+historical control or ten-turn benchmark was rerun. There was one sample per
+model and no relaunch to seek a better outcome.
+
+Frozen Python source SHA256:
+  2d26631cdbbca8bc642beea71e15cf562c78ef42640c27f383a085eec7745708
+Artifact root:
+  build/structured-efficiency-fixes-20261030/live-gameplay
+Limits per model: 64 actual provider reservations, 12 admitted jobs, 900 seconds,
+300-second activation timeout, and a three-million reported-token stop threshold.
+The token threshold is polled and can overshoot; the provider ceiling is enforced
+before forwarding. Neither spending limit was reached. Both stopped normally
+at the one-round game-turn limit with exit code zero.
+
+Actual reported tokens (cached input is included in input; reasoning is included
+in output, and neither is added twice):
+
+Model   Input      Cached input  Uncached input  Output  Input + output
+Luna      565,815       452,608         113,207   2,633         568,448
+Terra   1,195,615       968,704         226,911   4,058       1,199,673
+Total   1,761,430     1,421,312         340,118   6,691       1,768,121
+
+Luna used 15 reservations and reported 15 responses. Terra used 26 reservations
+and reported 25 responses. All 41 reservations correlate with durable decisions;
+none are unmatched. There were no compactions or disabled-tool attempts. The
+reported usage reconciles exactly with the host counters. One interrupted Terra
+generation has unknown usage, so its total and the combined total are lower
+bounds, not complete cost measurements. No dollars or quota weights are inferred.
+
+Matched turn 156 against the previous revision's decision-efficiency benchmark:
+
+Model  Previous total  Candidate reported  Change   Responses previous/current
+Luna        1,482,911             568,448  -61.67%                        28/15
+Terra       2,594,089           1,199,673  -53.75%                        51/25
+
+Uncached input changed from 176,781 to 113,207 for Luna (-35.96%), and from
+169,935 to 226,911 for Terra (+33.53%, before its unknown interrupted usage).
+Against the initial strict-schema run, reported total tokens fell 69.36% for
+Luna and 53.60% for Terra; uncached input fell 39.08% and 2.02% respectively.
+Historical cache conditions and model decisions differ. These are observed
+comparisons, not isolated causal estimates of the schema or individual fixes.
+
+Candidate role accounting:
+
+Model Role      Reservations Responses    Input     Cached   Output
+Luna  Main                 6         6    237,041   195,712   1,091
+Luna  Economy              1         1     31,242         0      25
+Luna  Military             8         8    297,532   256,896   1,517
+Terra Main                 5         5    228,573   179,584     724
+Terra Economy             14        13    581,029   482,432   2,023
+Terra Military             7         7    386,013   306,688   1,311
+
+Terra's first Economy activation hit REVIEW_OUTPUT_STALLED, the existing guard
+for more than 4,096 consecutive whitespace characters outside JSON strings.
+That response dispatched nothing and has no usage record. The scheduler opened
+a second Economy activation, which completed within the shared budget; its
+reported 365,702 input and 861 output tokens are included above. The guard and
+budget bounded this failure but did not eliminate it. Complete scheduler
+accounting means saved counters reconcile, not that every upstream attempt
+returned usage. This remains an explicit measurement gap.
+
+All 40 completed responses validated. Eight batches stopped partially, leaving
+nine unexecuted children for prerequisite, position, target or fresh-inspection
+reasons. Luna had one MILITARY_COMPLETION_REVIEW_REQUIRED rejection, recovered
+through the normal review path. No confirmed native request ID was dispatched
+twice. Connection-retry warnings continued in Codex; the gate admitted only the
+41 recorded upstream attempts. Local fallback/retry activity is not another
+paid generation and must not be counted as one.
+
+Gameplay limits are material. Luna's Economy role immediately finished without
+issuing any work, while the previous revision started two worker improvements.
+Luna healed its injured crossbowman but otherwise issued no military move or
+attack. Terra moved the injured crossbowman away, repositioned another, fortified
+a Pikeman, and started two Farm jobs. Its previous-revision control started
+three worker jobs and healed then attacked Paris; the initial structured run
+also attacked Paris. Neither new candidate attacked this turn. These differences
+prevent attributing all lower usage to doing equivalent work more efficiently.
+
+Both native endpoints reached turn 157 with four cities, population 43 (up one),
+and 558 gold (up 33). Both lost one Pikeman in confirmed opponent combat, as did
+their turn-156 historical controls. No city was gained. Native saves and receipts
+establish these results; growth from existing queues and one matched casualty
+do not establish preserved strategy quality.
+
+The next acceptance work should test whether Economy addresses useful worker
+opportunities and whether military choices remain effective, while investigating
+Terra's whitespace stall and uncached-input regression. Do not accept a lower
+token total caused by skipping useful work. No further paid calls were made.
+
+Reproduction/evidence: plan.json and commands.json record the frozen source,
+matched controls and limits; audit.py/audit.json correlate receipts, reservations
+and provider usage; compare.py/comparison.json retain first-turn comparisons and
+gameplay evidence. cleanup.json verifies removal of the temporary auth client,
+released service ports, unchanged frozen source, a clean pinned engine and all
+four existing games still on runtime image
+e24a970af60cc4923768549741e45b297f259a554f79daa82469578055ab436b.

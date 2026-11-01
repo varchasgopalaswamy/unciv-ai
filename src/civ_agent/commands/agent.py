@@ -21,7 +21,6 @@ from civ_agent.tls import (
     private_directory,
     verify_https_connection,
 )
-from civ_agent.tool_discovery import tool_discovery_instructions
 from civ_agent.turn_archive import civilization_directory_name
 
 
@@ -174,7 +173,11 @@ def run(args: argparse.Namespace) -> int:
         else:
             command += ["--"]
         prompt = args.prompt if args.prompt is not None else initial_prompt(civilization)
-        command += [tool_discovery_instructions("gameplay") + "\n\n" + prompt]
+        command += [
+            "Civ action guidance: Use the available player tools. Read required previews and ownership "
+            "before acting; inspect receipts and follow recovery instructions. Social promises record "
+            "intent and never prohibit native-legal actions.\n\n" + prompt
+        ]
         if args.dry_run:
             print(f"Player: {civilization}; token supplied through UNCIV_PLAYER_TOKEN (not shown).")
             print(f"HTTPS trust: {ca_file or 'system certificate authorities'}")

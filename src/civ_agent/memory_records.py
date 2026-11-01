@@ -1,8 +1,9 @@
 """Validated agent-authored memory and intent. Operational metadata is service owned."""
 
-from typing import Annotated, Literal
+import copy
+from typing import Annotated, Any, Literal
 
-from pydantic import Field, ValidationError, model_validator
+from pydantic import Field, ValidationError, create_model, model_serializer, model_validator
 
 from civ_agent.delivery_options import DeliveryOptions
 from civ_agent.memory_delivery import MemoryDelivery
@@ -144,17 +145,41 @@ class Retire(BoundaryModel):
     assessment: str = Field(default="", max_length=2000)
 
 
+class ContentPatch(BoundaryModel):
+    @model_serializer(mode="wrap")
+    def supplied_fields(self, handler):
+        return {key: value for key, value in handler(self).items() if key in self.model_fields_set}
+
+    @model_validator(mode="after")
+    def nonempty(self):
+        if not self.model_fields_set:
+            raise ValueError("Amend at least one content field")
+        return self
+
+
+def patch_model(model):
+    fields: dict[str, Any] = {}
+    for name, definition in model.model_fields.items():
+        if name == "type":
+            continue
+        field = copy.deepcopy(definition)
+        field.default, field.default_factory = None, None
+        fields[name] = (field.annotation, field)
+    return create_model(model.__name__ + "Patch", __base__=ContentPatch, **fields)
+
+
+BeliefPatch = patch_model(Belief)
+NotePatch = patch_model(Note)
+CityPlanPatch = patch_model(CityPlan)
+
+
 class Amend(BoundaryModel):
     op: Literal["amend"]
     id: Source
-    fields: Annotated[
-        JsonObject,
-        Field(
-            min_length=1,
-            max_length=12,
-            description="Only changed content fields of a belief, note or city_plan you read. Strategy and handoff require replace. Omitted fields are retained. Lists replace the old list; they never append. Record type, IDs and dates cannot be changed.",
-        ),
-    ]
+    fields: BeliefPatch | NotePatch | CityPlanPatch = Field(  # type: ignore[valid-type]
+        description="Changed fields of a previously read belief, note or city_plan. Omitted fields are retained; "
+        "lists replace. Use replace for strategy and handoff."
+    )
 
 
 class Replace(BoundaryModel):
@@ -174,9 +199,13 @@ class CityPlanCreate(BoundaryModel):
     content: CityPlan
 
 
+class CityPlanAmend(Amend):
+    fields: CityPlanPatch  # type: ignore[valid-type]
+
+
 class EconomyMemoryUpdate(BoundaryModel):
     changes: Annotated[
-        list[Annotated[CityPlanCreate | Retire | Amend, Field(discriminator="op")]], Field(max_length=20)
+        list[Annotated[CityPlanCreate | Retire | CityPlanAmend, Field(discriminator="op")]], Field(max_length=20)
     ]
 
 
@@ -250,7 +279,7 @@ class MemorySearch(DeliveryOptions):
         ]
         | None
     ) = None
-    subject: str = Field(default="", max_length=160)
+    subject: str = Field(default="", max_length=160, description="Exact subject tag or city_plan city handle.")
     state: Literal["active", "retired", "all"] = "active"
     query: str = Field(default="", max_length=200)
     history: bool = False
@@ -268,15 +297,19 @@ class RecordedInitiativeDecision(InitiativeDecision):
     reviewTurn: NonnegativeInt
 
 
+def intent_schema(schema):
+    variants = []
+    for field in ("reason", "cityPlan"):
+        variant = copy.deepcopy(schema)
+        variant["required"] = [field]
+        variant["properties"][field].update(minLength=1, pattern=r"\S")
+        variants.append(variant)
+    schema.clear()
+    schema.update(type="object", anyOf=variants)
+
+
 class Intent(BoundaryModel):
-    model_config = {
-        "json_schema_extra": {
-            "anyOf": [
-                {"required": ["reason"], "properties": {"reason": {"minLength": 1, "pattern": r"\S"}}},
-                {"required": ["cityPlan"], "properties": {"cityPlan": {"minLength": 1, "pattern": r"\S"}}},
-            ]
-        }
-    }
+    model_config = {"json_schema_extra": intent_schema}
     cityPlan: str = Field(
         default="",
         max_length=160,

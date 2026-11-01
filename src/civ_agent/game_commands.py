@@ -231,7 +231,7 @@ class DismissNotifications(Command):
     kind: Literal["DISMISS_NOTIFICATIONS"]
     targets: Annotated[
         list[Annotated[str, Field(min_length=1, max_length=128, pattern=r"\S")]],
-        Field(min_length=1, max_length=256, json_schema_extra={"uniqueItems": True}),
+        Field(min_length=1, max_length=256),
     ]
 
     @field_validator("targets")
@@ -277,59 +277,50 @@ COMMANDS = TypeAdapter(PlayerCommand)
 def command_schema(
     allowed_kinds: set[str] | frozenset[str] | None = None, *, military_review: bool = False
 ) -> JsonObject:
-    """Compact transport envelope; COMMANDS enforces the selected action's shape.
-
-    Inspected options provide complete commands. Keep the accepted field types
-    discoverable without repeating the same envelope in every action variant.
-    """
+    """Exact variants derived from the same contract used by command_arguments."""
     schema = COMMANDS.json_schema()
-    properties: JsonObject = {}
-    kinds = []
-    for variant in schema["oneOf"]:
-        fields = schema["$defs"][variant["$ref"].rsplit("/", 1)[1]]["properties"]
+    schema["type"] = "object"
+    variants = []
+    for reference in schema["oneOf"]:
+        fields = schema["$defs"][reference["$ref"].rsplit("/", 1)[1]]["properties"]
         kind = fields["kind"]
         selected = [
             value for value in kind.get("enum", [kind.get("const")]) if allowed_kinds is None or value in allowed_kinds
         ]
         if not selected:
             continue
-        kinds.extend(selected)
-        for name, shape in fields.items():
-            properties.setdefault(
-                name, {k: v for k, v in shape.items() if k not in {"title", "description", "default"}}
-            )
-    properties["kind"] = {"type": "string", "enum": sorted(kinds)}
-    if military_review:
-        properties["reviewAfter"]["description"] = Command.model_fields["reviewAfter"].description
-    else:
-        properties.pop("reviewAfter", None)
-    if "initiativeDecisions" in properties:
-        properties["initiativeDecisions"]["description"] = (
-            "END_TURN only. Optional private decisions about the delivered strategic report's numbered initiatives."
-        )
-    definitions = {}
+        fields["kind"] = {"type": "string", "enum": selected}
+        if not military_review:
+            fields.pop("reviewAfter", None)
+        variants.append(reference)
+    schema["oneOf"] = variants
+    mapping = schema["discriminator"]["mapping"]
+    schema["discriminator"]["mapping"] = {
+        key: ref for key, ref in mapping.items() if allowed_kinds is None or key in allowed_kinds
+    }
+    used = set()
 
     def references(value):
         if isinstance(value, dict):
             if "$ref" in value:
-                key = value["$ref"].rsplit("/", 1)[1]
-                if key not in definitions:
-                    definitions[key] = schema["$defs"][key]
-                    references(definitions[key])
+                name = value["$ref"].split("/")[-1]
+                if name not in used:
+                    used.add(name)
+                    references(schema["$defs"][name])
             for part in value.values():
                 references(part)
         elif isinstance(value, list):
             for part in value:
                 references(part)
 
-    references(properties)
-    return {
-        "type": "object",
-        "properties": properties,
-        "required": ["kind"],
-        "additionalProperties": False,
-        "$defs": definitions,
-    }
+    references(variants)
+    schema["$defs"] = {name: shape for name, shape in schema["$defs"].items() if name in used}
+    return schema
+
+
+def command_kinds(schema: JsonObject) -> set[str]:
+    """Read the discriminated variants without accepting a flattened envelope."""
+    return set(schema["discriminator"]["mapping"])
 
 
 def command_arguments(arguments: JsonObject) -> JsonObject:

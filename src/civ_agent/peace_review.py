@@ -20,6 +20,7 @@ from civ_agent.provider_usage import reconcile_provider_usage
 from civ_agent.review_grounding import ReviewEvidence
 from civ_agent.review_runtime import OfflineConnection
 from civ_agent.schemas import BoundaryModel
+from civ_agent.structured_decisions import GenerationRecoveryError
 from civ_agent.telemetry import merge_model_usage
 from civ_agent.tls import private_directory
 from civ_agent.war_state import tactical_basis
@@ -216,6 +217,19 @@ class PeaceReviews:
         granted = False
 
         async def notification(method, params):
+            from civ_agent.structured_decisions import generation_event
+
+            if method in {
+                "service/providerRequest",
+                "service/providerRejection",
+                "thread/tokenUsage/updated",
+                "turn/completed",
+                "service/requestFailed",
+                "service/transportFailure",
+                "service/approvalRequired",
+                "service/generationFailed",
+            }:
+                await generation_event(service.gateway, record, method, params)
             if method == "service/requestFailed":
                 record["requestFailure"] = copy.deepcopy(params)
                 record.setdefault("error", "CODEX_REQUEST_FAILED")
@@ -234,9 +248,9 @@ class PeaceReviews:
                 completions[turn.get("id")] = turn.get("status")
                 done.set()
             elif method == "item/completed" and params.get("item", {}).get("type") == "agentMessage":
-                item = params["item"]
-                if item.get("phase") in {None, "final_answer"}:
-                    answers[params.get("turnId")] = item.get("text", "")
+                from civ_agent.structured_decisions import capture_answer
+
+                capture_answer(answers, params)
             elif method in {"service/disconnected", "service/transportFailure", "service/approvalRequired"}:
                 if record["phase"] != "COMPLETED":
                     record.setdefault("error", "CONSULTATION_PROCESS_FAILED")
@@ -256,18 +270,24 @@ class PeaceReviews:
                 await service.io.call(service.accounting.start, identifier, caller.epoch, granted)
                 service.gateway.jobs[job.token] = job
                 await service.io.call(service.history.begin, record, None, job.token)
+                from civ_agent.decision_contracts import DECISION_INSTRUCTIONS
+
                 instruction = (
-                    "Use only the frozen permitted observations supplied. Do not access files, execute actions or request approvals. "
-                    "Distinguish facts, assessments and unknowns. Return the required JSON. "
+                    DECISION_INSTRUCTIONS
+                    + "\n\n"
                     + (
-                        "As military, assess goals, tactical position, likely gains/losses continuing, immediate threats and what peace gives up. You advise; main decides."
-                        if role == "military"
-                        else "As main, approve or decline the exact peace terms after considering military's overview and current strategic goals. Explain your decision, including any disagreement."
+                        "Use only the frozen permitted observations supplied. Do not access files, execute actions or request approvals. "
+                        "Distinguish facts, assessments and unknowns. Return the required JSON. "
+                        + (
+                            "As military, assess goals, tactical position, likely gains/losses continuing, immediate threats and what peace gives up. You advise; main decides."
+                            if role == "military"
+                            else "As main, approve or decline the exact peace terms after considering military's overview and current strategic goals. Explain your decision, including any disagreement."
+                        )
+                        + "\n\n"
+                        + CAMPAIGN_GUIDANCE
+                        + "\n\n"
+                        + PEACE_CONTEXT_INSTRUCTIONS
                     )
-                    + "\n\n"
-                    + CAMPAIGN_GUIDANCE
-                    + "\n\n"
-                    + PEACE_CONTEXT_INSTRUCTIONS
                 )
                 snapshot = await service.io.call(service.memory.snapshot, role, inputs["position"].get("turn"))
                 inputs = {**inputs, "privateMemory": service.memory.context(snapshot)}
@@ -276,6 +296,7 @@ class PeaceReviews:
                 record["startup"] = {
                     "format": prepared["format"],
                     "characters": len(prompt),
+                    "userCharacters": len(prompt),
                     "instructionCharacters": len(instruction),
                     "sectionCharacters": {key: len(encoded(value)) for key, value in prepared.items()},
                 }
@@ -293,6 +314,7 @@ class PeaceReviews:
                         "cwd": str(workspace),
                         "approvalPolicy": "never",
                         "sandbox": "workspace-write",
+                        "dynamicTools": [],
                         "developerInstructions": instruction,
                         **codex_thread_settings(settings, fast=service.fast),
                     },
@@ -306,36 +328,55 @@ class PeaceReviews:
                 if any(settings.get(k) is not None and settings[k] != effective[k] for k in effective):
                     raise ValueError("CONSULTATION_SETTINGS_CHANGED")
                 record["effectiveSettings"] = effective
-                result = await process.request(
-                    "turn/start",
-                    {
-                        "threadId": record["threadId"],
-                        "input": [{"type": "text", "text": prompt}],
-                        "approvalPolicy": "never",
-                        "model": effective["model"],
-                        "outputSchema": schema.model_json_schema(),
-                        **({"effort": settings["reasoningEffort"]} if settings.get("reasoningEffort") else {}),
-                    },
+                from civ_agent.decision_contracts import DecisionContract
+                from civ_agent.structured_decisions import DecisionLoop
+
+                decisions = DecisionLoop(
+                    service.gateway, job, DecisionContract("consultation", [], report_model=schema), record
                 )
-                turn = result["turn"]["id"]
-                await service.io.call(service.history.bind_turn, identifier, turn)
-                record.update(turnId=turn, phase="RUNNING")
-                await service._save(record)
-                while turn not in completions and not record.get("error"):
+                while True:
                     done.clear()
-                    try:
-                        await asyncio.wait_for(done.wait(), 10)
-                    except TimeoutError:
-                        if granted and not (await service.chat.social("job_heartbeat", job=identifier))["granted"]:
-                            raise ValueError("CONSULTATION_PERMIT_EXPIRED") from None
-                if record.get("error") or completions.get(turn) != "completed":
-                    raise ValueError("CONSULTATION_PROCESS_FAILED")
-                answer = schema.model_validate_json(answers.get(turn, "")).model_dump()
+                    result = await process.request(
+                        "turn/start",
+                        {
+                            "threadId": record["threadId"],
+                            **await decisions.begin(prompt),
+                            "approvalPolicy": "never",
+                            "model": effective["model"],
+                            **({"effort": settings["reasoningEffort"]} if settings.get("reasoningEffort") else {}),
+                        },
+                    )
+                    turn = result["turn"]["id"]
+                    await decisions.bind(turn)
+                    await service.io.call(service.history.bind_turn, identifier, turn)
+                    record.update(turnId=turn, phase="RUNNING")
+                    await service._save(record)
+                    while turn not in completions and not record.get("error"):
+                        done.clear()
+                        try:
+                            await asyncio.wait_for(done.wait(), 10)
+                        except TimeoutError:
+                            if granted and not (await service.chat.social("job_heartbeat", job=identifier))["granted"]:
+                                raise ValueError("CONSULTATION_PERMIT_EXPIRED") from None
+                    if record.get("error"):
+                        raise ValueError("CONSULTATION_PROCESS_FAILED")
+                    if decisions.generation_failed:
+                        continue
+                    if completions.get(turn) != "completed":
+                        raise ValueError("CONSULTATION_PROCESS_FAILED")
+                    break
+                receipt = await decisions.complete(answers.get(turn, ""))
+                if "report" not in receipt:
+                    raise ValueError("INVALID_CONSULTATION_REPORT")
+                answer = receipt["report"]
                 from civ_agent.agent_service import USAGE_KEYS
 
                 merge_model_usage(record, usages.get(turn, {}), USAGE_KEYS)
                 record.update(phase="COMPLETED", answer=answer)
                 return answer
+        except GenerationRecoveryError as error:
+            record.update(phase="FAILED", error=str(error))
+            raise
         except ServiceError as error:
             record.update(phase="FAILED", error=error.code)
             if error.request_failure is not None:
@@ -363,7 +404,11 @@ class PeaceReviews:
             if record["phase"] != "COMPLETED":
                 record["phase"] = "FAILED"
             reconciled = await service.io.call(reconcile_provider_usage, record, service.provider_usage)
-            record["usageComplete"] = reconciled or record.get("usageReported", False)
+            record["usageComplete"] = reconciled or (
+                record.get("usageReported", False)
+                and not record.get("generationFailures")
+                and not record.get("providerRejections")
+            )
             await service.io.call(service.accounting.sample, record, 0)
             await service._save(record)
             if granted:

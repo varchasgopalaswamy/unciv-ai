@@ -104,7 +104,7 @@ class NegotiationSuspensionTests(AgentServiceTestCase):
         assert starts[0]["threadId"] == starts[1]["threadId"]
         assert starts[1]["model"] == "game-model" and starts[1]["effort"] == "high"
         assert self.service.status()["usage"]["input_tokens"] == 20  # cumulative, not 10 + 20
-        return json.loads(starts[1]["input"][0]["text"].split("\n", 1)[1])["toolResults"]
+        return json.loads(starts[1]["toolOutput"]["output"])["toolResults"]
 
     async def complete_model(self):
         await self.models.instances[0].notification(
@@ -179,6 +179,26 @@ class NegotiationSuspensionTests(AgentServiceTestCase):
     async def test_decline_delivers_all_parallel_call_results(self):
         await self.closed_negotiation("DECLINED")
 
+    async def test_negotiation_refresh_cannot_alias_prior_role_refresh_at_the_same_usage_count(self):
+        job = await self.start_game()
+        count = self.service.records[job.id]["modelRequests"]
+        # Replay the captured Pangaea shape: an earlier automatic refresh is
+        # already durable under the old usage-based identifier.
+        await self.service.gateway.call(job, "player_turn", {"delivery": "auto"}, f"resume:{count}")
+        pending = asyncio.create_task(self.offer(job))
+        await self.suspended()
+        self.models.host.view["cities"][0]["name"] = "Changed during negotiation"
+        self.models.host.trade["status"] = "EXPIRED"
+        self.models.host.active = False
+        self.models.host.settled.set()
+        await pending
+        await self.resumed()
+        starts = [args for name, args in self.models.calls if name == "turn/start"]
+        result = json.loads(starts[-1]["toolOutput"]["output"])
+        assert result["observation"]["cities"][0]["name"] == "Changed during negotiation"
+        assert self.service.failure is None
+        assert len(self.models.host.writes) == 1  # The offer was never replayed.
+
     async def test_completion_racing_interrupt_is_a_confirmed_pause(self):
         self.models.complete_during_interrupt = True
         await self.closed_negotiation("EXPIRED")
@@ -207,7 +227,7 @@ class NegotiationSuspensionTests(AgentServiceTestCase):
         await pending
         results = await self.resumed()
         turn = [args for name, args in self.models.calls if name == "turn/start"][-1]
-        continuation = json.loads(turn["input"][0]["text"].split("\n", 1)[1])
+        continuation = json.loads(turn["toolOutput"]["output"])
         assert len(continuation["completedActions"]) == 1
         action = continuation["completedActions"][0]
         assert action["tool"] == "player_command" and action["arguments"] == arguments

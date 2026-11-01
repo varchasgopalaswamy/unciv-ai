@@ -460,10 +460,32 @@ class WarStore:
         if name == "role_message":
             if args.get("action") in {"acknowledge", "resolve"}:
                 selected = [m for m in state["messages"] if m["id"] in args["ids"]]
-                if {m["id"] for m in selected} != set(args["ids"]):
-                    return error("UNKNOWN_ROLE_MESSAGE")
+                missing = sorted(set(args["ids"]) - {m["id"] for m in selected})
+                if missing:
+                    return {
+                        **error("UNKNOWN_ROLE_MESSAGE"),
+                        "unknownIds": missing,
+                        "recoverable": True,
+                        "recovery": {
+                            "reads": [
+                                {
+                                    "tool": "war_goals",
+                                    "arguments": {"action": "read", "section": "messages", "role": role},
+                                }
+                            ]
+                        },
+                        "instruction": "Use IDs from role messages addressed to you. Economy request IDs are handled "
+                        "by Economy in the finish decision's arguments.requests, not by role_message. "
+                        "No messages were changed.",
+                    }
                 if any(m.get("to") != role for m in selected):
-                    return error("MESSAGE_RECIPIENT_REQUIRED")
+                    return {
+                        **error("MESSAGE_RECIPIENT_REQUIRED"),
+                        "recipients": {m["id"]: m["to"] for m in selected},
+                        "recoverable": True,
+                        "instruction": "Only a message's addressed recipient may acknowledge or resolve it. "
+                        "You may send that role a follow-up message when needed. No messages were changed.",
+                    }
                 for message in selected:
                     message["acknowledged"] = True
                     if args["action"] == "resolve":

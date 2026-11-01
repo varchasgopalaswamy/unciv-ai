@@ -2,7 +2,7 @@
 
 from sqlalchemy import Column, ForeignKey, Index, Integer, MetaData, Table, Text, and_, literal_column, select
 
-FORMAT_VERSION = 13
+FORMAT_VERSION = 14
 
 metadata = MetaData()
 meta = Table(
@@ -57,6 +57,15 @@ calls = Table(
     Column("name", Text, nullable=False),
     Column("arguments", Text, nullable=False),
     Column("result", Text),
+)
+decision_journal = Table(
+    "decision_journal",
+    metadata,
+    Column("id", Text, primary_key=True),
+    Column("job", Text, nullable=False),
+    Column("epoch", Text, nullable=False),
+    Column("purpose", Text, nullable=False),
+    Column("body", Text, nullable=False),
 )
 heads = Table(
     "heads", metadata, Column("key", Text, primary_key=True, nullable=True), Column("version", Integer, nullable=False)

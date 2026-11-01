@@ -6,14 +6,16 @@ import hashlib
 import json
 import os
 import re
-import ssl
+import signal
 import sys
-import tomllib
 import uuid
 from pathlib import Path
 from typing import Any
 
-from aiohttp import ClientSession, web
+from aiohttp import web
+
+# The subprocess runs in an isolated role directory, outside the test package.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 
 async def exercise_trade(civilization, communication, view, call, preloaded_trades):
@@ -79,7 +81,7 @@ async def exercise_trade(civilization, communication, view, call, preloaded_trad
         else:
             settled = await call("trade_read", {"proposalId": "d1"})
             assert settled["trade"]["status"] == "ENACTED"
-    await call("player_turn", {"delivery": "full"})
+    await call("player_turn", {}, recover_baseline="missing")
     return await call("player_command", {"kind": "END_TURN"})
 
 
@@ -94,7 +96,6 @@ async def main():
     socket_path = listen.removeprefix("unix://")
     trace = Path(os.environ["CIV_TEST_RPC_TRACE"])
     token = os.environ["UNCIV_PLAYER_TOKEN"]
-    context = ssl.create_default_context(cafile=os.environ["CIV_TEST_CA"])
 
     def record(method, params):
         value = dict(
@@ -158,7 +159,7 @@ async def main():
                             id=message_id,
                             type="agentMessage",
                             text="Settled and chose research.",
-                            phase="final_answer",
+                            phase="commentary",
                         ),
                     ),
                 )
@@ -209,100 +210,59 @@ async def main():
                 )
             )
 
-        async def play(params):
-            if params.get("outputSchema", {}).get("title") in {"TacticalOverview", "PeaceApproval"}:
-                schema = params["outputSchema"]
-                report = {
-                    name: True
-                    if field.get("type") == "boolean"
-                    else "Frozen tactical assessment and strategic approval."
-                    for name, field in schema["properties"].items()
+        from civ_agent.decision_contracts import READS
+        from tests.structured_helpers import decision_text
+
+        choices = asyncio.Queue()
+        pending_result = None
+        script_task = None
+
+        async def choose(name, arguments_value, *, recover_baseline=None):
+            nonlocal pending_result
+            future = asyncio.get_running_loop().create_future()
+            if name == "finish_role" or name == "player_command" and arguments_value["kind"] == "END_TURN":
+                decision = {"kind": "finish", "arguments": {k: v for k, v in arguments_value.items() if k != "kind"}}
+            elif name == "economy_wait":
+                decision = {"kind": "wait", "arguments": arguments_value}
+            else:
+                if name == "player_command":
+                    arguments_value = {
+                        "command": {k: v for k, v in arguments_value.items() if k not in {"intent", "reviewAfter"}},
+                        **{k: v for k, v in arguments_value.items() if k in {"intent", "reviewAfter"}},
+                    }
+                decision = {
+                    "kind": "inspect" if name in READS else "act",
+                    "operations": [
+                        {
+                            "tool": name,
+                            "arguments": arguments_value,
+                            **({"recoverBaseline": recover_baseline} if recover_baseline else {}),
+                        }
+                    ],
                 }
-                await websocket.send_json(
-                    dict(
-                        method="item/completed",
-                        params=dict(
-                            threadId=current["thread"],
-                            turnId=current["turn"],
-                            item=dict(
-                                id="peace-review", type="agentMessage", phase="final_answer", text=json.dumps(report)
-                            ),
-                        ),
-                    )
-                )
-                await report_usage()
-                await complete("completed")
-                return
-            if params.get("outputSchema", {}).get("title") == "StrategicAdvice":
-                report = {
-                    "assessment": "Develop the starting position before choosing a victory path.",
-                    "review": {
-                        "horizonTurns": 5,
-                        "outcomeAssessment": "No previous choices at opening.",
-                        "materialAssumptions": [
-                            {
-                                "assessment": "The timing of rival development remains uncertain.",
-                                "status": "unknown",
-                                "sources": [],
-                            }
-                        ],
-                        "plans": [
-                            {
-                                "name": "Explore",
-                                "objective": "Learn about the starting area.",
-                                "investment": "Use the starting units to scout before committing production.",
-                                "expectedObservations": ["Find a possible settlement site within five turns."],
-                                "firstActions": ["Explore the starting area."],
-                                "relativeOutcome": "Better information could help claim useful land before rivals.",
-                                "risks": "Explorers may encounter hostile units.",
-                            }
-                        ],
-                        "preferredPlan": 1,
-                        "diplomacy": {"assessment": "Reassess after scouting.", "initiatives": []},
-                        "reconsiderWhen": "Reassess after scouting.",
-                    },
-                }
-                await websocket.send_json(
-                    dict(
-                        method="item/completed",
-                        params=dict(
-                            threadId=current["thread"],
-                            turnId=current["turn"],
-                            item=dict(id="advice", type="agentMessage", phase="final_answer", text=json.dumps(report)),
-                        ),
-                    )
-                )
-                await report_usage()
-                await complete("completed")
-                return
-            text = " ".join(item.get("text", "") for item in params["input"])
-            continuation = text.startswith("The negotiation has finished.")
-            if continuation:
-                results = json.loads(text.split("\n", 1)[1])["toolResults"]
-                assert results[0]["tool"] == "trade_offer"
-                assert results[0]["result"]["trade"]["status"] == "ENACTED"
-                record("test/negotiation_result", results[0])
-                text = current["gameplayPrompt"]
+            await choices.put((decision, future))
+            result = await future
+            record(
+                "test/tool",
+                {
+                    "civilization": current.get("civilization"),
+                    "purpose": current.get("purpose"),
+                    "tool": name,
+                    "result": result,
+                },
+            )
+            return result
+
+        async def script(text):
             match = re.search(r"Play (.*?)'s current game turn", text)
             communication = match is None
-            if not communication:
-                current["gameplayPrompt"] = text
             if communication:
                 match = re.search(
                     r"Pursue (.*?)'s diplomatic objectives in light of newly received communication", text
                 )
             assert match is not None
+            current.update(civilization=match.group(1), purpose="communication" if communication else "gameplay")
             common = dict(threadId=current["thread"], turnId=current["turn"])
-            await websocket.send_json(
-                dict(
-                    method="item/agentMessage/delta",
-                    params=dict(
-                        **common,
-                        itemId="before-" + current["turn"],
-                        delta="Checking current position.",
-                    ),
-                )
-            )
             await websocket.send_json(
                 dict(
                     method="item/completed",
@@ -311,121 +271,130 @@ async def main():
                         item=dict(
                             id="before-" + current["turn"],
                             type="agentMessage",
-                            text="Checking current position.",
                             phase="commentary",
+                            text="Checking current position.",
+                        ),
+                    ),
+                )
+            )
+            if economy or "military" in Path.cwd().name:
+                arguments = {}
+                if economy and '"roleCompletion":' in text:
+                    completion = json.JSONDecoder().raw_decode(text.split('"roleCompletion":', 1)[1])[0]
+                    if workers := completion.get("idleWorkers", []):
+                        arguments["workerSkips"] = [
+                            {"targets": workers, "reason": "Deliberate hold in this lifecycle fixture."}
+                        ]
+                await choose("finish_role", arguments)
+                return
+            view = (
+                await choose("chat_read", {"includeContext": True})
+                if communication
+                else await choose("player_turn", {}, recover_baseline="missing")
+            )
+            scenario = view.get("scenario") or view.get("context", {}).get("scenario", {})
+            if scenario.get("testHangGameplay"):
+                await choose("player_command", {"kind": "DISMISS_NOTIFICATIONS", "targets": ["n1"]})
+                await asyncio.Event().wait()
+            current["slowCompletion"] = scenario.get("testSlowCompletion", False)
+            if current["slowCompletion"]:
+                # Dispatch waits for the final response. Delay process shutdown
+                # after completion to exercise concurrent host finalization.
+                asyncio.get_running_loop().add_signal_handler(
+                    signal.SIGTERM, lambda: asyncio.get_running_loop().call_later(1.8, os._exit, 0)
+                )
+            if scenario.get("testModelRetry"):
+                print("PRIVATE_PROVIDER_HEADER=" + "x" * 80000, file=sys.stderr, flush=True)
+                print(
+                    "WARN codex_core::responses_retry: stream disconnected - retrying sampling request "
+                    f"(1/5 in 184ms)... turn_id={current['turn']} retries=1 max_retries=5 "
+                    "sampling_error=stream disconnected before completion: idle timeout waiting for websocket cookie=PRIVATE_COOKIE",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                await asyncio.sleep(0.15)
+                await websocket.send_json(
+                    dict(
+                        method="item/agentMessage/delta",
+                        params=dict(
+                            threadId=current["thread"], turnId=current["turn"], itemId="recovered", delta="Continuing."
+                        ),
+                    )
+                )
+            if scenario.get("testManyEvents") and not os.environ.get("CIV_TEST_MANY_EVENTS"):
+                await publish_history(dict(threadId=current["thread"], turnId=current["turn"]))
+            if scenario.get("name") == "CONCURRENT_TRADE_TEST":
+                preloaded_trades = {}
+                if communication and "Details already available:\n" in text:
+                    details = json.JSONDecoder().raw_decode(text.split("Details already available:\n", 1)[1])[0]
+                    preloaded_trades = {
+                        detail["trade"]["proposalId"]: detail["trade"]
+                        for detail in details
+                        if "error" not in detail and (detail.get("query") or {}).get("tool") == "trade_read"
+                    }
+                    for proposal, trade in preloaded_trades.items():
+                        record("test/preloaded_trade", {"proposalId": proposal, "version": trade["version"]})
+                await exercise_trade(match.group(1), communication, view, choose, preloaded_trades)
+                if communication:
+                    await choose("finish_role", {})
+            else:
+                assert not communication
+                await choose("finish_role", {"deferReason": current["thread"]})
+
+        async def play(params):
+            nonlocal script_task, pending_result
+            schema = params["outputSchema"]
+            common = dict(threadId=current["thread"], turnId=current["turn"])
+            variants = schema["properties"]["decision"]["anyOf"]
+            report = next(
+                (v["properties"].get("report") for v in variants if "report" in v.get("properties", {})), None
+            )
+            if report is not None:
+                if "review" in report["properties"]:
+                    from tests.test_strategic_review import assessment
+
+                    answer = assessment()
+                else:
+                    answer = {
+                        name: True
+                        if field.get("type") == "boolean"
+                        else "Frozen tactical assessment and strategic approval."
+                        for name, field in report["properties"].items()
+                    }
+                decision = {"kind": "submit_report", "report": answer}
+            else:
+                if script_task is None:
+                    text = " ".join(item.get("text", "") for item in params["input"])
+                    script_task = asyncio.create_task(script(text))
+                elif "toolOutput" in params:
+                    receipt = json.loads(params["toolOutput"]["output"])
+                    assert pending_result is not None and not pending_result.done()
+                    result = receipt.get("receipts", [{}])[0].get("result", receipt)
+                    pending_result.set_result(result)
+                take = asyncio.create_task(choices.get())
+                done, _ = await asyncio.wait({take, script_task}, return_when=asyncio.FIRST_COMPLETED)
+                if take not in done:
+                    take.cancel()
+                    await script_task
+                    raise RuntimeError("Script ended without a role completion")
+                decision, pending_result = take.result()
+            if os.environ.get("CIV_TEST_MANY_EVENTS"):
+                await publish_history(common)
+            await websocket.send_json(
+                dict(
+                    method="item/completed",
+                    params=dict(
+                        **common,
+                        item=dict(
+                            id="decision-" + current["turn"],
+                            type="agentMessage",
+                            phase="final_answer",
+                            text=decision_text(schema, decision),
                         ),
                     ),
                 )
             )
             await report_usage()
-            if os.environ.get("CIV_TEST_MANY_EVENTS"):
-                await publish_history(common)
-            mcp = next(argument for argument in arguments if argument.startswith("mcp_servers"))
-            gateway = tomllib.loads(mcp)["mcp_servers"]["civ"]
-            gateway_url = gateway["url"]
-            async with ClientSession() as client:
-
-                async def call(name, arguments_value):
-                    current["rpcId"] += 1
-                    async with client.post(
-                        gateway_url,
-                        ssl=context,
-                        headers={**gateway.get("http_headers", {}), "Authorization": "Bearer " + token},
-                        json={
-                            "jsonrpc": "2.0",
-                            "id": current["rpcId"],
-                            "method": "tools/call",
-                            "params": {"name": name, "arguments": arguments_value},
-                        },
-                    ) as response:
-                        response.raise_for_status()
-                        result = (await response.json())["result"]
-                        assert result["content"] == [], "The configured model must receive each payload once"
-                        value = result["structuredContent"]
-                        record(
-                            "test/tool",
-                            {
-                                "civilization": match.group(1),
-                                "purpose": "communication" if communication else "gameplay",
-                                "tool": name,
-                                "result": value,
-                            },
-                        )
-                        return value
-
-                if economy:
-                    await call("finish_role", {})
-                    await report_usage()
-                    await complete("completed")
-                    return
-                view = (
-                    await call("chat_read", {"includeContext": True})
-                    if communication
-                    # This scripted client does not interpret startup overviews.
-                    # Request explicit recovery rather than pretending a delta
-                    # alone contains its scenario flags and complete position.
-                    else await call("player_turn", {"delivery": "full"})
-                )
-                scenario = view.get("scenario") or view.get("context", {}).get("scenario", {})
-                if scenario.get("testHangGameplay"):
-                    # Leave an unfinished role with a recorded native effect.
-                    # Finishing first races the controller's failing END_TURN
-                    # receipt against the operator pause and tests a different case.
-                    await call("player_command", {"kind": "DISMISS_NOTIFICATIONS", "targets": ["n1"]})
-                    await asyncio.Event().wait()
-                current["slowCompletion"] = scenario.get("testSlowCompletion", False)
-                if scenario.get("testModelRetry"):
-                    # Match the real warning which isn't emitted as a protocol event
-                    # on the first automatic retry. Extra stderr must stay private.
-                    print("PRIVATE_PROVIDER_HEADER=" + "x" * 80000, file=sys.stderr, flush=True)
-                    print(
-                        "WARN codex_core::responses_retry: stream disconnected - retrying sampling request "
-                        f"(1/5 in 184ms)... turn_id={current['turn']} retries=1 max_retries=5 "
-                        "sampling_error=stream disconnected before completion: idle timeout waiting for websocket "
-                        "cookie=PRIVATE_COOKIE",
-                        file=sys.stderr,
-                        flush=True,
-                    )
-                    await asyncio.sleep(0.15)
-                    await report_usage()  # Usage/heartbeats do not prove recovery.
-                    await websocket.send_json(
-                        dict(
-                            method="item/agentMessage/delta",
-                            params=dict(**common, itemId="recovered", delta="Continuing."),
-                        )
-                    )
-                if scenario.get("testManyEvents") and not os.environ.get("CIV_TEST_MANY_EVENTS"):
-                    await publish_history(common)
-                if continuation:
-                    result = await call("player_command", {"kind": "END_TURN"})
-                elif scenario.get("name") == "CONCURRENT_TRADE_TEST":
-                    assert "Follow error recovery instructions" in current["instructions"]
-                    preloaded_trades = {}
-                    if communication and "Details already available:\n" in text:
-                        details = json.JSONDecoder().raw_decode(text.split("Details already available:\n", 1)[1])[0]
-                        preloaded_trades = {
-                            detail["trade"]["proposalId"]: detail["trade"]
-                            for detail in details
-                            if "error" not in detail and (detail.get("query") or {}).get("tool") == "trade_read"
-                        }
-                        for proposal, trade in preloaded_trades.items():
-                            record("test/preloaded_trade", {"proposalId": proposal, "version": trade["version"]})
-                    result = await exercise_trade(match.group(1), communication, view, call, preloaded_trades)
-                else:
-                    assert not communication
-                    result = await call("player_command", {"kind": "END_TURN", "deferReason": current["thread"]})
-                if result.get("behavior") == "hang":
-                    await asyncio.Event().wait()
-                if "error" in result:
-                    raise RuntimeError("Gateway rejected fake gameplay")
-                behavior = result.get("behavior", "slow_report" if scenario.get("testSlowCompletion") else "complete")
-                if behavior == "slow_report":
-                    assert "memoryPhase" not in result
-                    await asyncio.sleep(4)
-            if behavior in {"hang", "after_handoff_hang"}:
-                await asyncio.Event().wait()
-            if behavior == "crash":
-                os._exit(1)
             await complete("completed")
 
         async for message in websocket:
@@ -437,6 +406,10 @@ async def main():
             result = {}
             if method == "initialize":
                 result = {"userAgent": "unciv-test-fake-app-server"}
+            elif method == "config/read":
+                result = {"config": {}}
+            elif method == "account/read":
+                result = {"account": {"type": "chatgpt"}}
             elif method in {"thread/start", "thread/resume"}:
                 current["thread"] = params.get("threadId") or str(uuid.uuid4())
                 current["instructions"] = params["developerInstructions"]
@@ -466,6 +439,16 @@ async def main():
             await websocket.send_json(dict(id=data["id"], result=result))
             if method == "turn/start":
                 current["task"] = asyncio.create_task(play(params))
+
+                def failed(task):
+                    if not task.cancelled() and task.exception() is not None:
+                        record("test/error", {"error": str(task.exception())})
+                        asyncio.create_task(complete("failed"))
+
+                current["task"].add_done_callback(failed)
+        if script_task is not None:
+            script_task.cancel()
+            await asyncio.gather(script_task, return_exceptions=True)
         if current["task"]:
             current["task"].cancel()
         return websocket

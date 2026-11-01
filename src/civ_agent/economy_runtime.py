@@ -162,7 +162,10 @@ class RoleRuntime:
                 await service.gateway.close(self.job, record["phase"] == "COMPLETED")
             reconciled = await service.io.call(reconcile_provider_usage, record, service.provider_usage)
             record["usageComplete"] = reconciled or (
-                record["phase"] == "COMPLETED" and record.get("usageReported", False)
+                record["phase"] == "COMPLETED"
+                and record.get("usageReported", False)
+                and not record.get("generationFailures")
+                and not record.get("providerRejections")
             )
             await service.io.call(service.accounting.sample, record, self.job.waiting_seconds() if self.job else 0)
             await service._save(record)
@@ -193,6 +196,17 @@ async def run_role(service, coordinator, payload, parent_record, role="economy")
             from sqlalchemy.exc import SQLAlchemyError
 
             from civ_agent.agent_service import ServiceError
+            from civ_agent.structured_decisions import GENERATION_RECOVERY_LIMIT
+
+            if str(error) in {
+                GENERATION_RECOVERY_LIMIT,
+                "GENERATION_RECOVERY_UNSAFE",
+                "GENERATION_STOP_UNCONFIRMED",
+                "PROMPT_POLICY_REJECTED",
+            }:
+                service.failure = str(error)
+                service.stop_event.set()
+                raise
 
             if isinstance(error, ServiceError) and error.code in {"MODEL_INVOCATION_LIMIT", "ROLE_CAPACITY_TOO_SMALL"}:
                 service.failure = error.code

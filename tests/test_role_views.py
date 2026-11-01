@@ -263,7 +263,7 @@ def test_managed_recovery_guidance_is_consistent():
     for role in ("gameplay", "economy", "military"):
         text = job_instructions(role)
         assert "END_TURN" not in text and "stop if it happens again" not in text
-        assert "finish_role" in text and "Reconcile uncertain execution before retrying" in text
+        assert "finish decision" in text and "Reconcile uncertain execution before retrying" in text
 
 
 def test_economy_only_advertises_permitted_war_goal_reads():

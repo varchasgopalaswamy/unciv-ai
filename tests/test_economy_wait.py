@@ -237,7 +237,7 @@ class EconomyWaitLifecycleTests(AgentServiceTestCase):
         starts = [args for method, args in self.models.calls if method == "turn/start"]
         assert len(starts) == 2 and starts[0]["threadId"] == starts[1]["threadId"]
         assert starts[1]["model"] == "game-model" and starts[1]["effort"] == "high"
-        resumed = json.loads(starts[1]["input"][0]["text"].split("\n", 1)[1])
+        resumed = json.loads(starts[1]["toolOutput"]["output"])
         assert resumed["economyWait"]["state"] == "pass_finished"
         assert resumed["currentGame"]["economyCoordination"]["rolesFinished"]["economy"]
         assert not self.models.host.executed and not roles.ready["gameplay"]
@@ -264,7 +264,7 @@ class EconomyWaitLifecycleTests(AgentServiceTestCase):
         await roles.save()
         await self.until(lambda: self.models.count == 2)
         starts = [args for method, args in self.models.calls if method == "turn/start"]
-        resumed = json.loads(starts[1]["input"][0]["text"].split("\n", 1)[1])
+        resumed = json.loads(starts[1]["toolOutput"]["output"])
         assert resumed["economyWait"]["state"] == "timeout"
         assert not roles.ready["gameplay"] and not roles.ready["economy"]
         await self.service.interrupt(main.id)
@@ -281,7 +281,7 @@ class EconomyWaitLifecycleTests(AgentServiceTestCase):
         )
         await self.until(lambda: self.models.count == 2 and self.service.turn_id == "turn-2")
         starts = [args for method, args in self.models.calls if method == "turn/start"]
-        resumed = json.loads(starts[1]["input"][0]["text"].split("\n", 1)[1])
+        resumed = json.loads(starts[1]["toolOutput"]["output"])
         assert resumed["economyWait"]["state"] == "attention"
         assert "reserved for defense" in json.dumps(resumed["currentGame"])
         assert not roles.resumes["gameplay"].is_set() and "gameplay" not in roles.messages
@@ -299,7 +299,7 @@ class EconomyWaitLifecycleTests(AgentServiceTestCase):
         host.settled.set()
         await self.until(lambda: self.models.count == 2 and self.service.turn_id == "turn-2")
         starts = [args for method, args in self.models.calls if method == "turn/start"]
-        resumed = json.loads(starts[1]["input"][0]["text"].split("\n", 1)[1])
+        resumed = json.loads(starts[1]["toolOutput"]["output"])
         assert resumed["economyWait"]["state"] == "negotiation"
         assert "negotiation" in resumed and "currentGame" in resumed
         assert not main.role_wait_pending.is_set() and not main.negotiation_pending.is_set()

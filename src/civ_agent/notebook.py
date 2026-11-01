@@ -70,7 +70,11 @@ class Notebook:
                     "recoverable": True,
                     "recovery": {
                         "reads": [
-                            {"tool": "memory_read", "arguments": {"ids": [key], "includeRetired": True, "full": True}}
+                            {
+                                "tool": "memory_read",
+                                "arguments": {"ids": [key], "includeRetired": True},
+                                "recoverBaseline": "mismatched",
+                            }
                         ]
                     },
                     "instruction": "Read the current entry before editing it. The proposed edit was not applied.",
@@ -109,14 +113,21 @@ class Notebook:
                 if category == "city_plan":
                     if old and old["body"]["city"] != content["city"]:
                         return {"id": key, "accepted": False, "reason": "CITY_IDENTITY_IMMUTABLE"}
-                    if any(
-                        k != key
-                        and r["category"] == "city_plan"
-                        and r["body"].get("state") == "active"
-                        and r["body"].get("city") == content["city"]
-                        for k, r in self.store.all().items()
-                    ):
-                        return {"id": key, "accepted": False, "reason": "CITY_PLAN_ALREADY_EXISTS"}
+                    for existing, record in self.store.all(categories={"city_plan"}).items():
+                        if (
+                            existing != key
+                            and record["body"].get("state") == "active"
+                            and record["body"].get("city") == content["city"]
+                        ):
+                            return {
+                                "id": key,
+                                "accepted": False,
+                                "reason": "CITY_PLAN_ALREADY_EXISTS",
+                                "recoverable": True,
+                                "recovery": {"reads": [{"tool": "memory_read", "arguments": {"ids": [existing]}}]},
+                                "instruction": "Read the existing city_plan, then amend or replace its returned ID "
+                                "only if the plan needs to change. No memory edit was applied.",
+                            }
                 if category == "strategy":
                     content["_decisionBaselines"] = decision_baselines(
                         content, old["body"] if old else {}, self.snapshot, self.basis["turn"]
@@ -124,11 +135,18 @@ class Notebook:
                     for baseline in content["_decisionBaselines"].values():
                         if "id" not in baseline:
                             baseline["id"] = self.store.handle("choice")
-                if category in BRIEF_TYPES and any(
-                    k != key and r["body"].get("state") == "active"
-                    for k, r in self.store.all(categories={category}).items()
-                ):
-                    raise ValueError("BRIEF_EXISTS: read and replace the existing " + category)
+                if category in BRIEF_TYPES:
+                    for existing, record in self.store.all(categories={category}).items():
+                        if existing != key and record["body"].get("state") == "active":
+                            return {
+                                "id": key,
+                                "accepted": False,
+                                "reason": "BRIEF_EXISTS: read and replace the existing " + category,
+                                "recoverable": True,
+                                "recovery": {"reads": [{"tool": "memory_read", "arguments": {"ids": [existing]}}]},
+                                "instruction": "Read the existing brief, then replace its returned ID only if it needs "
+                                "to change. No memory edit was applied.",
+                            }
                 body = {
                     **content,
                     "createdTurn": old["body"]["createdTurn"] if old else self.basis["turn"],

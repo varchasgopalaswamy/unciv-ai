@@ -35,7 +35,7 @@ from civ_agent.coordination_updates import (
 from civ_agent.delivery_options import content_arguments, full_delivery
 from civ_agent.diplomacy_tools import argument_error, commitment_problem, unavailable
 from civ_agent.feedback_view import compact_feedback
-from civ_agent.game_commands import add_combat_commands, command_arguments, command_error, command_schema
+from civ_agent.game_commands import add_combat_commands, command_arguments, command_error, command_kinds, command_schema
 from civ_agent.inspection_bundle import run_bundle
 from civ_agent.mcp_results import RESULT_FORMAT_HEADER, STRUCTURED_RESULT_FORMAT, canonical_tool_result
 from civ_agent.memory_delivery import apply_memory_delivery, memory_response
@@ -191,6 +191,8 @@ class JobAccess:
     review_evidence: ReviewEvidence | None = None
     outgoing_start: int = 0
     seen_messages: set[str] = field(default_factory=set)
+    # Structured batches pin this to model-delivered context, not host reads.
+    delivered_messages: set[str] | None = None
     pending_calls: dict[asyncio.Task, JsonObject] = field(default_factory=dict)
     negotiation_calls: dict[asyncio.Task, JsonObject] = field(default_factory=dict)
     completed_actions: dict[asyncio.Task, JsonObject] = field(default_factory=dict)
@@ -393,7 +395,7 @@ class ProposalGateway:
 
             for entry in catalogue:
                 if entry["name"] == "player_command":
-                    kinds = entry["inputSchema"]["properties"]["kind"]["enum"]
+                    kinds = command_kinds(entry["inputSchema"])
                     allowed_kinds = {
                         kind
                         for kind in kinds
@@ -438,7 +440,7 @@ class ProposalGateway:
                         "top-level removed, then collections (upsert replaces rows by key, removed deletes rows, order "
                         "sets order). Unmentioned sections/rows remain; fields absent from that replacement are removed. "
                         "unchanged keeps data. Adopt stateId; ignore an update already at that ID. Recover missing/mismatched "
-                        "bases with player_turn(delivery=full). Removal does not prove an entity ceased to exist. "
+                        "bases with a full player_turn inspection. Removal does not prove an entity ceased to exist. "
                         "unavailable requires a read while retaining the successful receipt; never repeat that action. "
                         "turn_ended ends the conversation.\n"
                         "Apply invalidatedDetails even with full/unchanged replies or communication results; reread only "
@@ -613,7 +615,7 @@ class ProposalGateway:
             "war_goals": "Read private war episodes, goals, operations, escort assignments and messages. For initial, main must supply opponent, nonempty goals and a reason, including when already at war. For propose, supply the current version, replacement goals and a reason. The counterpart uses respond with proposal, version, agree and reason before either role finalizes. Main breaks disagreement with a reason. Priority 1 is highest. Use the current version and proposal IDs.",
             "escort_assignment": "Main assigns a military unit to escort duty with an owned civilian, or releases it after unpairing. Main controls both units for the duration of the assignment.",
             "military_operation": "Maintain an ongoing peacetime or wartime operation under a stable ID. Update it across turns; do not create per-turn journals. Set status to active, completed, abandoned or superseded; supersedes lists replaced IDs. action=set_status changes dispositions of existing IDs with a reason, including explicit reconciliation of legacy notes. Read older revisions with war_goals section=operation_history. Notes do not establish factual outcomes. Use role_message for attention or economy_request for supplies.",
-            "role_message": "Send a durable private notice or request to another internal role; a finished recipient is reopened. Acknowledge read messages with action=acknowledge and ids. Requests remain open until the recipient uses action=resolve with ids and a reason. Acknowledgement alone does not resolve a request. History is available with war_goals section=messages, role and cursor. Record lasting instructions in current goals, active operations or economy requests.",
+            "role_message": "Send a durable private notice or request to another internal role; a finished recipient is reopened. Only the addressed recipient may acknowledge read messages with action=acknowledge and ids, or resolve requests with action=resolve, ids and a reason. Acknowledgement alone does not resolve a request. Economy request IDs belong in Economy's finish decision arguments.requests. History is available with war_goals section=messages, role and cursor. Record lasting instructions in current goals, active operations or economy requests.",
         }.items():
             if role_tool == "war_goals" or purpose in {"gameplay", "economy", "military"}:
                 if role_tool == "war_goals" and purpose in {"economy", "communication"}:
@@ -739,7 +741,8 @@ class ProposalGateway:
             "terms. Read a binding trade before deciding. Social promises express intentions; they do not change "
             "the game rules, and players interpret ambiguous terms."
             + (
-                " Use handledMessages for IDs you have fully considered and responded to or acted on as needed. "
+                " Use handledMessages with messages[].body.message IDs, never event id numbers, for messages "
+                "you have fully considered and responded to or acted on as needed. "
                 "After successful gameplay, those messages need no separate response session. Reading alone "
                 "does not mark them handled."
                 if routing_enabled and purpose == "gameplay"
@@ -906,6 +909,18 @@ class ProposalGateway:
     ) -> JsonObject:
         async with self.admit(review=job.review_inputs is not None):
             return await self._admitted_call(job, name, arguments, call_id, source=source)
+
+    async def fresh_turn(self, job: JobAccess, arguments: JsonObject, reason: str) -> JsonObject:
+        """Give each new host observation its own journal identity.
+
+        Usage counters and handoff passes can remain unchanged across several
+        refreshes. Reusing their IDs either conflicts with new arguments or
+        silently replays an old position. This helper is restricted to a read;
+        actions must retain their existing durable identities for reconciliation.
+        """
+        return await self.call(
+            job, "player_turn", arguments, "host:" + reason + ":" + secrets.token_hex(16), source="host"
+        )
 
     @staticmethod
     def reset_coordination(job: JobAccess) -> None:
@@ -1364,6 +1379,13 @@ class ProposalGateway:
             compact["strategicReview"] = brief
         if self.role_coordinator is not None:
             compact = label_commands(compact, self.role_coordinator, job.purpose, value)
+            if job.purpose == "economy":
+                from civ_agent.economy_completion import worker_completion
+
+                compact["roleCompletion"] = {
+                    "tool": "finish_role",
+                    **worker_completion(value, self.role_coordinator.war_state),
+                }
             if job.purpose == "military":
                 from civ_agent.military_completion import completion_review
 
@@ -1769,7 +1791,32 @@ class ProposalGateway:
     async def chat_read(self, job: JobAccess, arguments: JsonObject) -> JsonObject:
         # Mark only messages actually returned; concurrent sends stay unseen.
         if arguments.get("handledMessages"):
-            await self.io.call(self.memory.acknowledge_messages, job.id, arguments["handledMessages"])
+            try:
+                if (
+                    job.delivered_messages is not None
+                    and not set(arguments["handledMessages"]) <= job.delivered_messages
+                ):
+                    raise StateConflict("MESSAGES_NOT_DELIVERED_TO_JOB")
+                await self.io.call(self.memory.acknowledge_messages, job.id, arguments["handledMessages"])
+            except StateConflict as error:
+                # These checks precede the atomic acknowledgment. They are
+                # definite rejections, not uncertain transport failures.
+                code = str(error)
+                if code not in {"MESSAGES_NOT_DELIVERED_TO_JOB", "MESSAGE_ACKNOWLEDGEMENT_GAMEPLAY_ONLY"}:
+                    raise
+                return {
+                    "error": code,
+                    "applied": False,
+                    "recoverable": True,
+                    "instruction": (
+                        "No messages were acknowledged. Use messages[].body.message IDs from a delivered "
+                        "chat_read, not event id numbers. Read chat_read with handledMessages=[] if needed, "
+                        "then acknowledge only messages you have handled."
+                        if code == "MESSAGES_NOT_DELIVERED_TO_JOB"
+                        else "Message acknowledgment is available only during routed gameplay. "
+                        "Read chat_read without handledMessages."
+                    ),
+                }
         social = await self.read_social(
             job,
             include_context=arguments.get("includeContext", False),
@@ -1944,7 +1991,7 @@ class ProposalGateway:
             catalogue = await self._tools(job)
             command = next((tool for tool in catalogue if tool["name"] == "player_command"), None)
             kinds = set(arguments["kinds"])
-            if command is None or not kinds <= set(command["inputSchema"]["properties"]["kind"]["enum"]):
+            if command is None or not kinds <= set(command_kinds(command["inputSchema"])):
                 return {"error": "COMMAND_NOT_PERMITTED", "applied": False}
             return {
                 "description": command["description"],
@@ -2120,7 +2167,7 @@ class ProposalGateway:
                         catalogue = await self._tools(job)
                         command = next((tool for tool in catalogue if tool["name"] == "player_command"), None)
                         if command is not None:
-                            allowed = command["inputSchema"]["properties"]["kind"]["enum"]
+                            allowed = command_kinds(command["inputSchema"])
                             value["commands"] = [kind for kind in value.get("commands", []) if kind in allowed]
                 await self.io.call(self.memory.observe, name, value, job.id)
                 if name in EXTERNAL_DETAIL_TOOLS:

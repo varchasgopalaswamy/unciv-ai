@@ -94,8 +94,12 @@ def reconcile_provider_usage(record: JsonObject, reader: ProviderUsageReader) ->
     usage = record.setdefault("usage", {})
     for key in TOKEN_KEYS:
         usage[key] = max(usage.get(key, 0), recovered["usage"][key])
-    # Response IDs make this count exact; replace any live notification estimate.
-    record["modelRequests"] = recovered["modelRequests"]
+    # Interrupted streams and rejected prompts may lack usage records. A later
+    # successful response does not make unreported request costs disappear.
+    admitted = len(record.get("providerRequests", {}))
+    incomplete_attempt = record.get("generationFailures") or record.get("providerRejections")
+    complete = not incomplete_attempt or bool(admitted and recovered["modelRequests"] >= admitted)
+    record["modelRequests"] = max(recovered["modelRequests"], admitted) if not complete else recovered["modelRequests"]
     record["usageReported"] = True
-    record["providerUsageReconciled"] = True
-    return True
+    record["providerUsageReconciled"] = complete
+    return complete

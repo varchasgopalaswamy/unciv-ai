@@ -49,17 +49,20 @@ from civ_agent.review_context import review_position
 from civ_agent.schemas import BoundaryModel
 
 
+def construction_schema(schema):
+    """Express the comparison prerequisite with supported, disjoint nested unions."""
+    ordinary, comparison = copy.deepcopy(schema), copy.deepcopy(schema)
+    ordinary["properties"]["horizonTurns"] = {"type": "null", "default": None}
+    comparison["properties"]["horizonTurns"] = {"type": "integer", "minimum": 1, "maximum": 100}
+    comparison["properties"]["names"]["minItems"] = 1
+    comparison["required"] = [*comparison.get("required", []), "horizonTurns", "names"]
+    schema.clear()
+    schema["type"] = "object"
+    schema["anyOf"] = [ordinary, comparison]
+
+
 class ConstructionDetails(EntityDetails, DeliveryOptions):
-    model_config = {
-        "json_schema_extra": {
-            "allOf": [
-                {
-                    "if": {"required": ["horizonTurns"], "properties": {"horizonTurns": {"type": "integer"}}},
-                    "then": {"required": ["names"], "properties": {"names": {"minItems": 1}}},
-                }
-            ]
-        }
-    }
+    model_config = {"json_schema_extra": construction_schema}
     names: Annotated[list[str], Field(max_length=16)] = Field(default_factory=list)
     horizonTurns: (
         Annotated[int, Field(ge=1, le=100, description="Comparison horizon; requires a nonempty names list.")] | None

@@ -182,6 +182,8 @@ def test_token_guard_counts_all_roles_and_job_revisions_only_once(tmp_path):
                 }
             },
         )
+    store.put("jobs", "military", {"job": {"purpose": "military", "phase": "STARTING", "usage": None}})
+    store.put("jobs", "economy", {"job": {"purpose": "economy", "phase": "STARTING"}})
     assert reported_model_tokens(tmp_path) == 660
     store.put(
         "jobs",

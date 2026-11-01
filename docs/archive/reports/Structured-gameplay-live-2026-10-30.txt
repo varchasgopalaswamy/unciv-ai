@@ -1,0 +1,320 @@
+Structured gameplay live test — October 30, 2026
+
+Follow-up usage audit and receipt-compaction fix are recorded at the end.
+
+The candidate executed real gameplay on Luna and Terra, but neither trial met
+the requested three-round test horizon. Luna completed two rounds; Terra
+completed one and part of its second. Both reached the reported-token stop
+threshold. Terra also recorded a failed state refresh after a confirmed attack
+during shutdown. This is a failed three-round acceptance test, with useful
+evidence that structured decisions execute and confirmed actions survive a
+refresh failure. It is not evidence of improved gameplay quality or efficiency.
+
+Setup and scope
+
+Artifact root:
+  build/strict-decisions-20261030/live-gameplay-20261030-retry1
+Retained initial harness attempt:
+  build/strict-decisions-20261030/live-gameplay-20261030
+
+Both models started from the same prepared pangaea-g4-inca position at turn 156,
+with four cities, 42 population, 525 gold and an existing war against France.
+Other civilizations used native AI. Private memory was empty and independent.
+Each model used medium effort, the existing strategy/civilization guides,
+ordinary concurrent Main/Economy/Military scheduling and review interval 10.
+This run exercised those three generative roles. It did not generate dedicated
+Communication, strategic-review or peace-consultation responses.
+
+The tested Python source was frozen before execution at:
+  live-gameplay-20261030/snapshot/src
+Python tree SHA256:
+  57334acb149097e497cce8c2fa5f885f3954ccb13282e399ae51ed9e95fbf24d
+Pinned engine:
+  63e4bee9e6cefff0be88abd2c5ec4f6e0b6793dd
+plan.json, commands.json and each live-run.json record source paths, checkpoint
+hashes, settings and limits. No baseline model calls or full games were rerun.
+
+Each trial targeted three rounds with a 900-second wall-time limit, 300-second
+activation timeout, six admitted jobs and a four-million-reported-token stop
+threshold. The token monitor polls every two seconds and counts input plus
+output, including cached input once. In-flight generations can finish after the
+threshold; this was explicitly a stop threshold, not a hard request/token cap.
+The user authorized this new gameplay test after the earlier protocol screen.
+Its calls are additional to that screen, not part of its exhausted 16-request
+allowance. No further live calls were made after these gameplay trials stopped.
+
+The six-job limit was too small for an unconstrained three-round run with
+specialists and consultations. Both native accounting databases reached six
+admitted jobs by round two. Luna's attempted peace consultation failed before
+thread creation, consistent with this exhausted capacity. The consultation
+record lost its specific ValueError reason, so the exact denial is inferred from
+the exhausted native limit and admission path, not a saved denial message.
+Future gameplay testing must allow enough role jobs within its spending limit.
+This fixture constraint prevents treating the peace failure as model judgment.
+
+The first attempt stopped before model thread creation because the harness
+token monitor called .get on a pending job's null usage. Both initial attempts
+had zero decision generations and zero native gameplay commands. The monitor
+now handles missing/null usage as unreported, and its regression test retains
+other roles' reported usage. The failed attempt remains intact; the relaunch used
+fresh directories and the same frozen candidate.
+
+Results and actual usage
+
+Model         Completed rounds   Host decisions   Reported provider responses
+Luna                     2 / 3               48                            74
+Terra                    1 / 3               65                            64
+
+Luna reached native turn 158. Terra stopped in turn 157 after further actions.
+Luna was paused by the harness. Terra ended needs_inspection with
+STATE_UPDATE_FAILED. Both trial driver exit codes are 130 from the stop signal;
+their enclosing suites exit with code 2. Both
+completedEvaluation fields are false. Runtime is recorded for provenance only.
+
+Model       Input       Cached input   Uncached input   Output   Input + output
+Luna      4,012,939         3,589,888          423,051     14,467        4,027,406
+Terra     4,122,755         3,680,128          442,627      8,469        4,131,224
+Total     8,135,694         7,270,016          865,678     22,936        8,158,630
+
+Reasoning tokens, already included in output: Luna 6,582; Terra 665.
+These are actual reported tokens, not character estimates or dollar costs.
+Per-response provider records reconcile exactly with the host's reported totals.
+They do not establish complete usage for interrupted requests with no record.
+
+The audit deduplicates usage by provider response ID, rather than counting
+turn/start as a provider request. Luna has one bound interrupted decision without
+a token record; its cost is unknown. Another interrupted Luna decision has some
+reported response usage. Terra has one journaled generation with no bound turn,
+so that entry is not proof that another provider request was dispatched. Thus
+138 completed provider response records are a measured lower bound, not an exact
+count of every attempted request. Missing usage is not assumed to be free.
+
+The monitor observed Luna's threshold at 4,027,406 and Terra's at 4,037,623.
+Terra's final in-flight response raised its total to 4,131,224. The combined
+reported overshoot beyond two four-million thresholds is 158,630 tokens.
+
+Reported usage by role:
+
+Model Role       Host decisions  Provider responses      Input     Cached    Output
+Luna  Main                   16                  20   1,132,141    995,584     2,633
+Luna  Economy                13                  25   1,151,315  1,033,600     4,136
+Luna  Military               19                  29   1,729,483  1,560,704     7,698
+Terra Main                   15                  15     831,999    709,376     1,852
+Terra Economy                20                  20   1,036,562    926,976     2,841
+Terra Military               30                  29   2,254,194  2,043,776     3,776
+
+Luna attempted 28 disabled exec calls. Codex rejected them; none executed.
+Internal continuations materially increased provider requests. Terra attempted
+no such tools. No host schema repair was needed for the completed decisions.
+The apparent precision of the JSON interface does not prevent a model from
+attempting an unavailable tool before returning its structured answer.
+
+Protocol findings
+
+110 decisions completed validation: 46 Luna and 64 Terra. There were no invalid
+structured-decision or malformed-argument failures in those responses. The
+remaining three journal entries were interrupted or still marked generating
+when the services stopped. These entries dispatched no operations.
+
+21 batches stopped partially, leaving 30 explicit unexecuted children. Reasons
+were changed prerequisites, changed targets, required fresh observations,
+negotiation/position changes and one rejected operation. These are distinct from
+malformed batches. The largest observed batches contained seven operations on
+Luna and eight on Terra. Schemas remained stable across roles' decisions and both
+models: Main 92,695 characters, Economy 50,623 and Military 60,856. These are
+actual serialized schema character sizes, not token measurements. Production
+read descriptions make these different from earlier fake-provider fixture sizes.
+
+No native player_command request ID was dispatched twice. The native receipt
+and ordered child ID survived Terra's failed refresh. No generated code ran.
+Actual dispatch still encountered semantic/state rejections:
+  Luna: OPTION_UNAVAILABLE once; MILITARY_COMPLETION_REVIEW_REQUIRED once;
+        PEACE_CONSULTATION_UNAVAILABLE once before model generation.
+  Terra: OBSERVATION_REQUIRED three times; STALE_REVISION once;
+         MILITARY_COMPLETION_REVIEW_REQUIRED once; STATE_UPDATE_FAILED once.
+These do not support a claim that structured output eliminates gameplay errors.
+
+Observed gameplay
+
+Luna withdrew the 7-HP Crossbowman using a destination order, moved a Pikeman,
+accepted friendship with Arabia and started one worker Farm job. It made no
+native attacks. Two host-issued END_TURN commands completed. Native population
+rose from 42 to 43, treasury from 525 to 592; four cities remained owned. Existing
+construction completed Ironworks, a Stable and an Aqueduct over the two rounds.
+
+Terra used Heal Instantly to restore that Crossbowman from 7 to 57 HP, attacked
+Paris for 25 damage, moved workers and started four Farm jobs, fortified a
+Pikeman and accepted friendship with Arabia. In its second turn, two ranged
+attacks dealt 46 and then 29 damage to a French Pikeman, destroying it. One
+host-issued END_TURN completed. Population rose to 43 and treasury to 558; four
+cities remained owned. An existing Aqueduct completed.
+
+Each run's native combat reports confirm one own Pikeman destroyed by a French
+Pikeman during turn 156. No city was captured. The horizons differ, and completed
+buildings/growth largely follow existing queues. These observations do not rank
+the models' strategy or demonstrate equal decision quality.
+
+Terra refresh failure
+
+The last attack was confirmed as native request r19029135189bb5a8533c5247:
+  Crossbowman dealt 29 damage; the enemy Pikeman was destroyed; attacker HP 57.
+Decision: decision:f9a404872d197635c84cee7c210de74a, child :0.
+Diagnostic: 0a47bcc67a5017af0c2a2d26.
+
+The following player_turn read received MCP internal-error code -32603 and was
+classified HOST_PROTOCOL_ERROR. A simultaneous Main negotiation read received
+the same error. The gateway preserved applied=true and the native receipt,
+reported STATE_UPDATE_FAILED, and stopped the run for inspection.
+
+Timing: reported usage crossed the threshold at 20:36:27.243 UTC; another
+response completed at 20:36:29.260; the two failed host reads were recorded at
+20:36:30.529 and .531. This occurred during the budget-stop sequence. A shutdown
+race is plausible, but the retained evidence does not establish the exact native
+exception. The normal live gameplay path is therefore not exonerated.
+
+Both final checkpoints were independently loaded and observed with the pinned
+engine, without models or turn advancement. These checks passed and verified
+that native state and tile ownership references did not change. Both copied
+checkpoints match the original native game state, including exploration. The
+offline observation did not reproduce Terra's concurrent MCP failure.
+
+Local fixes and validation after the live run
+
+1. The harness token guard accepts pending null usage without crashing.
+2. A receipt with applied=true remains confirmed even when a post-action refresh
+   returns an error. The failure tracker reports confirmed execution and a refresh
+   failure, rather than an unknown/rejected action. The next batch entry still
+   remains unexecuted. The regression verifies one native execution and retrieves
+   the original successful native receipt.
+
+32 focused harness, recovery and failure-tracking tests passed. Repository Ruff
+lint and formatting checks passed; Pyrefly reported zero errors and 40 warnings.
+Both pinned-engine endpoint observation checks passed. The full Python suite was
+not repeated for these small follow-up fixes; the immediately preceding full run
+had 2,577 passing tests, eight skips and 76 passing subtests. No additional live
+calls verified the label fix, and the frozen source used in this test is retained
+unchanged. The native/MCP refresh failure and unavailable-tool generation remain
+unresolved follow-ups.
+
+Evidence and deployment
+
+audit.json contains per-role actual usage, schema fingerprints, native receipts,
+batch sizes, skipped children, request-ID checks and failure evidence. The
+per-model *-failures.json files preserve the original diagnostic interpretation
+before the receipt-label fix; the raw native receipt already confirms execution.
+*-outcomes.json, *-loss-reports.json and *-observation-provenance.json contain
+native endpoint evidence. local-fixes.log and the lint/format/type logs record
+post-run validation. Credentials and raw reasoning are excluded from these audit
+outputs and this report.
+
+The four existing pangaea-v4/two-continents-v4 g0001/g0002 games retain runtime
+image e24a970af60cc4923768549741e45b297f259a554f79daa82469578055ab436b.
+None was resumed, rewound, rebuilt or deployed by this test. The temporary auth
+clients were removed and the test services exited. No engine source changed.
+
+Follow-up: token usage regression
+
+The user questioned the high usage. A new offline audit compares these traces
+with the immediately preceding saved decision-efficiency trials on the same
+pangaea-g4-inca starting position. It makes no provider or engine calls:
+  build/strict-decisions-20261030/usage-regression-20261030/audit.py
+  build/strict-decisions-20261030/usage-regression-20261030/audit.json
+Previous trials:
+  build/decision-efficiency-20261030/live/<model>/pangaea-g4-inca-candidate-1
+
+The first completed turn, 156, starts from the same native position with fresh
+private memory, medium effort and the same guides. It is the strongest available
+comparison. These are single samples, with concurrent roles and different
+decisions, not a controlled estimate of an interface's causal effect.
+
+Model   Previous total   Structured total   Change   Provider responses old/new
+Luna         1,482,911          1,855,138    +25.1%                       28/38
+Terra        2,594,089          2,585,351     -0.3%                       51/39
+
+Model   Previous uncached input   Structured uncached input   Change
+Luna                    176,781                      185,816    +5.1%
+Terra                   169,935                      231,578   +36.3%
+
+Totals are input plus output, counting cached input once. Provider response
+records reconcile with monitoring usage and request counts for every included
+job. Output for this turn was nearly unchanged: Luna 7,058 to 7,114; Terra 5,594
+to 5,613. The increase is chiefly input processing, not longer generated answers.
+
+Luna's second turn is worse: 1,003,068 previous tokens versus 2,172,268 structured.
+Across the two turns Luna rises from 2,485,979 to 4,027,406 (+62.0%). The native
+positions have already diverged in turn 157, and the previous Luna trial also
+completed two peace consultations while the new trial exhausted its job limit.
+Terra's second turn is unfinished, so dividing its entire 4.13M usage by its one
+completed round would produce a misleading comparison. Its new total also
+includes substantial work on the next round.
+
+Across the new test, 7,270,016 of 8,135,694 input tokens were reported cached
+(89.4%). Uncached input was 865,678 and output 22,936. This is not 8.16M uncached
+tokens. These counts do not establish dollar cost or ChatGPT quota weighting.
+
+Measured contributors and limits
+
+1. Luna generated 28 responses containing disabled exec attempts, among its 74
+   reported responses. Those responses consumed 1,329,522 input tokens,
+   including 1,107,072 cached, and 3,389 output tokens. These are real failed-tool
+   responses, not host receipt replays or duplicate accounting. Preventing the
+   attempts would change later decisions, so these numbers are not a measured
+   counterfactual saving. Four jobs attempted exec on their first response,
+   before receiving decision_receipts; receipt continuation alone therefore
+   cannot explain the behavior. No attempted exec ran. Terra had none.
+
+2. Terra's Military cost grew even though its aggregate first-turn total did
+   not. Military input increased from 764,162 to 1,421,861; responses rose from
+   15 to 17, while mean input per response rose from 50,944 to 83,639 tokens.
+   Its first new context was 37,994 tokens and its last was 112,278.
+   All 14 model-requested unit_details reads in that turn explicitly selected
+   delivery=full. It also requested two full player_turn observations and a
+   full radius-four map. Full delivery intentionally bypasses delta/sharing
+   savings. The previous run used full delivery for nine of 18 model-requested
+   unit detail reads, no full player_turn, and an ordinary radius-three map.
+   The new Main and Economy costs fell, masking this Military regression in
+   the total. This does not establish equivalent gameplay quality.
+
+3. The complete schemas add a fixed context cost despite removing duplicated
+   startup schema listings. First-response input grew by approximately 3.4K
+   tokens for Economy, 4.8K for Military and 8.8K for Main on each model. These
+   are actual net request-size changes, not isolated schema-token measurements.
+   Current schemas are 50,623 / 60,856 / 92,695 serialized characters for
+   Economy / Military / Main. Character sizes must not be described as tokens.
+   Generic Codex coding and multi-agent instructions were also present in both
+   old and new traces; they are overhead, not a newly introduced cost.
+
+4. The new runs had 21 partial batches and 30 unexecuted children, which require
+   reconsideration or fresh observation. These include real concurrent state
+   changes and ownership/prerequisite safeguards. Removing those checks merely
+   to reduce calls would violate the protocol. The audit does not attribute an
+   exact token saving to eliminating any particular partial batch.
+
+Confirmed local fix
+
+DecisionLoop.execute expanded the gateway's compact response before retaining
+and delivering its child receipt. It now preserves the exact gateway response;
+delivered() still expands the child for host inspection bookkeeping. This also
+preserves explicit full-delivery requests and durable replay behavior. It does
+not change schemas, legal actions, ownership, or any gameplay guidance.
+
+The saved gateway responses expand exactly to all 179 delivered child receipts.
+Preserving them would remove 4,997 serialized characters from Luna's receipt
+payloads (587,508 to 582,511), before accounting for repeated context. Terra's
+826,686 receipt characters are unchanged because its delivered replies were
+already expanded. This is a small fix, not a solution to the measured regression.
+Recompacting explicit full replies could reduce them further but would disregard
+the requested delivery semantics; the fix does not do that.
+
+The regression test failed at the compact-receipt equality assertion before the
+fix. Afterward, 64 decision, recovery, failure-tracking and payload tests passed,
+including compact/full delivery, exact reconstruction, delivered inspection
+credit and restart replay. Repository Ruff lint and formatting checks passed;
+Pyrefly reported zero errors and 40 warnings; git diff --check passed. The full
+Python suite was not rerun for this change. The frozen live candidate and raw
+evidence remain unchanged. No additional live model calls were made.
+
+The candidate has not demonstrated an efficiency improvement and remains
+isolated. The next substantive work is to prevent unavailable-tool continuation
+loops and unnecessary full observations, then measure a bounded comparison.
+No saving from those future changes is claimed here.

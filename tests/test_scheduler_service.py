@@ -69,6 +69,7 @@ class SchedulerServiceTest(unittest.TestCase):
             CIV_TEST_CA=str(self.certificate),
             CIV_TEST_HOST=self.host.url,
             UNCIV_OPERATOR_TOKEN="must-not-enter-codex",
+            PATH=str(Path(sys.executable).parent) + os.pathsep + os.environ.get("PATH", ""),
         )
         self.services = []
         for civilization in ("Rome", "Greece"):
@@ -192,8 +193,8 @@ class SchedulerServiceTest(unittest.TestCase):
         self.assertEqual(1, len(self.host.plays))
         self.assertEqual([], self.host.restores)
         starts = [record for record in self.records() if record["method"] == "turn/start"]
-        self.assertEqual(2, sum("outputSchema" in record["params"] for record in starts))
-        self.assertEqual(1, sum("outputSchema" not in record["params"] for record in starts))
+        self.assertEqual(4, len(starts))
+        self.assertTrue(all("outputSchema" in record["params"] for record in starts))
         for civilization in ("Rome", "Greece"):
             workspace = self.state_dir / "agents" / civilization
             delivered = json.loads((self.state_dir / "agent-services" / civilization / "result.json").read_text())
@@ -209,7 +210,7 @@ class SchedulerServiceTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual([play["civ"] for play in self.host.plays], ["Rome", "Greece", "Rome", "Greece"])
         self.assertEqual(self.saved()["handoffs"], 4)
-        self.assertEqual(self.saved()["usage"]["input_tokens"], 40)
+        self.assertEqual(self.saved()["usage"]["input_tokens"], 80)
         records = self.records()
         starts = [record for record in records if record["method"] == "thread/start"]
         resumes = [record for record in records if record["method"] == "thread/resume"]
@@ -219,7 +220,8 @@ class SchedulerServiceTest(unittest.TestCase):
         self.assertFalse(any(record["method"].startswith("economy/") for record in records))
         for record in starts + resumes:
             self.assertFalse(record["operatorTokenPresent"])
-            self.assertIn("mcp_servers.civ", " ".join(record["argv"]))
+            self.assertIn("mcp_servers={}", record["argv"])
+            self.assertEqual(record["params"]["dynamicTools"], [])
             self.assertNotIn(self.host.url + "/mcp", " ".join(record["argv"]))
             self.assertIn("unix://", " ".join(record["argv"]))
             self.assertNotIn(self.host.operator_token, json.dumps(record))
@@ -228,17 +230,25 @@ class SchedulerServiceTest(unittest.TestCase):
             self.assertIn("include_environment_context=false", record["argv"])
             self.assertIn("include_permissions_instructions=false", record["argv"])
             self.assertIn("skills.include_instructions=false", record["argv"])
-            label = (
-                "Available tools:" if Path(record["params"]["cwd"]).parent.name == "reviews" else "Civ tool discovery:"
-            )
+            label = "Return one structured decision"
             self.assertIn(label, record["params"]["developerInstructions"])
             self.assertIn(Path(record["params"]["cwd"]).parent.parent.name, {"Rome", "Greece"})
             self.assertEqual(Path(record["params"]["cwd"]).parent.parent.parent, self.state_dir / "agents")
             self.assertIn(record["params"]["model"], {"rome-service-model", "greece-service-model"})
-            self.assertEqual({"model_reasoning_effort": "high"}, record["params"]["config"])
+            self.assertEqual("high", record["params"]["config"]["model_reasoning_effort"])
+            self.assertEqual(record["params"]["modelProvider"], "civ_openai")
+            config = record["params"]["config"]
+            self.assertTrue(config["model_providers.civ_openai.base_url"].startswith("http://127.0.0.1:"))
+            self.assertTrue(config["model_providers.civ_openai.requires_openai_auth"])
+            self.assertFalse(config["model_providers.civ_openai.supports_websockets"])
+            self.assertIn("Return exactly one JSON decision", record["params"]["baseInstructions"])
         self.assertEqual(len({record["params"]["cwd"] for record in starts + resumes}), 6)
         turns = [
-            record for record in records if record["method"] == "turn/start" and "outputSchema" not in record["params"]
+            record
+            for record in records
+            if record["method"] == "turn/start"
+            and record["params"]["input"]
+            and "Play " in record["params"]["input"][0]["text"]
         ]
         self.assertEqual(4, len(turns))
         self.assertTrue(all(record["params"]["effort"] == "high" for record in turns))
@@ -277,7 +287,8 @@ class SchedulerServiceTest(unittest.TestCase):
         )
         self.assertEqual([play["civ"] for play in self.host.plays], ["Rome", "Greece"] * 2)
         starts = [row["params"] for row in self.records() if row["method"] == "turn/start"]
-        self.assertEqual(["outputSchema" in row for row in starts], [False, False, True, True, False, False])
+        self.assertTrue(all("outputSchema" in row for row in starts))
+        starts = [row for row in starts if row["input"]]
         for report in starts[2:4]:
             text = report["input"][0]["text"]
             self.assertIn("after all players completed round 5", text)
@@ -292,7 +303,8 @@ class SchedulerServiceTest(unittest.TestCase):
         result = self.run_cli("--max-turns", "2", "--max-seconds", "60")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         starts = [row["params"] for row in self.records() if row["method"] == "turn/start"]
-        self.assertEqual(["outputSchema" in row for row in starts], [False, False, True, True, False, False])
+        self.assertTrue(all("outputSchema" in row for row in starts))
+        starts = [row for row in starts if row["input"]]
         for report in starts[2:4]:
             self.assertIn("after all players completed round 4", report["input"][0]["text"])
         saved = self.saved()
@@ -309,7 +321,7 @@ class SchedulerServiceTest(unittest.TestCase):
         records = [
             record for record in self.records() if record["method"] in {"thread/start", "thread/resume", "turn/start"}
         ]
-        self.assertEqual(10, len(records))  # Two opening reviews plus three gameplay requests.
+        self.assertEqual(13, len(records))  # Two opening reviews and three two-decision gameplay turns.
         for record in records:
             parameters = record["params"]
             self.assertEqual("run-model", parameters["model"])
@@ -489,9 +501,11 @@ class SchedulerServiceTest(unittest.TestCase):
         self.assertTrue(all(record["phase"] == "COMPLETED" for record in records))
         self.assertEqual(result.stdout.count("Settled and chose research."), 0)
         self.assertTrue(all(record["completionReason"] == "native_handoff" for record in records))
-        self.assertTrue(all(record["usage"]["input_tokens"] == 10 for record in records))
+        self.assertTrue(all(record["usage"]["input_tokens"] == 20 for record in records))
         self.assertTrue(all("finalizationElapsedMs" in record for record in records))
-        self.assertGreaterEqual(sum(row["method"] == "turn/interrupt" for row in self.records()), 1)
+        # Strict responses are complete before dispatch. Finalization still
+        # overlaps the next player while the previous process exits.
+        self.assertFalse(any(row["method"] == "turn/interrupt" for row in self.records()))
         calls = [row["params"] for row in self.records() if row["method"] == "test/tool"]
         self.assertEqual([play["civ"] for play in self.host.plays], ["Rome", "Greece"])
         self.assertFalse(any(row["tool"] == "memory_update" for row in calls))
@@ -573,25 +587,28 @@ class SchedulerServiceTest(unittest.TestCase):
         for path in (self.state_dir / "agent-services").glob("*/activations/*.json"):
             self.assertEqual(json.loads(path.read_text())["phase"], "COMPLETED")
         starts = [r for r in records if r["method"] == "turn/start"]
-        # Two opening reviews, four turns, two chat jobs and one gameplay continuation.
-        self.assertEqual(len(starts), 15 if peace else 9)
-        self.assertEqual(8 if peace else 2, sum("outputSchema" in r["params"] for r in starts))
+        # Decisions continue each of the same two review, four gameplay and
+        # two chat threads. Peace adds six one-response consultations.
+        self.assertEqual(len(starts), 32 if peace else 26)
+        self.assertTrue(all("outputSchema" in r["params"] for r in starts))
+        self.assertEqual(len({r["params"]["threadId"] for r in starts}), 14 if peace else 8)
         if peace:
-            titles = [r["params"].get("outputSchema", {}).get("title") for r in starts]
-            self.assertEqual(titles.count("TacticalOverview"), 3)
-            self.assertEqual(titles.count("PeaceApproval"), 3)
-        interruptions = [r for r in records if r["method"] == "turn/interrupt"]
-        thread = next(
-            r["params"]["threadId"]
-            for r in starts
-            if r["params"]["input"][0]["text"].startswith("The negotiation has finished.")
-        )
-        self.assertEqual(sum(r["params"]["threadId"] == thread for r in starts), 2)
-        self.assertTrue(any(r["params"]["threadId"] == thread for r in interruptions))
-        continuations = [r for r in records if r["method"] == "test/negotiation_result"]
+            reports = [
+                variant["properties"]["report"]["properties"]
+                for r in starts
+                for variant in r["params"]["outputSchema"]["properties"]["decision"]["anyOf"]
+                if "report" in variant["properties"]
+            ]
+            self.assertEqual(sum("approve" in report for report in reports), 3)
+            self.assertEqual(sum("battlefield" in report for report in reports), 3)
+        continuations = [
+            r["params"] for r in starts if "Negotiation settled." in r["params"].get("toolOutput", {}).get("output", "")
+        ]
         self.assertEqual(len(continuations), 1)
-        self.assertEqual(continuations[0]["params"]["result"]["trade"]["version"], 2)
+        receipts = json.loads(continuations[0]["toolOutput"]["output"])["receipts"]
+        self.assertEqual(receipts[0]["result"]["trade"]["version"], 2)
+        self.assertEqual(receipts[0]["result"]["trade"]["status"], "ENACTED")
         opening = next(r for r in self.gameplay_records("Rome") if r["gameTurn"] == 0)
-        self.assertEqual(opening["usage"]["input_tokens"], 20)
+        self.assertEqual(opening["usage"]["input_tokens"], 40)
         self.assertTrue(opening["usageReported"])
         self.assertGreater(opening["negotiationWaitSeconds"], 0)

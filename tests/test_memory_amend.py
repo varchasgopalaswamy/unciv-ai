@@ -43,8 +43,8 @@ def test_amend_rejects_metadata_and_invalid_content_without_partial_write(tmp_pa
     memory = setup(tmp_path)
     key = create(memory, belief())
     before = current(memory, key)
-    result = memory.patch("game", [{"op": "amend", "id": key, "fields": fields}])
-    assert not result["changes"][0]["accepted"]
+    with pytest.raises(ValueError, match="INVALID_ARGUMENT"):
+        memory.patch("game", [{"op": "amend", "id": key, "fields": fields}])
     assert current(memory, key) == before
 
 
@@ -62,7 +62,7 @@ def test_amend_batch_keeps_successful_edits_and_replays_once(tmp_path):
     second = create(memory, belief())
     changes = [
         {"op": "amend", "id": first, "fields": {"text": "New information"}},
-        {"op": "amend", "id": second, "fields": {"claim": None}},
+        {"op": "amend", "id": second, "fields": {"text": "A note field cannot amend a belief"}},
     ]
     result = memory.patch("game", changes, "batch")
     MemoryUpdateResult.model_validate(result)
@@ -93,9 +93,8 @@ def test_constraints_name_the_actual_field_without_echoing_content(tmp_path, fie
     memory = setup(tmp_path)
     key = create(memory, belief())
     before = current(memory, key)
-    result = memory.patch("game", [{"op": "amend", "id": key, "fields": {field: value}}])["changes"][0]
-    assert result["limits"] == [{"fields": ["fields", field], "maximum": bound, "received": len(value)}]
-    assert "PRIVATE_" not in json.dumps(result)
+    with pytest.raises(ValueError, match="INVALID_ARGUMENT"):
+        memory.patch("game", [{"op": "amend", "id": key, "fields": {field: value}}])
     assert current(memory, key) == before
     assert memory.patch("game", [{"op": "amend", "id": key, "fields": {field: value[:bound]}}])["changes"][0][
         "accepted"

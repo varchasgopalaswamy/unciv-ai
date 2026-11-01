@@ -58,6 +58,56 @@ class Socket:
         self.closed = True
 
 
+@pytest.mark.parametrize(
+    "status,reason,failed_turn,fatal",
+    [
+        ("completed", "PROVIDER_FORWARD_FAILED", "turn-1", False),
+        ("completed", "PROVIDER_DECISION_REQUEST_LIMIT", "turn-1", True),
+        ("interrupted", "PROVIDER_FORWARD_FAILED", "turn-1", True),
+        ("completed", "PROVIDER_FORWARD_FAILED", "turn-2", True),
+    ],
+)
+def test_late_provider_failure_is_fenced_to_its_completed_turn(tmp_path, status, reason, failed_turn, fatal):
+    async def run():
+        seen = []
+        arrived, release = asyncio.Event(), asyncio.Event()
+
+        async def notification(method, params):
+            if method == "turn/completed":
+                arrived.set()
+                await release.wait()
+            seen.append((method, params))
+
+        process = CodexProcess("codex", tmp_path, "", None, notification)
+        socket = Socket()
+        process.socket = cast(aiohttp.ClientWebSocketResponse, socket)
+        process.reader_task = asyncio.create_task(process._read())
+        try:
+            socket.feed(
+                {
+                    "method": "turn/completed",
+                    "params": {"threadId": "thread-1", "turn": {"id": "turn-1", "status": status}},
+                }
+            )
+            await asyncio.wait_for(arrived.wait(), 1)
+            # Socket receipt fences the result even while durable notification
+            # delivery is blocked. The provider error cannot win that race.
+            await process._provider_notice(
+                "service/providerRequestBlocked",
+                {"reason": reason, "threadId": "thread-1", "turnId": failed_turn, "stage": "upstream_read"},
+            )
+            assert (process.transport_error == reason) == fatal
+        finally:
+            release.set()
+            await asyncio.wait_for(process.close(), 1)
+        failures = [p for m, p in seen if m == "service/requestFailed"]
+        assert bool(failures) == fatal
+        if not fatal:
+            assert any(p.get("afterCompletedTurn") for m, p in seen if m == "service/transportStatus")
+
+    asyncio.run(run())
+
+
 def test_rpc_error_metadata_survives_pending_request_cleanup_and_shutdown(tmp_path):
     async def run():
         seen = []
@@ -247,14 +297,14 @@ def test_coalesced_history_redacts_secrets_across_batch_boundaries_and_omits_raw
     asyncio.run(run())
 
 
-def test_review_runaway_guard_wakes_failure_even_with_blocked_history(tmp_path):
+def test_review_size_guard_wakes_failure_even_with_blocked_history(tmp_path):
     async def run():
         started, release, failed = asyncio.Event(), asyncio.Event(), asyncio.Event()
         seen = []
 
         async def notification(method, params):
             if method == "service/transportFailure":
-                assert params["reason"] == "REVIEW_OUTPUT_STALLED"
+                assert params["reason"] == "REVIEW_OUTPUT_LIMIT"
                 failed.set()
                 return
             if method == "item/started":
@@ -283,7 +333,7 @@ def test_review_runaway_guard_wakes_failure_even_with_blocked_history(tmp_path):
         socket.feed(
             {
                 "method": "item/agentMessage/delta",
-                "params": {**common, "itemId": "report", "delta": '{"answer":"unfinished"'},
+                "params": {**common, "itemId": "report", "delta": '{"answer":"' + "x" * (128 * 1024)},
             }
         )
         for _ in range(6000):

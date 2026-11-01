@@ -63,7 +63,7 @@ async def test_gateway_advertises_worker_commands_and_preloads_work_in_targeted_
         )
         m.host.revision = "worker-added"
         catalogue = await m.gateway.tools(m.economy)
-        kinds = next(t for t in catalogue if t["name"] == "player_command")["inputSchema"]["properties"]["kind"]["enum"]
+        kinds = next(t for t in catalogue if t["name"] == "player_command")["inputSchema"]["discriminator"]["mapping"]
         assert {"START_WORKER_JOB", "STOP_WORKER_JOB", "CONNECT_ROAD", "MOVE_UNIT"} <= set(kinds)
         prepared = await prepare_startup(m.gateway, m.economy)
         brief = prepared["reads"]["player_turn"]

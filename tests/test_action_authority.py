@@ -191,7 +191,11 @@ def test_service_stops_running_gameplay_and_communication_without_model_cooperat
             service.chat.settings = dict(service.default_settings)
             chat_task = asyncio.create_task(service.chat.compute("chat"))
             async with asyncio.timeout(3):
-                while "chat" not in service.chat.jobs:
+                # Exercise a running conversation; job registration precedes
+                # startup reads and can otherwise race the injected store failure.
+                while (
+                    "chat" not in service.chat.job_records or service.chat.job_records["chat"][0]["phase"] != "RUNNING"
+                ):
                     await asyncio.sleep(0.01)
             await service.gateway.call(game, "player_turn", {}, "failure-source")
             await service.io.call(

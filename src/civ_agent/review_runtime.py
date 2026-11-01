@@ -23,7 +23,6 @@ from civ_agent.review_store import ReviewStore
 from civ_agent.strategic_review import (
     REVIEW_READ_TOOLS,
     advice_prompt,
-    advice_schema,
     parse_advice,
     review_due,
     review_facts,
@@ -369,7 +368,7 @@ class ReviewRuntime:
                         latest = await self.persist(self.store.at_turn, task["turn"])
                         if quota:
                             continue  # The supervisor retries after its quota cooldown, preserving the pending review.
-                        elif latest["attempts"] >= self.attempts:
+                        elif str(error) == "PROMPT_POLICY_REJECTED" or latest["attempts"] >= self.attempts:
                             await self.persist(self.store.unavailable, task["job"], str(error) or type(error).__name__)
                         else:
                             self.pending.set()
@@ -467,6 +466,19 @@ class ReviewRuntime:
 
         async def notification(method, params):
             nonlocal completed
+            from civ_agent.structured_decisions import generation_event
+
+            if method in {
+                "service/providerRequest",
+                "service/providerRejection",
+                "thread/tokenUsage/updated",
+                "turn/completed",
+                "service/requestFailed",
+                "service/transportFailure",
+                "service/approvalRequired",
+                "service/generationFailed",
+            }:
+                await generation_event(service.gateway, record, method, params)
             if method == "service/llmMetrics":
                 await record_llm_metrics(service, record, params)
                 return
@@ -535,7 +547,16 @@ class ReviewRuntime:
                     civilization_guide=service.civilization_guide,
                 )
                 record["startup"] = prompt.metadata()
-                output_schema = advice_schema(inputs["reads"]["player_turn"])
+                from civ_agent.decision_contracts import DecisionContract
+                from civ_agent.strategic_review import StrategicAdvice
+                from civ_agent.structured_decisions import DecisionLoop
+
+                decisions = DecisionLoop(
+                    service.gateway,
+                    job,
+                    DecisionContract("review", inputs["catalogue"], report_model=StrategicAdvice),
+                    record,
+                )
                 first_input = prompt.user
                 if task.get("error"):
                     feedback = correction_message(ValueError(task["error"]))
@@ -564,6 +585,7 @@ class ReviewRuntime:
                         "cwd": str(workspace),
                         "approvalPolicy": "never",
                         "sandbox": "workspace-write",
+                        "dynamicTools": [],
                         "developerInstructions": prompt.instructions,
                         **codex_thread_settings(settings, fast=service.fast),
                     },
@@ -583,6 +605,7 @@ class ReviewRuntime:
                 await save()
                 turn_input = first_input
                 while True:
+                    await self.persist(service.history.next_conversation, id, "strategic_review")
                     expected = None
                     completed = None
                     done.clear()
@@ -590,16 +613,16 @@ class ReviewRuntime:
                         "turn/start",
                         {
                             "threadId": record["threadId"],
-                            "input": [{"type": "text", "text": turn_input}],
+                            **await decisions.begin(turn_input),
                             "approvalPolicy": "never",
                             "summary": "auto",
                             "model": record["effectiveSettings"]["model"],
                             **({"effort": settings["reasoningEffort"]} if settings.get("reasoningEffort") else {}),
                             **({"serviceTier": "fast"} if service.fast else {}),
-                            "outputSchema": output_schema,
                         },
                     )
                     expected = response["turn"]["id"]
+                    await decisions.bind(expected)
                     record["turnId"] = expected
                     record["reviewAttempt"] = task["attempts"]
                     await self.persist(service.history.bind_turn, id, expected)
@@ -622,6 +645,15 @@ class ReviewRuntime:
                                 raise ValueError("REVIEW_PERMIT_EXPIRED") from None
                             await save()
                             await service.flush_telemetry()
+                    if decisions.generation_failed and not record.get("error"):
+                        # Share the existing review allowance with semantic
+                        # corrections; never nest an extra pair of attempts.
+                        if task["attempts"] >= self.attempts:
+                            raise ValueError("STRUCTURED_GENERATION_RECOVERY_LIMIT")
+                        await self.persist(self.store.failed, task["job"], "REVIEW_OUTPUT_STALLED")
+                        task = await self.persist(self.store.attempt, task["job"], self.attempts)
+                        progress.value["stage"] = "Correcting"
+                        continue
                     if completed != "completed" or record.get("error"):
                         if record.get("transportError") == "CODEX_NOTIFICATION_FAILED":
                             raise ReviewFatalError("REVIEW_RECORD_FAILED")
@@ -630,18 +662,30 @@ class ReviewRuntime:
                     await save()
                     answer = final_messages.get(expected, unphased_messages.get(expected, ""))
                     try:
-                        advice = parse_advice(answer, inputs["reads"]["player_turn"], evidence=evidence)
+                        receipt = await decisions.complete(answer)
+                        decisions.delivered(receipt)
+                        if receipt.get("error"):
+                            raise ValueError(receipt["error"])
+                        if "report" not in receipt:
+                            turn_input = receipt
+                            continue
+                        advice = parse_advice(
+                            json.dumps(receipt["report"]), inputs["reads"]["player_turn"], evidence=evidence
+                        )
                         break
                     except ValueError as error:
+                        if decisions.current is not None and decisions.current["status"] == "reported":
+                            await decisions.reject_report(str(error))
                         if str(error) == "STRATEGIC_REVIEW_POSITION_MISMATCH":
                             raise ReviewFatalError("REVIEW_INPUT_FAILED") from error
                         if task["attempts"] >= self.attempts:
                             raise
                         await self.persist(self.store.failed, task["job"], str(error))
                         task = await self.persist(self.store.attempt, task["job"], self.attempts)
-                        turn_input = correction_message(error)
+                        feedback = correction_message(error)
+                        turn_input = {"error": "REVIEW_CORRECTION_REQUIRED", "instruction": feedback}
                         await self.persist(service.history.next_conversation, id, "strategic_review")
-                        await self.persist(service.history.startup_context, id, turn_input)
+                        await self.persist(service.history.startup_context, id, json.dumps(turn_input))
                         progress.value["stage"] = "Correcting"
                         await save()
             await stop()
@@ -691,7 +735,11 @@ class ReviewRuntime:
                         )
                     progress.value["stage"] = record["phase"].capitalize()
                     record["usageComplete"] = trace_complete or (
-                        stopped and completed == "completed" and record.get("usageReported", False)
+                        stopped
+                        and completed == "completed"
+                        and record.get("usageReported", False)
+                        and not record.get("generationFailures")
+                        and not record.get("providerRejections")
                     )
                     await save()
                 except Exception as error:

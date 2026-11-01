@@ -46,8 +46,8 @@ def test_healthy_military_near_visible_hostiles_is_still_in_tactical_review():
 
 def test_compact_command_envelope_preserves_all_action_kinds_and_is_smaller():
     full, compact = COMMANDS.json_schema(), command_schema()
-    assert set(compact["properties"]["kind"]["enum"]) == set(full["discriminator"]["mapping"])
-    assert len(json.dumps(compact)) < len(json.dumps(full)) / 2
+    assert set(compact["discriminator"]["mapping"]) == set(full["discriminator"]["mapping"])
+    assert set(compact["$defs"]) == set(full["$defs"])
     Draft202012Validator.check_schema(compact)
 
 

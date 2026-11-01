@@ -485,7 +485,6 @@ def test_declaration_paths_include_native_replies_and_canonical_trades():
 
 @run_async
 async def test_real_readonly_peace_conversation_and_accounting(tmp_path):
-    import json
 
     from civ_agent.agent_service import AgentService
     from civ_agent.peace_review import TacticalOverview
@@ -524,7 +523,9 @@ async def test_real_readonly_peace_conversation_and_accounting(tmp_path):
                             "id": "answer",
                             "type": "agentMessage",
                             "phase": "final_answer",
-                            "text": json.dumps(answer),
+                            "text": __import__("tests.structured_helpers", fromlist=["report_text"]).report_text(
+                                answer, TacticalOverview
+                            ),
                         },
                     },
                 )

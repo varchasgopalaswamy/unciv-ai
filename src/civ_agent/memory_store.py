@@ -276,7 +276,13 @@ class RecordStore:
             conditions.append(tables.records.c.category == type)
         if subject:
             subjects = func.json_each(tables.records.c.body, "$.subjects").table_valued("value")
-            conditions.append(select(1).select_from(subjects).where(subjects.c.value == subject).exists())
+            conditions.append(
+                select(1).select_from(subjects).where(subjects.c.value == subject).exists()
+                | (
+                    (tables.records.c.category == "city_plan")
+                    & (func.json_extract(tables.records.c.body, "$.city") == subject)
+                )
+            )
         if state != "all":
             conditions.append(func.coalesce(func.json_extract(tables.records.c.body, "$.state"), "active") == state)
         if id:

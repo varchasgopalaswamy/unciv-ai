@@ -123,7 +123,7 @@ def completion_review(view, state, saved=None) -> JsonObject:
             "active": len(operations),
             "read": {"tool": "war_goals", "arguments": {"section": "operations", "status": "active"}},
         },
-        "instruction": "Resolve these exposures or opportunities with native actions, or include reasoned hold decisions for every remaining target in finish_role.militaryReview using this basis. Group targets when the reason is shared. Compare observed progress with accepted objectives and update military_operation only when its assessment or plan changes.",
+        "instruction": "Resolve these exposures or opportunities with native actions, or include reasoned hold decisions for every remaining target in finish.arguments.decisions. The host binds this delivered review. Group targets when the reason is shared. Compare observed progress with accepted objectives and update military_operation only when its assessment or plan changes.",
         "limits": "Visible proximity is not enemy reach; unseen threats remain unknown. A hold may deliberately accept risk. Counts do not establish an operation's success, and lost/reassigned units do not establish combat losses.",
     }
 

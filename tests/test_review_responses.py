@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock
 
 import pytest
+from jsonschema import ValidationError as SchemaError
 
 from civ_agent import service_recovery
 from civ_agent.agent_service import AgentService
@@ -47,6 +48,16 @@ async def reviewing(tmp_path, *, attempts=1):
 
 
 async def message(process, text, *, phase=MISSING_PHASE, item_id="report", method="item/completed", **scope):
+    try:
+        report = json.loads(text)
+        if isinstance(report, dict) and "review" in report:
+            from tests.structured_helpers import report_text
+
+            text = report_text(report)
+    except SchemaError:
+        text = json.dumps({"decision": {"kind": "submit_report", "report": json.loads(text)}})
+    except (ValueError, KeyError):
+        pass
     item = {"id": item_id, "type": "agentMessage", "text": text}
     if phase is not MISSING_PHASE:
         item["phase"] = phase
@@ -161,7 +172,7 @@ def test_invalid_explicit_final_does_not_fall_back_to_valid_unlabeled_report(tmp
             await message(process, text, phase="final_answer", item_id="final")
             await message(process, json.dumps(assessment()), phase=None, item_id="unlabeled")
             await complete(process)
-            await rejected(service, "Invalid JSON")
+            await rejected(service, "INVALID_STRUCTURED_DECISION")
 
     asyncio.run(run())
 
@@ -169,11 +180,11 @@ def test_invalid_explicit_final_does_not_fall_back_to_valid_unlabeled_report(tmp
 @pytest.mark.parametrize(
     "text,error",
     [
-        pytest.param("invalid", "Invalid JSON", id="json"),
-        pytest.param(json.dumps({"assessment": "Missing review."}), "Field required", id="schema"),
+        pytest.param("invalid", "INVALID_STRUCTURED_DECISION", id="json"),
+        pytest.param(json.dumps({"assessment": "Missing review."}), "INVALID_STRUCTURED_DECISION", id="schema"),
         pytest.param(
             json.dumps({**assessment(), "review": {**assessment()["review"], "horizonTurns": 0}}),
-            "greater than or equal to 1",
+            "INVALID_STRUCTURED_DECISION",
             id="horizon",
         ),
     ],
@@ -215,7 +226,7 @@ def test_nonfinal_unfinished_or_unrelated_messages_are_not_review_answers(tmp_pa
                 },
             )
             await complete(process)
-            await rejected(service, "Invalid JSON")
+            await rejected(service, "INVALID_STRUCTURED_DECISION")
 
     asyncio.run(run())
 

@@ -267,6 +267,58 @@ def test_city_plan_rejects_display_names_with_recovery_and_preserves_overrides(t
     memory.engine.dispose()
 
 
+def test_omitted_city_plan_is_searchable_by_its_city_without_subject_tags(tmp_path):
+    from tests.test_structured_memory import create
+
+    memory = setup(tmp_path)
+    memory.start_job("previous", "economy", {}, game_turn=4)
+    plan = create(
+        memory,
+        {"type": "city_plan", "city": "city1", "subjects": ["Cuzco", "growth"], "reasons": {"growth": "Keep growing"}},
+        "previous",
+    )
+    create(memory, {"type": "city_plan", "city": "city11", "reasons": {"growth": "Another city"}}, "previous")
+    memory.finish_job("previous", True)
+    memory.start_job("worker-pass", "economy", {}, game_turn=5)
+    context = memory.select_startup_context("worker-pass", set(), owned_cities=[])
+    assert plan not in context["contextIds"] and plan not in context["delivered"]
+    result = memory.search_memory("worker-pass", {"type": "city_plan", "subject": "city1"})
+    assert [r["id"] for r in result["records"]] == [plan]
+    assert result["records"][0]["subjects"] == ["Cuzco", "growth"]
+    assert memory.patch("worker-pass", [{"op": "amend", "id": plan, "fields": {"priority": 2}}])["changes"][0][
+        "accepted"
+    ]
+    history = memory.search_memory("worker-pass", {"type": "city_plan", "subject": "city1", "history": True})
+    assert len(history["records"]) == 2 and all(r["id"] == plan for r in history["records"])
+    memory.engine.dispose()
+
+
+def test_duplicate_city_plan_returns_exact_recovery_without_granting_unseen_read_credit(tmp_path):
+    from tests.test_structured_memory import create, current
+
+    memory = setup(tmp_path)
+    memory.start_job("previous", "economy", {}, game_turn=4)
+    content = {"type": "city_plan", "city": "city1", "reasons": {"growth": "Keep growing"}}
+    plan = create(memory, content, "previous")
+    memory.finish_job("previous", True)
+    memory.start_job("worker-pass", "economy", {}, game_turn=5)
+    memory.select_startup_context("worker-pass", set(), owned_cities=[])
+    before = current(memory, plan)
+    rejected = memory.patch("worker-pass", [{"op": "create", "content": content}], "duplicate-plan")
+    MemoryUpdateResult.model_validate(rejected)
+    result = rejected["changes"][0]
+    assert result["reason"] == "CITY_PLAN_ALREADY_EXISTS" and result["recoverable"]
+    read = result["recovery"]["reads"][0]
+    assert read["tool"] == "memory_read" and read["arguments"]["ids"] == [plan]
+    assert current(memory, plan) == before
+    edit = [{"op": "amend", "id": plan, "fields": {"priority": 2}}]
+    assert memory.patch("worker-pass", edit)["changes"][0]["reason"] == "MEMORY_CONFLICT"
+    memory.refresh_memory("worker-pass", [plan])
+    assert memory.patch("worker-pass", edit)["changes"][0]["accepted"]
+    assert memory.patch("worker-pass", [{"op": "create", "content": content}], "duplicate-plan") == rejected
+    memory.engine.dispose()
+
+
 @run_async
 async def test_both_real_role_lifecycles_share_one_native_handoff(tmp_path):
     class FinishingCodex(FakeCodex):

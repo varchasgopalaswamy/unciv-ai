@@ -7,6 +7,7 @@ import pytest
 from civ_agent.agent_service import AgentService, ServiceError
 from civ_agent.civilization_guide import civilization_reference
 from civ_agent.strategy_guide import strategy_reference
+from tests.structured_helpers import decision_text
 from tests.test_agent_service import FakeCodex, StartupHost
 
 
@@ -178,6 +179,8 @@ class Jobs:
             def __init__(self):
                 self.task = None
                 self.token = None
+                self.turns = 0
+                self.purpose = None
 
             async def start(self, token, settings):
                 self.token = token
@@ -194,33 +197,53 @@ class Jobs:
                         "serviceTier": parameters.get("serviceTier"),
                     }
                 if method == "turn/start":
-                    owner.prompts.append(parameters["input"][0]["text"])
-                    purpose = (
-                        "communication"
-                        if "newly received communication" in parameters["input"][0]["text"]
-                        else "gameplay"
-                    )
-                    owner.purposes.append(purpose)
-                    if purpose == "gameplay":
+                    self.turns += 1
+                    turn_id = f"t{self.turns}"
+                    if self.purpose is None:
+                        prompt = parameters["input"][0]["text"]
+                        owner.prompts.append(prompt)
+                        self.purpose = "communication" if "newly received communication" in prompt else "gameplay"
+                        owner.purposes.append(self.purpose)
+                    if self.purpose == "gameplay":
                         owner.planning_started.set()
                     else:
 
                         async def respond():
                             await asyncio.sleep(0)
-                            assert owner.service is not None
-                            job = owner.service.gateway.jobs[self.token]
-                            await owner.service.gateway.call(job, "chat_read", {}, "read")
-                            await owner.service.gateway.call(
-                                job, "chat_send", {"to": "Greece", "text": "I will consider your offer."}, "send"
+                            decision = (
+                                {
+                                    "kind": "act",
+                                    "operations": [
+                                        {
+                                            "tool": "chat_send",
+                                            "arguments": {"to": "Greece", "text": "I will consider your offer."},
+                                        }
+                                    ],
+                                }
+                                if self.turns == 1
+                                else {"kind": "finish", "arguments": {}}
+                            )
+                            await notification(
+                                "item/completed",
+                                {
+                                    "threadId": workspace.name,
+                                    "turnId": turn_id,
+                                    "item": {
+                                        "type": "agentMessage",
+                                        "phase": "final_answer",
+                                        "text": decision_text(parameters["outputSchema"], decision),
+                                    },
+                                },
                             )
                             await notification(
                                 "turn/completed",
-                                {"threadId": workspace.name, "turn": {"id": "t1", "status": "completed"}},
+                                {"threadId": workspace.name, "turn": {"id": turn_id, "status": "completed"}},
                             )
-                            owner.replied.set()
+                            if self.turns > 1:
+                                owner.replied.set()
 
                         self.task = asyncio.create_task(respond())
-                    return {"turn": {"id": "t1"}}
+                    return {"turn": {"id": turn_id}}
                 return {}
 
             async def close(self):
@@ -273,6 +296,80 @@ def test_transport_failure_during_close_cannot_finalize_communication_as_complet
         finally:
             await service.close()
         assert '"event": "codex_transport"' in service.diagnostics.path.read_text()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("stalls", [1, 2])
+def test_communication_recovers_without_repeating_a_confirmed_message(tmp_path, monkeypatch, stalls):
+    from civ_agent.structured_decisions import GenerationRecoveryError
+
+    async def run():
+        host, jobs = MailboxHost(), Jobs()
+        monkeypatch.setattr("civ_agent.chat_runtime.HostConnection", lambda *args, **kwargs: host)
+        starts, instances = [], []
+
+        def factory(executable, workspace, url, ca, notification):
+            process = jobs(executable, workspace, url, ca, notification)
+            assert not isinstance(process, FakeCodex)
+            instances.append(process)
+            original = process.request
+
+            async def request(method, parameters):
+                payload = parameters
+                if method == "turn/start":
+                    starts.append(payload)
+                    if 2 <= len(starts) <= stalls + 1:
+                        process.turns += 1
+                        turn = f"t{process.turns}"
+                        await notification(
+                            "service/generationFailed",
+                            {"threadId": workspace.name, "turnId": turn, "reason": "REVIEW_OUTPUT_STALLED"},
+                        )
+                        await notification(
+                            "turn/completed",
+                            {"threadId": workspace.name, "turn": {"id": turn, "status": "interrupted"}},
+                        )
+                        return {"turn": {"id": turn}}
+                return await original(method, payload)
+
+            process.request = request
+            return process
+
+        service = AgentService(
+            "Rome",
+            tmp_path / "Rome",
+            tmp_path / "private",
+            "S" * 43,
+            "https://localhost:8765/mcp",
+            None,
+            process_factory=factory,
+            connection_factory=lambda *args, **kwargs: StartupHost(jobs),
+        )
+        jobs.service = service
+        try:
+            await service.chat.connect(
+                {"epoch": "g1", "playerToken": "P" * 43, "model": None, "reasoningEffort": None, "timeoutSeconds": 10}
+            )
+            await service.review_phase({"epoch": "g1", "gameTurn": 0, "stage": "release"})
+            if stalls == 1:
+                await service.chat.compute("chat-stall")
+            else:
+                with pytest.raises(GenerationRecoveryError, match="STRUCTURED_GENERATION_RECOVERY_LIMIT"):
+                    await service.chat.compute("chat-stall")
+            path = service.state_dir / "chat-jobs" / (hashlib.sha256(b"chat-stall").hexdigest() + ".json")
+            record = json.loads(path.read_text())
+            assert record["phase"] == ("COMPLETED" if stalls == 1 else "FAILED")
+            assert record["generationRetries"] == 1 and not record["usageComplete"]
+            assert len(starts) == 3 and len(instances) == 1
+            assert all(
+                p["threadId"] == starts[0]["threadId"] and p["outputSchema"] == starts[0]["outputSchema"]
+                for p in starts
+            )
+            assert host.sent == ["I will consider your offer."]
+            assert not service.gateway.jobs
+        finally:
+            await service.close()
 
     asyncio.run(run())
 
@@ -491,12 +588,13 @@ def test_chat_batches_and_replies_while_planning_job_is_held(
             assert service.records["planning"]["startup"]["civilizationGuide"]["enabled"] == civilization_guide
             if strategy_guide and civilization_guide:
                 assert jobs.prompts[0].index(strategy_reference()) < jobs.prompts[0].index(reference)
-            assert all(prompt.count("Civ tool discovery:") == 1 for prompt in jobs.instructions)
-            assert all("Civ tool discovery:" not in prompt for prompt in jobs.prompts)
-            assert '"mcp__civ__player_capabilities"' in jobs.instructions[0]
-            assert '"mcp__civ__chat_read"' in jobs.instructions[1]
-            assert '"mcp__civ__chat_send"' in jobs.instructions[1]
-            assert '"mcp__civ__player_capabilities"' not in jobs.instructions[1]
+            assert all(prompt.count("Return one structured decision") == 1 for prompt in jobs.instructions)
+            assert all("Return one structured decision" not in prompt for prompt in jobs.prompts)
+            schemas = [p["outputSchema"] for method, p in jobs.calls if method == "turn/start"]
+            assert '"player_capabilities"' in json.dumps(schemas[0])
+            assert '"chat_read"' in json.dumps(schemas[1])
+            assert '"chat_send"' in json.dumps(schemas[1])
+            assert '"player_capabilities"' not in json.dumps(schemas[1])
             assert "otherwise play to win" in jobs.instructions[1]
             assert host.sent == ["I will consider your offer."]
             assert service.status()["phase"] == "RUNNING"  # Long planning still in progress.

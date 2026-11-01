@@ -9,6 +9,7 @@ dependencies = [
     "cryptography>=50.0.1,<51",
     "httpx2>=2.12,<3",
     "jsonpatch>=1.33,<2",
+    "jsonschema>=4.25,<5",
     "mcp>=2.2,<3",
     "opentelemetry-proto>=1.45.1",
     "pydantic>=2.13.5,<3",

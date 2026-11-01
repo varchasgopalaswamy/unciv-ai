@@ -118,7 +118,7 @@ GAMEPLAY_WORKFLOW = (
     "previews before acting. Build-time estimates start now and may leave out waiting or research.\n\n"
     "Group independent inspections and actions where useful. Check each action's result before continuing, "
     "and pause when that result could change your next choice.\n\n"
-    "Use finish_role once you have made your choices and resolved required decisions. Only the host advances "
+    "Complete your role once you have made your choices and resolved required decisions. Only the host advances "
     "the native turn. Stop if the game has ended, is unavailable or needs a decision you cannot make. "
     "No closing summary is needed."
 )
@@ -161,14 +161,16 @@ ECONOMY_INSTRUCTIONS = (
     "exact city handle (for example city2), without the city's display name. Mark unexplained inherited "
     "choices as inherited; never invent a reason or record a failed command as a completed change. "
     "Read or create that city's plan before making changes; plans delivered at startup already count as read. "
+    "Omitted plans still exist: find them with memory_search(type=city_plan, subject=city handle). "
+    "Amend or replace an existing plan's returned ID; create only when none exists. "
     "Reread only when missing, changed or recovery requires it. Cite its returned memory ID in intent.cityPlan "
     "on meaningful city commands; this citation alone is sufficient. Add intent.reason only for action-specific rationale. A plan written after an action cannot establish which plan motivated it. "
     "Retain a sensible plan when its reasons still hold. Leave its notebook record unchanged unless a decision, "
     "rationale, expectation or specific deadline changes. Do not rewrite current production progress, countdowns "
-    "or treasury figures merely to show that you reviewed them. A no-change review needs only finish_role; "
+    "or treasury figures merely to show that you reviewed them. A no-change review needs only the finish decision, including explicit skips for any idle workers; "
     "the service records when you reviewed each city separately from your plans. Fetch details only when useful. "
     "economyCoordination.economySchedule identifies fullReview and the cities needing this pass. In a targeted "
-    "pass, review those cities and all workers you control against fresh empire constraints; inspect other cities when the decision requires it. A worker-only pass may select no cities. Account for each idle worker with a useful job, travel or a deliberate hold. Continuing valid jobs need no repeated orders. "
+    "pass, review those cities and all workers you control against fresh empire constraints; inspect other cities when the decision requires it. A worker-only pass may select no cities. Account for each idle worker with useful work or travel, or explicitly skip it using finish.arguments.workerSkips: targets and reason. Group workers sharing a reason. roleCompletion.idleWorkers lists the remaining workers; cover each exactly once. Skips record your choice for this pass without issuing native orders. Continuing valid jobs, destinations and standing orders need no repeated orders or skips. "
     "player_turn can select cities by handle and retains an owned-city index; omit cities for a full overview. "
     "Unrelated routine changes wait for the periodic full review, whose clock is independent of local passes. "
     "Use city_plan.reviewTurn only for a specific future decision deadline that native construction, research "
@@ -178,7 +180,7 @@ ECONOMY_INSTRUCTIONS = (
     "Current native facts take priority over old notes. After another role changes the position, refresh "
     "the required observations and reconsider; never repeat a successful action. "
     "Requests arriving while you work join this pass. Read current coordination in results before finishing "
-    "and dispose of pending urgent requests. Use finish_role when done; the host waits for every active role. "
+    "and dispose of pending urgent requests. Use the finish decision when done; the host waits for every active role. "
     "Stop after success unless asked for another pass."
 )
 
@@ -186,7 +188,7 @@ ECONOMY_INSTRUCTIONS = (
 def job_instructions(purpose):
     workflow = {
         "gameplay": GAMEPLAY_INSTRUCTIONS
-        + "\n\nYour scenario role is Main (gameplay). A military manager controls combat units, scouts and city bombardment in peace and war; you retain other civilians and both members of each escort assignment, declarations, nuclear strikes, capture disposition and peace authority. Use escort_assignment to assign or release escort duty; you move both escort and civilian. Assigning a worker escort transfers that worker from Economy to you; release returns it to Economy. Before declaring war, and when an existing war lacks goals, supply initial war_goals with opponent, nonempty goals and a reason. Discuss revisions with military using war_goals; you break ties with a reason. Read goal proposals and role messages before subsequent actions. Send role_message(to=military) to request reconnaissance, staging, readiness or opportunity assessment; it wakes military when needed. An economy manager owns city economics, city_plan records and unescorted workers and wakes on worker decisions, economic events or periodic reviews. Send economy_request for new production or spending priorities: urgent wakes it now, routine joins an active pass or waits for the next scheduled review. Check fresh city queues and economyCoordination request dispositions before sending another urgent request. ECONOMY_CONTEXT_CHANGED returns the refresh for reconsideration; submit a new call only if the request is still needed. Avoid repeating unchanged requests. Use city_override for an emergency before changing its city controls or plan. If a remaining decision depends on economy, call economy_wait alone with the request IDs, or omit IDs to await its current pass, then stop until resumed. Do not poll player_turn while waiting. When your decisions are complete, use finish_role; it suspends inference while the host waits for other roles, and only the host advances the game turn.",
+        + "\n\nYour scenario role is Main (gameplay). A military manager controls combat units, scouts and city bombardment in peace and war; you retain other civilians and both members of each escort assignment, declarations, nuclear strikes, capture disposition and peace authority. Use escort_assignment to assign or release escort duty; you move both escort and civilian. Assigning a worker escort transfers that worker from Economy to you; release returns it to Economy. Before declaring war, and when an existing war lacks goals, supply initial war_goals with opponent, nonempty goals and a reason. Discuss revisions with military using war_goals; you break ties with a reason. Read goal proposals and role messages before subsequent actions. Send role_message(to=military) to request reconnaissance, staging, readiness or opportunity assessment; it wakes military when needed. An economy manager owns city economics, city_plan records and unescorted workers and wakes on worker decisions, economic events or periodic reviews. Send economy_request for new production or spending priorities: urgent wakes it now, routine joins an active pass or waits for the next scheduled review. Check fresh city queues and economyCoordination request dispositions before sending another urgent request. ECONOMY_CONTEXT_CHANGED returns the refresh for reconsideration; submit a new call only if the request is still needed. Avoid repeating unchanged requests. Use city_override for an emergency before changing its city controls or plan. If a remaining decision depends on economy, use the wait decision alone with the request IDs, or omit IDs to await its current pass, then stop until resumed. Do not poll player_turn while waiting. When your decisions are complete, use the finish decision; it suspends inference while the host waits for other roles, and only the host advances the game turn.",
         "military": (
             "You control combat units, scouts and city bombardment in peace and war. "
             "Economy controls unescorted workers. Main controls other civilians and both members of each escort assignment. Main retains declarations, nuclear strikes, capture disposition and peace authority. "
@@ -199,18 +201,18 @@ def job_instructions(purpose):
             "Defend immediately if initial goals are pending. Keep military_operation records explaining deployments, expected results, progress and reconsideration. "
             "Peacetime operations can have an empty opponents list. Set reviewTurn only for a concrete decision deadline; keeping a sound plan needs no rewrite. "
             "Distinguish confirmed events from assessments and unseen threats. Use native previews and assess avoidable losses. "
-            "Before finish_role, obtain a current military completion review when militaryCompletion.remainingTargets is nonzero. "
+            "Before the finish decision, obtain a current military completion review when militaryCompletion.remainingTargets is nonzero. "
             "Add reviewAfter=true to your last chosen player_command to receive it with the action result; otherwise use military_review, "
-            "which can share an inspect_bundle with independent inspections. A returned militaryCompletion already counts as the review; "
+            "which can share an inspect decision with independent inspections. A delivered militaryCompletion already counts as the review; "
             "read again only after its facts change or to obtain remaining pages. Deliberately resolve each exposed unit or unused native "
-            "attack/capture/bombardment opportunity by acting or holding for a reason. Submit the fresh basis and reasoned holds for every "
-            "remaining target in finish_role.militaryReview. Group targets sharing a reason. Risk acceptance is valid; the check never "
+            "attack/capture/bombardment opportunity by acting or holding for a reason. Submit reasoned holds for every "
+            "remaining target in finish.arguments.decisions. The host binds the delivered review. Group targets sharing a reason. Risk acceptance is valid; the check never "
             "requires retreat or an attack. Compare observed progress with accepted objectives and revise military_operation when its assessment changes. "
             "Read war_goals after coordination notifications and before subsequent actions. Use economy_request for supplies and role_message for private discussion. "
             "Send main a role_message when a planning result changes strategic choices, proposes a campaign or needs main's action; saving an operation alone does not request main's attention. "
             "Give a clear recommendation: attack now with the assessed force and timing, take a specified preparation action with a decision deadline, or decline for a concrete reason. Include the decisive evidence and likely losses instead of handing main an unresolved list of possibilities. "
             "Inspect militaryReadiness.visibleForeignCities and visibleForeignUnits during planning, including peaceful neighbors; assess concrete opportunities using map_region when useful. "
-            "Current facts supersede notes. Use finish_role when done; only the host advances the turn. "
+            "Current facts supersede notes. Use the finish decision when done; only the host advances the turn. "
         )
         + EVIDENCE_GUIDANCE
         + "\n\n"

@@ -712,11 +712,11 @@ def test_prompt_prefix_excludes_state_memory_identity_and_capability_changes(str
         assert private not in second.user
     assert first.user.index("Available actions") < first.user.index("MEMORY_SENTINEL")
     assert first.user.index("MEMORY_SENTINEL") < first.user.index("private-state-1")
-    assert "inputSchema" in first.instructions and "inputSchema" not in first.user
+    assert "inputSchema" not in first.instructions and "inputSchema" not in first.user
     assert "TEMPORARY_ERROR" in second.user
     changed["coreTools"][0]["inputSchema"]["required"] = ["kind"]
     third = startup_prompt(changed, "gameplay", "Greece turn 2", strategy_guide=strategy_guide)
-    assert third.metadata()["instructionsSha256"] != first.metadata()["instructionsSha256"]
+    assert third.metadata()["instructionsSha256"] == first.metadata()["instructionsSha256"]
     assert prepared == before
 
 

@@ -3,9 +3,9 @@
 from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field, RootModel, field_validator, model_validator
-from pydantic.json_schema import SkipJsonSchema
 
 from civ_agent.delivery_options import DeliveryOptions
+from civ_agent.economy_completion import WorkerSkip
 from civ_agent.economy_roles import CityOverride, EconomyRequest, FinishRole, RequestDisposition
 from civ_agent.game_commands import Position
 from civ_agent.inspection_bundle import InspectionBundle
@@ -49,10 +49,14 @@ class MilitaryFinishRole(SpecialistFinishRole):
     militaryReview: MilitaryCompletion | None = None
 
 
+class EconomyFinishRole(SpecialistFinishRole):
+    workerSkips: list[WorkerSkip] = Field(default_factory=list, max_length=500)
+
+
 class EconomyWait(BoundaryModel):
     requestIds: Annotated[
         list[Annotated[str, Field(min_length=1, max_length=128)]],
-        Field(max_length=100, json_schema_extra={"uniqueItems": True}),
+        Field(max_length=100),
     ] = Field(default_factory=list)
 
     @field_validator("requestIds")
@@ -79,27 +83,61 @@ class MissionPreview(MovementPreview):
     mission: Literal["REBASE", "PARADROP", "AIR_SWEEP", "NUCLEAR_STRIKE"]
 
 
-class PlayerInspection(BoundaryModel):
-    subject: Literal[
-        "POLITICS", "WONDERS", "NOTIFICATIONS", "REPLAY", "CIVILOPEDIA", "TILE", "UNIT", "ROAD", "CITY_FOCUS"
-    ]
-    target: Annotated[str, Field(min_length=1, max_length=128)] = ""
-    destination: Position | SkipJsonSchema[None] = None
-    category: Annotated[str, Field(min_length=1, max_length=128)] = ""
-    names: Annotated[list[Annotated[str, Field(min_length=1, max_length=128)]], Field(max_length=16)] = Field(
-        default_factory=list
-    )
-    search: Annotated[str, Field(max_length=128)] = ""
-    turn: NonnegativeInt | SkipJsonSchema[None] = None
+class InspectionPage(BoundaryModel):
     offset: NonnegativeInt = 0
     limit: Annotated[int, Field(ge=1, le=100)] = 50
 
-    @field_validator("destination", "turn")
-    @classmethod
-    def supplied_values_are_not_null(cls, value):
-        if value is None:
-            raise ValueError("Omit unused arguments instead of passing null")
-        return value
+
+class WorldInspection(InspectionPage):
+    subject: Literal["POLITICS", "WONDERS"]
+
+
+class HistoryInspection(InspectionPage):
+    subject: Literal["NOTIFICATIONS", "REPLAY"]
+    turn: NonnegativeInt = 0
+
+
+class ReferenceInspection(InspectionPage):
+    subject: Literal["CIVILOPEDIA"]
+    category: Annotated[str, Field(min_length=1, max_length=128)] = ""
+    names: list[Annotated[str, Field(min_length=1, max_length=128)]] = Field(default_factory=list, max_length=16)
+    search: Annotated[str, Field(max_length=128)] = ""
+
+
+class TileInspection(InspectionPage):
+    subject: Literal["TILE"]
+    destination: Position
+    target: Annotated[str, Field(min_length=1, max_length=128)] = ""
+
+
+class TargetInspection(InspectionPage):
+    subject: Literal["CITY_FOCUS", "UNIT"]
+    target: Annotated[str, Field(min_length=1, max_length=128)]
+
+
+class UnitLocationInspection(InspectionPage):
+    subject: Literal["UNIT"]
+    destination: Position
+
+
+class RoadInspection(InspectionPage):
+    subject: Literal["ROAD"]
+    target: Annotated[str, Field(min_length=1, max_length=128)]
+    destination: Position
+
+
+class PlayerInspection(
+    RootModel[
+        WorldInspection
+        | HistoryInspection
+        | ReferenceInspection
+        | TileInspection
+        | TargetInspection
+        | UnitLocationInspection
+        | RoadInspection
+    ]
+):
+    pass
 
 
 class WithIntent(BoundaryModel):
@@ -188,7 +226,6 @@ class ChatSend(BoundaryModel):
     recipients: Annotated[list[PlayerName], Field(min_length=1, max_length=100)] = Field(
         default_factory=list,
         description="Private recipients, each once, excluding yourself. Omit to and nativeAction. Reply to all using the message participants minus yourself.",
-        json_schema_extra={"uniqueItems": True},
     )
     mentions: Annotated[list[PlayerName], Field(max_length=100)] = Field(default_factory=list)
     intent: Intent | None = None
@@ -310,7 +347,7 @@ def tool_model(name: str, purpose: str) -> type[BaseModel]:
     if name == "finish_role" and purpose == "military":
         return MilitaryFinishRole
     if name == "finish_role" and purpose == "economy":
-        return SpecialistFinishRole
+        return EconomyFinishRole
     if name == "player_details" and purpose == "review":
         return ReviewPlayerDetails
     if name == "memory_update":

@@ -104,9 +104,9 @@ class LaunchAgentTest(unittest.TestCase):
             self.assertNotIn("CLOSE_START_DIPLOMACY", prompt)
             self.assertNotIn("Rome declares war", prompt)
             self.assertNotIn("reviewId=", prompt)
-            self.assertIn("Use finish_role once you have made your choices and resolved required decisions", prompt)
-            self.assertEqual(prompt.count("Civ tool discovery:"), 1)
-            self.assertIn('"mcp__civ__player_turn"', prompt)
+            self.assertIn("Complete your role once you have made your choices and resolved required decisions", prompt)
+            self.assertEqual(prompt.count("Civ action guidance:"), 1)
+            self.assertIn("Read required previews and ownership before acting", prompt)
 
     def test_resume_is_explicit_and_keeps_player_configuration(self):
         code, execute, _ = self.launch(
@@ -124,7 +124,7 @@ class LaunchAgentTest(unittest.TestCase):
         command = execute.call_args.args[1]
         self.assertEqual(command[-4:-1], ["resume", "--", "conversation-id"])
         self.assertTrue(command[-1].endswith("\n\nContinue my turn"))
-        self.assertEqual(command[-1].count("Civ tool discovery:"), 1)
+        self.assertEqual(command[-1].count("Civ action guidance:"), 1)
         self.assertEqual(command[command.index("--model") + 1], "chosen-model")
         self.assertIn('model_reasoning_effort="high"', command)
         self.assertNotIn("--last", command)

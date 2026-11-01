@@ -347,7 +347,7 @@ def test_startup_defers_only_command_schema_and_preserves_complete_role_index(tm
             definitions = core_definitions(catalogue, "economy")
             brief = next(t for t in definitions if t["name"] == "mcp__civ__player_command")
             complete = next(t for t in catalogue if t["name"] == "player_command")
-            assert set(brief["commandIndex"]) == set(complete["inputSchema"]["properties"]["kind"]["enum"])
+            assert set(brief["commandIndex"]) == set(complete["inputSchema"]["discriminator"]["mapping"])
             assert "inputSchema" not in brief and brief["schemaRead"]["tool"] == "mcp__civ__command_help"
             help = await m.gateway.call(m.economy, "command_help", {"kinds": ["SET_CITY_FOCUS"]}, "help")
             Draft202012Validator(help["inputSchema"]).validate(
@@ -358,7 +358,7 @@ def test_startup_defers_only_command_schema_and_preserves_complete_role_index(tm
             assert len(encoded(brief)) < len(encoded(complete)) / 2 and catalogue == saved
             prepared = await prepare_startup(m.gateway, m.economy)
             prompt = startup_prompt(prepared, "economy", "")
-            assert prompt.metadata()["layoutVersion"] == 13 and "commandIndex" in prompt.instructions
+            assert prompt.metadata()["layoutVersion"] == 13 and "commandIndex" not in prompt.instructions
 
     asyncio.run(run())
 

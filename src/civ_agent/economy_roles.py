@@ -8,6 +8,7 @@ from typing import Annotated, Literal
 
 from pydantic import Field
 
+from civ_agent.economy_completion import worker_completion_problem
 from civ_agent.economy_schedule import request_city
 from civ_agent.memory_records import InitiativeDecision
 from civ_agent.protocol import JsonObject
@@ -790,6 +791,8 @@ class TurnRoles:
                         ):
                             return {"error": "ECONOMY_REFRESH_REQUIRED", "applied": False}
                         await self.synchronize_economy(view)
+                        if problem := worker_completion_problem(view, self.war_state, arguments.get("workerSkips", [])):
+                            return problem
                         if self.economy_observation is None or not await self.service.io.call(
                             self.economy_schedule.complete,
                             view,
@@ -808,6 +811,10 @@ class TurnRoles:
                                 },
                             }
                         self.economy_revision = (view.get("epoch"), view.get("turn"), view.get("revision"))
+                    elif problem := worker_completion_problem(
+                        job.observation or {}, self.war_state, arguments.get("workerSkips", [])
+                    ):
+                        return problem
                     for request in self.requests:
                         if request["id"] in dispositions:
                             request.update(dispositions[request["id"]], reviewedTurn=self.key[1])
@@ -1059,13 +1066,7 @@ class TurnRoles:
             job = self.jobs["gameplay"]
             gateway = self.service.gateway
             await gateway.wait_for_gameplay(job)
-            view = await gateway.call(
-                job,
-                "player_turn",
-                {"delivery": "full"},
-                "host:review:" + str(self.record.get("handoffPass", 0)),
-                source="host",
-            )
+            view = await gateway.fresh_turn(job, {"delivery": "full"}, "handoff-review")
             async with self.service.gateway.role_dispatch:
                 await self.synchronize_war(job.observation or {})
                 await self.synchronize_economy(job.observation or {})

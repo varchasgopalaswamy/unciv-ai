@@ -87,7 +87,7 @@ class ReviewHost(StartupHost):
 
 class ReviewCodex(FakeCodex):
     async def request(self, method, payload):
-        if method == "turn/start" and "outputSchema" in payload:
+        if method == "turn/start" and self.job is not None and self.job.purpose == "review":
             self.complete = False
             result = await super().request(method, payload)
             self.turn_id = result["turn"]["id"]
@@ -106,7 +106,9 @@ class ReviewCodex(FakeCodex):
                     "id": "review-result",
                     "type": "agentMessage",
                     "phase": "final_answer",
-                    "text": text if text is not None else json.dumps(assessment()),
+                    "text": text
+                    if text is not None
+                    else __import__("tests.structured_helpers", fromlist=["report_text"]).report_text(assessment()),
                 },
             },
         )
@@ -396,9 +398,12 @@ class StrategicAdviserServiceTests(AgentServiceTestCase):
         inputs = json.loads(pending["inputs"])
         prompt = advice_prompt(inputs)
         assert "old strategy" not in prompt.user
-        definitions = json.loads(prompt.instructions.split("Available tools:\n", 1)[1])
-        assert {tool["name"] for tool in definitions} == {"mcp__civ__" + tool["name"] for tool in inputs["catalogue"]}
-        assert "mcp__civ__policy_details" in {tool["name"] for tool in definitions}
+        from civ_agent.decision_contracts import DecisionContract
+
+        contract = DecisionContract("review", inputs["catalogue"])
+        assert contract.names == {tool["name"] for tool in inputs["catalogue"]} - {"inspect_bundle", "command_help"}
+        assert "policy_details" in contract.names
+        assert "inputSchema" not in prompt.instructions
         assert len(self.factory.instances) == 2
         reviewer = next(job for job in self.service.gateway.jobs.values() if job.review_inputs is not None)
         before = self.factory.native_reads

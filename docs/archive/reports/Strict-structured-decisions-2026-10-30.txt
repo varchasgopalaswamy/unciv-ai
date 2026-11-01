@@ -1,0 +1,308 @@
+Strict structured decisions — October 30, 2026
+
+Scheduled generation now returns a typed decision envelope. The host validates
+the entire response and dispatches explicit operations through the existing
+gateway. Main, Economy, Military, Communication, strategic reviews and both
+peace-consultation phases use strict output schemas on every turn, including
+continuations and resumed threads. Generated JavaScript is no longer the
+scheduled model interface. Authentication, model selection, ownership and the
+concurrent scheduler remain in place.
+
+The implementation has local contract, recovery and provider-boundary coverage.
+It is not accepted as a demonstrated gameplay improvement. The live screen
+violated its request cap: 16 host turn/start calls produced at least 20 provider
+requests, because four rejected exec calls triggered automatic continuations
+inside Codex. This was an accounting error in the screening harness. No execution
+tool ran, no screened decision was dispatched, and further live calls were
+stopped. The screen is closed; its checked-in utility now supports only offline
+schema preparation and audit. One stalled request has no reported usage.
+
+Preservation and rollout
+
+Before implementation, the complete existing source worktree, staged changes,
+unstaged changes, repository status and engine revision were preserved under
+build/strict-decisions-20261030. worktree.tar has SHA256
+1817d6b241a678a3267b8acad86fb656695c6b597074e6bce73cf0def57847d7.
+The preservation manifest lists independent copies of existing build evidence,
+benchmarks, benchmarks-old and inputs. The supplied protocol schema artifacts
+were retained under preserved/app-server-protocol. The four successful earlier
+live protocol responses described in the task were not located as response
+captures; their feasibility result is user-provided evidence, not an independently
+reproduced or inspected result of this implementation.
+
+No engine source or submodule revision changed. The selected engine remains
+63e4bee9e6cefff0be88abd2c5ec4f6e0b6793dd. The four current games remain pinned:
+pangaea-v4-20261030 g0001 and g0002; two-continents-v4-20261030 g0001 and g0002.
+Each retained container.json names runtime image
+e24a970af60cc4923768549741e45b297f259a554f79daa82469578055ab436b.
+The candidate was not built into or deployed to these games. This work did not
+resume, rewind or replace their runtimes. Future candidate games require new,
+isolated state; the decision journal uses memory format 14. No compatibility
+adapter for the previous scheduled model-facing protocol was added.
+
+Interface and enforcement
+
+decision_contracts.py defines inspect, act, finish, wait and submit_report
+variants. Role schemas contain their complete permitted operation set; there is
+no operation-selection round trip. Inspections and actions have separate batches
+of 1–12 entries. Completion and waiting are standalone decisions. Report phases
+use their existing typed report models. Strategic review inspections retain their
+frozen source and grounding checks. Decisions backends retain their existing
+closed-choice contracts and fallback checks; these are separate from strict
+generative JSON output and are not included in the generative schema claim.
+
+Command variants come from the canonical command definitions, with common
+intent and military reviewAfter metadata outside the repeated variants. Native
+inspection arguments, typed memory amendments, coordination and diplomacy are
+also closed contracts. Dynamic game options remain observation data, rather than
+state-dependent schema enums. Startup instructions no longer duplicate full
+schema listings; descriptions retain consequences, prerequisites, ownership and
+guidance for ambiguous choices. Social promises remain exact, authored,
+nonbinding text. They never prohibit a native-legal action.
+
+strict_schema.py produces both the provider representation and its runtime
+validator from these contracts. It closes every object, makes wire properties
+required, removes wire defaults, uses supported nested unions and shares
+structurally identical definitions with collision checks. Compact schemas omit
+redundant titles while preserving descriptions and constraints. Null in a wire
+optional means omission. If the canonical optional itself accepts null, a
+{value: null} wrapper explicitly clears it; {value: X} sets it. Omitted patch
+fields remain unchanged, and canonical defaults still apply where appropriate.
+Unsupported keywords, arbitrary objects, unsupported intersections, ambiguous
+oneOf conversions and unsupported formats fail compilation. Canonical semantic
+validators additionally enforce constraints such as duplicate-free lists that
+the supported provider schema subset cannot express.
+
+Every scheduled turn/start supplies outputSchema. CodexProcess rejects a missing
+schema before sending the request. Thread start and resume supply no dynamic
+tools; inherited MCP servers are explicitly disabled, along with shell, unified
+execution, code mode and other execution features. Local captures from the
+installed Codex 0.164 show strict=true and the expected schema on all seven call
+families, their continuations and resumed turns. They show no executable tool or
+MCP call. Codex still advertises its built-in request_user_input tool outside Plan
+mode; interactive RPCs are rejected. Consequently the accurate claim is no
+model-accessible execution or MCP, not an entirely empty provider tools array.
+Hallucinating a disabled tool can still cause internal model continuations.
+
+Only completed final responses are parsed. An explicit final answer takes
+priority over later unphased messages. Refusals, unfinished generations, invalid
+JSON and failed schema or canonical argument validation dispatch nothing.
+Repairs are bounded and journaled. Receipt continuations use toolOutput on the
+same thread. Fresh role activations still create fresh threads as before.
+
+Execution, delivery and recovery
+
+structured_decisions.py persists a host decision identity before generation and
+all child operation identities before dispatch. It validates the complete batch
+before executing any child. Actions run in order, stopping on rejection,
+uncertainty, ownership/coordination changes, changed targets, unavailable state,
+negotiation suspension or an operation requiring reconsideration. Each receipt
+identifies its operation; all remaining entries are explicitly unexecuted.
+
+The loop records the context actually delivered to the model separately from
+intermediate gateway observations. Receipt snapshots retain observation revision,
+entity fingerprints, inspected detail credits, proposal fingerprints and memory
+and war versions. Unrelated receipts and hidden refreshes cannot grant a preview
+or revision credit. A sibling action may leave an independently inspected target
+usable, but cannot confer permission based on unseen information. Gateway
+visibility, native legality, role ownership, previews and emergency overrides
+still apply at dispatch.
+
+Military completion binds the delivered review basis in the host. The model
+supplies dispositions for delivered targets, including paginated reviews. It
+cannot invent a basis field. Zero remaining targets need no fabricated review.
+The existing completion checks still require explicit dispositions when targets
+remain. Main waits preserve exact request IDs and deliver current outcomes and
+fresh context through the receipt continuation.
+
+Confirmed receipts replay without repeating native actions. If execution was
+interrupted, deterministic operation/request identities are reconciled against
+the native receipt before any retry. An uncertain outcome remains uncertain;
+an unexecuted child after restart needs a new decision. Epoch checks prevent
+replaying an old decision across rewind. Pure report validation can drain during
+a checkpoint hold; its controller separately fences publication against rewind.
+
+Diagnostics and accounting
+
+The read-only civ-agent match failures command correlates generation, schema validation, gateway
+dispatch and native receipts. Evidence contains schema fingerprints, decision and
+operation identities, execution status, argument/state/ownership/legality/
+transport categories, partial-batch status and retrievable native receipts.
+Receipt replay and bundle wrappers are not counted as additional failed actions.
+A partial batch is a separate incident, not another failed child call. Pending
+calls without an outcome are not assumed to have failed. Invalid-generation
+evidence stores an output hash and size, not raw reasoning. Credentials and raw
+reasoning are excluded from the new diagnostics and audit report.
+
+Usage groups by role, model phase, provider, model and schema fingerprint. Main
+and Military peace consultations remain distinct phases. Schema characters and
+UTF-8 bytes, instruction sizes, initial observation sizes, continuation sizes and
+output sizes are separate from actual tokens. These sizes are storage measures
+and only proxies for token cost; no tokenizer estimate is presented as usage.
+Actual input, cached input, uncached input, output and repair usage come from
+cumulative thread counters, differenced against the durable decision baseline.
+Using only the last-response counter would omit internal continuations.
+Restart restores that baseline from the decision journal if a crash preceded the
+controller record save, avoiding double-counting earlier thread usage.
+Unknown usage remains marked unknown. Provider inference, HTTP transport,
+WebSocket transport and tool-call counts from accounting.sqlite3 remain separate
+from host decisionRequests; they must not be added as interchangeable requests.
+
+Local verification
+
+Contract coverage exercises every advertised operation and canonical command,
+role filtering, unsupported schema constructs, nullable/default behavior, typed
+memory patches and equivalence of verbose/compact parsing. It also asserts that
+encoding and decoding cannot mutate the provider schema or its fingerprint.
+Captured failure classes include research aliases, malformed intent, invalid
+inspection bounds, request/message ID confusion and invented review bases.
+
+Recovery and scheduler coverage includes partial batches, independent sibling
+actions, changed targets, hidden inspections, ownership transfers, escorts, city
+overrides, targeted Economy passes, paginated military reviews, waits, negotiation
+receipts, restart, rewind, repeated receipts, lost native responses, interrupted
+execution, late usage notifications and early turn notifications. Existing
+concurrent role and handoff tests continue to exercise the scheduling paths.
+
+The real Codex-to-local-fake-provider matrix has 14 cases: seven call families
+with ordinary continuation or thread resume, two local responses per case. An
+additional disabled-exec case captures three local responses across two host
+turns, checks that execution is rejected, and verifies cumulative usage includes
+the internal continuation. These 31 local responses are synthetic, not paid
+model requests. Captures are in provider-captures/*-False.json and
+provider-captures/gameplay-False-True.json under the artifact root; older captures
+are retained alongside them. Review and consultation local fixtures measure
+schema compatibility, not live report quality.
+
+Current local fake-provider compact-schema sizes in characters are Main 80506,
+Economy 38434, Military 48667, Communication 46881, strategic review 72825,
+Military consultation 827 and Main consultation 439. These are fixture catalogue
+sizes, not production token costs. Their read descriptions/catalogues differ from
+the live saved contexts below. The capture stores each exact provider schema;
+candidate-validation.json records its fingerprint and size without request text.
+
+Validation results:
+  Ruff check: passed.
+  Ruff format --check: 465 files already formatted.
+  Pyrefly: zero errors; 40 warnings.
+  git diff --check: passed.
+  Full Python suite: 2577 passed, 8 skipped, 76 subtests passed.
+  Final crash-accounting regression and related recovery/diagnostics: 16 passed.
+
+The full suite is recorded in full-suite-verified.log. It completed immediately
+before the final crash-accounting fix; the 16 focused tests, lint, formatting and
+types were rerun after that fix. The complete suite was not repeated for that last
+accounting-only change. restart-accounting.log records its targeted verification.
+Five skipped tests require rootless Podman; three installed-Codex timing/retry/
+cache checks are opt-in and were not enabled. No Kotlin or engine code changed,
+so no new engine build was run for this Python implementation. Earlier failed
+test logs are retained, including the two obsolete completion-wording assertions
+corrected before the passing full-suite run.
+
+Live paired screen: measured evidence and exceptions
+
+Four saved contexts were reused across Luna and Terra at medium effort with
+verbose and compact schemas. Main, Economy and Military came from the retained
+Arabia context in pangaea-v4-20261030 g0001; Communication used a retained Greece
+context from two-continents-v3 g0003. screen-contexts.json and the prepared context
+files record source histories and hashes. This was a one-response screen per
+cell, not a played turn or a full game. No generated decisions were executed.
+
+The original 16-cell result is preserved in live-screen-v3/results.json. The
+corrected offline audit is live-screen-v3/usage-audit.json. It deduplicates
+per-response token records by provider response ID and reads tool names only.
+The first two setup attempts made no model requests. The working live runner is
+retained as runner-original.py for provenance and is not the checked-in runner.
+
+The measured schema sizes at the first Luna invocation were:
+
+Role            Verbose chars   Compact chars   Reduction   Instructions   Observation
+Main                  100832           76423      24.21%          18077         38538
+Economy                41435           37708       8.99%          11420         27355
+Military               55100           49605       9.97%          14237         16819
+Communication          67461           47144      30.12%           9694         41863
+
+These are character counts, not token estimates or billable usage. All variants
+retain descriptions and gameplay guidance. No optional prose cuts were accepted.
+Required wording changes from tool names to finish/wait decisions were made
+after the screen and locally tested.
+
+A schema-mutability bug was discovered after the screen: decoding reinserted
+deduplicated aliases into shared definitions. Terra's compact schema therefore
+grew by 375 characters for Main/Economy/Military and 62 for Communication. The
+compiler now deep-copies definitions before deduplication, and exhaustive tests
+assert stable schemas through encode/parse. The historical screen was not a
+perfect identical-schema comparison. This fix and subsequent recovery/diagnostic
+fixes have local verification only; no additional live requests were made.
+
+Actual provider usage, including automatic continuations:
+
+Model Role          Variant  Requests*   Input   Cached   Uncached   Output  Valid
+Luna  Main          verbose          1   38521        0      38521      987  yes
+Luna  Main          compact          1   33738        0      33738      349  yes
+Luna  Economy       verbose          2   47685    23552      24133      263  yes
+Luna  Economy       compact          1   22926        0      22926      170  yes
+Luna  Military      verbose          2   48416    23936      24480      393  yes
+Luna  Military      compact          2   45941    22656      23285      307  yes
+Luna  Communication verbose          1   31527        0      31527       99  yes
+Luna  Communication compact          2   55579    27520      28059      303  yes
+Terra Main          verbose          1   39149        0      39149      122  yes
+Terra Main          compact          1   34428        0      34428      141  yes
+Terra Economy       verbose          1   24382        0      24382      172  yes
+Terra Economy       compact         1+ unknown  unknown    unknown  unknown  no
+Terra Military      verbose          1   24730        0      24730      135  yes
+Terra Military      compact          1   23562        0      23562      156  yes
+Terra Communication verbose          1   32155        0      32155       59  yes
+Terra Communication compact          1   28307        0      28307       89  yes
+
+* Counts are observed lower bounds; failed transport attempts can lack usage.
+Known totals: 531046 input, including 97664 cached and 433382 uncached; 3745
+output, including 1847 reasoning tokens. Input plus output is 534791 tokens.
+The unreported stalled request is excluded, not counted as free. The four
+additional internal continuation responses account for 99226 input (97664 cached,
+1562 uncached) and 495 output tokens within these totals. There were no
+host-issued repair requests. Internal continuations are real additional model
+requests even though the host did not issue another turn/start.
+
+Luna attempted disabled exec in Economy/verbose, Military/verbose,
+Military/compact and Communication/compact. Codex rejected each and continued.
+Terra Economy/compact produced stalled whitespace output, reached the output
+watchdog/deadline, and supplied no valid completed decision or usable usage
+record. Fifteen cells completed with schema-valid decisions. The bounded
+reference-presence screen found no missing referenced handles in those cells;
+it did not prove native legality, good strategy or equal quality. Most cells
+chose inspections. Main's longer action batch would require stopping after its
+Economy request, leaving the following memory amendment unexecuted, as the host
+loop now requires. Communication's finish-versus-inspect choice also differed.
+
+Observed verbose totals were 286565 input, 47488 cached and 2230 output;
+compact totals were at least 244481 input, 50176 cached and 1515 output. The
+missing compact result, automatic continuations, schema mutation and single
+context per role prevent a reliable total-usage or decision-quality comparison.
+The schema character reductions stand as serialization measurements only.
+
+Existing gameplay evidence and acceptance limits
+
+The preserved Decision-efficiency-screening-2026-10-30 report covers four earlier
+ten-turn trials paired with four reused controls and reports 30.80% lower total
+tokens for Luna and 9.13% for Terra, with mixed peace/conquest choices. Those
+results support the preceding context-delivery work, not this new decision loop.
+They were reused as background evidence; full games were not rerun. Dedicated
+Communication and live strategic/peace reports are not validated for quality by
+this screen. Runtime alone is not an acceptance measure.
+
+Strict shape enforcement does not establish good strategy, full player-action
+coverage, universal native legality or a complete privacy boundary. Semantic
+mistakes still reach gateway rejection, and uncertain native outcomes still need
+reconciliation. The live request cap was not met, the stalled cell remains
+unresolved, and post-screen fixes have no live rerun. These are explicit limits
+of this delivery, not successful acceptance criteria.
+
+References
+
+https://learn.chatgpt.com/docs/app-server
+  outputSchema is per turn; every continuation must supply it again.
+https://developers.openai.com/api/docs/guides/structured-outputs
+  Supported strict-schema subset, closed objects and nullable optionals.
+Local Codex 0.164 provider captures establish the behavior of the installed
+client, including disabled execution and its still-advertised question tool.

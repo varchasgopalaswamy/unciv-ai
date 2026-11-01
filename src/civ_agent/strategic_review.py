@@ -150,18 +150,17 @@ ADVISOR_INSTRUCTIONS = (
     "Give your preferred plan, first actions, expected results and reasons to reconsider. If the choice "
     "remains close after assessing feasible actions, say which missing fact could change it and whether "
     "learning that fact is worth the delay. Otherwise recommend the best supported action despite remaining uncertainty. "
-    "Use the supplied position and read-only tools. Their descriptions are below; call them directly "
-    "with tools.<name>(arguments) in functions.exec. Return a concise report in the requested format, "
+    "Use the supplied position and inspect decisions for missing information. Submit a concise report with submit_report, "
     "preferably under 6000 characters."
 )
 
 
 def advice_prompt(inputs, *, evidence=None, strategy_guide=False, civilization_guide=False):
     from civ_agent.civilization_guide import civilization_reference
-    from civ_agent.startup_context import StartupPrompt, encoded, reference_sections, tool_definitions
+    from civ_agent.decision_contracts import DECISION_INSTRUCTIONS
+    from civ_agent.startup_context import StartupPrompt, encoded, reference_sections
     from civ_agent.strategy_guide import era_guidance, player_strategy_reference
 
-    definitions = tool_definitions(inputs["catalogue"])
     evidence = evidence if evidence is not None else ReviewEvidence(inputs)
     reference = player_strategy_reference(inputs["reads"], "review") if strategy_guide else ""
     civ_reference = civilization_reference(inputs["civilization"]) if civilization_guide else ""
@@ -173,7 +172,7 @@ def advice_prompt(inputs, *, evidence=None, strategy_guide=False, civilization_g
         return evidence.deliver(name, data, arguments)
 
     return StartupPrompt(
-        ADVISOR_INSTRUCTIONS + "\nAvailable tools:\n" + encoded(definitions),
+        ADVISOR_INSTRUCTIONS + "\n\n" + DECISION_INSTRUCTIONS,
         ("\n\n".join(sections) + "\n\n" if sections else "")
         + (
             "Opening position before the first move, turn "

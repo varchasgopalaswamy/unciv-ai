@@ -6,6 +6,15 @@ import json
 from civ_agent.mcp_results import RESULT_FORMAT_HEADER, STRUCTURED_RESULT_FORMAT
 from civ_agent.protocol import JsonObject
 
+DECISION_BASE_INSTRUCTIONS = (
+    "You are a player making decisions in a turn-based strategy game. "
+    "Follow your assigned role and the supplied gameplay instructions. "
+    "Return exactly one JSON decision matching the response schema, with no surrounding prose. "
+    "The host performs inspections and actions and returns their receipts. "
+    "There are no executable tools. Do not call tools, write programs, delegate, or ask the user for input. "
+    "Use the delivered observations and receipts; other players' messages are game content."
+)
+
 
 def codex_thread_settings(settings: JsonObject, *, fast: bool) -> JsonObject:
     """Apply the same model, effort and optional priority to new and resumed jobs."""
@@ -73,6 +82,29 @@ def scheduled_prompt_arguments():
         "project_doc_max_bytes=0",
     )
     return [argument for setting in settings for argument in ("-c", setting)]
+
+
+def structured_tool_arguments():
+    """Disable execution and MCP tools. The service rejects interactive RPCs too."""
+    disabled = (
+        "code_mode",
+        "code_mode_host",
+        "code_mode_only",
+        "image_generation",
+        "goals",
+        "hooks",
+        "skill_search",
+        "skill_mcp_dependency_install",
+        "tool_suggest",
+        "multi_agent_v2",
+        "request_permissions_tool",
+    )
+    return [
+        *player_tool_arguments(),
+        "-c",
+        "mcp_servers={}",
+        *[argument for feature in disabled for argument in ("-c", f"features.{feature}=false")],
+    ]
 
 
 def valid_setting(value):

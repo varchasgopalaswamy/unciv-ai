@@ -3,6 +3,7 @@
 import asyncio
 import json
 
+from tests.structured_helpers import report_text
 from tests.test_review_responses import complete, message, published, reviewing
 from tests.test_strategic_adviser import ReviewCodex
 from tests.test_strategic_review import assessment
@@ -47,7 +48,7 @@ def test_repair_report_before_start_response_with_reused_item_id_is_durable(tmp_
             reports = [event["data"] for event in events if event["kind"] == "assistant_message"]
             assert [(row["turnId"], row["itemId"], row["text"]) for row in reports] == [
                 (turns[0], "review:report", "FIRST_INVALID_REPORT"),
-                (turns[1], "review:report", corrected_text),
+                (turns[1], "review:report", report_text(corrected)),
             ]
             drafts = [event["data"] for event in events if event["kind"] == "assistant_delta"]
             assert any(row["turnId"] == turns[1] and row["text"] == "SECOND_TURN_DRAFT" for row in drafts)
