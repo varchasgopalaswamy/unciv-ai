@@ -231,12 +231,8 @@ def test_gateway_counts_cached_tools_replays_and_rejections(tmp_path):
             }
             edited = await gateway.call(job, "memory_update", batch, "batch")
             assert await gateway.call(job, "memory_update", batch, "batch") == edited
-            try:
-                await gateway.call(job, "unknown_tool", {}, "bad")
-            except ValueError:
-                pass
-            else:
-                raise AssertionError("Unknown tool accepted")
+            rejected = await gateway.call(job, "unknown_tool", {}, "bad")
+            assert rejected == {"error": "TOOL_NOT_PERMITTED", "applied": False}
             store.sample(record(phase="COMPLETED", usageComplete=True))
             calls = store.pending()[0]["telemetry"]["apiCalls"]
             assert calls["tool:memory_read"]["calls"] == 2

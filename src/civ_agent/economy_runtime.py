@@ -6,6 +6,7 @@ import copy
 from typing import Any
 
 from civ_agent.effort_decisions import base_settings
+from civ_agent.model_status import RECOVERABLE_MODEL_FAILURES
 from civ_agent.provider_usage import reconcile_provider_usage
 from civ_agent.startup_context import prepare_startup, startup_prompt
 from civ_agent.tls import private_directory
@@ -164,6 +165,7 @@ class RoleRuntime:
             record["usageComplete"] = reconciled or (
                 record["phase"] == "COMPLETED"
                 and record.get("usageReported", False)
+                and not record.get("previousThreadIds")
                 and not record.get("generationFailures")
                 and not record.get("providerRejections")
             )
@@ -216,10 +218,34 @@ async def run_role(service, coordinator, payload, parent_record, role="economy")
                 service.failure = "STOP_UNCONFIRMED"
                 service.stop_event.set()
                 raise ServiceError("STOP_UNCONFIRMED", 503) from error
-            if coordinator.committed or isinstance(error, (OSError, SQLAlchemyError)):
+            if isinstance(error, (OSError, SQLAlchemyError)):
                 service.failure = "DURABLE_RECORD_FAILED"
                 service.stop_event.set()
                 raise ServiceError("DURABLE_RECORD_FAILED", 503) from error
+            if coordinator.committed:
+                from civ_agent.civilization_state import StateConflict
+
+                # A finished role can race the native handoff while refreshing
+                # its view. Its process, history and accounting have already
+                # drained in run(); this is not a failed durable write.
+                if (
+                    isinstance(error, StateConflict)
+                    and str(error) == "HOST_PROTOCOL_ERROR"
+                    and coordinator.ready.get(role)
+                    and not service.gateway.run_failure
+                    and not await service.io.call(service.memory.pending)
+                ):
+                    service.diagnostics.emit("role_read_failed_after_handoff", role=role, error=error)
+                    return
+                raise
+            failed = getattr(service, "records", {}).get(getattr(runtime, "active_id", ""), {})
+            notice = failed.get("modelStatus") or {}
+            if notice.get("state") == "failed" and notice.get("reason") in RECOVERABLE_MODEL_FAILURES:
+                parent_record["modelStatus"] = copy.deepcopy(notice)
+                parent_record["modelFailureJob"] = failed["activationId"]
+                service.failure = "MODEL_CAPACITY_UNAVAILABLE"
+                service.stop_event.set()
+                raise ServiceError("MODEL_CAPACITY_UNAVAILABLE", 503) from error
             if service.gateway.run_failure or await service.io.call(service.memory.pending) or attempt == 3:
                 service.failure = role.upper() + "_ROLE_FAILED"
                 service.stop_event.set()

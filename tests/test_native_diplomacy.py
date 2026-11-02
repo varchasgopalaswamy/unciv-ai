@@ -4,7 +4,7 @@ import copy
 import pytest
 from pydantic import ValidationError
 
-from civ_agent.civilization_state import CivilizationState, StateConflict
+from civ_agent.civilization_state import CivilizationState
 from civ_agent.proposal_gateway import ProposalGateway
 from civ_agent.protocol import JsonObject
 from civ_agent.service_io import ServiceIO
@@ -190,8 +190,8 @@ def test_explicit_chat_action_uses_observed_revision_and_replays_once(tmp_path):
                 "text": "We denounce you.",
                 "nativeAction": {"kind": "DENOUNCE", "target": "Greece"},
             }
-            with pytest.raises(StateConflict, match="Read player_turn"):
-                await gateway.call(job, "chat_send", args, "unobserved")
+            rejected = await gateway.call(job, "chat_send", args, "unobserved")
+            assert rejected["error"] == "OBSERVATION_REQUIRED" and rejected["applied"] is False
             assert host.writes == []
             await gateway.call(job, "chat_send", {"to": "Greece", "text": "We denounce your conduct."}, "plain")
             assert "nativeAction" not in host.writes[-1]

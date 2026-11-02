@@ -1,6 +1,6 @@
 {
   "version": 4,
-  "policyVersion": "player-advisories-v4",
+  "policyVersion": "player-advisories-v5",
   "notes": "All labels are provisional assistant-authored scheduling/advisory judgments over explicit synthetic production-shaped evidence. No model calls or gameplay outcomes establish these labels. Historical v1 captured answers remain paired with the untouched v2 fixture artifact and are rejected by current replay identity checks.",
   "cases": [
     {
@@ -14,7 +14,7 @@
         "observedGameplay": false
       },
       "evidence": {
-        "version": "player-advisories-v4",
+        "version": "player-advisories-v5",
         "player": "Rome",
         "preservation": [
           {
@@ -97,7 +97,7 @@
         "observedGameplay": false
       },
       "evidence": {
-        "version": "player-advisories-v4",
+        "version": "player-advisories-v5",
         "player": "Rome",
         "preservation": [
           {
@@ -180,7 +180,7 @@
         "observedGameplay": false
       },
       "evidence": {
-        "version": "player-advisories-v4",
+        "version": "player-advisories-v5",
         "player": "Rome",
         "preservation": [
           {
@@ -263,7 +263,7 @@
         "observedGameplay": false
       },
       "evidence": {
-        "version": "player-advisories-v4",
+        "version": "player-advisories-v5",
         "player": "Rome",
         "topics": [
           "coast",
@@ -358,7 +358,7 @@
         "observedGameplay": false
       },
       "evidence": {
-        "version": "player-advisories-v4",
+        "version": "player-advisories-v5",
         "player": "Rome",
         "topics": [
           "coast",
@@ -453,7 +453,7 @@
         "observedGameplay": false
       },
       "evidence": {
-        "version": "player-advisories-v4",
+        "version": "player-advisories-v5",
         "player": "Rome",
         "topics": [
           "trade"
@@ -547,7 +547,7 @@
         "observedGameplay": false
       },
       "evidence": {
-        "version": "player-advisories-v4",
+        "version": "player-advisories-v5",
         "player": "Rome",
         "objectives": [
           {
@@ -724,7 +724,7 @@
         "observedGameplay": false
       },
       "evidence": {
-        "version": "player-advisories-v4",
+        "version": "player-advisories-v5",
         "player": "Rome",
         "beliefs": [
           {
@@ -828,7 +828,7 @@
         "observedGameplay": false
       },
       "evidence": {
-        "version": "player-advisories-v4",
+        "version": "player-advisories-v5",
         "player": "Rome",
         "beliefs": [
           {
@@ -1103,7 +1103,7 @@
         "observedGameplay": false
       },
       "evidence": {
-        "version": "player-advisories-v4",
+        "version": "player-advisories-v5",
         "player": "Rome",
         "objectives": [
           {
@@ -1320,7 +1320,7 @@
         "observedGameplay": false
       },
       "evidence": {
-        "version": "player-advisories-v4",
+        "version": "player-advisories-v5",
         "player": "Rome",
         "objectives": [
           {
@@ -1553,7 +1553,7 @@
         "observedGameplay": false
       },
       "evidence": {
-        "version": "player-advisories-v4",
+        "version": "player-advisories-v5",
         "player": "Rome",
         "objectives": [
           {
@@ -1697,7 +1697,7 @@
         "observedGameplay": false
       },
       "evidence": {
-        "version": "player-advisories-v4",
+        "version": "player-advisories-v5",
         "player": "Rome",
         "objectives": [
           {
@@ -4165,7 +4165,7 @@
         "observedGameplay": false
       },
       "evidence": {
-        "version": "player-advisories-v4",
+        "version": "player-advisories-v5",
         "player": "Rome",
         "objectives": [
           {
@@ -4382,7 +4382,7 @@
         "observedGameplay": false
       },
       "evidence": {
-        "version": "player-advisories-v4",
+        "version": "player-advisories-v5",
         "player": "Rome",
         "objectives": [
           {
@@ -4599,7 +4599,7 @@
         "observedGameplay": false
       },
       "evidence": {
-        "version": "player-advisories-v4",
+        "version": "player-advisories-v5",
         "player": "Rome",
         "objectives": [
           {
@@ -4772,7 +4772,7 @@
         "observedGameplay": false
       },
       "evidence": {
-        "version": "player-advisories-v4",
+        "version": "player-advisories-v5",
         "player": "Rome",
         "objectives": [
           {
@@ -4973,7 +4973,7 @@
         "observedGameplay": false
       },
       "evidence": {
-        "version": "player-advisories-v4",
+        "version": "player-advisories-v5",
         "player": "Rome",
         "objectives": [
           {
@@ -5184,7 +5184,7 @@
         "observedGameplay": false
       },
       "evidence": {
-        "version": "player-advisories-v4",
+        "version": "player-advisories-v5",
         "player": "Rome",
         "objectives": [
           {

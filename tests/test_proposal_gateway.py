@@ -194,8 +194,9 @@ def test_gateway_owns_bookkeeping_and_retries_exact_call(tmp_path):
         assert await gateway.call(job, "player_command", action, "2") == result
         assert len(host.executed) == 1 and host.executed[0]["revision"] == "rev1"
         assert "requestId" not in result
-        with pytest.raises(ValueError):
-            await gateway.call(job, "player_command", {**action, "requestId": "mine"}, "3")
+        invalid = await gateway.call(job, "player_command", {**action, "requestId": "mine"}, "3")
+        assert invalid["error"] == "INVALID_TOOL_ARGUMENTS" and invalid["applied"] is False
+        assert len(host.executed) == 1
         await gateway.close(job, True)
         with pytest.raises(StateConflict):
             await gateway.call(job, "player_turn", {}, "4")
@@ -329,8 +330,9 @@ def test_greeting_preserves_economic_job_and_chat_cannot_issue_gameplay(tmp_path
         )
         assert result["done"] and len(host.executed) == 1
         communication = await gateway.open("chat", "communication", "g1", host, {})
-        with pytest.raises(StateConflict, match="GAMEPLAY_NOT_PERMITTED"):
-            await gateway.call(communication, "player_command", {"kind": "END_TURN"}, "4")
+        denied = await gateway.call(communication, "player_command", {"kind": "END_TURN"}, "4")
+        assert denied == {"error": "GAMEPLAY_NOT_PERMITTED", "applied": False}
+        assert len(host.executed) == 1
         await gateway.close(job, True)
         await gateway.close(communication, True)
         assert not (tmp_path / "workspace/memory-index.md").exists()

@@ -18,7 +18,16 @@ from civ_agent.commands import agent_server
 from civ_agent.decisions_broker import DecisionsBroker
 from civ_agent.decisions_policy import DecisionsSettings, decisions_values
 from civ_agent.decisions_tasks import acceptance_threshold, request_body, request_id, request_metadata
-from civ_agent.effort_decisions import EFFORT_LEVELS, base_settings, brief, choose, select_effort, supported_levels
+from civ_agent.effort_decisions import (
+    EFFORT_LEVELS,
+    VERSION,
+    base_settings,
+    brief,
+    choose,
+    question,
+    select_effort,
+    supported_levels,
+)
 from civ_agent.game_config import load_config
 from civ_agent.protocol import JsonObject
 from civ_agent.startup_context import prepare_startup
@@ -324,6 +333,72 @@ def test_brief_preserves_complete_authored_plans_or_reports_omission():
     prepared["reads"]["player_turn"]["cities"] = [{"name": "long" * 3000}]
     with pytest.raises(ValueError, match="EFFORT_INPUT_TOO_LARGE"):
         brief(prepared, [], "gameplay")
+
+
+def test_classifier_responsibilities_include_workers_and_current_review_scope():
+    main = question({"role": "gameplay", "levels": list(EFFORT_LEVELS)})
+    economy = question({"role": "economy", "levels": list(EFFORT_LEVELS)})
+    assert "non-worker civilians" in main["instructions"]
+    assert "Economy owns cities and workers" in main["instructions"]
+    assert "movement, safety and improvement replacements" in economy["instructions"]
+    assert "current review scope and requests due now" in economy["instructions"]
+    assert [r["value"] for r in economy["choices"]] == list(EFFORT_LEVELS)
+
+
+@pytest.mark.parametrize("role", ["gameplay", "economy"])
+def test_brief_retains_due_deferred_requests_and_scope_without_mutating_source(role):
+    requests = [
+        {"id": "pending", "status": "pending"},
+        {"id": "due", "status": "deferred", "reviewTurn": 64, "text": "Authored request"},
+        {"id": "overdue", "status": "deferred", "reviewTurn": 63},
+        {"id": "future", "status": "deferred", "reviewTurn": 65},
+        {"id": "completed", "status": "completed", "reviewTurn": 64},
+        {"id": "rejected", "status": "rejected", "reviewTurn": 64},
+        {"id": "unknown", "status": "deferred"},
+        {"id": "null", "status": "deferred", "reviewTurn": None},
+        {"id": "bool", "status": "deferred", "reviewTurn": True},
+        {"id": "string", "status": "deferred", "reviewTurn": "64"},
+    ]
+    prepared = {
+        "reads": {"player_turn": {"turn": 64}},
+        "economyCoordination": {
+            "requests": requests,
+            "economySchedule": {"fullReview": False, "cities": ["city:1"], "workerActionRequired": True},
+        },
+    }
+    original = copy.deepcopy(prepared)
+    facts = brief(prepared, [], role)
+    assert facts["coordination"]["requests"] == requests[:3]
+    assert facts["coordination"]["economySchedule"] == prepared["economyCoordination"]["economySchedule"]
+    facts["coordination"]["requests"][1]["text"] = "Changed only in projection"
+    facts["coordination"]["economySchedule"]["cities"].clear()
+    assert prepared == original
+
+
+@pytest.mark.parametrize("turn", [None, True, "64"])
+def test_unknown_turn_does_not_make_deferred_requests_due(turn):
+    prepared = {
+        "reads": {"player_turn": {"turn": turn}},
+        "economyCoordination": {"requests": [{"status": "deferred", "reviewTurn": 1}]},
+    }
+    assert brief(prepared, [], "economy")["coordination"]["requests"] == []
+
+
+def test_old_classifier_evidence_cannot_reuse_current_receipts():
+    supplied = evidence()
+    explicit = copy.deepcopy(supplied)
+    explicit["effortSelection"]["version"] = VERSION
+    assert request_id(supplied) == request_id(explicit)
+    explicit["effortSelection"]["version"] = "reasoning-effort-v1"
+    with pytest.raises(ValidationError):
+        request_id(explicit)
+
+
+def test_already_selected_historical_activation_keeps_effort_without_new_classification():
+    record = {"effortSelection": {"version": "reasoning-effort-v1", "selectedEffort": "xhigh"}}
+    service = SimpleNamespace(decisions_settings=settings())
+    chosen = asyncio.run(select_effort(service, record, SimpleNamespace(purpose="economy"), None, {}, Models()))
+    assert chosen == {"reasoningEffort": "xhigh"}
 
 
 def test_broker_effort_threshold_is_scoped_and_receipts_deduplicate(tmp_path):

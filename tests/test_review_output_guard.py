@@ -37,7 +37,7 @@ def test_json_string_whitespace_and_escaped_quotes_are_not_stalls():
     assert delta(guard, " " * 9) == "REVIEW_OUTPUT_STALLED"
 
 
-@pytest.mark.parametrize("phase", ["final_answer", None])
+@pytest.mark.parametrize("phase", ["final_answer", "commentary", "analysis", None])
 def test_report_byte_limit_applies_to_streamed_or_completed_message(phase):
     guard = ReviewOutputGuard("thread-1", max_bytes=32)
     start(guard, phase=phase)
@@ -52,11 +52,9 @@ def test_report_byte_limit_applies_to_streamed_or_completed_message(phase):
     )
 
 
-def test_commentary_reasoning_and_other_turns_are_ignored():
+def test_reasoning_and_other_turns_are_ignored():
     guard = ReviewOutputGuard("thread-1", max_bytes=32, max_whitespace=8)
     guard.bind_turn("turn-1")
-    start(guard, phase="commentary")
-    assert delta(guard, " " * 1000) is None
     start(guard, turn="old-turn")
     assert delta(guard, " " * 1000, turn="old-turn") is None
     assert guard.observe(*event("item/reasoning/textDelta", delta=" " * 1000)) is None
@@ -92,3 +90,26 @@ def test_early_events_are_bound_to_the_acknowledged_turn():
     assert delta(guard, '"' + "x" * 20) is None
     guard.bind_turn("turn-1")
     assert delta(guard, "x" * 12) == "REVIEW_OUTPUT_LIMIT"
+
+
+@pytest.mark.parametrize("phase", ["final_answer", "commentary", "analysis", None])
+@pytest.mark.parametrize("pattern", ['"}', '\\"}', "abcde"])
+def test_repetitive_output_stops_across_arbitrary_fragments(phase, pattern):
+    guard = ReviewOutputGuard("thread-1")
+    start(guard, phase=phase)
+    text = '{"decision":{"kind":"inspect"}}' + pattern * 3000
+    failure = None
+    for index in range(0, len(text), 37):
+        failure = delta(guard, text[index : index + 37])
+        if failure:
+            break
+    assert failure == "REVIEW_OUTPUT_STALLED"
+    assert index < 5000
+
+
+def test_varied_long_message_is_not_a_repetition_stall():
+    guard = ReviewOutputGuard("thread-1")
+    start(guard)
+    text = str(list(range(3000)))
+    for index in range(0, len(text), 37):
+        assert delta(guard, text[index : index + 37]) is None

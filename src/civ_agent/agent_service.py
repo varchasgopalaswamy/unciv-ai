@@ -279,6 +279,17 @@ class CodexProcess:
                 # receipt dispatch remain the controller's responsibility.
                 self._queue_notification("service/transportStatus", {**params, "afterCompletedTurn": True})
                 return
+            if (
+                params.get("reason") == "PROVIDER_FORWARD_FAILED"
+                and params.get("stage") == "upstream_read"
+                and params.get("upstreamStatus") == 200
+                and params.get("requestKind") == "generation"
+            ):
+                # No operation can dispatch from an incomplete structured
+                # response. Keep the control channel alive to confirm its stop
+                # before the journal admits its one replacement request.
+                self._reject_generation(params, "PROVIDER_RESPONSE_INTERRUPTED")
+                return
             self._queue_notification("service/requestFailed", {**params, "rpcMethod": "provider/request"})
             self._transport_failed(params["reason"])
         else:
@@ -360,26 +371,33 @@ class CodexProcess:
                 return False
         failure = self.output_guard.observe(method, params) if self.output_guard is not None else None
         if failure == "REVIEW_OUTPUT_STALLED":
-            if (
-                not isinstance(key[0], str)
-                or not isinstance(key[1], str)
-                or not identifier(key[0])
-                or not identifier(key[1])
-            ):
-                self._transport_failed("GENERATION_STOP_UNCONFIRMED")
-                return False
-            failed_key = key[0], key[1]
-            self.failed_generations[failed_key] = {}
-            self.generation_stopped.clear()
-            self._queue_notification(
-                "service/generationFailed", {"threadId": key[0], "turnId": key[1], "reason": failure}
-            )
-            self.generation_stop_task = asyncio.create_task(self._stop_failed_generation(failed_key))
+            self._reject_generation(params, failure)
             return False
         if failure is not None:
             self._transport_failed(failure)
             return False
         return True
+
+    def _reject_generation(self, params: JsonObject, reason: str) -> None:
+        thread, turn = params.get("threadId"), params.get("turnId")
+        if (
+            not isinstance(thread, str)
+            or not isinstance(turn, str)
+            or not identifier(thread)
+            or not identifier(turn)
+            or self.output_guard is None
+            or thread != self.output_guard.thread_id
+            or self.output_guard.turn_id not in {None, turn}
+        ):
+            self._transport_failed("GENERATION_STOP_UNCONFIRMED")
+            return
+        key = thread, turn
+        if key in self.failed_generations:
+            return
+        self.failed_generations[key] = {"reason": reason}
+        self.generation_stopped.clear()
+        self._queue_notification("service/generationFailed", {**params, "reason": reason})
+        self.generation_stop_task = asyncio.create_task(self._stop_failed_generation(key))
 
     async def _stop_failed_generation(self, key: tuple[str, str]) -> None:
         try:
@@ -387,10 +405,13 @@ class CodexProcess:
                 await self.request("turn/interrupt", {"threadId": key[0], "turnId": key[1]})
                 await self.generation_stopped.wait()
             completion = self.failed_generations[key]["completion"]
-            if completion.get("turn", {}).get("status") == "failed":
+            interrupted_stream = self.failed_generations[key].get("reason") == "PROVIDER_RESPONSE_INTERRUPTED"
+            if completion.get("turn", {}).get("status") == "failed" and not interrupted_stream:
                 self._transport_failed("GENERATION_RECOVERY_UNSAFE")
                 return
-            if completion.get("turn", {}).get("status") not in {"completed", "interrupted"}:
+            if completion.get("turn", {}).get("status") not in {"completed", "interrupted"} | (
+                {"failed"} if interrupted_stream else set()
+            ):
                 raise ValueError("GENERATION_STOP_UNCONFIRMED")
             # Controllers may retry only after both the interrupt acknowledgment
             # and the terminal event. Usage notifications still flow normally.
@@ -1162,6 +1183,10 @@ class AgentService:
             for key, value in record.items()
             if key != "fingerprint"
         }
+        if record.get("error") == "MODEL_CAPACITY_UNAVAILABLE":
+            child = self.records.get(record.get("modelFailureJob", ""), {})
+            if child.get("parentActivation") == record["activationId"]:
+                result["modelStatus"] = copy.deepcopy(child.get("modelStatus"))
         if "roles" in result:
             from civ_agent.coordination_context import control_roles
 
@@ -1596,6 +1621,12 @@ class AgentService:
 
     async def _record_usage(self, record, token_usage):
         total = token_usage.get("total", {})
+        if record.get("usageOffset") and isinstance(total, dict):
+            total = dict(total)
+            for name, field in USAGE_KEYS.items():
+                value = total.get(field)
+                if type(value) is int and value >= 0:
+                    total[field] = value + record["usageOffset"].get(name, 0)
         if not merge_model_usage(record, total, USAGE_KEYS):
             return
         await self._save(record)
@@ -1685,6 +1716,42 @@ class AgentService:
         self.gateway.commit_startup_coordination(job)
         message = prompt.user
         while True:
+            window = record.get("modelContextWindow", 0)
+            if (
+                window > 0
+                and record.get("contextInputTokens", 0) >= window * 4 // 5
+                and self.completion == "completed"
+                and not self.decision_loop.generation_failed
+                and not job.gameplay_ended.is_set()
+            ):
+                # Refresh only between fully dispatched decisions. A fresh
+                # conversation avoids unstructured automatic compaction while
+                # preserving the same job, action journal and request budget.
+                await process.close()
+                self.process = None
+                record.setdefault("previousThreadIds", []).append(record["threadId"])
+                record["usageOffset"] = dict(record.get("usage", {}))
+                record["contextRotations"] = record.get("contextRotations", 0) + 1
+                record["contextInputTokens"] = 0
+                record.pop("activeDecision", None)
+                job.details_read.clear()
+                job.trades.clear()
+                job.seen_messages.clear()
+                refreshed = await prepare_startup(
+                    self.gateway, job, call_prefix=f"context:{record['contextRotations']}:"
+                )
+                fresh_prompt = startup_prompt(
+                    refreshed,
+                    job.purpose,
+                    prompt.task_instruction,
+                    strategy_guide=self.strategy_guide,
+                    civilization_guide=self.civilization_guide,
+                    civilization=self.civilization,
+                )
+                record["contextRefresh"] = fresh_prompt.metadata()
+                await self._save(record)
+                await self._model_turn(record, job, fresh_prompt, workspace, selected, refreshed)
+                return
             if record.get("roleState") in {"finished", "waiting_negotiation", "waiting_economy"} and self.chat.running:
                 while not (await self.chat.social("job_claim", job=job.id, purpose=job.purpose))["granted"]:
                     if self.failure:
@@ -2291,6 +2358,7 @@ class AgentService:
             finished["usageComplete"] = trace_complete or (
                 self.completion == "completed"
                 and finished.get("usageReported", False)
+                and not finished.get("previousThreadIds")
                 and not finished.get("generationFailures")
                 and not finished.get("providerRejections")
                 and "accountingIncompleteReason" not in record

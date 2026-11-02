@@ -11,7 +11,7 @@ from civ_agent.protocol import JsonObject
 
 Effort = Literal["low", "medium", "high", "xhigh", "max"]
 EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
-VERSION = "reasoning-effort-v1"
+VERSION = "reasoning-effort-v2"
 MAX_FACT_CHARACTERS = 5800
 DESCRIPTIONS = {
     "low": "Simple local decisions following an applicable existing plan; few dependencies.",
@@ -30,7 +30,7 @@ def canonical_levels(values):
 
 class EffortEvidence(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
-    version: Literal["reasoning-effort-v1"] = VERSION
+    version: Literal["reasoning-effort-v2"] = VERSION
     role: Literal["gameplay", "economy"]
     model: Annotated[str, Field(min_length=1, max_length=128)]
     levels: Annotated[list[Effort], Field(min_length=2, max_length=5)]
@@ -45,11 +45,12 @@ class EffortEvidence(BaseModel):
 def question(evidence):
     role = "main" if evidence["role"] == "gameplay" else "economy"
     responsibility = (
-        "Handle research, scouting, civilians, settlement and diplomacy. Economy owns city management; "
+        "Handle research, scouting, non-worker civilians, settlement and diplomacy. Economy owns cities and workers; "
         "Military owns unescorted combat units in peace and war, including military reconnaissance."
         if role == "main"
-        else "Handle city production, purchases, citizen focus, growth and saved city plans, "
-        "considering empire constraints and requests."
+        else "Handle city production, purchases, citizen focus, growth, saved city plans, and workers, "
+        "including their movement, safety and improvement replacements. Consider empire constraints, "
+        "the current review scope and requests due now."
     )
     return {
         "type": "choice",
@@ -158,11 +159,26 @@ def brief(prepared, plans, role):
     coordination = prepared.get("economyCoordination") or {}
     value["coordination"] = {
         key: copy.deepcopy(coordination[key])
-        for key in ("militaryActive", "militaryAtWar", "militarySchedule", "cityOverrides", "rolesFinished")
+        for key in (
+            "militaryActive",
+            "militaryAtWar",
+            "militarySchedule",
+            "economySchedule",
+            "cityOverrides",
+            "rolesFinished",
+        )
         if key in coordination
     }
     value["coordination"]["requests"] = [
-        copy.deepcopy(row) for row in coordination.get("requests", []) if row.get("status") == "pending"
+        copy.deepcopy(row)
+        for row in coordination.get("requests", [])
+        if row.get("status") == "pending"
+        or (
+            row.get("status") == "deferred"
+            and type(row.get("reviewTurn")) is int
+            and type(view.get("turn")) is int
+            and row["reviewTurn"] <= view["turn"]
+        )
     ]
     value["plans"] = copy.deepcopy(plans)
     value["coverage"] = {

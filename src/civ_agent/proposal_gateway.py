@@ -1876,7 +1876,13 @@ class ProposalGateway:
                 raise StateConflict("PLAYER_CREDENTIAL_MISMATCH")
             job.verified = True
         if BOOKKEEPING & arguments.keys():
-            raise ValueError("Supply gameplay choices only; the service manages request bookkeeping.")
+            return {
+                "error": "INVALID_TOOL_ARGUMENTS",
+                "applied": False,
+                "recoverable": True,
+                "invalidFields": [{"fields": [key]} for key in sorted(BOOKKEEPING & arguments.keys())],
+                "instruction": "Supply gameplay choices only; the service manages request bookkeeping.",
+            }
         if name == "memory_update":
             model = tool_model(name, job.purpose)
             try:
@@ -1963,6 +1969,8 @@ class ProposalGateway:
                 if refresh is not None:
                     return refresh
             return await coordinator.tool(job, name, arguments)
+        if coordinator is None and name in {"finish_role", "economy_request", "city_override"}:
+            return {"error": "ACTIVE_ROLE_REQUIRED", "applied": False}
         if (
             coordinator is not None
             and name == "player_command"
@@ -2001,7 +2009,7 @@ class ProposalGateway:
             }
         if name == "native_advice":
             if not self.native_advice_enabled or job.purpose not in {"gameplay", "economy", "military"}:
-                raise StateConflict("NATIVE_ADVICE_DISABLED")
+                return {"error": "NATIVE_ADVICE_DISABLED", "applied": False}
             if job.observation is None:
                 return self.reobserve_after_negotiation("Read player_turn before native_advice.")
             try:
@@ -2027,7 +2035,7 @@ class ProposalGateway:
             return value
         if name == "chat_delivery":
             if self.routing is None:
-                raise StateConflict("DIPLOMACY_ROUTING_DISABLED")
+                return {"error": "DIPLOMACY_ROUTING_DISABLED", "applied": False}
             return await self.routing.control(job, arguments)
         if name == "history_read":
             value = await self.io.call(
@@ -2094,7 +2102,21 @@ class ProposalGateway:
                     scope = "trade/" + arguments["proposalId"]
                 if name.startswith("agreement_"):
                     value["evidence"] = "observation:" + scope
-                version = await self.io.call(self.memory.observe, scope, value, job.id)
+                try:
+                    version = await self.io.call(self.memory.observe, scope, value, job.id)
+                except StateConflict as error:
+                    if name not in {"agreement_read", "agreement_list"} or str(error) != (
+                        "AGREEMENT_CHANGED: refresh with " + name
+                    ):
+                        raise
+                    return {
+                        "error": "AGREEMENT_CHANGED",
+                        "applied": False,
+                        "recoverable": True,
+                        "recovery": {"reads": [{"tool": name, "arguments": arguments}]},
+                        "instruction": "A newer agreement event arrived during this read. Read the current "
+                        "agreement again before deciding; the older terms were not delivered.",
+                    }
                 job.memory["records"]["observation:" + scope] = {
                     "version": version,
                     "category": "observation",
@@ -2106,7 +2128,7 @@ class ProposalGateway:
             return public_result(value)
         if name in READ_TOOLS:
             if job.purpose == "communication" and name not in COMMUNICATION_READ_TOOLS:
-                raise StateConflict("TOOL_NOT_PERMITTED")
+                return {"error": "TOOL_NOT_PERMITTED", "applied": False}
             if name in {"movement_preview", "mission_preview", "player_inspect"} and job.observation is None:
                 return self.reobserve_after_negotiation("Read player_turn before requesting this inspection.")
             value = await job.connection.tool(name, {} if name == "player_turn" else arguments)
@@ -2255,7 +2277,7 @@ class ProposalGateway:
             return MemoryUpdateResult.model_validate(result).model_dump(exclude_unset=True)
         if name == "player_command":
             if job.purpose not in {"gameplay", "economy", "military"}:
-                raise StateConflict("GAMEPLAY_NOT_PERMITTED")
+                return {"error": "GAMEPLAY_NOT_PERMITTED", "applied": False}
             if job.observation is None:
                 return self.reobserve_after_negotiation(
                     "Read player_turn before acting. Successful commands normally return stateUpdate; a failed refresh requires this full read."
@@ -2330,7 +2352,9 @@ class ProposalGateway:
                 payload["op"] = "send"
                 if payload.get("nativeAction") is not None:
                     if job.observation is None:
-                        raise StateConflict("Read player_turn and the native diplomatic options before acting.")
+                        return self.reobserve_after_negotiation(
+                            "Read player_turn and the native diplomatic options before acting."
+                        )
                     native_action = arguments["nativeAction"]
                     if not isinstance(native_action, dict):
                         raise ValueError("INVALID_ARGUMENT")
@@ -2391,7 +2415,7 @@ class ProposalGateway:
                 payload["version"] = selected["version"]
             transport = "player_communication"
         else:
-            raise ValueError("TOOL_NOT_PERMITTED")
+            return {"error": "TOOL_NOT_PERMITTED", "applied": False}
         declaring = declaration_targets(self.memory.civilization, name, payload, selected, job.observation or {})
         if declaring and self.role_coordinator is not None:
             if job.purpose != "gameplay":

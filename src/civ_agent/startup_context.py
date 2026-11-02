@@ -424,6 +424,7 @@ class StartupPrompt:
     strategy_reference: str = ""
     civilization_reference: str = ""
     payload_characters: dict[str, int] = field(default_factory=dict)
+    task_instruction: str = ""
 
     def metadata(self):
         return {
@@ -523,6 +524,7 @@ def startup_prompt(
         )
     instructions = job_instructions(purpose)
     return StartupPrompt(
+        task_instruction=dynamic,
         instructions=instructions + "\n\n" + startup_instructions(prepared),
         user="\n\n".join(sections),
         strategy_reference=reference,

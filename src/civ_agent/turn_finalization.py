@@ -34,12 +34,13 @@ def finalize_turn(agent, flight):
         time.sleep(0.1)
         status = agent.call("heartbeat", activationId=flight["activationId"])
     if status.get("error") in {
-        "DURABLE_RECORD_FAILED",
         "STATE_UPDATE_FAILED",
         "STOP_UNCONFIRMED",
         "STATE_STORE_FAILED",
     }:
         raise ValueError(status["error"])
+    # A committed handoff is never replayed. An explicit resume may retry its
+    # idempotent durable finalization; actual write failures still fail below.
     finalized = _idempotent_call(agent, "begin_finalize", **payload)
     deadline = time.monotonic() + 300
     while finalized.get("finalizationState") != "COMPLETED":

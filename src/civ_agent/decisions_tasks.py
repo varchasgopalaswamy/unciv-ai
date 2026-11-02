@@ -15,7 +15,7 @@ from civ_agent.effort_decisions import MAX_FACT_CHARACTERS, EffortEvidence
 from civ_agent.effort_decisions import question as effort_question
 from civ_agent.protocol import JsonObject
 
-TASK_VERSION = "player-advisories-v4"
+TASK_VERSION = "player-advisories-v5"
 CITY_LIMIT = 4
 CONSTRUCTION_LIMIT = 8
 FOCUS_LIMIT = 16

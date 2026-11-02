@@ -44,6 +44,47 @@ def coordinator():
     return roles, jobs
 
 
+@run_async
+async def test_unchanged_native_construction_choices_return_to_main_for_explicit_decision():
+    roles, jobs = coordinator()
+    pending = [{"kind": "CHOOSE_CONSTRUCTION", "city": "city1"}]
+    view = {"canEndTurn": False, "pending": pending, "turnControls": {"canDeferChoices": True}}
+    roles.service.failure = None
+    roles.service.stopping = False
+    roles.service.gateway = SimpleNamespace(
+        role_dispatch=asyncio.Lock(),
+        wait_for_gameplay=AsyncMock(),
+        fresh_turn=AsyncMock(return_value=view),
+        call=AsyncMock(return_value={"kind": "END_TURN"}),
+    )
+    roles.ready.update(gameplay=True, economy=True)
+    advancing = asyncio.create_task(roles.advance())
+    try:
+        roles.changed.set()
+        message = await asyncio.wait_for(roles.wait_for_resume(jobs["economy"]), 1)
+        assert "city1" in message and roles.ready == {"gameplay": True, "economy": False, "military": True}
+        assert (await roles.tool(jobs["economy"], "finish_role", {}))["roleFinished"]
+        message = await asyncio.wait_for(roles.wait_for_resume(jobs["gameplay"]), 1)
+        assert "deferChoices=true" in message and "city_override" in message
+        assert roles.ready == {"gameplay": False, "economy": True, "military": True}
+        roles.service.gateway.call.assert_not_awaited()
+        # The controller does not select deferral. Main must explicitly choose it.
+        assert (
+            await roles.tool(
+                jobs["gameplay"],
+                "finish_role",
+                {"deferChoices": True, "deferReason": "Preserve current production until priorities are reassessed."},
+            )
+        )["roleFinished"]
+        await asyncio.wait_for(advancing, 1)
+        assert roles.committed
+        assert roles.service.gateway.call.await_args.args[2]["deferChoices"] is True
+        assert not roles.resumes["economy"].is_set()
+    finally:
+        advancing.cancel()
+        await asyncio.gather(advancing, return_exceptions=True)
+
+
 @pytest.mark.parametrize("boundary", ["committed", "ended"])
 @run_async
 async def test_negotiation_monitor_waiting_for_dispatch_stops_after_handoff(boundary):

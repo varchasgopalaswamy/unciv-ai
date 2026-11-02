@@ -47,7 +47,7 @@ frozen memory/review/city or typed effort-selection evidence to `/batch`;
 unknown top-level controls and arbitrary gameplay tasks are rejected.
 Every request identifies its player, which
 must match the authenticated principal. The task policy is
-`player-advisories-v4`, broker protocol 3; routing uses `diplomacy-routing-v4`.
+`player-advisories-v5`, broker protocol 3; routing uses `diplomacy-routing-v4`.
 These are the only supported versions. Enabling Decisions selects the current
 implementation; old policies, response adapters and settings migrations are
 absent. Health checks authenticate and validate exact current versions without
@@ -169,14 +169,21 @@ and rejects `none`. The service intersects these values with the selected
 model's advertised `model/list` reasoning options. An unavailable catalogue,
 unknown model or fewer than two remaining alternatives retains the default.
 
-The fixed `reasoning-effort-v1` question uses a bounded brief of that role's
+The fixed `reasoning-effort-v2` question uses a bounded brief of that role's
 prepared facts and exactly its delivered strategy, city plans and handoff.
 Current decisions, constraints, unit work, visible threats, settlement and
-pending coordination inform the choice. Whole optional plans can be omitted
+pending coordination, deferred requests due by the current turn, and Economy's
+current review scope inform the choice. Economy's responsibilities explicitly
+include worker movement, safety and improvement replacements. Whole optional plans can be omitted
 with coverage notices; prose is never clipped. If the remaining brief exceeds
 the classifier bound, the default is retained. The target model is evidence,
 not interpolated into question instructions. The gameplay prompt itself is
 unchanged.
+
+The advisory version changes with this classifier contract so mismatched agent
+and broker deployments fail their health check. Deploy both together. Existing
+activations keep their persisted effort selection when resumed; new activations
+use the corrected inputs and a distinct receipt identity.
 
 Effort selection has its own `/batch` request and uses the same trusted ledger,
 budget, metadata validation and lost-reply reconciliation as other advisories.

@@ -745,8 +745,9 @@ def test_trade_tools_keep_decisions_small_and_do_not_grant_gameplay(tmp_path):
                 "terms",
             )
             assert result["error"] == "INVALID_TOOL_ARGUMENTS"
-            with pytest.raises(StateConflict, match="GAMEPLAY_NOT_PERMITTED"):
-                await gateway.call(job, "player_command", {"kind": "END_TURN"}, "move")
+            rejected = await gateway.call(job, "player_command", {"kind": "END_TURN"}, "move")
+            assert rejected == {"error": "GAMEPLAY_NOT_PERMITTED", "applied": False}
+            assert not host.executed
             offer = {
                 "counterofferTo": "d1",
                 "partner": "Greece",

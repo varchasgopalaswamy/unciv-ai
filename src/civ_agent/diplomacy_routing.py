@@ -260,7 +260,7 @@ class DiplomacyRouting:
         async with self.delivery_lock:
             draft = await self.gateway.io.call(self.store.get, arguments["deliveryId"])
             if draft is None:
-                raise StateConflict("UNKNOWN_DELIVERY")
+                return {"error": "UNKNOWN_DELIVERY", "applied": False}
             action = arguments.get("action", "status")
             if action == "cancel" and draft["status"] in {"queued", "omitted", "classifying"}:
                 draft = await self.gateway.io.call(

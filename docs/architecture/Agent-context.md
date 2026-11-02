@@ -102,6 +102,14 @@ children. Host observations inside a batch cannot grant unseen preview credit.
 Receipts return through retained `toolOutput` on the same thread. No operation
 selection/discovery request is required and state-dependent options stay in reads.
 
+Definite input and permission rejections return unapplied error receipts. This
+includes unknown delivery IDs, unavailable tools or role coordination, and native
+diplomatic actions without a current observation. Chat-history queries advertise
+the store's 200-character limit. Agreement reads overtaken by a newer lifecycle
+event return `AGREEMENT_CHANGED` with a fresh-read request, preserving the newer
+evidence. Job/epoch fences, credential conflicts, storage failures and uncertain
+execution still stop work; they cannot be converted into a new action attempt.
+
 Scheduled Codex processes use game decision base instructions and disable execution,
 MCP, plugins and skill injection. Inherited MCP servers are explicitly disabled on
 thread start/resume; an empty configuration table alone does not erase them.
@@ -113,6 +121,14 @@ inside that decision. Blocking fails the activation without dispatching an actio
 it does not initiate another repair turn. One automatic compaction attempt is
 separately allowed and counted. Only completed, validated decisions reach the game.
 Incomplete/refused output cannot dispatch.
+
+Before the current input reaches the context ceiling, managed conversations
+refresh at a completed decision boundary once input reaches 80% of the reported
+window. The old process closes before a fresh thread receives current permitted
+facts and the original task. The job, native action journal and workspace request
+budget remain; preview credit and delivery baselines refresh. Usage accumulates
+across all threads, and incomplete trace coverage stays marked incomplete. This
+avoids relying on automatic compaction requests that omit the required schema.
 
 A terminal HTTP 400 containing the provider's specific prompt-policy rejection
 can receive one unchanged retry per activation workspace. The gate reserves this
@@ -158,6 +174,11 @@ execution fences. No intermediate host observation grants inspection credit.
 
 In managed gameplay, each role submits `finish`; the host advances the native
 turn after all required roles finish. See [economy management](Economy-manager.md).
+Final review sends unresolved construction choices to Economy once. If its
+completed pass leaves the same native choices unresolved, Main receives the
+exact pending choices and decides whether to request specific work, take a city
+override, or explicitly defer where native rules permit. The controller does
+not repeatedly reopen Economy or select deferral itself.
 Managed catalogues omit native turn advancement. Optional `memory_update`
 remains available in the schema during play. Scheduled reviews run concurrently at a shared
 round boundary after all players finish; gameplay and communication wait for the
@@ -603,16 +624,19 @@ Military completion binds dispositions to delivered review pages; zero remaining
 targets needs no invented review basis. Social promises remain exact, nonbinding
 player text.
 
-Excessive whitespace rejects the entire generation. The process interrupts that
+Excessive whitespace, repetitive output, or an HTTP 200 generation stream that
+fails during an upstream read rejects the entire generation. The process interrupts that
 turn and withholds its terminal notification until interruption is acknowledged
 and completion is confirmed. Late text from the rejected turn cannot become a
 decision. The controller may then reserve one recovery request per activation
 and epoch, durably before generation, using the same thread, strict schema and
-delivered receipts. A second whitespace stall stops the activation; specialist
+delivered receipts. Output stalls and interrupted streams share this one retry.
+A second failure stops the activation; specialist
 restarts cannot multiply the allowance. Strategic reviews share their existing
 two-attempt allowance with semantic corrections. Failed advisory reports retain
 their existing unavailable-report behavior. Unconfirmed interruption, transport
-failure, and uncertain action execution do not qualify for this recovery.
+failures outside that confirmed generation-stream case, and uncertain action
+execution do not qualify for this recovery.
 
 The failed decision and recovery retain distinct identities linked by `retryOf`;
 recovery usage is marked as repair cost. Confirmed actions are never replayed as

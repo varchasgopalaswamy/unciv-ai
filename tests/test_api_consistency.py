@@ -362,8 +362,8 @@ def test_legacy_tools_are_absent_and_review_recovery_uses_public_arguments(tmp_p
             assert set(tools["trade_decide"]["inputSchema"]["required"]) == {"proposalId", "decision"}
             assert "Supply only" not in tools["trade_decide"]["description"]
             for name in old:
-                with pytest.raises(ValueError, match="TOOL_NOT_PERMITTED"):
-                    await gateway.call(job, name, {}, name)
+                denied = await gateway.call(job, name, {}, name)
+                assert denied == {"error": "TOOL_NOT_PERMITTED", "applied": False}
 
     asyncio.run(run())
     raw = {"error": {"code": "TURN_REVIEW_REQUIRED", "message": "Supply reviewId"}}

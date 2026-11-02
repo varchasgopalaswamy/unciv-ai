@@ -88,9 +88,15 @@ class ProviderUsageReader:
 
 def reconcile_provider_usage(record: JsonObject, reader: ProviderUsageReader) -> bool:
     """Merge an authoritative closed trace into a local lifecycle record."""
-    recovered = reader.read(record.get("threadId"))
-    if recovered is None:
+    thread_ids = list(dict.fromkeys([*record.get("previousThreadIds", []), record.get("threadId")]))
+    parts = [reader.read(thread) for thread in thread_ids]
+    available = [part for part in parts if part is not None]
+    if not available:
         return False
+    recovered = {
+        "usage": {key: sum(part["usage"][key] for part in available) for key in TOKEN_KEYS},
+        "modelRequests": sum(part["modelRequests"] for part in available),
+    }
     usage = record.setdefault("usage", {})
     for key in TOKEN_KEYS:
         usage[key] = max(usage.get(key, 0), recovered["usage"][key])
@@ -98,7 +104,9 @@ def reconcile_provider_usage(record: JsonObject, reader: ProviderUsageReader) ->
     # successful response does not make unreported request costs disappear.
     admitted = len(record.get("providerRequests", {}))
     incomplete_attempt = record.get("generationFailures") or record.get("providerRejections")
-    complete = not incomplete_attempt or bool(admitted and recovered["modelRequests"] >= admitted)
+    complete = len(available) == len(parts) and (
+        not incomplete_attempt or bool(admitted and recovered["modelRequests"] >= admitted)
+    )
     record["modelRequests"] = max(recovered["modelRequests"], admitted) if not complete else recovered["modelRequests"]
     record["usageReported"] = True
     record["providerUsageReconciled"] = complete

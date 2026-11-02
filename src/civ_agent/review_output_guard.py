@@ -1,4 +1,4 @@
-"""Bound structured assistant output without retaining drafts or raw reasoning."""
+"""Bound assistant output using a short suffix, without collecting raw reasoning."""
 
 from dataclasses import dataclass
 
@@ -6,6 +6,8 @@ from civ_agent.protocol import JsonObject
 
 REVIEW_OUTPUT_BYTES = 128 * 1024
 REVIEW_WHITESPACE_CHARACTERS = 4096
+REVIEW_REPETITION_CHARACTERS = 4096
+REVIEW_REPETITION_PERIOD = 64
 
 
 @dataclass
@@ -14,11 +16,17 @@ class ReportStream:
     whitespace: int = 0
     in_string: bool = False
     escaped: bool = False
+    suffix: str = ""
 
     def observe(self, text: str, max_bytes: int, max_whitespace: int) -> str | None:
         self.size += len(text.encode("utf-8", errors="replace"))
         if self.size > max_bytes:
             return "REVIEW_OUTPUT_LIMIT"
+        self.suffix = (self.suffix + text)[-REVIEW_REPETITION_CHARACTERS:]
+        if len(self.suffix) == REVIEW_REPETITION_CHARACTERS and any(
+            self.suffix[period:] == self.suffix[:-period] for period in range(1, REVIEW_REPETITION_PERIOD + 1)
+        ):
+            return "REVIEW_OUTPUT_STALLED"
         for character in text:
             if self.in_string:
                 if self.escaped:
@@ -38,7 +46,7 @@ class ReportStream:
 
 
 class ReviewOutputGuard:
-    """Observe only final or unphased assistant messages from one structured turn."""
+    """Bound every assistant message in a structured turn, regardless of phase."""
 
     def __init__(
         self,
@@ -50,7 +58,7 @@ class ReviewOutputGuard:
         self.thread_id = thread_id
         self.turn_id: str | None = None
         self.max_bytes, self.max_whitespace = max_bytes, max_whitespace
-        self.streams: dict[tuple[str, str], ReportStream | None] = {}
+        self.streams: dict[tuple[str, str], ReportStream] = {}
 
     def bind_turn(self, turn_id: str) -> None:
         self.turn_id = turn_id
@@ -67,9 +75,6 @@ class ReviewOutputGuard:
             if item.get("type") != "agentMessage" or not isinstance(item.get("id"), str):
                 return None
             key = turn_id, item["id"]
-            if item.get("phase") not in {None, "final_answer"}:
-                self.streams[key] = None
-                return None
             # A completed item contains the full message, not an additional delta.
             # Check it independently so missing starts/deltas cannot bypass limits.
             stream = ReportStream()
@@ -81,6 +86,6 @@ class ReviewOutputGuard:
             text = params.get("delta", "")
         else:
             return None
-        if stream is None or not isinstance(text, str):
+        if not isinstance(text, str):
             return None
         return stream.observe(text, self.max_bytes, self.max_whitespace)

@@ -31,6 +31,7 @@ EVENT_FIELDS = (
     "generationStopped",
 )
 GENERATION_RECOVERY_LIMIT = "STRUCTURED_GENERATION_RECOVERY_LIMIT"
+RECOVERABLE_GENERATION_ERRORS = frozenset({"REVIEW_OUTPUT_STALLED", "PROVIDER_RESPONSE_INTERRUPTED"})
 
 
 class GenerationRecoveryError(ValueError):
@@ -92,8 +93,8 @@ def reserve_generation_retry(memory, failed_id, replacement):
         failed = rows.get(failed_id, {})
         if (
             failed.get("status") != "generation_failed"
-            or failed.get("error") != "REVIEW_OUTPUT_STALLED"
-            or failed.get("requestFailure", {}).get("reason") != "REVIEW_OUTPUT_STALLED"
+            or failed.get("error") not in RECOVERABLE_GENERATION_ERRORS
+            or failed.get("requestFailure", {}).get("reason") != failed.get("error")
             or not failed.get("generationStopped")
             or failed.get("thread") != replacement["thread"]
             or "decision" in failed
@@ -175,6 +176,12 @@ async def generation_event(gateway, record, method, params):
         if saved.get("turn") not in {None, params.get("turnId")}:
             return
         usage = params.get("tokenUsage", {})
+        current_input = usage.get("last", {}).get("inputTokens")
+        context_window = usage.get("modelContextWindow")
+        if type(current_input) is int and current_input >= 0:
+            record["contextInputTokens"] = current_input
+        if type(context_window) is int and context_window > 0:
+            record["modelContextWindow"] = context_window
         changes["cumulativeUsage"] = {
             name: value
             for name, value in usage.get("total", {}).items()
@@ -215,11 +222,11 @@ async def generation_event(gateway, record, method, params):
                 category="request_budget"
                 if reason in {"PROVIDER_DECISION_REQUEST_LIMIT", "MODEL_REQUEST_BUDGET_EXHAUSTED"}
                 else "generation"
-                if reason in {"REVIEW_OUTPUT_STALLED", "REVIEW_OUTPUT_LIMIT"}
+                if reason in RECOVERABLE_GENERATION_ERRORS | {"REVIEW_OUTPUT_LIMIT"}
                 else "transport",
                 error=reason,
             )
-            if method == "service/generationFailed" and reason == "REVIEW_OUTPUT_STALLED":
+            if method == "service/generationFailed" and reason in RECOVERABLE_GENERATION_ERRORS:
                 failure = {"decisionId": identity, "turnId": turn, "reason": reason}
                 record["generationFailure"] = failure
                 record.setdefault("generationFailures", {})[identity] = failure
@@ -234,6 +241,7 @@ async def generation_event(gateway, record, method, params):
                 "exceptionType",
                 "forwardedBytes",
                 "upstreamStatus",
+                "requestKind",
             )
             if k in params
         }
@@ -250,8 +258,12 @@ async def generation_event(gateway, record, method, params):
                 record.setdefault("error", "PROMPT_POLICY_REJECTED")
         if (
             saved["status"] == "generation_failed"
-            and saved.get("error") == "REVIEW_OUTPUT_STALLED"
-            and params.get("turn", {}).get("status") in {"completed", "interrupted"}
+            and saved.get("error") in RECOVERABLE_GENERATION_ERRORS
+            and (
+                params.get("turn", {}).get("status") in {"completed", "interrupted"}
+                or saved.get("error") == "PROVIDER_RESPONSE_INTERRUPTED"
+                and params.get("turn", {}).get("status") == "failed"
+            )
         ):
             changes["generationStopped"] = True
         elif params.get("turn", {}).get("status") != "completed":
@@ -314,7 +326,7 @@ class DecisionLoop:
                 )
                 for key, value in saved.get("cumulativeUsage", {}).items():
                     baseline[key] = max(baseline.get(key, 0), value)
-                if saved.get("status") == "generation_failed" and saved.get("error") == "REVIEW_OUTPUT_STALLED":
+                if saved.get("status") == "generation_failed" and saved.get("error") in RECOVERABLE_GENERATION_ERRORS:
                     failure = {"decisionId": saved["id"], "turnId": saved.get("turn"), "reason": saved["error"]}
                     self.record["generationFailure"] = failure
                     self.record.setdefault("generationFailures", {})[saved["id"]] = failure
@@ -342,7 +354,7 @@ class DecisionLoop:
                 "failedDecisionId": failure["decisionId"],
                 "applied": False,
                 "instruction": (
-                    "The previous response was discarded after excessive whitespace; no operation from it was "
+                    "The previous response was discarded after an output stall or interrupted provider stream; no operation from it was "
                     "dispatched. Return a complete compact JSON decision. Include every required key, using null "
                     "for omitted optional arguments. Use the delivered context and confirmed receipts; never "
                     "repeat a confirmed action."

@@ -267,7 +267,7 @@ def test_memory_heartbeat_and_lost_async_finalization_ack(monkeypatch):
     assert "start" not in calls and "finalize" not in calls
 
 
-@pytest.mark.parametrize("error", ["DURABLE_RECORD_FAILED", "STATE_STORE_FAILED", "STOP_UNCONFIRMED"])
+@pytest.mark.parametrize("error", ["STATE_STORE_FAILED", "STOP_UNCONFIRMED"])
 def test_resume_does_not_acknowledge_internal_memory_failures(tmp_path, error):
     from civ_agent.turn_finalization import finish_turn
 
@@ -291,5 +291,34 @@ def test_resume_does_not_acknowledge_internal_memory_failures(tmp_path, error):
     try:
         with pytest.raises(ValueError, match=error):
             finish_turn(agent, flight, scheduler.history_for(flight))
+    finally:
+        scheduler.finalizer.shutdown(wait=True)
+
+
+@pytest.mark.parametrize("write_fails", [False, True])
+def test_committed_handoff_retries_durable_finalization_without_replaying_turn(tmp_path, write_fails):
+    from civ_agent.turn_finalization import finish_turn
+
+    scheduler, _ = make_scheduler(tmp_path)
+    agent = scheduler.agents["Rome"]
+    flight = {
+        "activationId": "failed",
+        "epoch": "g1",
+        "civilization": "Rome",
+        "gameTurn": 0,
+        "handoff": 0,
+        "confirmedHandoff": 1,
+        "agentUrl": agent.url,
+    }
+    agent.rows["failed"] = {**flight, "phase": "FAILED", "error": "DURABLE_RECORD_FAILED"}
+    agent.fail = write_fails
+    agent.release.set()
+    try:
+        if write_fails:
+            with pytest.raises(ValueError, match="Turn finalization failed"):
+                finish_turn(agent, flight, scheduler.history_for(flight))
+        else:
+            assert finish_turn(agent, flight, scheduler.history_for(flight))["committedHandoff"] == 1
+        assert scheduler.operator.activated == []
     finally:
         scheduler.finalizer.shutdown(wait=True)

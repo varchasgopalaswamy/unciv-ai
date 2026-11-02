@@ -2,6 +2,7 @@
 
 import asyncio
 import copy
+import json
 import secrets
 import time
 from typing import Annotated, Literal
@@ -69,11 +70,21 @@ ECONOMY_TOOLS = frozenset(
 )
 
 
+def disposition_schema(schema):
+    # Omitted and null dates both mean unscheduled. Require the nullable key on
+    # the wire so strict output needs no separate {value: ...} wrapper. Runtime
+    # defaults retain compatibility with callers that omit this optional date.
+    schema["required"] = [*schema.get("required", []), "reviewTurn"]
+
+
 class RequestDisposition(BoundaryModel):
+    model_config = {"json_schema_extra": disposition_schema}
     id: str
     status: Literal["completed", "deferred", "rejected"]
     reason: Annotated[str, Field(min_length=1, max_length=500)]
-    reviewTurn: int | None = Field(default=None, ge=0)
+    reviewTurn: int | None = Field(
+        default=None, ge=0, description="A future game turn to reconsider this request, or null for no scheduled date."
+    )
 
 
 class FinishRole(BoundaryModel):
@@ -1076,9 +1087,27 @@ class TurnRoles:
                 if view.get("canEndTurn") is False and not self.deferral.get("deferChoices"):
                     pending = view.get("pending", [])
                     role = "economy" if any("CONSTRUCTION" in str(entry).upper() for entry in pending) else "gameplay"
+                    previous = self.record.get("handoffReview", {})
+                    if previous.get("pending") == pending:
+                        # A completed economic pass did not resolve these same
+                        # native choices. Main owns the decision to override,
+                        # request specific work, or explicitly defer choices.
+                        # Reopening Economy again just repeats its finish loop.
+                        role = "gameplay"
+                    self.record["handoffReview"] = {"pending": copy.deepcopy(pending), "role": role}
                     self.resume(
                         role,
-                        "The host's final review still has required decisions. Read player_turn, resolve them, then finish_role again.",
+                        "The native turn still has required decisions: "
+                        + json.dumps(pending, separators=(",", ":"))
+                        + ". Resolve these choices before finishing. "
+                        + (
+                            "As Main, you can request specific economic work "
+                            "or use city_override to manage a city yourself. If the native turnControls permit "
+                            "deferring choices, you may instead finish with deferChoices=true and a deferReason. "
+                            "Finishing without resolving or explicitly deferring them cannot advance the turn."
+                            if role == "gameplay"
+                            else "Choose construction for the affected cities, or explain the unresolved choices to Main."
+                        ),
                     )
                     self.record["handoffPass"] = self.record.get("handoffPass", 0) + 1
                     await self.save()

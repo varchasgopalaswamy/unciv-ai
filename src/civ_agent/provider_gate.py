@@ -154,6 +154,7 @@ class ProviderGate:
             return await self.deny("PROVIDER_ENDPOINT_NOT_PERMITTED", window)
         body = None
         identity = None
+        kind = None
         if not catalogue:
             if window is None:
                 return await self.deny("PROVIDER_DECISION_REQUIRED", window)
@@ -261,6 +262,7 @@ class ProviderGate:
                 "requestId": identity,
                 "forwardedBytes": forwarded_bytes,
                 "upstreamStatus": outgoing.status if outgoing is not None else None,
+                "requestKind": kind,
             }
             if stage.startswith("downstream_"):
                 # Codex can close its HTTP reader after the terminal SSE event,

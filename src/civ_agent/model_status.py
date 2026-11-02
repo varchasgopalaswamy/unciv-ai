@@ -12,6 +12,7 @@ from civ_agent.protocol import JsonObject
 from civ_agent.terminal_output import visible_text
 
 QUIET_SECONDS = 60
+RECOVERABLE_MODEL_FAILURES = frozenset({"serverOverloaded", "internalServerError", "rateLimitExceeded"})
 MAX_LOG_LINE = 16 * 1024
 RETRY = re.compile(r"retrying sampling request \((\d{1,4})/(\d{1,4}) in (\d{1,9}(?:\.\d{1,6})?)(ms|s)\)")
 TURN = re.compile(r"\bturn_id=([A-Za-z0-9-]{1,128})\b")

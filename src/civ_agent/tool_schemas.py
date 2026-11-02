@@ -191,7 +191,7 @@ class HistoryRead(BoundaryModel):
 
 class ChatHistory(BoundaryModel):
     with_player: str = Field(default="", alias="with")
-    query: str = ""
+    query: str = Field(default="", max_length=200)
 
 
 class ChatRead(BoundaryModel):

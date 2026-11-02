@@ -10,11 +10,13 @@ import pytest
 from civ_agent import service_recovery
 from civ_agent.chat_runtime import ChatRuntime
 from civ_agent.civilization_state import CivilizationState, StateConflict
+from civ_agent.decision_contracts import DecisionContract
 from civ_agent.diplomacy_decisions import POLICY_VERSION, parse_answer, request_body
 from civ_agent.diplomacy_routing import DiplomacyRouting
 from civ_agent.experiment_metrics import summarize
 from civ_agent.proposal_gateway import ProposalGateway
 from civ_agent.protocol import JsonObject
+from civ_agent.structured_decisions import DecisionLoop
 from tests.test_diplomacy_contracts import opened
 from tests.test_routing_policy import envelope
 
@@ -79,6 +81,50 @@ def test_unsent_status_and_idempotent_override(tmp_path, choice):
             assert host.writes[0]["recipients"] == ["France", "Greece"]
             await gateway.call(job, "chat_delivery", args, "override-again")
             assert len(host.writes) == 1 and client.classify.await_count == 1
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("delivery_id", ["", "delivery-missing"])
+@pytest.mark.parametrize("action", ["status", "immediate", "cancel"])
+def test_unknown_delivery_rejects_batch_and_preserves_confirmed_send(tmp_path, delivery_id, action):
+    async def run():
+        async with routed(tmp_path) as (gateway, job, host, router, client, now):
+            loop = DecisionLoop(gateway, job, DecisionContract(job.purpose, await gateway.tools(job)), {})
+            await loop.begin("Coordinate peacefully.")
+            result = await loop.complete(
+                loop.contract.encode(
+                    {
+                        "kind": "act",
+                        "operations": [
+                            {"tool": "chat_send", "arguments": {"to": "Greece", "text": "Hello."}},
+                            {"tool": "chat_delivery", "arguments": {"deliveryId": delivery_id, "action": action}},
+                            {"tool": "chat_send", "arguments": {"to": "Greece", "text": "Not yet."}},
+                        ],
+                    }
+                )
+            )
+            assert [receipt["status"] for receipt in result["receipts"]] == ["confirmed", "rejected", "unexecuted"]
+            assert result["receipts"][1]["result"] == {"error": "UNKNOWN_DELIVERY", "applied": False}
+            delivery = result["receipts"][0]["result"]["deliveryId"]
+            draft = router.store.get(delivery)
+            assert draft is not None and draft["status"] == "queued"
+            assert await loop.execute(recovery=True) == result
+            assert client.classify.await_count == 1
+            loop.delivered(result)
+            await loop.begin(result)
+            corrected = await loop.complete(
+                loop.contract.encode(
+                    {
+                        "kind": "act",
+                        "operations": [
+                            {"tool": "chat_delivery", "arguments": {"deliveryId": delivery, "action": "immediate"}}
+                        ],
+                    }
+                )
+            )
+            assert corrected["receipts"][0]["result"]["delivered"]
+            assert [write["text"] for write in host.writes] == ["Hello."]
 
     asyncio.run(run())
 

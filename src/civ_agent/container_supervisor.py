@@ -35,13 +35,13 @@ from civ_agent.container_support import (
     stop_containers,
 )
 from civ_agent.game_config import ContainerResources, ResolvedGameConfig
+from civ_agent.model_status import RECOVERABLE_MODEL_FAILURES
 from civ_agent.monitoring import path_for, read_record
 from civ_agent.protocol import JsonObject
 from civ_agent.providers import read_api_key
 from civ_agent.tls import private_directory, write_private_json
 from civ_agent.turn_archive import civilization_directory_name
 
-RECOVERABLE_MODEL_FAILURES = frozenset({"serverOverloaded", "internalServerError"})
 QUOTA_RETRY_SECONDS = 300
 logger = logging.getLogger(__name__)
 

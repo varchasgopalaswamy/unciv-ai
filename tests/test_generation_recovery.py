@@ -36,8 +36,9 @@ async def fail_generation(m, loop, turn="stalled", *, stopped=True):
 
 
 @pytest.mark.parametrize("terminal_status", ["interrupted", "completed"])
+@pytest.mark.parametrize("phase,output", [(None, " " * 4097), ("commentary", '\\"}' * 2000)])
 @run_async
-async def test_whitespace_interrupt_discards_late_output_and_fences_next_turn(tmp_path, terminal_status):
+async def test_stalled_interrupt_discards_late_output_and_fences_next_turn(tmp_path, terminal_status, phase, output):
     seen = []
     failed, completed = asyncio.Event(), asyncio.Event()
 
@@ -61,8 +62,14 @@ async def test_whitespace_interrupt_discards_late_output_and_fences_next_turn(tm
         await start
         socket.feed(
             {
+                "method": "item/started",
+                "params": {**common, "item": {"id": "answer", "type": "agentMessage", "phase": phase}},
+            }
+        )
+        socket.feed(
+            {
                 "method": "item/agentMessage/delta",
-                "params": {**common, "itemId": "answer", "delta": '{"decision":{' + " " * 4097},
+                "params": {**common, "itemId": "answer", "delta": '{"decision":{' + output},
             }
         )
         interrupt = await asyncio.wait_for(socket.outgoing.get(), 1)
@@ -100,7 +107,7 @@ async def test_whitespace_interrupt_discards_late_output_and_fences_next_turn(tm
     finally:
         await process.close()
     assert not process.transport_error
-    assert not any(method.startswith("item/") for method, _ in seen)
+    assert not any(method in {"item/agentMessage/delta", "item/completed"} for method, _ in seen)
     assert [method for method, _ in seen].count("service/generationFailed") == 1
     assert [method for method, _ in seen].count("turn/completed") == 1
 

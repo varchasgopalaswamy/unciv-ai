@@ -195,6 +195,8 @@ receipt means delivered. Original text and audience are retained. Use
 `delivery="immediate"` to bypass scheduling or
 `chat_delivery(deliveryId=..., action="status"|"immediate"|"cancel")` to inspect,
 send or cancel an owned draft. Repeating an override does not duplicate delivery.
+An unknown delivery ID returns `UNKNOWN_DELIVERY` with `applied=false`; the model
+can read the outstanding statuses and correct its request without pausing the game.
 `chat_read` includes outstanding statuses. There is no message quota, rewriting,
 honesty policy or enforcement of social promises.
 
@@ -247,9 +249,10 @@ otherwise safe. Players see that advice is unavailable; an earlier completed
 report may still appear with its original date. Missing advice does not invent a
 replacement strategy or advance the completed-review evidence baseline.
 
-Structured review output is stopped above 128 KiB per assistant report message
-or after more than 4,096 consecutive whitespace characters outside JSON strings.
-These guards do not inspect reasoning, tool output or ordinary chat. Adjacent
+Structured turns limit every assistant message to 128 KiB, regardless of its phase.
+More than 4,096 consecutive whitespace characters outside JSON strings, or a
+4,096-character suffix repeating a pattern of up to 64 characters, stops generation
+through the bounded recovery path. These guards do not inspect reasoning or tool output. Adjacent
 text fragments from the same stream are combined before history processing,
 without changing their text or crossing tool, usage or completion events. The
 notification queue remains bounded at 16 MiB and 4,096 entries, including work

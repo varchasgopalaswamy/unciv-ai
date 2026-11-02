@@ -17,6 +17,7 @@ from civ_agent.runtime_profile import game_directories
 from civ_agent.telemetry import llm_metrics
 
 STATE_ERRORS = {
+    "AGREEMENT_CHANGED",
     "OBSERVATION_REQUIRED",
     "STALE_REVISION",
     "MILITARY_OBSERVATION_CHANGED",
