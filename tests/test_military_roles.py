@@ -1,7 +1,6 @@
 """War coordination is durable and independent of model execution order."""
 
 import asyncio
-import copy
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -11,12 +10,12 @@ from jsonschema import Draft202012Validator
 from civ_agent.civilization_state import CivilizationState
 from civ_agent.economy_roles import TurnRoles
 from civ_agent.game_config import GameConfig, Player
-from civ_agent.peace_review import PeaceReviews, peace_terms
+from civ_agent.peace_contracts import peace_terms
 from civ_agent.protocol import JsonObject
 from civ_agent.service_io import ServiceIO
 from civ_agent.tool_schemas import tool_model
 from civ_agent.war_state import WarStore, goal_versions, tactical_basis, war_opponents
-from tests.test_economy_roles import run_async
+from tests.domain_fixtures import run_async
 
 GOALS = [
     {
@@ -264,6 +263,32 @@ def test_military_configuration_inherits_and_overrides():
     assert settings["military_model"]["model"] == settings["model"]
 
 
+@run_async
+async def test_samurai_water_improvement_is_advertised_to_its_owning_role(tmp_path):
+    from tests.test_diplomacy_contracts import opened
+
+    async with opened(tmp_path, "military") as (gateway, military, _host):
+        roles = TurnRoles(SimpleNamespace(records={}), {"epoch": "g1", "gameTurn": 0, "activationId": "main"})
+        gateway.role_coordinator = roles
+        roles.register(military)
+        military.observation = position(war=False)
+        military.observation["map"]["units"] = [
+            {"handle": "samurai", "name": "Samurai", "military": True},
+            {"handle": "boat", "name": "Work Boats", "military": False},
+        ]
+        action = {"kind": "CREATE_WATER_IMPROVEMENT", "target": "samurai", "selection": "Fishing Boats"}
+        schema = next(tool["inputSchema"] for tool in await gateway.tools(military) if tool["name"] == "player_command")
+        assert Draft202012Validator(schema).is_valid(action)
+        assert roles.ownership_problem(military, action) is None
+        main = SimpleNamespace(purpose="gameplay", observation=military.observation)
+        assert roles.ownership_problem(main, action)["owner"] == "military"
+        assert roles.ownership_problem(military, {**action, "target": "boat"})["owner"] == "gameplay"
+        assert roles.ownership_problem(main, {**action, "target": "boat"}) is None
+        roles.war_state["escorts"] = {"samurai": {"civilian": "boat"}}
+        assert roles.ownership_problem(main, action) is None
+        assert roles.ownership_problem(military, action)["owner"] == "gameplay"
+
+
 @pytest.mark.parametrize(
     "tool,payload,selected,required",
     [
@@ -284,68 +309,6 @@ def test_binding_peace_paths(tool, payload, selected, required):
     assert (peace_terms(tool, payload, selected) is not None) == required
 
 
-@run_async
-@pytest.mark.parametrize(
-    "failure,approve,stale",
-    [(False, True, False), (True, True, False), ("rpc", True, False), (False, False, False), (False, True, True)],
-)
-async def test_peace_requires_overview_then_main_exact_terms(tmp_path, failure, approve, stale):
-    wars = store(tmp_path)
-    io = ServiceIO()
-    hold = asyncio.Event()
-    hold.set()
-    gateway = SimpleNamespace(
-        role_dispatch=asyncio.Lock(), wars=wars, jobs={}, consultation_hold=hold, suspend_negotiation=lambda job: None
-    )
-    service = SimpleNamespace(
-        memory=wars.memory, io=io, gateway=gateway, records={}, chat=SimpleNamespace(running=False)
-    )
-    reviews = PeaceReviews(service)
-    calls = []
-    view = position()
-
-    async def compute(caller, role, inputs, schema):
-        calls.append(role)
-        assert not hold.is_set()
-        if failure:
-            if failure == "rpc":
-                from civ_agent.agent_service import ServiceError
-
-                raise ServiceError("CODEX_REQUEST_FAILED", 502)
-            raise ValueError("MODEL_FAILED")
-        if stale and role == "gameplay":
-            view["map"]["units"][0]["health"] = 50
-        return (
-            {"recommendation": "Peace"} if role == "military" else {"approve": approve, "reason": "Protect our cities"}
-        )
-
-    reviews.compute = compute
-
-    async def read(*_):
-        return copy.deepcopy(view)
-
-    job = SimpleNamespace(id="diplomat", epoch="e1", purpose="communication", connection=SimpleNamespace(tool=read))
-    payload = {"kind": "CITY_STATE_ACTION", "selection": "makePeace", "target": "Geneva"}
-    try:
-        result = await reviews.authorize(job, "player_command", payload)
-        assert hold.is_set()
-        if failure:
-            assert calls == ["military"] and result["error"] == "PEACE_CONSULTATION_UNAVAILABLE"
-            assert result["recoverable"] and not result["applied"]
-        else:
-            assert calls == ["military", "gameplay"]
-            if not approve:
-                assert result["error"] == "MAIN_DECLINED_PEACE"
-            elif stale:
-                assert result["error"] == "PEACE_REVIEW_STALE"
-            else:
-                assert result is None and payload["revision"] == "r1"
-                await reviews.authorize(job, "player_command", payload)
-                assert calls == ["military", "gameplay"], "Exact valid approval is reused"
-    finally:
-        await io.close()
-
-
 def test_peace_basis_binds_goals_terms_and_tactical_facts(tmp_path):
     wars = store(tmp_path)
     state = wars.synchronize("e1", position())
@@ -356,87 +319,6 @@ def test_peace_basis_binds_goals_terms_and_tactical_facts(tmp_path):
     assert tactical_basis(view, state, {"gold": 11}) != basis
     next(iter(state["episodes"].values()))["version"] += 1
     assert tactical_basis(view, state, {"gold": 10}) != basis
-
-
-@run_async
-async def test_three_actual_role_conversations_join_one_native_handoff(tmp_path):
-    from civ_agent.agent_service import AgentService
-    from tests.test_agent_service import FakeCodex, FakeFactory, StartupHost
-
-    class WarHost(StartupHost):
-        async def tool(self, name, args):
-            result = await super().tool(name, args)
-            if name == "player_turn":
-                result["diplomacy"] = position()["diplomacy"]
-            return result
-
-    class Model(FakeCodex):
-        async def start(self, token, settings):
-            await super().start(token, settings)
-            assert self.job is not None
-            if self.job.purpose == "military":
-                self.economy = True  # Existing fake implements a subordinate role protocol.
-
-        async def request(self, method, payload):
-            assert self.job is not None
-            if method == "turn/start" and self.job.purpose == "gameplay":
-                result = await self.factory.service.gateway.invoke(
-                    self.job,
-                    "war_goals",
-                    {"action": "initial", "opponent": "Greece", "goals": GOALS, "reason": "Defend our border"},
-                    "initial",
-                )
-                assert "error" not in result
-            return await super().request(method, payload)
-
-    class Factory(FakeFactory):
-        def __call__(self, executable, workspace, mcp_url, ca_file, notification):
-            model = Model(self, workspace, notification)
-            self.instances.append(model)
-            return model
-
-        def connection(self, *args, **kwargs):
-            return WarHost(self)
-
-    factory = Factory()
-    service = AgentService(
-        "Rome",
-        tmp_path / "workspace",
-        tmp_path / "state",
-        "S" * 43,
-        "https://localhost:8765/mcp",
-        None,
-        process_factory=factory,
-        connection_factory=factory.connection,
-    )
-    factory.service = service
-    try:
-        await service.start(
-            {
-                "activationId": "turn1",
-                "epoch": "g1",
-                "civilization": "Rome",
-                "threadId": None,
-                "gameTurn": 0,
-                "handoff": 0,
-                "mcpUrl": "https://localhost:8765/mcp",
-                "playerToken": "P" * 43,
-                "prompt": "Play",
-                "model": None,
-                "timeoutSeconds": 20,
-                "leaseSeconds": 10,
-            }
-        )
-        assert service.active_task is not None
-        await asyncio.wait_for(asyncio.shield(service.active_task), 8)
-        assert service.failure is None, service.status()
-        assert {r.get("purpose", "gameplay") for r in service.records.values()} == {"gameplay", "economy", "military"}
-        assert service.turn_roles is not None
-        assert service.turn_roles.committed
-        assert all(service.turn_roles.ready.values())
-        assert all(process.closed for process in factory.instances)
-    finally:
-        await service.close()
 
 
 def test_canonical_incoming_peace_includes_all_exact_terms():
@@ -481,113 +363,6 @@ def test_declaration_paths_include_native_replies_and_canonical_trades():
     selected = {"clauses": [{"from": "Rome", "to": "Greece", "item": {"type": "WarDeclaration", "name": "Egypt"}}]}
     assert declaration_targets("Rome", "trade_decide", {"decision": "accept"}, selected, {}) == {"Egypt"}
     assert not declaration_targets("Rome", "trade_decide", {"decision": "decline"}, selected, {})
-
-
-@run_async
-async def test_real_readonly_peace_conversation_and_accounting(tmp_path):
-
-    from civ_agent.agent_service import AgentService
-    from civ_agent.peace_review import TacticalOverview
-    from tests.test_agent_service import FakeFactory
-
-    class DecisionModel:
-        def __init__(self, factory, notification):
-            self.factory, self.notification = factory, notification
-            self.closed = False
-
-        async def start(self, token, settings):
-            self.job = self.factory.service.gateway.jobs[token]
-            assert await self.factory.service.gateway.tools(self.job) == []
-            denied = await self.factory.service.gateway.call(self.job, "player_command", {"kind": "END_TURN"}, "attack")
-            assert denied["error"] == "REVIEW_READ_ONLY"
-
-        async def request(self, method, payload):
-            if method == "thread/start":
-                return {
-                    "thread": {"id": "consult-thread"},
-                    "modelProvider": payload["modelProvider"],
-                    "model": payload.get("model") or "configured-model",
-                    "reasoningEffort": "medium",
-                }
-            if method == "turn/start":
-                answer = {
-                    name: "Observed facts; inferred continuation costs; unknown reinforcements."
-                    for name in TacticalOverview.model_fields
-                }
-                await self.notification(
-                    "item/completed",
-                    {
-                        "threadId": "consult-thread",
-                        "turnId": "c1",
-                        "item": {
-                            "id": "answer",
-                            "type": "agentMessage",
-                            "phase": "final_answer",
-                            "text": __import__("tests.structured_helpers", fromlist=["report_text"]).report_text(
-                                answer, TacticalOverview
-                            ),
-                        },
-                    },
-                )
-                await self.notification(
-                    "thread/tokenUsage/updated",
-                    {
-                        "threadId": "consult-thread",
-                        "turnId": "c1",
-                        "tokenUsage": {
-                            "total": {
-                                "inputTokens": 100,
-                                "cachedInputTokens": 20,
-                                "outputTokens": 30,
-                                "reasoningOutputTokens": 10,
-                            }
-                        },
-                    },
-                )
-                await self.notification(
-                    "turn/completed", {"threadId": "consult-thread", "turn": {"id": "c1", "status": "completed"}}
-                )
-                return {"turn": {"id": "c1"}}
-            raise AssertionError(method)
-
-        async def close(self):
-            self.closed = True
-            await self.notification("service/disconnected", {})
-
-    class Factory(FakeFactory):
-        def __call__(self, executable, workspace, mcp_url, ca_file, notification):
-            process = DecisionModel(self, notification)
-            self.instances.append(process)
-            return process
-
-    factory = Factory()
-    service = AgentService(
-        "Rome",
-        tmp_path / "workspace",
-        tmp_path / "state",
-        "S" * 43,
-        "https://localhost:8765/mcp",
-        None,
-        process_factory=factory,
-        connection_factory=factory.connection,
-    )
-    factory.service = service
-    try:
-        service.memory.bind("e1")
-        caller = SimpleNamespace(id="diplomat", epoch="e1")
-        result = await service.peace_reviews.compute(
-            caller, "military", {"position": position(), "warState": {}, "exactPeaceTerms": {}}, TacticalOverview
-        )
-        assert result["recommendation"]
-        record = next(iter(service.records.values()))
-        assert record["purpose"] == "consultation" and record["phase"] == "COMPLETED"
-        assert not record.get("error"), "An expected disconnect during shutdown is not a consultation failure"
-        assert record["usage"]["input_tokens"] == 100
-        assert record["modelRequests"] == 1
-        assert factory.instances[0].closed
-        assert not service.gateway.jobs
-    finally:
-        await service.close()
 
 
 def test_war_records_follow_checkpoint_rewind_and_reject_changed_retry(tmp_path):
@@ -642,26 +417,57 @@ def test_container_provisions_subordinate_provider_credentials():
     assert player_providers(config, Player(name="Greece")) == {"openai"}
 
 
+@pytest.mark.parametrize("action", ["acknowledge", "resolve"])
 @run_async
-async def test_required_consultation_wait_does_not_exhaust_diplomacy_budget():
-    import time
-
-    from civ_agent.chat_runtime import ChatRuntime
-    from civ_agent.proposal_gateway import JobAccess
-    from civ_agent.review_runtime import OfflineConnection
-
-    runtime = ChatRuntime(None)
-    runtime.timeout = 1
-    job = JobAccess("diplomat", "communication", "e1", OfflineConnection(), {})
-
-    async def compute(id):
-        runtime.jobs[id] = (job, None)
-        job.wait_started = time.monotonic()
-        await asyncio.sleep(1.5)
-        job.completed_wait += time.monotonic() - job.wait_started
-        job.wait_started = None
-        await asyncio.sleep(0.02)
-
-    runtime.compute = compute
-    await runtime.compute_with_budget("diplomat")
-    assert job.completed_wait >= 1.5
+async def test_completing_message_history_does_not_reopen_finished_author(tmp_path, action):
+    memory = CivilizationState(tmp_path, "Rome")
+    memory.bind("e1")
+    io = ServiceIO()
+    service = SimpleNamespace(memory=memory, io=io, records={}, _save=AsyncMock())
+    roles = TurnRoles(service, {"epoch": "e1", "gameTurn": 4, "activationId": "main"})
+    jobs = {}
+    for role in ("gameplay", "military"):
+        job = SimpleNamespace(
+            id=role,
+            purpose=role,
+            epoch="e1",
+            memory={"gameTurn": 4},
+            observation=position(war=False),
+            gameplay_ended=asyncio.Event(),
+            pending_calls={},
+        )
+        roles.register(job)
+        jobs[role] = job
+    roles.ready["military"] = False
+    try:
+        sent = await roles.role_tool(
+            jobs["military"],
+            "role_message",
+            {"to": "gameplay", "kind": "request", "text": "Movement was blocked; reconsider if still needed."},
+            "old-request",
+        )
+        assert (await roles.tool(jobs["military"], "finish_role", {}))["roleFinished"]
+        assert roles.ready["military"] and jobs["military"].role_finished.is_set()
+        arguments = {"action": action, "ids": [sent["message"]["id"]]}
+        if action == "resolve":
+            arguments["reason"] = "Movement subsequently succeeded; no new pass is needed."
+        recorded = await roles.role_tool(jobs["gameplay"], "role_message", arguments, "record-outcome")
+        assert "error" not in recorded
+        assert roles.ready["military"] and jobs["military"].role_finished.is_set()
+        assert not roles.resumes["military"].is_set()
+        original = next(row for row in roles.war_state["messages"] if row["id"] == sent["message"]["id"])
+        assert original["acknowledged"]
+        assert bool(original.get("resolved")) is (action == "resolve")
+        # The correction must still wake a completed specialist for explicit new work.
+        new = await roles.role_tool(
+            jobs["gameplay"],
+            "role_message",
+            {"to": "military", "kind": "request", "text": "New visible threat: review the current military facts."},
+            "new-request",
+        )
+        assert "error" not in new
+        assert not roles.ready["military"] and not jobs["military"].role_finished.is_set()
+        assert roles.resumes["military"].is_set()
+    finally:
+        await io.close()
+        memory.engine.dispose()

@@ -1,509 +1,293 @@
 import asyncio
 import json
 import subprocess
+from datetime import UTC, datetime
 from unittest.mock import Mock
 
 import pytest
+from pydantic_ai.messages import (
+    BinaryContent,
+    ModelRequest,
+    ModelResponse,
+    RetryFeedbackPart,
+    RetryInfo,
+    TextPart,
+    ToolCallPart,
+    ToolReturnPart,
+    UserPromptPart,
+)
 from textual.widgets import DataTable, RichLog, Static, TabbedContent
 
 from civ_agent import cli, container_support, match_watch
-from civ_agent.monitoring import (
-    MonitorStore,
-    path_for,
-    put_record,
-    record_key,
-)
-from civ_agent.monitoring import records as table
-from civ_agent.protocol import JsonObject
-from civ_agent.runner_history import EventHistory
+from civ_agent.monitoring import MonitorStore, path_for
+from civ_agent.tls import write_private_json
 from civ_agent.watch_state import WatchReader
+from tests.native_watch_fixtures import base_history, fixture, history, memory, persistent_files, publish, task
 
 
 def put_state(root, key, value):
-    MonitorStore(path_for(root)).put("state", key, value)
-
-
-def put_history(root, name, turn, job, values):
-    log = EventHistory(path_for(root), "g1", name, job, game_turn=turn)
-    log.append(values)
-
-
-def append_events(root, values):
-    put_history(root, "Rome", 2, "job2", values)
-
-
-def put_source(root, value):
-    MonitorStore(path_for(root)).put("streams", record_key("g1", "Rome", "job2"), value)
-
-
-def event(sequence, kind, **data):
-    return {"sequence": sequence, "time": f"2026-09-21T12:00:{sequence:02d}+00:00", "kind": kind, "data": data}
-
-
-def fixture(root) -> tuple[JsonObject, list[JsonObject]]:
-    usage = {"input_tokens": 2000, "cached_input_tokens": 1500, "output_tokens": 100, "reasoning_output_tokens": 20}
-    records: list[JsonObject] = []
-    for handoff, (name, turn, phase) in enumerate(
-        (("Rome", 1, "ended"), ("Greece", 1, "ended"), ("Rome", 2, "active"))
-    ):
-        job = f"job{handoff}"
-        put_history(
-            root,
-            name,
-            turn,
-            job,
-            [
-                event(0, "developer_message", text="Repeated startup context", source="service_startup"),
-                event(1, "assistant_delta", itemId="a", text=f"{name} is "),
-                event(2, "assistant_message", itemId="a", text=f"{name} is expanding."),
-                event(3, "action", itemId="call1", description=f"{name} founded a city on turn {turn}."),
-                event(4, "action", itemId="call1", description="Duplicate action must be hidden"),
-                event(5, "tool_call", itemId="call2", tool="movement_preview", arguments={}),
-                event(6, "tool_result", itemId="call2", result={"structuredContent": {"error": "Stale move"}}),
-            ],
-        )
-        records.append(
-            {
-                "turn": {"epoch": "g1", "civilization": name, "gameTurn": turn, "handoff": handoff, "status": phase},
-                "jobs": [job],
-                "accountingComplete": phase == "ended",
-                "usage": usage,
-                "gameplayElapsedMs": 25000 if phase == "ended" else None,
-                "finalizationElapsedMs": 1500 if phase == "ended" else None,
-                "hostCalls": {"tool:player_command": {"calls": 3}, "command:FOUND_CITY": {"calls": 1}},
-                "modelRequests": 5,
-                "memoryEdits": {
-                    "batches": 2,
-                    "accepted": 3,
-                    "rejected": 1,
-                    "rejectedBatches": 1,
-                    "rejectionReasons": {"SOURCE_NOT_DELIVERED": 1},
-                    "complete": True,
-                },
-            }
-        )
-    run = {
-        "epoch": "g1",
-        "status": "running",
-        "sessions": {
-            "Rome": {"effectiveSettings": {"provider": "openai", "model": "gpt-6-luna", "reasoningEffort": "high"}},
-            "Greece": {
-                "effectiveSettings": {
-                    "provider": "openrouter",
-                    "model": "anthropic/claude-sonnet-4.5",
-                    "reasoningEffort": "high",
-                }
-            },
-        },
-        "inFlight": {
-            "civilization": "Rome",
-            "gameTurn": 2,
-            "handoff": 2,
-            "activationId": "job2",
-            "agentPhase": "RUNNING",
-        },
-        "pendingFinalizations": [],
-        "usage": usage,
-    }
-    put_state(root, "run", run)
-    for row in records:
-        MonitorStore(path_for(root)).put("turns", "g1/" + str(row["turn"]["handoff"]), row)
-    put_state(
-        root,
-        "result",
-        {
-            "epoch": "g1",
-            "status": "running",
-            "usage": {**usage, "complete": False},
-            "scores": [
-                {"civilization": "Rome", "score": 42, "controller": "AGENT"},
-                {"civilization": "Greece", "score": 38, "controller": "AGENT"},
-                {"civilization": "Egypt", "score": 50, "controller": "BUILT_IN_AI"},
-            ],
-            "players": [
-                {"civilization": "Rome", "usage": usage, "hostCalls": records[-1]["hostCalls"], "modelRequests": 10}
-            ],
-            "hostCalls": records[-1]["hostCalls"],
-            "modelRequests": 15,
-        },
-    )
-    return run, records
-
-
-def test_reader_preserves_accounting_deduplicates_messages_and_never_writes(tmp_path):
-    fixture(tmp_path)
-    before = path_for(tmp_path).read_bytes()
-    reader = WatchReader(tmp_path)
-    view = reader.read()
-    assert view.players == ["Rome", "Greece", "Egypt"]
-    assert len(view.turns) == 3 and not view.errors
-    latest = view.latest_turn("Rome")
-    assert latest is not None and latest["usage"]["cached_input_tokens"] == 1500
-    recent = [entry for entry in view.activity if entry.civilization == "Rome" and entry.turn == 2]
-    assert [e.text for e in recent if e.label == "Assistant"] == ["Rome is expanding."]
-    assert len([e for e in recent if e.label == "Action"]) == 1
-    assert [e for e in recent if e.label == "Developer instructions"][0].verbose
-    assert not [e for e in recent if e.label == "Error"][0].verbose
-    assert reader.read() == view
-    assert before == path_for(tmp_path).read_bytes()
-
-
-def test_uncommitted_events_are_invisible_and_failed_reads_retain_previous_display(tmp_path):
-    fixture(tmp_path)
-    reader = WatchReader(tmp_path)
-    original = reader.read()
-    store = MonitorStore(path_for(tmp_path))
-    key = record_key("g1", "Rome", "job2")
-    with store.engine.connect() as writer, writer.begin() as transaction:
-        put_record(
-            writer,
-            "events",
-            record_key(key, 7),
-            event(7, "assistant_message", itemId="b", text="New decision"),
-            epoch="g1",
-            civilization="Rome",
-            activation="job2",
-            sequence=7,
-        )
-        assert reader.read().activity == original.activity
-        transaction.rollback()
-    assert reader.read().activity == original.activity
-    append_events(tmp_path, [event(7, "assistant_message", itemId="b", text="New decision")])
-    updated = reader.read()
-    assert any(e.text == "New decision" for e in updated.activity)
-    store.put(
-        "events",
-        record_key(key, 8),
-        {"sequence": 8, "kind": "assistant_message", "data": None},
-        epoch="g1",
-        civilization="Rome",
-        activation="job2",
-        sequence=8,
-    )
-    failed = reader.read()
-    assert failed.errors and failed.activity == updated.activity
-
-
-def test_old_epoch_and_other_players_history_are_not_mixed(tmp_path):
-    run, records = fixture(tmp_path)
-    reader = WatchReader(tmp_path)
-    past = reader.read(("Rome", 1))
-    assert all(e.civilization == "Rome" and e.turn == 1 for e in past.activity)
-    put_state(tmp_path, "run", {**run, "epoch": "g2"})
-    view = reader.read()
-    assert view.result == {} and view.turns == () and view.activity == ()
-    assert len(view.errors) >= 1
-    put_state(tmp_path, "run", run)
-    put_source(tmp_path, {"epoch": "g1", "civilization": "Greece", "gameTurn": 2, "activationId": "job2"})
-    view = reader.read(("Rome", 2))
-    assert view.activity == () and view.errors
-
-
-def test_chunked_startup_is_hidden_and_control_sequences_are_inert(tmp_path):
-    fixture(tmp_path)
-    payload = json.dumps({"source": "service_startup", "text": "Private repeated preload"})
-    put_history(
-        tmp_path,
-        "Rome",
-        2,
-        "chunked",
-        [
-            event(0, "developer_message", encoding="json", chunkIndex=0, chunkCount=2, text=payload[:20]),
-            event(1, "developer_message", encoding="json", chunkIndex=1, chunkCount=2, text=payload[20:]),
-            event(2, "assistant_message", itemId="visible", text="[bold]literal[/bold]\x1b[2J safe"),
-        ],
-    )
-    put_state(
-        tmp_path, "run", {"epoch": "g1", "inFlight": {"civilization": "Rome", "gameTurn": 2, "activationId": "chunked"}}
-    )
-    with MonitorStore(path_for(tmp_path)).engine.begin() as db:
-        db.execute(table.delete().where(table.c.collection == "turns"))
-    view = WatchReader(tmp_path).read(("Rome", 2))
-    assert view.activity[0].verbose and view.activity[0].text == "Private repeated preload"
-    assert view.activity[1].text == "[bold]literal[/bold] safe"
+    assert key == "diplomacy", "Native watch never consumes scheduler state.run"
+    publish(root, "state", key, value, epoch=value["epoch"])
 
 
 def log_text(app):
     return "\n".join(line.text for line in app.query_one("#activity", RichLog).lines)
 
 
-def test_dashboard_shows_review_wait_before_gameplay_starts(tmp_path):
-    run, _ = fixture(tmp_path)
-    flight = run.pop("inFlight")
-    run["reviewPhase"] = {
-        "civilizations": ["Rome", "Greece"],
-        "gameTurn": 2,
-        "reviewTurn": 1,
-        "stage": "Reviewing",
-    }
-    put_state(tmp_path, "run", run)
-
-    async def check():
-        app = match_watch.MatchWatch(tmp_path, refresh=60)
-        async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            assert "Shared review after round 1" in str(app.query_one("#status", Static).render())
-            assert str(app.query_one("#players", DataTable).get_row("Rome")[1]) == "Reviewing"
-            run.pop("reviewPhase")
-            run["inFlight"] = flight
-            put_state(tmp_path, "run", run)
-            await app.poll_records()
-            await pilot.pause()
-            assert "Shared review" not in str(app.query_one("#status", Static).render())
-            assert str(app.query_one("#players", DataTable).get_row("Rome")[1]) == "Running"
-
-    asyncio.run(check())
+def test_reader_uses_native_accounting_and_public_sdk_history_without_writes(tmp_path):
+    fixture(tmp_path)
+    base_history(tmp_path)
+    files = persistent_files(tmp_path)
+    reader = WatchReader(tmp_path)
+    view = reader.read()
+    assert not view.errors and view.players == ["Rome", "Greece", "Egypt"]
+    latest = view.latest_turn("Rome")
+    assert latest is not None and len(view.turns) == 3 and latest["turn"]["gameTurn"] == 2
+    assert view.result["usage"]["cached_input_tokens"] == 192
+    assert [entry.text for entry in view.activity if entry.label == "Assistant"] == [
+        "Greece is expanding.",
+        "Rome is expanding.",
+    ]
+    assert any(entry.verbose and entry.label == "Developer instructions" for entry in view.activity)
+    assert reader.read() == view
+    assert files == persistent_files(tmp_path)
 
 
-def test_dashboard_model_warning_clears_on_recovery_and_stays_in_history(tmp_path):
-    run, _ = fixture(tmp_path)
-    notice = {
-        "state": "retrying",
-        "message": "Model connection idle timeout; retrying (1/5).",
-        "elapsedSeconds": 301,
-    }
-    run["inFlight"]["modelStatus"] = notice
-    put_state(tmp_path, "run", run)
-    append_events(tmp_path, [event(7, "model_status", **notice)])
-
-    async def check():
-        app = match_watch.MatchWatch(tmp_path, refresh=60)
-        async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            assert "retrying (1/5)" in str(app.query_one("#status", Static).render())
-            assert "301s" in str(app.query_one("#status", Static).render())
-            assert str(app.query_one("#players", DataTable).get_row("Rome")[1]) == "Model retrying"
-            assert "idle timeout" in log_text(app)
-            resumed = {"state": "responding", "message": "Model response resumed after 315s without progress."}
-            run["inFlight"]["modelStatus"] = resumed
-            put_state(tmp_path, "run", run)
-            append_events(tmp_path, [event(8, "model_status", **resumed)])
-            await app.poll_records()
-            await pilot.pause()
-            assert "retrying" not in str(app.query_one("#status", Static).render())
-            assert str(app.query_one("#players", DataTable).get_row("Rome")[1]) == "Running"
-            assert "idle timeout" in log_text(app) and "resumed after 315s" in log_text(app)
-
-    asyncio.run(check())
-
-
-def test_dashboard_distinguishes_negotiation_suspension_from_model_stall(tmp_path):
-    run, _ = fixture(tmp_path)
-    run["inFlight"].update(
-        negotiationWait={"state": "waiting"},
-        modelStatus={"state": "waiting", "message": "No model progress", "elapsedSeconds": 301},
+def test_selection_and_sdk_inherited_messages_preserve_exact_run_origin(tmp_path):
+    fixture(tmp_path)
+    prepared = task(tmp_path)
+    first = ModelResponse([TextPart("Original decision")], run_id="first")
+    asyncio.run(history(tmp_path, prepared, run_id="first", messages=[first]))
+    asyncio.run(
+        history(
+            tmp_path,
+            prepared,
+            run_id="second",
+            messages=[first, ModelResponse([TextPart("Corrected decision")], run_id="second")],
+        )
     )
-    put_state(tmp_path, "run", run)
-
-    async def check():
-        app = match_watch.MatchWatch(tmp_path, refresh=60)
-        async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            assert "No model progress" not in str(app.query_one("#status", Static).render())
-            assert str(app.query_one("#players", DataTable).get_row("Rome")[1]) == "Negotiating (model suspended)"
-            run["inFlight"].pop("negotiationWait")
-            run["inFlight"].pop("modelStatus")
-            put_state(tmp_path, "run", run)
-            await app.poll_records()
-            await pilot.pause()
-            assert str(app.query_one("#players", DataTable).get_row("Rome")[1]) == "Running"
-
-    asyncio.run(check())
+    base_history(tmp_path)
+    view = WatchReader(tmp_path).read(("Rome", 2))
+    assert sum(entry.text == "Original decision" for entry in view.activity) == 1
+    assert sum(entry.text == "Corrected decision" for entry in view.activity) == 1
+    assert all(entry.civilization == "Rome" and entry.turn == 2 for entry in view.activity)
 
 
-def test_dashboard_shows_quota_retry_countdown_and_clears_on_recovery(tmp_path, monkeypatch):
-    from civ_agent.tls import write_private_json
-
-    run, _ = fixture(tmp_path)
-    run["status"] = "paused"
-    run["inFlight"].update(agentPhase="FAILED", modelStatus={"state": "failed", "reason": "usageLimitExceeded"})
-    put_state(tmp_path, "run", run)
-    now = [1000]
-    monkeypatch.setattr(match_watch.time, "time", lambda: now[0])
-    write_private_json(
-        tmp_path / "container-status.json",
-        {
-            "status": "retrying",
-            "recovery": {"reason": "usageLimitExceeded", "civilization": "Rome", "attempt": 6, "nextRetryAt": 1300},
-        },
+def test_native_sdk_feedback_is_visible_even_when_original_command_arguments_are_invalid(tmp_path):
+    fixture(tmp_path)
+    prepared = task(tmp_path)
+    asyncio.run(
+        history(
+            tmp_path,
+            prepared,
+            run_id="correction",
+            messages=[
+                ModelResponse(
+                    [ToolCallPart("execute_commands", "{invalid JSON", tool_call_id="invalid")],
+                    run_id="correction",
+                ),
+                ModelRequest(
+                    [
+                        ToolReturnPart(
+                            "execute_commands",
+                            "Supply canonical command arguments.",
+                            tool_call_id="invalid",
+                            outcome="retried",
+                            retry=RetryInfo(cause="validation_error", attempt=1, max_retries=1),
+                        ),
+                        RetryFeedbackPart("Return the required output.", retry=RetryInfo(cause="model_retry")),
+                    ],
+                    run_id="correction",
+                ),
+            ],
+        )
     )
+    view = WatchReader(tmp_path).read(("Rome", 2))
+    assert not view.errors
+    assert any(entry.label == "Command request" and "validation" in entry.text for entry in view.activity)
+    corrections = [entry for entry in view.activity if entry.label == "Correction"]
+    assert len(corrections) == 2 and all(not entry.verbose for entry in corrections)
 
-    async def check():
+
+def test_uncommitted_native_rows_are_invisible_and_storage_failure_keeps_same_epoch_metrics(tmp_path):
+    fixture(tmp_path)
+    reader = WatchReader(tmp_path)
+    before = reader.read()
+    store = MonitorStore(path_for(tmp_path))
+    with store.engine.connect() as db, db.begin() as transaction:
+        db.exec_driver_sql("UPDATE monitor_records SET payload='not json' WHERE collection='turns'")
+        assert reader.read() == before
+        transaction.commit()
+    failed = reader.read()
+    assert failed.errors and failed.turns == before.turns
+    store.engine.dispose()
+
+
+def test_legacy_scheduler_rows_and_other_epoch_histories_are_not_a_fallback(tmp_path):
+    publish(tmp_path, "state", "run", {"epoch": "old", "status": "running", "private": "old scheduler"})
+    assert WatchReader(tmp_path).read().run == {}
+    request, status = fixture(tmp_path)
+    base_history(tmp_path)
+    reader = WatchReader(tmp_path)
+    assert reader.read().activity
+    request = request.model_copy(update={"authority": request.authority.model_copy(update={"epoch": "next"})})
+    write_private_json(tmp_path / "native-runtime/game.json", request.model_dump(mode="json"))
+    changed = reader.read()
+    assert changed.epoch == "next" and changed.activity == () and changed.result == {} and changed.errors
+    assert "old scheduler" not in str(changed)
+
+
+def test_literal_sdk_content_is_inert_and_multimodal_data_not_stringified(tmp_path):
+    fixture(tmp_path)
+    prepared = task(tmp_path)
+    messages = [
+        ModelRequest(
+            [UserPromptPart(["Visible caption", BinaryContent(data=b"PRIVATE IMAGE BYTES", media_type="image/png")])],
+            run_id="media",
+        ),
+        ModelResponse([TextPart("[bold]literal[/bold]\x1b[2J safe")], run_id="media"),
+    ]
+    asyncio.run(history(tmp_path, prepared, run_id="media", messages=messages))
+    view = WatchReader(tmp_path).read()
+    entry = next(entry for entry in view.activity if entry.label == "Assistant")
+    assert entry.text == "[bold]literal[/bold] safe"
+    assert "Visible caption" in str(view.activity) and "PRIVATE IMAGE BYTES" not in str(view.activity)
+    assert "UFJJVkFURSBJTUFHRSBCWVRFUw==" not in str(view.activity)
+
+
+def test_corrupt_native_sdk_database_is_bounded_and_does_not_drop_real_accounting(tmp_path):
+    from civ_agent.player_paths import ManagedPlayerPaths
+
+    fixture(tmp_path)
+    prepared = task(tmp_path)
+    asyncio.run(history(tmp_path, prepared))
+    paths = ManagedPlayerPaths(tmp_path, 0, "Rome")
+    (paths.store / "agent-steps.sqlite3").write_bytes(b"PRIVATE malformed sqlite")
+    view = WatchReader(tmp_path).read()
+    assert view.errors and len(view.turns) == 3 and view.result["modelRequests"] == 64
+    assert "PRIVATE" not in str(view.errors) and view.activity == ()
+
+
+def test_prepared_native_effort_is_distinct_from_frozen_operator_default(tmp_path):
+    fixture(tmp_path)
+    prepared = task(tmp_path)
+    prepared = prepared.model_copy(
+        update={"selection": prepared.selection.model_copy(update={"reasoning_effort": "low"})}
+    )
+    state = memory(tmp_path)
+    with state.transaction() as db:
+        record = state._meta(db, "nativeTurn:ticket-Rome-2")
+        record["requests"]["gameplay:0"] = prepared.model_dump(mode="json")
+        state._set(db, "nativeTurn:ticket-Rome-2", record)
+    state.engine.dispose()
+    view = WatchReader(tmp_path).read()
+    assert view.run["sessions"]["Rome"]["configuredSettings"]["reasoningEffort"] == "medium"
+    assert view.run["inFlight"]["effectiveSettings"]["reasoningEffort"] == "low"
+
+
+def test_native_command_requests_and_recorded_receipt_status_remain_visible_in_concise_feed(tmp_path):
+    fixture(tmp_path)
+    prepared = task(tmp_path)
+    messages = [
+        ModelResponse(
+            [
+                ToolCallPart(
+                    "execute_commands",
+                    {"commands": [{"kind": "MOVE_UNIT", "unit": "private-detail"}]},
+                    tool_call_id="command",
+                )
+            ],
+            run_id="commands",
+            timestamp=datetime(2026, 11, 5, 12, tzinfo=UTC),
+        ),
+        ModelRequest(
+            [
+                ToolReturnPart(
+                    "execute_commands",
+                    {"receipts": [{"status": "confirmed"}, {"status": "unexecuted"}]},
+                    tool_call_id="command",
+                )
+            ],
+            run_id="commands",
+        ),
+    ]
+    asyncio.run(history(tmp_path, prepared, run_id="commands", messages=messages))
+    concise = [entry for entry in WatchReader(tmp_path).read().activity if not entry.verbose]
+    assert [(entry.label, entry.text) for entry in concise] == [
+        ("Command request", "MOVE_UNIT"),
+        ("Command receipts", "1 confirmed · 1 unexecuted"),
+    ]
+    assert "private-detail" not in str(concise)
+
+
+def test_dashboard_native_metrics_navigation_freeze_and_quit(tmp_path):
+    request, status = fixture(tmp_path)
+    base_history(tmp_path)
+
+    async def run():
         app = match_watch.MatchWatch(tmp_path, refresh=60)
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
-            banner = str(app.query_one("#status", Static).render())
-            assert "Quota exhausted" in banner and "5m 00s" in banner and "Attempt 6" in banner
-            assert str(app.query_one("#players", DataTable).get_row("Rome")[1]) == "Quota exhausted"
-            now[0] += 120
-            await app.poll_records()
-            await pilot.pause()
-            assert "3m 00s" in str(app.query_one("#status", Static).render())
-            run["status"] = "running"
-            run["inFlight"].update(agentPhase="RUNNING", modelStatus=None)
-            put_state(tmp_path, "run", run)
-            write_private_json(tmp_path / "container-status.json", {"status": "running"})
-            await app.poll_records()
-            await pilot.pause()
-            assert "Quota exhausted" not in str(app.query_one("#status", Static).render())
-            assert str(app.query_one("#players", DataTable).get_row("Rome")[1]) == "Running"
-
-    asyncio.run(check())
-
-
-def test_dashboard_navigation_live_refresh_freeze_and_quit(tmp_path):
-    run, _ = fixture(tmp_path)
-    run["pendingFinalizations"] = [{"civilization": "Greece", "gameTurn": 1, "activationId": "job1"}]
-    put_state(tmp_path, "run", run)
-    before = path_for(tmp_path).read_bytes()
-
-    async def check():
-        app = match_watch.MatchWatch(tmp_path, refresh=60)
-        async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            players = app.query_one("#players", DataTable)
-            assert players.row_count == 3
-            assert str(players.get_row("Rome")[0]) == "Rome · gpt-6-luna"
-            assert str(players.get_row("Greece")[0]) == "Greece · anthropic/claude-sonnet-4.5"
-            assert str(players.get_row("Egypt")[0]) == "Egypt"
-            assert str(players.get_row("Rome")[-1]) == "3"  # Command breakdown is not counted twice.
-            assert str(players.get_row("Egypt")[1]) == "Built-in AI"
-            assert str(players.get_row("Greece")[1]) == "Bookkeeping"
-            assert "Repeated startup context" not in log_text(app)
-            assert "Stale move" in log_text(app)
-            players.focus()
-            await pilot.press("enter")
-            assert app.civilization == "Rome"
-            assert "Greece is expanding" not in log_text(app)
-            await pilot.press("v")
-            assert "Repeated startup context" in log_text(app)
-            await pilot.press("v", "space")
-            assert app.frozen
-            put_state(tmp_path, "run", {"epoch": "g1", "status": "paused", "reason": "Operator paused"})
+            table = app.query_one("#players", DataTable)
+            assert table.row_count == 3 and "gpt-6-luna" in str(table.get_row("Rome")[0])
+            assert str(table.get_row("Egypt")[1]) == "Built-in AI"
+            assert "Repeated startup" not in log_text(app) and "Rome is expanding" in log_text(app)
+            table.focus()
+            await pilot.press("enter", "v")
+            assert app.civilization == "Rome" and "Greece is expanding" not in log_text(app)
+            assert "Repeated startup" in log_text(app) and "Stale move" in log_text(app)
+            await pilot.press("space")
+            write_private_json(
+                tmp_path / "native-runtime/status.json",
+                status.model_copy(update={"mode": "PAUSED", "phase": "PAUSED", "quiesced": True}).model_dump(
+                    mode="json"
+                ),
+            )
             await app.poll_records()
             assert app.snapshot.run["status"] == "running"
-            await pilot.press("space")
-            assert app.snapshot.run["status"] == "paused"
-            tabs = app.query_one("#main-tabs", TabbedContent)
-            assert [
-                pane.id for pane in tabs.query("TabPane") if pane.parent is tabs.get_pane("activity-tab").parent
-            ] == ["activity-tab", "diplomacy-tab", "strategy-tab", "economy-tab", "military-tab"]
-            assert not app.query("#turns") and not app.query("#calls")
-            await pilot.press("l", "a")
-            assert app.civilization is None
-            log = app.query_one("#activity", RichLog)
-            log.scroll_end(animate=False)
-            await pilot.pause()
+            await pilot.press("space", "a")
+            assert app.snapshot.run["status"] == "paused" and app.civilization is None
             await pilot.resize_terminal(80, 24)
             await pilot.pause()
-            assert log.size.height >= 4 and log.is_vertical_scroll_end
-            log.scroll_home(animate=False)
-            await pilot.pause()
-            append_events(tmp_path, [event(7, "assistant_message", itemId="last", text="Latest action")])
-            await app.poll_records()
-            await pilot.pause()
-            assert log.scroll_y == 0  # Refresh does not pull the reader away from older text.
+            assert app.query_one("#activity", RichLog).size.height >= 4
+            tabs = app.query_one("#main-tabs", TabbedContent)
+            assert tabs.active == "activity-tab"
             await pilot.press("q")
         assert app.return_code == 0
 
-    asyncio.run(check())
-    assert path_for(tmp_path).read_bytes() != before
-    assert not list(tmp_path.rglob("*.jsonl")) and not list(tmp_path.rglob("*.md"))
+    asyncio.run(run())
 
 
-def test_dashboard_shows_selected_effort_and_pending_without_substituting_default(tmp_path):
-    run, _ = fixture(tmp_path)
-    run["sessions"]["Rome"]["configuredSettings"] = {
-        "provider": "openai",
-        "model": "gpt-6-luna",
-        "reasoningEffort": "medium",
-    }
-    run["inFlight"]["effectiveSettings"] = {"provider": "openai", "model": "gpt-6-luna", "reasoningEffort": "low"}
-    put_state(tmp_path, "run", run)
+def test_dashboard_current_native_failure_is_bounded_typed_notice(tmp_path):
+    from civ_agent.orchestration.contracts import ModelFailure, Scope
 
-    async def check():
-        app = match_watch.MatchWatch(tmp_path, refresh=60)
-        async with app.run_test(size=(140, 40)) as pilot:
-            await pilot.pause()
-            row = app.query_one("#players", DataTable).get_row("Rome")
-            assert str(row[2]) == "low (default medium)"
-            assert "Effort low (default medium)" in str(app.query_one("#status", Static).render())
-            run["inFlight"].pop("effectiveSettings")
-            run["inFlight"]["agentPhase"] = "STARTING"
-            put_state(tmp_path, "run", run)
-            await app.poll_records()
-            await pilot.pause()
-            assert str(app.query_one("#players", DataTable).get_row("Rome")[2]) == "pending (default medium)"
-
-    asyncio.run(check())
-
-
-def test_empty_and_completed_matches(tmp_path):
-    async def check():
-        app = match_watch.MatchWatch(tmp_path, refresh=60)
-        async with app.run_test(size=(80, 24)) as pilot:
-            assert app.snapshot.players == []
-            put_state(
-                tmp_path,
-                "result",
-                {
-                    "epoch": "g1",
-                    "status": "completed",
-                    "result": {"winner": "Egypt", "victoryType": "Time"},
-                    "scores": [{"civilization": "Egypt", "score": 999, "controller": "BUILT_IN_AI"}],
-                },
-            )
-            await app.poll_records()
-            assert str(app.query_one("#players", DataTable).get_row("Egypt")[4]) == "999"
-            assert "Winner: Egypt" in str(app.query_one("#status", Static).render())
-            await pilot.press("q")
-
-    asyncio.run(check())
-
-
-@pytest.mark.parametrize("individually_resumed", [False, True])
-def test_batch_dashboard_switches_games(tmp_path, individually_resumed):
-    batch = tmp_path / "batch"
-    first, second = batch / "games/g0001", batch / "games/g0002"
-    first.mkdir(parents=True)
-    second.mkdir(parents=True)
-    fixture(first)
-    second_run, _ = fixture(second)
-    second_run.update(status="paused", reason="Capacity recovery")
-    put_state(second, "run", second_run)
-    (batch / "batch.json").write_text(
-        json.dumps(
-            {
-                "format": 2,
-                "parallel": 2,
-                "runs": [
-                    {"id": "g0001", "status": "paused" if individually_resumed else "running"},
-                    {"id": "g0002", "status": "paused"},
-                ],
-            }
-        )
+    _, status = fixture(tmp_path)
+    task(tmp_path)
+    failure = ModelFailure(
+        scope=Scope(game="game", player="p0", epoch="g1", activation="role"),
+        run_id="same-sdk",
+        model_step=1,
+        attempt=1,
+        category="quota",
+        dispatch="rejected",
+        retry_mode="automatic",
     )
-    if individually_resumed:
-        (first / "container-status.json").write_text(json.dumps({"status": "running"}))
+    write_private_json(
+        tmp_path / "native-runtime/status.json",
+        status.model_copy(update={"model_failures": [failure]}).model_dump(mode="json"),
+    )
 
-    async def check():
-        app = match_watch.MatchWatch(batch, refresh=60)
+    async def run():
+        app = match_watch.MatchWatch(tmp_path, refresh=60)
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
-            assert app.game_id == "g0001"
-            assert "g0001 running" in str(app.query_one("#game-switcher", Static).render())
-            await pilot.press("right_square_bracket")
-            await pilot.pause()
-            assert app.game_id == "g0002" and app.snapshot.run["status"] == "paused"
-            assert "[2/2] g0002" in app.sub_title
-            await pilot.press("right_square_bracket")
-            await pilot.pause()
-            assert app.game_id == "g0001"
-            await pilot.press("left_square_bracket")
-            await pilot.pause()
-            assert app.game_id == "g0002"
+            assert "quota · automatic recovery" in str(app.query_one("#status", Static).render())
+            assert str(app.query_one("#players", DataTable).get_row("Rome")[1]) == "Model retrying"
+            write_private_json(tmp_path / "native-runtime/status.json", status.model_dump(mode="json"))
+            await app.poll_records()
+            assert "automatic recovery" not in str(app.query_one("#status", Static).render())
 
-    asyncio.run(check())
+    asyncio.run(run())
 
 
 def test_watch_cli_dispatch_and_nonterminal_error(tmp_path, monkeypatch, capsys):
@@ -514,57 +298,32 @@ def test_watch_cli_dispatch_and_nonterminal_error(tmp_path, monkeypatch, capsys)
     monkeypatch.undo()
     monkeypatch.setattr(match_watch.sys.stdin, "isatty", lambda: False)
     assert match_watch.run(match_watch.parser().parse_args(["--state-dir", str(tmp_path)])) == 2
-    assert "interactive terminal" in capsys.readouterr().err
-    assert list(tmp_path.iterdir()) == []
+    assert "interactive terminal" in capsys.readouterr().err and list(tmp_path.iterdir()) == []
 
 
 def test_batch_manifest_rejects_duplicate_or_unsafe_game_ids(tmp_path):
     manifest = tmp_path / "batch.json"
-    manifest.write_text(json.dumps({"format": 2, "runs": [{"id": "g0001"}, {"id": "g0001"}]}))
-    with pytest.raises(ValueError, match="Invalid game ID"):
-        match_watch.game_directories(tmp_path)
-    manifest.write_text(json.dumps({"format": 2, "runs": [{"id": "../other"}]}))
-    with pytest.raises(ValueError, match="Invalid game ID"):
-        match_watch.game_directories(tmp_path)
+    for values in (["g0001", "g0001"], ["../other"]):
+        manifest.write_text(json.dumps({"format": 2, "runs": [{"id": value} for value in values]}))
+        with pytest.raises(ValueError, match="Invalid game ID"):
+            match_watch.game_directories(tmp_path)
 
 
-def test_local_dashboard_can_view_a_container_game_without_starting_containers(tmp_path, monkeypatch):
+def test_local_dashboard_can_view_container_game_without_starting_containers(tmp_path, monkeypatch):
     manifest = tmp_path / "container.json"
-    manifest.write_text(json.dumps({"images": {"runtime": "sha256:pinned"}}))
+    manifest.write_text(
+        json.dumps({"format": 2, "runtime": "pydantic-local-v1", "images": {"runtime": "sha256:pinned"}})
+    )
     original = manifest.read_bytes()
     monkeypatch.setattr(container_support, "IN_CONTAINER", False)
-    mounts = Mock(return_value=[])
+    mounts, launch, viewer = Mock(return_value=[]), Mock(return_value=7), Mock()
     monkeypatch.setattr(container_support, "watch_mounts", mounts)
-    launch = Mock(return_value=7)
     monkeypatch.setattr(subprocess, "call", launch)
-    viewer = Mock()
     monkeypatch.setattr(match_watch, "MatchWatch", viewer)
     monkeypatch.setattr(match_watch.sys.stdin, "isatty", lambda: True)
     monkeypatch.setattr(match_watch.sys.stdout, "isatty", lambda: True)
-    arguments = ["match", "watch", "--state-dir", str(tmp_path), "--verbose"]
-
-    assert cli.main(arguments) == 7
+    assert cli.main(["match", "watch", "--state-dir", str(tmp_path), "--verbose"]) == 7
     assert launch.call_args.args[0][-3:] == ["sha256:pinned", "watch", "--verbose"]
-    viewer.assert_not_called()
-    launch.reset_mock()
-    mounts.reset_mock()
-
-    assert cli.main([*arguments, "--local"]) == 0
-    viewer.assert_called_once_with(tmp_path.resolve(), verbose=True)
+    assert cli.main(["match", "watch", "--state-dir", str(tmp_path), "--local"]) == 0
     viewer.return_value.run.assert_called_once_with()
-    launch.assert_not_called()
-    mounts.assert_not_called()
     assert manifest.read_bytes() == original
-    assert list(tmp_path.iterdir()) == [manifest]
-
-    batch = tmp_path / "batch"
-    batch.mkdir()
-    (batch / "batch.json").write_text(json.dumps({"format": 2, "runs": [{"id": "g0001"}]}))
-    (batch / "container.json").write_text(json.dumps({"images": None}))
-    viewer.reset_mock()
-
-    assert cli.main(["match", "watch", "--state-dir", str(batch)]) == 0
-    viewer.assert_called_once_with(batch.resolve(), verbose=False)
-    viewer.return_value.run.assert_called_once_with()
-    launch.assert_not_called()
-    mounts.assert_not_called()

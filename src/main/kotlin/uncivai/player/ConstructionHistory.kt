@@ -59,9 +59,11 @@ internal fun observeConstructionChoice(city: City, options: List<String>, state:
 }
 
 internal fun recordConstructionSelection(city: City, before: TurnCity, request: TurnCommandRequest, state: TurnSessionState) {
+    state.constructionQueues.remove(city.id)
     val selections = state.constructionSelections[city.id].orEmpty().toMutableList()
     when (request.kind) {
-        TurnCommandKind.QUEUE_CONSTRUCTION -> selections.add(
+        TurnCommandKind.QUEUE_CONSTRUCTION, TurnCommandKind.START_CONSTRUCTION -> selections.add(
+            if (request.kind == TurnCommandKind.START_CONSTRUCTION) 0 else selections.size,
             ConstructionSelection(
                 checkNotNull(request.selection),
                 city.civ.gameInfo.turns,
@@ -77,4 +79,20 @@ internal fun recordConstructionSelection(city: City, before: TurnCity, request: 
         else -> return
     }
     state.constructionSelections[city.id] = selections.toList()
+}
+
+@Serializable
+internal data class ConstructionQueueState(val queue: List<String>, val revision: String)
+
+/** Durable queue identity, independent of unrelated native revisions.
+ * Every explicit
+ * queue edit invalidates the identity, including permutations of equal units.
+ */
+internal fun observeConstructionQueueRevision(city: City, state: TurnSessionState): String {
+    val queue = city.cityConstructions.constructionQueue.toList()
+    val prior = state.constructionQueues[city.id]
+    if (prior != null && prior.queue == queue) return prior.revision
+    val revision = java.util.UUID.randomUUID().toString()
+    state.constructionQueues[city.id] = ConstructionQueueState(queue, revision)
+    return revision
 }

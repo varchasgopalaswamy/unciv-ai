@@ -68,10 +68,6 @@ complete desktop/API parity.
   becoming a native-state dependency; independent hostile choices remain legal
   after social consent; native peace still invalidates stale attacks.
 
-The earlier live war and lifecycle reports record the rules in force when those
-runs happened. The [September 19 social-promise live exercise](../archive/reports/Social-promises-live-results.md)
-separately verified advisory delivery, player discussion, war with unchanged
-social consent, visibility and restart recovery over three complete rounds.
 It included no unit attacks or city bombardments; those remain scripted checks.
 
 Validation on September 19, 2026:

@@ -261,42 +261,38 @@ def test_batch_results_and_status_attribute_civilizations_to_named_players(tmp_p
 
 def test_dashboard_mounts_follow_assigned_agent_civilizations(tmp_path):
     from civ_agent.container_support import mount, watch_mounts
-    from civ_agent.tls import write_private_json
-    from civ_agent.turn_archive import civilization_directory_name
+    from civ_agent.player_paths import PlayerPaths
+    from civ_agent.tls import private_directory, write_private_json
 
     config = GameConfig(game={"map_seed": 42, "randomize": True, "assignment_seed": 7}).resolved()
     write_private_json(tmp_path / "resolved.json", config.model_dump())
+    # Pending games do not gain misleading empty service directories on watch.
+    assert watch_mounts(tmp_path) == mount(tmp_path, "/match")
+    private_directory(tmp_path / "runner")
+    for index, player in enumerate(config.agent_players):
+        PlayerPaths(tmp_path, index, player.civilization).prepare()
     arguments = watch_mounts(tmp_path)
-    assert arguments[:2] == mount(tmp_path, "/match")  # The overall game remains read-only.
-    for player in config.assigned_players:
-        directory = tmp_path / "agent-services" / civilization_directory_name(player.civilization)
-        for name in ("civilization", "telemetry"):
-            assert (directory / name).exists() == (player.controller == "agent")
-    assert len(arguments) == 2 * (1 + 2 + 2 * len(config.agent_players))
+    assert arguments[:2] == mount(tmp_path, "/match")
+    assert not any(":rw," in argument for argument in arguments)
+    assert len(arguments) == 2
 
 
-def test_saved_config_and_images_survive_input_edits_and_relocation(tmp_path, monkeypatch):
-    root = tmp_path / "original"
-    source = tmp_path / "game.toml"
-    source.write_text('[game]\nmap_seed=19\nrandomize=true\n[agents]\nmodel="original-model"')
-    config = load_config(source).resolved()
+def test_single_game_and_batch_previews_accept_phoenix_config(tmp_path, monkeypatch, capsys):
+    from civ_agent.commands import batch
+
+    inputs = tmp_path / "inputs"
+    inputs.mkdir()
+    source = inputs / "game.toml"
+    source.write_text('[runtime.tracing]\nlocal=true\nendpoint="http://phoenix:6006/v1/traces"\n')
     monkeypatch.setattr(game, "resolve_image", lambda _: "sha256:fixed")
-    monkeypatch.setattr(game, "validate_setup", lambda *_: {"maxTurns": 500})
-    record = game.initialize(root, config, tmp_path / "auth", original=source)
-    assert config.limits.max_turns == 501
-    source.write_text('[agents]\nmodel="changed-model"')
-    moved = tmp_path / "moved"
-    root.rename(moved)
-    restored = game.resume_configuration(moved, options(moved, action="resume"))
-    assert restored.assignments == config.assignments
-    assert restored.game.assignment_seed == config.game.assignment_seed
-    assert restored.agents.model == "original-model"
-    assert identity(moved)["id"] == record["id"]
-    assert identity(moved)["images"]["runtime"] == "sha256:fixed"
-    with pytest.raises(ValueError, match="decrease"):
-        game.resume_configuration(moved, options(moved, "--max-turns", "3", action="resume"))
-    with pytest.raises(ContainerError, match="saved game"):
-        game.initialize(moved, restored, tmp_path / "auth")
+    monkeypatch.setattr(game, "validate_setup", lambda *_: {"maxTurns": 330})
+    assert game.run(options(tmp_path / "match", "--config", str(source), "--dry-run")) == 0
+    single = json.loads(capsys.readouterr().out)
+    preview = json.loads(json.dumps(batch._preview(batch._resolved_inputs(inputs), 1)))
+    expected = {"local": True, "endpoint": "http://phoenix:6006/v1/traces"}
+    assert single["config"]["runtime"]["tracing"] == expected
+    assert preview["inputs"][0]["config"]["runtime"]["tracing"] == expected
+    assert not (tmp_path / "match").exists()
 
 
 def test_supervisor_lock_prevents_second_owner(tmp_path):
@@ -400,200 +396,85 @@ def test_interrupted_batch_initialization_resumes_frozen_queue(tmp_path, monkeyp
 
 
 def test_budget_exhaustion_is_distinct_from_a_resumable_operator_pause(tmp_path, monkeypatch):
+    from civ_agent import container_supervisor as supervisor
     from civ_agent.container_supervisor import GameRun
+    from civ_agent.container_support import ContainerService
     from civ_agent.tls import write_private_json
 
     config = GameConfig().resolved()
     game.initialize(
-        tmp_path / "game", config, tmp_path / "auth", images={"runtime": "fixed"}, validation={"maxTurns": 330}
+        tmp_path / "game",
+        config,
+        tmp_path / "auth",
+        images={"runtime": "sha256:" + "b" * 64},
+        validation={"maxTurns": 330},
     )
     root = tmp_path / "game"
-    write_private_json(
-        root / "runtime.json",
-        {"phase": "stopped", "runner_status": "budget_exhausted", "reason": "Game-turn budget exhausted."},
-    )
     run = GameRun(root)
-    monkeypatch.setattr(run, "setup", lambda: None)
-    monkeypatch.setattr(run, "stop", lambda: None)
-    monkeypatch.setattr(run.stop_event, "wait", lambda _: False)
-    assert run.run() == "budget_exhausted"
-    assert json.loads((root / "container-status.json").read_text())["status"] == "budget_exhausted"
-
-
-def test_terminal_model_capacity_failure_waits_and_resumes_from_checkpoint(tmp_path, monkeypatch):
-    from civ_agent.container_supervisor import GameRun
-    from civ_agent.monitoring import MonitorStore, path_for
-    from civ_agent.tls import write_private_json
-
-    config = GameConfig(limits={"model_capacity_retries": 2, "model_capacity_retry_delay": 17}).resolved()
-    game.initialize(
-        tmp_path / "game", config, tmp_path / "auth", images={"runtime": "fixed"}, validation={"maxTurns": 330}
+    launch = "123456789abc"
+    service = ContainerService(
+        run.controller, "a" * 64, "sha256:" + "b" * 64, run.deployment_id, run.controller + "-" + launch + ".service"
     )
-    root = tmp_path / "game"
-    monitor = MonitorStore(path_for(root))
-    monitor.put(
-        "state",
-        "run",
-        {
-            "status": "paused",
-            "inFlight": {
-                "agentPhase": "FAILED",
-                "modelStatus": {"state": "failed", "reason": "serverOverloaded"},
-            },
-        },
-    )
-    run = GameRun(root)
-    launches = 0
-    waits = []
+    controller = {
+        "Id": service.cid,
+        "Name": run.controller,
+        "Image": service.image,
+        "State": {"Running": True, "StartedAt": "2024-01-01T00:00:00Z"},
+    }
 
     def setup():
-        nonlocal launches
-        launches += 1
+        run.record["launch"] = launch
+        run.names, run.services = [run.controller], [service]
         write_private_json(
             root / "runtime.json",
             {
                 "phase": "stopped",
-                "runner_status": "paused" if launches == 1 else "complete",
-                "reason": "Agent service failed without a confirmed handoff." if launches == 1 else "Game finished.",
+                "launch": launch,
+                "runner_status": "budget_exhausted",
+                "reason": "Game-turn budget exhausted.",
             },
         )
 
-    def wait(seconds):
-        waits.append(seconds)
-        return False
+    def verified(binding):
+        assert binding == service
+        return controller, {"ActiveState": "active"}
 
     monkeypatch.setattr(run, "setup", setup)
-    monkeypatch.setattr(run, "stop", lambda: None)
-    monkeypatch.setattr(run.stop_event, "wait", wait)
-    assert run.run() == "completed"
-    assert launches == 2
-    assert 17 in waits
-
-
-def test_noncapacity_model_failure_stays_paused_without_automatic_retry(tmp_path, monkeypatch):
-    from civ_agent.container_supervisor import GameRun
-    from civ_agent.monitoring import MonitorStore, path_for
-    from civ_agent.tls import write_private_json
-
-    game.initialize(
-        tmp_path / "game",
-        GameConfig().resolved(),
-        tmp_path / "auth",
-        images={"runtime": "fixed"},
-        validation={"maxTurns": 330},
+    stopped = Mock()
+    monkeypatch.setattr(run, "stop", stopped)
+    monkeypatch.setattr(supervisor, "verify_container_service", verified)
+    monkeypatch.setattr(supervisor, "unit_state", lambda unit: {"ActiveState": "active"})
+    monkeypatch.setattr(
+        supervisor,
+        "podman",
+        Mock(side_effect=AssertionError("Current terminal budget must settle before stats or lifecycle operations")),
     )
-    root = tmp_path / "game"
-    MonitorStore(path_for(root)).put(
-        "state",
-        "run",
-        {
-            "status": "paused",
-            "inFlight": {
-                "agentPhase": "FAILED",
-                "modelStatus": {"state": "failed", "reason": "contextWindowExceeded"},
-            },
-        },
-    )
-    run = GameRun(root)
-    write_private_json(
-        root / "runtime.json",
-        {"phase": "stopped", "runner_status": "paused", "reason": "Agent service failed."},
-    )
-    monkeypatch.setattr(run, "setup", lambda: None)
-    monkeypatch.setattr(run, "stop", lambda: None)
     monkeypatch.setattr(run.stop_event, "wait", lambda _: False)
-    assert run.run() == "paused"
+    assert run.run() == "budget_exhausted"
+    assert json.loads((root / "container-status.json").read_text())["status"] == "budget_exhausted"
+    stopped.assert_called_once_with()
 
 
-@pytest.mark.parametrize("source", ["modelStatus", "requestFailure", "quotaFailure"])
-def test_quota_failures_retry_every_five_minutes_without_capacity_retry_limit(tmp_path, monkeypatch, source):
-    from civ_agent import container_supervisor
+@pytest.mark.parametrize("reason", ["serverOverloaded", "usageLimitExceeded"])
+def test_native_pause_does_not_relaunch_from_untyped_provider_reason(tmp_path, monkeypatch, reason):
     from civ_agent.container_supervisor import GameRun
-    from civ_agent.monitoring import MonitorStore, path_for
-
-    root = tmp_path / "game"
-    game.initialize(
-        root,
-        GameConfig(limits={"model_capacity_retries": 0, "model_capacity_retry_delay": 17}).resolved(),
-        tmp_path / "auth",
-        images={"runtime": "fixed"},
-        validation={"maxTurns": 330},
-    )
-    monitor = MonitorStore(path_for(root))
-    run = GameRun(root)
-    launches, retries = [], []
-    monkeypatch.setattr(container_supervisor.time, "time", lambda: 1000)
-
-    def once():
-        launches.append(True)
-        if len(launches) > 7:
-            run.status("completed")
-            return "completed"
-        state = {
-            "status": "paused",
-            "inFlight": {
-                "civilization": "Rome",
-                "agentPhase": "FAILED",
-                source: {"state": "failed", "reason": "usageLimitExceeded"},
-            },
-        }
-        if source == "quotaFailure":
-            state = {
-                "status": "paused",
-                "epoch": "g1",
-                "quotaFailure": {
-                    "reason": "usageLimitExceeded",
-                    "epoch": "g1",
-                    "civilization": "Rome",
-                    "purpose": "review",
-                },
-            }
-        monitor.put("state", "run", state)
-        run.status("paused")
-        return "paused"
-
-    def wait(delay):
-        saved = json.loads((root / "container-status.json").read_text())
-        assert saved["status"] == "retrying"
-        assert saved["recovery"]["nextRetryAt"] == 1300
-        assert saved["recovery"]["civilization"] == "Rome"
-        retries.append((delay, saved["recovery"]["attempt"]))
-        return False
-
-    monkeypatch.setattr(run, "run_once", once)
-    monkeypatch.setattr(run.stop_event, "wait", wait)
-    assert run.run() == "completed"
-    assert retries == [(300, attempt) for attempt in range(1, 8)]
-    assert len(launches) == 8
-    assert json.loads((root / "container-status.json").read_text())["status"] == "completed"
-
-
-def test_operator_can_stop_automatic_quota_recovery(tmp_path, monkeypatch):
-    from civ_agent.container_supervisor import GameRun
-    from civ_agent.monitoring import MonitorStore, path_for
+    from civ_agent.tls import write_private_json
+    from tests.test_native_status import native_files
 
     root = tmp_path / "game"
     game.initialize(
         root, GameConfig().resolved(), tmp_path / "auth", images={"runtime": "fixed"}, validation={"maxTurns": 330}
     )
-    MonitorStore(path_for(root)).put(
-        "state",
-        "run",
-        {
-            "status": "paused",
-            "inFlight": {"agentPhase": "FAILED", "modelStatus": {"state": "failed", "reason": "usageLimitExceeded"}},
-        },
+    _, status, _ = native_files(root)
+    write_private_json(
+        root / "native-runtime/status.json",
+        status.model_copy(update={"mode": "PAUSED", "quiesced": True, "reason": reason}).model_dump(mode="json"),
     )
     run = GameRun(root)
     once = Mock(return_value="paused")
     monkeypatch.setattr(run, "run_once", once)
-    monkeypatch.setattr(run.stop_event, "wait", lambda delay: True)
     assert run.run() == "paused"
     once.assert_called_once()
-    saved = json.loads((root / "container-status.json").read_text())
-    assert saved["status"] == "paused"
-    assert "Operator stopped" in saved["reason"]
-    assert "recovery" not in saved
 
 
 def test_stop_reports_cleanup_failure_without_retrying_it(tmp_path, monkeypatch):

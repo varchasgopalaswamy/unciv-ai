@@ -1,7 +1,133 @@
 # Agent context and tools
 
-This describes the current model-facing interface. Earlier numbered efficiency
-plans and their measurements are in the [archive](../archive/README.md).
+This describes the model-facing interface.
+
+## Recorded execution policy
+
+Native local runs retain a versioned `execution_policy` in player settings,
+authorized attempts and prepared role/report requests. Missing fields preserve
+the legacy direct interface. `ExecutionPolicy()` selects the version-one direct
+interface with provider-aware caching and conservative context management;
+`ExecutionPolicy.current()` selects version two with full Monty execution,
+overflow, summaries, optional short focused execution windows and advisory
+intent-handoff reassessment for isolated trials. There is no hybrid Code Mode.
+These choices do not change the fixed Main →
+Economy/Military → handoff flow or add gameplay actions. Existing games do not
+adopt a policy when an image is rebuilt. Applying a different policy to a running
+game remains a separate rollout action.
+
+Code Mode uses Harness `CodeMode` and Monty 1.5.0 with the tested Pydantic AI
+2.64.0/Harness 0.64.0 pair. It generates functions from the current role's canonical
+tools, including observations, command batches, coordination, Memory and Planning.
+`finish_role` remains a separate structured completion tool. Preparation fails
+on missing functions or Python-name collisions. Execution is sequential, with
+at most 100 nested calls per snippet, 30 seconds of execution, 256 MiB of memory
+and 1,000 session suspensions. Native limits and deadlines still apply. Sessions
+last for one agent run; no filesystem, environment, eager execution, speculation
+or cross-run REPL restoration is enabled.
+
+Correctable Code Mode failures use a JSON recovery envelope with
+`status=needs_recovery`, an error code/message/tool, recovery instructions,
+required reads, and settled `action_outcomes`. Argument feedback includes
+schema-owned field paths, allowed values, required fields and numeric limits;
+it does not echo rejected text. Python errors retain a diagnostic. These are
+SDK correction responses with the existing retry allowance. A failed snippet
+stops at its failing line, committed effects remain committed, and authority,
+integrity and uncertain-effect failures still stop the runtime.
+
+City-plan writes and deletes privately validate current native ownership when
+the role's observation has been invalidated by a native action. This read does
+not acknowledge or install an observation, grant inspection credit, or authorize
+the next gameplay command. Current role assignment and document CAS checks
+still apply; a lost or reassigned city remains unwritable.
+
+Generated signatures retain required inputs and typed bundle queries/results;
+presentation adapters leave the canonical dispatch validators in place. Pure
+result helpers execute locally in the Monty REPL, rather than creating SDK tool
+events. `result_view` returns `status`, `data` and the full original `feedback`:
+ordinary rejections and partial results produce `needs_recovery` with no data;
+zero or multiple successful receipts require explicit selection. Confirmed
+receipts remain available in feedback and never require replay. Frozen reviews
+use the explicit `review` envelope; authored dictionaries retain their own shape.
+Optional focused programs share a bounded FIFO gateway scheduling gate
+with other roles. The gate releases before deferred waits and preserves receipt,
+freshness and permission checks. See [the gameplay policy](Gameplay-policy.md#short-execution-windows-and-intent-handoffs)
+for limits, reset behavior and advisory plan/route handoffs.
+
+When a program returns a complete command result, the displayed output uses its
+original native state update instead of repeating the reconstructed overview.
+Receipt identities, action feedback, current completion fields and changed state
+remain available. This presentation matches exact child results retained in
+trusted metadata; it does not guess from field names or rewrite selected facts,
+printed text, explicit reads, rejected commands or recovered observations. Full
+materialized results remain in REPL variables and private child histories. A
+later snippet can select particular fields, and `player_turn` still returns a
+complete current view.
+
+The same update presentation covers native trade, ownership, coordination and
+construction mutations. Complete bundles and selector outputs share exact
+repeated payloads through the existing message-local `sharedValues` registry;
+query IDs, receipts, statuses and missing/unexecuted results stay present. A
+declined peace consultation retains its rejection and complete reports, sharing
+report copies across its phase entries. Registry collisions and original literal
+reference dictionaries retain their original presentation.
+
+A displayed investment checkpoint includes its selected decision, strategy
+identity/version, updated task and exact receipt evidence. The full pre-update
+workspace stays in the program and can also be read through `review_investments`.
+Planning recognizes a trusted complete checklist visibly returned by Code Mode,
+avoiding a second reminder. Hidden, stale or compacted-away plans still cause the
+current reminder to be injected.
+
+Each child keeps its SDK identity in private histories and receives a bounded
+native identity before dispatch. Settled sequential inspections acknowledge their
+receipts before the script can use those observations. Direct sibling tools keep
+their existing response-delivery boundary. Fatal authority, integrity and uncertain
+outcome failures fence later dispatch even when Python catches the exception.
+Definite rejections remain available for correction. Programs are never replayed
+automatically. Deferred results settle their original child effects and owning
+permit. Committed outcomes stay inline even when the program prints nothing or a
+later statement fails; complete child arguments, results and receipts remain private.
+
+Only the model-facing `run_code` result is spilled above 20,000 characters, with
+a 2,000-character preview. Complete structured nested results remain available
+inside Monty. Opaque spill handles are checked against game, player, epoch, role,
+job and attempt on every read. The SDK reader bounds retrieval; retained files and
+child evidence are included in private history exports. Ordinary storage failure
+delivers the complete output inline without undoing effects; corruption still
+fences the run. A failed spill must not hide decision facts or receipts.
+
+Version-one context management keeps the 75% pressure threshold. It clears only
+superseded observational results, then attempts incremental Harness summarization
+before a deterministic window fallback. Both paths preserve the first user input,
+the current task and complete recent exchanges. The fallback also preserves action
+outcomes and mixed programs. Summaries are historical assessments; native
+observations remain authoritative. Summary requests use the owning configured and
+limited model, share attempt/game usage and original deadlines, and reserve a
+parent request and provider-attempt capacity. Expected summary failures fall back;
+integrity failures, cancellation and whole-game stops propagate. A retry requires
+a smaller context. Strategic report provenance is retained as private validated
+read metadata, so summary prose cannot create evidence.
+
+Public common instructions precede role material, with changing observations and
+tasks in conversation content. Cache routing uses the actual prepared public prefix,
+including transformed schemas and injected static instructions. Full prepared-prefix
+fingerprints also measure changing instructions. Verified account identity,
+provider, endpoint and model bound each routing family; unknown accounts cannot
+share routing across runs. Conversation identity and permissions stay distinct.
+Caching uses Pydantic AI's provider controls. Subscription retention stays at the
+unverified provider default; supporting OpenAI API adapters request 30 minutes.
+Anthropic tier translation and Vertex/Gemini implicit caching have offline tests
+without adding credential flows. Requested/effective retention, cache measurements
+and price provenance are retained, with absent measurements left unknown.
+
+Subscription requests use stable transport affinity by default, including with
+legacy execution policies. A verified provider/account/endpoint/serving-model
+scope determines `session-id`; logical headers identify the current conversation.
+Case-insensitive caller overrides win, and unknown accounts remain run-isolated.
+There is no affinity toggle. Existing retention and body-cache-key behavior are
+preserved; nonlegacy prepared keys still include selected effort. Context summaries
+inherit their owner's model and account scope.
 
 ## Startup and discovery
 
@@ -593,8 +719,7 @@ from older host responses.
 
 Filtering applies consistently to fresh observations, receipts, replay, history,
 evidence and startup context. Original host records remain available for trusted
-audit and human display. The [field audit](../archive/reports/Model-flavor-text-audit.md)
-records the inspected surfaces and validation. Existing agent-authored beliefs
+audit and human display. Existing agent-authored beliefs
 are not silently rewritten by a projection update.
 
 ## Memory and recovery
@@ -620,9 +745,10 @@ ID. These reads cannot use model-usage counters or handoff-pass numbers: both ca
 remain unchanged while the position or delivery options change. The shared helper
 only reads `player_turn`; it cannot assign replacement identities to actions.
 Economy-wait refreshes remain bound to their distinct durable wait-operation IDs.
-Military completion binds dispositions to delivered review pages; zero remaining
-targets needs no invented review basis. Social promises remain exact, nonbinding
-player text.
+Military completion binds dispositions to exactly the targets in delivered review
+pages. Rejected extra targets are named in recovery feedback; other units and
+cities can be discussed in the summary. Zero remaining targets needs no invented
+review basis. Social promises remain exact, nonbinding player text.
 
 Excessive whitespace, repetitive output, or an HTTP 200 generation stream that
 fails during an upstream read rejects the entire generation. The process interrupts that
@@ -668,8 +794,6 @@ recovered attempts, and exclude the duplicate terminal wrapper. Unreported usage
 for rejected requests stays explicitly unknown. Runtime configuration warnings
 are categorized separately from connection failures and do not manufacture a
 subsequent connection-recovery notice.
-See the [structured decision report](../archive/reports/Strict-structured-decisions-2026-10-30.txt)
-for enforcement evidence, the live screen's request-budget overrun and rollout limits.
 
 ## Implementation entry points
 

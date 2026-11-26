@@ -4,6 +4,7 @@ import com.unciv.json.json
 import com.unciv.logic.civilization.CivFlags
 import com.unciv.logic.civilization.PlayerTurnRequirements
 import com.unciv.logic.map.mapunit.UnitSettlement
+import uncivai.player.CityStateVoteWindow
 import uncivai.player.PlayerHost
 import uncivai.player.PlayerSessionException
 import uncivai.player.PlayerSessionFailure
@@ -27,6 +28,7 @@ object VictoryDecisionsProbe {
             "scientific" -> scientific(root)
             "spaceship-production" -> spaceshipProduction(root)
             "elections" -> elections(root)
+            "city-state-vote-timing" -> cityStateVoteTiming(root)
             "privacy" -> privacy(root)
             "recovery" -> recovery(root)
             "cultural" -> cultural(root)
@@ -35,7 +37,7 @@ object VictoryDecisionsProbe {
         }
     }
 
-    internal fun create(root: Path): HeadlessRuntime = HeadlessRuntime.createVanillaGame(root, 412L).also { runtime ->
+    internal fun create(root: Path, cityStates: Int = 0): HeadlessRuntime = HeadlessRuntime.createVanillaGame(root, 412L, cityStates = cityStates).also { runtime ->
         runtime.executor.accessGame { game ->
             for (id in players) {
                 val player = game.getCivilization(id)
@@ -358,6 +360,62 @@ object VictoryDecisionsProbe {
                     check(!final.victory.votingResults.canAcknowledge)
                 }
             }
+        }
+    }
+
+    private fun cityStateVoteTiming(root: Path) = create(root.resolve("initial"), cityStates = 2).use { runtime ->
+        val game = runtime.game
+        val rome = game.getCivilization("Rome")
+        val greece = game.getCivilization("Greece")
+        val (known, unknown) = game.civilizations.filter { it.isCityState }
+        runtime.executor.accessGame {
+            game.turns = 224
+            arrangeVote(runtime)
+            for (civ in listOf(known, unknown)) {
+                if (civ.cities.isEmpty()) checkNotNull(UnitSettlement.tryFoundCity(civ.units.getCivUnits().single { it.name == "Settler" }))
+            }
+            rome.diplomacyFunctions.makeCivilizationsMeet(known)
+            greece.diplomacyFunctions.makeCivilizationsMeet(known)
+            check(!rome.knows(unknown))
+            known.getDiplomacyManager(greece)!!.setInfluence(70f)
+            known.getDiplomacyManager(rome)!!.setInfluence(40f)
+            rome.addGold(1_000)
+            for (civ in game.civilizations.filter { it.isMajorCiv() || it.isCityState }) {
+                civ.removeFlag(CivFlags.ShowDiplomaticVotingResults.name)
+                civ.addFlag(CivFlags.TurnsTillNextDiplomaticVote.name, 2)
+                civ.popupAlerts.clear()
+            }
+        }
+        GameplayTestApi(runtime, root.resolve("tls"), tokens).use { api ->
+            val token = tokens.getValue("Rome")
+            val before = api.turn(token).victory.ballot!!.cityStateVoteTiming!!
+            check(before.lastInfluenceTurn == 225 && before.window == CityStateVoteWindow.BEFORE_LAST_TURN)
+            runtime.executor.accessGame { unknown.addFlag(CivFlags.TurnsTillNextDiplomaticVote.name, 1) }
+            check(api.turn(token).victory.ballot!!.cityStateVoteTiming == before) { "An unmet city-state changed the cue" }
+            runtime.executor.accessGame { unknown.addFlag(CivFlags.TurnsTillNextDiplomaticVote.name, 2) }
+
+            for (id in players) finishTurn(api, tokens.getValue(id))
+            val last = api.turn(token).victory.ballot!!
+            check(last.turnsUntilNextVote == 1 && !last.canVote)
+            check(last.cityStateVoteTiming!!.let { it.lastInfluenceTurn == 225 && it.window == CityStateVoteWindow.LAST_TURN })
+            finishTurn(api, token)
+            val waiting = api.turn(token).victory.ballot!!.cityStateVoteTiming!!
+            check(waiting.lastInfluenceTurn == 225 && waiting.window == CityStateVoteWindow.CLOSED)
+            for (id in players.drop(1)) {
+                val other = tokens.getValue(id)
+                val turn = api.turn(other)
+                check(turn.victory.ballot!!.canVote)
+                api.execute(other, command(turn, TurnCommandKind.ABSTAIN_DIPLOMATIC_VOTE))
+                finishTurn(api, other)
+            }
+
+            val turn = api.turn(token)
+            check(turn.turn == 226 && turn.victory.ballot!!.canVote && turn.victory.votingResults == null)
+            check(turn.victory.ballot.cityStateVoteTiming!!.window == CityStateVoteWindow.CLOSED)
+            check(game.diplomaticVictoryVotesCast[known.civID] == "Greece")
+            val gift = command(turn, TurnCommandKind.CITY_STATE_ACTION, known.civID, "giftGold1000").copy(confirmAction = true)
+            check(api.execute(token, gift).cityState!!.allyAfter!!.civilizationId == "Rome")
+            check(game.diplomaticVictoryVotesCast[known.civID] == "Greece") { "A late gift changed a cast vote" }
         }
     }
 

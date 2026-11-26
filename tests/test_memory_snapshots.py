@@ -10,7 +10,7 @@ from civ_agent.memory_snapshots import compact, expand, load_snapshot
 from civ_agent.memory_store import RecordStore, encode
 from civ_agent.observations import DetailQuery, detail_scope, overview, project_detail
 from civ_agent.protocol import JsonObject
-from tests.test_proposal_gateway import Host
+from tests.domain_fixtures import Host
 
 
 def test_historical_region_bodies_are_neither_loaded_nor_copied_into_new_jobs(tmp_path, monkeypatch):
@@ -98,7 +98,7 @@ def test_frozen_projection_survives_new_heads_without_copying_record_bodies(tmp_
 
 
 def test_checkpoint_excludes_completed_job_snapshots(tmp_path):
-    from tests.test_structured_memory import setup
+    from tests.domain_fixtures import setup
 
     memory = setup(tmp_path)
     memory.observe("large", {"text": "OLD_COMPLETED_PAYLOAD" * 1000}, "game")

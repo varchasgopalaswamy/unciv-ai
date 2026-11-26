@@ -23,8 +23,8 @@ from civ_agent.startup_context import (
 from civ_agent.state_updates import apply_player_turn
 from civ_agent.tool_schemas import tool_model
 from civ_agent.war_state import WarStore
+from tests.domain_fixtures import managed
 from tests.test_conversation_context import message
-from tests.test_economy_optimization import managed
 from tests.test_military_roles import GOALS, position
 from tests.test_trade_gateway import PendingTradesHost
 

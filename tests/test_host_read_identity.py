@@ -8,8 +8,7 @@ from sqlalchemy import select
 
 from civ_agent import memory_schema as tables
 from civ_agent.proposal_gateway import ProposalGateway
-from tests.test_economy_optimization import managed
-from tests.test_economy_roles import run_async
+from tests.domain_fixtures import managed, run_async
 
 
 @run_async

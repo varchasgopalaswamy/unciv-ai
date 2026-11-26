@@ -9,8 +9,8 @@ from civ_agent.civilization_state import CivilizationState
 from civ_agent.protocol import JsonObject
 from civ_agent.review_context import MAX_CHANGES, MAX_EVENTS, development_changes, review_position, upcoming_events
 from civ_agent.review_store import ReviewStore
+from tests.domain_fixtures import setup
 from tests.test_strategic_review import assessment
-from tests.test_structured_memory import setup
 
 
 def position(turn=5) -> JsonObject:

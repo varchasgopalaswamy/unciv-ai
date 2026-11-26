@@ -1,11 +1,8 @@
 # Native AI guidance and diplomacy routing
 
-Status: opt-in implementation with local regression validation. A bounded live
-[memory/review triage replay](../archive/reports/Decisions-triage-trial-2026-10-14.md)
-is recorded; city-choice gameplay evaluation and matched-game behavioral acceptance
-remain pending. See the
-[rollout guide](../guides/Native-guidance-and-routing.md) for configuration,
-coverage limits, credentials and evaluation instructions.
+Native guidance and Decisions advisories are opt-in. See the
+[configuration guide](../guides/Native-guidance-and-routing.md) for credentials,
+settings, and coverage limits.
 
 ## Summary
 

@@ -1,15 +1,9 @@
 """Terminal presentation preserves audit data, player identity, and accounting scope."""
 
-import asyncio
 import io
-import json
 from concurrent.futures import ThreadPoolExecutor
-from types import SimpleNamespace
 
-from civ_agent.agent_history import HistoryStore
 from civ_agent.monitoring import MonitorStore, path_for
-from civ_agent.protocol import JsonObject
-from civ_agent.runner_history import EventHistory
 from civ_agent.terminal_output import TerminalOutput, color_enabled, player_style, visible_text
 from civ_agent.turn_display import display_turn, turn_metrics
 
@@ -61,46 +55,6 @@ def test_background_output_cannot_join_another_players_partial_line():
         "  [Rome] Assistant:  the next move.",
         "    Second line",
     ]
-
-
-def test_quiet_output_keeps_receipts_errors_and_identical_audit_records(tmp_path):
-    events = [
-        event(0, "developer_message", source="service_startup", text="REPEATED INSTRUCTIONS"),
-        event(1, "user_message", source="service_startup", text="PRELOADED READS"),
-        event(2, "action", itemId="action:one", description="Founded Rome at (1, 2)."),
-        event(3, "tool_call", itemId="read", tool="unit_details", arguments={}),
-        event(4, "tool_result", itemId="read", result={"isError": False, "structuredContent": {"units": []}}),
-        event(
-            5,
-            "tool_result",
-            itemId="failed",
-            result={"isError": True, "structuredContent": {"error": "DETAIL_REQUIRED"}},
-        ),
-        event(6, "assistant_message", itemId="m", text="Next I will research Mining."),
-    ]
-    histories = []
-    for verbose in (False, True):
-        output = io.StringIO()
-        renderer = TerminalOutput(color="never", file=output)
-        history = EventHistory(
-            tmp_path / str(verbose), "epoch", "Rome", "job", game_turn=0, verbose=verbose, renderer=renderer
-        )
-        history.append(events)
-        text = output.getvalue()
-        assert ("PRELOADED READS" in text) is verbose
-        assert ("REPEATED INSTRUCTIONS" in text) is verbose
-        assert ("unit_details" in text) is verbose
-        assert "Founded Rome at (1, 2)." in text and "DETAIL_REQUIRED" in text
-        assert str(history.store.path) in text
-        assert "Next I will research Mining." in text
-        histories.append(history)
-    assert histories[0].events == histories[1].events
-    quiet = io.StringIO()
-    resumed = EventHistory(
-        tmp_path / "False", "epoch", "Rome", "job", game_turn=0, renderer=TerminalOutput(color="never", file=quiet)
-    )
-    resumed.append(events + [event(7, "action", itemId="action:two", description="Research queue: Mining.")])
-    assert "Founded" not in quiet.getvalue() and "Research queue: Mining." in quiet.getvalue()
 
 
 def test_turn_summary_uses_matching_host_totals_without_double_counting(tmp_path):
@@ -177,53 +131,3 @@ def test_missing_accounting_is_unavailable_not_zero_and_partial_usage_is_labelle
     )
     assert "Input 120" in output.getvalue() and "Activation usage partial" in output.getvalue()
     assert "2.0s gameplay (activation)" in output.getvalue()
-
-
-def test_gateway_action_event_requires_a_receipt_and_does_not_repeat_replays(tmp_path):
-    from civ_agent.civilization_state import CivilizationState
-    from civ_agent.proposal_gateway import ProposalGateway
-    from civ_agent.service_io import ServiceIO
-    from tests.test_agent_service import StartupHost
-
-    class ReceiptHost(StartupHost):
-        reject_command = True
-
-        async def tool(self, name, args):
-            if name == "player_command" and self.reject_command:
-                return {"error": "OPTION_UNAVAILABLE", "applied": False}
-            result: JsonObject = await super().tool(name, args)
-            if name == "player_turn" and self.executed:
-                result["turnReview"]["actions"] = [{"kind": "FOUND_CITY", "description": "Founded Rome at (1, 2)."}]
-            return result
-
-    async def run():
-        io_worker = ServiceIO()
-        memory = CivilizationState(tmp_path / "memory", "Rome")
-        gateway = ProposalGateway(memory, io_worker, tmp_path / "workspace")
-        gateway.history = HistoryStore(tmp_path / "history", "service-token")
-        record = {"activationId": "job", "phase": "RUNNING"}
-        gateway.history.begin(record, None, "player-token")
-        host = ReceiptHost(
-            SimpleNamespace(service=SimpleNamespace(active_id="job", records={"job": {"epoch": "g1", "gameTurn": 0}}))
-        )
-        host.view["map"]["units"][0]["canFoundCity"] = True
-        try:
-            job = await gateway.open("job", "gameplay", "g1", host, {}, 0)
-            await gateway.call(job, "player_turn", {}, "view")
-            action = {"kind": "FOUND_CITY", "target": "unit1", "intent": {"reason": "Settle here"}}
-            # A host rejection must not generate a successful action message.
-            rejected = await gateway.call(job, "player_command", action, "rejected")
-            assert rejected["error"] == "OPTION_UNAVAILABLE"
-            host.reject_command = False
-            result = await gateway.call(job, "player_command", action, "accepted")
-            assert "error" not in result
-            assert result == await gateway.call(job, "player_command", action, "accepted")
-            events = [json.loads(line) for line in gateway.history.logs["job"].path.read_text().splitlines()]
-            actions = [event for event in events if event["kind"] == "action"]
-            assert len(actions) == 1
-            assert actions[0]["data"]["description"] == "Founded Rome at (1, 2)."
-            assert "description" not in result  # Presentation adds nothing to the model-facing payload.
-        finally:
-            await io_worker.close()
-
-    asyncio.run(run())

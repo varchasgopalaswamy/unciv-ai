@@ -2,21 +2,15 @@ import asyncio
 import copy
 import json
 from contextlib import asynccontextmanager
-from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
 
-from civ_agent import service_recovery
-from civ_agent.chat_runtime import ChatRuntime
 from civ_agent.civilization_state import CivilizationState, StateConflict
-from civ_agent.decision_contracts import DecisionContract
 from civ_agent.diplomacy_decisions import POLICY_VERSION, parse_answer, request_body
 from civ_agent.diplomacy_routing import DiplomacyRouting
 from civ_agent.experiment_metrics import summarize
 from civ_agent.proposal_gateway import ProposalGateway
-from civ_agent.protocol import JsonObject
-from civ_agent.structured_decisions import DecisionLoop
 from tests.test_diplomacy_contracts import opened
 from tests.test_routing_policy import envelope
 
@@ -85,50 +79,6 @@ def test_unsent_status_and_idempotent_override(tmp_path, choice):
     asyncio.run(run())
 
 
-@pytest.mark.parametrize("delivery_id", ["", "delivery-missing"])
-@pytest.mark.parametrize("action", ["status", "immediate", "cancel"])
-def test_unknown_delivery_rejects_batch_and_preserves_confirmed_send(tmp_path, delivery_id, action):
-    async def run():
-        async with routed(tmp_path) as (gateway, job, host, router, client, now):
-            loop = DecisionLoop(gateway, job, DecisionContract(job.purpose, await gateway.tools(job)), {})
-            await loop.begin("Coordinate peacefully.")
-            result = await loop.complete(
-                loop.contract.encode(
-                    {
-                        "kind": "act",
-                        "operations": [
-                            {"tool": "chat_send", "arguments": {"to": "Greece", "text": "Hello."}},
-                            {"tool": "chat_delivery", "arguments": {"deliveryId": delivery_id, "action": action}},
-                            {"tool": "chat_send", "arguments": {"to": "Greece", "text": "Not yet."}},
-                        ],
-                    }
-                )
-            )
-            assert [receipt["status"] for receipt in result["receipts"]] == ["confirmed", "rejected", "unexecuted"]
-            assert result["receipts"][1]["result"] == {"error": "UNKNOWN_DELIVERY", "applied": False}
-            delivery = result["receipts"][0]["result"]["deliveryId"]
-            draft = router.store.get(delivery)
-            assert draft is not None and draft["status"] == "queued"
-            assert await loop.execute(recovery=True) == result
-            assert client.classify.await_count == 1
-            loop.delivered(result)
-            await loop.begin(result)
-            corrected = await loop.complete(
-                loop.contract.encode(
-                    {
-                        "kind": "act",
-                        "operations": [
-                            {"tool": "chat_delivery", "arguments": {"deliveryId": delivery, "action": "immediate"}}
-                        ],
-                    }
-                )
-            )
-            assert corrected["receipts"][0]["result"]["delivered"]
-            assert [write["text"] for write in host.writes] == ["Hello."]
-
-    asyncio.run(run())
-
-
 def test_deadline_is_oldest_and_flush_needs_no_model(tmp_path):
     async def run():
         async with routed(tmp_path) as (gateway, job, host, router, client, now):
@@ -157,34 +107,6 @@ def test_classifier_wait_consumes_timeout_budget(tmp_path, monkeypatch):
             assert result["choice"] == "send_now" and result["fallback"] == "timeout"
             client.classify.assert_not_awaited()
             assert not router.classifications
-
-    asyncio.run(run())
-
-
-def test_scheduler_delivers_while_player_model_is_busy_and_holds_at_barrier(tmp_path):
-    async def run():
-        async with routed(tmp_path) as (gateway, job, host, router, client, now):
-            await gateway.call(job, "chat_send", {"text": "Original", "to": "Greece"}, "a")
-            runtime = ChatRuntime(SimpleNamespace(gateway=gateway, io=gateway.io, memory=gateway.memory))
-            runtime.connection, runtime.epoch = host, "g1"
-            runtime.running, runtime.held, runtime.dispatching = True, False, True
-            worker = asyncio.create_task(runtime.schedule_routing())
-            try:
-                now[0] = 131
-                gateway.request_checkpoint()
-                await asyncio.sleep(0.3)
-                assert not host.writes
-                gateway.release_checkpoint()
-                async with asyncio.timeout(2):
-                    while not host.writes:
-                        await asyncio.sleep(0.02)
-                assert len(host.writes) == 1 and runtime.dispatching
-                assert client.classify.await_count == 1
-            finally:
-                runtime.running = False
-                await worker
-                if runtime.routing_task:
-                    await runtime.routing_task
 
     asyncio.run(run())
 
@@ -478,92 +400,6 @@ def test_lost_receipt_reconciles_and_rewind_drops_future_delivery(tmp_path):
     asyncio.run(run())
 
 
-@pytest.mark.parametrize("phase", ["routing", "generic"])
-def test_chat_reconciliation_during_delivery_keeps_snapshot_receipt_consistent(tmp_path, phase):
-    async def run():
-        async with routed(tmp_path) as (gateway, job, host, router, client, now):
-            queued = await gateway.call(job, "chat_send", {"text": "Original", "to": "Greece"}, "a")
-            service = SimpleNamespace(
-                gateway=gateway,
-                io=gateway.io,
-                memory=gateway.memory,
-                state_dir=tmp_path / "service",
-                civilization="Rome",
-                match=None,
-                records={},
-            )
-            runtime = service.chat = ChatRuntime(service)
-            runtime.connection, runtime.epoch = host, "g1"
-            routing_checked, continue_recovery = asyncio.Event(), asyncio.Event()
-            send_entered, release_send = asyncio.Event(), asyncio.Event()
-            recovery_blocked_or_finished = asyncio.Event()
-            original_reconcile, original_tool = router.reconcile, host.tool
-            recovering = None
-
-            async def reconcile(epoch, connection):
-                if phase == "generic":
-                    await original_reconcile(epoch, connection)
-                routing_checked.set()
-                await continue_recovery.wait()
-                if phase == "routing":
-                    await original_reconcile(epoch, connection)
-
-            class ObservedDispatch(asyncio.Lock):
-                async def acquire(self):
-                    if asyncio.current_task() is recovering and self.locked():
-                        recovery_blocked_or_finished.set()
-                    return await super().acquire()
-
-            async def tool(name, args):
-                if name == "player_communication" and args["op"] == "send":
-                    send_entered.set()
-                    await release_send.wait()
-                return await original_tool(name, args)
-
-            gateway.dispatch = ObservedDispatch()
-            router.delivery_lock = ObservedDispatch()
-            router.reconcile, host.tool = reconcile, tool
-            recovering = asyncio.create_task(runtime.reconcile())
-            recovering.add_done_callback(lambda _: recovery_blocked_or_finished.set())
-            await asyncio.wait_for(routing_checked.wait(), 2)
-            now[0] = 131
-            sending = asyncio.create_task(router.flush_due("g1", host))
-            try:
-                await asyncio.wait_for(send_entered.wait(), 2)
-                continue_recovery.set()
-                await asyncio.wait_for(recovery_blocked_or_finished.wait(), 2)
-                release_send.set()
-                await asyncio.wait_for(asyncio.gather(sending, recovering), 2)
-                assert len(host.writes) == 1
-                assert not gateway.memory.pending()
-                delivered = router.store.get(queued["deliveryId"])
-                assert delivered is not None
-                assert delivered["status"] == "sent"
-                request = router.store.delivery_request(delivered["requestId"])
-                assert json.loads(request["result"]) == delivered["receipt"]
-
-                router.reconcile = original_reconcile
-                gateway.paused = True
-                gateway.memory.pause(True)
-                saved = await service_recovery.capture(service, "receipt-race")
-                path = service_recovery.checkpoint_path(service, saved["id"])
-                gateway.memory.restore(path, saved["sha256"], "g2")
-                restored = router.store.get(queued["deliveryId"])
-                assert restored is not None
-                assert restored["receipt"] == delivered["receipt"]
-                assert json.loads(router.store.delivery_request(request["id"])["result"]) == delivered["receipt"]
-                gateway.memory.pause(False)
-                gateway.paused = False
-                await router.flush_due("g2", host)
-                assert len(host.writes) == 1
-            finally:
-                continue_recovery.set()
-                release_send.set()
-                await asyncio.gather(sending, recovering, return_exceptions=True)
-
-    asyncio.run(run())
-
-
 @pytest.mark.parametrize(
     "error",
     ["NOT_ENACTED", "COMMUNICATION_UNAVAILABLE", "INTERNAL_ERROR", {"code": "INTERNAL_ERROR"}],
@@ -587,79 +423,6 @@ def test_absent_or_transient_receipt_cannot_poison_outbox(tmp_path, error):
             gateway.memory.receipt(request_id, result["receipt"])
             with pytest.raises(StateConflict, match="RECEIPT_CONFLICT"):
                 gateway.memory.receipt(request_id, {"message": {"message": "different"}})
-
-    asyncio.run(run())
-
-
-def test_generic_reconciliation_does_not_claim_routed_delivery(tmp_path):
-    async def run():
-        async with routed(tmp_path) as (gateway, job, host, router, client, now):
-            queued = await gateway.call(job, "chat_send", {"text": "Original", "to": "Greece"}, "a")
-            request = router.store.prepare_delivery("g1", queued["deliveryId"])
-            assert request is not None
-            original_reconcile, original_tool = router.reconcile, host.tool
-            router.reconcile = AsyncMock()
-
-            async def tool(name, args):
-                if name == "player_communication" and args["op"] == "receipt":
-                    pytest.fail("Generic reconciliation must leave routed requests to their owner")
-                return await original_tool(name, args)
-
-            host.tool = tool
-            runtime = ChatRuntime(SimpleNamespace(gateway=gateway, io=gateway.io, memory=gateway.memory))
-            runtime.connection, runtime.epoch = host, "g1"
-            await runtime.reconcile()
-            assert gateway.memory.pending()[0]["id"] == request["id"]
-            host.tool, router.reconcile = original_tool, original_reconcile
-            await runtime.reconcile()
-            assert len(host.writes) == 1 and not gateway.memory.pending()
-
-    asyncio.run(run())
-
-
-@pytest.mark.parametrize("failure_point", ["before_host_commit", "after_host_commit", "after_receipt_commit"])
-def test_chat_reconciliation_recovers_routed_send_without_changing_identity(tmp_path, failure_point):
-    async def run():
-        async with routed(tmp_path) as (gateway, job, host, router, client, now):
-            queued = await gateway.call(job, "chat_send", {"text": "Original", "to": "Greece"}, "a")
-            original_tool, original_receipt = host.tool, gateway.memory.receipt
-            attempts = []
-            failed = False
-
-            async def tool(name, args):
-                nonlocal failed
-                sending = name == "player_communication" and args["op"] == "send"
-                if sending:
-                    attempts.append(copy.deepcopy(args))
-                if sending and not failed and failure_point == "before_host_commit":
-                    failed = True
-                    raise OSError("request did not arrive")
-                result = await original_tool(name, args)
-                if sending and not failed and failure_point == "after_host_commit":
-                    failed = True
-                    raise OSError("response lost after commit")
-                return result
-
-            def receipt(request_id: str, result: JsonObject):
-                nonlocal failed
-                original_receipt(request_id, result)
-                if not failed and failure_point == "after_receipt_commit":
-                    failed = True
-                    raise OSError("stopped after receipt commit")
-
-            host.tool, gateway.memory.receipt = tool, receipt
-            now[0] = 131
-            with pytest.raises(OSError):
-                await router.flush_due("g1", host)
-            runtime = ChatRuntime(SimpleNamespace(gateway=gateway, io=gateway.io, memory=gateway.memory))
-            runtime.connection, runtime.epoch = host, "g1"
-            await runtime.reconcile()
-            await runtime.reconcile()
-            assert len(host.writes) == 1 and not gateway.memory.pending()
-            delivered = router.store.get(queued["deliveryId"])
-            assert delivered is not None and delivered["status"] == "sent"
-            assert len(attempts) == (2 if failure_point == "before_host_commit" else 1)
-            assert all(attempt == attempts[0] for attempt in attempts)
 
     asyncio.run(run())
 

@@ -2,8 +2,10 @@ package uncivai
 
 import com.unciv.json.json
 import com.unciv.logic.GameInfo
+import kotlinx.serialization.EncodeDefault
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.decodeFromJsonElement
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonObject
@@ -38,6 +40,8 @@ internal data class GameCheckpoint(
     val communicationPaused: Boolean = false,
     val accountingId: String? = null,
     val accountingOutbox: List<AccountingBatch> = emptyList(),
+    @EncodeDefault(EncodeDefault.Mode.NEVER)
+    val replay: ReplayCursor? = null,
 )
 
 @Serializable
@@ -59,6 +63,7 @@ internal data class SavedPlayerState(
     val deliveredCombatReports: Int = 0,
     val freeGreatPersonDecision: SharedFreeGreatPersonDecision? = null,
     val constructionSelections: Map<String, List<uncivai.player.ConstructionSelection>> = emptyMap(),
+    val constructionQueues: Map<String, uncivai.player.ConstructionQueueState> = emptyMap(),
     val settlementKnowledge: List<uncivai.player.KnownSettlementTile> = emptyList(),
     val settlementTechnologies: Set<String>,
     val settlerHistory: Map<Int, uncivai.player.SettlerHistory> = emptyMap(),
@@ -69,12 +74,16 @@ internal class CheckpointStore(
     val path: Path,
     private val beforeReplace: () -> Unit = {},
     private val afterReplace: () -> Unit = {},
+    internal val recordReplay: Boolean = false,
 ) : AutoCloseable {
     private var lockChannel: FileChannel? = null
     private var lock: FileLock? = null
     internal var accounting: HostAccountingStore? = null
         private set
     internal val accountingPath get() = path.resolveSibling("${path.fileName}.accounting.sqlite3")
+    private val replayPath get() = path.resolveSibling("${path.fileName}.replay")
+    internal var replayArchive: ReplayArchive? = null
+        private set
     internal var writes = 0L
         private set
     internal var bytesWritten = 0L
@@ -83,7 +92,7 @@ internal class CheckpointStore(
         require(path.isAbsolute) { "Checkpoint path must be absolute" }
     }
 
-    fun write(checkpoint: GameCheckpoint) {
+    fun write(checkpoint: GameCheckpoint, replayEvents: List<JsonObject> = emptyList()) {
         acquire()
         val ledger = checkNotNull(accounting) { "Initialize accounting before writing a checkpoint" }
         ledger.checkHealthy()
@@ -91,7 +100,8 @@ internal class CheckpointStore(
         Files.createDirectories(parent)
         val temporary = Files.createTempFile(parent, ".checkpoint-", ".tmp")
         try {
-            val persisted = checkpoint.copy(formatVersion = 9, communication = checkpoint.communication.withoutAccounting(), accountingId = ledger.id, accountingOutbox = ledger.outbox())
+            val cursor = replayArchive?.stage(checkpoint, replayEvents) ?: checkpoint.replay
+            val persisted = checkpoint.copy(formatVersion = 9, communication = checkpoint.communication.withoutAccounting(), accountingId = ledger.id, accountingOutbox = ledger.outbox(), replay = cursor)
             val bytes = HostTimings.measure("checkpoint.serialize") { checkpointJson.encodeToString(persisted).toByteArray(Charsets.UTF_8) }
             FileChannel.open(temporary, StandardOpenOption.WRITE).use { channel ->
                 val buffer = ByteBuffer.wrap(bytes)
@@ -110,12 +120,13 @@ internal class CheckpointStore(
         }
     }
 
-    fun writeInitial(checkpoint: GameCheckpoint) {
+    fun writeInitial(checkpoint: GameCheckpoint, replayEvents: List<JsonObject> = emptyList()) {
         acquire()
         require(!Files.exists(path)) { "Checkpoint already exists; resume it explicitly" }
         require(!Files.exists(accountingPath)) { "Accounting already exists; use a fresh checkpoint path" }
         initializeAccounting(checkpoint.communication, "initial")
-        write(checkpoint)
+        if (recordReplay) replayArchive = ReplayArchive(replayPath)
+        write(checkpoint, replayEvents)
     }
 
     fun read(): GameCheckpoint {
@@ -141,6 +152,7 @@ internal class CheckpointStore(
             require(saved.accountingId == ledger.id) { "Checkpoint and accounting database do not match" }
             saved.accountingOutbox.forEach { ledger.submit(it).join() }
         }
+        if (recordReplay || saved.replay != null) replayArchive = ReplayArchive(replayPath).also { it.restore(saved) }
         return saved.copy(formatVersion = 9, communication = checkNotNull(accounting).restore(saved.communication), accountingId = accounting!!.id, accountingOutbox = emptyList())
     }
 
@@ -202,6 +214,7 @@ internal class CheckpointStore(
                     deliveredCombatReports = state.deliveredCombatReports,
                     freeGreatPersonDecision = state.freeGreatPersonDecision,
                     constructionSelections = state.constructionSelections.toMap(),
+                    constructionQueues = state.constructionQueues.toMap(),
                     settlementKnowledge = state.settlementKnowledge.values.toList(),
                     settlementTechnologies = state.settlementTechnologies.toSet(),
                     settlerHistory = state.settlerHistory.toMap(),

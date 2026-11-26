@@ -20,10 +20,10 @@ def evidence():
     return {"player": "Rome", "preservation": [{"key": "event:1", "version": 1}, {"key": "event:2", "version": 1}]}
 
 
-def registered(tmp_path):
+def registered(tmp_path, *, native_player=None):
     settings = DecisionsSettings(decisions_enabled=True)
     ledger = DecisionsLedger(tmp_path)
-    ledger.register("seat", "game", "Rome", settings.model_dump())
+    ledger.register("seat", "game", "Rome", settings.model_dump(), native_player=native_player)
     ledger.register("other", "game", "Greece", settings.model_dump())
     write_private_json(
         tmp_path / "decisions-clients.json",

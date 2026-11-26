@@ -18,7 +18,7 @@ from civ_agent.role_view import label_commands, role_overview
 from civ_agent.startup_context import decision_queries, prepare_startup, startup_prompt
 from civ_agent.state_updates import apply_overview_update
 from civ_agent.tool_schemas import tool_model
-from tests.test_economy_optimization import managed
+from tests.domain_fixtures import managed
 from tests.test_military_roles import position
 from tests.test_strategic_review import assessment
 

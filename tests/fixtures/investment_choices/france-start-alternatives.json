@@ -1,0 +1,45 @@
+{
+  "choice": {
+    "id": "capital",
+    "objective": "Establish a productive capital immediately and explore nearby land.",
+    "investment": "Found on the starting tile this turn.",
+    "status": "active",
+    "ownerRole": "gameplay",
+    "nextStep": "Found the capital, choose research, and request economic management and exploration.",
+    "expectedObservations": [
+      "Capital founded with growth, production, science and French culture.",
+      "Exploration reveals sites or neighbors."
+    ],
+    "reviewAfterTurns": 5,
+    "reconsiderWhen": "A nearby rival, threat, or revealed land changes expansion or conquest priorities.",
+    "comparison": [
+      {
+        "kind": "other",
+        "option": "Found on starting tile",
+        "investment": "Consume starting settler immediately",
+        "expectedOutcome": "Begin capital yields now; retain nearby cotton and bananas.",
+        "timing": "This turn",
+        "uncertainty": "Unknown surrounding tiles and future resource access."
+      },
+      {
+        "kind": "other",
+        "option": "Move to cotton river site",
+        "investment": "Move settler and potentially delay founding",
+        "expectedOutcome": "Higher heuristic site score but uncertain luxury connection and lost early output.",
+        "timing": "At least movement this turn; founding timing unverified",
+        "uncertainty": "Unknown surrounding tiles and native founding yield."
+      },
+      {
+        "kind": "wait",
+        "option": "Delay founding for scouting",
+        "investment": "Forego initial city yields",
+        "expectedOutcome": "Possibly gain information but lose early compounding.",
+        "timing": "At least one turn",
+        "uncertainty": "Scouting may reveal no better site."
+      }
+    ],
+    "subjects": [
+      "unit2"
+    ]
+  }
+}

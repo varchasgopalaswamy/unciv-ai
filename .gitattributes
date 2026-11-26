@@ -1,0 +1,3 @@
+# Preserve archived evidence: CSV uses CRLF and patch context lines contain spaces.
+docs/results/*.csv whitespace=cr-at-eol
+docs/results/*.patch -whitespace

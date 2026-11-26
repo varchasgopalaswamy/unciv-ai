@@ -17,8 +17,7 @@ from civ_agent.observations import DetailQuery, overview, project_detail, requir
 from civ_agent.proposal_gateway import ProposalGateway
 from civ_agent.protocol import JsonObject
 from civ_agent.service_io import ServiceIO
-from tests.test_proposal_gateway import Host
-from tests.test_structured_memory import create, current, strategy
+from tests.domain_fixtures import Host, create, current, strategy
 
 
 def query(tool, target, sections):
@@ -565,7 +564,7 @@ def test_copied_purchase_still_forwards_to_native_confirmation_and_legality_chec
 
 
 def test_selective_measurement_uses_the_same_permitted_state_and_omits_contents():
-    from tests.verify_selective_actions_live import measure
+    from tests.payload_metrics import measure_selective as measure
 
     snapshot = options_snapshot()
     snapshot["map"]["units"][0]["displayName"] = "PRIVATE-UNIT-NAME"

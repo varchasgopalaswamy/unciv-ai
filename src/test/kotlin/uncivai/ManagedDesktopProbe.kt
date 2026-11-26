@@ -15,6 +15,8 @@ import com.badlogic.gdx.scenes.scene2d.ui.TextArea
 import com.badlogic.gdx.scenes.scene2d.ui.TextField
 import com.unciv.UncivGame
 import com.unciv.logic.files.UncivFiles
+import com.unciv.ui.popups.ConfirmPopup
+import com.unciv.ui.popups.activePopup
 import com.unciv.ui.screens.basescreen.BaseScreen
 import com.unciv.ui.screens.diplomacyscreen.DiplomacyScreen
 import com.unciv.ui.screens.pickerscreens.TechPickerScreen
@@ -315,8 +317,9 @@ object ManagedDesktopProbe {
             "give" to emptyList<String>(),
             "receive" to listOf(obj("type" to "Gold", "name" to "Gold", "amount" to 3, "duration" to -1)),
         )
-        // An open confirmation is consent to its displayed version, never to a later counter.
+        // A new counteroffer dismisses the confirmation for the previous version.
         click("Accept")
+        waitFor { onGl { (app.screen as BaseScreen).activePopup is ConfirmPopup } }
         communication(
             "Rome",
             "trade_offer",
@@ -326,12 +329,26 @@ object ManagedDesktopProbe {
             "give" to emptyList<String>(),
             "receive" to listOf(obj("type" to "Gold", "name" to "Gold", "amount" to 4, "duration" to -1)),
         )
-        click("Accept")
+        waitFor {
+            onGl {
+                val screen = app.screen as? DiplomacyScreen
+                screen != null && screen.activePopup == null && actors().filterIsInstance<Label>().any {
+                    val text = it.text.toString()
+                    "Review the current offer before deciding." in text && "PENDING · version 3" in text
+                }
+            }
+        }
         check(onGl { session.executor.communicationState.trades.proposals.getValue(declined.proposal).last().status == "PENDING" })
         check(onGl { game.getCivilization("France").gold == 982 })
         capture("03d-stale-native-consent")
         click("Decline")
-        waitFor { onGl { session.executor.communicationState.trades.proposals.getValue(declined.proposal).last().status == "DECLINED" } }
+        waitFor {
+            onGl {
+                val trades = session.executor.communicationState.trades
+                trades.activeProposal == null && trades.proposals.getValue(declined.proposal).last().status == "DECLINED"
+            }
+        }
+        check(onGl { game.getCivilization("France").gold == 982 })
         closeNativeDiplomacy()
 
         // A stopped attempt restores both native actions and communication, in the same window.
@@ -390,7 +407,7 @@ object ManagedDesktopProbe {
         capture("05-incoming-trade-off-turn")
         click("Accept")
         capture("06-exact-consent")
-        click("Accept")
+        click("Confirm acceptance")
         waitFor { onGl { session.executor.communicationState.trades.activeProposal == null } }
         check(onGl { game.getCivilization("France").gold == 1025 })
         closeNativeDiplomacy()

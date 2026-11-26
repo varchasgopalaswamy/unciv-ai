@@ -7,7 +7,6 @@ from jsonschema import Draft202012Validator
 
 from civ_agent.civilization_state import CivilizationState
 from civ_agent.proposal_gateway import ProposalGateway
-from civ_agent.provider_usage import ProviderUsageReader, reconcile_provider_usage
 from civ_agent.service_io import ServiceIO
 from civ_agent.telemetry import JobAccounting, merge_model_usage
 
@@ -108,50 +107,6 @@ def test_cumulative_usage_counts_new_responses_but_not_duplicate_notifications()
     assert merge_model_usage(job, second, fields)
     assert job["modelRequests"] == 2
     assert job["usage"]["input_tokens"] == 250
-
-
-def test_closed_provider_trace_reconciles_interrupted_usage_and_exact_request_count(tmp_path):
-    thread = "01a1027a-1ec6-79e3-8a18-721f87b5b338"
-    directory = tmp_path / "sessions" / "2026" / "10" / "03"
-    directory.mkdir(parents=True)
-    path = directory / f"rollout-2026-10-03T12-00-00-{thread}.jsonl"
-
-    def usage(response, input_tokens, cached, output, reasoning):
-        return {
-            "type": "token_usage_record",
-            "payload": {
-                "thread_id": thread,
-                "response_id": response,
-                "usage": {
-                    "input_tokens": input_tokens,
-                    "cached_input_tokens": cached,
-                    "output_tokens": output,
-                    "reasoning_output_tokens": reasoning,
-                },
-            },
-        }
-
-    rows = [
-        {"type": "event_msg", "payload": {"private": "not inspected"}},
-        usage("response-1", 100, 80, 20, 5),
-        usage("response-1", 100, 80, 20, 5),
-        usage("response-2", 150, 120, 30, 7),
-    ]
-    path.write_text("".join(json.dumps(row) + "\n" for row in rows))
-    job = {
-        "threadId": thread,
-        "usage": {"input_tokens": 100, "cached_input_tokens": 80, "output_tokens": 20},
-        "modelRequests": 9,
-    }
-    assert reconcile_provider_usage(job, ProviderUsageReader(tmp_path / "sessions"))
-    assert job["usage"] == {
-        "input_tokens": 250,
-        "cached_input_tokens": 200,
-        "output_tokens": 50,
-        "reasoning_output_tokens": 12,
-    }
-    assert job["modelRequests"] == 2
-    assert job["usageReported"] and job["providerUsageReconciled"]
 
 
 def test_model_telemetry_uses_effective_settings_and_survives_restart(tmp_path):
@@ -259,7 +214,7 @@ def test_gateway_counts_cached_tools_replays_and_rejections(tmp_path):
 
 
 def test_memory_counts_recover_lost_responses_and_survive_rollback(tmp_path):
-    from tests.test_structured_memory import setup
+    from tests.domain_fixtures import setup
 
     memory = setup(tmp_path / "memory")
     store = JobAccounting(tmp_path / "accounting", memory.memory_edit_counts)

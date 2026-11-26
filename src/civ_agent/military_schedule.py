@@ -17,6 +17,10 @@ def _needs_orders(unit):
     return bool(unit.get("idle")) and float(str(unit.get("movement", "0")).partition("/")[0]) > 0
 
 
+def triage_signature(baseline, current, next_review_turn):
+    return fingerprint({"baseline": baseline, "current": current, "nextReviewTurn": next_review_turn})
+
+
 def military_facts(view: JsonObject, state: JsonObject, civilization: str | None = None) -> JsonObject:
     """No world access, inferred enemy totals, turn clocks or stored research progress."""
     units = {}
@@ -235,9 +239,7 @@ class MilitarySchedule:
         if status.get("fullReview") or not status.get("materialChanged"):
             return None
         material = military_facts(view, state, self.memory.civilization)["material"]
-        signature = fingerprint(
-            {"baseline": saved["planningBaseline"], "current": material, "nextReviewTurn": status["nextReviewTurn"]}
-        )
+        signature = triage_signature(saved["planningBaseline"], material, status["nextReviewTurn"])
         prior = saved.get("triage", {})
         if prior.get("signature") == signature:
             # Reconcile only an uncertain original request; do not reclassify a wait.

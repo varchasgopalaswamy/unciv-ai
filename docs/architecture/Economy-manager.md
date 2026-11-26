@@ -56,11 +56,14 @@ full economy pass. Urgent city events start a targeted review; they do not reset
 the full-review clock. Each pass retains fresh empire constraints, while its
 preload and city advice focus on the selected cities and their plans. A full
 review covers every owned city. `1` requests a full review every own turn with cities.
-Without cities or workers needing attention the economy role sleeps. New workers,
+Without cities or workers needing attention the economy role sleeps. New workers needing orders,
 idle workers with movement on each own turn, completed or interrupted jobs/travel,
 and changed worker health or visible threats trigger worker reviews. A deliberate
 hold is acknowledged once per turn; ongoing jobs do not wake Economy just because
-their remaining time decreases. Worker-only passes may select zero cities and do
+their remaining time decreases. A new exhausted worker waits until it can take
+orders, unless visible threats or damage need attention. The scheduler reassesses
+it on subsequent native views without requiring an intervening economy pass.
+Worker-only passes may select zero cities and do
 not reset the full city-review clock. Restarting a service or
 resuming a checkpoint is not itself a wakeup: the saved baseline and review turn
 are restored with private memory.

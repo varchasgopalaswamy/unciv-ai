@@ -1,14 +1,6 @@
 # Live scenario: Three-Cornered War
 
-Status: both scripted engine scenarios and both September 18 live runs pass,
-including two continuation rounds and restart preservation. The initially
-interrupted runs completed after resuming their saved games with additional time.
-[Desktop acceptance](../archive/reports/War-trades-desktop-acceptance.md) also passed. See the
-[live results and evidence](../archive/reports/War-trades-live-results.md).
 The launcher accepts `war-paid` and `war-joint` alongside `trade-cycle`.
-The [September 19 social-promise run](../archive/reports/Social-promises-live-results.md) separately
-passed the updated advisory contract using Run A, including unchanged promise
-consent at settlement and continuation after restart.
 
 Use guided diplomatic milestones with live agents negotiating prices, reading
 their own observations and choosing military orders. The exercise has two short

@@ -26,6 +26,7 @@ from civ_agent.construction_estimates import (
     overview_estimates,
     queue_progress,
 )
+from civ_agent.construction_intents import construction_state
 from civ_agent.delivery_options import DeliveryOptions
 from civ_agent.entity_sections import (
     CityDetails,
@@ -163,6 +164,7 @@ class CitySummary(BoundaryModel):
     turnsToGrowth: int | None = None
     turnsToStarvation: int | None = None
     constructionQueue: list[str]
+    constructionState: JsonObject | None = None
     constructionChoice: JsonObject | None = None
     constructionConversion: JsonObject | None = None
     constructionEstimates: JsonObject = Field(default_factory=dict)
@@ -491,6 +493,19 @@ def overview(snapshot: JsonObject) -> JsonObject:
                 "canAssembleSpaceshipPart": (unit.get("spaceshipAssembly") or {}).get("available", False),
             }
         )
+    for city in value.get("cities", []) if "revision" in snapshot else []:
+        city["constructionState"] = construction_state(
+            city["handle"],
+            city.get("constructionQueue", []),
+            next(
+                (
+                    [raw.get("constructionQueueRevision"), snapshot.get("turn", 0)]
+                    for raw in snapshot.get("cities", [])
+                    if raw["handle"] == city["handle"]
+                ),
+                None,
+            ),
+        )
     value["economy"] = {
         key: item
         for key, item in (snapshot.get("economy") or {}).items()
@@ -728,6 +743,12 @@ def project_detail(snapshot: JsonObject, query: DetailQuery) -> JsonObject:
                         }
                 else:
                     add_city_commands(data["entity"])
+                    if "constructionQueue" in data["entity"] and "revision" in snapshot:
+                        data["constructionState"] = construction_state(
+                            entity["handle"],
+                            entity["constructionQueue"],
+                            [entity.get("constructionQueueRevision"), snapshot.get("turn", 0)],
+                        )
             else:
                 purchases = {p["name"]: p for p in (entity.get("purchases") or {}).get("constructions", [])}
                 progress = (entity.get("development") or {}).get("constructions", [])
@@ -820,6 +841,12 @@ def project_detail(snapshot: JsonObject, query: DetailQuery) -> JsonObject:
                 if estimates:
                     data["estimateBasis"] = ESTIMATE_BASIS
                 data = copy.deepcopy(data)
+                if "revision" in snapshot:
+                    data["constructionState"] = construction_state(
+                        entity["handle"],
+                        entity["constructionQueue"],
+                        [entity.get("constructionQueueRevision"), snapshot.get("turn", 0)],
+                    )
                 add_construction_commands(data)
     elif name in {"movement_preview", "mission_preview", "player_inspect"}:
         # Native pathfinding cannot be reconstructed from a cached turn projection.

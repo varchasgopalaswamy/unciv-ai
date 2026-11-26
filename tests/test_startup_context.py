@@ -26,9 +26,8 @@ from civ_agent.startup_context import (
 from civ_agent.state_updates import apply_overview_update
 from civ_agent.strategy_guide import strategy_reference
 from civ_agent.telemetry import JobAccounting
-from tests.test_agent_service import StartupHost
+from tests.domain_fixtures import StartupHost, create, strategy
 from tests.test_strategic_review import assessment
-from tests.test_structured_memory import create, strategy
 
 
 def test_startup_details_follow_role_responsibilities():

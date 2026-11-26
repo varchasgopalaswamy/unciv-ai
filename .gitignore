@@ -5,6 +5,7 @@ build/
 *.iml
 local.properties
 .DS_Store
+*~
 .venv/
 __pycache__/
 .pytest_cache/
@@ -15,3 +16,12 @@ benchmarks/
 inputs/
 benchmarks-old/
 docs/archive
+docs/results/
+docs/handoffs/
+docs/plans/
+/.agents/skills/
+/scripts/codex-monitor
+/scripts/game_autopilot.py
+/scripts/publish_game_4_replay.py
+/tests/fixtures/decision_positions/
+/tests/fixtures/provider_context/

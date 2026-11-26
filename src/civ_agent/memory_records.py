@@ -3,7 +3,7 @@
 import copy
 from typing import Annotated, Any, Literal
 
-from pydantic import Field, ValidationError, create_model, model_serializer, model_validator
+from pydantic import Field, FiniteFloat, ValidationError, create_model, model_serializer, model_validator
 
 from civ_agent.delivery_options import DeliveryOptions
 from civ_agent.memory_delivery import MemoryDelivery
@@ -46,8 +46,77 @@ class Content(BoundaryModel):
     expiresTurn: NonnegativeInt | None = None
 
 
-ShortThought = Annotated[str, Field(min_length=1, max_length=400)]
+ShortThought = Annotated[str, Field(min_length=1, description="A concise authored thought.")]
 Thoughts = Annotated[list[ShortThought], Field(max_length=5)]
+
+
+class PlanTaskReference(BoundaryModel):
+    role: Literal["gameplay", "economy", "military", "communication"]
+    taskId: Source = Field(
+        description="Stable ID in that role's existing Planning store; read_role_plan verifies its current authored status."
+    )
+
+
+class NativeQuoteFact(BoundaryModel):
+    field: Source
+    value: Annotated[str, Field(max_length=400)] | int | FiniteFloat | bool | None
+
+
+class NativeInvestmentQuote(BoundaryModel):
+    availability: Literal["observed", "unavailable", "unknown"]
+    source: Source | None = None
+    version: Source | None = None
+    observedTurn: NonnegativeInt | None = None
+    facts: Annotated[list[NativeQuoteFact], Field(max_length=8)] = Field(default_factory=list)
+    limitation: ShortThought | None = None
+
+    @model_validator(mode="after")
+    def quoted_facts(self):
+        if self.availability == "observed" and (not self.source or not self.version or not self.facts):
+            raise ValueError(
+                "An observed quote needs source, version and facts copied from review_investments().progress.quoteSources"
+            )
+        if self.availability != "observed" and not self.limitation:
+            raise ValueError("Explain what is unavailable or still unknown; do not invent a quote")
+        return self
+
+
+class InvestmentAlternative(BoundaryModel):
+    option: ShortThought
+    investment: ShortThought
+    expectedOutcome: ShortThought
+    timing: ShortThought
+    uncertainty: ShortThought
+    waiting: bool = False
+    kind: Literal["production", "purchase", "wait", "other"] | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
+    nativeQuote: NativeInvestmentQuote | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="Author-copied native quote and its source; not a verified effect or fresh inspection credit.",
+    )
+
+
+class DecisionFollowThrough(BoundaryModel):
+    """Optional authored links in one existing strategy, never execution proof."""
+
+    ownerRole: Literal["gameplay", "economy", "military", "communication"] | None = None
+    tasks: Annotated[list[PlanTaskReference], Field(max_length=8)] = Field(default_factory=list)
+    nextStep: ShortThought | None = None
+    blockedBy: Annotated[list[ShortThought], Field(max_length=3)] = Field(default_factory=list)
+    reassessWhen: Annotated[list[ShortThought], Field(max_length=3)] = Field(default_factory=list)
+    routeAssumptions: Annotated[list[ShortThought], Field(max_length=3)] = Field(
+        default_factory=list,
+        description="Assumptions about persistent civilian routes, escorts, threats and accepted risk. Compare with current native orders before handoff.",
+    )
+    alternatives: Annotated[list[InvestmentAlternative], Field(max_length=4)] = Field(
+        default_factory=list,
+        description="Relevant purchase, production or waiting alternatives using native quotes and stated uncertainty. These do not prescribe a build order.",
+    )
+    assessedTurn: NonnegativeInt | None = Field(
+        default=None, description="Author-stated assessment date, not a native verification or inspection credit."
+    )
 
 
 class ChosenDecision(BoundaryModel):
@@ -56,12 +125,18 @@ class ChosenDecision(BoundaryModel):
     )
     objective: ShortThought
     investment: ShortThought
-    expectedObservations: Annotated[list[ShortThought], Field(min_length=1, max_length=3)]
+    expectedObservations: Annotated[list[ShortThought], Field(min_length=1)]
     reviewAfterTurns: Annotated[int, Field(ge=1, le=100)]
     reconsiderWhen: ShortThought
     subjects: Annotated[list[Source], Field(max_length=8)] = Field(
         default_factory=list,
         description="Relevant subject tags; city handles or names include current city facts in feedback.",
+    )
+    followThrough: DecisionFollowThrough | None = Field(default=None, exclude_if=lambda value: value is None)
+    status: Literal["active", "waiting", "completed", "abandoned"] = Field(
+        default="active",
+        exclude_if=lambda value: value == "active",
+        description="Authored disposition of the investment; completed is not proof of a native effect.",
     )
 
 
@@ -73,7 +148,7 @@ class Strategy(Content):
     reconsiderWhen: Thoughts = Field(default_factory=list)
     assumptions: Annotated[list[Assumption], Field(max_length=20)] = Field(default_factory=list)
     sources: Sources = Field(default_factory=list)
-    decisions: Annotated[list[ChosenDecision], Field(max_length=3)] = Field(default_factory=list)
+    decisions: list[ChosenDecision] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def unique_decisions(self):
@@ -127,6 +202,11 @@ class CityPlan(Content):
         description="Exact construction names to watch for native purchase availability. No purchase is automatic.",
     )
     sources: Sources = Field(default_factory=list)
+    strategyDecisions: Annotated[list[Source], Field(max_length=3)] = Field(
+        default_factory=list,
+        exclude_if=lambda value: not value,
+        description="Stable decision IDs in the player's current strategy. These link intent, not authority or completed native actions.",
+    )
 
 
 RecordContent = Annotated[Strategy | Handoff | Belief | Note | CityPlan, Field(discriminator="type")]
@@ -164,6 +244,9 @@ def patch_model(model):
             continue
         field = copy.deepcopy(definition)
         field.default, field.default_factory = None, None
+        # Full documents can omit additive empty fields for legacy hashes.
+        # Explicit empty patch values must still clear an existing link/list.
+        field.exclude_if = None
         fields[name] = (field.annotation, field)
     return create_model(model.__name__ + "Patch", __base__=ContentPatch, **fields)
 
@@ -344,6 +427,10 @@ class Intent(BoundaryModel):
 
 def public_record(key, record):
     body = {k: v for k, v in record["body"].items() if not k.startswith("_") and k != "basis"}
+    if record["category"] == "decision" and body.get("native"):
+        body["receiptReference"] = receipt_reference(body).model_dump()
+        body.pop("native")
+        body["receipt"] = None
     review_evidence = [
         {**ref["assessment"], "source": ref["key"], "reviewTurn": ref["reviewTurn"]}
         for ref in record["body"].get("_citations", {}).values()
@@ -428,6 +515,20 @@ class ContributionRecord(BoundaryModel):
     historical: bool = False
 
 
+class NativeReceiptReference(BoundaryModel):
+    """Binding to the authoritative host receipt; projected facts are separate."""
+
+    operationId: str
+    transport: Literal["player_command", "player_communication"]
+    requestSha256: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
+    receiptSha256: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
+
+
+def receipt_reference(decision) -> NativeReceiptReference:
+    native = decision["native"]
+    return NativeReceiptReference.model_validate({key: native[key] for key in NativeReceiptReference.model_fields})
+
+
 class DecisionRecord(BoundaryModel):
     id: str
     type: Literal["decision"]
@@ -438,7 +539,9 @@ class DecisionRecord(BoundaryModel):
     )
     command: JsonObject
     outcome: Literal["pending", "confirmed", "rejected", "uncertain"]
-    receipt: JsonObject | None
+    receipt: JsonObject | None = None
+    facts: JsonObject | None = Field(default=None, exclude_if=lambda value: value is None)
+    receiptReference: NativeReceiptReference | None = Field(default=None, exclude_if=lambda value: value is None)
     subjects: list[str] = Field(default_factory=list)
     settlement: JsonObject | None = None
     evidence: str | None = None
@@ -476,6 +579,8 @@ class ChangeResult(BoundaryModel):
     recoverable: bool | None = None
     invalidFields: list[JsonObject] | None = None
     limits: list[JsonObject] | None = None
+    allowedValues: list[JsonObject] | None = None
+    requiredFields: list[list[str | int]] | None = None
     instruction: str | None = None
     warnings: list[JsonObject] = Field(default_factory=list)
     contribution: bool = False
@@ -503,6 +608,9 @@ class SummaryAction(BoundaryModel):
     outcome: Literal["pending", "confirmed", "rejected", "uncertain"]
     command: JsonObject
     receipt: JsonObject | None = None
+    facts: JsonObject | None = Field(default=None, exclude_if=lambda value: value is None)
+    receiptReference: NativeReceiptReference | None = Field(default=None, exclude_if=lambda value: value is None)
+    evidence: str | None = Field(default=None, exclude_if=lambda value: value is None)
     settlement: JsonObject | None = None
     initiativeDecisions: Annotated[list[RecordedInitiativeDecision], Field(max_length=2)] = Field(
         default_factory=list, exclude_if=lambda value: not value

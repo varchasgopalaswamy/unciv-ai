@@ -8,6 +8,7 @@ are applied only by the canonical validator, never by the wire codec.
 import copy
 import hashlib
 import json
+from types import MappingProxyType
 
 from jsonschema import Draft202012Validator, FormatChecker
 
@@ -55,23 +56,46 @@ SUPPORTED = {
 
 
 class StrictSchema:
+    def __setattr__(self, name, value):
+        if getattr(self, "_sealed", False):
+            raise AttributeError("Compiled schema is immutable")
+        object.__setattr__(self, name, value)
+
+    @property
+    def original(self):
+        return copy.deepcopy(self._original)
+
+    @property
+    def definitions(self):
+        return copy.deepcopy(self._definitions)
+
+    @property
+    def compiled_defs(self):
+        return copy.deepcopy(self._compiled_defs)
+
+    @property
+    def schema(self):
+        return copy.deepcopy(self._schema)
+
     def __init__(self, schema: JsonObject, *, compact: bool = True):
-        self.original = copy.deepcopy(schema)
-        self.definitions = self.original.pop("$defs", {})
+        self._original = copy.deepcopy(schema)
+        self._definitions = self._original.pop("$defs", {})
         self.compact = compact
-        self.compiled_defs: JsonObject = {}
-        result = self._compile(self.original)
+        self._compiled_defs: JsonObject = {}
+        result = self._compile(self._original)
         if result.get("type") != "object" or "anyOf" in result:
             raise UnsupportedSchema("The decision root must be an object, with unions nested in properties")
-        if self.compiled_defs:
+        if self._compiled_defs:
             # The codec keeps canonical reference names. Wire deduplication
             # must not mutate that graph, or decoding can reinsert aliases and
             # change the supposedly stable provider schema on later turns.
-            result["$defs"] = copy.deepcopy(self.compiled_defs)
-        self.schema = self._deduplicate(result) if compact else result
-        self.validator = Draft202012Validator(self.schema, format_checker=FormatChecker())
-        Draft202012Validator.check_schema(self.schema)
-        self.fingerprint = fingerprint(self.schema)
+            result["$defs"] = copy.deepcopy(self._compiled_defs)
+        self._schema = self._deduplicate(result) if compact else result
+        self._validator = Draft202012Validator(self._schema, format_checker=FormatChecker())
+        Draft202012Validator.check_schema(self._schema)
+        self.fingerprint = fingerprint(self._schema)
+        self._prepare_conversion()
+        self._sealed = True
 
     def _resolve(self, shape):
         seen = set()
@@ -79,7 +103,7 @@ class StrictSchema:
             if shape["$ref"] in seen:
                 raise UnsupportedSchema("Reference-only cycles are not supported")
             seen.add(shape["$ref"])
-            shape = self.definitions[shape["$ref"].removeprefix("#/$defs/")]
+            shape = self._definitions[shape["$ref"].removeprefix("#/$defs/")]
         return shape
 
     def _nullable(self, shape):
@@ -151,12 +175,12 @@ class StrictSchema:
             if set(shape) - {"$ref", "description", "title", "default"}:
                 raise UnsupportedSchema("Reference intersections require an explicit supported contract")
             ref = shape["$ref"]
-            if not ref.startswith("#/$defs/") or ref[8:] not in self.definitions:
+            if not ref.startswith("#/$defs/") or ref[8:] not in self._definitions:
                 raise UnsupportedSchema("Only local, defined references are supported")
             name = ref[8:]
-            if name not in self.compiled_defs:
-                self.compiled_defs[name] = {}  # recursion guard
-                self.compiled_defs[name] = self._compile(self.definitions[name])
+            if name not in self._compiled_defs:
+                self._compiled_defs[name] = {}  # recursion guard
+                self._compiled_defs[name] = self._compile(self._definitions[name])
         shape.pop("default", None)
         if self.compact:
             shape.pop("title", None)
@@ -233,14 +257,46 @@ class StrictSchema:
             schema["$defs"] = definitions
         return schema
 
+    def _prepare_conversion(self):
+        """Compile union selectors once; decode never mutates the compiled graph."""
+        shapes, selectors = {}, {}
+
+        def visit(raw):
+            identity = id(raw)
+            if identity in shapes:
+                return
+            shape = self._map(self._resolve(raw))
+            shapes[identity] = shape
+            variants = shape.get("anyOf", shape.get("oneOf"))
+            if variants:
+                for variant in variants:
+                    visit(variant)
+                for decode in (False, True):
+                    definitions = self._compiled_defs if decode else self._definitions
+                    selectors[identity, decode] = tuple(
+                        (
+                            variant,
+                            Draft202012Validator(
+                                {**(self._compile(variant) if decode else variant), "$defs": definitions}
+                            ),
+                        )
+                        for variant in variants
+                    )
+            for child in shape.get("properties", {}).values():
+                visit(child)
+            if "items" in shape:
+                visit(shape["items"])
+
+        visit(self._original)
+        self._conversion_shapes = MappingProxyType(shapes)
+        self._selectors = MappingProxyType(selectors)
+
     def _convert(self, raw, value, *, decode) -> object:
-        shape = self._map(self._resolve(raw))
-        variants = shape.get("anyOf", shape.get("oneOf"))
-        if variants:
-            for variant in variants:
-                candidate = self._compile(variant) if decode else variant
-                definitions = self.compiled_defs if decode else self.definitions
-                if Draft202012Validator({**candidate, "$defs": definitions}).is_valid(value):
+        shape = self._conversion_shapes[id(raw)]
+        selectors = self._selectors.get((id(raw), decode))
+        if selectors:
+            for variant, validator in selectors:
+                if validator.is_valid(value):
                     return self._convert(variant, value, decode=decode)
             raise ValueError("No matching union variant")
         if shape.get("type") == "object":
@@ -266,13 +322,13 @@ class StrictSchema:
         return value
 
     def decode(self, value) -> JsonObject:
-        self.validator.validate(value)
-        result = self._convert(self.original, value, decode=True)
+        self._validator.validate(value)
+        result = self._convert(self._original, value, decode=True)
         assert isinstance(result, dict)
         return result
 
     def encode(self, value) -> JsonObject:
-        result = self._convert(self.original, value, decode=False)
-        self.validator.validate(result)
+        result = self._convert(self._original, value, decode=False)
+        self._validator.validate(result)
         assert isinstance(result, dict)
         return result

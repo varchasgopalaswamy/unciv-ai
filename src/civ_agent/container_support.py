@@ -6,15 +6,19 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import stat
 import subprocess
+import time
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
 from civ_agent.game_config import ContainerResources
-from civ_agent.tls import private_directory, write_private_json
+from civ_agent.tls import private_directory, regular_file, write_private_json
 
 LABEL = "local.civ-agent.game"
+SERVICE_LABEL = "local.civ-agent.service"
 DEFAULT_AUTH = Path.home() / ".local/state/unciv-host/auth"
 IN_CONTAINER = os.environ.get("CIV_AGENT_CONTAINER") == "1"
 USER_RUNTIME_ROOT = Path("/run/user")
@@ -26,6 +30,204 @@ class ContainerError(RuntimeError):
 
 class LockBusy(ContainerError):
     pass
+
+
+@dataclass(frozen=True)
+class ContainerService:
+    """Physical process ownership, independent of native game/workflow state."""
+
+    name: str
+    cid: str
+    image: str
+    owner: str
+    unit: str
+
+    @classmethod
+    def load(cls, value):
+        result = None
+        try:
+            result = cls(**value)
+            valid = (
+                re.fullmatch(r"[a-zA-Z0-9_.-]{1,180}", result.name)
+                and re.fullmatch(r"[a-f0-9]{64}", result.cid)
+                and re.fullmatch(r"(?:sha256:)?[a-f0-9]{64}", result.image)
+                and re.fullmatch(r"[a-zA-Z0-9_.-]{1,100}", result.owner)
+                and re.fullmatch(r"civ-[a-zA-Z0-9_.-]{1,220}\.service", result.unit)
+            )
+        except (TypeError, KeyError):
+            valid = False
+        if not valid or result is None:
+            raise ContainerError("Invalid container process-owner descriptor")
+        return result
+
+    def record(self):
+        return asdict(self)
+
+
+def require_restart_systemd():
+    lines = command(["systemctl", "--version"]).stdout.splitlines()
+    version = lines[0] if lines else ""
+    match = re.match(r"systemd (\d+)", version)
+    if match is None or int(match[1]) < 254:
+        raise ContainerError("Container restart ownership requires systemd 254 or newer (bounded restart backoff)")
+
+
+def restart_properties():
+    # Keep failed units loaded: collecting them would reset the start allowance.
+    return [
+        "--property=Restart=on-failure",
+        "--property=RestartSec=2s",
+        "--property=RestartSteps=2",
+        "--property=RestartMaxDelaySec=8s",
+        "--property=StartLimitIntervalSec=infinity",
+        "--property=StartLimitBurst=4",
+        "--property=CollectMode=inactive",
+    ]
+
+
+def unit_state(unit):
+    if not re.fullmatch(r"civ-[a-zA-Z0-9_.-]{1,220}(?:\.service)?", unit):
+        raise ContainerError("Invalid owned service unit")
+    result = command(
+        [
+            "systemctl",
+            "--user",
+            "show",
+            unit,
+            "--no-pager",
+            "--property="
+            + ",".join(
+                (
+                    "LoadState",
+                    "ActiveState",
+                    "SubState",
+                    "Result",
+                    "NRestarts",
+                    "ExecMainStatus",
+                    "Description",
+                    "ExecStart",
+                    "ExecStop",
+                )
+            ),
+        ],
+        check=False,
+    )
+    values = dict(line.split("=", 1) for line in result.stdout.splitlines() if "=" in line)
+    if values.get("LoadState") == "not-found":
+        return values
+    if result.returncode or values.get("LoadState") != "loaded":
+        raise ContainerError("Could not inspect owned systemd service")
+    return values
+
+
+def _unit_argv(value):
+    matched = re.fullmatch(r"\{ path=([^;]+) ; argv\[\]=(.*?) ; .*\}", value)
+    return shlex.split(matched[2]) if matched is not None else None
+
+
+def verify_container_service(service: ContainerService, *, unit_required=True):
+    service = ContainerService.load(service.record())
+    current = inspected(service.cid)
+    if (
+        current is None
+        or current.get("Id") != service.cid
+        or current.get("Name", "").lstrip("/") != service.name
+        or current.get("Image", "").removeprefix("sha256:") != service.image.removeprefix("sha256:")
+        or current.get("Config", {}).get("Labels", {}).get(LABEL) != service.owner
+        or current.get("Config", {}).get("Labels", {}).get(SERVICE_LABEL) != service.unit
+        or current.get("HostConfig", {}).get("RestartPolicy", {}).get("Name", "no") not in {"", "no", "never"}
+    ):
+        raise ContainerError("Container process ownership differs; explicit operator replacement required")
+    return current, verify_container_unit(service, required=unit_required)
+
+
+def verify_container_unit(service: ContainerService, *, required=True):
+    """Verify the recorded process owner even when its container was removed."""
+    service = ContainerService.load(service.record())
+    state = unit_state(service.unit)
+    if state.get("LoadState") == "not-found" and not required:
+        return state
+    expected_start = ["/usr/bin/podman", "start", "--attach", "--sig-proxy=false", service.cid]
+    expected_stop = ["/usr/bin/podman", "stop", "--ignore", "--time", "90", service.cid]
+    if (
+        state.get("Description") != "Civ container " + service.owner + " " + service.cid
+        or _unit_argv(state.get("ExecStart", "")) != expected_start
+        or _unit_argv(state.get("ExecStop", "")) != expected_stop
+    ):
+        raise ContainerError("Systemd process ownership differs; refusing to adopt service")
+    return state
+
+
+def start_container_service(service: ContainerService, *, create=False, log_path: Path | None = None):
+    _, state = verify_container_service(service, unit_required=not create)
+    if state.get("LoadState") != "not-found":
+        # Observation/rejoin never restarts a stopped/failed unit or resets its
+        # allowance. Only the already installed systemd policy owns retries.
+        if state.get("ActiveState") not in {"active", "activating"}:
+            raise ContainerError("Owned container service stopped or exhausted its restart allowance")
+        return
+    require_restart_systemd()
+    output = []
+    if log_path is not None:
+        if not log_path.is_absolute():
+            raise ContainerError("Container service log must have an absolute private path")
+        private_directory(log_path.parent)
+        log_path.touch(mode=0o600, exist_ok=True)
+        regular_file(log_path, private=True)
+        escaped = systemd_path(log_path)
+        output = ["--property=StandardOutput=append:" + escaped, "--property=StandardError=append:" + escaped]
+    command(
+        [
+            "systemd-run",
+            "--user",
+            "--unit",
+            service.unit,
+            "--expand-environment=no",
+            "--property=Type=exec",
+            "--property=UMask=0077",
+            "--property=TimeoutStopSec=100",
+            "--property=Description=Civ container " + service.owner + " " + service.cid,
+            "--property=ExecStop=/usr/bin/podman stop --ignore --time 90 " + service.cid,
+            *restart_properties(),
+            *output,
+            "/usr/bin/podman",
+            "start",
+            "--attach",
+            "--sig-proxy=false",
+            service.cid,
+        ]
+    )
+
+
+def stop_container_service(service: ContainerService, *, collect=False):
+    current, state = verify_container_service(service, unit_required=False)
+    if state.get("LoadState") == "not-found":
+        if not current["State"]["Running"]:
+            return
+        raise ContainerError("Owned running container lost its systemd owner")
+    command(["systemctl", "--user", "stop", service.unit], timeout=110)
+    current = inspected(service.cid)
+    if current is None or current["State"]["Running"]:
+        raise ContainerError("Could not confirm owned container service stopped")
+    if collect:
+        wait_unit_collected(service.unit, reset_failed=True)
+
+
+def wait_unit_collected(unit, *, reset_failed=False):
+    """An explicit replacement must not race collection of its stopped unit."""
+    deadline = time.monotonic() + 5
+    while True:
+        state = unit_state(unit)
+        if state.get("LoadState") == "not-found":
+            return
+        if reset_failed and state.get("ActiveState") == "failed":
+            # Only an explicitly authorized replacement reaches this branch,
+            # after the caller verified ownership and stopped the exact unit.
+            command(["systemctl", "--user", "reset-failed", unit])
+            reset_failed = False
+        if time.monotonic() >= deadline:
+            raise ContainerError("Stopped unit is still loaded; retry explicit restart after references close")
+        time.sleep(0.05)
 
 
 def host_environment():
@@ -83,9 +285,11 @@ def identity(root) -> dict[str, Any]:
     path = root / "container.json"
     record = read_json(path)
     if record is None:
-        record = {"id": token_hex(5), "format": 1}
+        from civ_agent.container_identity import LOCAL_RUNTIME
+
+        record = {"id": token_hex(5), "format": 2, "runtime": LOCAL_RUNTIME}
         write_private_json(path, record)
-    if record.get("format") != 1 or not re.fullmatch("[a-f0-9]{10}", record.get("id", "")):
+    if record.get("format") not in {1, 2} or not re.fullmatch("[a-f0-9]{10}", record.get("id", "")):
         raise ContainerError("Unsupported container manifest; select a new match directory")
     return record
 
@@ -103,6 +307,7 @@ def preflight(*, background=True):
     # Permission errors are fatal; never silently fall back to a shared network.
     command(["podman", "unshare", "--rootless-netns", "nft", "list", "tables"])
     if background:
+        require_restart_systemd()
         command(["systemctl", "--user", "show-environment"])
         linger = command(["loginctl", "show-user", str(os.getuid()), "-p", "Linger", "--value"])
         if linger.stdout.strip() != "yes":
@@ -151,28 +356,16 @@ def base_arguments(name, *, game_id, resources):
 
 
 def mount(source, destination, *, writable=False):
-    # Shared SELinux label is needed for controller/agent/TUI access to the same
-    # directory. Mount visibility, not a shared filesystem root, limits each role.
+    # Shared SELinux label lets the controller and the operator reader open
+    # the same private SQLite files.
     if ":" in str(source) or "\n" in str(source):
         raise ContainerError("Container state paths cannot contain ':' or newlines")
     return ["--volume", f"{source}:{destination}:{'rw' if writable else 'ro'},z"]
 
 
 def watch_mounts(root):
-    """SQLite readers may create WAL coordination files even with mode=ro."""
-    from civ_agent.game_config import ResolvedGameConfig
-    from civ_agent.turn_archive import civilization_directory_name
-
-    directories = [Path("control"), Path("runner")]
-    config = ResolvedGameConfig.model_validate(read_json(root / "resolved.json"))
-    for player in config.agent_players:
-        base = Path("agent-services") / civilization_directory_name(player.civilization)
-        directories += [base / "civilization", base / "telemetry"]
-    arguments = mount(root, "/match")
-    for directory in directories:
-        private_directory(root / directory)
-        arguments += mount(root / directory, Path("/match") / directory, writable=True)
-    return arguments
+    """Observers consume runtime publications through a read-only mount."""
+    return mount(root, "/match")
 
 
 def inspected(name):
@@ -256,6 +449,23 @@ def cleanup(game_id):
     result = podman("ps", "--all", "--filter", f"label={LABEL}={game_id}", "--format", "{{.Names}}")
     names = result.stdout.split()
     if names:
+        for name in names:
+            current = inspected(name)
+            if current is None:
+                raise ContainerError("Could not inspect container before cleanup")
+            unit = current.get("Config", {}).get("Labels", {}).get(SERVICE_LABEL)
+            if unit:
+                stop_container_service(
+                    ContainerService.load(
+                        {
+                            "name": name,
+                            "cid": current["Id"],
+                            "image": current["Image"],
+                            "owner": game_id,
+                            "unit": unit,
+                        }
+                    )
+                )
         # Normal shutdown has already stopped these. Avoid another stop process
         # for every exited player, while still draining live orphaned services.
         running = podman("ps", "--filter", f"label={LABEL}={game_id}", "--format", "{{.Names}}")
@@ -274,20 +484,41 @@ def auth_name(root):
 def launch_background(root, role):
     import sys
 
-    unit = "civ-" + role + "-" + identity(root)["id"]
+    from civ_agent.container_identity import deployment_identity
+
+    unit = "civ-" + role + "-" + deployment_identity(identity(root)).id
+    require_restart_systemd()
+    record = identity(root)
+    expected = {"backend": "systemd-existing-cid-v1", "unit": unit}
+    previous = unit_state(unit)
+    if previous.get("LoadState") != "not-found":
+        # This function is called only by an explicit CLI launch. Never replace
+        # an unknown unit, nor silently reset an automatically exhausted owner.
+        if record.get("supervision") != expected:
+            raise ContainerError("Refusing to replace an unowned existing supervisor unit")
+        if previous.get("ActiveState") not in {"inactive", "failed"}:
+            raise ContainerError("The deployment already has a live systemd supervisor")
+        command(["systemctl", "--user", "stop", unit], timeout=250)
+        wait_unit_collected(unit, reset_failed=True)
+    record["supervision"] = expected
+    write_private_json(root / "container.json", record)
     command(
         [
             "systemd-run",
             "--user",
-            "--collect",
             "--unit",
             unit,
+            "--expand-environment=no",
+            "--property=Type=exec",
+            "--property=Environment=CIV_SUPERVISOR_UNIT=" + unit,
+            "--property=RestartPreventExitStatus=78",
+            *restart_properties(),
             "--property=TimeoutStopSec=240",
             "--property=KillMode=mixed",
             "--property=UMask=0077",
             "--property=WorkingDirectory=/",
-            f"--property=StandardOutput=append:{root / 'supervisor.log'}",
-            f"--property=StandardError=append:{root / 'supervisor.log'}",
+            f"--property=StandardOutput=append:{systemd_path(root / 'supervisor.log')}",
+            f"--property=StandardError=append:{systemd_path(root / 'supervisor.log')}",
             str(Path(sys.executable).absolute()),
             "-m",
             "civ_agent.container_supervisor",
@@ -297,3 +528,7 @@ def launch_background(root, role):
         ]
     )
     return unit
+
+
+def systemd_path(path: Path) -> str:
+    return str(path).replace("%", "%%")

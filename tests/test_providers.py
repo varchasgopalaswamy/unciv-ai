@@ -10,11 +10,18 @@ from aiohttp import web
 from aiohttp.test_utils import TestServer
 
 from civ_agent import container_supervisor as supervisor
-from civ_agent import providers
 from civ_agent.benchmark import generate_runs
 from civ_agent.commands import game, runtime
 from civ_agent.container_supervisor import agent_auth_arguments
-from civ_agent.game_config import GameConfig, ResolvedGameConfig
+from civ_agent.game_config import EconomyModel, GameConfig, ResolvedGameConfig
+from civ_agent.orchestration import provider_preparation
+from civ_agent.orchestration.contracts import ModelSelection
+from civ_agent.orchestration.managed_player import NativePlayerSession, NativePlayerSettings
+from civ_agent.orchestration.provider_capabilities import prepare_profile_contract
+from civ_agent.orchestration.provider_preparation import fetch_openrouter_catalog, prepare_managed_sessions
+from civ_agent.orchestration.providers import ProviderClients
+from civ_agent.protocol import JsonObject
+from civ_agent.provider_credentials import PROVIDERS, read_api_key
 from civ_agent.tls import write_private, write_private_json
 
 
@@ -77,20 +84,11 @@ def test_openrouter_login_is_private_durable_and_needs_no_openai_or_podman(tmp_p
     )
     assert runtime.run(args) == 0
     key = tmp_path / "openrouter.key"
-    assert providers.read_api_key(key) == "synthetic-secret"
+    assert read_api_key(key) == "synthetic-secret"
     assert stat.S_IMODE(key.stat().st_mode) == 0o600
     assert not (tmp_path / "codex").exists()
     assert "synthetic-secret" not in capsys.readouterr().out
-    original = {
-        "OPENAI_API_KEY": "must-not-leak",
-        "CODEX_API_KEY": "also-private",
-        "OPENROUTER_API_KEY": "old-value",
-        "CIV_OPENROUTER_KEY_FILE": str(key),
-    }
-    router = providers.provider_environment(original, "openrouter")
-    assert router == {"OPENROUTER_API_KEY": "synthetic-secret"}
-    assert "OPENROUTER_API_KEY" not in providers.provider_environment(original, "openai")
-    for provider in providers.PROVIDERS:
+    for provider in PROVIDERS:
         args = " ".join(agent_auth_arguments(tmp_path, "Rome", provider))
         assert "synthetic-secret" not in args
         assert ("openrouter.key" in args) == (provider == "openrouter")
@@ -98,64 +96,94 @@ def test_openrouter_login_is_private_durable_and_needs_no_openai_or_podman(tmp_p
         assert ":ro" in args
 
 
-def test_model_catalog_validates_tools_effort_and_caches_for_resume(tmp_path, monkeypatch):
+def test_model_catalog_validates_tools_effort_and_caches_for_resume(monkeypatch):
     async def run():
         fetches = []
+        rows: list[JsonObject] = [
+            {
+                "id": "test/reasoner",
+                "context_length": 32000,
+                "supported_parameters": ["tools", "structured_outputs", "reasoning"],
+                "reasoning": {"supported_efforts": ["high", "low"]},
+            },
+            {
+                "id": "test/plain",
+                "context_length": 16000,
+                "supported_parameters": ["tools", "structured_outputs"],
+            },
+            {"id": "test/no-schema", "context_length": 16000, "supported_parameters": ["tools"]},
+            {"id": "test/no-tools", "context_length": 16000, "supported_parameters": []},
+        ]
 
         async def catalog(request):
             assert "Authorization" not in request.headers
             fetches.append(True)
-            return web.json_response(
-                {
-                    "data": [
-                        {
-                            "id": "test/reasoner",
-                            "context_length": 32000,
-                            "supported_parameters": ["tools", "structured_outputs", "reasoning"],
-                            "reasoning": {"supported_efforts": ["high", "low"]},
-                        },
-                        {
-                            "id": "test/plain",
-                            "context_length": 16000,
-                            "supported_parameters": ["tools", "structured_outputs"],
-                        },
-                        {"id": "test/no-schema", "context_length": 16000, "supported_parameters": ["tools"]},
-                        {"id": "test/no-tools", "context_length": 16000, "supported_parameters": []},
-                    ]
-                }
-            )
+            return web.json_response({"data": rows})
 
+        settings = NativePlayerSettings(
+            provider="openrouter",
+            model="test/reasoner",
+            reasoning_effort="high",
+            communication_reasoning_effort="low",
+            economy_model=EconomyModel(provider="openrouter", model="test/reasoner", reasoning_effort="high"),
+            military_model=EconomyModel(provider="openrouter", model="test/reasoner", reasoning_effort="high"),
+        )
+        original = NativePlayerSession(game="game", player="p0", settings=settings)
         app = web.Application()
         app.router.add_get("/models", catalog)
         async with TestServer(app) as server:
-            monkeypatch.setattr(providers, "OPENROUTER_URL", str(server.make_url("/")).rstrip("/"))
-            args = await providers.openrouter_model_arguments("test/reasoner", "high", tmp_path)
-            assert "model_context_window=32000" in args
-            assert "model_supports_reasoning_summaries=true" in args
-            assert await providers.openrouter_model_arguments("test/reasoner", "high", tmp_path) == args
+            monkeypatch.setattr(provider_preparation, "CATALOG_URL", str(server.make_url("/models")))
+            prepared = await prepare_managed_sessions([original])
+            contract = prepared[0].get_provider_contract("gameplay")
+            assert contract is not None and contract.context_window == 32000
+            assert contract.profile["supports_thinking"] is True
+            assert await prepare_managed_sessions([original], frozen=prepared) == prepared
             assert len(fetches) == 1
+            capabilities = await fetch_openrouter_catalog({row["id"] for row in rows})
             for model, effort, error in (
-                ("test/reasoner", "ultra", "effort"),
+                ("test/reasoner", "max", "effort"),
                 ("test/plain", "high", "reasoning"),
                 ("test/no-tools", "none", "tool calling"),
-                ("test/missing", "high", "absent"),
                 ("test/no-schema", "none", "structured outputs"),
             ):
+                selection = ModelSelection(
+                    provider="openrouter", authentication="api_key", model=model, reasoning_effort=effort
+                )
                 with pytest.raises(ValueError, match=error):
-                    await providers.openrouter_model_arguments(model, effort, tmp_path)
-            args = await providers.openrouter_model_arguments("test/plain", "none", tmp_path)
-            assert "model_supports_reasoning_summaries=false" in args
-        # Frozen capabilities remain usable when the public endpoint is offline.
-        assert "model_context_window=32000" in await providers.openrouter_model_arguments(
-            "test/reasoner", "high", tmp_path
-        )
+                    await prepare_profile_contract(selection, catalog=capabilities[model])
+            with pytest.raises(ValueError, match="WORKFLOW_CATALOG_UNAVAILABLE"):
+                await fetch_openrouter_catalog({"test/missing"})
+            plain = await prepare_profile_contract(
+                ModelSelection(
+                    provider="openrouter", authentication="api_key", model="test/plain", reasoning_effort="none"
+                ),
+                catalog=capabilities["test/plain"],
+            )
+            assert plain.profile["supports_thinking"] is False
+        # Retained native contracts remain usable after the public endpoint closes.
+        before = len(fetches)
+        assert await prepare_managed_sessions([original], frozen=prepared) == prepared
+        assert len(fetches) == before
 
     asyncio.run(run())
 
 
-def test_openrouter_missing_key_does_not_fall_back_to_openai():
-    with pytest.raises(ValueError, match="OpenRouter API key missing"):
-        providers.provider_environment({"OPENAI_API_KEY": "not-the-right-key"}, "openrouter")
+def test_openrouter_missing_key_does_not_fall_back_to_environment_or_another_provider(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "not-the-right-key")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "environment-is-not-authority")
+
+    async def run():
+        clients = ProviderClients(openai_key_file=tmp_path / "must-not-read")
+        try:
+            with pytest.raises(ValueError, match="WORKFLOW_API_KEY_REQUIRED"):
+                await clients.model(
+                    ModelSelection(provider="openrouter", authentication="api_key", model="test/reasoner")
+                )
+            assert not clients.models
+        finally:
+            await clients.close()
+
+    asyncio.run(run())
 
 
 def test_openrouter_only_launch_does_not_require_or_expose_openai_login(tmp_path, monkeypatch):
@@ -163,27 +191,29 @@ def test_openrouter_only_launch_does_not_require_or_expose_openai_login(tmp_path
     config = GameConfig(agents={"provider": "openrouter", "model": "test/reasoner"}).resolved()
     write_private_json(root / "resolved.json", config.model_dump())
     record = supervisor.identity(root)
-    record.update(auth_root=str(auth), images={"runtime": "test-image"})
+    record.update(auth_root=str(auth), images={"runtime": "sha256:" + "1" * 64})
     write_private_json(root / "container.json", record)
     write_private(auth / "openrouter.key", b"synthetic-secret\n")
     login, authorize = Mock(), Mock()
     monkeypatch.setattr(supervisor, "ensure_auth", login)
     monkeypatch.setattr(supervisor, "authorize_agent", authorize)
-    monkeypatch.setattr(supervisor, "cleanup", lambda *_: None)
-    monkeypatch.setattr(supervisor, "create_network", lambda *_, **kwargs: {"subnets": [{"subnet": "10.1.0.0/24"}]})
+    monkeypatch.setattr(supervisor, "cleanup", lambda _: None)
+    monkeypatch.setattr(supervisor, "create_network", lambda *_, **__: {"subnets": [{"subnet": "10.55.0.0/24"}]})
     monkeypatch.setattr(supervisor, "firewall", lambda *_: None)
     monkeypatch.setattr(supervisor.GameRun, "await_ready", lambda *_: None)
-    launched = []
-    monkeypatch.setattr(
-        supervisor.GameRun, "start", lambda self, args, name, image, *entry: launched.append((args, entry))
-    )
-    supervisor.GameRun(root).setup()
+    run = supervisor.GameRun(root)
+    started = []
+    monkeypatch.setattr(run, "start", lambda arguments, name, image, *entry: started.append((arguments, name, entry)))
+    run.setup()
     login.assert_not_called()
     authorize.assert_not_called()
-    assert len(launched) == 4
-    assert "openrouter.key" not in " ".join(launched[0][0])
-    assert all("CIV_OPENROUTER_KEY_FILE=/run/secrets/openrouter.key" in args for args, _ in launched[1:])
-    assert not any("CIV_AUTH_" in arg or "synthetic-secret" in arg for args, _ in launched for arg in args)
+    assert len(started) == 1
+    arguments, name, entry = started[0]
+    assert name == run.controller and entry == ("controller",)
+    assert str(auth / "openrouter.key") + ":/run/secrets/openrouter.key:ro,z" in arguments
+    assert not any(
+        "/auth-ipc" in argument or "CIV_AUTH_" in argument or "synthetic-secret" in argument for argument in arguments
+    )
     record["auth_root"] = str(root / "credentials")
     write_private_json(root / "container.json", record)
     with pytest.raises(supervisor.ContainerError, match="outside the match"):

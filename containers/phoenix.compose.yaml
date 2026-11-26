@@ -1,0 +1,36 @@
+# Local operator UI. Create the external network and volume as documented in Monitoring.md.
+name: civ-local-telemetry
+services:
+  phoenix:
+    image: docker.io/arizephoenix/phoenix:version-21.0.0-nonroot@sha256:1dce55ba92fd708d39c062002722a4b6fbc46f1f5f395a2f867f5bd263d64ca2
+    container_name: civ-local-phoenix
+    environment:
+      PHOENIX_HOST: 0.0.0.0
+      PHOENIX_WORKING_DIR: /home/nonroot/.phoenix
+      PHOENIX_ENABLE_AUTH: "false"
+      PHOENIX_ALLOW_EXTERNAL_RESOURCES: "false"
+      PHOENIX_TELEMETRY_ENABLED: "false"
+      PHOENIX_DISABLE_MODEL_COST_AUTO_UPDATE: "true"
+      PHOENIX_DISABLE_AGENT_ASSISTANT: "true"
+      PHOENIX_ENABLE_MCP_SERVER: "false"
+      PHOENIX_ALLOWED_PROVIDERS: NONE
+      PHOENIX_ALLOWED_SANDBOX_PROVIDERS: NONE
+    ports:
+      - 127.0.0.1:6006:6006
+    volumes:
+      # Copy-up preserves the nonroot image user's ownership on the new volume.
+      - phoenix-data:/home/nonroot
+    networks:
+      telemetry:
+        aliases: [phoenix]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    restart: unless-stopped
+volumes:
+  phoenix-data:
+    external: true
+    name: civ-local-phoenix-data
+networks:
+  telemetry:
+    external: true
+    name: civ-local-telemetry

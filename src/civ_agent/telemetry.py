@@ -54,7 +54,9 @@ ADVISORY_CHOICES = {
     "beliefs": {"reconsider", "retain"},
     "early_review": {"review", "wait"},
     "city_focus": {"keep", "defer"},
+    "city_focus_change": {"keep", "change"},
     "city_construction": {"keep", "defer"},
+    "city_construction_change": {"keep", "change"},
 }
 ADVISORY_STATUSES = {"accepted", "low_confidence", "refusal", "missing", "malformed"}
 ADVISORY_DELIVERY_STATUSES = {"delivered", "no_notice", "not_selected", "stale", "not_accepted"}

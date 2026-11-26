@@ -84,6 +84,10 @@ object ConstructionOpportunitiesProbe {
         city.cityConstructions.inProgressConstructions["Library"] = 26
         city.cityStats.update()
         val session = PlayerHost(runtime).bindPlayer("Rome")
+        val before = json().toJson(runtime.game)
+        repeat(3) { session.turn() }
+        check(json().toJson(runtime.game) == before) { "Production observation changed a legacy queue" }
+        runtime.executor.enforceProductionPolicies()
         val turn = session.turn()
         check(turn.productionPolicy!!.conversionUnlockEra == "Future era")
         check(turn.productionPolicy.blockedConversions == listOf("Gold", "Science", "Culture"))
@@ -99,6 +103,9 @@ object ConstructionOpportunitiesProbe {
         // Reconcile an automatic/legacy choice even in a puppet city.
         city.isPuppet = true
         city.cityConstructions.constructionQueue = arrayListOf("Gold")
+        check(session.turn().cities.single().constructionQueue == listOf("Gold"))
+        check(city.cityConstructions.constructionQueue == listOf("Gold"))
+        runtime.executor.enforceProductionPolicies()
         check(session.turn().cities.single().constructionQueue == listOf("Nothing"))
         city.isPuppet = false
         player.tech.addTechnology("Future Tech", false)

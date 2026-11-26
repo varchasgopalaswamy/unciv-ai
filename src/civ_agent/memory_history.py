@@ -1,9 +1,9 @@
 """Deterministic history from committed memory and receipts, independent of model prose."""
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import Integer, and_, func, literal_column, or_, select
 
 from civ_agent import memory_schema as tables
-from civ_agent.memory_records import MEMORY_TYPES, TurnSummary, record_text
+from civ_agent.memory_records import MEMORY_TYPES, TurnSummary, receipt_reference, record_text
 from civ_agent.memory_snapshots import load_snapshot, record_bodies
 from civ_agent.memory_store import RecordStore
 from civ_agent.protocol import JsonObject
@@ -34,23 +34,75 @@ def action_text(command, receipt, settlement=None, *, transport):
     return f"Requested {label}" if native or not confirmed else label
 
 
-def action_record(key, decision, *, transport) -> JsonObject:
+def action_record(key, decision, *, transport, evidence=None) -> JsonObject:
     intent = decision.get("intent") or {}
     reason = intent.get("reason", "")
     plan = (decision.get("_pinned") or {}).get("cityPlan")
-    return {
+    native = decision.get("native")
+    result = {
         "decision": key,
         "action": action_text(
-            decision["command"], decision["receipt"], decision.get("settlement"), transport=transport
+            decision["command"],
+            decision["facts"] if native else decision["receipt"],
+            decision.get("settlement"),
+            transport=transport,
         ),
         "reason": reason,
         **({"cityPlan": {"id": plan["key"], "version": plan["version"]}} if plan else {}),
         "outcome": decision["outcome"],
         "command": decision["command"],
-        "receipt": decision["receipt"],
+        "receipt": None if native else decision["receipt"],
         "settlement": decision.get("settlement"),
         **({"initiativeDecisions": decision["initiativeDecisions"]} if decision.get("initiativeDecisions") else {}),
     }
+    if native:
+        result.update(facts=decision["facts"], receiptReference=receipt_reference(decision).model_dump())
+        if evidence is not None:
+            result["evidence"] = evidence
+    return result
+
+
+def action_rows(db, *, jobs=None, turn=None, limit=None, offset=0):
+    """Read reachable domain outcomes and live legacy requests in creation order."""
+    origins = tables.records.alias("action_origins")
+    origin_order = (
+        select(func.min(literal_column("action_origins.rowid", Integer)))
+        .where(origins.c.key == tables.records.c.key)
+        .correlate(tables.records)
+        .scalar_subquery()
+    )
+    query = (
+        select(
+            tables.records.c.key.label("decision"),
+            tables.records.c.version,
+            tables.records.c.category,
+            tables.record_order.label("record_id"),
+            tables.jobs.c.id.label("job"),
+            func.coalesce(
+                tables.outbox.c.transport, func.json_extract(tables.records.c.body, "$.native.transport")
+            ).label("transport"),
+        )
+        .select_from(
+            tables.current_records.join(tables.active_jobs, tables.records.c.job == tables.jobs.c.id).outerjoin(
+                tables.live_requests, tables.outbox.c.decision == tables.records.c.key
+            )
+        )
+        .where(
+            tables.records.c.category == "decision",
+            or_(
+                tables.outbox.c.id.is_not(None),
+                func.json_extract(tables.records.c.body, "$.native.operationId").is_not(None),
+            ),
+        )
+        .order_by(origin_order)
+    )
+    if jobs is not None:
+        query = query.where(tables.jobs.c.id.in_(jobs))
+    if turn is not None:
+        query = query.where(tables.jobs.c.game_turn == turn)
+    if limit is not None:
+        query = query.limit(limit)
+    return list(db.execute(query.offset(offset)).mappings())
 
 
 def build_summary(db, *, turn=None, job=None):
@@ -71,21 +123,17 @@ class SummaryReader:
                 .where(
                     or_(
                         tables.jobs.c.id.in_(jobs),
-                        and_(tables.jobs.c.game_turn.in_(turns), tables.jobs.c.purpose.in_(["gameplay", "economy"])),
+                        and_(
+                            tables.jobs.c.game_turn.in_(turns),
+                            tables.jobs.c.purpose.in_(["gameplay", "economy", "military"]),
+                        ),
                     )
                 )
                 .order_by(tables.job_order)
             ).mappings()
         )
         ids = [row["id"] for row in self.jobs]
-        self.requests = list(
-            db.execute(
-                select(tables.outbox)
-                .select_from(tables.live_requests)
-                .where(tables.outbox.c.job.in_(ids))
-                .order_by(tables.request_order)
-            ).mappings()
-        )
+        self.requests = action_rows(db, jobs=ids)
         self.decisions = RecordStore(db).all(keys=[row["decision"] for row in self.requests], project=False)
         # Follow only keys written by the selected jobs. A single recursive walk
         # serves the whole batch, and discarded branches remain unreachable.
@@ -111,7 +159,11 @@ class SummaryReader:
         jobs = (
             [row for row in self.jobs if row["id"] == job]
             if job is not None
-            else [row for row in self.jobs if row["purpose"] in {"gameplay", "economy"} and row["game_turn"] == turn]
+            else [
+                row
+                for row in self.jobs
+                if row["purpose"] in {"gameplay", "economy", "military"} and row["game_turn"] == turn
+            ]
         )
         ids = {row["id"] for row in jobs}
         return (

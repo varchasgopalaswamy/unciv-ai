@@ -141,7 +141,7 @@ print(json.dumps(out))
             cleanup(game_id)
 
 
-def test_dashboard_can_read_closed_wal_databases_without_game_access(tmp_path):
+def test_dashboard_reads_stopped_snapshots_without_source_database_writes(tmp_path):
     from civ_agent.container_support import watch_mounts
     from civ_agent.game_config import GameConfig
     from civ_agent.monitoring import MonitorStore, path_for
@@ -150,8 +150,9 @@ def test_dashboard_can_read_closed_wal_databases_without_game_access(tmp_path):
     config = GameConfig(game={"randomize": True, "assignment_seed": 7}).resolved()
     write_private_json(tmp_path / "resolved.json", config.model_dump())
     MonitorStore(path_for(tmp_path)).put("state", "run", {"status": "running"})
-    # SQLite's final writer closes/removes its WAL sidecars. A read-only SQL
-    # connection must still be able to create coordination files on next open.
+    # Coordination files belong only in the private stopped capture. The source
+    # directory is mounted read-only and must keep exactly the same file set.
+    before = {str(path.relative_to(tmp_path)): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
     result = podman(
         "run",
         "--rm",
@@ -167,14 +168,23 @@ def test_dashboard_can_read_closed_wal_databases_without_game_access(tmp_path):
         "/opt/app/.venv/bin/python",
         os.environ.get("CIV_TEST_IMAGE", "localhost/civ-agent:runtime"),
         "-c",
-        "from pathlib import Path; from civ_agent.monitoring import read_record; "
-        "from civ_agent.game_config import ResolvedGameConfig; "
-        "config=ResolvedGameConfig.model_validate_json(Path('/match/resolved.json').read_text()); "
-        "assert len(config.agent_players)==3 and config.turn_order[-1].name=='Unciv'; "
-        "assert read_record(Path('/match/runner/monitoring.sqlite3'),'state','run')['status']=='running'; "
-        "print('read-only query succeeded')",
+        """
+from pathlib import Path
+from civ_agent.monitoring import read_record
+from civ_agent.operator_views import passive_root
+from civ_agent.game_config import ResolvedGameConfig
+config = ResolvedGameConfig.model_validate_json(Path('/match/resolved.json').read_text())
+assert len(config.agent_players) == 3 and config.turn_order[-1].name == 'Unciv'
+with passive_root(Path('/match')) as captured:
+    assert captured != Path('/match')
+    assert read_record(captured / 'runner/monitoring.sqlite3', 'state', 'run')['status'] == 'running'
+print('passive snapshot query succeeded')
+""",
     )
-    assert result.stdout.strip() == "read-only query succeeded"
+    assert result.stdout.strip() == "passive snapshot query succeeded"
+    assert {
+        str(path.relative_to(tmp_path)): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()
+    } == before
 
 
 @pytest.mark.parametrize("provider", ["openai", "openrouter"])
@@ -188,6 +198,10 @@ def test_worker_mounts_only_its_selected_provider_credential(tmp_path, provider)
         "run",
         "--rm",
         "--network=none",
+        "--env",
+        "OPENAI_API_KEY=ambient-openai-must-not-be-used",
+        "--env",
+        "OPENROUTER_API_KEY=ambient-router-must-not-be-used",
         "--userns=keep-id",
         "--cap-drop=ALL",
         "--security-opt=no-new-privileges",
@@ -199,12 +213,32 @@ def test_worker_mounts_only_its_selected_provider_credential(tmp_path, provider)
         "/opt/app/.venv/bin/python",
         os.environ.get("CIV_TEST_IMAGE", "localhost/civ-agent:runtime"),
         "-c",
-        "import os; from pathlib import Path; from civ_agent.providers import provider_environment; "
-        f"provider={provider!r}; "
-        "assert Path('/run/secrets/openrouter.key').is_file() == (provider == 'openrouter'); "
-        "assert Path('/auth-ipc').is_dir() == (provider == 'openai'); "
-        "environment=provider_environment(dict(os.environ), provider); "
-        "assert environment.get('OPENROUTER_API_KEY') == ('synthetic-secret' if provider == 'openrouter' else None); "
-        "print('provider isolation verified')",
+        """
+import asyncio
+from pathlib import Path
+from civ_agent.orchestration.contracts import ModelSelection
+from civ_agent.orchestration.worker_configuration import WorkerProviderConfig, provider_clients
+
+async def probe():
+    assert Path('/run/secrets/openrouter.key').is_file() == (PROVIDER == 'openrouter')
+    assert Path('/auth-ipc').is_dir() == (PROVIDER == 'openai')
+    config = (WorkerProviderConfig(openrouter_key_file=Path('/run/secrets/openrouter.key'))
+              if PROVIDER == 'openrouter' else
+              WorkerProviderConfig(broker_socket=Path('/auth-ipc/broker.sock'),
+                                   broker_token_file=Path('/auth-ipc/not-read-during-preflight.json')))
+    selection = (ModelSelection(provider='openrouter', authentication='api_key', model='vendor/test')
+                 if PROVIDER == 'openrouter' else ModelSelection(model='gpt-6.1-sol'))
+    clients = provider_clients(config)
+    try:
+        model = await clients.model(selection)
+        assert model.provider.client.api_key == ('synthetic-secret' if PROVIDER == 'openrouter'
+                                                else 'broker-managed')
+        assert (clients.broker is not None) == (PROVIDER == 'openai')
+    finally:
+        await clients.close()
+    print('provider isolation verified')
+
+asyncio.run(probe())
+""".replace("PROVIDER", repr(provider)),
     )
     assert result.stdout.strip() == "provider isolation verified"

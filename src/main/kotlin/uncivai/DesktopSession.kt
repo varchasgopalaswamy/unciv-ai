@@ -78,7 +78,7 @@ internal class DesktopSession(
     internal var diplomacyDrafts = DesktopDiplomacyDrafts()
         private set
     internal var tradePanel: DesktopTradeController? = null
-    private var tradeDraftToRestore: DesktopTradeDraft? = null
+    private var tradeStateToRestore: DesktopTradeState? = null
     private val host = PlayerHost(executor)
 
     private class UiWork(val generation: Long) : AbstractCoroutineContextElement(Key) {
@@ -169,6 +169,7 @@ internal class DesktopSession(
                 val result = block()
                 if (executor.handoff == handoff && generation == beforeCommit && json().toJson(game) != before) {
                     check(permitted) { "A native UI callback changed the game without turn authority" }
+                    executor.enforceProductionPolicies()
                     game.checkForVictory()
                     executor.turnSessions.values.forEach { it.invalidate() }
                     executor.captureCombatReports()
@@ -281,19 +282,19 @@ internal class DesktopSession(
         return true
     }
 
-    internal fun openTrade(civilization: String, draft: DesktopTradeDraft? = null) {
+    internal fun openTrade(civilization: String, state: DesktopTradeState? = null) {
         val view = checkNotNull(app.worldScreen).selectedGameView
-        tradeDraftToRestore = draft
+        tradeStateToRestore = state
         try {
             app.pushScreen { DiplomacyScreen(view.civView, view.getForeignCivView(game.getCivilization(civilization)), showTrade = true) }
         } finally {
-            tradeDraftToRestore = null
+            tradeStateToRestore = null
         }
     }
 
     override fun createTradeTable(viewer: CivView, partner: ForeignCivView, screen: DiplomacyScreen): TradeTable? {
         if (viewer.getCiv().civID != viewingCivilization || !usesSharedDiplomacy(partner.getCiv().civID)) return null
-        val controller = DesktopTradeController(this, viewer, partner, screen, tradeDraftToRestore)
+        val controller = DesktopTradeController(this, viewer, partner, screen, tradeStateToRestore)
         return TradeTable(viewer, partner, screen, controller).also {
             controller.table = it
             tradePanel = controller
@@ -362,7 +363,7 @@ internal class DesktopSession(
             loading = true
             val reopen = panel?.takeIf { app.screen === it }
             val trade = tradePanel?.takeIf { app.screen === it.screen && it.table.stage != null }
-            val draft = trade?.draft()
+            val tradeState = trade?.stateForReload()
             panel = null
             tradePanel = null
             Concurrency.runOnGLThread("Refresh managed game") {
@@ -372,7 +373,7 @@ internal class DesktopSession(
                     if (reopen != null) {
                         app.pushScreen { reopen.refreshed().also { panel = it } }
                     } else if (trade != null) {
-                        openTrade(trade.partner, draft)
+                        openTrade(trade.partner, tradeState)
                     }
                 } finally {
                     loading = false

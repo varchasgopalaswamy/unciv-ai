@@ -10,10 +10,12 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from civ_agent import memory_schema as tables
 from civ_agent.monitoring import read_database
+from civ_agent.operator_state import published_game as published_managed_epoch
+from civ_agent.orchestration.contracts import Scope
+from civ_agent.orchestration.native_watch import verify_native_notebook
+from civ_agent.player_paths import PlayerPaths as ManagedPlayerPaths
 from civ_agent.protocol import JsonObject
-from civ_agent.telemetry import jobs as accounting_jobs
 from civ_agent.terminal_output import visible_text
-from civ_agent.turn_archive import civilization_directory_name
 from civ_agent.turn_display import seconds
 
 
@@ -50,13 +52,13 @@ class StrategyReader:
         self.epoch = None
         self.previous = {}
 
-    def read(self, civilizations, epoch, jobs):
+    def read(self, civilizations, epoch, jobs, *, histories=None):
         if self.epoch != epoch:
             self.epoch, self.previous = epoch, {}
         result = []
         for civilization in civilizations:
             try:
-                view = self.player(civilization, epoch, jobs)
+                view = self.player(civilization, epoch, jobs, (histories or {}).get(civilization, ()))
                 self.previous[civilization] = view
             except FileNotFoundError:
                 view = StrategyView(civilization, error="Local review records are unavailable.")
@@ -68,17 +70,21 @@ class StrategyReader:
             result.append(view)
         return tuple(result)
 
-    def player(self, civilization, epoch, jobs):
-        path = self.root / "agent-services" / civilization_directory_name(civilization) / "civilization/memory.sqlite3"
+    def player(self, civilization, epoch, jobs, history=()):
+        request = published_managed_epoch(self.root)
+        selected = next(
+            ((index, seat) for index, seat in enumerate(request.seats) if seat.civilization == civilization), None
+        )
+        if selected is None:
+            raise ValueError("NATIVE_WATCH_REVIEW_PLAYER")
+        index, seat = selected
+        paths = ManagedPlayerPaths(self.root, index, civilization)
+        if request.authority.epoch != epoch or seat.session.player != paths.player:
+            raise ValueError("NATIVE_WATCH_REVIEW_SCOPE")
+        scope = Scope(game=request.authority.game, player=paths.player, epoch=epoch, activation="watch")
+        path = paths.coordinator / "notebook/memory.sqlite3"
         with read_database(path) as db:
-            identity = {
-                key: value
-                for key, value in db.execute(
-                    select(tables.meta).where(tables.meta.c.key.in_(["epoch", "civilization"]))
-                )
-            }
-            if json.loads(identity["epoch"]) != epoch or json.loads(identity["civilization"]) != civilization:
-                return StrategyView(civilization, error="Review records belong to another player or game timeline.")
+            verify_native_notebook(db, scope)
             # Never load frozen input snapshots or private notes to display reports.
             query = (
                 select(
@@ -86,7 +92,6 @@ class StrategyReader:
                     tables.reviews.c.turn,
                     tables.reviews.c.status,
                     tables.reviews.c.attempts,
-                    tables.reviews.c.error,
                     func.json_remove(tables.reviews.c.advice, "$._evidence").label("advice"),
                     func.coalesce(tables.jobs.c.epoch, epoch).label("sourceEpoch"),
                 )
@@ -97,42 +102,34 @@ class StrategyReader:
             pending = db.execute(query.where(tables.reviews.c.status == "PENDING").limit(1)).mappings().first()
             recent = db.execute(query.limit(1)).mappings().first()
             report = {"turn": completed["turn"], **json.loads(completed["advice"])} if completed else None
+            # A report's existence does not prove a later player read it. The
+            # native delivery projection currently has no report-preload receipt.
             delivered = None
-            if completed:
-                delivered = db.scalar(
-                    select(func.min(tables.jobs.c.game_turn))
-                    .select_from(tables.active_jobs)
-                    .where(
-                        tables.jobs.c.purpose == "gameplay",
-                        func.json_extract(tables.jobs.c.snapshot, "$.strategicAdvice.asOfTurn") == completed["turn"],
-                    )
-                )
             task = pending if pending is not None else recent
             matching = [
                 job
                 for job in jobs
                 if task is not None
                 and job["civilization"] == civilization
-                and job["epoch"] == task["sourceEpoch"]
-                and job["gameTurn"] == task["turn"]
+                and job["epoch"] == epoch
+                and job.get("reviewTurn") == task["turn"]
             ]
             latest = max(matching, key=lambda job: job["claimedAtMs"], default=None)
             # Completed attempts from a discarded timeline cannot complete a restored task.
             if pending and latest and (latest.get("telemetry") or {}).get("phase") == "COMPLETED":
                 latest = None
+            selected_history = [entry for entry in history if task is not None and entry.turn == task["turn"]]
+            trace = {
+                "entries": [{"label": entry.label, "text": entry.text} for entry in selected_history],
+                "truncated": len(selected_history) >= 600,
+            }
             progress = None
-            trace = None
-            accounting = path.parent.parent / "telemetry/accounting.sqlite3"
-            if latest and latest.get("id") and accounting.is_file():
-                with read_database(accounting) as ledger:
-                    payload = ledger.scalar(
-                        select(accounting_jobs.c.payload).where(accounting_jobs.c.id == latest["id"])
-                    )
-                if payload:
-                    record = json.loads(payload)
-                    if record["epoch"] == epoch:
-                        progress = record.get("reviewProgress")
-                        trace = record.get("reviewTrace")
+            if selected_history:
+                progress = {
+                    "stage": "Reviewing",
+                    "toolCalls": sum(entry.label == "Tool call" for entry in selected_history),
+                    "draftCharacters": sum(len(entry.text) for entry in selected_history if entry.label == "Assistant"),
+                }
             return StrategyView(
                 civilization,
                 report,
@@ -151,7 +148,7 @@ class StrategyReader:
 
 def trace_text(view: StrategyView) -> Text:
     text = Text()
-    text.append("Latest review attempt · exposed summaries and streamed output\n", style="bold")
+    text.append("Latest review attempt · committed SDK messages and execution events\n", style="bold")
     if view.trace is None:
         text.append("Live trace is unavailable from this review service.", style="dim")
         return text

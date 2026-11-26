@@ -1,5 +1,7 @@
 """Stopping a batch fences all games and avoids serial, redundant cleanup."""
 
+import hashlib
+import json
 import threading
 from contextlib import nullcontext
 from types import SimpleNamespace
@@ -64,9 +66,26 @@ def test_cleanup_only_stops_live_containers_and_removes_exited_ones(monkeypatch,
         commands.append(arguments)
         if arguments[0] == "ps":
             return SimpleNamespace(
-                stdout="exited-controller live-player" if "--all" in arguments else " ".join(running)
+                returncode=0,
+                stdout="exited-controller live-player" if "--all" in arguments else " ".join(running),
             )
-        return SimpleNamespace(stdout="")
+        if arguments[:2] == ("container", "inspect"):
+            name = arguments[-1]
+            return SimpleNamespace(
+                returncode=0,
+                stdout=json.dumps(
+                    [
+                        {
+                            "Id": hashlib.sha256(name.encode()).hexdigest(),
+                            "Name": name,
+                            "Image": "sha256:" + "a" * 64,
+                            "Config": {"Labels": {support.LABEL: "match"}},
+                            "State": {"Running": name in running},
+                        }
+                    ]
+                ),
+            )
+        return SimpleNamespace(returncode=0, stdout="")
 
     monkeypatch.setattr(support, "podman", podman)
     monkeypatch.setattr(support, "stop_containers", stopped)

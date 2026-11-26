@@ -162,4 +162,4 @@ tests; this inventory does not authorize the scheduler to emulate it.
 This inventory covers encounters and alerts. See the
 [coverage ledger](Player-api-coverage.md) for other player surfaces,
 [mixed-player diplomacy](Mixed-player-diplomacy.md) for native demands and
-responses, and the [roadmap](../Roadmap.md) for unfinished work.
+responses.

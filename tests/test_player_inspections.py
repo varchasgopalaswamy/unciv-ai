@@ -13,7 +13,7 @@ from civ_agent.proposal_gateway import ProposalGateway
 from civ_agent.service_io import ServiceIO
 from civ_agent.state_updates import changed_details
 from civ_agent.tool_schemas import PlayerInspection
-from tests.test_proposal_gateway import Host
+from tests.domain_fixtures import Host
 from tests.test_selective_actions import options_snapshot, query
 
 

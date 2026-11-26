@@ -11,47 +11,10 @@ from civ_agent.economy_roles import TurnRoles
 from civ_agent.economy_schedule import EconomySchedule
 from civ_agent.protocol import JsonObject
 from civ_agent.service_io import ServiceIO
-from tests.test_structured_memory import create, setup
-
-
-def observation(turn=4):
-    return {
-        "epoch": "g1",
-        "revision": "r1",
-        "turn": turn,
-        "phase": "ACTIVE",
-        "canEndTurn": True,
-        "cities": [
-            {
-                "handle": "city1",
-                "name": "Rome",
-                "puppet": False,
-                "constructionQueue": ["Worker"],
-                "constructionOptions": ["Worker", "Granary"],
-                "constructionChoice": {"chosenTurn": 1},
-                "development": {
-                    "population": 2,
-                    "unassignedPopulation": 0,
-                    "foodStored": 5,
-                    "turnsToGrowth": 4,
-                    "starving": False,
-                    "builtBuildings": ["Palace"],
-                    "tiles": [
-                        {"position": {"x": 0, "y": 0}, "worked": True, "yields": [{"stat": "Food", "amount": "2"}]}
-                    ],
-                },
-                "management": {"specialists": [{"name": "Scientist", "slots": 0, "assigned": 0}]},
-                "purchases": {"constructions": [{"name": "Granary", "available": False, "goldCost": 200}]},
-            }
-        ],
-        "economy": {
-            "treasury": 100,
-            "availableGold": 100,
-            "goldPerTurn": 5,
-            "happiness": 4,
-            "cityConnections": [{"name": "Rome", "connectedToCapital": True}],
-        },
-    }
+from tests.domain_fixtures import create, setup
+from tests.domain_fixtures import (
+    observation as observation,
+)
 
 
 @pytest.fixture
@@ -108,6 +71,22 @@ def test_workers_wake_without_resetting_city_clock_and_holds_are_acknowledged(sc
     view["epoch"] = "g2"
     assert not EconomySchedule(schedule.memory, 5).assess(view, 5, [])["reasons"]
     assert EconomySchedule(schedule.memory, 5).assess(view, 6, [])["reasons"] == status["reasons"]
+
+
+def test_exhausted_new_worker_waits_for_orders_but_danger_still_wakes(scheduled):
+    schedule, view = scheduled
+    worker: JsonObject = {"handle": "captured", "worker": {}, "movement": "0/2", "health": 100}
+    view["map"] = {"units": [worker]}
+    assert not schedule.assess(view, 5, [])["reasons"]
+    assert not schedule.assess(view, 5, [])["reasons"]
+    worker["movement"] = "2/2"
+    assert schedule.assess(view, 6, [])["reasons"] == ["New worker under Economy control: captured"]
+    worker["movement"] = "0/2"
+    worker["nearbyHostiles"] = [{"distance": 1}]
+    assert schedule.assess(view, 5, [])["reasons"]
+    worker["nearbyHostiles"] = []
+    worker["health"] = 77
+    assert schedule.assess(view, 5, [])["reasons"]
 
 
 def test_worker_jobs_routes_threats_and_unseen_changes(scheduled):
@@ -263,199 +242,5 @@ def test_dormant_turn_wakes_for_urgent_request_and_coalesces_events(scheduled, t
             assert roles.economy_requested
         finally:
             await io.close()
-
-    asyncio.run(run())
-
-
-def test_quiet_turns_start_no_economy_process_and_periodic_review_still_runs(tmp_path):
-    from civ_agent.agent_service import AgentService
-    from tests.test_agent_service import FakeFactory
-
-    class Factory(FakeFactory):
-        def __init__(self):
-            super().__init__()
-            self.economy_starts = 0
-
-        def __call__(self, *args):
-            process = super().__call__(*args)
-            self.economy_starts += process.economy
-            return process
-
-        def connection(self, *args, **kwargs):
-            host = super().connection(*args, **kwargs)
-            host.view["cities"][0]["constructionQueue"] = ["Worker"]
-            return host
-
-    async def run():
-        factory = Factory()
-        service = AgentService(
-            "Rome",
-            tmp_path / "workspace",
-            tmp_path / "state",
-            "S" * 43,
-            "https://localhost:8765/mcp",
-            None,
-            process_factory=factory,
-            connection_factory=factory.connection,
-        )
-        factory.service = service
-        service.memory.bind("g1")
-        service.memory.start_job("previous", "economy", {}, game_turn=0)
-        create(
-            service.memory,
-            {"type": "city_plan", "city": "city1", "reasons": {"construction": "Keep the queue"}},
-            "previous",
-        )
-        service.memory.finish_job("previous", True)
-        baseline = {**factory.connection().view, "epoch": "g1", "phase": "ACTIVE"}
-        EconomySchedule(service.memory, 5).complete(baseline, 0)
-        try:
-            for turn in (1, 2, 5):
-                await service.start(
-                    {
-                        "activationId": f"main{turn}",
-                        "epoch": "g1",
-                        "civilization": "Rome",
-                        "threadId": None,
-                        "gameTurn": turn,
-                        "handoff": turn,
-                        "mcpUrl": service.mcp_url,
-                        "playerToken": "P" * 43,
-                        "prompt": "Play",
-                        "model": None,
-                        "timeoutSeconds": 20,
-                        "leaseSeconds": 10,
-                    }
-                )
-                assert service.active_task is not None
-                await asyncio.wait_for(asyncio.shield(service.active_task), 8)
-                assert service.failure is None, service.status()
-                assert service.turn_roles is not None and service.turn_roles.committed
-                await service.finalize(
-                    {"activationId": f"main{turn}", "epoch": "g1", "gameTurn": turn, "committedHandoff": turn + 1}
-                )
-                if turn < 5:
-                    assert factory.economy_starts == 0
-                    assert not any(r.get("parentActivation") == f"main{turn}" for r in service.records.values())
-                    assert service.status()["economyUsageComplete"]
-                else:
-                    assert factory.economy_starts == 1
-                    assert service.records[f"main{turn}"]["roles"]["economySchedule"]["lastReviewTurn"] == 5
-                if turn == 1:
-                    await service.close()
-                    service = AgentService(
-                        "Rome",
-                        tmp_path / "workspace",
-                        tmp_path / "state",
-                        "S" * 43,
-                        "https://localhost:8765/mcp",
-                        None,
-                        process_factory=factory,
-                        connection_factory=factory.connection,
-                    )
-                    factory.service = service
-        finally:
-            await service.close()
-
-    asyncio.run(run())
-
-
-@pytest.mark.parametrize("event", ["urgent", "economic_changes", "required_city_choice"])
-def test_dormant_economy_can_start_late_and_must_finish_before_handoff(tmp_path, event):
-    from civ_agent.agent_service import AgentService
-    from tests.test_agent_service import FakeFactory, StartupHost
-
-    class Factory(FakeFactory):
-        def __init__(self):
-            super().__init__()
-            self.host = StartupHost(self)
-            self.host.view["cities"][0]["constructionQueue"] = ["Worker"]
-            self.economy_starts = 0
-            self.event_sent = False
-
-        def connection(self, *args, **kwargs):
-            return self.host
-
-        def __call__(self, *args):
-            process = super().__call__(*args)
-            self.economy_starts += process.economy
-            request = process.request
-
-            async def with_event(method, payload):
-                if method == "turn/start":
-                    if process.economy:
-                        assert not self.host.executed  # END_TURN cannot get ahead of the late role.
-                        if event == "required_city_choice":
-                            self.host.view.update(canEndTurn=True, pending=[])
-                    elif not self.event_sent:
-                        self.event_sent = True
-                        assert self.economy_starts == 0
-                        if event == "urgent":
-                            await self.service.gateway.invoke(
-                                process.job,
-                                "economy_request",
-                                {"text": "Reconsider growth", "priority": "urgent"},
-                                "new-request",
-                            )
-                        elif event == "economic_changes":
-                            city = self.host.view["cities"][0]
-                            city["development"] = {"population": 3, "unassignedPopulation": 1}
-                            city["constructionQueue"] = ["Granary"]
-                            self.host.revision = "changed-economy"
-                        else:
-                            self.host.view.update(canEndTurn=False, pending=[{"kind": "CHOOSE_CONSTRUCTION"}])
-                            self.host.revision = "required-choice"
-                return await request(method, payload)
-
-            process.request = with_event
-            return process
-
-    async def run():
-        factory = Factory()
-        service = AgentService(
-            "Rome",
-            tmp_path / "workspace",
-            tmp_path / "state",
-            "S" * 43,
-            "https://localhost:8765/mcp",
-            None,
-            process_factory=factory,
-            connection_factory=factory.connection,
-        )
-        factory.service = service
-        service.memory.bind("g1")
-        service.memory.start_job("previous", "economy", {}, game_turn=0)
-        create(
-            service.memory,
-            {"type": "city_plan", "city": "city1", "reasons": {"construction": "Keep the queue"}},
-            "previous",
-        )
-        service.memory.finish_job("previous", True)
-        EconomySchedule(service.memory, 5).complete({**factory.host.view, "epoch": "g1"}, 0)
-        try:
-            await service.start(
-                {
-                    "activationId": "late",
-                    "epoch": "g1",
-                    "civilization": "Rome",
-                    "threadId": None,
-                    "gameTurn": 1,
-                    "handoff": 0,
-                    "mcpUrl": service.mcp_url,
-                    "playerToken": "P" * 43,
-                    "prompt": "Play",
-                    "model": None,
-                    "timeoutSeconds": 20,
-                    "leaseSeconds": 10,
-                }
-            )
-            assert service.active_task is not None
-            await asyncio.wait_for(asyncio.shield(service.active_task), 8)
-            assert service.failure is None, service.status()
-            assert service.turn_roles is not None and service.turn_roles.committed
-            assert factory.economy_starts == 1
-            assert [command["kind"] for command in factory.host.executed] == ["END_TURN"]
-        finally:
-            await service.close()
 
     asyncio.run(run())

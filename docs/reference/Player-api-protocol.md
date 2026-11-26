@@ -130,7 +130,7 @@ objects or authorize stale commands. Older checkpoint formats require a new game
 | `CANCEL_UNIT_MOVEMENT` | `target`: owned unit with `movementOrder.canCancel=true`; no movement is spent |
 | `SWAP_UNITS` | `target`: owned unit; `destination`: advertised `controls.swaps` position; `captureRisks` identifies each affected unit and its risk, including civilians swapped out of a formation's protection. Use `confirmAction: true` only after accepting those risks. |
 | `CONNECT_ROAD` | `target`: owned worker; `destination`: exact coordinate from an available current `player_inspect(ROAD)`; starts the native persistent road/rail order |
-| `CREATE_WATER_IMPROVEMENT` | `target`: owned Work Boat; `selection`: available `waterImprovement.name`; consumes the unit |
+| `CREATE_WATER_IMPROVEMENT` | `target`: owned unit with an available `waterImprovement`; `selection`: its offered `name`. Work Boats are consumed; Samurai create Fishing Boats using native movement costs and remain alive. Read `consumesUnit` and the resulting receipt. |
 | `ATTACK` | `target`: owned unit; `destination` and `attackFrom`: exact pair from `combat.attacks` |
 | `CITY_ATTACK` | `target`: owned city; `destination`: offered city attack |
 | `SET_UNIT_ORDER` | `target`: owned unit; `selection`: available `combat.orders` name, including independent `SET_UP`, `GUARD` and `STOP_AUTOMATION` for road orders |
@@ -188,6 +188,15 @@ reports the destination when explored and requires its native relocation
 confirmation. Unit gifts use the single `gift` field for both eligible majors and
 city-states; `canGiftUnit` is the compact overview flag.
 
+`victory.ballot.turnsUntilNextVote` counts down to the player's own ballot.
+`cityStateVoteTiming` reports the player's last turn to influence the earliest
+pending votes of known city-states, using the current native schedule. A
+`LAST_TURN` cue can appear before the player's ballot opens. City-states vote
+for their ally when their own turn runs, and other players may change alliances
+before that happens. `CLOSED` means the player has no action window left for
+those votes. The cue is null when no known city-state has a schedule, and
+`lastInfluenceTurn` is null once no scheduled votes remain for the ballot.
+
 Autoplay does not advance the turn. Its receipt supplies the resulting state and
 decisions. Repeated `AUTOPLAY` and `END_TURN` calls compose continuous autoplay.
 `MOVE_AUTOMATED_UNITS` respects the native move-at-turn-start setting and
@@ -212,7 +221,7 @@ requested attack or destination was reached: the summary uses observed results.
 The operator-requested `productionPolicy` restricts Gold, Science and Culture
 production conversion until the ruleset's final era (Future in bundled Vanilla).
 It applies to API-controlled civilizations, including their saved and automated
-queues; ordinary construction progress is preserved. Blocked conversions are
+queues at startup and explicit mutation boundaries; ordinary construction progress is preserved. Queries never perform this cleanup. Blocked conversions are
 removed from available choices and explicit queue requests are rejected. Reaching
 the final era lifts this policy restriction; native prerequisites still apply.
 This restricts production conversion, not ordinary yields or spending.
@@ -486,3 +495,21 @@ Aircraft and guided missiles use existing `ATTACK` previews. These estimates
 exclude interception; `receipt.combat.resolution`, actual damage and subsequent
 combat reports describe what happened. Interception is automatic and does not
 need a separate order. See [air gameplay](Air-gameplay.md) for scope and validation.
+
+
+### Job retirement and operator observation
+
+Compute acquisition is claim-only. Reports and heartbeats may relinquish compute
+or settle cumulative accounting; a computing phase cannot reacquire capacity.
+Every renewal preserves the civilization, epoch, purpose and parent binding.
+Releasing Main terminally fences Economy/Military descendants. Expired parents
+remove child authority; explicit administrative recovery is parent-first. Frozen
+independent reviews keep their original attribution.
+
+Operator `retire_job` requires `leaseId`, the current `epoch`, `civilization`,
+`job`, and both native barriers. It idempotently retires an admitted job or records
+an absent-ID tombstone in accounting. A tombstone admits no model job, charges no
+invocation, and prevents late claims. Release authority applies even when its
+attached accounting report is older; the newest accounting remains authoritative.
+Operator status adds `leaseGeneration`. Communication grants are reused per
+civilization, epoch and lease generation and lose authority with their lease.

@@ -1,16 +1,12 @@
 """Comparable committed baselines and scheduler timing for bounded early triage."""
 
-import asyncio
 import copy
-from types import SimpleNamespace
-from typing import cast
 
 import pytest
 
 from civ_agent import memory_schema as tables
 from civ_agent.advisory_evidence import bounded_facts, material_changes
 from civ_agent.advisory_review import review_current, review_input
-from civ_agent.agent_service import AgentService, ServiceError
 from civ_agent.civilization_state import CivilizationState
 from civ_agent.decisions_policy import DecisionsSettings
 from civ_agent.memory_store import RecordStore
@@ -201,43 +197,3 @@ def test_missing_recorded_fields_cannot_establish_removal_or_pressure_reversal()
     relevant = [row for row in delta["fields"] if row["field"] in {"units", "economicPressure"}]
     assert len(relevant) == 2
     assert all(not row["complete"] and "removed" not in row and "beforeExcerpt" in row for row in relevant)
-
-
-def test_service_requires_scheduler_timing_and_converts_boundary_once():
-    seen = []
-
-    class Admission:
-        async def __aenter__(self):
-            return None
-
-        async def __aexit__(self, *args):
-            return None
-
-    async def triage(turn, **kwargs):
-        seen.append((turn, kwargs))
-        return {"earlyReview": False}
-
-    service = SimpleNamespace(
-        chat=SimpleNamespace(epoch="g1"),
-        gateway=SimpleNamespace(
-            advisories=SimpleNamespace(triage=triage),
-            paused=False,
-            checkpoint_requested=False,
-            run_failure=None,
-            admit=Admission,
-        ),
-    )
-
-    async def run():
-        payload = {"epoch": "g1", "gameTurn": 4, "scheduledSoon": False, "nextReviewTurn": 10}
-        await AgentService.review_triage(cast(AgentService, service), payload)
-        assert seen == [(3, {"scheduled_soon": False, "next_review_turn": 10})]
-        for bad in (
-            {k: v for k, v in payload.items() if k != "nextReviewTurn"},
-            {**payload, "nextReviewTurn": True},
-            {**payload, "nextReviewTurn": 3},
-        ):
-            with pytest.raises(ServiceError):
-                await AgentService.review_triage(cast(AgentService, service), bad)
-
-    asyncio.run(run())

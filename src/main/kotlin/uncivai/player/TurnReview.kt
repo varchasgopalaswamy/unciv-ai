@@ -77,7 +77,11 @@ internal fun confirmedAction(request: TurnCommandRequest, before: PlayerTurnSnap
 
         TurnCommandKind.CANCEL_UNIT_MOVEMENT -> "${unit!!.name}: cancelled destination order."
 
-        TurnCommandKind.CREATE_WATER_IMPROVEMENT -> "${unit!!.name}: created ${request.selection} at ${unit.position.text()}; builder consumed."
+        TurnCommandKind.CREATE_WATER_IMPROVEMENT -> {
+            val builder = after.map.units.singleOrNull { it.handle == request.target }
+            "${unit!!.name}: created ${request.selection} at ${unit.position.text()}; " +
+                (if (builder == null) "builder consumed." else "builder retained with ${builder.movement} movement remaining.")
+        }
 
         TurnCommandKind.AIR_SWEEP, TurnCommandKind.NUCLEAR_STRIKE ->
             "${unit!!.name}: ${request.kind.mission()} at ${request.destination!!.text()}; inspect mission receipt and combat reports for effects."
@@ -160,7 +164,7 @@ internal fun confirmedAction(request: TurnCommandRequest, before: PlayerTurnSnap
 
         TurnCommandKind.SET_RESEARCH_QUEUE -> "Research queue: ${after.researchQueue.joinToString(", ")}."
 
-        TurnCommandKind.QUEUE_CONSTRUCTION, TurnCommandKind.REMOVE_CONSTRUCTION, TurnCommandKind.MOVE_CONSTRUCTION -> {
+        TurnCommandKind.START_CONSTRUCTION, TurnCommandKind.QUEUE_CONSTRUCTION, TurnCommandKind.REMOVE_CONSTRUCTION, TurnCommandKind.MOVE_CONSTRUCTION -> {
             val updated = after.cities.single { it.handle == request.target }
             "${updated.name} construction queue: ${updated.constructionQueue.joinToString(", ")}."
         }

@@ -9,7 +9,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from civ_agent.agent_settings import add_settings_arguments, setting_argument
+from civ_agent.container_identity import deployment_identity, require_local_runtime
 from civ_agent.container_supervisor import validate_routing_credentials, validate_setup
 from civ_agent.container_support import (
     DEFAULT_AUTH,
@@ -25,8 +25,8 @@ from civ_agent.container_support import (
     resolve_image,
 )
 from civ_agent.game_config import ResolvedGameConfig, load_config
-from civ_agent.monitoring import path_for, read_record
-from civ_agent.providers import PROVIDERS
+from civ_agent.player_settings import add_settings_arguments, setting_argument
+from civ_agent.provider_credentials import PROVIDERS
 from civ_agent.tls import private_directory, write_private, write_private_json
 
 DEFAULT_STATE = Path.home() / ".local/state/unciv-host/vanilla-full"
@@ -54,6 +54,7 @@ def parser(*, add_help=True, action="start"):
     result.add_argument("--auth-dir", type=Path, help="Durable benchmark login directory")
     result.add_argument("--image", help="Explicit runtime image; otherwise resume retains the saved image")
     result.add_argument("--desktop-image", help="Explicit native desktop image")
+    result.add_argument("--record-replay", action="store_true", help="Record game events for private replay")
     result.add_argument("--port", type=int, help="Browser port; 0 chooses an available localhost port")
     for field in ("max-turns", "max-invocations", "max-seconds", "turn-timeout", "startup-timeout"):
         result.add_argument("--" + field, type=int)
@@ -158,6 +159,8 @@ def resolve_options(args):
     if getattr(args, "map_size", None) is not None:
         overrides["game"]["map_radius"] = None
     overrides["runtime"] = {}
+    if getattr(args, "record_replay", False):
+        overrides["runtime"]["record_replay"] = True
     for source, target in (("image", "image"), ("desktop_image", "desktop_image"), ("port", "browser_port")):
         if getattr(args, source, None) is not None:
             overrides["runtime"][target] = getattr(args, source)
@@ -188,6 +191,8 @@ def initialize(root, config, auth_root, *, original=None, images=None, validatio
         config.limits.max_turns = validation["maxTurns"] + 1
     private_directory(root)
     record = identity(root)
+    require_local_runtime(record)
+    record["launchResumeRequested"] = False
     if config.agents.decisions_enabled:
         from civ_agent.decisions_ledger import DecisionsLedger
 
@@ -211,23 +216,30 @@ def initialize(root, config, auth_root, *, original=None, images=None, validatio
         },
     )
     write_private_json(root / "container.json", record)
-    write_private_json(root / "resolved.json", config.model_dump())
+    write_private_json(root / "resolved.json", config.model_dump(mode="json"))
     if original is not None:
         write_private(root / "input.toml", original.read_bytes())
     return record
 
 
 def resume_configuration(root, args):
+    from civ_agent.orchestration.managed_host import validate_limit_increase
+
     config = ResolvedGameConfig.model_validate(read_json(root / "resolved.json"))
+    previous_limits = config.limits.model_copy(deep=True)
     record = identity(root)
+    require_local_runtime(record)
+    record["launchResumeRequested"] = True
     for key in ("max_turns", "max_invocations", "max_seconds", "turn_timeout", "startup_timeout"):
         value = getattr(args, key, None)
         if value is not None:
-            if value < getattr(config.limits, key):
-                raise ValueError("Resume cannot decrease saved run limits")
             setattr(config.limits, key, value)
+    config = ResolvedGameConfig.model_validate(config.model_dump())
+    validate_limit_increase(previous_limits, config.limits)
     if args.port is not None:
         config.runtime.browser_port = args.port
+    if getattr(args, "record_replay", False):
+        config.runtime.record_replay = True
     if args.auth_dir is not None:
         selected_auth = args.auth_dir.expanduser().resolve()
         if config.agents.decisions_enabled and selected_auth != Path(record["auth_root"]).resolve():
@@ -238,7 +250,7 @@ def resume_configuration(root, args):
             record["images"][key] = resolve_image(getattr(args, option))
     config = ResolvedGameConfig.model_validate(config.model_dump())
     write_private_json(root / "container.json", record)
-    write_private_json(root / "resolved.json", config.model_dump())
+    write_private_json(root / "resolved.json", config.model_dump(mode="json"))
     return config
 
 
@@ -246,6 +258,7 @@ def stop_game(root, *, role="game"):
     record = read_json(root / "container.json")
     if record is None:
         raise ContainerError("No containerized run at this path")
+    physical = deployment_identity(record).id
     write_private_json(root / "control/request.json", {"action": "stop"})
     matches = []
     if role == "batch":
@@ -256,7 +269,7 @@ def stop_game(root, *, role="game"):
                 # Publish every request before waiting, including when the batch
                 # supervisor is gone and games are still draining independently.
                 write_private_json(match / "control/request.json", {"action": "stop"})
-    result = command(["systemctl", "--user", "stop", f"civ-{role}-{record['id']}"], check=False, timeout=250)
+    result = command(["systemctl", "--user", "stop", f"civ-{role}-{physical}"], check=False, timeout=250)
     if role == "batch" and matches:
         # Each game owns independent infrastructure and its own supervisor lock.
         # Keep fallback waits and container cleanup from accumulating serially.
@@ -272,11 +285,11 @@ def stop_game(root, *, role="game"):
         while True:
             try:
                 with locked(root / ".supervisor.lock"):
-                    cleanup(record["id"])
+                    cleanup(physical)
                 break
             except LockBusy:
                 if time.monotonic() >= deadline:
-                    cleanup(record["id"])
+                    cleanup(physical)
                     break
                 time.sleep(0.2)
 
@@ -288,20 +301,36 @@ def run(args):
         root = args.state_dir.expanduser().resolve()
         if args.action == "status":
             from civ_agent.experiment_status import experiment_status
+            from civ_agent.operator_state import is_local, projection
+            from civ_agent.operator_status import GameStatusEnvelope
 
             status = read_json(root / "container-status.json", {})
-            result = read_record(path_for(root), "state", "result") if path_for(root).exists() else None
+            local = is_local(root)
+            native = projection(root)
             saved = read_json(root / "resolved.json")
             roster = ResolvedGameConfig.model_validate(saved) if saved else None
             print(
                 json.dumps(
-                    {
-                        "containers": status,
-                        "browser": read_json(root / "browser.json"),
-                        "result": result,
-                        "players": roster.player_records() if roster else [],
-                        "experiments": experiment_status(root, roster, read_json(root / "container.json", {})),
-                    },
+                    GameStatusEnvelope.model_validate(
+                        {
+                            "version": 1,
+                            "containers": status,
+                            "browser": read_json(root / "browser.json"),
+                            "runtime_status": native.status.model_dump(mode="json")
+                            if native.status is not None
+                            else None,
+                            "runtime_result": native.completion.model_dump(mode="json")
+                            if native.completion is not None
+                            else None,
+                            "result": native.result.model_dump(mode="json") if native.result is not None else None,
+                            "result_updated_at": native.result_updated_at,
+                            "read_only_archive": not local,
+                            "players": roster.player_records() if roster else [],
+                            "experiments": read_json(root / "container.json", {}).get("experiments")
+                            if local
+                            else experiment_status(root, roster, read_json(root / "container.json", {})),
+                        }
+                    ).model_dump(mode="json", exclude_unset=True),
                     indent=2,
                 )
             )
@@ -309,7 +338,7 @@ def run(args):
         if args.action in {"stop", "remove"}:
             stop_game(root)
             if args.action == "remove":
-                cleanup(identity(root)["id"])
+                cleanup(deployment_identity(identity(root)).id)
             print(f"Stopped. Durable state retained: {root}")
             return 0
         if args.action == "start":
@@ -319,7 +348,7 @@ def run(args):
                 print(
                     json.dumps(
                         {
-                            "config": config.model_dump(),
+                            "config": config.model_dump(mode="json"),
                             "turn_order": [p.civilization for p in config.turn_order],
                             "native_setup": native,
                         },
@@ -327,6 +356,8 @@ def run(args):
                     )
                 )
                 return 0
+        if args.action == "resume":
+            require_local_runtime(read_json(root / "container.json", {}))
         preflight()
         private_directory(root)
         with locked(root / ".launch.lock"):

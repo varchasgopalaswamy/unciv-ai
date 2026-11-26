@@ -156,7 +156,7 @@ def test_new_active_objective_during_classification_discards_only_city_delivery(
             incoming(memory)
             original = classifier.batch
 
-            async def changed(evidence, *, timeout):
+            async def changed(evidence, *, timeout, scope=None, task=None):
                 result = await original(evidence, timeout=timeout)
                 assert evidence["objectives"] == []
                 with memory.transaction() as db:
@@ -211,7 +211,7 @@ def test_unresolved_city_reuse_looks_up_original_mixed_request_before_new_memory
             original = classifier.batch
             completed, lookups = {}, []
 
-            async def batch(evidence, *, timeout):
+            async def batch(evidence, *, timeout, scope=None, task=None):
                 result = await original(evidence, timeout=timeout)
                 completed[request_id(evidence)] = result
                 if len(classifier.calls) == 1:
@@ -273,7 +273,7 @@ def test_lost_reply_gets_one_receipt_lookup_and_never_redispatches_unknown_compl
             evidence = simple_evidence()
             seen = []
 
-            async def batch(evidence, *, timeout):
+            async def batch(evidence, *, timeout, scope=None, task=None):
                 seen.append(("batch", request_id(evidence)))
                 if len(seen) == 1:
                     raise TimeoutError()
@@ -346,7 +346,7 @@ def test_memory_recovery_keeps_original_request_across_transport_only_observatio
             original = classifier.batch
             receipts, lookups = {}, []
 
-            async def lost(evidence, *, timeout):
+            async def lost(evidence, *, timeout, scope=None, task=None):
                 result = await original(evidence, timeout=timeout)
                 receipts[request_id(evidence)] = result
                 if len(classifier.calls) == 1:

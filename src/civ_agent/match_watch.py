@@ -3,7 +3,6 @@
 import argparse
 import asyncio
 import json
-import math
 import os
 import sys
 import time
@@ -16,15 +15,19 @@ from textual.binding import Binding
 from textual.widgets import DataTable, Footer, Header, RichLog, Static, TabbedContent, TabPane
 
 from civ_agent.diplomacy_view import conversations, trade_status
-from civ_agent.model_status import status_text
 from civ_agent.strategy_view import progress_text, report_text, trace_text
 from civ_agent.terminal_output import player_style, visible_text
-from civ_agent.turn_display import api_calls, memory_edits_text, number, seconds
-from civ_agent.watch_state import SPECIALIST_ROLES, WatchReader, WatchSnapshot, event_time
+from civ_agent.turn_display import api_calls, api_origins_text, context_usage_text, memory_edits_text, number, seconds
+from civ_agent.watch_state import SPECIALIST_ROLES, WatchReader, WatchSnapshot, event_time, phase_elapsed_ms
 
 
 def count(value):
     return "—" if value is None else number(value)
+
+
+def status_text(data):
+    """Render the native bounded notice without inventing quiet-time telemetry."""
+    return visible_text(data.get("message", "Native model status updated."))
 
 
 def effort_text(settings, configured=None, *, pending="—"):
@@ -92,7 +95,7 @@ class MatchWatch(App):
     #game-switcher { height: auto; max-height: 3; padding: 0 1; color: $text-muted; }
     #negotiation { height: auto; padding: 0 1; color: $warning; }
     #players { height: 7; border: round $primary; margin: 0 1; }
-    #metrics { height: auto; max-height: 5; padding: 0 2; }
+    #metrics { height: auto; max-height: 7; padding: 0 2; }
     #scope { height: 1; padding: 0 2; color: $text-muted; }
     TabbedContent { height: 1fr; margin: 0 1; }
     TabPane { padding: 0; }
@@ -185,12 +188,12 @@ class MatchWatch(App):
         for identity, columns in {
             "players": ("Player", "Status", "Effort", "Turn", "Score", "Input", "Cached", "Output", "Game API"),
             "conversations": ("Participants", "Status", "Latest turn"),
-            "strategies": ("Player", "Review status", "Effort", "Report turn", "Preloaded turn", "Attempt time"),
+            "strategies": ("Player", "Review status", "Effort", "Report turn", "Delivered turn", "Attempt time"),
         }.items():
             self.query_one(f"#{identity}", DataTable).add_columns(*columns)
         for role in SPECIALIST_ROLES:
             self.query_one(f"#{role}-agents", DataTable).add_columns(
-                "Player / model", "Status", "Effort", "Input", "Output", "Time"
+                "Player / model", "Status", "Effort", "Input", "Output", "Phase time"
             )
         self.query_one("#players", DataTable).border_title = "Players · Enter to filter"
         self.render_game_switcher()
@@ -290,11 +293,6 @@ class MatchWatch(App):
         review_wait = run.get("reviewPhase") or {}
         current = flight or review_wait or (snapshot.latest_turn() or {}).get("turn", {})
         status = str(run.get("status") or result.get("status") or "Waiting for match records").replace("_", " ")
-        container = snapshot.container_status or {}
-        recovery = container.get("recovery") or {}
-        quota_wait = container.get("status") == "retrying" and recovery.get("reason") == "usageLimitExceeded"
-        if quota_wait:
-            status = "waiting for quota"
         title = Text(
             f"{status.capitalize()}  ·  Turn {current.get('gameTurn', '—')}  ·  {visible_text(current.get('civilization', '—'))}",
             style="bold",
@@ -307,6 +305,28 @@ class MatchWatch(App):
                     flight.get("effectiveSettings"),
                     session.get("configuredSettings", session.get("effectiveSettings")),
                     pending="pending",
+                ),
+                style="dim",
+            )
+        if flight.get("agentPhase"):
+            title.append("  ·  " + visible_text(flight["agentPhase"].replace("_", " ").title()))
+            elapsed = phase_elapsed_ms(flight.get("phaseStartedAt"))
+            if elapsed is not None:
+                title.append(" " + seconds(elapsed), style="dim")
+        active_roles = flight.get("activeRoles", [])
+        if active_roles:
+            title.append(
+                "\nRoles: "
+                + " · ".join(
+                    visible_text(
+                        f"{role['purpose']}: {role['phase'].replace('_', ' ').lower()}"
+                        + (
+                            " " + seconds(phase_elapsed_ms(role.get("phase_started_at")))
+                            if role.get("phase_started_at")
+                            else ""
+                        )
+                    )
+                    for role in active_roles
                 ),
                 style="dim",
             )
@@ -329,13 +349,15 @@ class MatchWatch(App):
             title.append("  ·  VIEW FROZEN", style="bold yellow")
         if run.get("reason"):
             title.append("\n" + visible_text(run["reason"]), style="yellow")
-        if quota_wait:
-            remaining = max(0, math.ceil(recovery.get("nextRetryAt", time.time()) - time.time()))
+        runtime = run.get("runtimeStatus") or {}
+        for player, deferred in runtime.get("communication_deferrals", {}).items():
+            civilization = next(
+                (seat["civilization"] for seat in runtime.get("seats", []) if seat["session"]["player"] == player),
+                player,
+            )
             title.append(
-                f"\nQuota exhausted · {visible_text(recovery.get('civilization') or current.get('civilization', '—'))}"
-                f" · Next retry in {remaining // 60}m {remaining % 60:02d}s"
-                f" · Attempt {recovery.get('attempt', 1)} · repeats every five minutes",
-                style="bold yellow",
+                f"\nCommunication UNAVAILABLE · {visible_text(civilization)} · eligible after handoff {deferred['next_handoff']}",
+                style="yellow",
             )
         if review_wait:
             title.append(
@@ -348,12 +370,6 @@ class MatchWatch(App):
                 style="yellow",
             )
         model_status = flight.get("modelStatus") or {}
-        if not quota_wait and (
-            model_status.get("reason") == "usageLimitExceeded"
-            or (flight.get("requestFailure") or {}).get("reason") == "usageLimitExceeded"
-            or (run.get("quotaFailure") or {}).get("reason") == "usageLimitExceeded"
-        ):
-            title.append("\nModel quota exhausted; awaiting automatic recovery.", style="yellow")
         if (
             run.get("status") == "running"
             and flight.get("agentPhase") not in {"COMPLETED", "FAILED", "INTERRUPTED"}
@@ -428,8 +444,6 @@ class MatchWatch(App):
                 phase = "Human"
             if score.get("defeated"):
                 phase = "Defeated"
-            elif quota_wait and name == (recovery.get("civilization") or flight.get("civilization")):
-                phase = "Quota exhausted"
             usage = accounting.get("usage", {})
             rows.append(
                 (
@@ -466,9 +480,27 @@ class MatchWatch(App):
             f"Game API {count(api_calls(accounting.get('hostCalls')))} · "
             f"Model requests {count(accounting.get('modelRequests'))}"
         )
+        requests = run.get("requestCounts", {})
+        if self.civilization:
+            requests = requests.get("players", {}).get(self.civilization, {})
+        if requests:
+            if run.get("requestCountsScope") == "bounded_recent_dashboard_jobs":
+                metrics += " · Recent job breakdown"
+            metrics += f" · Gameplay {count(requests.get('gameplay'))} · Review {count(requests.get('review'))} · Communication {count(requests.get('communication'))}"
         metrics += " · Usage " + ("complete" if complete else "partial / not yet finalized")
         metrics += " · Cached and reasoning tokens are included in input and output."
+        metrics += "\n" + api_origins_text(accounting.get("hostCalls"))
         metrics += "\n" + memory_edits_text(accounting.get("memoryEdits"))
+        flight = run.get("inFlight") or {}
+        if self.civilization in {None, flight.get("civilization")}:
+            for role in flight.get("activeRoles", []):
+                if context := context_usage_text(role.get("context_usage")):
+                    metrics += "\n" + visible_text(str(role.get("purpose", "agent"))) + " · " + context
+        diagnostic_rows = [row for row in snapshot.diagnostics if self.civilization in {None, row["civilization"]}]
+        calls = [row.get("classifier", {}).get("calls") for row in diagnostic_rows]
+        if calls:
+            known = all(type(value) is int for value in calls)
+            metrics += f"\nClassifier calls {sum(calls) if known else '—'} · native scoped receipts"
         self.query_one("#metrics", Static).update(Text(metrics))
         inspection = f"Recent activity · {scope}"
         self.query_one("#scope", Static).update(
@@ -502,7 +534,7 @@ class MatchWatch(App):
                             effort_text(telemetry, job.get("configuredSettings")),
                             count(usage.get("input_tokens")),
                             count(usage.get("output_tokens")),
-                            seconds(telemetry.get("elapsedMs")),
+                            seconds(telemetry.get("phaseElapsedMs", telemetry.get("elapsedMs"))),
                         ),
                     )
                 )
@@ -532,6 +564,8 @@ class MatchWatch(App):
                     )
                 if view.job:
                     heading.append("\n" + usage_text(job.get("usage") or {}), style="dim")
+                    if context := context_usage_text(telemetry.get("contextUsage")):
+                        heading.append("\n" + context, style="dim")
                     heading.append(
                         " · Usage " + ("complete" if telemetry.get("usageComplete") else "partial"), style="dim"
                     )
@@ -624,23 +658,23 @@ class MatchWatch(App):
                 if view.pending.get("error"):
                     heading.append("\nLast failure: " + visible_text(view.pending["error"]), style="yellow")
             if view.report:
-                if compact and view.pending:
+                if compact:
                     heading.append(
-                        f"\nLatest report T{view.report['turn']} · preloaded T{view.delivered_turn if view.delivered_turn is not None else '—'}"
+                        f"\nReport T{view.report['turn']} · delivered T{view.delivered_turn if view.delivered_turn is not None else '—'} · advisory"
                     )
                 else:
                     heading.append(f"\nLatest adviser report · based on turn {view.report['turn']} · ", style="bold")
                     heading.append(
                         f"provided to gameplay on turn {view.delivered_turn}."
                         if view.delivered_turn is not None
-                        else "awaiting the next gameplay turn."
+                        else "delivery acknowledgement unavailable."
                     )
                     heading.append(" Recommendations remain advisory.", style="dim")
             if view.job:
                 usage = view.job.get("usage") or {}
-                if compact and view.pending:
+                if compact:
                     heading.append(
-                        f"\nReview tokens · input {number(usage.get('input_tokens'))} · output {number(usage.get('output_tokens'))}",
+                        f"\nTokens · input {number(usage.get('input_tokens'))} / cache {number(usage.get('cached_input_tokens'))} · output {number(usage.get('output_tokens'))} / reason {number(usage.get('reasoning_output_tokens'))}",
                         style="dim",
                     )
                 else:
@@ -960,9 +994,10 @@ def run(args):
         print(f"Match directory does not exist: {root}", file=sys.stderr)
         return 2
     from civ_agent.container_support import IN_CONTAINER, read_json, watch_mounts
+    from civ_agent.operator_state import is_local
 
     batch = (root / "batch.json").is_file()
-    if not args.local and not batch and not IN_CONTAINER and (root / "container.json").exists():
+    if not args.local and not batch and not IN_CONTAINER and is_local(root):
         import subprocess
 
         manifest = read_json(root / "container.json")

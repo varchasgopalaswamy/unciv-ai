@@ -11,7 +11,7 @@ INSTRUCTIONS = (
     "sharedValues contains exact repeated native values once in this message. A field value containing only "
     "sharedValueRef is replaced by sharedValues[that ID]. Expand references before applying any state/detail "
     "update or interpreting its facts. References never use an earlier message's registry. delivery=full "
-    "returns the inline values. Authored messages, notebook records and strategic judgments are not shared."
+    "returns the inline values. Sharing never rewrites authored text or grants observation credit."
 )
 
 FIELDS = frozenset(
@@ -37,6 +37,32 @@ FIELDS = frozenset(
         "buildings",
     }
 )
+# Complete result objects remain unchanged in code. These presentation shapes
+# contain exact copies of the same payload under several documented paths.
+RESULT_FIELDS = FIELDS | {"result", "receipt", "moves", "options", "overview", "approval", "report"}
+
+
+def result_copies(value: JsonObject) -> bool:
+    keys = value.keys() - {"sharedValues"}
+    feedback = value.get("feedback")
+    if isinstance(feedback, dict) and isinstance(feedback.get("receipts"), list):
+        return (
+            value.get("receiptVersion") == 1
+            and isinstance(value.get("receiptEntries"), list)
+            and isinstance(value.get("results"), list)
+            or keys == {"feedback", "receipt"}
+            or keys == {"feedback", "unit", "movement", "options"}
+        )
+    if keys == {"bundle", "query"} and isinstance(value["bundle"], dict):
+        return result_copies(value["bundle"])
+    consultation = value.get("consultation")
+    return (
+        value.get("error") == "MAIN_DECLINED_PEACE"
+        and isinstance(consultation, dict)
+        and isinstance(consultation.get("phases"), list)
+    )
+
+
 SKIP = frozenset(
     {
         "text",
@@ -70,6 +96,9 @@ def _roots(value: JsonObject, startup: bool) -> Iterator[tuple[tuple, JsonObject
             for path, root in _roots(reply, False):
                 yield ("decisionDetails", index, *path), root
         return
+    if result_copies(value):
+        yield (), value
+        return
     if "stateId" in value and isinstance(value.get("cities"), list):
         yield (), value
         return
@@ -89,17 +118,17 @@ def _roots(value: JsonObject, startup: bool) -> Iterator[tuple[tuple, JsonObject
                 yield ("results", index, "result", *path), root
 
 
-def _fields(root, path=()) -> Iterator[tuple[tuple, object]]:
+def _fields(root, path=(), *, fields=FIELDS) -> Iterator[tuple[tuple, object]]:
     if isinstance(root, dict):
         for name, value in root.items():
             if name in SKIP:
                 continue
-            if name in FIELDS:
+            if name in fields:
                 yield (*path, name), value
-            yield from _fields(value, (*path, name))
+            yield from _fields(value, (*path, name), fields=fields)
     elif isinstance(root, list):
         for index, value in enumerate(root):
-            yield from _fields(value, (*path, index))
+            yield from _fields(value, (*path, index), fields=fields)
 
 
 def _set(value, path, replacement):
@@ -108,16 +137,26 @@ def _set(value, path, replacement):
     value[path[-1]] = replacement
 
 
+def _literal_reference(value):
+    if isinstance(value, dict):
+        return set(value) == {"sharedValueRef"} or any(_literal_reference(item) for item in value.values())
+    if isinstance(value, list):
+        return any(_literal_reference(item) for item in value)
+    return False
+
+
 def compact_shared_values(value: JsonObject, *, startup=False, full=False) -> JsonObject:
     if full:
         return expand_shared_values(value, startup=startup)
     if "sharedValues" in value:
         expand_shared_values(value, startup=startup)  # Validate, retaining idempotent wire bytes.
         return copy.deepcopy(value)
+    if result_copies(value) and _literal_reference(value):
+        return copy.deepcopy(value)
     candidates = defaultdict(list)
     originals = {}
     for prefix, root in _roots(value, startup):
-        for path, item in _fields(root, prefix):
+        for path, item in _fields(root, prefix, fields=RESULT_FIELDS if result_copies(root) else FIELDS):
             if isinstance(item, dict) and set(item) == {"sharedValueRef"}:
                 return copy.deepcopy(value)  # Never reinterpret an original native field.
             if not isinstance(item, (dict, list, str)):
@@ -167,7 +206,7 @@ def expand_shared_values(value: JsonObject, *, startup=False) -> JsonObject:
     used = set()
     for prefix, root in _roots(result, startup):
         # Collect before replacing, so a registry value cannot add references.
-        for path, item in list(_fields(root, prefix)):
+        for path, item in list(_fields(root, prefix, fields=RESULT_FIELDS if result_copies(root) else FIELDS)):
             if not isinstance(item, dict) or set(item) != {"sharedValueRef"}:
                 continue
             reference = item["sharedValueRef"]

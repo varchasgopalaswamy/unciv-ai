@@ -2,17 +2,17 @@ import asyncio
 import copy
 import json
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
 
-from civ_agent.chat_runtime import ChatRuntime
-from civ_agent.civilization_state import CivilizationState, StateConflict
+from civ_agent.civilization_state import CivilizationState
 from civ_agent.economy_roles import TurnRoles
 from civ_agent.proposal_gateway import ProposalGateway
 from civ_agent.protocol import JsonObject
 from civ_agent.service_io import ServiceIO
-from tests.test_proposal_gateway import Host
+from tests.domain_fixtures import Host
 
 
 class PendingTradesHost(Host):
@@ -426,7 +426,7 @@ def test_native_offer_routing_survives_projection_and_interrupted_receipt_replay
             game = await gateway.open("game", "gameplay", "g1", host, {})
             original = gateway.update_after_action
 
-            async def interrupted(job, name, arguments, call_id, result) -> JsonObject:
+            async def interrupted(job, name, arguments, call_id, result, *, record_call=True) -> JsonObject:
                 raise asyncio.CancelledError()
 
             gateway.update_after_action = interrupted
@@ -877,57 +877,6 @@ def test_private_policy_changes_do_not_gate_an_inspected_trade_decision(tmp_path
     asyncio.run(run())
 
 
-@pytest.mark.parametrize("enacted", [False, True])
-def test_trade_receipt_reconciliation_after_response_loss(tmp_path, enacted):
-    async def run():
-        io = ServiceIO()
-        memory = CivilizationState(tmp_path / "private", "Rome")
-        gateway = ProposalGateway(memory, io, tmp_path / "workspace")
-        host = TradeHost()
-        original = host.tool
-
-        async def unreliable(name, args):
-            if name == "player_communication" and args["op"] == "trade_decide":
-                if enacted:
-                    await original(name, args)
-                raise TimeoutError("Lost trade response")
-            return await original(name, args)
-
-        host.tool = unreliable
-        try:
-            job = await gateway.open("chat", "communication", "g1", host, {})
-            await gateway.call(job, "trade_read", {"proposalId": "d1"}, "read")
-            with pytest.raises(TimeoutError):
-                await gateway.call(
-                    job,
-                    "trade_decide",
-                    {"proposalId": "d1", "decision": "accept", "intent": {"reason": "Advance the test assessment"}},
-                    "accept",
-                )
-            assert job.closed and len(memory.pending()) == 1
-            request_id = memory.pending()[0]["id"]
-            restarted = CivilizationState(tmp_path / "private", "Rome")
-            fresh_gateway = ProposalGateway(restarted, io, tmp_path / "restarted-workspace")
-            runtime = ChatRuntime(SimpleNamespace(io=io, memory=restarted, gateway=fresh_gateway))
-            runtime.connection, runtime.epoch = host, "g1"
-            await runtime.reconcile()
-            await runtime.reconcile()
-            assert bool(restarted.pending()) == (not enacted)
-            assert len(host.writes) == int(enacted)
-            request = restarted.requests_for_job("chat")[0]
-            assert request["id"] == request_id
-            if enacted:
-                assert "outcome" in json.loads(request["result"])
-            else:
-                assert request["result"] is None
-                with pytest.raises(StateConflict, match="CHECKPOINT_REQUEST_UNSETTLED"):
-                    restarted.backup(tmp_path / "unsettled-trade.json")
-        finally:
-            await io.close()
-
-    asyncio.run(run())
-
-
 def test_duplicate_offer_rejection_with_null_trade_is_durable_and_does_not_break_settlement(tmp_path):
     class BusyHost(HoldingHost):
         async def tool(self, name, args):
@@ -968,5 +917,161 @@ def test_duplicate_offer_rejection_with_null_trade_is_durable_and_does_not_break
             assert summary["actions"][0].get("settlement") is None
         finally:
             await io.close()
+
+    asyncio.run(run())
+
+
+# Regression: a closed trade must not leave an immortal refresh notification.
+def _negotiation_notice_fixture() -> tuple[Any, Any]:
+    hold = asyncio.Event()
+    hold.set()
+    gateway = SimpleNamespace(
+        consultation_hold=hold,
+        role_coordinator=None,
+        check=lambda job: None,
+        suspend_negotiation=ProposalGateway.suspend_negotiation,
+    )
+    job = SimpleNamespace(
+        epoch="g1",
+        negotiation_pending=asyncio.Event(),
+        connection=SimpleNamespace(tool=AsyncMock(return_value={"negotiation": {"active": False}})),
+        wait_started=None,
+        completed_wait=0.0,
+        suspend_for_negotiation=False,
+        pending_calls={},
+    )
+    return gateway, job
+
+
+def test_closed_negotiation_notification_requires_only_one_refresh():
+    async def run():
+        gateway, job = _negotiation_notice_fixture()
+        job.negotiation_pending.set()
+        assert await ProposalGateway.wait_for_gameplay(gateway, job) is True
+        assert not job.negotiation_pending.is_set()
+        # After the caller obtains the required fresh view, the next finish's
+        # inactive native poll must permit completion instead of another loop.
+        assert await ProposalGateway.wait_for_gameplay(gateway, job) is False
+        assert job.wait_started is None
+        assert job.connection.tool.call_args_list[0].args == (
+            "player_communication",
+            {"op": "negotiation", "epoch": "g1", "waitSeconds": 25},
+        )
+        assert job.connection.tool.call_args_list[1].args[1]["waitSeconds"] == 0
+
+    asyncio.run(run())
+
+
+def test_new_negotiation_notification_arriving_during_poll_is_not_cleared():
+    async def run():
+        gateway, job = _negotiation_notice_fixture()
+        job.negotiation_pending.set()
+
+        async def poll(name, arguments):
+            await asyncio.sleep(0)
+            job.negotiation_pending.set()
+            return {"negotiation": {"active": False}}
+
+        job.connection.tool.side_effect = poll
+        assert await ProposalGateway.wait_for_gameplay(gateway, job) is True
+        assert job.negotiation_pending.is_set()
+        job.connection.tool.side_effect = None
+        assert await ProposalGateway.wait_for_gameplay(gateway, job) is True
+        assert not job.negotiation_pending.is_set()
+        assert await ProposalGateway.wait_for_gameplay(gateway, job) is False
+
+    asyncio.run(run())
+
+
+def test_active_native_negotiation_still_blocks_until_released():
+    async def run():
+        gateway, job = _negotiation_notice_fixture()
+        entered, released = asyncio.Event(), asyncio.Event()
+        polls = []
+
+        async def poll(name, arguments):
+            polls.append(arguments)
+            if len(polls) == 1:
+                return {"negotiation": {"active": True}}
+            entered.set()
+            await released.wait()
+            return {"negotiation": {"active": False}}
+
+        job.connection.tool.side_effect = poll
+        waiting = asyncio.create_task(ProposalGateway.wait_for_gameplay(gateway, job))
+        try:
+            await asyncio.wait_for(entered.wait(), 1)
+            assert not waiting.done()
+            assert polls[0]["waitSeconds"] == 0 and polls[1]["waitSeconds"] == 25
+            released.set()
+            assert await asyncio.wait_for(waiting, 1) is True
+            assert await ProposalGateway.wait_for_gameplay(gateway, job) is False
+        finally:
+            waiting.cancel()
+            await asyncio.gather(waiting, return_exceptions=True)
+
+    asyncio.run(run())
+
+
+def test_code_suspension_retains_accepted_calls_and_consumes_its_new_notice_once():
+    async def run():
+        gateway, job = _negotiation_notice_fixture()
+        pending = asyncio.create_task(asyncio.Event().wait())
+        accepted = {"tool": "unit_details", "arguments": {"target": "unit1"}}
+        job.suspend_for_negotiation = True
+        job.pending_calls = {pending: accepted}
+        job.negotiation_calls = {}
+        job.delivered_overview = {"revision": "before-negotiation"}
+        job.connection.tool.side_effect = [
+            {"negotiation": {"active": True}},
+            {"negotiation": {"active": False}},
+            {"negotiation": {"active": False}},
+            {"negotiation": {"active": False}},
+        ]
+        try:
+            # The active poll suspends Code Mode and raises a new notice after
+            # this wait's initial consume. Retain it and the accepted call.
+            assert await ProposalGateway.wait_for_gameplay(gateway, job) is True
+            assert job.negotiation_pending.is_set()
+            assert job.negotiation_calls == {pending: accepted}
+            assert job.pending_calls == {pending: accepted}
+            assert job.delivered_overview is None
+            # The next wait consumes that new notice; it must not become an
+            # immortal refresh after the caller has obtained fresh facts.
+            assert await ProposalGateway.wait_for_gameplay(gateway, job) is True
+            assert not job.negotiation_pending.is_set()
+            assert await ProposalGateway.wait_for_gameplay(gateway, job) is False
+            assert job.negotiation_calls == {pending: accepted}
+        finally:
+            pending.cancel()
+            await asyncio.gather(pending, return_exceptions=True)
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("failure", ["cancelled", "paused", "invalid_status"])
+def test_failed_wait_keeps_refresh_obligation_and_does_not_swallow_fences(failure):
+    from civ_agent.proposal_gateway import StateConflict
+
+    async def run():
+        gateway, job = _negotiation_notice_fixture()
+        job.negotiation_pending.set()
+        if failure == "cancelled":
+            job.connection.tool.side_effect = asyncio.CancelledError()
+            expected = asyncio.CancelledError
+        elif failure == "paused":
+
+            def paused(_job):
+                raise StateConflict("JOB_PAUSED_OR_EXPIRED")
+
+            gateway.check = paused
+            expected = StateConflict
+        else:
+            job.connection.tool.return_value = {"negotiation": {"active": "false"}}
+            expected = StateConflict
+        with pytest.raises(expected):
+            await ProposalGateway.wait_for_gameplay(gateway, job)
+        assert job.negotiation_pending.is_set()
+        assert job.wait_started is None
 
     asyncio.run(run())

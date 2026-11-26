@@ -13,14 +13,13 @@ from mcp.client import Client
 from mcp.client.streamable_http import streamable_http_client
 from mcp.types import TextContent
 
-from civ_agent.agent_service import server_ssl_context
 from civ_agent.civilization_state import CivilizationState
 from civ_agent.mcp_results import RESULT_FORMAT_HEADER, STRUCTURED_RESULT_FORMAT, canonical_tool_result
 from civ_agent.proposal_gateway import JobAccess, ProposalGateway, public_result, tool_result
 from civ_agent.review_grounding import ReviewEvidence
 from civ_agent.service_io import ServiceIO
-from civ_agent.tls import client_ssl_context, ensure_server_certificate
-from tests.test_proposal_gateway import Host
+from civ_agent.tls import client_ssl_context, ensure_server_certificate, server_ssl_context
+from tests.domain_fixtures import Host
 
 
 @pytest.mark.parametrize("payload", [{}, {"city": "Róma", "choices": [True, 1, None]}, {"error": "DETAIL_REQUIRED"}])

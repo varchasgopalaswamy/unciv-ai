@@ -310,13 +310,15 @@ async def prepare_startup(gateway, job, *, call_prefix: str = STARTUP_CALL_PREFI
     # Select using fresh permitted facts, without admitting contributions that
     # arrived after dispatch. Explicit reads below deliver the chosen records;
     # selection alone does not deliver cached evidence.
+    native_authored = gateway.memory.authored_enabled
     topics = memory_topics(reads)
-    if gateway.advisories is not None:
+    if not native_authored and gateway.advisories is not None:
         async with gateway.admit(), job.lock:
             gateway.check(job)
             await gateway.advisories.startup(job, reads, topics)
-    await gateway.select_startup_memory(job, topics)
-    selected = job.memory["contextIds"]
+    if not native_authored:
+        await gateway.select_startup_memory(job, topics)
+    selected = [] if native_authored else job.memory["contextIds"]
     for offset in range(0, len(selected), 20):
         await gateway.call(
             job,
@@ -325,7 +327,7 @@ async def prepare_startup(gateway, job, *, call_prefix: str = STARTUP_CALL_PREFI
             call_prefix + f"memory:{offset}",
             source="startup",
         )
-    if gateway.advisories is not None:
+    if not native_authored and gateway.advisories is not None:
         async with gateway.admit(), job.lock:
             gateway.check(job)
             await gateway.advisories.finish_delivery(job)
@@ -338,7 +340,7 @@ async def prepare_startup(gateway, job, *, call_prefix: str = STARTUP_CALL_PREFI
             working_context(context, job.purpose), job.id, job.epoch, job.coordination_scope, 1
         )
         job.coordination_pending = coordination
-        memory_context = gateway.startup_memory_context(job)
+        memory_context = "" if native_authored else gateway.startup_memory_context(job)
         job.coordination_preparing = False
     extra_tools: tuple[str, ...] = ()
     if job.purpose == "communication":
@@ -351,7 +353,7 @@ async def prepare_startup(gateway, job, *, call_prefix: str = STARTUP_CALL_PREFI
         "coreTools": core_definitions(catalogue, job.purpose, extra_tools),
         "reads": reads,
         "decisionDetails": decision_details,
-        "memoryContext": memory_context,
+        **({"memoryContext": memory_context} if not native_authored else {}),
         "advisories": job.memory.get("advisories", {}),
         "economyCoordination": coordination,
         **(

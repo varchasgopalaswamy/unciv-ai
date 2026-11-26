@@ -5,7 +5,7 @@ from unittest.mock import patch
 from sqlalchemy import event
 
 from civ_agent.memory_history import SummaryReader
-from tests.test_structured_memory import create, setup
+from tests.domain_fixtures import create, setup
 
 
 def test_explicit_export_after_rewind_uses_restored_evidence(tmp_path):

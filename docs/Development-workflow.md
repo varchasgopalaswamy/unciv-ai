@@ -1,12 +1,11 @@
 # Development workflow
 
-This repository is private and has one maintainer. It contains the host, MCP adapter, plans, and integration tests. The game engine remains in the separate [Unciv fork](https://github.com/varchasgopalaswamy/Unciv/tree/experimental-changes), with `experimental-changes` as its integration branch.
+This repository contains the game host, player adapter, and integration tests.
+The [submodule configuration](../.gitmodules) identifies the separate Unciv fork.
 
 Read the [repository instructions](../AGENTS.md) before making changes. Unciv commit messages and public contribution text must never reveal this repository's existence, name, or purpose. Describe each engine change accurately in terms of its reusable behavior and tests. Keep private coordination notes here.
 
-Use the [documentation index](README.md) to find current guides and references,
-and the [roadmap](Roadmap.md) to resume unfinished work. Completed task plans
-and dated results belong in the [archive](archive/README.md).
+Use the [documentation index](README.md) to find current guides and references.
 
 ## Checkouts and dependency
 
@@ -18,7 +17,9 @@ projects/
     └── docs/
 ```
 
-The submodule URL is `https://github.com/varchasgopalaswamy/Unciv.git`. Its branch setting identifies `experimental-changes` for deliberate updates; the Git submodule entry records the exact commit used by this repository. Ordinary builds and CI use that commit, even if the remote branch has advanced. See [Git's submodule documentation](https://git-scm.com/docs/git-submodule).
+The branch setting in `.gitmodules` identifies `experimental-changes` for
+deliberate updates. The submodule entry records the exact commit used by builds
+and CI, even if the remote branch has advanced.
 
 After cloning this private repository, initialize the dependency:
 
@@ -38,7 +39,7 @@ The headless runtime loads the bundled Vanilla and Gods & Kings rules without a
 graphics backend. The [player protocol](reference/Player-api-protocol.md) describes
 authenticated observations, commands, receipts and recovery. Use the
 [coverage ledger](reference/Player-api-coverage.md) for supported and outstanding
-player surfaces, and the [roadmap](Roadmap.md) for current acceptance work.
+player surfaces.
 
 ## Kotlin host libraries
 
@@ -53,15 +54,18 @@ lifetimes, and the transport schema layout.
 
 The Python application lives in `src/civ_agent/`, with a single installed
 `civ-agent` entrypoint. Command parsing is in `cli.py`; command handlers are in
-`commands/`. Scheduling, the HTTPS service, history, TLS, and turn archives are
-importable modules rather than scripts loaded by filesystem path.
+`commands/`. One async controller per game uses programmatic hand-off between
+Pydantic AI agents. Native histories, HTTPS services and TLS helpers are
+importable modules.
 
 Use Python 3.12 or newer and [uv](https://docs.astral.sh/uv/). The project metadata,
 runtime dependencies, and Ruff, Pyrefly, and pytest configuration live in
 `pyproject.toml`. `uv.lock` records the resolved runtime and development dependencies.
 
-Runtime libraries include aiohttp for the service and Codex socket connection,
-Pydantic for owned boundary schemas, SQLAlchemy Core for SQLite memory and
+Runtime libraries include Pydantic AI for native agents and provider calls,
+pydantic-ai-harness for histories, authored memory and plans, standard Python
+async tasks for coordination, aiohttp for local services, Authlib for centralized OAuth renewal,
+Pydantic for owned boundary schemas, SQLAlchemy Core for SQLite domain state and
 accounting queries, the official MCP SDK with httpx2 for host
 clients, and cryptography for certificate and keystore provisioning. See the
 [Python architecture diagrams](architecture/Python-architecture.md) for their responsibilities
@@ -77,10 +81,10 @@ uv run pytest
 ```
 
 Ruff checks and formats Python; Pyrefly checks the package and tests; pytest runs
-the launcher, scheduler, history, and HTTPS regression suites. Those tests use
-temporary match directories and fake model processes. They do not require a live
-game or model account. The existing unittest test cases run under pytest alongside
-new pytest tests. Routine validation uses the source checkout; producing a wheel
+launcher, local controller, history and HTTPS regression suites. Tests use temporary
+match directories and scripted model fixtures. Ordinary tests do not require
+a live game, orchestration service or model account. Existing unittest test cases run under pytest alongside
+pytest tests. Routine validation uses the source checkout; producing a wheel
 or source archive is not a required check.
 
 Add dependencies with `uv add PACKAGE`, or development tools with `uv add --dev
@@ -94,8 +98,9 @@ the Gradle wrapper directly and package the selected engine code and assets.
 
 Low-level host commands discover the JVM checkout from the working directory or editable
 source tree. An independently installed package can select it with `--repo-dir`
-or `CIV_AGENT_REPO`. Agent services need only the Python package and their runtime
-tools, credentials, and certificates. See [local commands](guides/Local-launchers.md).
+or `CIV_AGENT_REPO`. The controller needs the Python package, its selected
+runtime dependencies, credentials and certificates. See
+[local commands](guides/Local-launchers.md).
 
 ## Work on the engine locally
 
@@ -128,4 +133,6 @@ git add vendor/Unciv
 
 If the desired commit is still on an engine feature branch, fetch that branch instead. The ordinary submodule update command checks out the recorded commit; use `--remote` only when intentionally choosing a new dependency revision, then review and record that change.
 
-The workflow in [build.yml](../.github/workflows/build.yml) checks out submodules at their recorded revisions, checks the engine SHA, and runs the default build. It is ready for private GitHub hosting; its first hosted run will occur after these setup files are pushed.
+The workflow in [build.yml](../.github/workflows/build.yml) checks out
+submodules at their recorded revisions, checks the engine SHA, and runs the
+default build.

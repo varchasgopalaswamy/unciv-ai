@@ -78,6 +78,7 @@ object CityDevelopmentProbe {
             player.tech.techsInProgress["Mining"] = 20
             val session = PlayerHost(runtime).bindPlayer("Rome")
             val choices = session.researchDetails(listOf("Calendar"))
+            val originalQueueRevision = session.turn().cities.single().constructionQueueRevision
             check(choices.current == "Mining" && choices.researchQueue == listOf("Mining"))
             check(choices.technologies.single().prerequisiteQueue == listOf("Calendar"))
             for ((index, queue) in listOf(listOf("Calendar"), listOf("Mining", "Calendar")).withIndex()) {
@@ -89,6 +90,39 @@ object CityDevelopmentProbe {
                 check(!player.tech.isResearched("Mining"))
             }
             check(choices.researchQueue == listOf("Mining")) { "Research detail queue changed after mutation" }
+            check(session.turn().cities.single().constructionQueueRevision == originalQueueRevision) { "Research invalidated an unchanged construction queue" }
+            // Production intents use one native add-to-top operation. Legacy
+            // append and index-based edits retain their independent meanings.
+            val cityHandle = session.turn().cities.single().handle
+            fun construction(id: String, kind: TurnCommandKind, selection: String? = null, index: Int? = null, toIndex: Int? = null): uncivai.player.TurnCommandReceipt {
+                val turn = session.turn()
+                return session.execute(TurnCommandRequest(id, turn.epoch, turn.revision, kind, target = cityHandle, selection = selection, index = index, toIndex = toIndex))
+            }
+            val appended = construction("append-worker", TurnCommandKind.QUEUE_CONSTRUCTION, "Worker")
+            check(appended.construction!!.after == listOf("Worker", "Worker", "Worker"))
+            val beforeStart = session.turn()
+            val startRequest = TurnCommandRequest("start-monument", beforeStart.epoch, beforeStart.revision, TurnCommandKind.START_CONSTRUCTION, target = cityHandle, selection = "Monument")
+            val started = session.execute(startRequest)
+            check(started.construction!!.after == listOf("Monument", "Worker", "Worker", "Worker"))
+            check(city.cityConstructions.getWorkDone("Worker") == 7)
+            check(session.execute(startRequest) == started) { "Lost acknowledgement replay duplicated construction" }
+            check(city.cityConstructions.constructionQueue == started.construction!!.after)
+            check(session.turn().cities.single().constructionQueueRevision != originalQueueRevision)
+            check(appended.construction!!.after == listOf("Worker", "Worker", "Worker")) { "A retained receipt changed" }
+            val unchangedQueue = city.cityConstructions.constructionQueue.toList()
+            check(runCatching { session.execute(startRequest.copy(requestId = "stale-start", selection = "Worker")) }.isFailure)
+            check(city.cityConstructions.constructionQueue == unchangedQueue)
+            val duplicateRevision = session.turn().cities.single().constructionQueueRevision
+            val duplicateMove = construction("move-equal-workers", TurnCommandKind.MOVE_CONSTRUCTION, index = 3, toIndex = 2)
+            check(duplicateMove.construction!!.after == unchangedQueue)
+            check(session.turn().cities.single().constructionQueueRevision != duplicateRevision) { "An edit to equal queue entries retained its old reference" }
+            check(runCatching { construction("unknown-start", TurnCommandKind.START_CONSTRUCTION, "Unknown") }.isFailure)
+            check(city.cityConstructions.constructionQueue == unchangedQueue)
+            val prioritized = construction("prioritize-worker", TurnCommandKind.MOVE_CONSTRUCTION, index = 2, toIndex = 0)
+            check(prioritized.construction!!.after == listOf("Worker", "Monument", "Worker", "Worker"))
+            val removed = construction("remove-worker", TurnCommandKind.REMOVE_CONSTRUCTION, index = 3)
+            check(removed.construction!!.after == listOf("Worker", "Monument", "Worker"))
+            check(city.cityConstructions.getWorkDone("Worker") == 7)
             val cityOperations = PlayerCityOperations(player)
             // Research changes can reassign citizens. Inspect the current choice
             // before testing mutation and detachment of the returned snapshot.

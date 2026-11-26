@@ -14,10 +14,7 @@ from civ_agent.memory_records import MemoryUpdate
 from civ_agent.proposal_gateway import READ_TOOLS
 from civ_agent.startup_context import startup_instructions
 from civ_agent.strict_schema import StrictSchema, UnsupportedSchema
-from civ_agent.structured_decisions import DecisionLoop, continuation, journal
-from tests.structured_helpers import decision_text
-from tests.test_economy_optimization import managed
-from tests.test_economy_roles import run_async
+from tests.domain_fixtures import managed, run_async
 
 
 def sample(shape, definitions):
@@ -196,73 +193,6 @@ def test_inspection_transport_is_automatic_with_explicit_recovery_only():
 def test_unsupported_schema_fails_closed(keyword, value):
     with pytest.raises(UnsupportedSchema):
         StrictSchema({**closed({}), keyword: value})
-
-
-@run_async
-async def test_batch_validation_receipts_replay_and_ownership_stop(tmp_path):
-    async with managed(tmp_path) as m:
-        await m.gateway.call(m.main, "player_turn", {}, "initial")
-        loop = DecisionLoop(m.gateway, m.main, DecisionContract("gameplay", await m.gateway.tools(m.main)), {})
-        await loop.begin("position")
-        valid = {
-            "kind": "act",
-            "operations": [
-                {"tool": "city_override", "arguments": {"city": "city1", "reason": "Emergency"}},
-                {
-                    "tool": "player_command",
-                    "arguments": {"command": {"kind": "QUEUE_CONSTRUCTION", "target": "city1", "selection": "Granary"}},
-                },
-            ],
-        }
-        malformed = json.loads(loop.contract.encode(valid))
-        malformed["decision"]["operations"][1]["arguments"]["command"]["invented"] = True
-        result = await loop.complete(json.dumps(malformed))
-        assert result["error"] == "INVALID_STRUCTURED_DECISION" and not m.roles.overrides
-        await loop.begin(result)
-        response = await loop.complete(loop.contract.encode(valid))
-        assert response["receipts"][0]["status"] == "confirmed"
-        assert response["receipts"][1]["status"] == "unexecuted"
-        assert response["receipts"][1]["reason"] == "PREREQUISITES_CHANGED"
-        assert await loop.execute() == response
-        saved = journal(m.memory, response["decisionId"])
-        assert saved is not None
-        assert saved["operationIds"] == [r["operationId"] for r in response["receipts"]]
-        assert continuation(response)["toolOutput"]["retain"]
-
-
-@run_async
-async def test_read_batch_bounds_and_no_actions_from_incomplete_output(tmp_path):
-    async with managed(tmp_path) as m:
-        contract = DecisionContract("gameplay", await m.gateway.tools(m.main))
-        loop = DecisionLoop(m.gateway, m.main, contract, {})
-        operation = {"tool": "player_turn", "arguments": {}}
-        for count in (0, 13):
-            with pytest.raises((SchemaError, ValueError)):
-                contract.encode({"kind": "inspect", "operations": [operation] * count})
-        await loop.begin("position")
-        with pytest.raises(ValueError, match="INCOMPLETE_GENERATION"):
-            await loop.complete(contract.encode({"kind": "finish", "arguments": {}}), "interrupted")
-        assert not m.roles.ready["gameplay"]
-        assert loop.current is not None
-        saved = journal(m.memory, loop.current["id"])
-        assert saved is not None and saved["status"] == "generation_failed"
-
-
-@run_async
-async def test_military_completion_has_no_model_authored_basis(tmp_path):
-    async with managed(tmp_path) as m:
-        job = await m.gateway.open("military", "military", "g1", m.host, {}, 0)
-        m.roles.register(job)
-        contract = DecisionContract("military", await m.gateway.tools(job))
-        assert '"basis"' not in json.dumps(contract.schema)
-        loop = DecisionLoop(m.gateway, job, contract, {})
-        await loop.begin("position")
-        result = await loop.complete(
-            contract.encode({"kind": "finish", "arguments": {"decisions": [{"targets": ["unit1"], "reason": "Hold"}]}})
-        )
-        assert result["error"] == "MILITARY_REVIEW_NOT_DELIVERED"
-        with pytest.raises((ValueError, SchemaError)):
-            decision_text(contract.schema, {"kind": "finish", "arguments": {"basis": "invented"}})
 
 
 def test_inspection_subject_shapes_and_bounds():

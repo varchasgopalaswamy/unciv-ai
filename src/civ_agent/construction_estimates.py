@@ -44,7 +44,7 @@ def investment_comparison(
         if current
         else {"kind": "MOVE_CONSTRUCTION", "index": move["index"], "toIndex": 0}
         if move
-        else {"kind": "QUEUE_CONSTRUCTION", "thenMoveToFront": True}
+        else {"kind": "START_CONSTRUCTION"}
         if append
         else None
     )

@@ -56,20 +56,22 @@ def choice_versions(records: list[JsonObject], since_turn: int) -> list[JsonObje
         ended = body.get("updatedTurn") if latest else later_turns[key]
         active = latest and body.get("state") == "active"
         for decision in body.get("decisions", []):
+            decision_active = active and decision.get("status", "active") not in {"completed", "abandoned"}
+            decision_ended = ended if decision_active or not active else body.get("updatedTurn")
             baseline = body.get("_decisionBaselines", {}).get(decision["id"], {})
             identity = baseline.get("id")
             if identity in seen:
                 continue
             seen.add(identity)
-            if active or (ended is not None and ended >= since_turn):
+            if decision_active or (decision_ended is not None and decision_ended >= since_turn):
                 choices.append(
                     {
                         "strategy": key,
                         "version": record["version"],
                         "decision": decision,
                         "baseline": baseline,
-                        "state": "active" if active else "ended",
-                        "endedTurn": None if active else ended,
+                        "state": "active" if decision_active else "ended",
+                        "endedTurn": None if decision_active else decision_ended,
                     }
                 )
         later_turns[key] = body.get("updatedTurn")

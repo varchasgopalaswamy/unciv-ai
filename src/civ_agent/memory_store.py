@@ -1,6 +1,7 @@
 """Revision and lifecycle operations within a caller-owned SQLite transaction."""
 
 import json
+from copy import deepcopy
 
 from sqlalchemy import ColumnElement, func, insert, select
 
@@ -36,6 +37,17 @@ class RecordStore:
             row["key"]: {"version": row["version"], "category": row["category"], "body": json.loads(row["body"])}
             for row in self.db.execute(query).mappings()
         }
+        reader = self.db.info.get("authored_reader")
+        if reader is not None and (categories is None or set(categories) & (MEMORY_TYPES | {"contribution"})):
+            if "authored_records" not in self.db.info:
+                self.db.info["authored_records"] = reader()
+            records.update(
+                {
+                    key: deepcopy(record)
+                    for key, record in self.db.info["authored_records"].items()
+                    if (categories is None or record["category"] in categories) and (keys is None or key in keys)
+                }
+            )
 
         if project:
             notices = {k: r for k, r in records.items() if r["category"] == "notice"}
@@ -74,6 +86,8 @@ class RecordStore:
                 }
 
     def write(self, key, category, body, job=None):
+        if self.db.info.get("authored_reader") is not None and category in MEMORY_TYPES | {"contribution"}:
+            raise ValueError("NATIVE_AUTHORED_MEMORY_REQUIRED")
         if category in MEMORY_TYPES:
             body = {
                 k: v for k, v in body.items() if k not in {"needsReview", "reviewSources", "_review", "_noticeVersion"}
@@ -239,7 +253,7 @@ class RecordStore:
                 )
 
     def expire(self):
-        if self.turn is None:
+        if self.turn is None or self.db.info.get("authored_reader") is not None:
             return
         for key, record in self.all(categories=MEMORY_TYPES | {"contribution"}).items():
             body = record["body"]

@@ -14,7 +14,7 @@ from civ_agent.economy_roles import TurnRoles
 from civ_agent.military_schedule import MilitarySchedule, military_facts
 from civ_agent.protocol import JsonObject
 from civ_agent.service_io import ServiceIO
-from tests.test_economy_roles import run_async
+from tests.domain_fixtures import run_async
 
 
 def fixture(tmp_path):
@@ -268,69 +268,6 @@ async def test_coordinator_applies_triage_only_to_current_optional_planning(tmp_
         assert roles.military_schedule.saved()["lastFullReviewTurn"] == 4
     finally:
         await io.close()
-
-
-@run_async
-async def test_peacetime_manager_uses_the_existing_runtime_and_sleeps_between_reviews(tmp_path):
-    from civ_agent.agent_service import AgentService
-    from tests.test_agent_service import FakeFactory, StartupHost
-
-    class MilitaryHost(StartupHost):
-        def __init__(self, factory):
-            super().__init__(factory)
-            self.view["diplomacy"] = {"knownCivilizations": [], "cityStates": []}
-
-    factory = FakeFactory()
-    factory.connection = lambda *args, **kwargs: MilitaryHost(factory)
-    service = AgentService(
-        "Rome",
-        tmp_path / "workspace",
-        tmp_path / "service",
-        "S" * 43,
-        "https://localhost:8765/mcp",
-        None,
-        process_factory=factory,
-        connection_factory=factory.connection,
-        military_interval=5,
-    )
-    factory.service = service
-    try:
-        for index, turn in enumerate((4, 5, 9)):
-            identifier = f"turn-{turn}"
-            await service.start(
-                {
-                    "activationId": identifier,
-                    "epoch": "g1",
-                    "civilization": "Rome",
-                    "threadId": None,
-                    "gameTurn": turn,
-                    "handoff": index,
-                    "mcpUrl": service.mcp_url,
-                    "playerToken": "P" * 43,
-                    "prompt": "Play",
-                    "model": None,
-                    "timeoutSeconds": 30,
-                    "leaseSeconds": 20,
-                }
-            )
-            assert service.active_task is not None
-            await asyncio.wait_for(asyncio.shield(service.active_task), 8)
-            assert service.failure is None, service.status()
-            roles = service.turn_roles
-            assert roles is not None and roles.committed
-            assert roles.unit_owner({"handle": "unit1", "military": True}) == "military"
-            children = [
-                r
-                for r in service.records.values()
-                if r.get("parentActivation") == identifier and r["purpose"] == "military"
-            ]
-            assert len(children) == int(turn in {4, 9})
-            assert all(r["phase"] == "COMPLETED" for r in children)
-            await service.finalize(
-                {"activationId": identifier, "epoch": "g1", "gameTurn": turn, "committedHandoff": index + 1}
-            )
-    finally:
-        await service.close()
 
 
 @run_async

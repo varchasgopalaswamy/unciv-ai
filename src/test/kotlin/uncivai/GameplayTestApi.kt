@@ -128,9 +128,12 @@ internal class GameplayTestApi(runtime: HeadlessRuntime, tlsRoot: Path, initialT
         check(response.statusCode() == 200) { "HTTP ${response.statusCode()}: ${response.body()}" }
         return response.body()
     }
-    private fun call(token: String, name: String, args: JsonObject = JsonObject(emptyMap())) = Json.parseToJsonElement(raw("/mcp", """{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"$name","arguments":$args}}""", token)).jsonObject.getValue("result").jsonObject
-    fun tool(token: String, name: String, args: JsonObject = JsonObject(emptyMap())): JsonObject {
-        val response = call(token, name, args)
+    private fun call(token: String, name: String, args: JsonObject = JsonObject(emptyMap()), meta: JsonObject? = null): JsonObject {
+        val parameters = if (meta == null) obj("name" to name, "arguments" to args) else obj("name" to name, "arguments" to args, "_meta" to meta)
+        return Json.parseToJsonElement(raw("/mcp", obj("jsonrpc" to "2.0", "id" to 1, "method" to "tools/call", "params" to parameters).toString(), token)).jsonObject.getValue("result").jsonObject
+    }
+    fun tool(token: String, name: String, args: JsonObject = JsonObject(emptyMap()), meta: JsonObject? = null): JsonObject {
+        val response = call(token, name, args, meta)
         check(!response.getValue("isError").jsonPrimitive.boolean) { response.toString() }
         return response.getValue("structuredContent").jsonObject
     }

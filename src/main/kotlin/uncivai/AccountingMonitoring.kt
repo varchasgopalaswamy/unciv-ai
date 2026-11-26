@@ -114,7 +114,7 @@ internal class AccountingMonitoring(path: Path) : AutoCloseable {
                 val turn = turns[id] ?: continue
                 val attempts = buildMap {
                     putAll(byTurn[Triple(turn.epoch, turn.handoff, turn.civilization)].orEmpty().filterValues { it.purpose in setOf("gameplay", "economy", "military", "consultation", "review") })
-                    if (turn.gameTurn == 0) putAll(byTurn[Triple(turn.epoch, null, turn.civilization)].orEmpty().filterValues { it.purpose == "review" && it.gameTurn == 0 })
+                    if (turn.gameTurn == 0) putAll(byTurn[Triple(turn.epoch, null, turn.civilization)].orEmpty().filterValues { it.isOpeningReview() })
                 }
                 val sums = Totals().apply { attempts.values.forEach { job(it, 1) } }
                 val elapsed = turn.endedAtMs?.let { (it - turn.startedAtMs).coerceAtLeast(0) }

@@ -10,7 +10,7 @@ from civ_agent.memory_store import RecordStore
 from civ_agent.proposal_gateway import ProposalGateway
 from civ_agent.service_io import ServiceIO
 from civ_agent.startup_context import prepare_startup
-from tests.test_agent_service import StartupHost
+from tests.domain_fixtures import StartupHost
 
 
 def test_matched_variants_and_legacy_defaults():

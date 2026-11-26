@@ -3,25 +3,19 @@
 import asyncio
 import copy
 import json
-from contextlib import asynccontextmanager
-from types import SimpleNamespace
-from unittest.mock import AsyncMock
 
 import pytest
 from jsonschema import Draft202012Validator
 
-from civ_agent.civilization_state import CivilizationState
 from civ_agent.coordination_updates import apply_coordination_update
-from civ_agent.economy_roles import TurnRoles
 from civ_agent.economy_schedule import EconomySchedule
 from civ_agent.memory_store import RecordStore
-from civ_agent.proposal_gateway import ProposalGateway
-from civ_agent.service_io import ServiceIO
 from civ_agent.startup_context import prepare_startup, startup_prompt
 from civ_agent.state_updates import apply_overview_update
-from tests.test_agent_service import StartupHost
-from tests.test_economy_schedule import observation
-from tests.test_structured_memory import create, setup
+from tests.domain_fixtures import create, observation, setup
+from tests.domain_fixtures import (
+    managed as managed,
+)
 
 
 @pytest.fixture
@@ -183,85 +177,6 @@ def test_legacy_schedule_metadata_retains_its_full_review_deadline(two_cities):
     status = schedule.assess(view, 8, [])
     assert status["lastFullReviewTurn"] == 4 and status["nextReviewTurn"] == 9
     assert status["cityReviewTurns"] == {"city1": 4, "city2": 7}
-
-
-@asynccontextmanager
-async def managed(tmp_path):
-    memory, io = CivilizationState(tmp_path / "memory", "Rome"), ServiceIO()
-    record = {"activationId": "main", "epoch": "g1", "gameTurn": 0, "settings": {}}
-    service = SimpleNamespace(
-        memory=memory,
-        io=io,
-        records={"main": record},
-        active_id="main",
-        economy_interval=5,
-        _save=AsyncMock(),
-        state_dir=tmp_path,
-        failure=None,
-        stopping=False,
-    )
-    host = StartupHost(SimpleNamespace(service=service))
-    first = host.view["cities"][0]
-    first.update(constructionQueue=["Worker"], development={"population": 2, "unassignedPopulation": 0})
-    second = copy.deepcopy(first)
-    second.update(handle="city2", name="Antium", constructionQueue=["Granary"])
-    host.view["cities"].append(second)
-    gateway = ProposalGateway(memory, io, tmp_path / "workspace")
-    service.gateway = gateway
-    try:
-        main = await gateway.open("main", "gameplay", "g1", host, {}, 0)
-        await gateway.call(main, "player_turn", {}, "main-start")
-        strategy = await gateway.call(
-            main,
-            "memory_update",
-            {"changes": [{"op": "create", "content": {"type": "strategy", "assessment": "Develop both cities"}}]},
-            "strategy",
-        )
-        seed = await gateway.open("seed", "economy", "g1", host, {}, 0)
-        await gateway.call(seed, "player_turn", {}, "seed-start")
-        plans = await gateway.call(
-            seed,
-            "memory_update",
-            {
-                "changes": [
-                    {
-                        "op": "create",
-                        "content": {
-                            "type": "city_plan",
-                            "city": city,
-                            "reasons": {"construction": "Keep the current queue"},
-                        },
-                    }
-                    for city in ("city1", "city2")
-                ]
-            },
-            "seed-plans",
-        )
-        await gateway.close(seed, True)
-        view = await host.tool("player_turn", {})
-        EconomySchedule(memory, 5).complete(view, 0)
-        roles = TurnRoles(service, record)
-        gateway.role_coordinator = roles
-        roles.register(main)
-        second["development"]["unassignedPopulation"] = 1
-        host.revision = "review-city2"
-        await roles.initialize_economy(await host.tool("player_turn", {}))
-        assert roles.economy_status["cities"] == ["city2"] and not roles.economy_status["fullReview"]
-        economy = await gateway.open("economy", "economy", "g1", host, {}, 0)
-        roles.register(economy)
-        yield SimpleNamespace(
-            gateway=gateway,
-            roles=roles,
-            main=main,
-            economy=economy,
-            host=host,
-            memory=memory,
-            plans=[c["id"] for c in plans["changes"]],
-            strategy=strategy["changes"][0]["id"],
-        )
-    finally:
-        await io.close()
-        memory.engine.dispose()
 
 
 def test_targeted_preload_keeps_constraints_and_player_access(tmp_path):

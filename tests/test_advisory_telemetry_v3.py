@@ -57,7 +57,8 @@ def test_advisory_metadata_retains_status_and_raw_binary_confidence_without_priv
     assert report["byTask"]["retrieval_priority"]["statuses"] == {"refusal": 1}
     raw = next(answer for answer in report["rawAnswers"] if answer["name"] == "retrieval_include:0")
     assert raw["probabilities"] == [{"value": "include", "probability": 0.7}, {"value": "omit", "probability": 0.3}]
-    assert len(report["answers"]) == 5
+    assert len(report["answers"]) == 7
+    assert {"city_focus_change:0", "city_construction_change:0"} <= {answer["name"] for answer in report["answers"]}
 
 
 def test_advisory_statuses_survive_actual_accounting_round_trip(tmp_path):

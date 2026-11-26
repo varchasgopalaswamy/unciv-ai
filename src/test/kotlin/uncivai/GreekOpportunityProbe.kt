@@ -34,7 +34,9 @@ object GreekOpportunityProbe {
         val checkpoint = Json.parseToJsonElement(original).jsonObject
         Files.writeString(root.resolve("source-game.json"), checkpoint.getValue("gameJson").jsonPrimitive.content)
         val events = root.resolve("actions.jsonl")
-        fun log(value: JsonObject) { Files.writeString(events, value.toString() + "\n", StandardOpenOption.CREATE, StandardOpenOption.APPEND) }
+        fun log(value: JsonObject) {
+            Files.writeString(events, value.toString() + "\n", StandardOpenOption.CREATE, StandardOpenOption.APPEND)
+        }
         HeadlessRuntime.load(root.resolve("source-game.json"), root.resolve("runtime")).use { runtime ->
             runtime.executor.enableCheckpoints(root.resolve("checkpoint.json"))
             GameplayTestApi(runtime, root.resolve("tls"), mapOf("Greece" to "G".repeat(43))).use { api ->
@@ -53,12 +55,22 @@ object GreekOpportunityProbe {
                     val preview = turn.map.units.firstOrNull { it.handle == request.target }?.combat?.attacks?.firstOrNull {
                         it.destination == request.destination && it.attackFrom == request.attackFrom
                     }
-                    log(obj("phase" to "attempt", "turn" to turn.turn,
-                        "request" to Json.parseToJsonElement(PlayerTurnJson.json.encodeToString(request)),
-                        "preview" to preview?.let { Json.parseToJsonElement(PlayerTurnJson.json.encodeToString(it)) }))
+                    log(
+                        obj(
+                            "phase" to "attempt",
+                            "turn" to turn.turn,
+                            "request" to Json.parseToJsonElement(PlayerTurnJson.json.encodeToString(request)),
+                            "preview" to preview?.let { Json.parseToJsonElement(PlayerTurnJson.json.encodeToString(it)) },
+                        ),
+                    )
                     val receipt = api.execute(token, request)
-                    log(obj("phase" to "receipt", "turn" to turn.turn,
-                        "receipt" to Json.parseToJsonElement(PlayerTurnJson.json.encodeToString(receipt))))
+                    log(
+                        obj(
+                            "phase" to "receipt",
+                            "turn" to turn.turn,
+                            "receipt" to Json.parseToJsonElement(PlayerTurnJson.json.encodeToString(receipt)),
+                        ),
+                    )
                 }
                 for (ownTurn in 0..1) {
                     if (ownTurn > 0) token = checkNotNull(api.activate().playerToken)
@@ -85,19 +97,31 @@ object GreekOpportunityProbe {
                         val best = turn.map.units.filter { it.military }.flatMap { unit ->
                             unit.combat!!.attacks.filter { it.defenderIsCity && it.destination == target && it.maxDamageToAttacker < unit.health }
                                 .map { unit to it }
-                        }.maxWithOrNull(compareBy<Pair<OwnedUnit, AttackOption>>(
-                            { (unit, attack) -> if (unit.combat!!.rangedStrength == 0 && attack.minDamageToDefender >= cityHealth - 1) 2 else if (unit.combat.rangedStrength > 0) 1 else 0 },
-                            { (_, attack) -> attack.minDamageToDefender },
-                            { (_, attack) -> -attack.movementCost },
-                        ))
+                        }.maxWithOrNull(
+                            compareBy<Pair<OwnedUnit, AttackOption>>(
+                                { (unit, attack) ->
+                                    if (unit.combat!!.rangedStrength == 0 && attack.minDamageToDefender >= cityHealth - 1) {
+                                        2
+                                    } else if (unit.combat.rangedStrength > 0) {
+                                        1
+                                    } else {
+                                        0
+                                    }
+                                },
+                                { (_, attack) -> attack.minDamageToDefender },
+                                { (_, attack) -> -attack.movementCost },
+                            ),
+                        )
                         if (best != null) {
                             val (unit, attack) = best
                             act(turn, command(turn, TurnCommandKind.ATTACK, unit.handle).copy(destination = attack.destination, attackFrom = attack.attackFrom))
                             continue
                         }
-                        val move = turn.map.units.filter { it.military }.flatMap { unit -> unit.moves.filter {
-                            distance(it.destination, target) < distance(unit.position, target) && distance(it.destination, target) >= if (unit.combat!!.rangedStrength > 0) 2 else 1
-                        }.map { unit to it } }.minByOrNull { (_, option) -> distance(option.destination, target) }
+                        val move = turn.map.units.filter { it.military }.flatMap { unit ->
+                            unit.moves.filter {
+                                distance(it.destination, target) < distance(unit.position, target) && distance(it.destination, target) >= if (unit.combat!!.rangedStrength > 0) 2 else 1
+                            }.map { unit to it }
+                        }.minByOrNull { (_, option) -> distance(option.destination, target) }
                         if (move == null) break
                         act(turn, command(turn, TurnCommandKind.MOVE_UNIT, move.first.handle).copy(destination = move.second.destination))
                     }
@@ -116,11 +140,13 @@ object GreekOpportunityProbe {
                     "sourceUnchanged" to (Files.readString(source) == original), "modelCalls" to 0,
                     "declaredTurn" to initial.turn, "captureTurn" to captureTurn, "completedOwnTurns" to completedTurns,
                     "afterNativeOpponentTurn" to final.turn, "ownsParis" to final.cities.any { it.name == "Paris" },
-                    "lostMilitaryHandles" to lost.toList(), "finalUnits" to final.map.units.filter { it.military }.map {
+                    "lostMilitaryHandles" to lost.toList(),
+                    "finalUnits" to final.map.units.filter { it.military }.map {
                         obj("unit" to it.handle, "name" to it.name, "health" to it.health)
-                    }, "remainingCapitalQueue" to final.cities.single { it.name == "Athens" }.constructionQueue,
+                    },
+                    "remainingCapitalQueue" to final.cities.single { it.name == "Athens" }.constructionQueue,
                     "happiness" to final.economy!!.happiness,
-                    "scope" to "One fixed visible-information attack sequence followed by native opponent turns; feasibility evidence, not optimal-play or win-rate evidence."
+                    "scope" to "One fixed visible-information attack sequence followed by native opponent turns; feasibility evidence, not optimal-play or win-rate evidence.",
                 )
                 Files.writeString(root.resolve("result.json"), prettyJson.encodeToString(result))
                 println("GREEK_OPPORTUNITY_RESULT $result")
@@ -130,8 +156,7 @@ object GreekOpportunityProbe {
         }
     }
 
-    private fun command(turn: PlayerTurnSnapshot, kind: TurnCommandKind, target: String? = null, selection: String? = null) =
-        TurnCommandRequest(UUID.randomUUID().toString(), turn.epoch, turn.revision, kind, target, selection)
+    private fun command(turn: PlayerTurnSnapshot, kind: TurnCommandKind, target: String? = null, selection: String? = null) = TurnCommandRequest(UUID.randomUUID().toString(), turn.epoch, turn.revision, kind, target, selection)
 
     private fun distance(a: TilePosition, b: TilePosition): Int {
         val dx = a.x - b.x

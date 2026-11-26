@@ -22,7 +22,7 @@ from civ_agent.shared_values import compact_shared_values, expand_shared_values
 from civ_agent.startup_context import core_definitions, prepare_startup, startup_prompt
 from civ_agent.state_updates import apply_overview_update, apply_player_turn, overview_update, stamp
 from civ_agent.strategic_review import REVIEW_READ_TOOLS
-from tests.test_economy_optimization import managed
+from tests.domain_fixtures import managed
 
 
 @pytest.mark.parametrize("arguments", [{"delivery": "full"}, {"full": True}, {"delivery": "full", "full": True}])

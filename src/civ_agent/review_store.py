@@ -45,7 +45,7 @@ class ReviewStore:
                 .limit(1)
             ).scalar()
 
-    def prepare(self, id, inputs, settings, timeout):
+    def prepare(self, id, inputs, settings, timeout, *, after_preparation=None):
         with self.memory.transaction() as db:
             if (
                 db.execute(select(tables.reviews.c.job).where(tables.reviews.c.turn == inputs["turn"])).first()
@@ -63,6 +63,8 @@ class ReviewStore:
                     timeout=timeout,
                 )
             )
+            if after_preparation is not None:
+                after_preparation(db)
 
     def blocking(self, epoch, turn):
         """Only read readiness metadata; frozen inputs may be large."""
@@ -101,7 +103,7 @@ class ReviewStore:
                 .values(error=error, attempts=tables.reviews.c.attempts - int(quota))
             )
 
-    def unavailable(self, parent, error):
+    def unavailable(self, parent, error, *, after_publication=None):
         """Retain failed input for inspection without blocking play on missing advice."""
         with self.memory.transaction() as db:
             inputs = db.execute(
@@ -116,8 +118,10 @@ class ReviewStore:
                 .where(tables.reviews.c.job == parent, tables.reviews.c.status == "PENDING")
                 .values(status="UNAVAILABLE", advice=None, error=error)
             )
+            if after_publication is not None:
+                after_publication(db)
 
-    def complete(self, parent, advice):
+    def complete(self, parent, advice, *, after_publication=None):
         with self.memory.transaction() as db:
             inputs = db.execute(
                 select(tables.reviews.c.inputs).where(
@@ -125,6 +129,8 @@ class ReviewStore:
                 )
             ).scalar_one_or_none()
             if inputs is None:
+                if after_publication is not None:
+                    after_publication(db)
                 return
             # Publish the factual baseline with its report. It participates in the
             # existing metadata checkpoint and is rewound with that report.
@@ -153,6 +159,8 @@ class ReviewStore:
                     error=None,
                 )
             )
+            if after_publication is not None:
+                after_publication(db)
 
 
 def available_for_turn(turn):

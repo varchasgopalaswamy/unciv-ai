@@ -2,6 +2,7 @@ package uncivai.mcp
 
 import io.modelcontextprotocol.kotlin.sdk.server.Server
 import io.modelcontextprotocol.kotlin.sdk.server.ServerOptions
+import io.modelcontextprotocol.kotlin.sdk.types.CallToolRequest
 import io.modelcontextprotocol.kotlin.sdk.types.CallToolResult
 import io.modelcontextprotocol.kotlin.sdk.types.Implementation
 import io.modelcontextprotocol.kotlin.sdk.types.ServerCapabilities
@@ -14,6 +15,7 @@ import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
@@ -53,7 +55,7 @@ internal fun createPlayerToolsServer(session: PlayerSession): Server = Server(
         inputSchema = InputSchemas.nativeAdvice.toolSchema(),
         toolAnnotations = QUERY_ANNOTATIONS,
     ) { request ->
-        measuredPlayerResult(session, "native_advice", request.arguments) {
+        measuredPlayerResult(session, "native_advice", request) {
             val query = InputSchemas.nativeAdvice.decode(uncivai.player.NativeAdviceRequest.serializer(), request.arguments ?: throw InvalidToolArgumentsException())
             PlayerTurnJson.json.encodeToString(uncivai.player.NativeAdvice.serializer(), session.nativeAdvice(query))
         }
@@ -65,7 +67,7 @@ internal fun createPlayerToolsServer(session: PlayerSession): Server = Server(
         inputSchema = TURN_COMMAND_INPUT_SCHEMA,
         toolAnnotations = QUERY_ANNOTATIONS,
     ) { request ->
-        measuredPlayerResult(session, "player_receipt", request.arguments) {
+        measuredPlayerResult(session, "player_receipt", request) {
             val arguments = request.arguments ?: throw InvalidToolArgumentsException()
             val command = InputSchemas.turnCommand.decode(TurnCommandRequest.serializer(), arguments)
             session.completedReceipt(command)?.let(PlayerTurnJson::encode) ?: "{\"error\":\"NOT_ENACTED\"}"
@@ -77,7 +79,7 @@ internal fun createPlayerToolsServer(session: PlayerSession): Server = Server(
         inputSchema = COMMUNICATION_INPUT_SCHEMA,
         toolAnnotations = COMMAND_ANNOTATIONS,
     ) { request ->
-        measuredPlayerResult(session, "player_communication", request.arguments) {
+        measuredPlayerResult(session, "player_communication", request) {
             val arguments = request.arguments?.get("request") as? JsonObject ?: throw InvalidToolArgumentsException()
             session.awaitCommunication(arguments).toString()
         }
@@ -89,7 +91,7 @@ internal fun createPlayerToolsServer(session: PlayerSession): Server = Server(
         inputSchema = NO_ARGUMENTS_SCHEMA,
         toolAnnotations = QUERY_ANNOTATIONS,
     ) { request ->
-        measuredPlayerResult(session, "player_capabilities", request.arguments) {
+        measuredPlayerResult(session, "player_capabilities", request) {
             request.arguments.requireNoArguments()
             PlayerTurnJson.encode(session.capabilities())
         }
@@ -101,7 +103,7 @@ internal fun createPlayerToolsServer(session: PlayerSession): Server = Server(
         inputSchema = NO_ARGUMENTS_SCHEMA,
         toolAnnotations = QUERY_ANNOTATIONS,
     ) { request ->
-        measuredPlayerResult(session, "player_turn", request.arguments) {
+        measuredPlayerResult(session, "player_turn", request) {
             request.arguments.requireNoArguments()
             PlayerTurnJson.encode(session.turn())
         }
@@ -109,11 +111,11 @@ internal fun createPlayerToolsServer(session: PlayerSession): Server = Server(
 
     addTool(
         name = "player_command",
-        description = "Execute one command using the revision from player_turn. Unit controls offer SWAP_UNITS, RENAME_UNIT (empty selection clears the custom name), SAVE_UNIT_PROMOTIONS and SET_DEFAULT_PROMOTIONS (city target, unit name selection, enabled). SET_UNIT_ORDER also includes SET_UP and GUARD. CONNECT_ROAD requires player_inspect subject=ROAD for the same worker/destination at this revision and starts a persistent native road/rail order. GIFT_UNIT follows unit.gift for major or minor recipients. AUTOPLAY with ALL/MILITARY/CIVILIANS/ECONOMY automates the current turn without advancing it; inspect the result before END_TURN. MOVE_AUTOMATED_UNITS runs scheduled orders now when offered. END_TURN deferChoices=true uses the native menu deferral when turnControls.canDeferChoices is true; it cannot bypass modal decisions. MOVE_UNIT uses target=unit handle and offered destination; movement may stop early. MOVE_UNIT and SET_UNIT_DESTINATION require confirmAction=true when the current stop has captureRisk; refusal moves nothing. Same-tile escorts permit movement. Confirmation covers this move only; future route turns recheck danger. FOUND_CITY uses settler target and requires confirmBreakPromise=true if settlementPromises is nonempty. START_WORKER_JOB uses unit target and selection=available job name; STOP_WORKER_JOB uses unit target. SET_WORKED_TILE / SET_TILE_LOCKED use city target, an offered development.tiles destination and worked / locked boolean. REMOVE_CONSTRUCTION uses city target and queue index; MOVE_CONSTRUCTION also uses an offered toIndex. Append with QUEUE_CONSTRUCTION then reorder to change production. SET_RESEARCH_QUEUE replaces the entire research queue, including current research. Put technologies in prerequisite order; the first becomes active. To finish Mining before Calendar, send queue=[Mining, Calendar]. Stored science is retained. ACKNOWLEDGE_ALERT uses target=an alert handle with canAcknowledge=true and full content already read from player_turn at this revision, including FirstContact; a revision from a command receipt alone is insufficient (OBSERVATION_REQUIRED). This dismisses only that message, including WarDeclaration. DISMISS_NOTIFICATIONS takes targets=[notice handles] with canDismiss=true from a fresh player_turn; the whole batch is validated before clearing any messages. It clears the player API pending list, preserves native notification history, and returns the exact dismissedNotifications in the receipt. DECLARE_WAR uses target=known civilizationId and requires confirmWar=true after reading declarationConfirmation at this revision. RESPOND_FRIENDSHIP uses an alert target and selection=Accept or Decline after reading its friendship content and choices. Bilateral trades and friendship proposals use the communication trade tools. Shared human/agent negotiations pause gameplay until they close; native AI offers remain pending without pausing gameplay. Successful requests replay; restart recovery requires durableRecovery. Re-observe after commands. END_TURN requires reviewId=turnReview.id from a fresh player_turn and either canEndTurn=true or explicit deferChoices=true when turnControls.canDeferChoices is offered. Idle units do not block END_TURN; deferReason is optional audit context. Any mutation invalidates the review. TURN_REVIEW_REQUIRED means read the current review and use its reviewId. ATTACK uses an owned unit target and the exact offered destination and attackFrom; CITY_ATTACK uses an owned city and offered destination; omit attackFrom (only ATTACK accepts it). Read receipt.combat: discovery can stop movement before an attack. SET_UNIT_ORDER and PROMOTE_UNIT use an owned unit and selection=available option name. RESOLVE_CAPTURED_CITY uses the capture alert handle (including civilian return and traded-city KeepCity/Liberate choices) and selection=available option name after reading the full decision at this revision. MANAGE_CAPTURED_CITY uses an owned city and available captureOptions selection. BUY_CONSTRUCTION uses city target and purchases.constructions selection=name; BUY_TILE uses city target and purchases.tiles destination (no selection). UPGRADE_UNIT uses unit target and economy.upgrades selection=targetName. PILLAGE and DISBAND_UNIT use unit target without selection. Re-read player_turn before these economic commands; read costs and any confirmation text, and set confirmAction=true when confirmation is present. Read receipt.economy for actual gold and unit changes; re-observe afterward. City management commands require a fresh player_turn at this revision. SET_CITY_FOCUS uses city target and management.focusOptions selection=name. SET_AVOID_GROWTH and SET_MANUAL_SPECIALISTS use city target and enabled boolean. ASSIGN_SPECIALIST / UNASSIGN_SPECIALIST use city target and management.specialists selection=name; each changes one citizen. Assignment needs a free citizen: unwork a tile first if necessary. RESET_CITIZENS uses city target and clears tile locks before automatic allocation. SELL_BUILDING uses city target and management.buildingSales selection=name; read the refund, reasons and confirmation, then set confirmAction=true. REASSIGN_CITY_TILE uses receiving city target and an available management.sharedTiles destination; it needs a free citizen and releases the donor city's tile lock. Read receipt.cityManagement for actual allocations, yields, removed buildings and gold changes. ACTIVATE_GREAT_PERSON uses an owned unit target and selection=an available greatPerson.abilities name from a fresh player_turn. Abilities act at the current tile: move first if needed. Read effects and consumesUnit before acting, then read receipt.greatPerson and any new alerts or choices. RESPOND_CITY_STATE_ALERT uses an owned alert target and an available nativeDiplomacy.options name as selection; read its responseCommand in player_turn. CITY_STATE_ACTION uses a known diplomacy.cityStates civilizationId target and available actions.name selection; set confirmAction=true when its confirmation is nonempty. DECLARE_WAR also accepts known city-states. GIFT_UNIT uses an owned unit target with gift.action.available=true. ACTIVATE_GREAT_PERSON also supports native trade missions. Inspect receipt.cityState for actual influence, alliance, quest and unit changes. For distant movement read movement_preview(target,destination), then SET_UNIT_DESTINATION with the same choices. The native order resumes at the start of your turns. Inspect unit.movementOrder; CANCEL_UNIT_MOVEMENT stops it. For Work Boats read unit.waterImprovement, then CREATE_WATER_IMPROVEMENT with the unit target and selection=its offered name; the unit is consumed. Inspect receipt.movement and receipt.waterImprovement for actual effects. ADD_SPACESHIP_PART uses an owned unit target with spaceshipAssembly.available=true; it consumes that part in your capital. victory.ballot supplies world leader candidates: CAST_DIPLOMATIC_VOTE uses selection=civilizationId; ABSTAIN_DIPLOMATIC_VOTE has no target or selection. Read victory.votingResults before ACKNOWLEDGE_DIPLOMATIC_RESULTS (no target or selection). Read receipt.victory and refresh after these actions; terminal results remain available through player_result.",
+        description = "Execute one command using the revision from player_turn. Unit controls offer SWAP_UNITS, RENAME_UNIT (empty selection clears the custom name), SAVE_UNIT_PROMOTIONS and SET_DEFAULT_PROMOTIONS (city target, unit name selection, enabled). SET_UNIT_ORDER also includes SET_UP and GUARD. CONNECT_ROAD requires player_inspect subject=ROAD for the same worker/destination at this revision and starts a persistent native road/rail order. GIFT_UNIT follows unit.gift for major or minor recipients. AUTOPLAY with ALL/MILITARY/CIVILIANS/ECONOMY automates the current turn without advancing it; inspect the result before END_TURN. MOVE_AUTOMATED_UNITS runs scheduled orders now when offered. END_TURN deferChoices=true uses the native menu deferral when turnControls.canDeferChoices is true; it cannot bypass modal decisions. MOVE_UNIT uses target=unit handle and offered destination; movement may stop early. MOVE_UNIT and SET_UNIT_DESTINATION require confirmAction=true when the current stop has captureRisk; refusal moves nothing. Same-tile escorts permit movement. Confirmation covers this move only; future route turns recheck danger. FOUND_CITY uses settler target and requires confirmBreakPromise=true if settlementPromises is nonempty. START_WORKER_JOB uses unit target and selection=available job name; STOP_WORKER_JOB uses unit target. SET_WORKED_TILE / SET_TILE_LOCKED use city target, an offered development.tiles destination and worked / locked boolean. REMOVE_CONSTRUCTION uses city target and queue index; MOVE_CONSTRUCTION also uses an offered toIndex. QUEUE_CONSTRUCTION appends a new entry. START_CONSTRUCTION atomically adds a new entry at the top using native city-screen rules; existing production is retained. Use MOVE_CONSTRUCTION to prioritize an existing entry. SET_RESEARCH_QUEUE replaces the entire research queue, including current research. Put technologies in prerequisite order; the first becomes active. To finish Mining before Calendar, send queue=[Mining, Calendar]. Stored science is retained. ACKNOWLEDGE_ALERT uses target=an alert handle with canAcknowledge=true and full content already read from player_turn at this revision, including FirstContact; a revision from a command receipt alone is insufficient (OBSERVATION_REQUIRED). This dismisses only that message, including WarDeclaration. DISMISS_NOTIFICATIONS takes targets=[notice handles] with canDismiss=true from a fresh player_turn; the whole batch is validated before clearing any messages. It clears the player API pending list, preserves native notification history, and returns the exact dismissedNotifications in the receipt. DECLARE_WAR uses target=known civilizationId and requires confirmWar=true after reading declarationConfirmation at this revision. RESPOND_FRIENDSHIP uses an alert target and selection=Accept or Decline after reading its friendship content and choices. Bilateral trades and friendship proposals use the communication trade tools. Shared human/agent negotiations pause gameplay until they close; native AI offers remain pending without pausing gameplay. Successful requests replay; restart recovery requires durableRecovery. Re-observe after commands. END_TURN requires reviewId=turnReview.id from a fresh player_turn and either canEndTurn=true or explicit deferChoices=true when turnControls.canDeferChoices is offered. Idle units do not block END_TURN; deferReason is optional audit context. Any mutation invalidates the review. TURN_REVIEW_REQUIRED means read the current review and use its reviewId. ATTACK uses an owned unit target and the exact offered destination and attackFrom; CITY_ATTACK uses an owned city and offered destination; omit attackFrom (only ATTACK accepts it). Read receipt.combat: discovery can stop movement before an attack. SET_UNIT_ORDER and PROMOTE_UNIT use an owned unit and selection=available option name. RESOLVE_CAPTURED_CITY uses the capture alert handle (including civilian return and traded-city KeepCity/Liberate choices) and selection=available option name after reading the full decision at this revision. MANAGE_CAPTURED_CITY uses an owned city and available captureOptions selection. BUY_CONSTRUCTION uses city target and purchases.constructions selection=name; BUY_TILE uses city target and purchases.tiles destination (no selection). UPGRADE_UNIT uses unit target and economy.upgrades selection=targetName. PILLAGE and DISBAND_UNIT use unit target without selection. Re-read player_turn before these economic commands; read costs and any confirmation text, and set confirmAction=true when confirmation is present. Read receipt.economy for actual gold and unit changes; re-observe afterward. City management commands require a fresh player_turn at this revision. SET_CITY_FOCUS uses city target and management.focusOptions selection=name. SET_AVOID_GROWTH and SET_MANUAL_SPECIALISTS use city target and enabled boolean. ASSIGN_SPECIALIST / UNASSIGN_SPECIALIST use city target and management.specialists selection=name; each changes one citizen. Assignment needs a free citizen: unwork a tile first if necessary. RESET_CITIZENS uses city target and clears tile locks before automatic allocation. SELL_BUILDING uses city target and management.buildingSales selection=name; read the refund, reasons and confirmation, then set confirmAction=true. REASSIGN_CITY_TILE uses receiving city target and an available management.sharedTiles destination; it needs a free citizen and releases the donor city's tile lock. Read receipt.cityManagement for actual allocations, yields, removed buildings and gold changes. ACTIVATE_GREAT_PERSON uses an owned unit target and selection=an available greatPerson.abilities name from a fresh player_turn. Abilities act at the current tile: move first if needed. Read effects and consumesUnit before acting, then read receipt.greatPerson and any new alerts or choices. RESPOND_CITY_STATE_ALERT uses an owned alert target and an available nativeDiplomacy.options name as selection; read its responseCommand in player_turn. CITY_STATE_ACTION uses a known diplomacy.cityStates civilizationId target and available actions.name selection; set confirmAction=true when its confirmation is nonempty. DECLARE_WAR also accepts known city-states. GIFT_UNIT uses an owned unit target with gift.action.available=true. ACTIVATE_GREAT_PERSON also supports native trade missions. Inspect receipt.cityState for actual influence, alliance, quest and unit changes. For distant movement read movement_preview(target,destination), then SET_UNIT_DESTINATION with the same choices. The native order resumes at the start of your turns. Inspect unit.movementOrder; CANCEL_UNIT_MOVEMENT stops it. For Work Boats read unit.waterImprovement, then CREATE_WATER_IMPROVEMENT with the unit target and selection=its offered name; the unit is consumed. Inspect receipt.movement and receipt.waterImprovement for actual effects. ADD_SPACESHIP_PART uses an owned unit target with spaceshipAssembly.available=true; it consumes that part in your capital. victory.ballot supplies world leader candidates: CAST_DIPLOMATIC_VOTE uses selection=civilizationId; ABSTAIN_DIPLOMATIC_VOTE has no target or selection. Read victory.votingResults before ACKNOWLEDGE_DIPLOMATIC_RESULTS (no target or selection). Read receipt.victory and refresh after these actions; terminal results remain available through player_result.",
         inputSchema = TURN_COMMAND_INPUT_SCHEMA,
         toolAnnotations = COMMAND_ANNOTATIONS,
     ) { request ->
-        measuredPlayerResult(session, "player_command", request.arguments) {
+        measuredPlayerResult(session, "player_command", request) {
             val arguments = request.arguments ?: throw InvalidToolArgumentsException()
             val command = InputSchemas.turnCommand.decode(TurnCommandRequest.serializer(), arguments)
             PlayerTurnJson.encode(session.execute(command))
@@ -126,7 +128,7 @@ internal fun createPlayerToolsServer(session: PlayerSession): Server = Server(
         inputSchema = NO_ARGUMENTS_SCHEMA,
         toolAnnotations = QUERY_ANNOTATIONS,
     ) { request ->
-        measuredPlayerResult(session, "player_result", request.arguments) {
+        measuredPlayerResult(session, "player_result", request) {
             request.arguments.requireNoArguments()
             PlayerTurnJson.json.encodeToString(PlayerFinalState.serializer(), session.result())
         }
@@ -138,7 +140,7 @@ internal fun createPlayerToolsServer(session: PlayerSession): Server = Server(
         inputSchema = InputSchemas.missionPreview.toolSchema(),
         toolAnnotations = QUERY_ANNOTATIONS,
     ) { request ->
-        measuredPlayerResult(session, "mission_preview", request.arguments) {
+        measuredPlayerResult(session, "mission_preview", request) {
             val preview = InputSchemas.missionPreview.decode(uncivai.player.MissionPreviewRequest.serializer(), request.arguments ?: throw InvalidToolArgumentsException())
             PlayerTurnJson.json.encodeToString(uncivai.player.MissionPreview.serializer(), session.missionPreview(preview))
         }
@@ -150,7 +152,7 @@ internal fun createPlayerToolsServer(session: PlayerSession): Server = Server(
         inputSchema = InputSchemas.movementPreview.toolSchema(),
         toolAnnotations = QUERY_ANNOTATIONS,
     ) { request ->
-        measuredPlayerResult(session, "movement_preview", request.arguments) {
+        measuredPlayerResult(session, "movement_preview", request) {
             val preview = InputSchemas.movementPreview.decode(MovementPreviewRequest.serializer(), request.arguments ?: throw InvalidToolArgumentsException())
             PlayerTurnJson.json.encodeToString(MovementPreview.serializer(), session.movementPreview(preview))
         }
@@ -162,7 +164,7 @@ internal fun createPlayerToolsServer(session: PlayerSession): Server = Server(
         inputSchema = InputSchemas.playerInspect.toolSchema(),
         toolAnnotations = QUERY_ANNOTATIONS,
     ) { request ->
-        measuredPlayerResult(session, "player_inspect", request.arguments) {
+        measuredPlayerResult(session, "player_inspect", request) {
             val query = InputSchemas.playerInspect.decode(uncivai.player.PlayerInspectionRequest.serializer(), request.arguments ?: throw InvalidToolArgumentsException())
             PlayerTurnJson.json.encodeToString(uncivai.player.PlayerInspection.serializer(), session.inspect(query))
         }
@@ -174,7 +176,7 @@ internal fun createPlayerToolsServer(session: PlayerSession): Server = Server(
         inputSchema = DETAIL_INPUT_SCHEMA,
         toolAnnotations = QUERY_ANNOTATIONS,
     ) { request ->
-        measuredPlayerResult(session, "research_details", request.arguments) {
+        measuredPlayerResult(session, "research_details", request) {
             PlayerTurnJson.json.encodeToString(ResearchDetails.serializer(), session.researchDetails(request.arguments.detailNames()))
         }
     }
@@ -185,7 +187,7 @@ internal fun createPlayerToolsServer(session: PlayerSession): Server = Server(
         inputSchema = DETAIL_INPUT_SCHEMA,
         toolAnnotations = QUERY_ANNOTATIONS,
     ) { request ->
-        measuredPlayerResult(session, "policy_details", request.arguments) {
+        measuredPlayerResult(session, "policy_details", request) {
             PlayerTurnJson.json.encodeToString(PolicyDetails.serializer(), session.policyDetails(request.arguments.detailNames()))
         }
     }
@@ -196,7 +198,7 @@ internal fun createPlayerToolsServer(session: PlayerSession): Server = Server(
         inputSchema = InputSchemas.victoryProgress.toolSchema(),
         toolAnnotations = QUERY_ANNOTATIONS,
     ) { request ->
-        measuredPlayerResult(session, "victory_progress", request.arguments) {
+        measuredPlayerResult(session, "victory_progress", request) {
             val query = InputSchemas.victoryProgress.decode(VictoryProgressRequest.serializer(), request.arguments ?: buildJsonObject {})
             PlayerTurnJson.json.encodeToString(VictoryProgress.serializer(), session.victoryProgress(query))
         }
@@ -208,7 +210,7 @@ internal fun createPlayerToolsServer(session: PlayerSession): Server = Server(
         inputSchema = NO_ARGUMENTS_SCHEMA,
         toolAnnotations = QUERY_ANNOTATIONS,
     ) { request ->
-        measuredPlayerResult(session, "player_summary", request.arguments) {
+        measuredPlayerResult(session, "player_summary", request) {
             request.arguments.requireNoArguments()
             PlayerSummaryJson.encode(session.summary())
         }
@@ -220,7 +222,7 @@ internal fun createPlayerToolsServer(session: PlayerSession): Server = Server(
         inputSchema = NO_ARGUMENTS_SCHEMA,
         toolAnnotations = QUERY_ANNOTATIONS,
     ) { request ->
-        measuredPlayerResult(session, "owned_cities", request.arguments) {
+        measuredPlayerResult(session, "owned_cities", request) {
             request.arguments.requireNoArguments()
             PlayerCommandJson.encode(session.cities())
         }
@@ -232,7 +234,7 @@ internal fun createPlayerToolsServer(session: PlayerSession): Server = Server(
         inputSchema = NO_ARGUMENTS_SCHEMA,
         toolAnnotations = QUERY_ANNOTATIONS,
     ) { request ->
-        measuredPlayerResult(session, "free_great_person_choice", request.arguments) {
+        measuredPlayerResult(session, "free_great_person_choice", request) {
             request.arguments.requireNoArguments()
             PlayerCommandJson.encode(session.freeGreatPersonChoice())
         }
@@ -339,12 +341,13 @@ private class InvalidToolArgumentsException : IllegalArgumentException()
 /** Count at the authenticated MCP boundary, including rejected calls and uncertain cancellations. */
 internal val playerWork = Dispatchers.IO.limitedParallelism(16)
 
-private suspend fun measuredPlayerResult(session: PlayerSession, name: String, arguments: JsonObject?, operation: suspend () -> String): CallToolResult = withContext(playerWork) {
+private suspend fun measuredPlayerResult(session: PlayerSession, name: String, request: CallToolRequest, operation: suspend () -> String): CallToolResult = withContext(playerWork) {
     var id: String? = null
     var outcome = "incomplete"
     try {
         playerResult {
-            id = (session as? PlayerApiAccounting)?.beginApiCall(name, arguments)
+            val origin = (request.meta?.get("civAgentOrigin") as? JsonPrimitive)?.takeIf { it.isString }?.content
+            id = (session as? PlayerApiAccounting)?.beginApiCall(name, request.arguments, origin)
             val body = operation()
             outcome = if ((runCatching { Json.parseToJsonElement(body) }.getOrNull() as? JsonObject)?.containsKey("error") == true) "error" else "success"
             body

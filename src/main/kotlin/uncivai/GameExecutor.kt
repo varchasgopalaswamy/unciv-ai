@@ -11,6 +11,7 @@ import uncivai.player.TurnSessionState
 import uncivai.player.captureBarbarianSightings
 import uncivai.player.captureSettlementKnowledge
 import uncivai.player.detached
+import uncivai.player.enforceProductionPolicy
 import uncivai.player.gameFinished
 import uncivai.player.observation
 import java.nio.file.Path
@@ -41,29 +42,59 @@ class GameExecutor internal constructor(
     internal val turnSessions = HashMap<String, TurnSessionState>()
 
     init {
+        enforceProductionPolicies()
         observeVisibility()
     }
 
-    private fun observeVisibility() {
+    /** Deliberate production-policy exception, applied only at mutation boundaries. */
+    internal fun enforceProductionPolicies() {
         for (player in game.civilizations.filter { it.isHuman() && it.isMajorCiv() }) {
+            if (enforceProductionPolicy(player)) turnSessions[player.civID]?.invalidate()
+        }
+    }
+
+    private fun observeVisibility() {
+        for (player in game.civilizations.filter { it.isMajorCiv() }) {
+            if (!player.isHuman() && replayCapture == null) continue
             player.cache.onTileRevealed = { tile ->
-                val state = turnSessions.getOrPut(player.civID) { TurnSessionState() }
-                captureSettlementKnowledge(player, state, listOf(tile), remoteReveal = true)
+                if (player.isHuman()) {
+                    val state = turnSessions.getOrPut(player.civID) { TurnSessionState() }
+                    captureSettlementKnowledge(player, state, listOf(tile), remoteReveal = true)
+                }
+                replayCapture?.tileRevealed(player.civID, tile)
             }
             player.cache.onViewableTilesUpdated = { tiles ->
-                val state = turnSessions.getOrPut(player.civID) { TurnSessionState() }
-                captureSettlementKnowledge(player, state, tiles)
-                captureBarbarianSightings(player, state, tiles)
+                if (player.isHuman()) {
+                    val state = turnSessions.getOrPut(player.civID) { TurnSessionState() }
+                    captureSettlementKnowledge(player, state, tiles)
+                    captureBarbarianSightings(player, state, tiles)
+                }
+                replayCapture?.visibilityChanged(player.civID)
             }
         }
     }
 
     private fun stopObservingVisibility() {
+        game.replayObserver = null
         game.civilizations.forEach {
             it.cache.onViewableTilesUpdated = null
             it.cache.onTileRevealed = null
         }
     }
+    private fun startReplayCapture() {
+        replayCapture = ReplayCapture(game)
+        game.replayObserver = replayCapture
+        observeVisibility()
+    }
+
+    internal fun recordReplayInput(civilization: String, type: String, payload: () -> kotlinx.serialization.json.JsonObject) {
+        replayCapture?.let { it.input(civilization, type, payload()) }
+    }
+
+    internal fun recordReplayDiplomacy(civilization: String, delivered: CommunicationEvent) {
+        replayCapture?.diplomacy(civilization, delivered)
+    }
+
     internal var communicationState = CommunicationState()
     internal val communication = Communication(this)
     internal val telemetry = Telemetry(this)
@@ -125,6 +156,7 @@ class GameExecutor internal constructor(
     internal var handoff = 0L
     internal var scheduler: OperatorControl? = null
     private var checkpointStore: CheckpointStore? = null
+    private var replayCapture: ReplayCapture? = null
     internal val durableRecovery get() = checkpointStore != null
     private val accountingWaits = ThreadLocal<MutableList<CompletableFuture<Unit>>>()
 
@@ -236,13 +268,15 @@ class GameExecutor internal constructor(
     }
 
     /** Starts durable command acknowledgement. Existing checkpoints require explicit restoration. */
-    fun enableCheckpoints(path: Path) = enableCheckpoints(CheckpointStore(path))
+    fun enableCheckpoints(path: Path, recordReplay: Boolean = false) = enableCheckpoints(CheckpointStore(path, recordReplay = recordReplay))
 
     internal fun enableCheckpoints(store: CheckpointStore) = accessGame {
         check(checkpointStore == null) { "Checkpointing is already configured" }
         try {
+            enforceProductionPolicies()
             synchronizeWarDeclarations()
-            store.writeInitial(CheckpointStore.capture(game, epoch, paused, turnSessions, handoff, scheduled, communication = communicationState))
+            if (store.recordReplay) startReplayCapture()
+            store.writeInitial(CheckpointStore.capture(game, epoch, paused, turnSessions, handoff, scheduled, communication = communicationState), replayCapture?.drain().orEmpty())
             checkpointStore = store
             telemetry.initialize(store)
             commitAccounting(includeGame = true)
@@ -261,7 +295,7 @@ class GameExecutor internal constructor(
             synchronizeWarDeclarations()
             telemetry.synchronize(game)
             val batch = checkpointStore?.accounting?.let { ledger -> telemetry.accountingBatch(game, includeGame = true)?.also(ledger::stage) }
-            checkpointStore?.write(HostTimings.measure("checkpoint.game_capture") { CheckpointStore.capture(game, epoch, paused, turnSessions, handoff, scheduled, communicationState, communicationPaused) })
+            checkpointStore?.write(HostTimings.measure("checkpoint.game_capture") { CheckpointStore.capture(game, epoch, paused, turnSessions, handoff, scheduled, communicationState, communicationPaused) }, replayCapture?.drain().orEmpty())
             if (batch != null) submitAccounting(batch)
             turnSessions.values.forEach { it.checkpointRevision = it.revision }
             communicationChanges.committed(communicationState)
@@ -308,13 +342,15 @@ class GameExecutor internal constructor(
         check(handoff >= 0) { "Invalid handoff counter" }
         restorePlayers(checkpoint.players, checkpoint.gameJson)
         checkpointStore = store
-        if (scheduled || pendingTelemetry) commitCheckpoint() else commitAccounting(includeGame = true)
+        if (store.replayArchive != null) startReplayCapture()
+        if (scheduled || pendingTelemetry || replayCapture != null) commitCheckpoint() else commitAccounting(includeGame = true)
         telemetry.publishDiplomacy()
     }
 
     internal fun turnSnapshot(): GameCheckpoint = accessGame {
         check(paused && communicationPaused && scheduled)
         val captured = CheckpointStore.capture(game, epoch, true, turnSessions, handoff, true, communication = communicationState.withoutAccounting(), communicationPaused = true)
+            .copy(replay = checkpointStore?.replayArchive?.cursor)
         kotlinx.serialization.json.Json.decodeFromString<GameCheckpoint>(kotlinx.serialization.json.Json.encodeToString(captured))
     }
 
@@ -328,13 +364,15 @@ class GameExecutor internal constructor(
         val accounting = communicationState
         try {
             stopObservingVisibility()
+            checkpointStore?.replayArchive?.restore(saved)
             game = replacement
+            enforceProductionPolicies()
             onGameReplaced(replacement)
             epoch = newEpoch
             handoff = saved.handoff
             turnSessions.clear()
             restorePlayers(saved.players, saved.gameJson)
-            observeVisibility()
+            if (replayCapture != null) startReplayCapture() else observeVisibility()
             val restoredCommunication = kotlinx.serialization.json.Json.decodeFromString<CommunicationState>(kotlinx.serialization.json.Json.encodeToString(saved.communication))
             communicationState = restoredCommunication.copy(
                 jobs = accounting.jobs.mapValues { (_, job) -> job.copy(expires = 0) }.toMutableMap(), invocations = accounting.invocations,
@@ -388,6 +426,7 @@ class GameExecutor internal constructor(
                 cityHandles.putAll(saved.cityHandles)
                 unitHandles.putAll(saved.unitHandles)
                 constructionSelections.putAll(saved.constructionSelections)
+                constructionQueues.putAll(saved.constructionQueues)
                 settlementKnowledge.putAll(saved.settlementKnowledge.associateBy { it.position })
                 settlementTechnologies.addAll(saved.settlementTechnologies)
                 settlerHistory.putAll(saved.settlerHistory)

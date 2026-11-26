@@ -7,6 +7,7 @@ from civ_agent.diplomacy_view import clauses_text, conversations
 from civ_agent.match_watch import MatchWatch
 from civ_agent.monitoring import MonitorStore, path_for
 from civ_agent.watch_state import WatchReader
+from tests.native_watch_fixtures import install_test_epoch
 from tests.test_match_watch import fixture, log_text, put_state
 
 
@@ -116,7 +117,7 @@ def test_reader_keeps_threads_and_outcomes_separate_and_reads_without_writing(tm
     assert "Insufficient gold" in updated.activity[-1].text
     assert updated.activity[-1].time == ""  # Publication time is not a claimed message timestamp.
     # A rewind's projection contains only communications retained in that branch.
-    put_state(tmp_path, "run", {"epoch": "g2"})
+    install_test_epoch(tmp_path, "g2")
     put_state(tmp_path, "diplomacy", {"epoch": "g2", "activeNegotiation": None})
     publish(tmp_path, "retained", "message", {"author": "Rome", "text": "Retained message"}, epoch="g2")
     restored = reader.read()

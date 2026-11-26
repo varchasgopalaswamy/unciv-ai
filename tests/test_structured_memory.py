@@ -10,47 +10,22 @@ from civ_agent.memory_history import summary_markdown
 from civ_agent.memory_records import MemoryReadResult, MemorySearchResult, MemoryUpdate, MemoryUpdateResult, TurnSummary
 from civ_agent.proposal_gateway import ProposalGateway
 from civ_agent.service_io import ServiceIO
-from civ_agent.turn_archive import TurnArchive
-from tests.memory_helpers import stored_records
-from tests.test_proposal_gateway import Host
-
-
-def strategy(**changes):
-    return {
-        "type": "strategy",
-        "assessment": "Defend Rome",
-        "reasons": ["Hold the border"],
-        "reconsiderWhen": ["Rome survives"],
-        **changes,
-    }
-
-
-def replacement(memory, key, **changes):
-    # Explicitly carry forward chosen fields in a complete replacement.
-    from civ_agent.memory_records import CONTENT_MODELS
-
-    old = current(memory, key)
-    content = {name: old[name] for name in CONTENT_MODELS[old["type"]].model_fields if name in old}
-    return {"op": "replace", "id": key, "content": {**content, **changes}}
-
-
-def setup(tmp_path, limit=12000):
-    memory = CivilizationState(tmp_path / "private", "Rome", limit)
-    memory.bind("g1")
-    memory.start_job("game", "gameplay", {}, game_turn=4)
-    memory.observe_player({"turn": 4, "cities": [{"handle": "c1"}], "map": {"units": [{"handle": "u1"}]}}, "game")
-    return memory
-
-
-def create(memory, content, job="game"):
-    result = memory.patch(job, [{"op": "create", "content": content}])
-    MemoryUpdateResult.model_validate(result)
-    assert result["changes"][0]["accepted"], result
-    return result["changes"][0]["id"]
-
-
-def current(memory, id):
-    return stored_records(memory)[id]["body"]
+from tests.domain_fixtures import Host
+from tests.domain_fixtures import (
+    create as create,
+)
+from tests.domain_fixtures import (
+    current as current,
+)
+from tests.domain_fixtures import (
+    replacement as replacement,
+)
+from tests.domain_fixtures import (
+    setup as setup,
+)
+from tests.domain_fixtures import (
+    strategy as strategy,
+)
 
 
 @pytest.mark.parametrize("reason", ["completed", "abandoned", "superseded", "retracted", "irrelevant"])
@@ -344,7 +319,7 @@ def test_summaries_survive_interruptions_preserve_reason_and_receipt_truth(tmp_p
 
 
 @pytest.mark.parametrize("uncertain", [False, True])
-def test_archive_can_render_during_dispatch_before_receipt_arrives(tmp_path, uncertain):
+def test_summary_can_render_during_dispatch_before_receipt_arrives(tmp_path, uncertain):
     memory = setup(tmp_path)
     request = memory.queue(
         "game", "player_command", {"kind": "FOUND_CITY", "target": "u1"}, "found", {"reason": "Found the capital"}
@@ -352,14 +327,14 @@ def test_archive_can_render_during_dispatch_before_receipt_arrives(tmp_path, unc
     if uncertain:
         memory.uncertain(request["id"])
     summary = memory.summary(4)
-    TurnSummary.model_validate(summary)
-    archive = TurnArchive(tmp_path / "archive", tmp_path / "workspace", "Rome", "g1")
-    artifacts = archive.update(4, "game", [], structured_summary=summary)
-    assert artifacts["summaryData"]["actions"][0]["outcome"] == ("uncertain" if uncertain else "pending")
+    rendered = TurnSummary.model_validate(summary)
+    assert rendered.actions[0].outcome == ("uncertain" if uncertain else "pending")
+    assert rendered.actions[0].reason == "Found the capital"
+    assert ("uncertain" if uncertain else "pending") in summary_markdown(summary)
     memory.receipt(request["id"], {"kind": "FOUND_CITY", "city": "Rome", "actionSummary": "Founded Rome at (0, 0)."})
-    artifacts = archive.update(4, "game", [], structured_summary=memory.summary(4))
-    assert artifacts["summaryData"]["actions"][0]["outcome"] == "confirmed"
-    assert "Found the capital" in artifacts["summary"]
+    summary = memory.summary(4)
+    assert TurnSummary.model_validate(summary).actions[0].outcome == "confirmed"
+    assert "Found the capital" in summary_markdown(summary)
 
 
 @pytest.mark.parametrize("rejected", [False, True])

@@ -17,7 +17,7 @@ from civ_agent.proposal_gateway import ProposalGateway, public_result
 from civ_agent.review_store import ReviewStore
 from civ_agent.service_io import ServiceIO
 from civ_agent.tool_schemas import tool_model
-from tests.test_proposal_gateway import Host
+from tests.domain_fixtures import Host
 from tests.test_strategic_review import assessment
 
 

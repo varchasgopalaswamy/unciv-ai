@@ -180,7 +180,14 @@ class EconomySchedule:
         for handle, worker in facts["workers"].items():
             old = previous_workers.get(handle)
             if old is None:
-                reasons.append("New worker under Economy control: " + handle)
+                # A newly captured, exhausted worker cannot take orders yet.
+                # It will be assessed again next turn, even without a review.
+                if (
+                    worker["needsOrders"]
+                    or worker["nearbyHostiles"]
+                    or (worker["health"] is not None and worker["health"] < 100)
+                ):
+                    reasons.append("New worker under Economy control: " + handle)
             elif worker["needsOrders"] and (worker_turn != turn or worker != old):
                 reasons.append("Worker needs orders: " + handle)
             elif (old.get("job") and not worker["job"]) or (old.get("destination") and not worker["destination"]):

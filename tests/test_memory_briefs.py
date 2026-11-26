@@ -7,7 +7,7 @@ from pydantic import ValidationError
 
 from civ_agent.civilization_state import CivilizationState
 from civ_agent.memory_records import Intent, MemoryUpdate, MemoryUpdateResult
-from tests.test_structured_memory import create, current, setup, strategy
+from tests.domain_fixtures import create, current, setup, strategy
 
 
 def test_expired_contributions_leave_preload_before_retiring_at_writer_boundary(tmp_path):

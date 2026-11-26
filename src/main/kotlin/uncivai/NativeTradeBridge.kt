@@ -68,8 +68,9 @@ internal class NativeTradeBridge(private val runtime: GameExecutor, private val 
         if (friendship && other.popupAlerts.any { it.type == AlertType.DeclarationOfFriendship && it.value == actor }) {
             return trades.unavailable("A native friendship request is already pending.")
         }
-        if (!friendship && !TradeOperations(player, other).tryReserve(trades.engineTrade(proposal), requestId, proposal.version))
+        if (!friendship && !TradeOperations(player, other).tryReserve(trades.engineTrade(proposal), requestId, proposal.version)) {
             return trades.unavailable("The offer's assets are already committed.")
+        }
         // All rejection checks precede removing a prior request or publishing replacement terms.
         if (previous != null) {
             removeRequest(previous, release = false)

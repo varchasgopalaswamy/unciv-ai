@@ -65,7 +65,7 @@ private class BoundPlayerSession(
     PlayerApiAccounting {
     private val turnSession = TurnSession(runtime, civilizationId)
 
-    override fun beginApiCall(tool: String, arguments: kotlinx.serialization.json.JsonObject?) = playerOperation { runtime.telemetry.startCall(civilizationId, tool, arguments) }
+    override fun beginApiCall(tool: String, arguments: kotlinx.serialization.json.JsonObject?, origin: String?) = playerOperation { runtime.telemetry.startCall(civilizationId, tool, arguments, origin) }
     override fun finishApiCall(id: String, outcome: String) = runtime.telemetry.finishCall(id, outcome)
 
     override fun communicationChanges() = playerOperation {

@@ -1,16 +1,18 @@
 # Run games in containers
 
-`civ-agent game` runs a durable game under rootless Podman. Each agent has its own
-container; a controller runs Unciv and the scheduler. Games run in the background,
-survive terminal closure/logout, and use saved configuration and image IDs on resume.
+`civ-agent game` runs one controller per game under rootless Podman. The
+controller runs Pydantic AI agents and the native JVM host; human games add the
+native desktop. Shared services manage subscription login renewal and optional
+Decisions requests. Games run in the background, survive terminal closure/logout,
+and retain their saved configuration and image IDs on resume. There is no
+Temporal server, PostgreSQL database or player-worker service.
 The [container architecture](../architecture/Containers.md) explains the boundaries.
 
 ## One-time setup
 
 Use Linux with rootless Podman, Netavark, cgroup v2, nftables, and a systemd user
-session. Building images also requires JDK 21+, Python 3.12+, uv, the selected
-engine checkout, and the standalone Linux Codex release (including its
-`codex-code-mode-host` companion).
+session. Building images also requires JDK 21+, Python 3.12+, uv and the selected
+engine checkout.
 
 ```sh
 git submodule update --init --recursive
@@ -21,8 +23,8 @@ uv sync --locked
 ```
 
 Image builds invoke the Gradle wrapper directly. `image build --unciv-dir ../Unciv`
-selects both code and assets from that engine checkout. `--codex PATH` selects a
-standalone Codex executable; `--tag localhost/my-civ` chooses the image name.
+selects both code and assets from that engine checkout. `--tag localhost/my-civ`
+chooses the image name.
 Running a built image needs no JVM source checkout.
 
 When a non-login shell omits `XDG_RUNTIME_DIR` or `DBUS_SESSION_BUS_ADDRESS`,
@@ -37,12 +39,20 @@ cannot use the user manager. The option applies only to image builds; game
 containers retain their normal systemd supervision and resource limits.
 
 `runtime setup` enables systemd user lingering so games survive logout.
-`auth login` opens a dedicated device login using your existing account. It leaves
-your everyday Codex home unchanged. The renewable login lives in
-`~/.local/state/unciv-host/auth`; a shared manager renews it and gives workers only
-short-lived access tokens. `auth status` reports whether the login exists and the
-manager is running. Use `--auth-dir` consistently to select another durable login.
-Changing the account requires stopping the manager and affected games first.
+`auth login` prints a browser login URL using Pydantic AI's native subscription
+login flow. Finish sign-in in that browser; the callback returns to
+`http://localhost:1455/auth/callback`. When running the command over SSH, forward
+port 1455 to the machine running the command first. Login runs on the host and
+does not need a built runtime image or a Codex process.
+
+The renewable login lives in
+`~/.local/state/unciv-host/auth/openai-subscription.json`; a shared manager renews
+it through Authlib and gives the controller only access tokens. `auth status` reports
+whether the login exists and the manager is running. Use `--auth-dir`
+consistently to select another durable login. Changing the account requires
+stopping the manager and affected games first. Existing auth directories need a
+native login before starting this version's manager; no running manager or saved
+credentials are changed automatically.
 
 Stop the shared login manager with:
 
@@ -77,6 +87,52 @@ launcher's complete version contract. This permits updating a stopped game
 alongside other active games. A protocol or policy mismatch still requires
 rebuilding and explicitly restarting the shared services.
 
+### Google Cloud / gcloud
+
+Gemini players use Pydantic AI's native `GoogleCloudProvider` and `GoogleModel`.
+Authenticate to the Cloud project whose billing account holds your credits, enable
+the API, then import Application Default Credentials (ADC):
+
+```sh
+gcloud auth login --update-adc
+gcloud config set project YOUR_PROJECT_ID
+gcloud services enable aiplatform.googleapis.com
+.venv/bin/civ-agent auth login --provider google-cloud --project YOUR_PROJECT_ID
+.venv/bin/civ-agent auth status --provider google-cloud
+```
+
+The import reads `GOOGLE_APPLICATION_CREDENTIALS`, or the standard gcloud ADC
+file under `CLOUDSDK_CONFIG` / `~/.config/gcloud`. Use `--credentials-file PATH`
+to select a private ADC JSON file explicitly and `--location us-central1` to
+choose a location instead of the default `global`. The chosen project is also
+used as the quota project, overriding an older quota project in imported ADC.
+The account must have permission to use Vertex AI and consume services in that
+project. This setup uses Google Cloud billing; an AI Studio key is a separate route.
+
+Only a private copy of ADC and the project/location settings are mounted read-only
+into the trusted game controller. The gcloud configuration directory is not
+mounted. Google's auth library renews credentials in the controller; credentials
+are absent from model inputs, saved role sessions, and container arguments.
+After switching accounts or renewing the source ADC login, import it again before
+starting or resuming affected games. Login import and `auth status` are local
+checks; they do not establish that the account has access to a particular model.
+
+Start a Google Cloud game with:
+
+```sh
+.venv/bin/civ-agent image build
+.venv/bin/civ-agent game start --config examples/google-cloud-game.toml \
+  --state-dir ~/.local/state/unciv-host/gemini-game
+```
+
+Or set `provider = "google-cloud"` and a Gemini model ID on individual players,
+`economy_model`, or `military_model` in a mixed-provider game. Main, subordinate,
+communication, review, and peace roles all use the same native adapter. Both Code
+Mode and direct tools use the existing local tool execution path. Gemini starts
+with implicit caching, and transient failures use the ordinary agent retry policy.
+`fast` remains an OpenAI-only option and does not select a Google priority tier.
+Google-only games do not require an OpenAI subscription login or an OpenRouter key.
+
 ## Start and watch
 
 ```sh
@@ -87,18 +143,89 @@ rebuilding and explicitly restarting the shared services.
 
 Defaults: Rome, Greece and France use **gpt-6-luna / medium**, with native Egypt
 and two city-states on Small Pangaea, Ancient, Quick/Prince. Victory conditions
-are the native defaults. Games start with concurrent opening reviews; later
-reviews run after every fifth complete round. Quitting the TUI leaves play running.
+are the native defaults. Quitting the TUI leaves play running.
 The TUI is an operator view and exposes all players' private information.
 
-Model quota exhaustion waits for recovery instead of ending the game. The TUI
-shows the affected player and counts down to the next attempt. The supervisor
-retries from the interrupted turn's checkpoint every five minutes, without the
-model-capacity retry limit. Operator stop and configured game budgets still apply.
+Expected provider waits keep the game alive. The affected role publishes its
+waiting state and retries within the configured policy. A provider wait does not
+restart the turn. Application bugs stop for inspection and require explicit
+`game resume` after a fix. Operator stop and whole-game budgets still apply.
+
+The dashboard shows the controller stage and each active role separately. Main
+finishing does not mean the turn has ended: Economy or Military can still be
+working, followed by native completion validation and handoff. Recorded model
+request counters separate gameplay work from background communication.
 
 The launcher returns after starting a background supervisor. `game status` and
 `container-status.json` report eventual startup failures or stops; the launch
 command's exit status is not the eventual game outcome. Logs are durable.
+
+## Record and export a replay
+
+Pass `--record-replay` to `game start` or set `record_replay = true` in
+`[runtime]`. Use a runtime image built with replay support. Resume with
+`--record-replay` to start recording an existing game from its saved position.
+After recording starts, resume continues the archive automatically.
+
+Keep `exploration.json.replay/` beside `exploration.json` when moving a game.
+The archive contains private operator data, including the whole world. The
+civilization export applies the visibility recorded at the time of each event.
+
+```sh
+.venv/bin/civ-agent replay --state-dir PATH
+.venv/bin/civ-agent replay --state-dir PATH --civilization Greece --output greece.jsonl
+.venv/bin/civ-agent replay --state-dir PATH --civilization Greece --video greece.mp4
+.venv/bin/civ-agent replay --state-dir PATH --web replay.html
+```
+
+Open `replay.html` directly or embed it in a static page. It includes the viewer
+and replay data in one file and works offline. Switch civilizations at the same
+point in time, step through visible events, or jump to a turn. The Decisions tab
+shows recorded agent rationales and strategic reviews. The Diplomacy tab shows
+the selected civilization's messages, proposals, and outcomes. Older diplomacy
+and strategic reviews can have turn-level timing.
+
+The civilization selector shows each saved model or controller when
+`resolved.json` is available. The viewer embeds Unciv's HexaRealm terrain art,
+unit sprites and flags, and territorial border art from the bundled engine.
+City nameplates, banners, and borders use the ruleset's civilization colors
+and the selected perspective's recorded observations. Use
+`--unciv-dir PATH` to select the matching engine checkout when exporting a game
+built with an override.
+
+Use the minimap to center the view, the zoom buttons or mouse wheel to change
+scale, and hover or tap to inspect an explored tile. The Research and Policies
+panels follow the selected civilization and replay position. City production
+and other private progress appear in the owner's view. The native replay adds
+these details at committed checkpoints. Snapshot exports show values recorded
+in the original player observation, including cost and turn estimates when present.
+
+The Statistics panel charts the saved Unciv rankings for the civilizations in
+the export. Hover over the chart for a turn's exact values, or click to go to
+that turn. A completed game shows its victory result at the end of the replay.
+
+```html
+<iframe src="replay.html" title="Game replay" sandbox="allow-scripts" width="100%" height="720"></iframe>
+```
+
+The HTML contains the data for every included civilization, including private
+messages and authored notes. Use `--civilization Greece --web greece.html` to
+export a single perspective, and share the file only with its intended audience.
+Keep `coordinator/` with the game when exporting agent rationales and reviews.
+
+For a save created before native recording, use `--from-snapshots --web replay.html`
+with the same state directory. This export uses the saved player's map observation
+for each available turn and includes recorded decisions, reviews, and diplomacy.
+Dashed arrows connect confirmed action endpoints. A player without saved
+observations gets a territory history view based on the engine's tile history.
+
+The video export requires FFmpeg with SVG decoding and H.264 encoding. It draws
+an original hex map from recorded observations and marks visible movement and
+combat. The archive reconstructs committed engine states from recorded changes
+and checks each state's hash. It also carries resolved movement and sight
+events inside a turn, including native AI turns. Playback uses the recorded
+outcomes. Re-running the simulation from the saved inputs alone would require
+additional controls for engine randomness, clock inputs and desktop actions.
 
 ## Configure with TOML
 
@@ -121,9 +248,9 @@ names. Mod content is out of scope. Choose `map_size` or a custom `map_radius`.
 | Section | Settings |
 | --- | --- |
 | `[game]` | `civilizations`, `randomize`, `master_seed`, `map_seed`, `starting_position_seed`, `assignment_seed`, `map_type`, `map_size`/`map_radius`, `difficulty`, `speed`, `starting_era`, `city_states`, `victories` |
-| `[agents]` | `provider` (`openai` or `openrouter`), `model`, `reasoning_effort`, `communication_reasoning_effort`, `review_interval`, `review_attempts`, `economy_interval` and `military_interval` (each default 5 own turns, with earlier event-driven reviews), `strategy_guide`, `civilization_guide`, `fast` |
+| `[agents]` | `provider` (`openai`, `openrouter`, or `google-cloud`), `model`, `reasoning_effort`, `communication_reasoning_effort`, `review_interval`, `review_attempts`, `economy_interval` and `military_interval` (each default 5 own turns, with earlier event-driven reviews), `strategy_guide`, `civilization_guide`, `fast` |
 | `[[players]]` | Unique `name`, `controller` (`agent`, `human`, `built_in_ai`; defaults to `agent`); optional agent `provider`/`model`/`reasoning_effort`/`communication_reasoning_effort` |
-| `[limits]` | `max_turns`, `max_invocations`, `max_seconds`, `turn_timeout`, `startup_timeout`, `max_concurrent_jobs`, `model_capacity_retries`, `model_capacity_retry_delay` |
+| `[limits]` | `max_turns`, `max_seconds`, `turn_timeout`, `startup_timeout`, `max_concurrent_jobs` |
 | `[resources.controller]`, `[resources.desktop]`, `[resources.agent]` | `memory_mib`, `cpus`, `pids` |
 | `[runtime]` | `image`, `desktop_image`, `browser_port` |
 
@@ -221,8 +348,9 @@ apply to gameplay, chat and reviews.
 ### Mix OpenAI and OpenRouter models
 
 Use [the mixed-provider example](../../examples/mixed-providers.toml). Both
-providers use the same Codex runner, prompts, game tools, memory and review flow.
-OpenAI players retain the dedicated Codex login; OpenRouter players use an API key.
+providers use Pydantic AI agents, typed game tools, Harness memory and plans, and
+programmatic hand-off in the same controller. OpenAI subscription players use the dedicated native OAuth
+login; OpenRouter players use an API key.
 Rebuild images after updating the source:
 
 ```sh
@@ -235,9 +363,10 @@ Rebuild images after updating the source:
 The OpenRouter login command prompts for a hidden API key. For unattended setup it
 can import `OPENROUTER_API_KEY` from the environment or an owner-only file using
 `--key-file PATH`. The key persists in `AUTH_DIR/openrouter.key` with mode `600`;
-never put it in TOML. Only OpenRouter agent containers mount this file, read-only.
-They receive no OpenAI login-manager socket or renewable credentials. OpenAI-only
-agents receive no OpenRouter key. An entirely OpenRouter roster requires no OpenAI
+never put it in TOML. The controller mounts this file read-only when a configured
+role uses OpenRouter. Model construction selects the assigned provider's
+credentials. Renewable subscription credentials stay in the login manager.
+An entirely OpenRouter roster requires no OpenAI
 login. `auth status --provider openrouter` reports key presence without contacting
 the provider. Recreate stopped game containers with `game resume` after rotating a key.
 
@@ -248,33 +377,29 @@ random assignment across generated games. Use `--provider` for the default or
 override. The provider also appears in per-job telemetry, strategy status, and
 JSON/CSV batch results. `fast = true` requests OpenAI priority only.
 
-Choose models that advertise **tool calling and structured outputs**; reviews use
-a JSON schema. Before model work, the runner reads OpenRouter's public catalog,
-checks these capabilities and reasoning effort, and saves the model's context
-limit/capabilities under that player's durable Codex directory. Resumes reuse that
-snapshot. Set `reasoning_effort = "none"` for models without reasoning; otherwise
-choose an advertised effort. Catalog validation failures stop with an
-`OPENROUTER_*` error before inference. Reasoning levels are provider-specific
-and do not imply equal compute.
+Choose models that support **tool calling and structured outputs**; reviews use
+typed output schemas. Set `reasoning_effort = "none"` for models without reasoning;
+otherwise choose a supported effort. Native startup validates the selected SDK
+profile and settings. Confirm that your account can access the configured model
+before starting a long match.
 
-Transport follows [OpenRouter's Codex configuration](https://openrouter.ai/blog/tutorials/codex-cli-openrouter/):
-its Responses API receives namespaced tools and structured review schemas.
-Model IDs and backend availability can change; OpenRouter may route a model across
-serving providers. Recorded `provider = "openrouter"` identifies the gateway,
-not the upstream serving company. Tokens reflect counters reported through Codex;
-this is not a provider-billing reconciliation or cost estimator.
+Pydantic AI's `OpenRouterModel` owns the OpenRouter transport. Model IDs and
+backend availability can change; OpenRouter may route a model across serving
+providers. Recorded `provider = "openrouter"` identifies the gateway. Token counts
+come from native SDK usage and do not establish provider billing or subscription
+monetary costs.
 
-Existing games retain their saved images. This adds provider identity to persisted
-job settings; older games should finish with their pinned images rather than
-upgrading them in place. No migration is included.
+Existing native games retain their saved images and frozen provider/job settings.
+Temporal saved games remain read-only archives in this version. Start fresh games
+with the new runtime; there is no converter.
 
 The default limits are a one-hour agent turn timeout, 900-second startup timeout,
-seven days total elapsed time, 10,000 model jobs and the native speed's turn limit
+seven days total elapsed time, 10,000 model invocations and the native speed's turn limit
 plus one (331 for Quick). Pauses count toward total elapsed time. Native victory
 ends the run earlier. Human turns have no model timeout, but whole-match limits apply.
 
 Default limits per container: controller 4 GiB/2 CPUs, graphical controller
-6 GiB/2 CPUs, each agent 2 GiB/1 CPU. These are ceilings, not reservations. Size batch
+6 GiB/2 CPUs. Agent tasks share that controller budget. These are ceilings, not reservations. Size batch
 concurrency for actual machine capacity and the shared account's usage limits.
 
 ## Play a civilization yourself
@@ -300,8 +425,7 @@ chat drafts and focus survive navigation/background activity within the desktop
 session. The operator TUI is separate from the human player's interface.
 
 Closing the browser merely disconnects the viewer. To stop play, use the native
-**Stop game** menu or `game stop`. Resume reconnects to the saved game, with any
-interrupted turn rewound. Native arbitrary save/load and Undo stay disabled in the
+**Stop game** menu or `game stop`. Resume reconnects to the saved native game. Native arbitrary save/load and Undo stay disabled in the
 managed match; per-unit automation remains available. Only one human seat per game
 is currently supported.
 
@@ -313,37 +437,62 @@ is currently supported.
 .venv/bin/civ-agent game resume --state-dir ~/.local/state/unciv-host/my-game
 ```
 
-`stop` quiesces the scheduler and agent work. `remove` additionally removes game
-containers, networks and firewall rules. **Both retain the entire state directory.**
-Resume recreates infrastructure using the saved image IDs and rewinds the interrupted
-turn, including communication and affected private state. Completed handoffs remain
-committed; pending reviews restart from their frozen inputs. Recovery does not
-require a surviving container or a model conversation in memory.
+`stop` stops admitted work and saves the native position. `remove` additionally
+removes game containers, networks and firewall rules. **Both retain the entire
+state directory.** `resume` recreates the controller using the saved image IDs.
 
-Resume retains model/settings and limits. Limits can explicitly increase, for example
-`--max-seconds 1209600`. `--image`/`--desktop-image` explicitly upgrade images; otherwise
-rebuilding a tag has no effect on existing games. Image upgrades require compatible
-saved game data; there are no migrations for the earlier launcher. Preserve pinned
-images when pruning Podman storage. For backups, stop the game and retain its full
-directory, the login directory, and the images (or reproducible image artifacts).
-A stopped game's directory can move; pass its new path to resume. If the login
+An interrupted player turn starts a fresh agent conversation at the latest
+native position. Committed actions, messages, authored plans, receipts and spent
+usage remain recorded. The world is not rewound. Code resolves uncertain native
+requests before starting new work; it never resends an unknown old action based
+only on a missing acknowledgement. Per-attempt correction allowances are
+refreshed; the original game clock and total limits remain in force. Roles and
+reports have no model-request cap, including across fresh conversations. Role
+passes, handoff attempts, model invocations, observation recoveries, summaries
+and offline assessments have no execution-count ceiling. Provider waits keep
+retrying with backoff. Consecutive output-validation failures are bounded by the
+role request's recorded `attempt_limit` (normally two failed runs, each with its
+existing SDK correction allowance). Exhaustion stops the controller with a saved
+failure instead of creating more fresh jobs. Successful role completions reset
+this allowance when new work wakes the role.
+Historical `request_limit`, `max_invocations`, and capacity-retry fields remain
+readable as archive metadata and are not enforced by the local runtime.
+
+An explicit resume authorizes one recovery attempt. If the replacement process
+fails again, automatic same-container restarts cannot grant another fresh
+attempt. Inspect the failure, apply the fix, then run `game resume` again.
+Expected provider waits follow their retry policy without requiring this step.
+
+Resume retains model settings and limits. Limits can explicitly increase, for
+example `--max-seconds 1209600`. `--image` and `--desktop-image` explicitly upgrade
+images; otherwise rebuilding a tag has no effect on saved games. Preserve pinned
+images when pruning Podman storage. Stop a game before backing up its full state
+directory, login directory and pinned images. No separate database volume is
+required. A stopped directory can move; use its new path on resume. If the login
 also moves, supply the new `--auth-dir`.
 
-A failed service stops its game for inspection, not other games. There is no automatic
-model/game retry loop. Host reboot requires explicit resume; lingering covers logout,
-not automatic boot-time relaunch of games.
+Saves from the retired Temporal runtime remain readable through the operator
+commands, but execution is rejected before service startup. `game recover` and
+the developer `workflow` commands are removed. There is no save converter or
+fallback executor.
+
+Unexpected process exits have bounded systemd restarts of the same container
+and original launch. Unfinished work remains stopped until explicit resume.
+Lingering covers logout without adding automatic boot-time relaunch. See
+[failure recovery](../architecture/Failure-recovery.md) for the boundaries.
 
 ## Benchmark batches
 
 For fixed openings screened for comparable starting conditions, use
 [Pangaea](../../examples/balanced-maps/pangaea.toml) or
 [Two Continents](../../examples/balanced-maps/two-continents.toml). Each uses a
-Medium map, twelve city-states, one built-in AI, four `gpt-6-luna` players and one
-`gpt-6.1-terra` player. Both pin the map and starting-position seeds while leaving
+Medium map at Quick speed, twelve city-states, one built-in AI, four
+`gpt-6-luna` players and one `gpt-6.1-terra` player. Both pin the map and starting-position seeds while leaving
 player assignments randomized. The accompanying
 [assessment](../../examples/balanced-maps/assessment.json) records per-civilization
-opening metrics, natural-wonder access and the remaining differences. These are
-heuristically comparable starts, not a guarantee of equal winning chances.
+opening metrics from the original Standard-speed screening, natural-wonder
+access and the remaining differences. The current templates use Quick speed.
+These are heuristically comparable starts, not a guarantee of equal winning chances.
 
 Use an ordinary single-game TOML as the template. Batch size and concurrency are
 command options, not a second configuration format. Generate twenty reusable
@@ -471,11 +620,11 @@ Keep the entire state directory. Key files are:
 - `resolved.json`, `container.json`: frozen configuration, IDs and image references.
 - `supervisor.log`, `launches/<id>/*.log`, `host.log`: controller and service logs.
 - `container-status.json`, `runtime.json`, `resources.json`/`resources.jsonl`: status, failures and resource samples.
-- `exploration.json`, `turn-recovery/`: game and coordinated turn boundaries.
-- `runner/monitoring.sqlite3`: scheduler, events and accounting for the TUI.
-- `agent-services/<civ>/`: private databases, reviews, receipts and diagnostics.
-- `agents/<civ>/`, `codex/<civ>/`: isolated workspaces and Codex state.
+- `exploration.json`: the latest native game checkpoint.
+- `runner/monitoring.sqlite3`: native host result and job accounting for the TUI.
+- `native-runtime/controller.json`: controller state, attempts and original game budget.
+- `native-runtime/status.json`: current controller and per-role phases.
+- `coordinator/<civ>/`: private domain state.
+- `player-stores/<civ>/`: native SDK histories, authored memory and role plans.
+- `agent-services/<civ>/`: scoped transport credentials.
 - `desktop/`: native client/VNC state for human games.
-
-The [saved-position driver](../scenarios/Strategic-positions.md) remains a source-level
-development tool. Ordinary launches and opening benchmarks use these container commands.

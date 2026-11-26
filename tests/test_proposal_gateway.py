@@ -6,110 +6,11 @@ from jsonschema import Draft202012Validator
 
 from civ_agent.civilization_state import CivilizationState, StateConflict
 from civ_agent.proposal_gateway import ProposalGateway
-from civ_agent.protocol import JsonObject
 from civ_agent.service_io import ServiceIO
+from tests.domain_fixtures import (
+    Host as Host,
+)
 from tests.memory_helpers import stored_records
-
-
-class Host:
-    def __init__(self):
-        self.civilization = "Rome"
-        self.revision = "rev1"
-        self.offers = []
-        self.consents = []
-        self.executed = []
-        self.seen = {}
-        self.view: JsonObject = {
-            "turn": 0,
-            "canEndTurn": True,
-            "constructionCatalogue": ["Granary", "Market", "Warrior"],
-            "cities": [
-                {
-                    "handle": "city1",
-                    "name": "Rome",
-                    "constructionQueue": [],
-                    "puppet": False,
-                    "attacksRemaining": 1,
-                    "constructionOptions": ["Market", "Granary"],
-                }
-            ],
-            "map": {
-                "units": [
-                    {
-                        "handle": "unit1",
-                        "name": "Warrior",
-                        "position": {"x": 0, "y": 0},
-                        "health": 100,
-                        "movement": "2",
-                        "military": True,
-                        "idle": True,
-                        "movementSupported": True,
-                        "canFoundCity": False,
-                        "moves": [],
-                        "combat": {"attacksRemaining": 1, "attacks": []},
-                    }
-                ]
-            },
-        }
-
-    async def close(self):
-        pass
-
-    async def list_tools(self):
-        return [
-            {
-                "name": "player_command",
-                "inputSchema": {
-                    "properties": {
-                        key: {"type": "string"} for key in ("kind", "target", "requestId", "epoch", "revision")
-                    },
-                    "required": ["kind", "requestId", "epoch", "revision"],
-                },
-            }
-        ]
-
-    async def tool(self, name, args):
-        if name == "player_turn":
-            return {
-                **copy.deepcopy(self.view),
-                "epoch": "g1",
-                "revision": self.revision,
-                "phase": "ACTIVE",
-                "turnReview": {"id": "review1"},
-            }
-        if name == "player_communication":
-            if args["op"] == "negotiation":
-                return {"negotiation": {"active": False}}
-            if args["op"] == "trade_options":
-                return {"partner": args["partner"], "mode": "SHARED", "give": [], "receive": []}
-            if args["op"] == "state":
-                return {
-                    "civilization": self.civilization,
-                    "epoch": "g1",
-                    "offers": copy.deepcopy(self.offers),
-                    "consents": copy.deepcopy(self.consents),
-                    "outcomes": [],
-                    "channels": ["Rome", "Greece", "France"],
-                    "context": {"turn": self.view["turn"]},
-                }
-            return {"sent": True}
-        if args["requestId"] in self.seen:
-            return self.seen[args["requestId"]]
-        self.executed.append(copy.deepcopy(args))
-        self.revision = "rev" + str(len(self.executed) + 1)
-        summary = {
-            "END_TURN": "Ended turn.",
-            "DISMISS_NOTIFICATIONS": f"Dismissed {len(args.get('targets', []))} ordinary notifications.",
-        }.get(args["kind"], f"Executed {args['kind']} in test host.")
-        result = {
-            "requestId": args["requestId"],
-            "revision": self.revision,
-            "kind": args["kind"],
-            "done": True,
-            "actionSummary": summary,
-        }
-        self.seen[args["requestId"]] = result
-        return result
 
 
 def test_unrecorded_intent_is_explained_without_blocking_or_changing_native_receipt(tmp_path):

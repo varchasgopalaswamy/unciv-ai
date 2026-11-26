@@ -7,9 +7,8 @@ import math
 import os
 import time
 
-import aiohttp
-
-from civ_agent.decisions_backends import BACKENDS, DEFAULT_BACKEND, provider_answers, provider_request
+from civ_agent.advisory_answers import choice_probabilities
+from civ_agent.decisions_backends import BACKENDS, DEFAULT_BACKEND, DecisionBackend
 from civ_agent.decisions_ledger import canonical
 from civ_agent.protocol import JsonObject
 
@@ -160,29 +159,7 @@ def probability_vector(direction, value):
 
 
 def _choice_probabilities(choices, value):
-    if not isinstance(value, list) or len(value) != len(choices):
-        return None
-    result: list[JsonObject] = []
-    seen = set()
-    total = 0.0
-    for row in value:
-        if not isinstance(row, dict):
-            return None
-        choice, probability = row.get("value"), row.get("probability")
-        if (
-            not isinstance(choice, str)
-            or choice not in choices
-            or choice in seen
-            or not isinstance(probability, (int, float))
-            or isinstance(probability, bool)
-            or not math.isfinite(probability)
-            or not 0 <= probability <= 1
-        ):
-            return None
-        seen.add(choice)
-        total += probability
-        result.append({"value": choice, "probability": probability})
-    return result if abs(total - 1) <= 0.02 else None
+    return choice_probabilities(choices, value, tolerance=0.02)
 
 
 def two_question_answers(value, direction="incoming"):
@@ -278,8 +255,8 @@ def parse_answer(
 class DecisionsClient:
     """One request, no retries, bounded time, and a temporary outage circuit."""
 
-    def __init__(self, api_key=None, *, backend=None, endpoint=None, clock=time.monotonic):
-        self.backend = backend or ("luna" if api_key is not None else DEFAULT_BACKEND)
+    def __init__(self, api_key=None, *, backend: DecisionBackend | None = None, endpoint=None, clock=time.monotonic):
+        self.backend: DecisionBackend = backend or ("luna" if api_key is not None else DEFAULT_BACKEND)
         spec = BACKENDS[self.backend]
         if self.backend == "luna" and not api_key:
             raise ValueError("The Luna Decisions backend requires a separate API key")
@@ -326,45 +303,42 @@ class DecisionsClient:
                 "policyVersion": POLICY_VERSION,
                 "providerError": dict(self.last_failure) if self.last_failure is not None else None,
             }
-        usage = {}
+        # Policy and service startup need no provider SDK. Load the transport
+        # only when this invocation will actually submit a Decision request.
+        import httpx2
+        from pydantic_ai.exceptions import (
+            ModelAPIError,
+            ModelHTTPError,
+            ModelTimeoutError,
+            UnexpectedModelBehavior,
+        )
+
+        from civ_agent.decision_provider import DecisionExchange
+
+        exchange = DecisionExchange(self.backend, self.api_key, self.endpoint)
         try:
-            if body.get("model") != self.model:
-                raise ValueError("Decisions request model mismatch")
-            payload = provider_request(body, self.backend)
-            headers = {"Content-Type": "application/json"}
-            if self.backend == "luna":
-                assert self.api_key is not None
-                headers["Authorization"] = "Bearer " + self.api_key
             async with asyncio.timeout(timeout):
-                async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=timeout)) as session:
-                    async with session.post(
-                        self.endpoint,
-                        headers=headers,
-                        data=canonical(payload).encode("utf-8"),
-                        allow_redirects=False,
-                    ) as response:
-                        response.raise_for_status()
-                        supplied = await response.json()
-            usage = supplied.get("usage", {}) if isinstance(supplied, dict) else {}
-            result = {"answers": provider_answers(body, supplied, self.backend), "fallback": None}
+                answers = await exchange.decide(body, timeout=timeout)
+            result = {"answers": answers, "fallback": None}
             self.failures = 0
             self.open_until = 0.0
             self.upstream_status = "available"
-        except TimeoutError:
+        except (TimeoutError, ModelTimeoutError, httpx2.TimeoutException):
             result = {"answers": [], "fallback": "timeout"}
             self._failed("timeout")
-        except (ValueError, TypeError, KeyError, aiohttp.ContentTypeError):
+        except (ValueError, TypeError, KeyError, UnexpectedModelBehavior):
             result = {"answers": [], "fallback": "service_failure"}
             self._failed("response_invalid")
-        except aiohttp.ClientResponseError as error:
+        except (ModelHTTPError, httpx2.HTTPStatusError) as error:
             result = {"answers": [], "fallback": "service_failure"}
+            status = error.status_code if isinstance(error, ModelHTTPError) else error.response.status_code
             kind = {
                 401: "authentication",
                 403: "access_denied",
                 429: "rate_limited",
-            }.get(error.status, "upstream_unavailable" if error.status >= 500 else "http_error")
-            self._failed(kind, http_status=error.status)
-        except (aiohttp.ClientError, OSError):
+            }.get(status, "upstream_unavailable" if status >= 500 else "http_error")
+            self._failed(kind, http_status=status)
+        except (ModelAPIError, httpx2.TransportError, OSError):
             result = {"answers": [], "fallback": "service_failure"}
             self._failed("transport")
         if self.failures >= 3:
@@ -372,7 +346,7 @@ class DecisionsClient:
         return {
             **result,
             "latencyMs": round((self.clock() - started) * 1000),
-            "usage": usage,
+            "usage": exchange.usage,
             "model": self.model,
             "policyVersion": POLICY_VERSION,
             "providerError": dict(self.last_failure) if self.failures and self.last_failure is not None else None,

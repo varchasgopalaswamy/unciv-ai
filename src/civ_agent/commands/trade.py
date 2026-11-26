@@ -6,8 +6,8 @@ import json
 import uuid
 from pathlib import Path
 
-from civ_agent.commands.agent import player_credentials
 from civ_agent.host_connection import HostConnection
+from civ_agent.player_credentials import player_credentials
 from civ_agent.proposal_gateway import public_result
 from civ_agent.tls import endpoint_configuration
 

@@ -10,7 +10,7 @@ from civ_agent.protocol import JsonObject
 from civ_agent.service_io import ServiceIO
 from civ_agent.startup_context import prepare_startup
 from civ_agent.tool_schemas import TOOL_MODELS
-from tests.test_proposal_gateway import Host
+from tests.domain_fixtures import Host
 
 
 class NativeHost(Host):

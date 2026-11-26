@@ -12,8 +12,9 @@ import time
 from collections.abc import Callable
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any, Literal, cast
 
+from pydantic import Field, ValidationError
 from sqlalchemy import bindparam, case, func, insert, inspect, or_, select
 
 from civ_agent import memory_schema as tables
@@ -21,7 +22,7 @@ from civ_agent.agreement_memory import affected_subjects, lifecycle_terms
 from civ_agent.conversation_context import conversation_context
 from civ_agent.decision_context import choice_versions, decision_feedback, intent_feedback
 from civ_agent.memory_exports import export_files, notebook_files
-from civ_agent.memory_history import action_record, action_text, build_summary
+from civ_agent.memory_history import action_record, action_rows, action_text, build_summary
 from civ_agent.memory_records import (
     MEMORY_TYPES,
     HistoryReadResult,
@@ -33,13 +34,17 @@ from civ_agent.memory_snapshots import dump_snapshot, expand, job_states, load_s
 from civ_agent.memory_store import EvidenceRequired, RecordStore, encode, expired_at, select_context, semantic
 from civ_agent.notebook import Notebook
 from civ_agent.observations import DetailQuery, detail_fingerprint, native_observation, project_detail
+from civ_agent.orchestration.contracts import EventNotice, canonical, digest
 from civ_agent.progress_history import HISTORY_TURNS, advance_history, progress_context
 from civ_agent.protocol import JsonObject
 from civ_agent.review_store import latest_advice, latest_review_status
-from civ_agent.schemas import validate
+from civ_agent.schemas import BoundaryModel, Identifier, validate
 from civ_agent.sqlite_database import sqlite_engine
 from civ_agent.tls import private_directory, write_private_json
 from civ_agent.turn_changes import turn_basis, turn_changes
+
+if TYPE_CHECKING:
+    from civ_agent.orchestration.store import WorkflowStore
 
 # Native offers belong to gameplay even when another message starts a conversation.
 COMMUNICATION_EVENTS = or_(
@@ -56,6 +61,20 @@ class MemoryFormatError(StateConflict):
     """An unsupported store needs a fresh match, not an implicit migration."""
 
 
+class _CheckpointNotification(BoundaryModel):
+    source: str = Field(min_length=1, max_length=512)
+    notice: EventNotice
+    notify: bool
+    signaled: bool
+    handled: bool
+    job: Identifier | None
+
+
+class _CheckpointNotifications(BoundaryModel):
+    version: Literal[1] = 1
+    rows: list[_CheckpointNotification]
+
+
 def receipt_is_uncertain(result: JsonObject) -> bool:
     error = result.get("error")
     code = error.get("code") if isinstance(error, dict) else error
@@ -68,6 +87,7 @@ class CivilizationState:
         self.path = self.root / "memory.sqlite3"
         self.civilization = civilization
         self.routing_enabled = False
+        self.authored_reader: Callable[[str, int | None], JsonObject] | None = None
         if context_limit < 1000:
             raise ValueError("Private memory context limit must be at least 1000 characters")
         self.context_limit = context_limit
@@ -93,7 +113,36 @@ class CivilizationState:
     @contextmanager
     def transaction(self):
         with self.engine.begin() as db:
-            yield db
+            if self.authored_reader is not None:
+
+                def read_authored():
+                    epoch = self._meta(db, "epoch")
+                    return self.authored_reader(epoch, self._meta(db, "gameTurn")) if epoch is not None else {}
+
+                db.info["authored_reader"] = read_authored
+            try:
+                yield db
+            finally:
+                db.info.pop("authored_reader", None)
+                db.info.pop("authored_records", None)
+
+    @property
+    def authored_enabled(self) -> bool:
+        return self.authored_reader is not None
+
+    def enable_authored(self, reader: Callable[[str, int | None], JsonObject]):
+        """Use native files as the sole authored authority in a fresh match."""
+        with self.transaction() as db:
+            if (
+                db.scalar(
+                    select(tables.records.c.key)
+                    .where(tables.records.c.category.in_(MEMORY_TYPES | {"contribution"}))
+                    .limit(1)
+                )
+                is not None
+            ):
+                raise MemoryFormatError("Native authored memory requires a fresh match without legacy authored rows.")
+        self.authored_reader = reader
 
     @staticmethod
     def _meta(db, key, default=None) -> Any:
@@ -114,7 +163,7 @@ class CivilizationState:
         with self.transaction() as db:
             return self._meta(db, "cursor", 0)
 
-    def ingest(self, epoch: str, events: list[JsonObject], cursor: int):
+    def ingest(self, epoch: str, events: list[JsonObject], cursor: int, *, after_ingest: Callable | None = None):
         """Commit authenticated events and their reconnect cursor together."""
         with self.transaction() as db:
             if self._meta(db, "paused", False):
@@ -237,6 +286,8 @@ class CivilizationState:
                         review_keys=["event:" + str(event["id"])],
                     )
             self._set(db, "cursor", max(cursor, self._meta(db, "cursor", 0)))
+            if after_ingest is not None:
+                after_ingest(db)
 
     @staticmethod
     def _record(db, key, category, body, job=None):
@@ -307,12 +358,57 @@ class CivilizationState:
             db.execute(tables.jobs.update().where(tables.jobs.c.id == job).values(snapshot=dump_snapshot(db, snapshot)))
         return version
 
-    def snapshot(self, purpose: str, game_turn: int | None = None) -> JsonObject:
+    def snapshot(
+        self,
+        purpose: str,
+        game_turn: int | None = None,
+        *,
+        event_ids: list[int] | None = None,
+        event_sources: list[str] | None = None,
+    ) -> JsonObject:
         with self.transaction() as db:
-            records = RecordStore(db).all(categories=MEMORY_TYPES | {"contribution"})
+            records = {} if self.authored_enabled else RecordStore(db).all(categories=MEMORY_TYPES | {"contribution"})
             cursor = self._meta(db, "handled:" + purpose, 0)
             query = select(tables.events.c.id, tables.events.c.body).select_from(tables.events.join(tables.inbox))
-            if purpose == "communication" and self.routing_enabled:
+            if event_sources is not None:
+                from civ_agent.orchestration.communication_store import communication_scope, notifications
+
+                if (
+                    purpose != "communication"
+                    or event_ids is not None
+                    or type(event_sources) is not list
+                    or any(
+                        not isinstance(source, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}:[1-9][0-9]*", source)
+                        for source in event_sources
+                    )
+                ):
+                    raise StateConflict("COMMUNICATION_EVENT_SELECTION_INVALID")
+                owner = self._meta(db, "nativeGatewayOwner", {})
+                if not owner or not inspect(db).has_table(notifications.name):
+                    raise StateConflict("COMMUNICATION_EVENT_SELECTION_INVALID")
+                scope = communication_scope(owner["game"], owner["player"], self._meta(db, "epoch"))
+                permitted = set(
+                    db.scalars(
+                        select(notifications.c.source).where(
+                            notifications.c.scope == canonical(scope.model_dump()),
+                            notifications.c.source.in_(event_sources),
+                        )
+                    )
+                )
+                if set(event_sources) != permitted:
+                    raise StateConflict("COMMUNICATION_EVENT_SELECTION_INVALID")
+                query = query.where(tables.events.c.source.in_(event_sources))
+            elif event_ids is not None:
+                if purpose != "communication" or any(
+                    type(identifier) is not int or identifier < 1 for identifier in event_ids
+                ):
+                    raise StateConflict("COMMUNICATION_EVENT_SELECTION_INVALID")
+                query = query.where(
+                    tables.events.c.source.in_(
+                        [self._meta(db, "epoch") + ":" + str(identifier) for identifier in event_ids]
+                    )
+                )
+            elif purpose == "communication" and self.routing_enabled:
                 from civ_agent.diplomacy_store import attention_ids, ready_ids
 
                 query = query.where(tables.events.c.id.in_(attention_ids(self, db))).order_by(
@@ -503,7 +599,7 @@ class CivilizationState:
             )
             .order_by(tables.request_order)
         )
-        actions = []
+        actions: list[JsonObject] = []
         for row in db.execute(query).mappings():
             saved = json.loads(row["body"])
             actions.append(
@@ -519,6 +615,36 @@ class CivilizationState:
                     "_pinned": saved.get("_pinned", {}),
                 }
             )
+        native = (
+            select(tables.records.c.key, tables.records.c.body)
+            .select_from(tables.current_records)
+            .where(
+                tables.records.c.category == "decision",
+                func.json_type(tables.records.c.body, "$.native") == "object",
+                func.json_extract(tables.records.c.body, "$.turn") >= first,
+                func.json_extract(tables.records.c.body, "$.turn") <= last,
+            )
+            .order_by(tables.record_order)
+        )
+        for row in db.execute(native).mappings():
+            saved = json.loads(row["body"])
+            actions.append(
+                {
+                    "turn": saved["turn"],
+                    "commandStatus": saved["outcome"],
+                    "action": action_text(
+                        saved["command"],
+                        saved["facts"],
+                        saved.get("settlement"),
+                        transport=saved["native"]["transport"],
+                    ),
+                    "command": saved["command"],
+                    "receipt": row["key"],
+                    "economy": saved["facts"].get("economy"),
+                    "_pinned": saved["_pinned"],
+                }
+            )
+        actions.sort(key=lambda action: cast(int, action["turn"]))
         return actions
 
     def _decision_feedback(self, db, body: JsonObject):
@@ -540,9 +666,20 @@ class CivilizationState:
             .order_by(tables.record_order.desc())
             .limit(257)
         )
-        rows = db.execute(query).mappings().all()
+        rows = (
+            [
+                {"key": key, **record}
+                for key, record in RecordStore(db).all(categories={"strategy"}).items()
+                if record["body"].get("state") == "active"
+            ]
+            if self.authored_enabled
+            else list(db.execute(query).mappings())
+        )
         since = db.scalar(select(func.max(tables.reviews.c.turn)).where(tables.reviews.c.status == "COMPLETED"))
-        choices = choice_versions([{**row, "body": json.loads(row["body"])} for row in rows[:256]], since or 0)
+        choices = choice_versions(
+            [{**row, "body": row["body"] if self.authored_enabled else json.loads(row["body"])} for row in rows[:256]],
+            since or 0,
+        )
         first = min(
             (c["baseline"]["authoredTurn"] for c in choices if c["baseline"].get("authoredTurn") is not None),
             default=body["turn"],
@@ -552,6 +689,11 @@ class CivilizationState:
         progress = progress_context(history, [a for a in actions if a["turn"] >= history[0]["turn"]])
         result = decision_feedback(choices, body, actions, progress)
         result["earlierStrategyRevisionsOmitted"] = len(rows) > 256
+        if self.authored_enabled:
+            result["strategyHistory"] = {
+                "available": False,
+                "reason": "Earlier authored choices are not included in this view.",
+            }
         return result
 
     def deliver_player(
@@ -564,6 +706,7 @@ class CivilizationState:
         arguments: JsonObject,
         respond: Callable[[JsonObject, JsonObject], JsonObject],
         update_memory: bool = True,
+        record_call: bool = True,
     ):
         """Commit delivered evidence and its replayable response in one transaction."""
         with self.transaction() as db:
@@ -592,7 +735,7 @@ class CivilizationState:
                     compact["changesSincePreviousTurn"] = changes
                 self._set(db, "turnChangeBaseline", turn_basis(body))
             observed = self._observe_player(db, body, job, compact)
-            records = RecordStore(db).all(categories=MEMORY_TYPES)
+            records = {} if self.authored_enabled else RecordStore(db).all(categories=MEMORY_TYPES)
             snapshot = load_snapshot(
                 db, db.execute(select(tables.jobs.c.snapshot).where(tables.jobs.c.id == job)).scalar_one()
             )
@@ -623,7 +766,8 @@ class CivilizationState:
                     RecordStore.deliver(snapshot, {key: cached})
             db.execute(tables.jobs.update().where(tables.jobs.c.id == job).values(snapshot=dump_snapshot(db, snapshot)))
             result = respond(records, changed)
-            self._call_record(db, job, call_id, name, arguments, result)
+            if record_call:
+                self._call_record(db, job, call_id, name, arguments, result)
             return {**observed, **changed}, result
 
     def _observe_player(self, db, body: JsonObject, job: str, compact: JsonObject | None):
@@ -1148,6 +1292,68 @@ class CivilizationState:
             db.execute(tables.jobs.update().where(tables.jobs.c.id == job).values(snapshot=dump_snapshot(db, snapshot)))
             return result
 
+    @staticmethod
+    def _action_attribution(snapshot, payload, intent, initiative_decisions):
+        """Pin authored annotations to the exact evidence already delivered."""
+        pinned: JsonObject = {}
+        initiatives = []
+        if initiative_decisions:
+            advice = snapshot.get("strategicAdvice")
+            available = len(advice["review"]["diplomacy"]["initiatives"]) if advice else 0
+            for entry in initiative_decisions:
+                if payload.get("kind") == "END_TURN" and advice and 1 <= entry["initiative"] <= available:
+                    initiatives.append({**entry, "reviewTurn": advice["asOfTurn"]})
+                else:
+                    pinned.setdefault("unverifiedInitiatives", []).append(entry["initiative"])
+        if intent is not None:
+            intent = validate(Intent, intent).model_dump()
+            # Intent is an audit annotation; the host validates the action.
+            city_plan = intent.get("cityPlan")
+            city_record = snapshot["records"].get(city_plan)
+            if (
+                city_record
+                and city_record["category"] == "city_plan"
+                and city_record["body"].get("city") == payload.get("target")
+                and snapshot.get("delivered", {}).get(city_plan) == city_record["version"]
+            ):
+                pinned["cityPlan"] = {
+                    "key": city_plan,
+                    "version": city_record["version"],
+                    "reason": intent["reason"],
+                }
+            elif city_plan:
+                pinned["unverifiedCityPlan"] = city_plan
+            key = intent.get("strategy")
+            chosen = intent.get("decision")
+            if chosen:
+                pinned["unverifiedDecision"] = chosen
+            prior = snapshot["records"].get(key)
+            if (
+                key
+                and prior
+                and snapshot.get("delivered", {}).get(key) == prior["version"]
+                and prior["category"] == "strategy"
+            ):
+                pinned["strategy"] = {
+                    "key": key,
+                    "version": prior["version"],
+                    "assessment": prior["body"]["assessment"],
+                }
+                baseline = prior["body"].get("_decisionBaselines", {}).get(chosen)
+                if chosen and baseline:
+                    pinned["decision"] = {"strategy": key, "id": chosen, "baseline": baseline["id"]}
+                    pinned.pop("unverifiedDecision")
+            elif key:
+                pinned["unverifiedStrategy"] = key
+            pinned["assumptions"] = []
+            for assumption in intent["assumptions"]:
+                if assumption.get("source"):
+                    try:
+                        pinned["assumptions"].extend(RecordStore.pin(snapshot, [assumption["source"]]))
+                    except EvidenceRequired:
+                        pinned.setdefault("unverifiedSources", []).append(assumption["source"])
+        return intent, pinned, initiatives
+
     def queue(
         self,
         job: str,
@@ -1178,63 +1384,7 @@ class CivilizationState:
                 db, db.execute(select(tables.jobs.c.snapshot).where(tables.jobs.c.id == job)).scalar_one()
             )
             store = RecordStore(db, self._meta(db, "gameTurn"))
-            pinned: JsonObject = {}
-            initiatives = []
-            if initiative_decisions:
-                advice = snapshot.get("strategicAdvice")
-                available = len(advice["review"]["diplomacy"]["initiatives"]) if advice else 0
-                for entry in initiative_decisions:
-                    if payload.get("kind") == "END_TURN" and advice and 1 <= entry["initiative"] <= available:
-                        initiatives.append({**entry, "reviewTurn": advice["asOfTurn"]})
-                    else:
-                        pinned.setdefault("unverifiedInitiatives", []).append(entry["initiative"])
-            if intent is not None:
-                intent = validate(Intent, intent).model_dump()
-                # Intent is an audit annotation; the host validates the action.
-                city_plan = intent.get("cityPlan")
-                city_record = snapshot["records"].get(city_plan)
-                if (
-                    city_record
-                    and city_record["category"] == "city_plan"
-                    and city_record["body"].get("city") == payload.get("target")
-                    and snapshot.get("delivered", {}).get(city_plan) == city_record["version"]
-                ):
-                    pinned["cityPlan"] = {
-                        "key": city_plan,
-                        "version": city_record["version"],
-                        "reason": intent["reason"],
-                    }
-                elif city_plan:
-                    pinned["unverifiedCityPlan"] = city_plan
-                key = intent.get("strategy")
-                chosen = intent.get("decision")
-                if chosen:
-                    pinned["unverifiedDecision"] = chosen
-                prior = snapshot["records"].get(key)
-                if (
-                    key
-                    and prior
-                    and snapshot.get("delivered", {}).get(key) == prior["version"]
-                    and prior["category"] == "strategy"
-                ):
-                    pinned["strategy"] = {
-                        "key": key,
-                        "version": prior["version"],
-                        "assessment": prior["body"]["assessment"],
-                    }
-                    baseline = prior["body"].get("_decisionBaselines", {}).get(chosen)
-                    if chosen and baseline:
-                        pinned["decision"] = {"strategy": key, "id": chosen, "baseline": baseline["id"]}
-                        pinned.pop("unverifiedDecision")
-                elif key:
-                    pinned["unverifiedStrategy"] = key
-                pinned["assumptions"] = []
-                for assumption in intent["assumptions"]:
-                    if assumption.get("source"):
-                        try:
-                            pinned["assumptions"].extend(store.pin(snapshot, [assumption["source"]]))
-                        except EvidenceRequired:
-                            pinned.setdefault("unverifiedSources", []).append(assumption["source"])
+            intent, pinned, initiatives = self._action_attribution(snapshot, payload, intent, initiative_decisions)
             decision = store.handle("dec")
             store.write(
                 decision,
@@ -1276,6 +1426,164 @@ class CivilizationState:
     def _command_subjects(payload):
         return [value for key in ("target", "partner", "to") if isinstance(value := payload.get(key), str)]
 
+    @staticmethod
+    def _native_outcome_facts(receipt):
+        """Only facts consumed by attribution/progress, never a cached RPC reply."""
+        facts = {}
+        if "error" in receipt:
+            error = receipt["error"]
+            facts["error"] = error.get("code", "REJECTED") if isinstance(error, dict) else error
+        if isinstance(receipt.get("actionSummary"), str):
+            facts["actionSummary"] = receipt["actionSummary"]
+        economy = receipt.get("economy")
+        if isinstance(economy, dict) and "goldChange" in economy:
+            facts["economy"] = {"goldChange": economy["goldChange"]}
+        for field, names in (
+            ("trade", ("proposal", "status", "mode", "author", "partner")),
+            ("offer", ("kind", "participants", "proposal", "version")),
+        ):
+            if isinstance(receipt.get(field), dict):
+                facts[field] = {key: receipt[field][key] for key in names if key in receipt[field]}
+        if receipt.get("outcome") or (receipt.get("trade") or {}).get("outcome"):
+            facts["outcome"] = True
+        return facts
+
+    def record_native_outcome(
+        self, job: str, prepared: JsonObject, receipt: JsonObject, *, receipt_only=False
+    ) -> JsonObject:
+        """Reduce a host outcome into attribution; the native host retains the reply.
+
+        The trusted preparation owns the frozen wire payload. This method never
+        authorizes dispatch, creates a pending request or returns a cached reply.
+        Its replay flag describes this domain reduction, not all role projectors.
+        """
+        payload, transport = prepared["payload"], prepared["transport"]
+        operation = prepared["operationId"]
+        if (
+            not isinstance(operation, str)
+            or not operation
+            or payload.get("requestId") != operation
+            or transport not in {"player_command", "player_communication"}
+            or receipt.get("requestId", operation) != operation
+            or receipt.get("epoch", payload.get("epoch")) != payload.get("epoch")
+        ):
+            raise StateConflict("NATIVE_OUTCOME_IDENTITY_CONFLICT")
+        if receipt_is_uncertain(receipt) or receipt.get("uncertain") is True:
+            raise StateConflict("RECEIPT_UNCERTAIN")
+        intent = validate(Intent, prepared["intent"]).model_dump() if prepared.get("intent") is not None else None
+        initiative_requests = prepared.get("initiativeDecisions") or []
+        turn = prepared.get("turn")
+        native = {
+            "operationId": operation,
+            "transport": transport,
+            "requestSha256": hashlib.sha256(encode([transport, payload]).encode()).hexdigest(),
+            "receiptSha256": hashlib.sha256(encode(receipt).encode()).hexdigest(),
+            "attributionSha256": hashlib.sha256(encode([intent, initiative_requests, turn]).encode()).hexdigest(),
+        }
+        if prepared.get("toolOperationId") is not None:
+            native["toolOperationId"] = prepared["toolOperationId"]
+        key = "native:" + operation
+        with self.transaction() as db:
+            identity = db.execute(select(tables.jobs).where(tables.jobs.c.id == job)).mappings().fetchone()
+            if (
+                identity is None
+                or identity["epoch"] != payload.get("epoch")
+                or identity["epoch"] != self._meta(db, "epoch")
+            ):
+                raise StateConflict("STALE_JOB")
+            store = RecordStore(db)
+            previous = store.all(keys=[key], project=False).get(key)
+            if previous is not None:
+                prior_job = db.scalar(
+                    select(tables.records.c.job).select_from(tables.current_records).where(tables.records.c.key == key)
+                )
+                if (
+                    previous["category"] != "decision"
+                    or prior_job != job
+                    or previous["body"].get("native") != native
+                    or prepared.get("pinned") is not None
+                    and prepared["pinned"] != previous["body"]["_pinned"]
+                ):
+                    raise StateConflict("NATIVE_OUTCOME_CONFLICT")
+                return {"replayed": True, **intent_feedback(previous["body"]["_pinned"])}
+            self._check_run_failure(db)
+            if receipt_only:
+                retiring = self._meta(db, "nativeGatewayRetirement")
+                local = self._meta(db, "localRecoveryBarrier")
+                if not (
+                    retiring is not None
+                    and retiring["epoch"] == identity["epoch"]
+                    or local is not None
+                    and local["epoch"] == identity["epoch"]
+                ):
+                    raise StateConflict("SOURCE_RETIREMENT_REQUIRED")
+            else:
+                self._validate(db, job)
+            snapshot = load_snapshot(db, identity["snapshot"])
+            intent, pinned, initiatives = self._action_attribution(snapshot, payload, intent, initiative_requests)
+            if prepared.get("pinned") is not None:
+                pinned = prepared["pinned"]
+            facts = self._native_outcome_facts(receipt)
+            store.write(
+                key,
+                "decision",
+                {
+                    "native": native,
+                    "turn": turn,
+                    "intent": intent,
+                    **({"initiativeDecisions": initiatives} if initiatives else {}),
+                    "_pinned": pinned,
+                    "command": payload,
+                    "outcome": "rejected" if "error" in receipt else "confirmed",
+                    "facts": facts,
+                    "subjects": self._command_subjects(payload),
+                },
+                job,
+            )
+            self._settle_trade(db, receipt)
+            trade = receipt.get("trade") or {}
+            if (
+                "error" not in receipt
+                and trade.get("status") == "ENACTED"
+                and (trade.get("outcome") or receipt.get("outcome"))
+            ):
+                RecordStore(db, self._meta(db, "gameTurn")).flag(
+                    subjects=[trade.get("author"), trade.get("partner")],
+                    reason="Engine agreement enacted; review diplomatic plans",
+                    review_keys=[key],
+                )
+            return {"replayed": False, **intent_feedback(pinned)}
+
+    def confirmed_city_actions(self, keys=None):
+        """Project native attribution without revising a player's authored plan."""
+        selected = set(keys) if keys is not None else None
+        with self.transaction() as db:
+            result = {}
+            query = (
+                select(tables.records.c.key, tables.records.c.body)
+                .select_from(tables.current_records)
+                .where(
+                    tables.records.c.category == "decision",
+                    func.json_type(tables.records.c.body, "$.native") == "object",
+                )
+                .order_by(tables.record_order)
+            )
+            for row in db.execute(query).mappings():
+                body = json.loads(row["body"])
+                plan = body["_pinned"].get("cityPlan")
+                if body["outcome"] != "confirmed" or not plan or selected is not None and plan["key"] not in selected:
+                    continue
+                command = body["command"]
+                result.setdefault(plan["key"], {})[command.get("kind", "action")] = {
+                    "receipt": row["key"],
+                    "turn": body["turn"],
+                    "planVersion": plan["version"],
+                    "reason": plan.get("reason", ""),
+                    "selection": command.get("selection"),
+                    "actionSummary": body["facts"].get("actionSummary"),
+                }
+            return result
+
     def uncertain(self, request_id):
         with self.transaction() as db:
             row = (
@@ -1301,6 +1609,21 @@ class CivilizationState:
             if (receipt.get("trade") or {}).get("proposal") == trade.get("proposal"):
                 record = records[row["decision"]]
                 self._record(db, row["decision"], "decision", {**record["body"], "settlement": value}, row["job"])
+        facts = self._native_outcome_facts(value)
+        for key, record in records.items():
+            body = record["body"]
+            if (
+                not body.get("native")
+                or body["facts"].get("trade", {}).get("proposal") != trade.get("proposal")
+                or body.get("settlement", body["facts"]) == facts
+            ):
+                continue
+            job = db.scalar(
+                select(tables.records.c.job).where(
+                    tables.records.c.key == key, tables.records.c.version == record["version"]
+                )
+            )
+            self._record(db, key, "decision", {**body, "settlement": facts}, job)
 
     def pending(self, *, exclude_purpose=None):
         with self.transaction() as db:
@@ -1624,15 +1947,21 @@ class CivilizationState:
         with self.transaction() as db:
             if job is not None:
                 self._validate(db, job)
-            rows = db.execute(
-                select(tables.outbox.c.decision, tables.outbox.c.transport)
-                .select_from(tables.live_requests.join(tables.jobs, tables.outbox.c.job == tables.jobs.c.id))
-                .where(tables.jobs.c.game_turn == game_turn)
-                .order_by(tables.request_order)
-                .limit(21)
-                .offset(offset)
-            ).fetchall()
-            records = RecordStore(db).all(keys=[row[0] for row in rows[:20]])
+            rows = action_rows(db, turn=game_turn, limit=21, offset=offset)
+            records = RecordStore(db).all(keys=[row["decision"] for row in rows[:20]], project=False)
+            snapshot = None
+            if job is not None:
+                native_rows = [row for row in rows[:20] if records[row["decision"]]["body"].get("native")]
+                if native_rows:
+                    snapshot = load_snapshot(
+                        db, db.execute(select(tables.jobs.c.snapshot).where(tables.jobs.c.id == job)).scalar_one()
+                    )
+                    for row in native_rows:
+                        snapshot.setdefault("historicalEvidence", {})["e" + str(row["record_id"])] = {
+                            "key": row["decision"],
+                            "version": row["version"],
+                            "category": "decision",
+                        }
             review = None
             if include_review:
                 saved = db.execute(
@@ -1643,9 +1972,11 @@ class CivilizationState:
                 if saved is not None:
                     review = {key: value for key, value in json.loads(saved).items() if key != "_contextFacts"}
                     if job is not None:
-                        snapshot = load_snapshot(
-                            db, db.execute(select(tables.jobs.c.snapshot).where(tables.jobs.c.id == job)).scalar_one()
-                        )
+                        if snapshot is None:
+                            snapshot = load_snapshot(
+                                db,
+                                db.execute(select(tables.jobs.c.snapshot).where(tables.jobs.c.id == job)).scalar_one(),
+                            )
                         read_reviews = snapshot.setdefault("readReviews", [])
                         if game_turn not in read_reviews:
                             read_reviews.append(game_turn)
@@ -1657,16 +1988,20 @@ class CivilizationState:
                                 "reviewTurn": game_turn,
                                 "assessment": assumption,
                             }
-                        db.execute(
-                            tables.jobs.update()
-                            .where(tables.jobs.c.id == job)
-                            .values(snapshot=dump_snapshot(db, snapshot))
-                        )
+            if snapshot is not None:
+                db.execute(
+                    tables.jobs.update().where(tables.jobs.c.id == job).values(snapshot=dump_snapshot(db, snapshot))
+                )
             result = HistoryReadResult.model_validate(
                 {
                     "turn": game_turn,
                     "actions": [
-                        action_record(row.decision, records[row.decision]["body"], transport=row.transport)
+                        action_record(
+                            row["decision"],
+                            records[row["decision"]]["body"],
+                            transport=row["transport"],
+                            evidence="e" + str(row["record_id"]),
+                        )
                         for row in rows[:20]
                     ],
                     "hasMore": len(rows) > 20,
@@ -1693,6 +2028,101 @@ class CivilizationState:
             files = notebook_files(db)
         export_files(self.root, workspace, files)
 
+    def _checkpoint_notifications(self, db, saved) -> _CheckpointNotifications | None:
+        """Validate saved queue state against the immutable authenticated inbox."""
+        from civ_agent.orchestration.communication_store import communication_scope
+
+        metadata = {key: json.loads(value) for key, value in saved["meta"]}
+        owner = metadata.get("nativeGatewayOwner")
+        events = {
+            row["source"]: row
+            for row in db.execute(select(tables.events).where(tables.events.c.id.in_(saved["inbox"]))).mappings()
+        }
+
+        def eligible(event):
+            return bool(event["wake"]) and not (event["kind"] == "trade" and event["body"].get("mode") == "NATIVE_AI")
+
+        if "nativeNotifications" not in saved:
+            # Legacy process snapshots have no native notification owner. Old
+            # native snapshots are safe only when no eligible inbox event could
+            # have had pending/signaled/assigned state at the capture boundary.
+            if owner is not None and any(eligible(json.loads(row["body"])) for row in events.values()):
+                raise StateConflict("CHECKPOINT_NOTIFICATION_PROJECTION_REQUIRED")
+            return None
+        try:
+            projection = _CheckpointNotifications.model_validate(saved["nativeNotifications"])
+            scope = (
+                communication_scope(owner["game"], owner["player"], metadata["epoch"]) if owner is not None else None
+            )
+        except (ValidationError, ValueError, TypeError, KeyError):
+            raise StateConflict("CHECKPOINT_NOTIFICATIONS_INVALID") from None
+        sources, identities = set(), set()
+        for entry in projection.rows:
+            notice = entry.notice
+            row = events.get(entry.source)
+            event = json.loads(row["body"]) if row is not None else None
+            if (
+                scope is None
+                or notice.scope != scope
+                or notice.id != scope.identity("native-event", str(notice.native_id))
+                or entry.source in sources
+                or notice.id in identities
+                or event is None
+                or type(event.get("id")) is not int
+                or notice.native_id != event["id"]
+                or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}:" + str(notice.native_id), entry.source)
+                or notice.content.sha256 != digest(event)
+                or notice.native_id > metadata.get("cursor", 0)
+                or entry.notify != eligible(event)
+                or not entry.notify
+                and not entry.handled
+            ):
+                raise StateConflict("CHECKPOINT_NOTIFICATIONS_INVALID")
+            sources.add(entry.source)
+            identities.add(notice.id)
+        if owner is not None and any(
+            eligible(json.loads(row["body"])) and source not in sources for source, row in events.items()
+        ):
+            raise StateConflict("CHECKPOINT_NOTIFICATIONS_INCOMPLETE")
+        return projection
+
+    def _capture_notifications(self, db, saved):
+        from civ_agent.orchestration.communication_store import communication_scope, notifications
+
+        if not inspect(db).has_table(notifications.name):
+            self._checkpoint_notifications(db, saved)
+            return
+        owner = self._meta(db, "nativeGatewayOwner")
+        scope = communication_scope(owner["game"], owner["player"], self._meta(db, "epoch")) if owner else None
+        if scope is None:
+            saved["nativeNotifications"] = {"version": 1, "rows": []}
+            self._checkpoint_notifications(db, saved)
+            return
+        selected = db.execute(
+            select(notifications)
+            .where(notifications.c.scope == canonical(scope.model_dump()))
+            .order_by(notifications.c.source)
+        ).mappings()
+        rows = []
+        for row in selected:
+            notice = EventNotice.model_validate_json(row["notice"])
+            if (
+                row["id"] != notice.id
+                or row["scope"] != canonical(notice.scope.model_dump())
+                or any(type(row[key]) is not int or row[key] not in {0, 1} for key in ("notify", "signaled", "handled"))
+            ):
+                raise StateConflict("CHECKPOINT_NOTIFICATIONS_INVALID")
+            rows.append(
+                {
+                    "source": row["source"],
+                    "notice": notice.model_dump(mode="json"),
+                    **{key: bool(row[key]) for key in ("notify", "signaled", "handled")},
+                    "job": row["job"],
+                }
+            )
+        saved["nativeNotifications"] = {"version": 1, "rows": rows}
+        self._checkpoint_notifications(db, saved)
+
     def backup(self, destination: Path, service=None) -> str:
         if destination.exists():
             raise StateConflict("CHECKPOINT_EXISTS")
@@ -1708,6 +2138,7 @@ class CivilizationState:
                 "jobs": job_states(db),
                 "reviews": [dict(row) for row in db.execute(select(tables.reviews)).mappings()],
             }
+            self._capture_notifications(db, snapshot)
             snapshot["historySha256"] = self._history_digest(db, snapshot)
             snapshot["service"] = service
         write_private_json(destination, snapshot)
@@ -1759,6 +2190,7 @@ class CivilizationState:
                 raise StateConflict("CHECKPOINT_INVALID")
             if saved["historySha256"] != self._history_digest(db, saved):
                 raise StateConflict("CHECKPOINT_HISTORY_CHANGED")
+            self._checkpoint_notifications(db, saved)
             for job in saved["jobs"]:
                 if not db.execute(select(tables.jobs.c.id).where(tables.jobs.c.id == job["id"])).first():
                     raise StateConflict("CHECKPOINT_HISTORY_MISSING")
@@ -1774,9 +2206,64 @@ class CivilizationState:
         with self.transaction() as db:
             return self._meta(db, "paused", False)
 
-    def restore(self, source: Path, checksum: str, epoch: str):
+    def restore(
+        self,
+        source: Path,
+        checksum: str,
+        epoch: str,
+        *,
+        notification_artifacts: "WorkflowStore | None" = None,
+    ):
+        """Install while the trusted recovery admission fence remains held.
+
+        For native notifications, the supplied artifact store must already be
+        bound to the target epoch. Old actors and accepted I/O must be drained;
+        no target actor may be admitted until the complete restore is published.
+        This method neither advances that store nor opens the admission fence.
+        """
         saved = self.verify(source, checksum)
         with self.transaction() as db:
+            from civ_agent.orchestration.communication_store import metadata as communication_metadata
+            from civ_agent.orchestration.communication_store import notifications
+
+            projection = self._checkpoint_notifications(db, saved)
+            restored_notices = []
+            for entry in projection.rows if projection is not None else []:
+                if notification_artifacts is None:
+                    raise StateConflict("CHECKPOINT_NOTIFICATION_ARTIFACTS_REQUIRED")
+                original = entry.notice
+                if original.scope.epoch == epoch:
+                    raise StateConflict("CHECKPOINT_NOTIFICATION_EPOCH_CONFLICT")
+                scope = type(original.scope).model_validate({**original.scope.model_dump(), "epoch": epoch})
+                event = json.loads(
+                    db.scalar(select(tables.events.c.body).where(tables.events.c.source == entry.source))
+                )
+                content = notification_artifacts.put(scope, event)
+                notice = EventNotice(
+                    scope=scope,
+                    id=scope.identity("native-event", str(original.native_id)),
+                    native_id=original.native_id,
+                    content=content,
+                )
+                pending = entry.notify and not entry.handled
+                restored_notices.append(
+                    {
+                        "id": notice.id,
+                        "scope": canonical(scope.model_dump()),
+                        "source": entry.source,
+                        "notice": canonical(notice.model_dump(mode="json")),
+                        "notify": int(entry.notify),
+                        "signaled": 0 if pending else int(entry.signaled),
+                        "handled": int(entry.handled),
+                        "job": None if pending else entry.job,
+                    }
+                )
+            if projection is not None:
+                communication_metadata.create_all(db)
+            if inspect(db).has_table(notifications.name):
+                db.execute(notifications.delete())
+                if restored_notices:
+                    db.execute(insert(notifications), restored_notices)
             attempts = {
                 job: count for job, count in db.execute(select(tables.reviews.c.job, tables.reviews.c.attempts))
             }

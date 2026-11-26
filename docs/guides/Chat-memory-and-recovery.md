@@ -191,9 +191,7 @@ under the new epoch.
 An internal projection, validation or persistence failure while preparing a
 command update returns `STATE_UPDATE_FAILED` and stops for inspection. The native
 receipt remains authoritative; do not repeat a confirmed action. Transport
-outages can instead require a fresh observation. The
-[historical recovery audit](../archive/reports/Recovery-and-benchmark-audit.md)
-records the implementation evidence.
+outages can instead require a fresh observation.
 
 ## Interruption and emergency restore
 

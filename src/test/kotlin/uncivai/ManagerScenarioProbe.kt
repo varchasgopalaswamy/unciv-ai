@@ -34,16 +34,46 @@ object ManagerScenarioProbe {
                     check(before.economy!!.committedGold == 480 && before.economy!!.availableGold == 20)
                     check(!player.isAtWar())
                     val capital = before.cities.single { it.name == player.cities.single { it.isOriginalCapital }.name }
-                    api.reject(token, TurnCommandRequest("blocked-worker", epoch, before.revision, TurnCommandKind.BUY_CONSTRUCTION,
-                        target = capital.handle, selection = "Worker", confirmAction = true), "OPTION_UNAVAILABLE")
+                    api.reject(
+                        token,
+                        TurnCommandRequest(
+                            "blocked-worker",
+                            epoch,
+                            before.revision,
+                            TurnCommandKind.BUY_CONSTRUCTION,
+                            target = capital.handle,
+                            selection = "Worker",
+                            confirmAction = true,
+                        ),
+                        "OPTION_UNAVAILABLE",
+                    )
                     val proposal = runtime.executor.communicationState.trades.proposals.values.single().last()
-                    val withdrawn = api.communicate(api.playerToken("Rome"), obj("op" to "trade_decide", "epoch" to epoch,
-                        "requestId" to "release-funds", "proposal" to proposal.proposal, "version" to proposal.version, "decision" to "withdraw"))
+                    val withdrawn = api.communicate(
+                        api.playerToken("Rome"),
+                        obj(
+                            "op" to "trade_decide",
+                            "epoch" to epoch,
+                            "requestId" to "release-funds",
+                            "proposal" to proposal.proposal,
+                            "version" to proposal.version,
+                            "decision" to "withdraw",
+                        ),
+                    )
                     check(withdrawn["error"] == null)
                     before = api.turn(token)
                     check(before.economy!!.committedGold == 0 && before.economy!!.availableGold == 500)
-                    api.execute(token, TurnCommandRequest("buy-worker", epoch, before.revision, TurnCommandKind.BUY_CONSTRUCTION,
-                        target = capital.handle, selection = "Worker", confirmAction = true))
+                    api.execute(
+                        token,
+                        TurnCommandRequest(
+                            "buy-worker",
+                            epoch,
+                            before.revision,
+                            TurnCommandKind.BUY_CONSTRUCTION,
+                            target = capital.handle,
+                            selection = "Worker",
+                            confirmAction = true,
+                        ),
+                    )
                     check(player.units.getCivUnits().any { it.name == "Worker" })
                 } else {
                     check(player.isAtWarWith(runtime.game.getCivilization("Greece")))
@@ -53,12 +83,28 @@ object ManagerScenarioProbe {
                     check(before.map.tiles.any { tile -> tile.visible && tile.units.any { it.civilization == "Greece" } })
                     val options = api.communicate(api.playerToken("Rome"), obj("op" to "trade_options", "epoch" to epoch, "partner" to "Greece"))
                     check(options["error"] == null)
-                    val offer = api.communicate(api.playerToken("Rome"), obj("op" to "trade_offer", "epoch" to epoch,
-                        "requestId" to "offer-peace", "partner" to "Greece",
-                        "give" to listOf(obj("type" to "Treaty", "name" to "Peace Treaty", "amount" to 1, "duration" to runtime.game.speed.peaceDealDuration)),
-                        "receive" to listOf(obj("type" to "Treaty", "name" to "Peace Treaty", "amount" to 1, "duration" to runtime.game.speed.peaceDealDuration))))["trade"]!!.jsonObject
-                    val accepted = api.communicate(api.playerToken("Greece"), obj("op" to "trade_decide", "epoch" to epoch,
-                        "requestId" to "accept-peace", "proposal" to offer["proposal"], "version" to offer["version"], "decision" to "accept"))
+                    val offer = api.communicate(
+                        api.playerToken("Rome"),
+                        obj(
+                            "op" to "trade_offer",
+                            "epoch" to epoch,
+                            "requestId" to "offer-peace",
+                            "partner" to "Greece",
+                            "give" to listOf(obj("type" to "Treaty", "name" to "Peace Treaty", "amount" to 1, "duration" to runtime.game.speed.peaceDealDuration)),
+                            "receive" to listOf(obj("type" to "Treaty", "name" to "Peace Treaty", "amount" to 1, "duration" to runtime.game.speed.peaceDealDuration)),
+                        ),
+                    )["trade"]!!.jsonObject
+                    val accepted = api.communicate(
+                        api.playerToken("Greece"),
+                        obj(
+                            "op" to "trade_decide",
+                            "epoch" to epoch,
+                            "requestId" to "accept-peace",
+                            "proposal" to offer["proposal"],
+                            "version" to offer["version"],
+                            "decision" to "accept",
+                        ),
+                    )
                     check(accepted["error"] == null && !player.isAtWar())
                 }
             }
@@ -74,31 +120,53 @@ object ManagerScenarioProbe {
         val epoch = runtime.executor.epoch
         val credential = api.playerToken("Rome")
         val roles = if (military) listOf("gameplay", "economy", "military") else listOf("gameplay", "economy")
-        fun claim(role: String) = api.communicate(credential, obj(
-            "op" to "job_claim", "epoch" to epoch, "job" to "probe-$role", "purpose" to role,
-            *if (role == "gameplay") emptyArray() else arrayOf("parentJob" to "probe-gameplay"),
-        ))
+        fun claim(role: String) = api.communicate(
+            credential,
+            obj(
+                "op" to "job_claim",
+                "epoch" to epoch,
+                "job" to "probe-$role",
+                "purpose" to role,
+                *if (role == "gameplay") emptyArray() else arrayOf("parentJob" to "probe-gameplay"),
+            ),
+        )
         for (role in roles) check(claim(role)["granted"] == JsonPrimitive(true))
         for (role in roles) {
             for ((index, phase) in listOf("RUNNING", "ROLE_FINISHED", "RUNNING", "WAITING_NEGOTIATION", "RUNNING").withIndex()) {
                 if (phase == "RUNNING") check(claim(role)["granted"] == JsonPrimitive(true))
-                val report = api.communicate(credential, obj(
-                    "op" to "job_report", "epoch" to epoch, "job" to "probe-$role",
-                    "usage" to obj("input_tokens" to 0, "cached_input_tokens" to 0, "output_tokens" to 0, "reasoning_output_tokens" to 0),
-                    "telemetry" to obj("sequence" to index + 1, "phase" to phase, "startedAtMs" to 1,
-                        "endedAtMs" to null, "elapsedMs" to index * 10, "negotiationWaitMs" to 0,
-                        "usageReported" to false, "usageComplete" to false, "model" to null,
-                        "reasoningEffort" to null, "modelRequests" to 0, "apiCalls" to obj()),
-                ))
+                val report = api.communicate(
+                    credential,
+                    obj(
+                        "op" to "job_report",
+                        "epoch" to epoch,
+                        "job" to "probe-$role",
+                        "usage" to obj("input_tokens" to 0, "cached_input_tokens" to 0, "output_tokens" to 0, "reasoning_output_tokens" to 0),
+                        "telemetry" to obj(
+                            "sequence" to index + 1, "phase" to phase, "startedAtMs" to 1,
+                            "endedAtMs" to null, "elapsedMs" to index * 10, "negotiationWaitMs" to 0,
+                            "usageReported" to false, "usageComplete" to false, "model" to null,
+                            "reasoningEffort" to null, "modelRequests" to 0, "apiCalls" to obj(),
+                        ),
+                    ),
+                )
                 check(report["granted"] == JsonPrimitive(true)) { report.toString() }
                 runtime.executor.accessGame {
                     check(runtime.executor.communicationState.jobs.getValue("probe-$role").computing == (phase == "RUNNING"))
                 }
             }
         }
-        for (role in roles.reversed()) check(api.communicate(credential, obj(
-            "op" to "job_release", "epoch" to epoch, "job" to "probe-$role",
-        ))["granted"] == JsonPrimitive(true))
+        for (role in roles.reversed()) {
+            check(
+                api.communicate(
+                    credential,
+                    obj(
+                        "op" to "job_release",
+                        "epoch" to epoch,
+                        "job" to "probe-$role",
+                    ),
+                )["granted"] == JsonPrimitive(true),
+            )
+        }
         check(runtime.executor.communicationState.invocations == roles.size.toLong())
     }
 }

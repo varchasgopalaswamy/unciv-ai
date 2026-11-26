@@ -7,17 +7,16 @@ import time
 
 from civ_agent.civilization_state import StateConflict
 from civ_agent.conversation_context import audience
-from civ_agent.decisions_policy import DecisionsSettings, routing_thresholds
+from civ_agent.decisions_policy import DecisionsSettings
 from civ_agent.diplomacy_decisions import (
     BATCH_SECONDS,
-    CHOICES,
     POLICY_VERSION,
     TIMEOUT_SECONDS,
     fallback,
-    parse_answer,
 )
 from civ_agent.diplomacy_store import DiplomacyStore, delivery_status, tuple_thread
 from civ_agent.memory_store import encode
+from civ_agent.routing_policy import protected_thread, validate_decision
 
 
 class DiplomacyRouting:
@@ -69,65 +68,12 @@ class DiplomacyRouting:
         return result
 
     def validate_decision(self, direction, result):
-        """Validate the effective broker action; diagnostic raw data cannot grant it."""
-        if (
-            not isinstance(result, dict)
-            or not isinstance(result.get("choice"), str)
-            or result.get("choice") not in CHOICES[direction]
-        ):
-            return fallback(direction, "malformed_broker_output")
-        policy = result.get("policyVersion")
-        if policy != POLICY_VERSION:
-            return {**result, **fallback(direction, "routing_policy_mismatch"), "overridden": True}
-        thresholds = routing_thresholds(self.settings, direction)
-        result = {**result, "thresholds": thresholds}
-        if result["choice"] != next(iter(CHOICES[direction])):
-            confidence = result.get("confidence")
-            choice = result["choice"]
-            assert isinstance(choice, str)
-            required = thresholds[choice]
-            if (
-                not isinstance(confidence, (int, float))
-                or isinstance(confidence, bool)
-                or not required <= confidence <= 1
-            ):
-                return {
-                    **result,
-                    **fallback(direction, "low_confidence"),
-                    "confidence": confidence,
-                    "overridden": True,
-                    "appliedThreshold": required,
-                    "lowConfidence": True,
-                }
-            result["appliedThreshold"] = required
-            # The binary confidence must belong to the question granting
-            # this action. Raw evidence can restrict a requested action;
-            # it never upgrades a broker's immediate response to batching.
-            parsed = parse_answer(
-                direction,
-                {"answers": result.get("rawAnswers")},
-                thresholds=thresholds,
-                policy_version=POLICY_VERSION,
-            )
-            if any(result.get(key) != parsed.get(key) for key in ("choice", "confidence", "questionBasis")):
-                return {**result, **fallback(direction, "malformed_broker_output"), "overridden": True}
-        return result
+        return validate_decision(direction, result, self.settings)
 
     def protected(self, thread, social):
-        # Public chat reaches all chat recipients. Any human in the audience
-        # makes the entire thread immediate, including messages authored by AI.
-        members = set(social.get("chatRecipients", social.get("channels", []))) if thread[0] else set(thread[1])
-        if members & (self.human_players | set(social.get("humanPlayers", []))):
-            return True
-        if not social.get("routingMetadataAvailable", False):
-            return True  # Missing metadata cannot establish that a negotiation is absent.
-        members.discard(self.gateway.memory.civilization)
-        for proposal in social.get("trades", []):
-            participants = set(proposal.get("participants", [])) | {proposal.get("author"), proposal.get("partner")}
-            participants.discard(None)
-            if proposal.get("status", "PENDING") == "PENDING" and participants & members:
-                return True
-        return False
+        return protected_thread(
+            thread, social, player=self.gateway.memory.civilization, human_players=self.human_players
+        )
 
     async def expire_incoming(self, epoch):
         """A backlog of separate threads cannot extend the oldest wait budget."""

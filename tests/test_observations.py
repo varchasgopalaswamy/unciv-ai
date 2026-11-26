@@ -19,9 +19,8 @@ from civ_agent.observations import (
 from civ_agent.proposal_gateway import ProposalGateway, public_result
 from civ_agent.protocol import JsonObject
 from civ_agent.service_io import ServiceIO
+from tests.domain_fixtures import Host, create, current, strategy
 from tests.memory_helpers import stored_records
-from tests.test_proposal_gateway import Host
-from tests.test_structured_memory import create, current, strategy
 from tests.test_tactical_review import reviewed
 
 

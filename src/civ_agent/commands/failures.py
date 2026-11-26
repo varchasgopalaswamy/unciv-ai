@@ -2,6 +2,7 @@
 
 import argparse
 import json
+import sqlite3
 import sys
 import time
 from pathlib import Path
@@ -27,7 +28,7 @@ def parser(*, add_help=True):
     result.add_argument("--code", help="Exact error code")
     result.add_argument("--since-turn", type=int, help="Include calls from this native turn onward")
     result.add_argument("--include-internal", action="store_true", help="Also show startup and host reads")
-    result.add_argument("--id", help="Inspect one failure with its full response and nearby calls")
+    result.add_argument("--id", help="Revalidate one native failure and inspect its exact recorded arguments/response")
     result.add_argument("--json", action="store_true", help="Emit machine-readable groups and failure evidence")
     result.add_argument("--output-dir", type=Path, help="Write report.json and report.txt atomically here")
     result.add_argument(
@@ -63,7 +64,7 @@ def run(args):
                 print(json.dumps(report, indent=2) if args.json else rendered, flush=True)
             else:
                 print(
-                    f"{report['generatedAt']}: {len(report['failures'])} issues; {len(report['unavailable'])} unreadable journals",
+                    f"{report['generatedAt']}: {len(report['failures'])} issues; {len(report['unavailable'])} unavailable native records",
                     flush=True,
                 )
             if not args.watch:
@@ -71,6 +72,6 @@ def run(args):
             time.sleep(args.watch)
     except KeyboardInterrupt:
         return 0
-    except (OSError, ValueError, KeyError, TypeError, SQLAlchemyError) as error:
-        print(f"Cannot read tool failures: {error}", file=sys.stderr)
+    except (OSError, ValueError, KeyError, TypeError, sqlite3.Error, SQLAlchemyError) as error:
+        print(f"Cannot read native tool failures ({type(error).__name__}).", file=sys.stderr)
         return 2

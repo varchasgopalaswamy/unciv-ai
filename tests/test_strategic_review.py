@@ -15,8 +15,7 @@ from civ_agent.review_store import ReviewStore
 from civ_agent.service_io import ServiceIO
 from civ_agent.startup_context import prepare_startup, startup_prompt
 from civ_agent.strategic_review import advice_schema, frozen_read, parse_advice, review_cities, review_due, review_facts
-from tests.test_agent_service import StartupHost
-from tests.test_structured_memory import setup
+from tests.domain_fixtures import StartupHost, setup
 
 VICTORIES = ["Scientific", "Cultural", "Domination", "Diplomatic", "Time"]
 

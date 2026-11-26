@@ -27,6 +27,8 @@ data class WaterImprovementOutcome(
     val resource: String,
     val availableResourceBefore: Int,
     val availableResourceAfter: Int,
+    val movementBefore: String? = null,
+    val movementAfter: String? = null,
 )
 
 internal fun observeWaterImprovement(player: Civilization, unit: MapUnit, active: Boolean): WaterImprovement? = PlayerWaterImprovementOperations(player).option(unit)?.let {
@@ -45,5 +47,7 @@ internal fun waterImprovementOutcome(request: TurnCommandRequest, before: Player
         resource,
         before.economy?.resources?.singleOrNull { it.name == resource }?.available ?: 0,
         after.economy?.resources?.singleOrNull { it.name == resource }?.available ?: 0,
+        unit.movement,
+        after.map.units.singleOrNull { it.handle == unit.handle }?.movement,
     )
 }

@@ -13,8 +13,13 @@ object MilitaryCapacityProbe {
             val session = PlayerHost(runtime).bindPlayer("Rome")
             check(executor.accessGame { it.getCivilization("Rome").getCivsAtWarWith().none { civ -> !civ.isBarbarian } })
             fun claim(id: String, purpose: String, parent: String? = null) = session.communication(
-                obj("op" to "job_claim", "epoch" to executor.epoch, "job" to id, "purpose" to purpose,
-                    *if (parent == null) emptyArray() else arrayOf("parentJob" to parent)),
+                obj(
+                    "op" to "job_claim",
+                    "epoch" to executor.epoch,
+                    "job" to id,
+                    "purpose" to purpose,
+                    *if (parent == null) emptyArray() else arrayOf("parentJob" to parent),
+                ),
             )
             val state = executor.communicationState
             state.maxConcurrent = 2

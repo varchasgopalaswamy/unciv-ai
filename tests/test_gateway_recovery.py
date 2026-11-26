@@ -1,79 +1,13 @@
 import asyncio
 import json
-from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 
-from civ_agent.chat_runtime import ChatRuntime
 from civ_agent.civilization_state import CivilizationState, StateConflict
 from civ_agent.proposal_gateway import ProposalGateway
 from civ_agent.service_io import ServiceIO
-from tests.test_proposal_gateway import Host
-from tests.test_structured_memory import current, replacement
-
-
-@pytest.mark.parametrize("enacted", [False, True])
-def test_lost_response_is_reconciled_without_executing_another_action(tmp_path, enacted):
-    async def run():
-        memory = CivilizationState(tmp_path / "private", "Rome")
-        io = ServiceIO()
-        gateway = ProposalGateway(memory, io, tmp_path / "workspace")
-        host = Host()
-        original = host.tool
-        interrupted = False
-
-        async def unreliable(name, args):
-            nonlocal interrupted
-            payload = args
-            if name == "player_receipt":
-                return host.seen.get(payload["requestId"], {"error": "NOT_ENACTED"})
-            if name == "player_command" and not interrupted:
-                interrupted = True
-                if enacted:
-                    await original(name, payload)
-                raise TimeoutError("Response lost")
-            return await original(name, payload)
-
-        host.tool = unreliable
-        try:
-            job = await gateway.open("old", "gameplay", "g1", host, {}, 0)
-            await gateway.call(job, "player_turn", {}, "observe")
-            await gateway.call(job, "unit_details", {"target": "unit1"}, "inspect")
-            with pytest.raises(TimeoutError):
-                await gateway.call(
-                    job,
-                    "player_command",
-                    {"kind": "MOVE_UNIT", "target": "unit1", "destination": {"x": 1, "y": 0}},
-                    "action",
-                )
-            with pytest.raises(StateConflict):
-                await gateway.call(
-                    job,
-                    "player_command",
-                    {"kind": "MOVE_UNIT", "target": "unit1", "destination": {"x": 1, "y": 0}},
-                    "new-id",
-                )
-            pending = memory.pending()[0]
-            restarted = CivilizationState(tmp_path / "private", "Rome")
-            fresh_gateway = ProposalGateway(restarted, io, tmp_path / "restarted-workspace")
-            runtime = ChatRuntime(SimpleNamespace(io=io, memory=restarted, gateway=fresh_gateway))
-            runtime.connection, runtime.epoch = host, "g1"
-            await runtime.reconcile()
-            assert bool(restarted.pending()) == (not enacted)
-            assert len(host.executed) == int(enacted)
-            row = restarted.requests_for_job("old")[0]
-            assert row["id"] == pending["id"]
-            if enacted:
-                assert json.loads(row["result"])["done"]
-            else:
-                assert row["result"] is None
-                with pytest.raises(StateConflict, match="CHECKPOINT_REQUEST_UNSETTLED"):
-                    restarted.backup(tmp_path / "unsettled.json")
-        finally:
-            await io.close()
-
-    asyncio.run(run())
+from tests.domain_fixtures import Host, current, replacement
 
 
 def test_receipt_survives_interruption_between_host_commit_and_mcp_response_cache(tmp_path):

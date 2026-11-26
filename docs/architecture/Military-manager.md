@@ -104,6 +104,11 @@ native view rejects a stale answer. The last full review, execution baseline,
 planning baseline and triage state live in checkpointed civilization memory.
 Finishing a military pass verifies the latest facts against its delivered view;
 unseen changes require a fresh read before completion.
+Repeated attention during an active pass preserves its delivered comparison
+basis when coordination is unchanged. New coordination still requires review.
+Completion privately checks the latest relevant facts and review basis;
+an unrelated revision change alone does not require a new read. A new pass still
+requires its own observation. Private checks grant no action or inspection credit.
 
 The overview's `militaryCompletion` reports how many exposed units or unused
 native attack, capture and bombardment opportunities remain. `military_review`

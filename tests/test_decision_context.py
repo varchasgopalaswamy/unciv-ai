@@ -10,9 +10,9 @@ from civ_agent.civilization_state import CivilizationState
 from civ_agent.memory_records import Strategy
 from civ_agent.observations import overview
 from civ_agent.review_store import ReviewStore
+from tests.domain_fixtures import create, current, replacement, strategy
 from tests.test_construction_estimates import snapshot
 from tests.test_strategic_review import assessment
-from tests.test_structured_memory import create, current, replacement, strategy
 
 
 def decision(**changes):
@@ -163,10 +163,11 @@ def test_unread_snapshot_cannot_supply_a_choice_baseline_or_communication_overwr
 def test_choice_schema_bounds_structure_without_requiring_a_playstyle():
     Strategy.model_validate(strategy(decisions=[decision(investment="Continue Science conversion")]))
     Strategy.model_validate(strategy(decisions=[]))
+    result = Strategy.model_validate(strategy(decisions=[decision(id=str(i)) for i in range(4)]))
+    assert len(result.decisions) == 4
     for decisions in (
         [decision(), decision()],
         [decision(reviewAfterTurns=0)],
-        [decision(id=str(i)) for i in range(4)],
     ):
         with pytest.raises(ValidationError):
             Strategy.model_validate(strategy(decisions=decisions))

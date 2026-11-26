@@ -79,7 +79,7 @@ private class HostedDesktopGame(
     }
 
     private fun startGame() {
-        val store = options.resumeCheckpoint?.let(::CheckpointStore)
+        val store = options.resumeCheckpoint?.let { CheckpointStore(it, recordReplay = options.recordReplay) }
         try {
             val checkpoint = store?.read()
             val human = checkNotNull(options.human)
@@ -110,7 +110,7 @@ private class HostedDesktopGame(
                 executor.communicationState.humanPlayers.add(human)
                 options.tradeCounteroffers?.let { executor.communicationState.trades.counterofferLimit = it }
                 options.tradeTimeoutSeconds?.let { executor.communicationState.trades.timeoutSeconds = it }
-                executor.enableCheckpoints(checkNotNull(options.checkpoint))
+                executor.enableCheckpoints(checkNotNull(options.checkpoint), options.recordReplay)
             }
             val operator = OperatorControl(executor)
             session.operator = operator

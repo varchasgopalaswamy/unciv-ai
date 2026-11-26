@@ -8,7 +8,7 @@ from sqlalchemy import select
 from civ_agent import memory_schema as tables
 from civ_agent.civilization_state import CivilizationState, StateConflict
 from civ_agent.memory_records import MemoryUpdate
-from tests.test_structured_memory import create, current, setup, strategy
+from tests.domain_fixtures import create, current, setup, strategy
 
 
 def test_repeated_notebook_conflicts_preserve_independent_edits_and_do_not_halt(tmp_path):

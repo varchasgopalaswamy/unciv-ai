@@ -106,9 +106,11 @@ object NativeAdviceProbe {
         val game = runtime.game
         // This fixture clears serialized river flags directly. Use the native
         // setter to clear cached river adjacency before comparing a saved copy.
-        for (tile in game.tileMap.values) for (neighbor in tile.neighbors) {
-            tile.setConnectedByRiver(neighbor, true)
-            tile.setConnectedByRiver(neighbor, false)
+        for (tile in game.tileMap.values) {
+            for (neighbor in tile.neighbors) {
+                tile.setConnectedByRiver(neighbor, true)
+                tile.setConnectedByRiver(neighbor, false)
+            }
         }
         val player = game.getCivilization("Rome")
         val city = player.cities.first()

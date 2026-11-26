@@ -32,8 +32,12 @@ import java.security.MessageDigest
 object DominationPositionFixtures {
     private val json = Json { prettyPrint = true }
     private val cases = listOf(
-        "greece-build-up", "persia-ready", "persia-strong-defense", "persia-opportunity",
-        "greece-damaged-capital", "greece-hill-fortress",
+        "greece-build-up",
+        "persia-ready",
+        "persia-strong-defense",
+        "persia-opportunity",
+        "greece-damaged-capital",
+        "greece-hill-fortress",
     )
 
     @JvmStatic fun main(args: Array<String>) {

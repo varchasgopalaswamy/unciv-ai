@@ -1,10 +1,11 @@
 """Strict schemas for data owned by this service, not extensible upstream events."""
 
+import json
 from typing import Annotated
 
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, ValidationError
 
-from civ_agent.agent_settings import valid_setting
+from civ_agent.player_settings import valid_setting
 from civ_agent.protocol import JsonObject
 
 
@@ -158,7 +159,41 @@ def argument_feedback(error: ValidationError, schema: JsonObject, prefix: list |
         else:
             continue
         limits.append(limit)
-    return {"invalidFields": issues, "limits": limits, "instruction": " ".join(instructions)}
+    allowed, required = [], []
+
+    def resolve(shape):
+        if "$ref" in shape:
+            return resolve(schema.get("$defs", {}).get(shape["$ref"].rsplit("/", 1)[-1], {}))
+        return shape
+
+    for issue in issues:
+        shape = schema
+        for field in issue["fields"]:
+            shape = resolve(shape)
+            variants = shape.get("anyOf", shape.get("oneOf", []))
+            if variants:
+                shape = next((resolve(v) for v in variants if field in resolve(v).get("properties", {})), {})
+            shape = shape.get("items", {}) if isinstance(field, int) else shape.get("properties", {}).get(field, {})
+        shape = resolve(shape)
+        fields = [*(prefix or []), *issue["fields"]]
+        options = shape.get("enum") or shape.get("propertyNames", {}).get("enum")
+        if options:
+            entry = {"fields": fields, "values": options}
+            if entry not in allowed:
+                allowed.append(entry)
+            instructions.append(
+                f"{'.'.join(map(str, fields))} accepts only these values or keys: {json.dumps(options)}."
+            )
+        if issue["code"] == "missing":
+            required.append(fields)
+            instructions.append(f"Supply required field {'.'.join(map(str, fields))}.")
+    return {
+        "invalidFields": issues,
+        "limits": limits,
+        "allowedValues": allowed,
+        "requiredFields": required,
+        "instruction": " ".join(instructions),
+    }
 
 
 def start_error(error: ValidationError) -> str:

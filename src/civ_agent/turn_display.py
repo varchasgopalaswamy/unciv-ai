@@ -27,6 +27,50 @@ def api_calls(calls):
     return total
 
 
+def api_origin_counts(calls):
+    """Origins partition actual game-tool calls; older unlabelled calls stay unknown."""
+    total = api_calls(calls)
+    if total is None:
+        return None
+    counts = {}
+    for origin in ("agent", "background_poll", "coordinator"):
+        row = calls.get("origin:" + origin, {})
+        value = row.get("calls", 0) if isinstance(row, dict) else None
+        if type(value) is not int or value < 0:
+            return None
+        counts[origin] = value
+    known = sum(counts.values())
+    if known > total:
+        return None
+    return {**counts, "unknown": total - known}
+
+
+def api_origins_text(calls):
+    counts = api_origin_counts(calls)
+    if counts is None:
+        return "API origins unavailable"
+    return "API origins: " + " · ".join(
+        label + " " + number(counts[key])
+        for key, label in (
+            ("agent", "agent"),
+            ("background_poll", "background"),
+            ("coordinator", "coordinator"),
+            ("unknown", "unknown"),
+        )
+    )
+
+
+def context_usage_text(value):
+    if not isinstance(value, dict):
+        return None
+    used, window = value.get("used_tokens"), value.get("window_tokens")
+    if type(used) is not int or used < 0 or type(window) is not int or window <= 0:
+        return None
+    return f"Context {used:,}/{window:,} tokens ({used / window:.0%})" + (
+        " · estimated window" if value.get("resolved") is False else ""
+    )
+
+
 def memory_edits_text(counts):
     if not isinstance(counts, dict):
         return "Memory edits unavailable"
@@ -81,6 +125,8 @@ def display_turn(renderer, state_directory, flight, status):
     total = api_calls(metrics.get("hostCalls")) if metrics else None
     requests = metrics.get("modelRequests") if metrics else status.get("modelRequests")
     renderer.line("Calls", f"Game API {number(total)} · Model requests {number(requests)}", civilization=civilization)
+    if metrics:
+        renderer.line("API", api_origins_text(metrics.get("hostCalls")), civilization=civilization)
     renderer.line("Memory", memory_edits_text((metrics or {}).get("memoryEdits")), civilization=civilization)
     if available and isinstance(usage, dict):
         renderer.line(

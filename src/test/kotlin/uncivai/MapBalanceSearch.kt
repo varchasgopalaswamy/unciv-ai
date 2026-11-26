@@ -108,16 +108,21 @@ object MapBalanceSearch {
         val seedPairs = args.getOrNull(6)?.let { json.decodeFromString<List<SeedPair>>(Files.readString(Path.of(it))) }
         require(types.all { it == MapType.pangaea || it == MapType.twoContinents })
         Files.createDirectories(root)
-        Files.writeString(root.resolve("settings.json"), json.encodeToString(obj(
-            "civilizations" to roster, "mapSize" to "Medium", "cityStates" to 12,
-            "difficulty" to "Prince", "speed" to "Standard", "startingEra" to "Ancient era",
-            "baseRuleset" to "Civ V - Vanilla", "candidateCount" to (seedPairs?.size ?: types.size * count),
-            "firstMapSeed" to firstMapSeed, "placementStreamSeed" to streamSeed,
-            "fixedStartingPositionSeed" to fixedPlacementSeed, "seedPairsFile" to args.getOrNull(6),
-            "engineRevision" to System.getProperty("uncivai.engineRevision"),
-            "engineWorkingTree" to "Uses the selected checkout, including local changes; record its diff for exact reproduction.",
-            "method" to "Native start quality; independent top-six food/production potentials within radius 2; resources within radius 3/5/8; walkable expansion within 10 steps; neighbor spacing; city-state access; fresh water; natural-wonder access and ancient-ruin races. Heuristic comparison, not equal win probabilities.",
-        )))
+        Files.writeString(
+            root.resolve("settings.json"),
+            json.encodeToString(
+                obj(
+                    "civilizations" to roster, "mapSize" to "Medium", "cityStates" to 12,
+                    "difficulty" to "Prince", "speed" to "Standard", "startingEra" to "Ancient era",
+                    "baseRuleset" to "Civ V - Vanilla", "candidateCount" to (seedPairs?.size ?: types.size * count),
+                    "firstMapSeed" to firstMapSeed, "placementStreamSeed" to streamSeed,
+                    "fixedStartingPositionSeed" to fixedPlacementSeed, "seedPairsFile" to args.getOrNull(6),
+                    "engineRevision" to System.getProperty("uncivai.engineRevision"),
+                    "engineWorkingTree" to "Uses the selected checkout, including local changes; record its diff for exact reproduction.",
+                    "method" to "Native start quality; independent top-six food/production potentials within radius 2; resources within radius 3/5/8; walkable expansion within 10 steps; neighbor spacing; city-state access; fresh water; natural-wonder access and ancient-ruin races. Heuristic comparison, not equal win probabilities.",
+                ),
+            ),
+        )
         HeadlessRuntime.createVanillaGame(root.resolve("runtime"), cityStates = 12, agentPlayers = roster).use {
             for (type in types) {
                 val random = Random(streamSeed)
@@ -128,9 +133,18 @@ object MapBalanceSearch {
                         val mapSeed = pairs?.get(index)?.mapSeed ?: if (index == 0 && firstMapSeed == 1L) 19238721L else firstMapSeed + index
                         val placementSeed = pairs?.get(index)?.startingPositionSeed ?: fixedPlacementSeed ?: if (index == 0 && firstMapSeed == 1L) 20261013L else random.nextLong(1L, Long.MAX_VALUE)
                         fun reject(reason: String) {
-                            Files.writeString(root.resolve("${slug(type)}-rejected.jsonl"), compactJson.encodeToString(obj(
-                                "mapSeed" to mapSeed, "startingPositionSeed" to placementSeed, "reason" to reason,
-                            )) + "\n", StandardOpenOption.CREATE, StandardOpenOption.APPEND)
+                            Files.writeString(
+                                root.resolve("${slug(type)}-rejected.jsonl"),
+                                compactJson.encodeToString(
+                                    obj(
+                                        "mapSeed" to mapSeed,
+                                        "startingPositionSeed" to placementSeed,
+                                        "reason" to reason,
+                                    ),
+                                ) + "\n",
+                                StandardOpenOption.CREATE,
+                                StandardOpenOption.APPEND,
+                            )
                         }
                         val game = try {
                             create(mapSeed, placementSeed, type)
@@ -140,7 +154,8 @@ object MapBalanceSearch {
                         }
                         if (game.civilizations.count { it.isCityState } != 12 || game.civilizations
                                 .filter { !it.isBarbarian && !it.isSpectator() }
-                                .any { civ -> civ.units.getCivUnits().count { it.baseUnit.isCityFounder() } != 1 }) {
+                                .any { civ -> civ.units.getCivUnits().count { it.baseUnit.isCityFounder() } != 1 }
+                        ) {
                             reject("Native generation did not place exactly one starting settler for each major and all twelve city-states")
                             return@repeat
                         }
@@ -163,12 +178,14 @@ object MapBalanceSearch {
         }
     }
 
-    private fun create(mapSeed: Long, placementSeed: Long, type: String, native: String? = null): GameInfo =
-        VanillaGameSetup.create(
-            mapSeed, cityStates = 12, builtInAI = listOfNotNull(native),
-            agentPlayers = if (native == null) roster else roster.filter { it != native }.reversed(), size = MapSize.Medium,
-            options = VanillaOptions(mapType = type, speed = "Standard", startingPositionSeed = placementSeed),
-        ).also { UncivGame.Current.gameInfo = it }
+    private fun create(mapSeed: Long, placementSeed: Long, type: String, native: String? = null): GameInfo = VanillaGameSetup.create(
+        mapSeed,
+        cityStates = 12,
+        builtInAI = listOfNotNull(native),
+        agentPlayers = if (native == null) roster else roster.filter { it != native }.reversed(),
+        size = MapSize.Medium,
+        options = VanillaOptions(mapType = type, speed = "Standard", startingPositionSeed = placementSeed),
+    ).also { UncivGame.Current.gameInfo = it }
 
     private fun landDistances(start: Tile): Map<Tile, Int> {
         val distances = hashMapOf(start to 0)
@@ -186,8 +203,7 @@ object MapBalanceSearch {
 
     internal fun evaluate(game: GameInfo, majorStartTiles: Map<String, Tile>? = null, minorStartTiles: List<Tile>? = null): Candidate {
         val majors = roster.map(game::getCivilization)
-        fun start(civ: com.unciv.logic.civilization.Civilization) =
-            civ.units.getCivUnits().single { it.baseUnit.isCityFounder() }.getTile()
+        fun start(civ: com.unciv.logic.civilization.Civilization) = civ.units.getCivUnits().single { it.baseUnit.isCityFounder() }.getTile()
         val centers = majors.map { majorStartTiles?.getValue(it.civID) ?: start(it) }
         val minorCenters = minorStartTiles ?: game.civilizations.filter { it.isCityState }.map(::start)
         val distances = centers.map(::landDistances)
@@ -201,10 +217,13 @@ object MapBalanceSearch {
             for (owner in owners) ruinShares[owner] += 1.0 / owners.size
         }
         val wonders = game.tileMap.values.filter { it.isNaturalWonder() }.groupBy { it.naturalWonder!! }.map { (name, tiles) ->
-            Wonder(name,
+            Wonder(
+                name,
                 roster.indices.associate { index -> roster[index] to tiles.minOf { centers[index].aerialDistanceTo(it) } },
-                roster.indices.associate { index -> roster[index] to tiles.flatMap { it.neighbors.toList() }
-                    .mapNotNull { distances[index][it] }.minOrNull() },
+                roster.indices.associate { index ->
+                    roster[index] to tiles.flatMap { it.neighbors.toList() }
+                        .mapNotNull { distances[index][it] }.minOrNull()
+                },
             )
         }
         // Avoid first-discovery gold and permanent healing swings entirely. Also reject close
@@ -213,8 +232,10 @@ object MapBalanceSearch {
             val access = wonder.landAccessByCivilization.values.filterNotNull().sorted()
             wonder.name in listOf("El Dorado", "Fountain of Youth") ||
                 wonder.aerialDistanceByCivilization.values.min() < 5 ||
-                (access.firstOrNull()?.let { it <= 8 } == true &&
-                    (access.getOrNull(1) ?: 999) - access.first() >= 4)
+                (
+                    access.firstOrNull()?.let { it <= 8 } == true &&
+                        (access.getOrNull(1) ?: 999) - access.first() >= 4
+                    )
         }
         val land = game.tileMap.values.filter { it.isLand && !it.isImpassible() }
         val territory = DoubleArray(majors.size)
@@ -288,19 +309,22 @@ object MapBalanceSearch {
             (if (ruinSafe) 0.0 else 2.0) +
             (if (comparable) 0.0 else 5.0) +
             if (validGeography) 0.0 else 10.0
-        return Candidate(game.tileMap.mapParameters.type, game.tileMap.mapParameters.seed,
+        return Candidate(
+            game.tileMap.mapParameters.type, game.tileMap.mapParameters.seed,
             checkNotNull(game.gameParameters.startingPositionSeed), loss, validGeography, wonderSafe, ruinSafe, comparable, wonders, split,
-            scoreSpread, foodSpread, prodSpread, landSpread, fertilitySpread, starts)
+            scoreSpread, foodSpread, prodSpread, landSpread, fertilitySpread, starts,
+        )
     }
 
-    private fun spread(values: List<Double>): Double =
-        (values.max() - values.min()) / max(1.0, values.average())
+    private fun spread(values: List<Double>): Double = (values.max() - values.min()) / max(1.0, values.average())
 
     private fun slug(type: String) = type.lowercase().replace(' ', '-')
 
     private fun mapTiles(game: GameInfo) = game.tileMap.values.map { tile ->
-        MapTile(tile.position.x, tile.position.y, tile.baseTerrain, tile.terrainFeatures.toList(),
-            tile.resource, tile.naturalWonder, tile.isAdjacentToRiver(), tile.getContinent(), tile.improvement)
+        MapTile(
+            tile.position.x, tile.position.y, tile.baseTerrain, tile.terrainFeatures.toList(),
+            tile.resource, tile.naturalWonder, tile.isAdjacentToRiver(), tile.getContinent(), tile.improvement,
+        )
     }
 
     private fun verifyControllers(root: Path, candidate: Candidate) {
@@ -314,11 +338,19 @@ object MapBalanceSearch {
                 "Starting positions changed when $native was assigned native AI"
             }
         }
-        Files.writeString(root.resolve("${slug(candidate.mapType)}-verification.json"), json.encodeToString(obj(
-            "mapSeed" to candidate.mapSeed, "startingPositionSeed" to candidate.startingPositionSeed,
-            "deterministicRegeneration" to true, "nativeCivilizationsChecked" to roster,
-            "mapAndCivilizationStartsPreserved" to true, "externalTurnOrderReversed" to true,
-        )))
+        Files.writeString(
+            root.resolve("${slug(candidate.mapType)}-verification.json"),
+            json.encodeToString(
+                obj(
+                    "mapSeed" to candidate.mapSeed,
+                    "startingPositionSeed" to candidate.startingPositionSeed,
+                    "deterministicRegeneration" to true,
+                    "nativeCivilizationsChecked" to roster,
+                    "mapAndCivilizationStartsPreserved" to true,
+                    "externalTurnOrderReversed" to true,
+                ),
+            ),
+        )
     }
 
     private fun export(root: Path, game: GameInfo, candidate: Candidate) {
@@ -326,12 +358,20 @@ object MapBalanceSearch {
         Files.writeString(root.resolve("$stem-best.json"), json.encodeToString(candidate))
         val mapJson = json.encodeToString(mapTiles(game))
         Files.writeString(root.resolve("$stem-tiles.json"), mapJson)
-        Files.writeString(root.resolve("$stem-map.sha256"), MessageDigest.getInstance("SHA-256")
-            .digest(mapJson.toByteArray()).joinToString("") { "%02x".format(it) } + "\n")
+        Files.writeString(
+            root.resolve("$stem-map.sha256"),
+            MessageDigest.getInstance("SHA-256")
+                .digest(mapJson.toByteArray()).joinToString("") { "%02x".format(it) } + "\n",
+        )
         Files.writeString(root.resolve("$stem-game.json"), UncivFiles.gameInfoToString(game, forceZip = false))
-        Files.writeString(root.resolve("$stem-city-states.json"), json.encodeToString(game.civilizations.filter { it.isCityState }.map { civ ->
-            val tile = civ.units.getCivUnits().single { it.baseUnit.isCityFounder() }.getTile()
-            obj("civilization" to civ.civID, "x" to tile.position.x, "y" to tile.position.y)
-        }))
+        Files.writeString(
+            root.resolve("$stem-city-states.json"),
+            json.encodeToString(
+                game.civilizations.filter { it.isCityState }.map { civ ->
+                    val tile = civ.units.getCivUnits().single { it.baseUnit.isCityFounder() }.getTile()
+                    obj("civilization" to civ.civID, "x" to tile.position.x, "y" to tile.position.y)
+                },
+            ),
+        )
     }
 }

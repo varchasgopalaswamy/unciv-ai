@@ -6,7 +6,7 @@ import pytest
 from pydantic import ValidationError
 
 from civ_agent.memory_records import MemoryUpdate, MemoryUpdateResult, memory_argument_error
-from tests.test_structured_memory import create, current, setup
+from tests.domain_fixtures import create, current, setup
 
 
 def belief(**changes):

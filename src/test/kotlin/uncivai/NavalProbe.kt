@@ -26,6 +26,7 @@ object NavalProbe {
             when (args[1]) {
                 "movement" -> movement(root)
                 "naval" -> naval(root)
+                "samurai" -> samurai(root)
                 "privacy" -> privacy(root)
                 "recovery" -> recovery(root)
                 "handoff" -> handoff(root)
@@ -161,6 +162,56 @@ object NavalProbe {
             check(ready.map.units.single { it.handle == settler.handle }.canFoundCity)
             api.execute(france, request(ready, TurnCommandKind.FOUND_CITY, settler.handle))
             check(api.turn(france).cities.size == 2)
+        }
+    }
+
+    private fun samurai(root: Path) {
+        val checkpoint = root.resolve("checkpoint.json")
+        lateinit var command: TurnCommandRequest
+        lateinit var receipt: TurnCommandReceipt
+        NavalFixtures.create(root.resolve("initial")).use { runtime ->
+            val unit = NavalFixtures.add(runtime, "Rome", "Samurai", -7, 0, "Fishing guard")
+            unit.currentMovement = 2f
+            runtime.executor.enableCheckpoints(checkpoint)
+            GameplayTestApi(runtime, root.resolve("tls"), NavalFixtures.tokens).use { api ->
+                val token = api.playerToken("Rome")
+                val native = json().toJson(runtime.game)
+                var turn = api.turn(token)
+                var shown = turn.map.units.single { it.name == "Samurai" }
+                check(shown.waterImprovement!!.available && !shown.waterImprovement!!.consumesUnit)
+                repeat(3) { check(api.turn(token).map.units.single { it.handle == shown.handle }.waterImprovement == shown.waterImprovement) }
+                check(json().toJson(runtime.game) == native)
+                val stale = request(turn, TurnCommandKind.CREATE_WATER_IMPROVEMENT, shown.handle, "Fishing Boats")
+                unit.currentMovement = 0f
+                api.reject(token, stale, "STALE_REVISION")
+                turn = api.turn(token)
+                check(!turn.map.units.single { it.handle == shown.handle }.waterImprovement!!.available)
+                api.reject(token, request(turn, stale.kind, shown.handle, "Fishing Boats"), "OPTION_UNAVAILABLE")
+                unit.currentMovement = 2f
+                turn = api.turn(token)
+                shown = turn.map.units.single { it.name == "Samurai" }
+                api.reject(token, request(turn, stale.kind, shown.handle, "Offshore Platform"), "OPTION_UNAVAILABLE")
+                api.reject(token, request(turn, stale.kind, "unit999999", "Fishing Boats"), "UNIT_UNAVAILABLE")
+                command = request(turn, stale.kind, shown.handle, shown.waterImprovement!!.name)
+                receipt = api.execute(token, command)
+                val outcome = receipt.waterImprovement!!
+                check(!outcome.unitConsumed && !unit.isDestroyed)
+                check(outcome.improvementAfter == "Fishing Boats")
+                check(outcome.movementBefore == shown.movement && outcome.movementAfter == api.turn(token).map.units.single { it.handle == shown.handle }.movement)
+                check(unit.currentMovement == 1f)
+                check(receipt.actionSummary.contains("builder retained"))
+                check(api.execute(token, command) == receipt && unit.currentMovement == 1f)
+                turn = api.turn(token)
+                api.reject(token, request(turn, stale.kind, shown.handle, "Fishing Boats"), "OPTION_UNAVAILABLE")
+                check(unit.currentMovement == 1f)
+            }
+        }
+        HeadlessRuntime.loadCheckpoint(checkpoint, root.resolve("restored")).use { runtime ->
+            GameplayTestApi(runtime, root.resolve("restored-tls"), NavalFixtures.tokens).use { api ->
+                check(api.execute(api.playerToken("Rome"), command) == receipt)
+                val unit = runtime.game.getCivilization("Rome").units.getCivUnits().single { it.name == "Samurai" }
+                check(!unit.isDestroyed && unit.currentMovement == 1f && unit.currentTile.improvement == "Fishing Boats")
+            }
         }
     }
 

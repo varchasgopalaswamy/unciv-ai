@@ -13,8 +13,7 @@ from civ_agent.protocol import JsonObject
 from civ_agent.service_io import ServiceIO
 from civ_agent.startup_context import prepare_startup, startup_prompt
 from civ_agent.state_updates import apply_overview_update
-from civ_agent.turn_archive import TurnArchive
-from tests.test_agent_service import StartupHost
+from tests.domain_fixtures import StartupHost
 
 
 def content(kind, paragraphs, gameplay=None) -> JsonObject:
@@ -601,25 +600,69 @@ def test_startup_deltas_details_receipts_replays_and_historical_evidence_share_p
     asyncio.run(run())
 
 
-def test_workspace_archives_project_native_data_and_keep_the_original_audit(tmp_path):
-    raw = {"alerts": [alert(), captured_settler()], "diplomacy": [relation()]}
-    reply = {"structuredContent": raw, "content": [{"type": "text", "text": json.dumps(raw)}]}
-    before = copy.deepcopy(reply)
-    event = {
-        "sequence": 0,
-        "time": "2026-09-21T20:00:00Z",
-        "kind": "tool_result",
-        "data": {"itemId": "read", "type": "mcpToolCall", "status": "completed", "result": reply},
-    }
-    archive = TurnArchive(tmp_path / "archive", tmp_path / "workspace", "Rome", "g1")
-    archive.update(0, "job", [event], phase="COMPLETED", handoff=1)
-    assert reply == before
-    for name in ("commands.jsonl", "attempts/attempt_1/events.jsonl"):
-        assert "FLAVOR_" in (tmp_path / "archive/turn_0" / name).read_text()
-        assert "FLAVOR_" not in (tmp_path / "workspace/turn_0" / name).read_text()
-        assert "grateful" not in (tmp_path / "workspace/turn_0" / name).read_text()
-    projected = model_view(reply)
-    assert json.loads(projected["content"][0]["text"]) == projected["structuredContent"]
-    assert model_view(projected) == projected
-    unmatched = {**reply, "content": [{"type": "text", "text": "A player's own quotation: FLAVOR_QUOTATION"}]}
-    assert model_view(unmatched)["content"] == unmatched["content"]
+def test_native_history_exports_only_delivered_projection_and_keeps_original_reply(tmp_path):
+    from pathlib import Path
+
+    from pydantic_ai import Agent
+    from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart
+    from pydantic_ai.models.function import FunctionModel
+    from pydantic_ai_harness import StepPersistence
+    from pydantic_ai_harness.step_persistence import SqliteStepStore
+
+    from civ_agent.orchestration.contracts import Scope, canonical
+    from civ_agent.orchestration.history_exports import export_native_history
+    from civ_agent.orchestration.store import WorkflowStore
+    from civ_agent.tls import write_private
+    from tests.test_export_agent_history import layout, source_bytes
+
+    async def run():
+        raw = {"alerts": [alert(), captured_settler()], "diplomacy": [relation()]}
+        reply = {"structuredContent": raw, "content": [{"type": "text", "text": json.dumps(raw)}]}
+        before = copy.deepcopy(reply)
+        projected = model_view(reply)
+        assert json.loads(projected["content"][0]["text"]) == projected["structuredContent"]
+        assert model_view(projected) == projected
+        unmatched = {**reply, "content": [{"type": "text", "text": "A player's own quotation: FLAVOR_QUOTATION"}]}
+        assert model_view(unmatched)["content"] == unmatched["content"]
+
+        root, _, paths = layout(tmp_path)
+        store = WorkflowStore(paths.store, player=paths.player)
+        try:
+            store.bind_epoch("game", "g1")
+        finally:
+            store.close()
+        database = paths.store / "agent-steps.sqlite3"
+        write_private(database, b"")
+        steps = SqliteStepStore(database=database)
+        scope = Scope(game="game", player="p0", epoch="g1", activation="source-role")
+        calls = []
+
+        def model(messages, info):
+            calls.append(messages)
+            return ModelResponse(
+                parts=[ToolCallPart("read_delivered_view", {}, "read")]
+                if len(calls) == 1
+                else [TextPart("Observed delivered view")]
+            )
+
+        agent = Agent(
+            FunctionModel(model),
+            name="player_role_v1",
+            capabilities=[StepPersistence(store=steps, metadata={"scope": canonical(scope.model_dump(mode="json"))})],
+        )
+
+        @agent.tool_plain
+        def read_delivered_view() -> dict:
+            return model_view(reply)
+
+        await agent.run("Read the delivered view")
+        original_files = source_bytes(root)
+        entries = await export_native_history(root, tmp_path / "export", "Rome")
+        assert len(entries) == 1 and len(calls) == 2
+        exported = Path(entries[0]["history"]).read_text()
+        assert "FLAVOR_" in json.dumps(reply) and reply == before
+        assert "FLAVOR_" not in exported and "grateful" not in exported
+        assert "Granary enabled" in exported
+        assert source_bytes(root) == original_files
+
+    asyncio.run(run())

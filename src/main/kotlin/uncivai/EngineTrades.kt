@@ -97,6 +97,7 @@ internal class EngineTrades(private val runtime: GameExecutor) {
         val deadline = proposal.deadlineMillis ?: return
         if (runtime.clockMillis() < deadline) return
         replace(proposal.copy(status = "EXPIRED", failure = "The negotiation deadline elapsed."), "")
+        runtime.recordReplayInput(proposal.author, "tradeExpired") { obj("proposal" to proposal.proposal, "version" to proposal.version) }
         runtime.commitCheckpoint()
     }
 
@@ -338,8 +339,9 @@ internal class EngineTrades(private val runtime: GameExecutor) {
         }
         val proposal = EngineTradeProposal(id, (previous?.version ?: 0) + 1, civilization, b.civID, clauses(civilization, b.civID, give, receive), deadline, previous?.counterofferLimit ?: state.counterofferLimit, now, listOf(TradeConsent(civilization, "accept", now)), friendship = if (friendship) FriendshipTerms() else null)
         legality(proposal)?.let { return unavailable(it) }
-        if (!friendship && !TradeOperations(a, b).tryReserve(engineTrade(proposal), id, proposal.version))
+        if (!friendship && !TradeOperations(a, b).tryReserve(engineTrade(proposal), id, proposal.version)) {
             return unavailable("The offer's gold or resources are already committed.")
+        }
         if (previous != null) {
             previous.participants().filter { it != civilization }.forEach { player(it).releaseTradeCommitment(id) }
             replace(previous.copy(status = "SUPERSEDED"), civilization)
@@ -469,8 +471,9 @@ internal class EngineTrades(private val runtime: GameExecutor) {
     }
     internal fun replace(proposal: EngineTradeProposal, actor: String) {
         state.proposals.getValue(proposal.proposal)[proposal.version - 1] = proposal
-        if (proposal.status !in setOf("PENDING", "SUPERSEDED"))
+        if (proposal.status !in setOf("PENDING", "SUPERSEDED")) {
             proposal.participants().forEach { player(it).releaseTradeCommitment(proposal.nativeRequestId ?: proposal.proposal) }
+        }
         if (state.activeProposal == proposal.proposal && proposal.status !in setOf("PENDING", "SUPERSEDED")) {
             state.completedWaitMillis += (minOf(runtime.clockMillis(), proposal.deadlineMillis ?: Long.MAX_VALUE) - state.openedAtMillis).coerceAtLeast(0)
             state.activeProposal = null

@@ -14,7 +14,7 @@ from civ_agent.proposal_gateway import ProposalGateway
 from civ_agent.strategic_review import frozen_read
 from civ_agent.tool_schemas import TradeDecision, tool_model
 from civ_agent.war_state import MILITARY_COMMANDS
-from tests.test_economy_optimization import managed
+from tests.domain_fixtures import managed
 
 
 @pytest.mark.parametrize(

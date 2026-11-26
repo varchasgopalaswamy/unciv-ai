@@ -11,7 +11,7 @@ from civ_agent.proposal_gateway import ProposalGateway
 from civ_agent.service_io import ServiceIO
 from civ_agent.startup_context import prepare_startup, startup_prompt
 from civ_agent.state_updates import apply_overview_update, overview_update, stamp
-from tests.test_proposal_gateway import Host
+from tests.domain_fixtures import Host
 from tests.test_selective_actions import options_snapshot
 
 

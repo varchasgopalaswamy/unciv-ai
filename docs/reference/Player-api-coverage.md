@@ -10,6 +10,15 @@ slices. Implementation, regression evidence and full-game acceptance are separat
 claims. An implemented command does not establish every ruleset combination,
 complete UI parity, or an exhaustive privacy boundary.
 
+The November 7 runtime repair preserves one deliberate operator policy exception:
+Gold, Science and Culture production conversion remain unavailable until the
+ruleset's final era. Queue cleanup happens at startup and explicit mutations;
+queries remain pure. This exception does not close any missing player surface
+or establish complete gameplay/privacy coverage.
+
+Samurai can create Fishing Boats through the water-improvement command.
+The command reports movement cost and unit survival and supports receipt replay.
+
 ## Scope and method
 
 The audit starts with native UI controls, not just APIs already implemented:
@@ -115,8 +124,7 @@ One local human can play through the authoritative native desktop, including
 its containerized browser display. Rootless player/game isolation and TOML batch
 launches are implemented with the bounded validation recorded below. Controller
 replacement, multi-human remote play and hard monetary spending caps remain unfinished. One More Turn
-and native multiplayer resignation have no player API. Ancient-to-victory live
-acceptance remains open in the [roadmap](../Roadmap.md).
+and native multiplayer resignation have no player API.
 
 ## 1. Identity, API layers and turn flow
 
@@ -195,14 +203,14 @@ Sources: [entire action enum][unit-enum], [UI factories][unit-ui],
 | `FoundCity` | Available | `FOUND_CITY`; native eligibility and nonbinding promise advice. |
 | `ConstructImprovement` | Available | `START_WORKER_JOB`; ordinary picker, clearing/road/rail and prerequisite queues. |
 | `Repair` | Available | `START_WORKER_JOB` with offered repair choice. |
-| `CreateImprovement` | Partial | GP improvements through `ACTIVATE_GREAT_PERSON`; Work Boats through `CREATE_WATER_IMPROVEMENT`. Other non-GP instant uniques lack a general route. |
+| `CreateImprovement` | Available, bundled | GP improvements through `ACTIVATE_GREAT_PERSON`; Work Boats and Samurai instant Fishing Boats through `CREATE_WATER_IMPROVEMENT`. Samurai survive and pay the native movement cost. Arbitrary mod-only instant construction remains outside scope. |
 | `HurryResearch` | Available | `ACTIVATE_GREAT_PERSON`; native science/free-tech behavior and subsequent choices. |
 | `HurryPolicy` | Available | `ACTIVATE_GREAT_PERSON` where offered; native culture grant. |
 | `HurryWonder` | Available | `ACTIVATE_GREAT_PERSON`; native production/consumption. |
 | `HurryBuilding` | Available | `ACTIVATE_GREAT_PERSON`; native non-wonder hurry constraints. |
 | `ConductTradeMission` | Available | `ACTIVATE_GREAT_PERSON`; city-state gold/influence. |
 | `FoundReligion` | Missing | Religious action and subsequent picker. |
-| `TriggerUnique` | Partial | Consuming GP Golden Age abilities work; no arbitrary triggered-action route. |
+| `TriggerUnique` | Available, bundled | Consuming GP Golden Age abilities work. No additional bundled nonreligious triggered action was found; arbitrary triggered-action extensions lack a general route. |
 | `SpreadReligion` | Missing | Conversion action/uses/targeting. |
 | `RemoveHeresy` | Missing | Inquisitor action. |
 | `EnhanceReligion` | Missing | Religious action and subsequent picker. |
@@ -487,7 +495,7 @@ and [selective sections][sections]. Evidence: **E-MAP**, **E-OVERVIEW**, **E-MOD
 | Enemy unit inspection | Available | `player_inspect(UNIT,destination)` for visible stats, mechanical reference, promotions and statuses; private orders/XP excluded. |
 | Civilization identity | Available | Ability, unique units/buildings/improvements, replacement differences, inherent promotions and technology/obsolescence conditions. |
 | Unbuilt wonder comparisons | Available | `wonderOpportunities` is the canonical location for benefits/requirements/city estimates. |
-| Unimproved-resource work | Available | Worker vs Work Boat, clearing/tech requirements and current jobs. |
+| Unimproved-resource work | Available | Worker vs Work Boat, Samurai instant Fishing Boats, clearing/tech requirements and current jobs. |
 | Road/rail connectivity | Available | Unlocks/unconnected cities and `player_inspect(ROAD)` for native route/work/maintenance/connection effects, followed by persistent `CONNECT_ROAD`. |
 | General Civilopedia | Available | `player_inspect(CIVILOPEDIA)` searches all native reference categories and reads named mechanical entries without flavor text. |
 | Sorting/filtering/camera/overlays | Engine/UI | Underlying facts matter; reproducing graphical widgets does not. Missing facts listed above. |

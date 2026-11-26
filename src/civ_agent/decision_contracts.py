@@ -2,6 +2,10 @@
 
 import copy
 import json
+import threading
+import time
+from collections import OrderedDict
+from types import MappingProxyType
 from typing import Annotated
 
 from pydantic import Field
@@ -108,19 +112,48 @@ def inspection_arguments(shape):
 
 
 class DecisionContract:
+    def __setattr__(self, name, value):
+        if getattr(self, "_sealed", False):
+            raise AttributeError("Compiled decision contract is immutable")
+        object.__setattr__(self, name, value)
+
+    @property
+    def models(self):
+        return self._models
+
+    @property
+    def definitions(self):
+        return copy.deepcopy(self._definitions)
+
+    @property
+    def names(self):
+        return self._names
+
+    @property
+    def recoverable(self):
+        return self._recoverable
+
+    @property
+    def codec(self):
+        return self._codec
+
+    @property
+    def schema(self):
+        return copy.deepcopy(self._schema)
+
     def __init__(self, purpose, catalogue, *, report_model=None, compact=True):
         self.purpose = purpose
-        self.models = {}
+        self._models = {}
         self.report_model = report_model
-        self.definitions = {}
-        self.names = set()
-        self.recoverable = set()
+        self._definitions = {}
+        self._names = set()
+        self._recoverable = set()
         inspections, actions = [], []
         for tool in sorted(catalogue, key=lambda t: t["name"]):
             name = tool["name"]
             if name in {"inspect_bundle", "command_help", "finish_role", "economy_wait"}:
                 continue
-            self.names.add(name)
+            self._names.add(name)
             if name == "player_command":
                 command = copy.deepcopy(tool["inputSchema"])
                 # Metadata is shared outside the command union on the model wire.
@@ -136,21 +169,21 @@ class DecisionContract:
                     },
                     ["command"],
                 )
-                self.models[name] = None
+                self._models[name] = None
             else:
                 model = NATIVE_MODELS.get(name) or tool_model(name, purpose)
-                self.models[name] = model
+                self._models[name] = model
                 shape = model.model_json_schema()
                 if name == "chat_read" and "handledMessages" not in tool["inputSchema"]["properties"]:
                     # The gateway exposes acknowledgment only for routed Main
                     # gameplay. Retain that capability restriction on the wire.
                     shape["properties"].pop("handledMessages", None)
                 if issubclass(model, DeliveryOptions):
-                    self.recoverable.add(name)
+                    self._recoverable.add(name)
                     inspection_arguments(shape)
                 arguments = self._import(name, shape)
             operation = closed({"tool": tag(name), "arguments": arguments})
-            if name in self.recoverable:
+            if name in self._recoverable:
                 operation["properties"]["recoverBaseline"] = {
                     "type": "string",
                     "enum": ["missing", "mismatched"],
@@ -194,19 +227,19 @@ class DecisionContract:
                 if purpose == "military"
                 else (BoundaryModel if purpose == "communication" else tool_model("finish_role", purpose))
             )
-            self.models["finish_role"] = model
+            self._models["finish_role"] = model
             variants.append(
                 closed({"kind": tag("finish"), "arguments": self._import("finish", model.model_json_schema())})
             )
         if purpose == "gameplay":
-            self.models["economy_wait"] = tool_model("economy_wait", purpose)
+            self._models["economy_wait"] = tool_model("economy_wait", purpose)
             variants.append(
                 closed(
                     {
                         "kind": tag("wait"),
                         "arguments": self._import(
                             "wait",
-                            self.models["economy_wait"].model_json_schema(),
+                            self._models["economy_wait"].model_json_schema(),
                         ),
                     }
                 )
@@ -223,11 +256,15 @@ class DecisionContract:
                     }
                 )
             )
-        self.codec = StrictSchema(
-            {**closed({"decision": {"anyOf": variants}}), "$defs": self.definitions}, compact=compact
+        self._codec = StrictSchema(
+            {**closed({"decision": {"anyOf": variants}}), "$defs": self._definitions}, compact=compact
         )
-        self.schema = self.codec.schema
-        self.fingerprint = self.codec.fingerprint
+        self._schema = self._codec.schema
+        self.fingerprint = self._codec.fingerprint
+        self._models = MappingProxyType(self._models)
+        self._names = frozenset(self._names)
+        self._recoverable = frozenset(self._recoverable)
+        self._sealed = True
 
     def _import(self, prefix, schema):
         schema = copy.deepcopy(schema)
@@ -253,13 +290,13 @@ class DecisionContract:
         for name, definition in definitions.items():
             rename(definition)
             key = prefix + "_" + name
-            if key in self.definitions and self.definitions[key] != definition:
+            if key in self._definitions and self._definitions[key] != definition:
                 raise UnsupportedSchema("Conflicting definition: " + key)
-            self.definitions[key] = definition
+            self._definitions[key] = definition
         return schema
 
     def parse(self, text):
-        value = self.codec.decode(json.loads(text))["decision"]
+        value = self._codec.decode(json.loads(text))["decision"]
         kind = value["kind"]
         if kind in {"inspect", "act"}:
             # Validate every operation, including semantic validators, before dispatch.
@@ -272,14 +309,14 @@ class DecisionContract:
                     if operation.pop("recoverBaseline", None) is not None:
                         arguments["delivery"] = "full"
                     operation["arguments"] = (
-                        self.models[name].model_validate(arguments).model_dump(by_alias=True, exclude_unset=True)
+                        self._models[name].model_validate(arguments).model_dump(by_alias=True, exclude_unset=True)
                     )
                 if name == "war_goals" and (arguments.get("action", "read") == "read") != (kind == "inspect"):
                     raise ValueError("Keep war_goals reads and actions in separate batches")
         elif kind in {"finish", "wait"}:
             name = "finish_role" if kind == "finish" else "economy_wait"
             value["arguments"] = (
-                self.models[name].model_validate(value["arguments"]).model_dump(by_alias=True, exclude_unset=True)
+                self._models[name].model_validate(value["arguments"]).model_dump(by_alias=True, exclude_unset=True)
             )
         elif kind == "submit_report":
             assert self.report_model is not None
@@ -288,13 +325,60 @@ class DecisionContract:
 
     def encode(self, decision):
         """For test fixtures and deterministic host-authored examples, never model repair."""
-        return encoded(self.codec.encode({"decision": decision}))
+        return encoded(self._codec.encode({"decision": decision}))
 
     def costs(self):
-        value = encoded(self.schema)
+        value = encoded(self._schema)
         return {
             "fingerprint": self.fingerprint,
             "schemaCharacters": len(value),
             "schemaBytes": len(value.encode()),
             "sizeUnit": "characters/UTF-8 bytes, not tokens",
         }
+
+
+_CONTRACT_CACHE_LIMIT = 64
+_CONTRACT_CACHE = OrderedDict()
+_CONTRACT_LOCK = threading.RLock()
+_CONTRACT_METRICS = {"hits": 0, "misses": 0, "buildMs": 0.0, "failures": 0}
+
+
+def compile_decision_contract(purpose, catalogue, *, report_model=None, compact=True, policy_key=None):
+    """Reuse immutable compilation, never request handlers or delivered authority.
+
+    The entire granted catalogue remains part of the key, including descriptions
+    and input schemas. Fresh gateway catalogue checks still run at every dispatch.
+    """
+    canonical = encoded(sorted(catalogue, key=lambda tool: tool["name"]))
+    report_schema = encoded(report_model.model_json_schema()) if report_model is not None else None
+    key = (purpose, canonical, report_model, report_schema, compact, encoded(policy_key))
+    with _CONTRACT_LOCK:
+        if key in _CONTRACT_CACHE:
+            _CONTRACT_METRICS["hits"] += 1
+            _CONTRACT_CACHE.move_to_end(key)
+            return _CONTRACT_CACHE[key]
+        _CONTRACT_METRICS["misses"] += 1
+        started = time.monotonic()
+        try:
+            result = DecisionContract(purpose, json.loads(canonical), report_model=report_model, compact=compact)
+        except BaseException:
+            _CONTRACT_METRICS["failures"] += 1
+            raise
+        finally:
+            _CONTRACT_METRICS["buildMs"] += (time.monotonic() - started) * 1000
+        _CONTRACT_CACHE[key] = result
+        while len(_CONTRACT_CACHE) > _CONTRACT_CACHE_LIMIT:
+            _CONTRACT_CACHE.popitem(last=False)
+        return result
+
+
+def decision_contract_cache_metrics():
+    with _CONTRACT_LOCK:
+        return {**_CONTRACT_METRICS, "entries": len(_CONTRACT_CACHE), "limit": _CONTRACT_CACHE_LIMIT}
+
+
+def clear_decision_contract_cache():
+    """Drop process-local compilation; no persisted or native state is changed."""
+    with _CONTRACT_LOCK:
+        _CONTRACT_CACHE.clear()
+        _CONTRACT_METRICS.update(hits=0, misses=0, buildMs=0.0, failures=0)

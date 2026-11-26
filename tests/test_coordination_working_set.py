@@ -1,17 +1,12 @@
 """History survives bounded, role-scoped delivery and explicit lifecycle changes."""
 
 import copy
-import json
-from types import SimpleNamespace
-from typing import cast
 
 import pytest
 
-from civ_agent.agent_service import AgentService
 from civ_agent.civilization_state import CivilizationState
 from civ_agent.coordination_context import MAX_COORDINATION_CHARACTERS, encoded, working_context
 from civ_agent.decision_contracts import DecisionContract
-from civ_agent.decisions_policy import DecisionsSettings
 from civ_agent.war_state import WarStore
 
 
@@ -212,52 +207,3 @@ def test_wrong_recipient_reports_ownership_and_does_not_partially_change_message
     assert result["recipients"] == {incoming["id"]: "gameplay", outgoing["id"]: "military"}
     assert "addressed recipient" in result["instruction"]
     assert result["applied"] is False and wars.state() == before
-
-
-def test_control_status_does_not_copy_authored_history_or_mutate_durable_record():
-    record = {
-        "activationId": "a",
-        "phase": "INTERRUPTED",
-        "usage": {},
-        "roles": {"ready": {}, "warState": context()["warState"]},
-    }
-    original = copy.deepcopy(record)
-    service = SimpleNamespace(
-        active_id="a",
-        records={"a": record},
-        finalization_tasks={},
-        finalization_errors={},
-        gateway=SimpleNamespace(jobs={}),
-        decisions_settings=DecisionsSettings(),
-    )
-    status = AgentService.status(cast(AgentService, service), "a")
-    assert len(json.dumps({"status": status}).encode()) < 65536
-    assert "Historical report" not in json.dumps(status) and "OLD_PLAN" not in json.dumps(status)
-    assert status["roles"]["counts"]["messages"] == 100
-    assert record == original
-
-
-def test_service_startup_migrates_an_idle_players_store_before_any_model_activation(tmp_path):
-    import asyncio
-
-    async def run():
-        root = tmp_path / "service"
-        root.mkdir(mode=0o700)
-        memory = CivilizationState(root / "civilization", "Rome")
-        with memory.transaction() as db:
-            memory._set(
-                db, "war:state", {"operations": {"old": {"id": "old", "plan": "Keep this exact note"}}, "messages": []}
-            )
-        memory.engine.dispose()
-        service = AgentService("Rome", tmp_path / "workspace", root, "S" * 43, "https://localhost:8765/mcp", None)
-        try:
-            assert service.active_id is None
-            with service.memory.transaction() as db:
-                state = service.memory._meta(db, "war:state")
-            assert state["schemaVersion"] == 2
-            assert state["operations"]["old"]["status"] == "legacy"
-            assert state["operations"]["old"]["plan"] == "Keep this exact note"
-        finally:
-            await service.close()
-
-    asyncio.run(run())

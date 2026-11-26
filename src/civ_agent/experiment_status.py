@@ -7,10 +7,8 @@ from collections import Counter
 from statistics import median
 
 from sqlalchemy import func, inspect, literal_column, select
-from sqlalchemy.exc import SQLAlchemyError
 
 from civ_agent import memory_schema as memory
-from civ_agent.decisions_ledger import RATE_VERSION, accounts, requests
 from civ_agent.decisions_policy import decisions_values
 from civ_agent.diplomacy_decisions import (
     BATCH_SECONDS,
@@ -23,7 +21,6 @@ from civ_agent.experiment_metrics import summarize_records
 from civ_agent.monitoring import read_database
 from civ_agent.protocol import JsonObject
 from civ_agent.telemetry import calls, classifier_calls, classifier_metadata, jobs
-from civ_agent.turn_archive import civilization_directory_name
 
 
 def memory_status(path, *, now):
@@ -203,7 +200,9 @@ def _advisory_delivery_summary(reports):
     return {
         "events": len(reports),
         "questionObservations": len(rows),
-        "latest": max(reports, key=lambda report: report["atMs"]) if reports else None,
+        "latest": max(known, key=lambda report: report["atMs"])
+        if (known := [r for r in reports if type(r.get("atMs")) is int])
+        else None,
         "byTask": {
             prefix: {
                 "questionObservations": sum(row["name"].split(":", 1)[0] == prefix for row in rows),
@@ -227,7 +226,7 @@ def _advisory_request_reports(reports):
     unresolved = {"broker_unavailable", "malformed_broker_output", "completion_unknown"}
     folded = []
     for observations in groups.values():
-        observations.sort(key=lambda item: (item[1]["atMs"], item[0]))
+        observations.sort(key=lambda item: (item[1].get("atMs") or 0, item[0]))
         if observations[0][1].get("direction") != "advisory_batch":
             folded.append(observations[0][1])
             continue
@@ -269,18 +268,6 @@ def classifier_status(path) -> JsonObject:
             for value in db.scalars(select(classifier_calls.c.payload).order_by(literal_column("rowid")))
             for report in [json.loads(value)]
         ]
-        deliveries = [report for report in reports if report.get("direction") == "advisory_delivery"]
-        reports = [report for report in reports if report.get("direction") != "advisory_delivery"]
-        advisory_observations = [report for report in reports if report.get("direction") == "advisory_batch"]
-        reconciliations = [report for report in advisory_observations if report.get("brokerReconciliation") is True]
-        reports = _advisory_request_reports(reports)
-        latest = max(reports, key=lambda r: r["atMs"]) if reports else None
-        latency = [r["latencyMs"] for r in reports if isinstance(r.get("latencyMs"), (int, float))]
-        usage = Counter()
-        for report in reports:
-            for key, value in (report.get("usage") or {}).items():
-                if type(value) is int and value >= 0:
-                    usage[key] += value
         advice_latency = db.scalar(
             select(calls.c.elapsed)
             .where(
@@ -296,45 +283,69 @@ def classifier_status(path) -> JsonObject:
             if inspect(db).has_table("jobs")
             else []
         )
-        return {
-            "status": "degraded"
-            if latest and latest.get("fallback")
-            else "active"
-            if latest
-            else "waiting_for_first_classification",
-            "calls": len(reports),
-            "fallbacks": dict(Counter(r["fallback"] for r in reports if r.get("fallback"))),
-            "routing": routing_classifier_summary(reports),
-            "advisoryDelivery": _advisory_delivery_summary(deliveries),
-            "advisoryObservations": {
-                "events": len(advisory_observations),
-                "requests": sum(report.get("direction") == "advisory_batch" for report in reports),
-                "reconciliations": len(reconciliations),
-                "identityConflicts": sum(report.get("observationIdentityConflict") is True for report in reports),
-                "fallbacks": dict(Counter(r["fallback"] for r in advisory_observations if r.get("fallback"))),
-                "latestReconciliation": reconciliations[-1] if reconciliations else None,
-            },
-            "latest": latest,
-            "averageLatencyMs": sum(latency) / len(latency) if latency else None,
-            "usage": dict(usage),
-            "lastAdviceCallLatencyMs": advice_latency,
-            "fullReviewUsage": {
-                "jobs": len(review_jobs),
-                "usage": dict(
-                    Counter(
-                        {
-                            key: sum(r.get("usage", {}).get(key, 0) for r in review_jobs)
-                            for key in (
-                                "input_tokens",
-                                "output_tokens",
-                                "cached_input_tokens",
-                                "reasoning_output_tokens",
-                            )
-                        }
-                    )
-                ),
-            },
-        }
+        return classifier_summary(reports, advice_latency=advice_latency, review_jobs=review_jobs)
+
+
+def classifier_summary(reports, *, advice_latency=None, review_jobs=()) -> JsonObject:
+    deliveries = [report for report in reports if report.get("direction") == "advisory_delivery"]
+    reports = [report for report in reports if report.get("direction") != "advisory_delivery"]
+    advisory_observations = [report for report in reports if report.get("direction") == "advisory_batch"]
+    reconciliations = [report for report in advisory_observations if report.get("brokerReconciliation") is True]
+    reports = _advisory_request_reports(reports)
+    known = [r for r in reports if type(r.get("atMs")) is int]
+    latest = max(known, key=lambda r: r["atMs"]) if known else None
+    latency = [r["latencyMs"] for r in reports if isinstance(r.get("latencyMs"), (int, float))]
+    usage = Counter()
+    for report in reports:
+        for key, value in (report.get("usage") or {}).items():
+            if type(value) is int and value >= 0:
+                usage[key] += value
+    return {
+        "status": "degraded"
+        if (latest.get("fallback") if latest else any(r.get("fallback") for r in reports))
+        else "active"
+        if reports
+        else "waiting_for_first_classification",
+        "calls": len(reports),
+        "fallbacks": dict(Counter(r["fallback"] for r in reports if r.get("fallback"))),
+        "routing": routing_classifier_summary(reports),
+        "advisoryDelivery": _advisory_delivery_summary(deliveries),
+        "advisoryObservations": {
+            "events": len(advisory_observations),
+            "requests": sum(report.get("direction") == "advisory_batch" for report in reports),
+            "reconciliations": len(reconciliations),
+            "identityConflicts": sum(report.get("observationIdentityConflict") is True for report in reports),
+            "fallbacks": dict(Counter(r["fallback"] for r in advisory_observations if r.get("fallback"))),
+            "latestReconciliation": max(known_reconciliations, key=lambda r: r["atMs"])
+            if (known_reconciliations := [r for r in reconciliations if type(r.get("atMs")) is int])
+            else None,
+        },
+        "latest": latest,
+        "chronologyComplete": len(known) == len(reports),
+        "unknownUsage": sum(r.get("usage") is None for r in reports),
+        "averageLatencyMs": sum(latency) / len(latency) if latency else None,
+        "usage": dict(usage),
+        "lastAdviceCallLatencyMs": advice_latency,
+        "fullReviewUsage": {
+            "jobs": len(review_jobs),
+            "complete": all(
+                r.get("usage") is not None and r.get("telemetry", {}).get("usageComplete") is True for r in review_jobs
+            ),
+            "usage": dict(
+                Counter(
+                    {
+                        key: sum((r.get("usage") or {}).get(key, 0) for r in review_jobs)
+                        for key in (
+                            "input_tokens",
+                            "output_tokens",
+                            "cached_input_tokens",
+                            "reasoning_output_tokens",
+                        )
+                    }
+                )
+            ),
+        },
+    }
 
 
 def experiment_status(root, config, manifest, *, now=None):
@@ -362,39 +373,7 @@ def experiment_status(root, config, manifest, *, now=None):
         result["preflight"] = manifest.get("routingPreflight")
     if not (config.agents.native_advice_enabled or config.agents.decisions_enabled):
         return result
-    for index, player in enumerate(config.agent_players):
-        directory = root / "agent-services" / civilization_directory_name(player.civilization)
-        row = {"player": player.name, "civilization": player.civilization}
-        if config.agents.decisions_enabled and manifest.get("auth_root") and manifest.get("id"):
-            from pathlib import Path
+    from civ_agent.orchestration.native_experiments import native_experiment_players
 
-            ledger = Path(manifest["auth_root"]) / "decisions.sqlite3"
-            if ledger.exists():
-                try:
-                    with read_database(ledger) as db:
-                        principal = f"{manifest['id']}-{index}"
-                        account = (
-                            db.execute(select(accounts).where(accounts.c.principal == principal)).mappings().first()
-                        )
-                        entries = db.execute(select(requests).where(requests.c.principal == principal)).mappings().all()
-                        row["additionalSpending"] = {
-                            "rateVersion": RATE_VERSION,
-                            "limitKind": "local_estimated_spending_ceiling",
-                            "ceilingNanodollars": account["ceiling"] if account else None,
-                            "spentNanodollars": sum(r["spent"] for r in entries),
-                            "reservedNanodollars": sum(r["reserved"] for r in entries),
-                            "inputTokens": sum(r["input_tokens"] or 0 for r in entries),
-                            "requests": len(entries),
-                        }
-                except (OSError, ValueError, KeyError, SQLAlchemyError):
-                    row["additionalSpending"] = {"status": "unavailable"}
-        for name, read, path in (
-            ("memory", lambda p: memory_status(p, now=now), directory / "civilization/memory.sqlite3"),
-            ("classifier", classifier_status, directory / "telemetry/accounting.sqlite3"),
-        ):
-            try:
-                row[name] = read(path)
-            except (OSError, ValueError, KeyError, TypeError, AttributeError, SQLAlchemyError):
-                row[name] = {"status": "unavailable", "reason": "diagnostics_unreadable"}
-        result["players"].append(row)
+    result["players"] = native_experiment_players(root, config, manifest, now=now)
     return result

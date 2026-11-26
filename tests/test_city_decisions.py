@@ -375,7 +375,7 @@ def test_changed_objective_discards_city_advice_even_with_current_native_state(t
             save_objective()
             original = classifier.batch
 
-            async def batch(evidence, *, timeout):
+            async def batch(evidence, *, timeout, scope=None, task=None):
                 result = await original(evidence, timeout=timeout)
                 if change_during_call:
                     objective["assessment"] = "Recruit defenders in City 1"

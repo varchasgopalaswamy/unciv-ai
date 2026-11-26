@@ -1,5 +1,4 @@
 import asyncio
-import json
 from contextlib import asynccontextmanager
 
 import pytest
@@ -7,8 +6,7 @@ import pytest
 from civ_agent.civilization_state import CivilizationState
 from civ_agent.proposal_gateway import ProposalGateway
 from civ_agent.service_io import ServiceIO
-from tests.test_agent_service import AgentService, FakeFactory
-from tests.test_proposal_gateway import Host
+from tests.domain_fixtures import Host
 
 MOVE = {"kind": "MOVE_UNIT", "target": "unit1", "destination": {"x": 1, "y": 0}}
 
@@ -98,128 +96,5 @@ def test_turn_only_cache_refresh_does_not_block_an_unannotated_trade_offer(tmp_p
             assert result["sent"] and "error" not in result
             assert await gateway.call(chat, "trade_offer", offer, "offer") == result
             assert memory.run_failure() is None and not memory.pending()
-
-    asyncio.run(run())
-
-
-def test_service_stops_running_gameplay_and_communication_without_model_cooperation(tmp_path):
-    class ChatProcess:
-        closed = False
-
-        async def start(self, token, settings):
-            pass
-
-        async def request(self, method, payload):
-            return {
-                "thread": {"id": "chat-thread"},
-                "turn": {"id": "chat-turn"},
-                "model": "test",
-                "modelProvider": "openai",
-                "reasoningEffort": "medium",
-            }
-
-        async def close(self):
-            self.closed = True
-
-    class Factory(FakeFactory):
-        def __call__(self, executable, workspace, mcp_url, ca_file, notification):
-            if workspace.name != "chat":
-                return super().__call__(executable, workspace, mcp_url, ca_file, notification)
-            process = ChatProcess()
-            self.instances.append(process)
-            return process
-
-    async def run():
-        factory = Factory()
-        factory.complete = False
-        service = AgentService(
-            "Rome",
-            tmp_path / "workspace",
-            tmp_path / "service",
-            "S" * 43,
-            "https://localhost:8765/mcp",
-            None,
-            process_factory=factory,
-            connection_factory=factory.connection,
-        )
-        factory.service = service
-        chat_task = None
-        try:
-            await service.start(
-                {
-                    "activationId": "game",
-                    "epoch": "g1",
-                    "gameTurn": 0,
-                    "handoff": 0,
-                    "civilization": "Rome",
-                    "threadId": None,
-                    "mcpUrl": service.mcp_url,
-                    "playerToken": "P" * 43,
-                    "prompt": "Play",
-                    "model": None,
-                    "timeoutSeconds": 20,
-                    "leaseSeconds": 10,
-                }
-            )
-            async with asyncio.timeout(3):
-                while service.status()["phase"] != "RUNNING":
-                    await asyncio.sleep(0.01)
-            game = next(job for job in service.gateway.jobs.values() if job.purpose == "gameplay")
-            original_close = factory.instances[0].close
-
-            async def interrupted_close():
-                await service._notification(
-                    "turn/completed",
-                    {
-                        "threadId": service.status()["threadId"],
-                        "turn": {"id": service.turn_id, "status": "interrupted"},
-                    },
-                )
-                await original_close()
-
-            factory.instances[0].close = interrupted_close
-            original_tool = game.connection.tool
-
-            async def with_job_reports(name, arguments):
-                if name == "player_communication" and arguments.get("op", "").startswith("job_"):
-                    return {"granted": True}
-                return await original_tool(name, arguments)
-
-            game.connection.tool = with_job_reports
-            service.chat.connection = game.connection
-            service.chat.epoch = "g1"
-            service.chat.settings = dict(service.default_settings)
-            chat_task = asyncio.create_task(service.chat.compute("chat"))
-            async with asyncio.timeout(3):
-                # Exercise a running conversation; job registration precedes
-                # startup reads and can otherwise race the injected store failure.
-                while (
-                    "chat" not in service.chat.job_records or service.chat.job_records["chat"][0]["phase"] != "RUNNING"
-                ):
-                    await asyncio.sleep(0.01)
-            await service.gateway.call(game, "player_turn", {}, "failure-source")
-            await service.io.call(
-                service.memory.fail_run,
-                game.id,
-                "failure-source",
-                "STATE_STORE_FAILED",
-                {"exceptionType": "OSError"},
-                {"applied": False},
-            )
-            await service.gateway.sync_failure()
-            await asyncio.wait_for(chat_task, 3)
-            assert service.active_task is not None
-            await asyncio.wait_for(asyncio.shield(service.active_task), 3)
-            assert all(process.closed for process in factory.instances)
-            assert service.status()["phase"] == "FAILED" and service.status()["error"] == "STATE_STORE_FAILED"
-            chat_record = json.loads(next((service.state_dir / "chat-jobs").glob("*.json")).read_text())
-            assert chat_record["phase"] == "FAILED" and chat_record["error"] == "STATE_STORE_FAILED"
-            failure = service.health()["runFailure"]
-            assert failure is not None and failure["job"] == game.id
-        finally:
-            if chat_task and not chat_task.done():
-                chat_task.cancel()
-                await asyncio.gather(chat_task, return_exceptions=True)
-            await service.close()
 
     asyncio.run(run())

@@ -45,6 +45,7 @@ class Choice(Command):
 class TargetChoice(Command):
     kind: Literal[
         "QUEUE_CONSTRUCTION",
+        "START_CONSTRUCTION",
         "RENAME_CITY",
         "START_WORKER_JOB",
         "CREATE_WATER_IMPROVEMENT",

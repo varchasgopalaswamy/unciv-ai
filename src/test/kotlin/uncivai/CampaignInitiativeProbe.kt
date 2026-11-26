@@ -45,12 +45,17 @@ object CampaignInitiativeProbe {
                     var declarationTurn: Int? = null
                     var completed = 0
                     fun act(turn: PlayerTurnSnapshot, kind: TurnCommandKind, target: String? = null, selection: String? = null, destination: TilePosition? = null, attackFrom: TilePosition? = null, queue: List<String> = emptyList()) {
-                        var request = TurnCommandRequest(UUID.randomUUID().toString(), turn.epoch, turn.revision, kind, target, selection,
-                            destination = destination, attackFrom = attackFrom, queue = queue, confirmWar = kind == TurnCommandKind.DECLARE_WAR)
+                        var request = TurnCommandRequest(
+                            UUID.randomUUID().toString(), turn.epoch, turn.revision, kind, target, selection,
+                            destination = destination, attackFrom = attackFrom, queue = queue, confirmWar = kind == TurnCommandKind.DECLARE_WAR,
+                        )
                         if (kind == TurnCommandKind.END_TURN) request = request.reviewedFor(turn)
                         val receipt = api.execute(token, request)
-                        val event = obj("turn" to turn.turn, "request" to Json.parseToJsonElement(PlayerTurnJson.json.encodeToString(request)),
-                            "receipt" to Json.parseToJsonElement(PlayerTurnJson.json.encodeToString(receipt)))
+                        val event = obj(
+                            "turn" to turn.turn,
+                            "request" to Json.parseToJsonElement(PlayerTurnJson.json.encodeToString(request)),
+                            "receipt" to Json.parseToJsonElement(PlayerTurnJson.json.encodeToString(receipt)),
+                        )
                         Files.writeString(directory.resolve("actions.jsonl"), "$event\n", StandardOpenOption.CREATE, StandardOpenOption.APPEND)
                     }
                     for (ownTurn in 0 until 7) {
@@ -63,8 +68,14 @@ object CampaignInitiativeProbe {
                             turn = api.turn(token)
                             val trade = turn.diplomacy.incomingRequests.firstOrNull()
                             if (trade != null) {
-                                val request = obj("op" to "trade_decide", "epoch" to turn.epoch, "requestId" to UUID.randomUUID().toString(),
-                                    "proposal" to trade.proposal, "version" to trade.version, "decision" to "decline")
+                                val request = obj(
+                                    "op" to "trade_decide",
+                                    "epoch" to turn.epoch,
+                                    "requestId" to UUID.randomUUID().toString(),
+                                    "proposal" to trade.proposal,
+                                    "version" to trade.version,
+                                    "decision" to "decline",
+                                )
                                 val result = api.communicate(token, request)
                                 Files.writeString(directory.resolve("actions.jsonl"), obj("turn" to turn.turn, "communication" to request, "result" to result).toString() + "\n", StandardOpenOption.CREATE, StandardOpenOption.APPEND)
                                 continue
@@ -77,8 +88,11 @@ object CampaignInitiativeProbe {
                                         act(turn, TurnCommandKind.RESOLVE_CAPTURED_CITY, alert.handle, option.name)
                                         if (api.turn(token).cities.any { it.name == "Paris" }) captureTurn = turn.turn
                                     }
+
                                     alert.friendship != null -> act(turn, TurnCommandKind.RESPOND_FRIENDSHIP, alert.handle, "Decline")
+
                                     alert.canAcknowledge -> act(turn, TurnCommandKind.ACKNOWLEDGE_ALERT, alert.handle)
+
                                     else -> error("Unsupported native alert: $alert")
                                 }
                                 continue
@@ -119,14 +133,29 @@ object CampaignInitiativeProbe {
                             val attacks = turn.map.units.filter { it.military && it.name != "Scout" }.flatMap { unit ->
                                 unit.combat!!.attacks.filter { attack ->
                                     attack.maxDamageToAttacker < unit.health &&
-                                        (!attack.defenderIsCity || attack.destination == paris &&
-                                            (unit.combat.rangedStrength > 0 || attack.minDamageToDefender >= targetHealth - 1))
+                                        (
+                                            !attack.defenderIsCity || (
+                                                attack.destination == paris &&
+                                                    (unit.combat.rangedStrength > 0 || attack.minDamageToDefender >= targetHealth - 1)
+                                                )
+                                            )
                                 }.map { unit to it }
                             }
-                            val attack = attacks.maxWithOrNull(compareBy<Pair<OwnedUnit, AttackOption>>(
-                                { (u, a) -> if (a.defenderIsCity && u.combat!!.rangedStrength == 0) 3 else if (!a.defenderIsCity) 2 else 1 },
-                                { (_, a) -> a.minDamageToDefender }, { (_, a) -> -a.movementCost },
-                            ))
+                            val attack = attacks.maxWithOrNull(
+                                compareBy<Pair<OwnedUnit, AttackOption>>(
+                                    { (u, a) ->
+                                        if (a.defenderIsCity && u.combat!!.rangedStrength == 0) {
+                                            3
+                                        } else if (!a.defenderIsCity) {
+                                            2
+                                        } else {
+                                            1
+                                        }
+                                    },
+                                    { (_, a) -> a.minDamageToDefender },
+                                    { (_, a) -> -a.movementCost },
+                                ),
+                            )
                             if (attack != null) {
                                 act(turn, TurnCommandKind.ATTACK, attack.first.handle, destination = attack.second.destination, attackFrom = attack.second.attackFrom)
                                 continue
@@ -141,10 +170,21 @@ object CampaignInitiativeProbe {
                                 unit.moves.filter { distance(it.destination, paris) in wanted until distance(unit.position, paris) }
                                     .map { unit to it }
                             }
-                            val movement = movements.minWithOrNull(compareBy(
-                                { (u, _) -> if (u.name == "Catapult") 0 else if (u.combat!!.rangedStrength > 0) 1 else 2 },
-                                { (_, m) -> distance(m.destination, paris) }, { (_, m) -> m.movementCost.toFloatOrNull() ?: 100f },
-                            ))
+                            val movement = movements.minWithOrNull(
+                                compareBy(
+                                    { (u, _) ->
+                                        if (u.name == "Catapult") {
+                                            0
+                                        } else if (u.combat!!.rangedStrength > 0) {
+                                            1
+                                        } else {
+                                            2
+                                        }
+                                    },
+                                    { (_, m) -> distance(m.destination, paris) },
+                                    { (_, m) -> m.movementCost.toFloatOrNull() ?: 100f },
+                                ),
+                            )
                             if (movement == null) break
                             moved += movement.first.handle
                             act(turn, TurnCommandKind.MOVE_UNIT, movement.first.handle, destination = movement.second.destination)
@@ -159,11 +199,13 @@ object CampaignInitiativeProbe {
                     val final = api.turn(token)
                     Files.writeString(directory.resolve("final-player.json"), PlayerTurnJson.json.encodeToString(final))
                     val lost = initial!!.map.units.filter { it.military }.map { it.handle }.toSet() - final.map.units.map { it.handle }.toSet()
-                    val result = obj("case" to id, "modelCalls" to 0, "sourceSha256" to sha256(original), "sourceUnchanged" to (Files.readString(checkpoint) == original),
+                    val result = obj(
+                        "case" to id, "modelCalls" to 0, "sourceSha256" to sha256(original), "sourceUnchanged" to (Files.readString(checkpoint) == original),
                         "completedOwnTurns" to completed, "declarationTurn" to declarationTurn, "captureTurn" to captureTurn,
                         "ownsParisAfterNativeTurn" to final.cities.any { it.name == "Paris" }, "lostStartingMilitary" to lost.toList(),
                         "finalUnits" to final.map.units.filter { it.military }.map { obj("unit" to it.handle, "name" to it.name, "health" to it.health) },
-                        "scope" to "Fixed visible-information candidate sequence with native opponent turns; demonstrates feasibility, not optimality or that every alternative is wrong")
+                        "scope" to "Fixed visible-information candidate sequence with native opponent turns; demonstrates feasibility, not optimality or that every alternative is wrong",
+                    )
                     Files.writeString(directory.resolve("result.json"), json.encodeToString(result))
                     println("CAMPAIGN_PROBE_RESULT $result")
                     check(captureTurn != null && final.cities.any { it.name == "Paris" }) { "Candidate campaign failed; retain its evidence and reconsider the fixture or sequence" }

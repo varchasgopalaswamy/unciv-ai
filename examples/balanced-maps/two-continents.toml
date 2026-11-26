@@ -9,7 +9,7 @@ map_type = "Two Continents"
 map_size = "Medium"
 city_states = 12
 difficulty = "Prince"
-speed = "Standard"
+speed = "Quick"
 starting_era = "Ancient era"
 
 [agents]

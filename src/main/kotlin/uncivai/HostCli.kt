@@ -36,6 +36,7 @@ internal data class CliOptions(
     val human: String? = null,
     val vanilla: VanillaOptions = VanillaOptions(),
     val validateSetup: Boolean = false,
+    val recordReplay: Boolean = false,
 )
 
 /** Parsing and help belong to Clikt; cross-option host requirements stay here. */
@@ -66,6 +67,7 @@ internal class HostCli(private val launch: (CliOptions) -> Unit) : CliktCommand(
     private val startingEra by option("--starting-era", help = "Native starting era.").default("Ancient era")
     private val victories by option("--victories", help = "Comma-separated enabled victory names; omitted enables all.")
     private val validateSetup by option("--validate-setup", help = "Validate native setup and print its turn limit without starting services.").flag()
+    private val recordReplay by option("--record-replay", help = "Record a private replay archive beside the game checkpoint.").flag()
 
     override fun run() {
         fun requireOption(condition: Boolean, message: String) {
@@ -74,6 +76,7 @@ internal class HostCli(private val launch: (CliOptions) -> Unit) : CliktCommand(
         requireOption(listOf(save != null, resume != null, newGame, validateSetup).count { it } == 1, "Specify exactly one of --save, --resume-checkpoint, --new-game or --validate-setup")
         requireOption(checkpoint == null || save != null || newGame, "--checkpoint requires --save or --new-game")
         requireOption(!newGame || checkpoint != null, "--new-game requires --checkpoint to persist the new game")
+        requireOption(!recordReplay || checkpoint != null || resume != null, "--record-replay requires a checkpoint")
         requireOption(cityStates == null || ((newGame || validateSetup) && scenario == null), "--city-states requires an ordinary --new-game")
         requireOption(builtInAI.isEmpty() || ((newGame || validateSetup) && scenario == null), "--built-in-ai requires an ordinary --new-game")
         requireOption(agentPlayers.isEmpty() || ((newGame || validateSetup) && scenario == null), "--agent-player requires an ordinary --new-game")
@@ -89,6 +92,6 @@ internal class HostCli(private val launch: (CliOptions) -> Unit) : CliktCommand(
         val vanilla = VanillaOptions(mapType, difficulty, speed, startingEra, victories?.split(',')?.map(String::trim), startingPositionSeed)
         requireOption(vanilla == VanillaOptions() || ((newGame || validateSetup) && scenario == null), "Native setup options require a new ordinary game")
         requireOption(!validateSetup || (players == null && human == null && (scenario == null || scenario in ManagerScenarioSetup.variants)), "Setup validation cannot start services or this scenario")
-        launch(CliOptions(save, data, players, port ?: 8765, checkpoint, resume, newGame, scenario, seed, operator, tls, counteroffers, timeout, cityStates, builtInAI, agentPlayers, mapSize, mapRadius, human, vanilla, validateSetup))
+        launch(CliOptions(save, data, players, port ?: 8765, checkpoint, resume, newGame, scenario, seed, operator, tls, counteroffers, timeout, cityStates, builtInAI, agentPlayers, mapSize, mapRadius, human, vanilla, validateSetup, recordReplay))
     }
 }

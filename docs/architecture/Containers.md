@@ -1,161 +1,110 @@
-# Game and player containers
+# Container runtime
 
-The trusted host-side supervisor uses **direct rootless Podman**, with one game
-controller and one container per agent. Containers do not receive a Podman socket
-or create nested containers. Built-in AI runs within the native engine. A human
-seat adds Xvfb, x11vnc and noVNC to the controller's desktop image.
+Each game has one trusted controller container. It runs the native JVM host and
+Pydantic AI agents in one async application. Human games use the desktop image,
+which adds the native Unciv window and localhost-only browser streaming. There
+are no player workers, Temporal services or PostgreSQL volumes.
 
 ```mermaid
 flowchart LR
-    S[Host supervisor / systemd user unit] --> C[Game controller: Unciv + scheduler]
-    C <-->|private bridge per player| A[Player service + Codex]
-    A -->|Unix socket: access tokens only| L[Shared login manager]
-    L --> P[Provider account renewal]
-    A --> I[Public internet]
-    H[Local human browser] -->|localhost port| C
-    T[Operator TUI container] --> D[Read-only match databases]
-    C --> D
+    Operator[CLI and systemd supervisor] --> Controller[Game controller]
+    Controller --> JVM[Native JVM host]
+    Controller --> Main[Main agent]
+    Controller --> Economy[Economy agent]
+    Controller --> Military[Military agent]
+    Controller --> Communication[Communication agents]
+    Controller --> Login[Shared login broker]
+    Controller --> Decisions[Optional Decisions broker]
+    Controller --> Phoenix[Optional local Phoenix]
+    Watch[Read-only TUI] --> Records[Saved game and native records]
+    Controller --> Records
 ```
 
-## Responsibility and isolation
+## Ownership and launch
 
-`game_config.py` validates separate named player profiles and civilization lists.
-Resolution derives omitted map, starting-position and assignment seeds from one
-master seed, preserves explicit overrides, and saves the player-to-civ mapping.
-`benchmark.py` copies one game template into independently seeded, reusable
-single-game TOML inputs. A stable batch-seed hash gives each file a distinct
-master and retries collisions deterministically; generation writes no resolved
-configuration or run state. Batch start reads the files in filename order and
-never enumerates rotations or a Cartesian product. Random assignment includes
-every controller type. Turn order is applied afterward: human, agents, built-in
-AI. Seeded native placement uses a stable civilization order, so assigning a
-different player or controller type does not move a civilization's start or
-change map resources. Native AI difficulty bonuses still follow controller type.
-Native setup validation runs the packaged engine before model work.
-`container_supervisor.py` owns lifecycle, resource sampling, health checks and
-the batch scheduler;
-`container_runtime.py` runs services inside images. The existing scheduler still
-owns turns, communication waits, reviews and recovery. Controller type does not
-change native trade or gameplay mechanics.
+`commands/game.py` validates configuration, resolves image IDs and starts the
+background supervisor. `container_supervisor.py` owns the physical controller
+container and its systemd unit. `container_runtime.py` starts the native JVM,
+checks readiness and calls `runtime.controller.run_controller`. An unexpectedly
+exited JVM fails its controller instead of leaving an orphaned model process.
 
-Each player has its own network/PID/IPC namespaces, Codex home and filesystem
-mounts. Only that player's `agent-services`, `agents` and `codex` subdirectories
-are mounted; operator credentials, the CA private key, sibling state and host
-home are absent. Leaf certificates and the public CA certificate are copied into
-the player's private service directory. The trusted controller can read all match
-state for scheduling/recovery. Image contents contain code/assets, never account
-credentials or live games.
+A version2 container manifest selects `pydantic-local-v1`. It records the logical
+game ID, physical deployment ID, exact image IDs and explicit launch intent.
+Fresh games have no resume authorization. An explicit `game resume` starts a new
+physical launch and grants one recovery attempt. The controller consumes that
+launch authorization; an automatic retry cannot repeatedly grant fresh attempts.
+The supervisor can reattach to its existing launch without rewriting control
+files or starting another controller.
 
-Each agent/controller pair shares one dedicated bridge. Controller IP forwarding
-is disabled. A separate internal bridge carries the human browser. Netavark
-network isolation plus nftables rules in Podman's rootless network namespace
-block cross-bridge, private-network, host and IPv6 egress from player networks;
-DNS and public IPv4 internet remain available. The graphical service binds only
-the controller's control interface and is published only on host localhost.
-Firewall setup failure aborts startup. Rules are scoped by random persisted game
-ID, so cleanup never removes another game's infrastructure.
+The controller uses fixed Python functions and async tasks for agent hand-off.
+Economy and Military may run concurrently, with native action ownership and
+mutation checks still enforced by code. Model completion combines the factual
+report and role completion fields in one structured output. Native checks decide
+whether that completion is accepted and whether Main must reopen.
 
-Containers use read-only root filesystems, dropped capabilities,
-no-new-privileges, independent tmpfs directories, and memory/CPU/PID limits.
-No host display server, source checkout or general home directory is mounted.
-Rootless containers share the Linux kernel; this is not a virtual-machine boundary
-or protection from a compromised host operator. Network probes and mount checks
-cover the tested paths, not every possible kernel/container exploit.
+## Process and network boundaries
 
-## Authentication
+Rootless Podman provides the game container's PID, IPC, mount and resource
+boundaries. A private control network carries the host and optional browser
+endpoint. A separate provider network supplies outbound access. IP forwarding is
+disabled; the existing rootless nftables rules block private, host and cross-bridge
+egress from the provider interface. The browser port binds only to localhost.
+Shared login and Decisions brokers use scoped Unix sockets. The optional Phoenix
+interface joins the internal telemetry network.
 
-A dedicated durable OpenAI Codex login belongs to the operator's existing account.
-The login-manager container alone mounts its renewable credential cache. Agent
-services authenticate over a mounted Unix socket using individual revocable
-client tokens. Only access tokens/account identity are returned. App-server
-external-token login and refresh callbacks keep the provider session outside
-model-facing content. Account identity changes are rejected during renewal.
+All player code runs in the trusted controller. Per-player privacy and action
+ownership are enforced by authenticated native player connections, scoped domain
+stores and the tool catalogue. Agents receive their own instructions, observations,
+memory and tools. They do not receive shell or arbitrary filesystem tools.
 
-One lock serializes refreshes. A hash of the current access token identifies the
-bundle across manager restarts, so concurrent failures renew it once. Provisioning
-locks serialize simultaneous game starts. Games still share the account's usage
-limits; isolation does not create independent provider quotas. A login failure
-is surfaced as a service failure. The normal personal Codex configuration is not
-imported into player homes.
+The controller mounts the complete private match directory writable at `/match`.
+It mounts only the credential sources needed by the roster: the login broker
+socket, an OpenRouter key file, and the optional Decisions socket. Per-player
+broker tokens remain under `agent-services/<civ>/`. Renewable subscription
+credentials remain in the separate login broker. Keys and tokens do not appear
+in Podman arguments or model inputs.
 
-Player profiles select `openai` or `openrouter`. Both use Codex app-server and the
-same player MCP gateway for gameplay, communication and structured reviews.
-OpenRouter uses a custom Responses provider with an explicit catalog model ID;
-it never runs the OpenAI login callback. Only OpenRouter workers mount the durable
-owner-only `AUTH_DIR/openrouter.key`, read-only at `/run/secrets/openrouter.key`.
-The worker loads it into the child process environment; it is absent from Podman
-arguments, game TOML, player prompts and telemetry. Other players and the game
-controller do not receive this mount. OpenRouter-only games do not start the
-OpenAI login manager.
+## Images and observation
 
-`providers.py` checks the public model catalog for tool calling, structured output
-and reasoning support and freezes context limits/capabilities in each worker's
-durable Codex directory. New and resumed jobs explicitly select the provider;
-effective provider/model/effort are checked and recorded across all job types.
-OpenAI priority is never requested on OpenRouter jobs. The catalog snapshot and
-credential file survive container replacement. No separate model loop or turn
-recovery path is introduced.
+`container_images.py` builds runtime and desktop targets from the selected source
+and engine checkout. The curated build context excludes credentials, saved games,
+local caches and archived documents. Provenance records source/engine revisions,
+dirty flags and hashes of packaged source, dependencies and assets. Existing games
+retain exact image IDs until an explicit image override is supplied.
 
-## Durability and provenance
+The TUI reads runtime-published operator views through a read-only state mount.
+History/profile/failure requests use the owner-only Unix socket for frozen
+captures; stopped archives are copied to private scratch before SQLite opens.
+No observer mount grants write access to a source database. Controller stages and per-role states are shown
+separately. A finished Main role cannot mask active specialists or the final
+native handoff. Model request counters distinguish gameplay from communication.
+Phoenix remains an optional local trace viewer; it is not needed for execution.
 
-`resolved.json` freezes all four seeds, player profiles, assignments and settings;
-`container.json` records image IDs, auth
-location and persisted game identity. Images contain host/engine revision and
-modified-tree status, Codex version and executable/helper checksums. The image ID
-identifies the exact packaged content, including uncommitted source edits.
-The selected engine supplies both libraries and assets.
+## Stop and restart
 
-All authoritative game, communication, review, memory, receipt and accounting
-state is bind-mounted under the match directory. Container writable layers are
-disposable. Review inputs persist before handoff. Resume reuses the existing
-[coordinated turn rewind](Turn-recovery.md), recreates containers/networks and
-starts fresh player processes. Internal paths are stable `/match/...` paths,
-so moving a stopped match on the host does not change stored endpoint paths.
-No format migration or legacy production process launcher is retained.
+Stop fences active roles and saves the native position. Both stop and remove retain
+the match directory; remove also deletes owned containers, networks and firewall
+rules. The systemd owner has bounded retries and never silently adopts a foreign
+container. Terminal projections must belong to the current launch and process.
 
-Systemd user units detach supervisors and flush logs into the match directory.
-Lingering keeps them alive after logout. An unexpected container exit records its
-exit/OOM state and stops only that game. Supervisors do not automatically restart
-failed games. The runner validates every input, pins its image pair, and prepares
-all `games/<input-stem>/` directories before atomically publishing the new run;
-a preparation failure cannot launch a partial batch. Each saved game owns its
-input copy, `resolved.json` and container metadata. `batch.json` contains only
-IDs, statuses and concurrency, while status/results read the saved per-game
-configuration. Resume never rereads the original input directory. Container
-removal leaves durable state intact; images and the dedicated login must also
-remain available for resume.
+After an application failure, explicit resume reconciles uncertain native requests
+and starts fresh agent conversations at the latest native position. Committed
+world actions, messages, authored plans, receipts and charged usage remain intact.
+The original deadline and total game caps remain in force; per-attempt allowances
+refresh. No previous agent graph or model history is replayed. Expected provider
+waits follow the bounded model policy and are shown as waiting, not game failures.
 
-The TUI runs from the saved runtime image with no network. Its match mount is
-read-only except for the control directory and SQLite directories (runner, private
-notebooks and accounting). SQLite needs those directories to create WAL
-coordination files even for `mode=ro` connections. All dashboard queries use
-read-only connections. This trusted operator viewer reads existing databases and
-does not depend on published game ports. Agents never receive these mounts.
-`civ-agent match watch --local` instead runs the installed viewer on the operator's
-machine, retaining read-only database connections. This lets viewer updates reach
-existing games independently of their pinned images, without restarting services.
+For backup, stop the game and retain its full directory, dedicated login directory
+and pinned image artifacts. There is no external workflow database. Old Temporal
+saves remain read-only archives in this version. The launcher rejects their
+execution before starting services and does not convert them.
 
-## Verification
+## Validation
 
-`tests/test_run_vanilla_game.py` covers config precedence, invalid settings,
-player assignment (including humans and native AI), immutable assignments on resume,
-result attribution and directory relocation. `VanillaSetupTest`
-checks native map/difficulty/speed/era/victory selection. `test_container_auth.py`
-checks parallel authorization, single renewal, broker restart and credential
-minimization. `test_container_isolation.py` is an opt-in real-Podman test for
-service reachability, sibling/game denial, public internet, mount separation,
-read-only roots and dropped capabilities. Live acceptance results are recorded
-separately in the coverage ledger.
-
-`test_benchmark.py` checks fresh and deterministic input generation, stable
-prefixes, collision-safe masters, explicit seed overrides, standalone TOML reuse,
-atomic preparation, resume isolation, concurrency and result attribution.
-Engine `GameStartingPositionSeedTest` checks repeated placement/resource generation
-and seed persistence.
-
-`test_providers.py` checks mixed-provider assignment, credential mounts/import and
-capability validation. `test_openrouter_process.py` runs the real Codex executable
-against local Responses/MCP fixtures (set `CIV_TEST_CODEX` to opt in), including
-tool round trips, reasoning controls, review schemas, context limits and usage.
-This exercises the wire contract without paid inference; it does not establish
-that every model/backend on OpenRouter completes a game.
+`test_local_container_runtime.py` checks one-controller launch, explicit resume
+intent, archive rejection before effects, local status views and separate request
+counts. Container ownership, shutdown, image provenance and supervisor reattachment
+have independent regression tests. `test_local_routing.py` checks persisted delivery
+admission before send, receipt recovery after lost acknowledgements, cancellation
+of unsent drafts and instance-local broker calls. These tests use temporary stores
+and synthetic host/broker responses; they make no live model requests.

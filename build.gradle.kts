@@ -238,9 +238,13 @@ tasks.register<JavaExec>("searchBalancedMaps") {
         val type = providers.gradleProperty("mapSearchType").orNull
         val placementSeed = providers.gradleProperty("mapSearchStartingPositionSeed").orNull
         val candidates = providers.gradleProperty("mapSearchCandidates").orNull
-        if (candidates != null) args(type ?: "both", placementSeed ?: "0", candidates)
-        else if (placementSeed != null) args(type ?: "Pangaea", placementSeed)
-        else type?.let { args(it) }
+        if (candidates != null) {
+            args(type ?: "both", placementSeed ?: "0", candidates)
+        } else if (placementSeed != null) {
+            args(type ?: "Pangaea", placementSeed)
+        } else {
+            type?.let { args(it) }
+        }
     }
 }
 

@@ -9,11 +9,14 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from civ_agent.agent_settings import communication_effort, valid_setting
 from civ_agent.civilization_guide import civilization_reference
 from civ_agent.decisions_policy import DecisionsSettings
+from civ_agent.execution_policy import ExecutionPolicy, legacy_execution_policy
+from civ_agent.gameplay_policy import GameplayPolicy, legacy_gameplay_policy
+from civ_agent.orchestration.worker_configuration import WorkerTracingConfig
+from civ_agent.player_settings import communication_effort, valid_setting
 from civ_agent.protocol import JsonObject
-from civ_agent.providers import Provider
+from civ_agent.provider_credentials import Provider
 
 Positive = Annotated[int, Field(gt=0)]
 Seed = Annotated[int, Field(ge=-(2**63), lt=2**63)]
@@ -74,6 +77,12 @@ class GameSetup(Configuration):
 
 
 class AgentDefaults(Configuration, DecisionsSettings):
+    gameplay_policy: GameplayPolicy = Field(
+        default_factory=legacy_gameplay_policy, exclude_if=lambda value: value.version == 0
+    )
+    execution_policy: ExecutionPolicy = Field(
+        default_factory=legacy_execution_policy, exclude_if=lambda value: value.version == 0
+    )
     provider: Provider = "openai"
     model: str = "gpt-6-luna"
     reasoning_effort: str = "medium"
@@ -82,6 +91,7 @@ class AgentDefaults(Configuration, DecisionsSettings):
     economy_interval: Positive = 5
     military_interval: Positive = 5
     review_attempts: Positive = 3
+    review_timeout_seconds: Annotated[int, Field(ge=1, le=86400, exclude_if=lambda value: value == 600)] = 600
     strategy_guide: bool = False
     civilization_guide: bool = False
     native_advice_enabled: bool = False
@@ -102,6 +112,13 @@ class AgentDefaults(Configuration, DecisionsSettings):
         return value
 
 
+class GameAgentSettings(AgentDefaults):
+    # Retain historical input/session hashes. The local runtime no longer
+    # enforces per-role request limits; this field is archive metadata only.
+    # Keep it out of the frozen NativePlayerSettings payload.
+    request_limit: Annotated[int, Field(ge=1, le=100, strict=True)] = 24
+
+
 class EconomyModel(Configuration):
     provider: Provider | None = None
     model: str | None = None
@@ -118,6 +135,7 @@ class EconomyModel(Configuration):
 class Player(Configuration):
     name: str
     controller: Literal["agent", "human", "built_in_ai"] = "agent"
+    execution_policy: ExecutionPolicy | None = Field(default=None, exclude_if=lambda value: value is None)
     economy_model: EconomyModel | None = None
     military_model: EconomyModel | None = None
     provider: Provider | None = None
@@ -134,6 +152,8 @@ class Player(Configuration):
 
     @model_validator(mode="after")
     def settings(self):
+        if self.execution_policy is not None and self.controller != "agent":
+            raise ValueError("Only agent players have execution policy settings")
         if self.military_model is not None and self.controller != "agent":
             raise ValueError("Only agent players have military model settings")
         if self.economy_model is not None and self.controller != "agent":
@@ -159,11 +179,12 @@ class AssignedPlayer(Player):
 
 class Limits(Configuration):
     max_turns: Positive | None = None
+    # Retained for saved configuration hashes; local play has no invocation cap.
     max_invocations: Positive = 10000
     max_seconds: Positive = 604800
     turn_timeout: Annotated[int, Field(gt=0, le=86400)] = 3600
     startup_timeout: Positive = 900
-    max_concurrent_jobs: Positive = 4
+    max_concurrent_jobs: Annotated[Positive, Field(le=64)] = 4
     model_capacity_retries: Annotated[int, Field(ge=0, le=100)] = 5
     model_capacity_retry_delay: Annotated[int, Field(gt=0, le=86400)] = 30
 
@@ -186,11 +207,14 @@ class Runtime(Configuration):
     image: str = "localhost/civ-agent:runtime"
     desktop_image: str = "localhost/civ-agent:desktop"
     browser_port: Annotated[int, Field(ge=0, le=65535)] = 0
+    scripted_models: bool = False
+    record_replay: bool = Field(default=False, exclude_if=lambda enabled: not enabled)
+    tracing: WorkerTracingConfig | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
 class GameConfig(Configuration):
     game: GameSetup = Field(default_factory=GameSetup)
-    agents: AgentDefaults = Field(default_factory=AgentDefaults)
+    agents: GameAgentSettings = Field(default_factory=GameAgentSettings)
     players: list[Player] = Field(
         default_factory=lambda: (
             [Player(name=f"Agent {index}") for index in range(1, 4)] + [Player(name="Unciv", controller="built_in_ai")]
@@ -199,6 +223,13 @@ class GameConfig(Configuration):
     limits: Limits = Field(default_factory=Limits)
     resources: Resources = Field(default_factory=Resources)
     runtime: Runtime = Field(default_factory=Runtime)
+
+    @field_validator("agents", mode="before")
+    @classmethod
+    def agent_settings(cls, value):
+        if isinstance(value, AgentDefaults):
+            return value.model_dump()
+        return value
 
     @model_validator(mode="after")
     def roster(self):
@@ -224,6 +255,12 @@ class GameConfig(Configuration):
         for player in self.players:
             if player.controller == "agent":
                 settings = self.settings(player)
+                models = [settings, settings["economy_model"], settings["military_model"]]
+                if self.runtime.scripted_models:
+                    if any(model["model"] != "scripted-v1" or model["provider"] != "openai" for model in models):
+                        raise ValueError("Scripted runtime requires explicit scripted-v1 models for every agent role")
+                elif any(model["model"] == "scripted-v1" for model in models):
+                    raise ValueError("Scripted models require explicit runtime.scripted_models=true")
                 if settings["provider"] == "openrouter" and "/" not in settings["model"]:
                     raise ValueError("OpenRouter requires an explicit model ID, such as anthropic/claude-sonnet-4.5")
         return self
@@ -249,8 +286,8 @@ class GameConfig(Configuration):
             military.update(player.military_model.model_dump(exclude_none=True))
         if military["provider"] == "openrouter" and "/" not in military["model"]:
             raise ValueError("OpenRouter military model requires an explicit model ID")
-        return {
-            **self.agents.model_dump(),
+        settings = {
+            **self.agents.model_dump(exclude={"request_limit"}),
             "military_model": military,
             "economy_model": economy,
             "provider": provider,
@@ -262,6 +299,9 @@ class GameConfig(Configuration):
             ),
             "fast": self.agents.fast and provider == "openai",
         }
+        if player.execution_policy is not None:
+            settings["execution_policy"] = player.execution_policy.model_dump(mode="json")
+        return settings
 
     def resolved(self):
         config = self.model_copy(deep=True)

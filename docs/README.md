@@ -1,7 +1,7 @@
 # Documentation
 
-Start with [running a full game](guides/Full-vanilla-run.md), the
-[development workflow](Development-workflow.md), or the [current roadmap](Roadmap.md).
+Start with [running a full game](guides/Full-vanilla-run.md) or the
+[development workflow](Development-workflow.md).
 The [coverage ledger](reference/Player-api-coverage.md) records implemented and
 outstanding player surfaces.
 
@@ -15,7 +15,6 @@ Run shell examples from the repository root unless a page says otherwise.
 | [architecture/](#architecture) | Current service, storage and model-context behavior |
 | [reference/](#player-and-operator-reference) | Player contracts, feature semantics and accounting |
 | [scenarios/](#scenarios) | Reproducible guided acceptance exercises |
-| [archive/](archive/README.md) | Historical plans, sprint handoffs, audits and measurements |
 
 ## Running and inspecting games
 
@@ -29,7 +28,6 @@ Run shell examples from the repository root unless a page says otherwise.
 | [Chat, memory and recovery](guides/Chat-memory-and-recovery.md) | Human communication, history and interrupted-turn recovery |
 | [Optional strategy guide](guides/Strategy-guide.md) | Advisory strategy context, CLI toggle and size measurements |
 | [Native guidance and Decisions](guides/Native-guidance-and-routing.md) | Direct native advice, city choices, diplomacy/memory/review triage, credentials and evaluation |
-| [Saved strategic positions](scenarios/Strategic-positions.md) | Reusable failure cases, live model comparisons and opening benchmarks |
 
 ## Architecture
 
@@ -50,11 +48,6 @@ Run shell examples from the repository root unless a page says otherwise.
 | [Background turn memory](architecture/Background-turn-memory.md) | Handoff, concurrent reflection, finalization and checkpoints |
 | [Database access](architecture/Database-access.md) | SQLAlchemy/SQLite ownership and transactions |
 | [Host accounting and responsiveness](architecture/Host-accounting.md) | Incremental accounting, crash recovery, health checks and timing diagnostics |
-
-The [decision-process refactor](architecture/Decision-process-refactor.md)
-connects factual comparisons, player choices and observed outcomes. Its first
-implementation and [saved-position results](archive/reports/Decision-process-refactor-2026-10-08.md)
-retain staged acceptance gates for stronger play.
 
 ## Player and operator reference
 
@@ -92,9 +85,7 @@ retain staged acceptance gates for stronger play.
 - [Informational popups](reference/Informational-popups.md)
 - [Ordinary notifications](reference/Ordinary-notifications.md)
 
-Feature references include scoped verification evidence. A passing prepared
-exercise does not establish complete player coverage; consult the coverage ledger
-and roadmap for outstanding work.
+The coverage ledger lists remaining gaps in the player API.
 
 ## Scenarios
 
@@ -103,14 +94,11 @@ and roadmap for outstanding work.
 - [Agreements under pressure](scenarios/Agreement-lifecycle-live-scenario.md)
 
 Naval, air, city-state and victory reproduction commands live with their feature
-references above. Results from individual runs are in the [archive](archive/README.md).
+references above.
 
 ## Maintaining the docs
 
-Keep the root limited to this index, the roadmap and the development workflow.
-Update the relevant guide or reference when behavior changes. Put completed task
-plans and dated results in the archive, carrying any unresolved work into the
-roadmap. Preserve evidence and its date; old measurements are not current
-performance guarantees. Use relative links and update them when moving a page.
+Update the relevant guide or reference when behavior changes. Use relative links
+and update them when moving a page.
 
 - [Monitoring storage and exports](architecture/Monitoring.md): dashboard data, durable records and existing-game import.

@@ -12,7 +12,7 @@ from civ_agent.observations import DetailQuery, detail_scope
 from civ_agent.payload_updates import apply_detail_response, detail_response, encoded, normalized_detail_query
 from civ_agent.protocol import JsonObject
 from civ_agent.state_updates import apply_overview_update, overview_update, stamp
-from tests.test_economy_optimization import managed
+from tests.domain_fixtures import managed
 
 
 def note(id: str = "mem1", **changes) -> JsonObject:

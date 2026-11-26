@@ -23,7 +23,10 @@ object BenchmarkStartAssessment {
     @JvmStatic
     fun main(args: Array<String>) {
         require(args.size == 2) { "manifest-json output-directory" }
-        val json = Json { prettyPrint = true; ignoreUnknownKeys = true }
+        val json = Json {
+            prettyPrint = true
+            ignoreUnknownKeys = true
+        }
         val cases = json.decodeFromString<List<Case>>(Files.readString(Path.of(args[0])))
         val root = Path.of(args[1]).toAbsolutePath()
         Files.createDirectories(root)

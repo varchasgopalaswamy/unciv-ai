@@ -2,16 +2,20 @@
 
 import asyncio
 import copy
+import hashlib
 import json
 import secrets
 import time
 from typing import Annotated, Literal
 
-from pydantic import Field
+from pydantic import Field, model_serializer
 
+from civ_agent.decisions_ledger import fingerprint
 from civ_agent.economy_completion import worker_completion_problem
 from civ_agent.economy_schedule import request_city
 from civ_agent.memory_records import InitiativeDecision
+from civ_agent.native_role_completion import required_choice_problem
+from civ_agent.orchestration.contracts import NativeAuxiliaryTask
 from civ_agent.protocol import JsonObject
 from civ_agent.schemas import BoundaryModel
 from civ_agent.tls import write_private_json
@@ -23,6 +27,7 @@ ECONOMY_WAIT_SECONDS = 300
 CITY_COMMANDS = frozenset(
     {
         "QUEUE_CONSTRUCTION",
+        "START_CONSTRUCTION",
         "REMOVE_CONSTRUCTION",
         "MOVE_CONSTRUCTION",
         "BUY_CONSTRUCTION",
@@ -85,6 +90,27 @@ class RequestDisposition(BoundaryModel):
     reviewTurn: int | None = Field(
         default=None, ge=0, description="A future game turn to reconsider this request, or null for no scheduled date."
     )
+
+    @model_serializer(mode="wrap")
+    def serialize_review_date(self, handler, info):
+        value = handler(self)
+        # The runtime accepts an omitted date, while our strict wire schema
+        # requires the nullable key. Preserve its default through exclude_unset
+        # serialization, including when nested in a typed role completion.
+        if (info.include is None or "reviewTurn" in info.include) and (
+            info.exclude is None or "reviewTurn" not in info.exclude
+        ):
+            value["reviewTurn"] = self.reviewTurn
+        return value
+
+
+ChoiceEscalation = Annotated[
+    str,
+    Field(
+        max_length=500,
+        description="Economy may explicitly transfer its remaining native Construction choices to Main, with a reason.",
+    ),
+]
 
 
 class FinishRole(BoundaryModel):
@@ -157,6 +183,7 @@ class TurnRoles:
         self.military_status = {}
         self.military_revision = None
         self.military_observation = None
+        self.military_observation_state = None
         self.known_units = None
         self.economy_start = asyncio.Event()
         self.economy_schedule = None
@@ -169,6 +196,7 @@ class TurnRoles:
         self.economy_wait_deadline = 0.0
         self.economy_changed = asyncio.Event()
         self.main_attention = 0
+        self.intent_handoffs = copy.deepcopy(record.get("roles", {}).get("intentHandoffs", {}))
 
     def state(self):
         return {
@@ -185,9 +213,12 @@ class TurnRoles:
             "economySchedule": copy.deepcopy(self.economy_status),
             "economyCompletions": self.economy_completions,
             "economyWait": copy.deepcopy(self.economy_wait_record),
+            "intentHandoffs": copy.deepcopy(self.intent_handoffs),
         }
 
     def context(self):
+        from civ_agent.intent_handoffs import compact_attempts
+
         return {
             "rolesFinished": dict(self.ready),
             "requests": copy.deepcopy(self.requests),
@@ -197,6 +228,7 @@ class TurnRoles:
             "militarySchedule": copy.deepcopy(self.military_status),
             "warState": copy.deepcopy(self.war_state),
             "economySchedule": copy.deepcopy(self.economy_status),
+            "intentHandoffs": compact_attempts(self.intent_handoffs),
         }
 
     async def save(self):
@@ -316,7 +348,7 @@ class TurnRoles:
             self.economy_changed.clear()
             self.service.gateway.check(job, ended_allowed=True)
             if self.service.failure:
-                from civ_agent.agent_service import ServiceError
+                from civ_agent.service_errors import ServiceError
 
                 raise ServiceError(self.service.failure)
             if self.committed or job.gameplay_ended.is_set():
@@ -342,15 +374,18 @@ class TurnRoles:
 
     async def finish_economy_wait(self, job, outcome):
         async with self.lock:
-            wait = self.economy_wait_record
-            self.economy_wait_record = None
-            job.role_wait_pending.clear()
-            # Attention delivered on this continuation is not a second request
-            # to reopen Main after it subsequently finishes.
-            self.resumes["gameplay"].clear()
-            self.messages.pop("gameplay", None)
-            self.record["lastEconomyWait"] = {**(wait or {}), "state": outcome}
+            result = self.settle_economy_wait(job, outcome)
             await self.save()
+        return result
+
+    def settle_economy_wait(self, job, outcome):
+        """Apply a settled outcome; the caller owns locking and persistence."""
+        wait = self.economy_wait_record
+        self.economy_wait_record = None
+        job.role_wait_pending.clear()
+        self.resumes["gameplay"].clear()
+        self.messages.pop("gameplay", None)
+        self.record["lastEconomyWait"] = {**(wait or {}), "state": outcome}
         return {"id": (wait or {}).get("id"), "state": outcome, "requestIds": (wait or {}).get("requestIds", [])}
 
     async def initialize_economy(self, view):
@@ -362,7 +397,7 @@ class TurnRoles:
         await self.synchronize_economy(view)
         await self.save()
 
-    async def synchronize_economy(self, view):
+    async def synchronize_economy(self, view, *, effect_id=None):
         if self.economy_schedule is None or self.committed or self.committing:
             return
         if (
@@ -385,7 +420,7 @@ class TurnRoles:
             return
         if status["reasons"]:
             self.economy_status = copy.deepcopy(status)
-            self.resume("economy", "; ".join(status["reasons"]), reasons=status["reasons"])
+            self.resume("economy", "; ".join(status["reasons"]), reasons=status["reasons"], effect_id=effect_id)
             await self.save()
             return
         elif self.economy_status.get("phase") == "finished":
@@ -424,11 +459,12 @@ class TurnRoles:
             self.messages.pop("economy", None)
         elif job.purpose == "military":
             self.military_observation = None
+            self.military_observation_state = None
             self.resumes["military"].clear()
             self.messages.pop("military", None)
 
     async def initialize_military(self, view):
-        from civ_agent.military_schedule import MilitarySchedule
+        from civ_agent.military_schedule import MilitarySchedule, triage_signature
 
         self.military_schedule = MilitarySchedule(self.service.memory, self.service.military_interval)
         await self.synchronize_war(view)
@@ -438,7 +474,17 @@ class TurnRoles:
                 self.military_schedule.triage_input, view, self.key[1], self.war_state, self.military_status
             )
             if evidence is not None:
-                result = await advisories.evaluate(evidence)
+                result = await advisories.evaluate(
+                    evidence,
+                    task=NativeAuxiliaryTask(
+                        kind="military_triage",
+                        key=triage_signature(
+                            evidence["militaryReview"]["baseline"],
+                            evidence["militaryReview"]["current"],
+                            evidence["militaryReview"]["nextReviewTurn"],
+                        ),
+                    ),
+                )
                 latest = await self.jobs["gameplay"].connection.tool("player_turn", {})
                 if (
                     "error" in latest
@@ -462,7 +508,7 @@ class TurnRoles:
             self.military_requested = True
             self.military_tasks.append(self.start_military())
 
-    async def synchronize_military(self, view):
+    async def synchronize_military(self, view, *, effect_id=None):
         if self.military_schedule is None or self.committed or self.committing:
             return
         if (
@@ -488,17 +534,21 @@ class TurnRoles:
         status["phase"] = "sleeping"
         self.military_status = status
         if status["reasons"]:
-            self.resume("military", "; ".join(status["reasons"]))
+            self.resume("military", "; ".join(status["reasons"]), effect_id=effect_id)
             await self.save()
 
-    async def synchronize_war(self, view):
+    async def synchronize_war(self, view, *, effect_id=None):
         if self.committed or self.committing or self.wars is None or "diplomacy" not in view:
             return
         previous_episodes = set(self.war_state["episodes"])
         self.war_state = await self.service.io.call(self.wars.synchronize, self.key[0], view)
         added_episodes = set(self.war_state["episodes"]) - previous_episodes
         if added_episodes and self.needs_attention("gameplay"):
-            self.resume("gameplay", "A new war needs your initial goals. Read war_goals and current observations.")
+            self.resume(
+                "gameplay",
+                "A new war needs your initial goals. Read war_goals and current observations.",
+                effect_id=effect_id,
+            )
         units = {u["handle"]: u for u in view.get("units", (view.get("map") or {}).get("units", []))}
         if self.known_units is not None:
             for handle in units.keys() - self.known_units:
@@ -508,18 +558,25 @@ class TurnRoles:
                         owner,
                         "A new unit has remaining actions. Read its fresh facts before issuing orders.",
                         workers_only=owner == "economy",
+                        effect_id=effect_id,
                     )
         self.known_units = set(units)
         active = bool(war_opponents(view))
         changed = active != self.military_active
         self.military_active = active
         if self.military_schedule is not None:
-            await self.synchronize_military(view)
+            await self.synchronize_military(view, effect_id=effect_id)
         elif changed:
-            self.resume("military", "War started or ended; review military plans and remaining actions.")
+            self.resume(
+                "military", "War started or ended; review military plans and remaining actions.", effect_id=effect_id
+            )
         if changed:
             if self.needs_attention("gameplay"):
-                self.resume("gameplay", "War status changed; review strategic priorities and current agreements.")
+                self.resume(
+                    "gameplay",
+                    "War status changed; review strategic priorities and current agreements.",
+                    effect_id=effect_id,
+                )
             self.changed.set()
             await self.save()
 
@@ -636,10 +693,8 @@ class TurnRoles:
                 (
                     [arguments["to"]]
                     if arguments.get("action", "send") == "send"
-                    else [
-                        m["author"] for m in self.war_state.get("messages", []) if m["id"] in arguments.get("ids", [])
-                    ]
-                    if arguments.get("action") == "resolve"
+                    # Acknowledgements and resolutions update shared history;
+                    # only a new message asks its recipient for another pass.
                     else []
                 )
                 if name == "role_message"
@@ -747,6 +802,26 @@ class TurnRoles:
             if name == "finish_role":
                 if job.purpose == "gameplay" and self.economy_wait_record is not None:
                     return {"error": "ROLE_WAIT_ACTIVE", "applied": False}
+                native_view = None
+                strict_native = job.memory.get("nativeRoleContract") == 1
+                if arguments.get("escalateChoices") and not strict_native:
+                    return {"error": "NATIVE_ROLE_ESCALATION_INVALID", "applied": False, "recoverable": True}
+                if strict_native and (job.purpose in {"gameplay", "economy"} or arguments.get("escalateChoices")):
+                    # This is a code-owned check, not delivered observation
+                    # credit. Reject before schedules, requests or ready flags
+                    # change; a provider must still read its own fresh facts.
+                    native_view = await job.connection.tool("player_turn", {})
+                    if problem := required_choice_problem(
+                        native_view,
+                        job.purpose,
+                        arguments,
+                        epoch=self.key[0],
+                        turn=self.key[1],
+                        city_owner=self.owner,
+                        handoff_review=self.record.get("handoffReview", {}),
+                        main_deferred=self.deferral.get("deferChoices") is True,
+                    ):
+                        return problem
                 if job.purpose == "gameplay" and any(
                     e["active"] and e["version"] == 0 for e in self.war_state["episodes"].values()
                 ):
@@ -793,7 +868,7 @@ class TurnRoles:
                     if self.economy_schedule is not None:
                         # Acknowledge the final native position, including this
                         # role's own actions, rather than its initial preload.
-                        view = await job.connection.tool("player_turn", {})
+                        view = native_view if native_view is not None else await job.connection.tool("player_turn", {})
                         if (
                             "error" in view
                             or view.get("phase") != "ACTIVE"
@@ -801,7 +876,8 @@ class TurnRoles:
                             or view.get("turn") != self.key[1]
                         ):
                             return {"error": "ECONOMY_REFRESH_REQUIRED", "applied": False}
-                        await self.synchronize_economy(view)
+                        if not strict_native:
+                            await self.synchronize_economy(view)
                         if problem := worker_completion_problem(view, self.war_state, arguments.get("workerSkips", [])):
                             return problem
                         if self.economy_observation is None or not await self.service.io.call(
@@ -823,7 +899,9 @@ class TurnRoles:
                             }
                         self.economy_revision = (view.get("epoch"), view.get("turn"), view.get("revision"))
                     elif problem := worker_completion_problem(
-                        job.observation or {}, self.war_state, arguments.get("workerSkips", [])
+                        native_view if native_view is not None else job.observation or {},
+                        self.war_state,
+                        arguments.get("workerSkips", []),
                     ):
                         return problem
                     for request in self.requests:
@@ -888,12 +966,27 @@ class TurnRoles:
                 if not self.known_cities:
                     self.known_cities = {city["handle"] for city in (job.observation or {}).get("cities", [])}
                 self.ready[job.purpose] = True
+                escalated = strict_native and job.purpose == "economy" and bool(arguments.get("escalateChoices"))
+                if escalated:
+                    assert native_view is not None
+                    self.record["handoffReview"] = {
+                        "pending": copy.deepcopy(native_view["pending"]),
+                        "role": "gameplay",
+                    }
+                    self.resume(
+                        "gameplay",
+                        "Economy transferred remaining native Construction choices to Main: "
+                        + arguments["escalateChoices"],
+                    )
                 if job.purpose == "gameplay":
                     self.deferral = {
                         k: v
                         for k, v in arguments.items()
                         if k in {"deferChoices", "deferReason", "initiativeDecisions"}
                     }
+                from civ_agent.intent_handoffs import role_handoff
+
+                self.intent_handoffs[job.purpose] = role_handoff(job)
                 await self.save()
                 job.role_finished.set()
                 self.changed.set()
@@ -901,6 +994,7 @@ class TurnRoles:
                     "roleFinished": True,
                     "role": job.purpose,
                     "instruction": "Stop issuing actions unless the host requests another pass.",
+                    **({"nativeChoicesEscalated": True} if escalated else {}),
                 }
             if job.purpose not in {"gameplay", "military"} or self.ready[job.purpose]:
                 return {"error": "ROLE_ACTION_NOT_PERMITTED", "applied": False}
@@ -951,7 +1045,16 @@ class TurnRoles:
         if self.ready["economy"]:
             self.resume("economy", "An urgent economic request requires another pass.", scoped=True)
 
-    def resume(self, role, message, *, reasons=None, scoped=False, workers_only=False):
+    def resume(self, role, message, *, reasons=None, scoped=False, workers_only=False, effect_id=None):
+        if effect_id is not None:
+            # This turn's attention causes are domain state, committed with the
+            # role context. They contain no command envelopes or host responses.
+            cause = hashlib.sha256(json.dumps([effect_id, role, message], separators=(",", ":")).encode()).hexdigest()
+            applied = self.record.setdefault("nativeAttentionCauses", [])
+            if cause in applied:
+                return
+            applied.append(cause)
+        was_ready = self.ready[role]
         if role == "economy" and workers_only and self.ready[role]:
             self.economy_status.update(fullReview=False, cities=[], reasons=[])
             if role in self.jobs:
@@ -962,7 +1065,12 @@ class TurnRoles:
         if role in self.jobs:
             self.jobs[role].role_finished.clear()
         if role == "military":
-            self.military_observation = None
+            # Coalesce redundant attention without discarding a delivered
+            # comparison basis. New coordination still needs judgment, and
+            # finish independently checks fresh native facts and its review.
+            if was_ready or self.military_observation_state != fingerprint(self.war_state):
+                self.military_observation = None
+                self.military_observation_state = None
             self.military_status["phase"] = "running"
             if message not in self.military_status.get("reasons", []):
                 self.military_status.setdefault("reasons", []).append(message)
@@ -982,12 +1090,12 @@ class TurnRoles:
         self.resumes[role].set()
         self.changed.set()
 
-    async def after_action(self, job, arguments, result):
+    async def after_action(self, job, arguments, result, *, effect_id=None):
         if "error" in result or arguments.get("kind") == "END_TURN":
             return
         if job.observation:
-            await self.synchronize_war(job.observation)
-            await self.synchronize_economy(job.observation)
+            await self.synchronize_war(job.observation, effect_id=effect_id)
+            await self.synchronize_economy(job.observation, effect_id=effect_id)
         async with self.lock:
             current = {city["handle"] for city in (job.observation or {}).get("cities", [])}
             added = current - self.known_cities
@@ -997,6 +1105,7 @@ class TurnRoles:
                 self.resume(
                     "economy",
                     "A newly owned city needs an economic pass. Read fresh city facts and choose its initial plan.",
+                    effect_id=effect_id,
                 )
                 changed = True
             if arguments.get("kind") == "BUY_CONSTRUCTION":
@@ -1011,10 +1120,15 @@ class TurnRoles:
                             owner,
                             "The economy manager purchased a unit. Read its fresh facts and consider its remaining actions.",
                             workers_only=owner == "economy",
+                            effect_id=effect_id,
                         )
                         changed = True
             if self.needs_attention("gameplay") and "CAPTURE" in str((job.observation or {}).get("alerts", {})).upper():
-                self.resume("gameplay", "A capture requires your city disposition decision. Read the alerts.")
+                self.resume(
+                    "gameplay",
+                    "A capture requires your city disposition decision. Read the alerts.",
+                    effect_id=effect_id,
+                )
                 changed = True
             if changed:
                 await self.save()
@@ -1059,80 +1173,167 @@ class TurnRoles:
             await asyncio.sleep(0.5)
 
     async def advance(self):
-        """Only this trusted controller can turn role completion into a native handoff."""
+        """Legacy waiter; native workflows schedule individual handoff attempts."""
         while not self.committed:
             await self.changed.wait()
             self.changed.clear()
-            if not all(self.ready.values()):
-                continue
             while any(job.pending_calls for job in self.jobs.values()):
                 await asyncio.sleep(0.01)
-            async with self.lock:
-                dormant = ({"economy"} if not self.economy_requested else set()) | (
-                    {"military"} if not self.military_requested else set()
-                )
-                required = self.ready.keys() - dormant
-                if not all(self.ready.values()) or not required <= self.jobs.keys():
-                    continue
-            job = self.jobs["gameplay"]
-            gateway = self.service.gateway
-            await gateway.wait_for_gameplay(job)
-            view = await gateway.fresh_turn(job, {"delivery": "full"}, "handoff-review")
-            async with self.service.gateway.role_dispatch:
-                await self.synchronize_war(job.observation or {})
-                await self.synchronize_economy(job.observation or {})
-            async with self.lock:
-                if not all(self.ready.values()):
-                    continue
-                if view.get("canEndTurn") is False and not self.deferral.get("deferChoices"):
-                    pending = view.get("pending", [])
-                    role = "economy" if any("CONSTRUCTION" in str(entry).upper() for entry in pending) else "gameplay"
-                    previous = self.record.get("handoffReview", {})
-                    if previous.get("pending") == pending:
-                        # A completed economic pass did not resolve these same
-                        # native choices. Main owns the decision to override,
-                        # request specific work, or explicitly defer choices.
-                        # Reopening Economy again just repeats its finish loop.
-                        role = "gameplay"
-                    self.record["handoffReview"] = {"pending": copy.deepcopy(pending), "role": role}
-                    self.resume(
-                        role,
-                        "The native turn still has required decisions: "
-                        + json.dumps(pending, separators=(",", ":"))
-                        + ". Resolve these choices before finishing. "
-                        + (
-                            "As Main, you can request specific economic work "
-                            "or use city_override to manage a city yourself. If the native turnControls permit "
-                            "deferring choices, you may instead finish with deferChoices=true and a deferReason. "
-                            "Finishing without resolving or explicitly deferring them cannot advance the turn."
-                            if role == "gameplay"
-                            else "Choose construction for the affected cities, or explain the unresolved choices to Main."
-                        ),
-                    )
-                    self.record["handoffPass"] = self.record.get("handoffPass", 0) + 1
-                    await self.save()
-                    continue
-                if self.service.failure or self.service.stopping:
-                    return
-                self.committing = True
-            result = await gateway.call(
-                job,
-                "player_command",
-                {"kind": "END_TURN", **self.deferral},
-                self.native_call_id or "host:end-turn:" + str(self.record.get("handoffPass", 0)),
-                source="host",
+            await self.handoff_once()
+
+    async def notify_unexecuted_intents(self):
+        """Bounded advisory Main passes for new specialist attempts, not a veto."""
+        from civ_agent.execution_policy import coordinator_execution_policy
+        from civ_agent.intent_handoffs import compact_attempts
+
+        if (
+            not coordinator_execution_policy(self.service).intent_handoff_review
+            or self.service.failure
+            or self.service.stopping
+            or self.committed
+            or self.record.get("intentHandoffAttentionSaturated")
+        ):
+            return False
+        rows = compact_attempts(
+            {role: handoff for role, handoff in self.intent_handoffs.items() if role in {"economy", "military"}}
+        )
+        rows = [
+            row
+            for row in rows
+            if row.get("status") in {"unexecuted", "rejected"} and row.get("sourceTurn") == self.key[1]
+        ]
+        offered = self.record.get("intentHandoffAttentionIds", [])
+        unseen = sorted({row["operationId"] for row in rows} - set(offered))
+        if not unseen:
+            return False
+        capacity = max(0, 256 - len(offered))
+        if len(unseen) >= capacity:
+            # Never evict old IDs: bringing an older pending attempt back into
+            # the bounded projection must not reopen another automatic pass.
+            # Saturation limits attention only, not native choices or actions.
+            self.record["intentHandoffAttentionSaturated"] = True
+            unseen = unseen[:capacity]
+        if not unseen:
+            await self.save()
+            return False
+        signature = hashlib.sha256(json.dumps([self.key, unseen], separators=(",", ":")).encode()).hexdigest()
+        # Offered attention is not proof that each bounded/omitted row was
+        # inspected or resolved. It only prevents old receipt IDs waking Main
+        # repeatedly. Readiness stays false until a fresh accepted Main finish.
+        self.record["intentHandoffAttentionIds"] = [*offered, *unseen]
+        self.record["intentHandoffAttention"] = signature
+        self.resume(
+            "gameplay",
+            "Review the dated rejected or unexecuted specialist attempts in intentHandoff before handoff. "
+            "Verify current intent and relevant native facts, then choose to revise, wait, hold or accept risk. "
+            "No action is automatically retried or required.",
+            effect_id="intent-handoff:" + signature,
+        )
+        await self.save()
+        return True
+
+    async def handoff_review(self, *, native=False):
+        """Check domain readiness and a fresh native review before freezing a handoff."""
+        if self.committed:
+            return True
+        if not all(self.ready.values()) or any(job.pending_calls for job in self.jobs.values()):
+            return False
+        async with self.lock:
+            dormant = ({"economy"} if not self.economy_requested else set()) | (
+                {"military"} if not self.military_requested else set()
             )
-            async with self.lock:
-                if "error" in result:
-                    self.committing = False
-                    self.record["handoffPass"] = self.record.get("handoffPass", 0) + 1
-                    self.resume(
-                        "gameplay",
-                        "The final position changed. Read player_turn and reconsider the remaining decisions.",
-                    )
-                    await self.save()
-                    continue
-                self.committed = True
-                for participant in self.jobs.values():
-                    participant.gameplay_ended.set()
+            required = self.ready.keys() - dormant
+            if not all(self.ready.values()) or not required <= self.jobs.keys():
+                return False
+            if await self.notify_unexecuted_intents():
+                return False
+        job = self.jobs["gameplay"]
+        gateway = self.service.gateway
+        await gateway.wait_for_gameplay(job)
+        if native:
+            view = await job.connection.tool("player_turn", {})
+            await gateway.deliver_turn(
+                job,
+                view,
+                "player_turn",
+                {"delivery": "full"},
+                "native:handoff-review",
+                force_full=True,
+                record_call=False,
+            )
+        else:
+            view = await gateway.fresh_turn(job, {"delivery": "full"}, "handoff-review")
+        async with self.service.gateway.role_dispatch:
+            await self.synchronize_war(job.observation or {})
+            await self.synchronize_economy(job.observation or {})
+        async with self.lock:
+            if not all(self.ready.values()):
+                return False
+            if view.get("canEndTurn") is False and not self.deferral.get("deferChoices"):
+                pending = view.get("pending", [])
+                role = "economy" if any("CONSTRUCTION" in str(entry).upper() for entry in pending) else "gameplay"
+                previous = self.record.get("handoffReview", {})
+                if previous.get("pending") == pending:
+                    # A completed economic pass did not resolve these same
+                    # native choices. Main owns the decision to override,
+                    # request specific work, or explicitly defer choices.
+                    # Reopening Economy again just repeats its finish loop.
+                    role = "gameplay"
+                self.record["handoffReview"] = {"pending": copy.deepcopy(pending), "role": role}
+                self.resume(
+                    role,
+                    "The native turn still has required decisions: "
+                    + json.dumps(pending, separators=(",", ":"))
+                    + ". Resolve these choices before finishing. "
+                    + (
+                        "As Main, you can request specific economic work "
+                        "or use city_override to manage a city yourself. If the native turnControls permit "
+                        "deferring choices, you may instead finish with deferChoices=true and a deferReason. "
+                        "Finishing without resolving or explicitly deferring them cannot advance the turn."
+                        if role == "gameplay"
+                        else "Choose construction for the affected cities, or explain the unresolved choices to Main."
+                    ),
+                )
+                self.record["handoffPass"] = self.record.get("handoffPass", 0) + 1
                 await self.save()
+                return False
+            if self.service.failure or self.service.stopping:
+                return False
+            self.committing = True
+        return True
+
+    async def handoff_once(self):
+        """Native history v1 compatibility; new workflows own the frozen effect."""
+        if self.committed:
+            return True
+        if not await self.handoff_review():
+            return False
+        job, gateway = self.jobs["gameplay"], self.service.gateway
+        result = await gateway.call(
+            job,
+            "player_command",
+            {"kind": "END_TURN", **self.deferral},
+            self.native_call_id or "host:end-turn:" + str(self.record.get("handoffPass", 0)),
+            source="host",
+        )
+        return await self.accept_handoff(result)
+
+    async def accept_handoff(self, result, *, effect_id=None, save=True):
+        async with self.lock:
+            if "error" in result:
+                self.committing = False
+                self.record["handoffPass"] = self.record.get("handoffPass", 0) + 1
+                self.resume(
+                    "gameplay",
+                    "The final position changed. Read player_turn and reconsider the remaining decisions.",
+                    effect_id=effect_id,
+                )
+                if save:
+                    await self.save()
+                return False
+            self.committed = True
+            for participant in self.jobs.values():
+                participant.gameplay_ended.set()
+            if save:
+                await self.save()
+        return self.committed

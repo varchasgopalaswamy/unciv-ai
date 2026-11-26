@@ -21,6 +21,7 @@ internal data class CommunicationRequest(
     val job: String? = null,
     val purpose: String? = null,
     val parentJob: String? = null,
+    val review: ReviewJobBinding? = null,
     val usage: ModelUsage? = null,
     val telemetry: JobTelemetry? = null,
     val to: String? = null,
@@ -47,6 +48,10 @@ internal data class CommunicationRequest(
 
 @Serializable
 internal data class NativeDiplomaticAction(val kind: String, val target: String, val revision: String, val selection: String? = null)
+
+/** Frozen private review evidence outlives the gameplay handoff that captured it. */
+@Serializable
+internal data class ReviewJobBinding(val cycleId: String, val sourceTurn: Int, val targetTurn: Int)
 
 @Serializable
 internal data class ModelUsage(
@@ -79,7 +84,12 @@ internal data class CommunicationJob(
     val parentJob: String? = null,
     val computing: Boolean = true,
     val militaryPartnerRequired: Boolean = false,
+    val review: ReviewJobBinding? = null,
 )
+
+/** Legacy opening jobs have no binding; between-turn reviews must stay separate. */
+internal fun CommunicationJob.isOpeningReview() = purpose == "review" && handoff == null && gameTurn == 0 &&
+    (review == null || (review.sourceTurn == 0 && review.targetTurn == 0))
 
 @Serializable
 internal data class CommunicationEvent(val id: Int, val kind: String, val body: JsonObject, val wake: Boolean)

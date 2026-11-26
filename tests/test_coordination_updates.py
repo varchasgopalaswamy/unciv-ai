@@ -10,7 +10,7 @@ from civ_agent.coordination_context import working_context
 from civ_agent.coordination_updates import apply_coordination_update, content, response, snapshot
 from civ_agent.protocol import JsonObject
 from civ_agent.startup_context import compact_startup, prepare_startup, startup_prompt
-from tests.test_economy_optimization import managed
+from tests.domain_fixtures import managed
 
 
 def context() -> JsonObject:

@@ -30,6 +30,7 @@ class InputSchemaTest {
         val request = obj("op" to "trade_decide", "epoch" to "g1", "requestId" to "r1", "proposal" to "d1", "version" to 1, "decision" to "accept", "expectedRevision" to "rev1")
         assertEquals("rev1", InputSchemas.communication.decode(CommunicationRequest.serializer(), request).expectedRevision)
     }
+
     @Test fun `native advice requires observed identity and bounds filters without authority fields`() {
         val schema = InputSchemas.nativeAdvice
         val request = obj("epoch" to "g1", "revision" to "rev1", "cities" to listOf("city1"))

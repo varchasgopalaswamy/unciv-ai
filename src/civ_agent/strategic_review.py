@@ -1,9 +1,10 @@
 """Periodic, advisory strategy reports from frozen player-visible facts."""
 
 import copy
+import json
 from typing import Annotated, Self
 
-from pydantic import Field, model_validator
+from pydantic import Field, ValidationError, model_validator
 
 from civ_agent.player_prompts import (
     CAMPAIGN_GUIDANCE,
@@ -155,7 +156,7 @@ ADVISOR_INSTRUCTIONS = (
 )
 
 
-def advice_prompt(inputs, *, evidence=None, strategy_guide=False, civilization_guide=False):
+def advice_prompt(inputs, *, evidence=None, strategy_guide=False, civilization_guide=False, guides_in_user=True):
     from civ_agent.civilization_guide import civilization_reference
     from civ_agent.decision_contracts import DECISION_INSTRUCTIONS
     from civ_agent.startup_context import StartupPrompt, encoded, reference_sections
@@ -173,10 +174,12 @@ def advice_prompt(inputs, *, evidence=None, strategy_guide=False, civilization_g
 
     return StartupPrompt(
         ADVISOR_INSTRUCTIONS + "\n\n" + DECISION_INSTRUCTIONS,
-        ("\n\n".join(sections) + "\n\n" if sections else "")
+        ("\n\n".join(sections) + "\n\n" if sections and guides_in_user else "")
         + (
             "Opening position before the first move, turn "
             if inputs["turn"] == 0
+            else "Position after this player completed turn "
+            if inputs.get("reviewTiming")
             else "Position after all players completed round "
         )
         + str(inputs["turn"])
@@ -266,19 +269,58 @@ def review_due(turn: int, interval: int = 5) -> bool:
     return turn >= interval and turn % interval == 0
 
 
+class FrozenReadArgumentError(ValueError):
+    """A model-authored frozen-read input failed its argument contract."""
+
+    def __init__(self, tool: str, validation: ValidationError | None = None):
+        super().__init__("INVALID_ARGUMENT")
+        self.tool = tool
+        self.diagnostics = ""
+        if validation is not None:
+            # Keep canonical schema feedback bounded and exclude submitted
+            # values, validator context and documentation URLs.
+            details = []
+            for error in validation.errors(include_input=False, include_url=False, include_context=False)[:4]:
+                detail = {
+                    "loc": [str(part)[:48] for part in error["loc"][:8]],
+                    "type": error["type"][:64],
+                    "msg": error["msg"][:200],
+                }
+                encoded = json.dumps([*details, detail], ensure_ascii=False)
+                if len(encoded) > 1000:
+                    break
+                details.append(detail)
+                self.diagnostics = encoded
+
+
+def _frozen_read_arguments(name: str, arguments: JsonObject) -> JsonObject:
+    """Validate only caller input, before projecting any part of a bundle."""
+    from civ_agent.decision_contracts import NATIVE_MODELS
+    from civ_agent.delivery_options import content_arguments
+    from civ_agent.tool_schemas import tool_model
+
+    model = NATIVE_MODELS.get(name) or tool_model(name, "review")
+    try:
+        parsed = model.model_validate(arguments)
+    except ValidationError as error:
+        raise FrozenReadArgumentError(name, error) from error
+    supplied = content_arguments(parsed.model_dump(exclude_unset=True))
+    if name == "inspect_bundle":
+        for query in supplied["queries"]:
+            if query["tool"] in REVIEW_READ_TOOLS - {"inspect_bundle"}:
+                _frozen_read_arguments(query["tool"], query.get("arguments", {}))
+    return supplied
+
+
 def frozen_read(inputs: JsonObject, name: str, arguments: JsonObject) -> JsonObject:
     """No host connection or notebook access exists along this path."""
-    from civ_agent.delivery_options import content_arguments
     from civ_agent.observations import DETAIL_MODELS, DetailQuery, project_detail
     from civ_agent.social_context import social_context
-    from civ_agent.tool_schemas import TOOL_MODELS, tool_model
     from civ_agent.victory_snapshot import victory_read
 
     if name not in REVIEW_READ_TOOLS or name == "player_details" and arguments.get("section") == "turn_history":
         return {"error": "REVIEW_READ_ONLY", "applied": False}
-    if name in TOOL_MODELS:
-        arguments = tool_model(name, "review").model_validate(arguments).model_dump(exclude_unset=True)
-    arguments = content_arguments(arguments)
+    arguments = _frozen_read_arguments(name, arguments)
     if name == "inspect_bundle":
         results = []
         for index, query in enumerate(arguments["queries"]):
@@ -292,8 +334,29 @@ def frozen_read(inputs: JsonObject, name: str, arguments: JsonObject) -> JsonObj
     if name in DETAIL_MODELS:
         return project_detail(inputs["observation"], DetailQuery.model_validate({"tool": name, "arguments": arguments}))
     if name == "victory_progress":
-        return victory_read(inputs["reads"][name], arguments, civilization=inputs.get("civilization"))
+        try:
+            return victory_read(inputs["reads"][name], arguments, civilization=inputs.get("civilization"))
+        except ValueError as error:
+            # This exact sentinel is victory_read's frozen selector rejection.
+            # Response validation and other projection errors remain fatal.
+            if type(error) is not ValueError or error.args != ("INVALID_ARGUMENT",):
+                raise
+            raise FrozenReadArgumentError(name) from error
     value = copy.deepcopy(inputs["reads"][name])
+    if name == "player_turn":
+        from civ_agent.role_view import role_overview
+
+        # Capture retains the complete permitted overview, independently of role
+        # presentation. "current" keeps that frozen view; no live read is needed.
+        view = arguments.get("view", "current")
+        value = role_overview(value, "full" if view == "current" else view, purpose="review")
+        if (cities := arguments.get("cities")) is not None:
+            value["cityScope"] = {
+                "included": list(cities),
+                "ownedCities": [{"handle": city["handle"], "name": city["name"]} for city in value.get("cities", [])],
+            }
+            value["cities"] = [city for city in value.get("cities", []) if city["handle"] in cities]
+        return value
     if name == "chat_read":
         # Review capture has already applied the model projection to these records.
         return social_context(
@@ -312,7 +375,7 @@ def frozen_read(inputs: JsonObject, name: str, arguments: JsonObject) -> JsonObj
             or len(names) > 16
             or any(not isinstance(n, str) for n in names)
         ):
-            raise ValueError("INVALID_ARGUMENT")
+            raise FrozenReadArgumentError(name)
         rows = {row["name"]: row for row in value[field]}
         if len(set(names)) != len(names) or any(n not in rows for n in names):
             return {"error": "OPTION_UNAVAILABLE", "applied": False}
@@ -336,7 +399,7 @@ def frozen_read(inputs: JsonObject, name: str, arguments: JsonObject) -> JsonObj
             ]
         )
     elif arguments:
-        raise ValueError("INVALID_ARGUMENT")
+        raise FrozenReadArgumentError(name)
     return value
 
 

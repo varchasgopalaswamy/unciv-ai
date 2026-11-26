@@ -76,6 +76,7 @@ CITY_FIELDS = {
     ),
     "production": (
         "constructionQueue",
+        "constructionQueueRevision",
         "constructionOptions",
         "constructionChoice",
         "productionConversions",

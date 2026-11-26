@@ -23,6 +23,7 @@ MILITARY_COMMANDS = frozenset(
         "MOVE_UNIT",
         "SET_UNIT_DESTINATION",
         "CANCEL_UNIT_MOVEMENT",
+        "CREATE_WATER_IMPROVEMENT",
         "REBASE_UNIT",
         "PARADROP",
         "AIR_SWEEP",

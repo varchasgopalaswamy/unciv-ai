@@ -1,28 +1,20 @@
 """Role barriers and ownership are independent of model timing and native turn order."""
 
 import asyncio
-from functools import wraps
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
 from pydantic import ValidationError
 
-from civ_agent.agent_service import AgentService
 from civ_agent.economy_roles import TurnRoles
 from civ_agent.game_config import GameConfig, Player
 from civ_agent.memory_records import MemoryReadResult, MemoryUpdateResult
 from civ_agent.war_state import WarStore
-from tests.test_agent_service import FakeCodex, FakeFactory
-from tests.test_structured_memory import setup
-
-
-def run_async(function):
-    @wraps(function)
-    def run(*args, **kwargs):
-        return asyncio.run(function(*args, **kwargs))
-
-    return run
+from tests.domain_fixtures import (
+    run_async as run_async,
+)
+from tests.domain_fixtures import setup
 
 
 def coordinator():
@@ -309,7 +301,7 @@ def test_city_plan_rejects_display_names_with_recovery_and_preserves_overrides(t
 
 
 def test_omitted_city_plan_is_searchable_by_its_city_without_subject_tags(tmp_path):
-    from tests.test_structured_memory import create
+    from tests.domain_fixtures import create
 
     memory = setup(tmp_path)
     memory.start_job("previous", "economy", {}, game_turn=4)
@@ -335,7 +327,7 @@ def test_omitted_city_plan_is_searchable_by_its_city_without_subject_tags(tmp_pa
 
 
 def test_duplicate_city_plan_returns_exact_recovery_without_granting_unseen_read_credit(tmp_path):
-    from tests.test_structured_memory import create, current
+    from tests.domain_fixtures import create, current
 
     memory = setup(tmp_path)
     memory.start_job("previous", "economy", {}, game_turn=4)
@@ -358,71 +350,6 @@ def test_duplicate_city_plan_returns_exact_recovery_without_granting_unseen_read
     assert memory.patch("worker-pass", edit)["changes"][0]["accepted"]
     assert memory.patch("worker-pass", [{"op": "create", "content": content}], "duplicate-plan") == rejected
     memory.engine.dispose()
-
-
-@run_async
-async def test_both_real_role_lifecycles_share_one_native_handoff(tmp_path):
-    class FinishingCodex(FakeCodex):
-        complete = False
-
-        async def start(self, token, settings):
-            await super().start(token, settings)
-            self.job = self.factory.service.gateway.jobs[token]
-
-        async def request(self, method, payload):
-            result = await super().request(method, payload)
-            if method == "turn/start":
-                await self.factory.service.gateway.invoke(self.job, "finish_role", {}, "finish:" + result["turn"]["id"])
-                await self.notification(
-                    "turn/completed",
-                    {"threadId": self.thread_id, "turn": {"id": result["turn"]["id"], "status": "completed"}},
-                )
-            return result
-
-    class Factory(FakeFactory):
-        def __call__(self, executable, workspace, mcp_url, ca_file, notification):
-            process = FinishingCodex(self, workspace, notification)
-            self.instances.append(process)
-            return process
-
-    factory = Factory()
-    service = AgentService(
-        "Rome",
-        tmp_path / "workspace",
-        tmp_path / "state",
-        "S" * 43,
-        "https://localhost:8765/mcp",
-        None,
-        process_factory=factory,
-        connection_factory=factory.connection,
-    )
-    factory.service = service
-    try:
-        await service.start(
-            {
-                "activationId": "turn1",
-                "epoch": "g1",
-                "civilization": "Rome",
-                "threadId": None,
-                "gameTurn": 0,
-                "handoff": 0,
-                "mcpUrl": "https://localhost:8765/mcp",
-                "playerToken": "P" * 43,
-                "prompt": "Play",
-                "model": None,
-                "timeoutSeconds": 20,
-                "leaseSeconds": 10,
-            }
-        )
-        assert service.active_task is not None
-        await asyncio.wait_for(asyncio.shield(service.active_task), 8)
-        assert service.failure is None, service.status()
-        assert service.turn_roles is not None and service.turn_roles.committed
-        assert len(factory.instances) == 2
-        assert {record.get("purpose", "gameplay") for record in service.records.values()} == {"gameplay", "economy"}
-        assert service.records["turn1"]["roles"]["ready"] == {"gameplay": True, "economy": True, "military": True}
-    finally:
-        await asyncio.wait_for(service.close(), 3)
 
 
 @run_async
@@ -459,8 +386,8 @@ async def test_shared_tile_reassignment_respects_both_city_owners():
 
 
 def test_city_plan_confirmation_requires_a_successful_native_receipt(tmp_path):
+    from tests.domain_fixtures import create
     from tests.memory_helpers import stored_records
-    from tests.test_structured_memory import create
 
     memory = setup(tmp_path)
     memory.start_job("econ", "economy", {}, game_turn=4)
@@ -490,8 +417,7 @@ async def test_economy_preload_includes_every_owned_city_plan_and_denies_diploma
     from civ_agent.proposal_gateway import ProposalGateway
     from civ_agent.service_io import ServiceIO
     from civ_agent.startup_context import prepare_startup
-    from tests.test_agent_service import StartupHost
-    from tests.test_structured_memory import create
+    from tests.domain_fixtures import StartupHost, create
 
     memory, io = CivilizationState(tmp_path / "memory", "Rome", 1000), ServiceIO()
     memory.bind("g1")
@@ -632,89 +558,3 @@ async def test_sibling_actions_deliver_fresh_details_and_require_reconsideration
         assert len(host.executed) == 1
         created = await gateway.call(economy, "memory_update", edit, "reconsidered-edit")
         assert created["changes"][0]["accepted"]
-
-
-@pytest.mark.parametrize("failure", ["retry", "shutdown"])
-@run_async
-async def test_economy_retries_only_after_confirmed_shutdown(tmp_path, failure):
-    from civ_agent.agent_service import ServiceError
-
-    class Factory(FakeFactory):
-        def __init__(self):
-            super().__init__()
-            self.economy_attempts = 0
-            self.refuse_shutdown = failure == "shutdown"
-            self.complete = failure == "retry"
-
-        def __call__(self, executable, workspace, mcp_url, ca_file, notification):
-            process = super().__call__(executable, workspace, mcp_url, ca_file, notification)
-            if not process.economy:
-                return process
-            self.economy_attempts += 1
-            first = self.economy_attempts == 1
-            request, close = process.request, process.close
-
-            async def failed_request(method, payload):
-                if first and failure == "retry" and method == "turn/start":
-                    raise ServiceError("TEST_PROVIDER_FAILED")
-                return await request(method, payload)
-
-            async def guarded_close():
-                if self.refuse_shutdown:
-                    raise ServiceError("TEST_STOP_FAILED")
-                return await close()
-
-            process.request, process.close = failed_request, guarded_close
-            return process
-
-    factory = Factory()
-    service = AgentService(
-        "Rome",
-        tmp_path / "workspace",
-        tmp_path / "state",
-        "S" * 43,
-        "https://localhost:8765/mcp",
-        None,
-        process_factory=factory,
-        connection_factory=factory.connection,
-    )
-    factory.service = service
-    payload = {
-        "activationId": "main",
-        "epoch": "g1",
-        "civilization": "Rome",
-        "threadId": None,
-        "gameTurn": 0,
-        "handoff": 0,
-        "mcpUrl": service.mcp_url,
-        "playerToken": "P" * 43,
-        "prompt": "Play",
-        "model": None,
-        "timeoutSeconds": 20,
-        "leaseSeconds": 10,
-    }
-    try:
-        await service.start(payload)
-        assert service.active_task is not None
-        if failure == "retry":
-            await asyncio.wait_for(asyncio.shield(service.active_task), 8)
-            assert service.status()["phase"] == "COMPLETED", service.status()
-            assert factory.economy_attempts == 2
-            children = [record for record in service.records.values() if record.get("purpose") == "economy"]
-            assert [record["phase"] for record in children] == ["FAILED", "COMPLETED"]
-        else:
-            async with asyncio.timeout(4):
-                while service.status()["phase"] == "STARTING":
-                    await asyncio.sleep(0.005)
-            with pytest.raises(ServiceError, match="STOP_UNCONFIRMED"):
-                await service.interrupt("main")
-            assert service.status()["phase"] == "RUNNING"
-            problem = service.health()["runFailure"]
-            assert problem is not None and problem["error"] == "STOP_UNCONFIRMED"
-            assert factory.economy_attempts == 1
-            with pytest.raises(ServiceError, match="STOP_UNCONFIRMED"):
-                await service.start({**payload, "activationId": "later"})
-            assert service.economy_runtime is not None and service.economy_runtime.job.gameplay_fenced
-    finally:
-        factory.refuse_shutdown = False
-        await service.close()

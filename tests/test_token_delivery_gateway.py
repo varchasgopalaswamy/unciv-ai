@@ -12,8 +12,8 @@ from civ_agent.memory_delivery import apply_memory_delivery
 from civ_agent.observations import DetailQuery, detail_scope
 from civ_agent.payload_updates import apply_detail_response
 from civ_agent.startup_context import prepare_startup, startup_prompt
+from tests.domain_fixtures import managed
 from tests.test_construction_estimates import estimate
-from tests.test_economy_optimization import managed
 
 ASSESSMENT = "Develop the cities while retaining production flexibility. " * 25
 

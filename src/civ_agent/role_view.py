@@ -44,7 +44,7 @@ FIELDS = {
     | frozenset("civilizationProfile eraProgress victory researchQueue research militaryReadiness".split()),
 }
 CITY_SUMMARY = frozenset(
-    "handle name position population health maxHealth defensiveStrength foodPerTurn turnsToGrowth "
+    "handle name constructionState position population health maxHealth defensiveStrength foodPerTurn turnsToGrowth "
     "turnsToStarvation constructionQueue puppet inResistance resistanceTurns beingRazed yields "
     "attacksRemaining attackOptionCount".split()
 )

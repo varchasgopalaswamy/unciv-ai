@@ -199,16 +199,6 @@ To repeat with a new output directory:
 ./gradlew runVictoryDesktop -PvictoryDesktopDir=/tmp/victory-desktop-new
 ```
 
-The [live victory exercises](../archive/reports/Victory-live-results.md) passed: 28 model
-activations produced, transported and assembled all six parts for Rome's
-Scientific Victory on turn 9; 36 activations completed a failed election and a
-later Greek Diplomatic Victory on turn 12. All 51 artifact checks passed, with
-correct final results delivered to every player. Every game agent used
-`gpt-5.6-luna` with medium reasoning; the hosts and services are stopped.
-Engine commit `31524759eb456734da1048cdec2eecd8131ed9d6` is merged and
-published on `experimental-changes`. The host pins that exact revision;
-the implementation, tests and private acceptance tooling are committed here.
-
 This work does not establish an Ancient-to-victory autonomous game, full privacy
 parity, city-state play, religion, espionage, naval/air combat, resignation or
 One More Turn support.

@@ -3,7 +3,7 @@
 import json
 
 from civ_agent.observations import DetailQuery, detail_scope
-from tests.test_structured_memory import create, current, replacement, setup, strategy
+from tests.domain_fixtures import create, current, replacement, setup, strategy
 
 
 def test_notes_can_describe_unreviewed_and_retired_plans(tmp_path):

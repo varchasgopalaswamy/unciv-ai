@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import copy
 import hashlib
-from typing import TYPE_CHECKING, Annotated, Literal
+from functools import lru_cache, reduce
+from operator import or_
+from typing import TYPE_CHECKING, Annotated, Any, Literal
 
-from pydantic import Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError, create_model
 
 from civ_agent.delivery_options import DeliveryOptions, full_delivery
 from civ_agent.diplomacy_tools import argument_error
@@ -41,6 +43,46 @@ class InspectionBundle(DeliveryOptions):
         description="Independent reads with arguments already known. Results are ordered; each query uses its "
         "normal tool schema and permissions. Never include actions or depend on another result in this bundle."
     )
+
+
+@lru_cache(maxsize=128)
+def typed_bundle_model(models: tuple[tuple[str, type[BaseModel]], ...]) -> type[BaseModel]:
+    """Describe permitted query arguments with the same canonical read models.
+
+    Only the Python tool boundary uses this narrowed model. Native permission,
+    evidence, source and conditional validators remain on the ordinary paths.
+    RootModel arguments stay the canonical inner object, not a direct tool's
+    additional ``arguments`` parameter wrapper.
+    """
+    queries = []
+    for name, model in models:
+        query = create_model(
+            "InspectionQuery_" + name,
+            __base__=BoundaryModel,
+            tool=(_parameterize(Literal, name), name),
+            arguments=(
+                model,
+                ...
+                if any(item.is_required() for item in model.model_fields.values())
+                else Field(default_factory=dict, validate_default=True),
+            ),
+        )
+        queries.append(query)
+    if not queries:
+        raise ValueError("INSPECTION_BUNDLE_HAS_NO_PERMITTED_READS")
+    union = reduce(or_, queries)
+    return create_model(
+        "PermittedInspectionBundle",
+        __base__=InspectionBundle,
+        queries=(
+            Annotated[list[Annotated[union, Field(discriminator="tool")]], Field(min_length=1, max_length=12)],
+            ...,
+        ),
+    )
+
+
+def _parameterize(form: Any, arguments: Any) -> Any:
+    return form[arguments]
 
 
 async def run_bundle(

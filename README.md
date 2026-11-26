@@ -6,15 +6,14 @@ private memory and only the game information that player may see. Native Unciv
 rules govern actions; social promises remain nonbinding player communications.
 
 The project targets ordinary human-player actions in the bundled Vanilla and
-Gods & Kings rulesets. Mods are out of scope. Full gameplay coverage and completed
-full-game acceptance remain open; see the [coverage ledger](docs/reference/Player-api-coverage.md)
-and [current roadmap](docs/Roadmap.md).
+Gods & Kings rulesets. The [coverage ledger](docs/reference/Player-api-coverage.md)
+lists supported actions, ruleset limits, and remaining gaps.
 
 ## Run a game
 
 Use Linux with rootless Podman/Netavark, nftables, cgroup v2 and systemd.
 Image builds need JDK 21+, Python 3.12+, [uv](https://docs.astral.sh/uv/),
-and the standalone Codex release.
+and the selected Unciv engine checkout.
 From the repository directory:
 
 ```sh
@@ -27,9 +26,13 @@ uv sync --locked
 ```
 
 The launcher starts Rome, Greece and France with `gpt-6-luna` at medium
-reasoning, built-in Egypt, and two city-states. It manages the host, agent
-services and scheduler in isolated containers, and records logs,
-checkpoints and token/call/timing telemetry.
+reasoning, built-in Egypt, and two city-states. One controller per game runs
+Pydantic AI agents and the native JVM host. Shared brokers manage login renewal
+and optional Decisions requests. Logs, native checkpoints and token/call/timing
+records remain in the game directory.
+
+Start a fresh game with this runtime. Saves from the retired Temporal runtime
+remain readable archives; this runtime does not execute or convert them.
 
 To join as the local human player, stream Unciv's native desktop controls and
 integrated chat/trade panel to your browser:
@@ -53,8 +56,7 @@ and launch them with `batch start --inputs INPUTS --state-dir PATH --parallel 2`
 
 See the [full-game guide](docs/guides/Full-vanilla-run.md) for directories,
 timeouts, stopping and resuming. Use the [local launcher guide](docs/guides/Local-launchers.md)
-for interactive play, human communication and desktop inspection, or
-[automatic turns](docs/guides/Automatic-turns.md) for individually managed services.
+for interactive play, human communication and desktop inspection.
 
 To watch the default full-game run from another terminal:
 
@@ -62,15 +64,16 @@ To watch the default full-game run from another terminal:
 .venv/bin/civ-agent match watch --state-dir ~/.local/state/unciv-host/vanilla-full
 ```
 
+For local agent/model/tool traces, use [Phoenix](http://127.0.0.1:6006).
+See [monitoring](docs/architecture/Monitoring.md) for the persistent local service,
+per-game tracing configuration and content-free export policy.
+
 ## Documentation
 
 - [Documentation index](docs/README.md): operating guides, architecture, player
   references and reproducible scenarios.
-- [Current roadmap](docs/Roadmap.md): unfinished acceptance and observed follow-ups.
 - [Development workflow](docs/Development-workflow.md): source checks, the pinned
   engine dependency and local checkout overrides.
-- [Historical archive](docs/archive/README.md): completed plans, sprint records,
-  benchmarks and live-game reviews.
 
 Read [AGENTS.md](AGENTS.md) for confidentiality and contribution instructions.
 Engine changes belong in the separately maintained engine checkout; a host commit

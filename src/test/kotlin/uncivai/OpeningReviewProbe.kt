@@ -43,7 +43,8 @@ object OpeningReviewProbe {
                     }
                 }
                 val review = "opening-$civilization"
-                check(api.communicate(credential, obj("op" to "job_claim", "epoch" to epoch, "job" to review, "purpose" to "review")).getValue("granted").jsonPrimitive.boolean)
+                val cycle = if (civilization == "Rome") arrayOf("review" to ReviewJobBinding("a".repeat(64), 0, 0).recordJson()) else emptyArray()
+                check(api.communicate(credential, obj("op" to "job_claim", "epoch" to epoch, "job" to review, "purpose" to "review", *cycle)).getValue("granted").jsonPrimitive.boolean)
                 check(runtime.executor.communicationState.jobs.getValue(review).handoff == null)
             }
             check(json().toJson(runtime.game) == gameBefore) { "Opening observations or review permits changed gameplay" }

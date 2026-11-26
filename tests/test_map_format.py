@@ -8,7 +8,7 @@ from civ_agent.map_format import compact_tiles, encoded, expand_tiles
 from civ_agent.memory_store import semantic
 from civ_agent.observations import DetailQuery, project_detail
 from civ_agent.protocol import JsonObject
-from tests.test_structured_memory import create, current, setup, strategy
+from tests.domain_fixtures import create, current, setup, strategy
 
 
 def tiles() -> list[JsonObject]:

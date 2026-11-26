@@ -10,9 +10,8 @@ The overview includes tactical and strategy reviews, city and unit rosters,
 production queues, growth, empire totals, research/culture progress, expansion and
 exploration, resources, known diplomatic status, and a confirmed-action count.
 Unit activity, strength and role are provided
-once in the unit roster. Alerts and decisions retain gameplay facts,
-effects and consequences; [audited native flavor text](../archive/reports/Model-flavor-text-audit.md)
-is omitted from model views. Ordinary notifications and combat reports retain
+once in the unit roster. Alerts and decisions retain gameplay facts and effects.
+The model view omits native flavor text. Ordinary notifications and combat reports retain
 their full content. Agents must read popup facts
 before acknowledging it. [Ordinary notifications](Ordinary-notifications.md) can
 be dismissed in batches after reading; agents choose which assessments to update.
@@ -385,7 +384,6 @@ responses keep ordinary tiles if defaults would make them larger. Use
 `format: "full"` for expanded tile objects. The reference
 [`expand_tiles`](../../src/civ_agent/map_format.py) reconstructs them exactly.
 Changing representation alone does not mark a plan's evidence as factually changed.
-See the [saved-response measurement](../archive/reports/Gameplay-read-audit-2026-09-22.md#implementation-follow-up).
 
 ## Focused sections and commands
 
@@ -551,10 +549,6 @@ exhausted movement, progress after restart, peaceful border forces and hidden-un
 changes. France's actual turn-68/70/71 rejected amendments now identify subject
 lists of 22/22/21 items against the limit of 20. These checks validate the delivered
 information and recovery guidance, not a measured improvement in model strategy.
-
-The September 20 [efficiency evaluation](../archive/plans/Agent-efficiency.md#tasks-2-and-5-validation-and-live-results)
-records focused unit/city reads, named choices, matching commands, payload sizes,
-and remaining refresh retries in a real Luna/medium opening turn.
 
 ## Live verification, September 14, 2026
 

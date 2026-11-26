@@ -10,8 +10,7 @@ from civ_agent.observations import DetailQuery
 from civ_agent.response_compaction import expand_response
 from civ_agent.startup_context import decision_queries, prepare_startup
 from civ_agent.state_updates import apply_player_turn
-from tests.test_economy_optimization import managed
-from tests.test_economy_roles import run_async
+from tests.domain_fixtures import managed, run_async
 from tests.test_military_completion import hold
 
 

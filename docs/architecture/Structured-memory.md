@@ -28,7 +28,7 @@ job's latest native view; that reference does not mark it as model-delivered evi
 
 | Type | Purpose | Updating it |
 | --- | --- | --- |
-| `strategy` | A provisional assessment and up to three chosen investments, expectations and review horizons | Replace its complete content; at most one active |
+| `strategy` | A provisional assessment, chosen investments, expectations and review horizons within the 8,000-character document limit | Replace its complete content; at most one active |
 | `handoff` | Unfinished work or questions for the next game turn | Replace its complete content; at most one active |
 | `belief` | A claim with uncertainty and optional historical citations | Amend changed fields or retire |
 | `note` | Useful retained information, optionally referring to another memory ID | Amend changed fields or retire |
@@ -38,6 +38,10 @@ The agent chooses its strategy; the service neither scores it nor requires a
 particular victory route. There is no separate persistent `plan`, `soul` or
 success-criteria record. Adviser recommendations and player choices have separate
 ownership: only gameplay can select or change the strategy's decisions.
+Authored strategy documents have no separate three-investment count limit.
+Adding or revising an investment preserves the other IDs unless Main explicitly
+requests replacement. An oversized document returns structured size feedback
+without applying the edit or evicting existing choices.
 
 Each `decisions` entry has a stable `id`, `objective`, `investment`, one to three
 `expectedObservations`, `reviewAfterTurns` (1–100), `reconsiderWhen`, and optional
@@ -253,6 +257,5 @@ writers; turn rewind restores captured heads and excludes abandoned
 future revisions. IDs are not reused.
 
 See [background reviews](Background-turn-memory.md),
-[database access](Database-access.md),
-[recovery diagnostics](../guides/Chat-memory-and-recovery.md#recovery-diagnostics)
-and [saved-position comparisons](../scenarios/Strategic-positions.md#memory-comparisons).
+[database access](Database-access.md), and
+[recovery diagnostics](../guides/Chat-memory-and-recovery.md#recovery-diagnostics).

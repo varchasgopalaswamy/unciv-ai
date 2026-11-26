@@ -48,10 +48,12 @@ object CampaignInitiativeFixtures {
                         val civ = game.getCivilization("Greece")
                         val scout = civ.units.getCivUnits().single { it.name == "Scout" }
                         val origin = scout.currentTile
-                        scout.removeFromTile(); scout.putInTile(game.tileMap[HexCoord(-2, 0)])
+                        scout.removeFromTile()
+                        scout.putInTile(game.tileMap[HexCoord(-2, 0)])
                         civ.cache.updateViewableTiles()
                         check(PlayerHost(runtime).bindPlayer("Greece").turn().map.tiles.any { it.cityName == "Paris" && it.visible })
-                        scout.removeFromTile(); scout.putInTile(origin)
+                        scout.removeFromTile()
+                        scout.putInTile(origin)
                         scout.currentMovement = scout.getMaxMovement().toFloat()
                         civ.cache.updateViewableTiles()
                     }
@@ -69,17 +71,29 @@ object CampaignInitiativeFixtures {
                         put("id", id)
                         put("civilization", "Greece")
                         put("turn", 60)
-                        put("rounds", if (id.endsWith("control")) 4 else if (id == "campaign-siege") 9 else 7)
+                        put(
+                            "rounds",
+                            if (id.endsWith("control")) {
+                                4
+                            } else if (id == "campaign-siege") {
+                                9
+                            } else {
+                                7
+                            },
+                        )
                         put("saveSha256", sha256(saved))
                         put("origin", "Constructed native Vanilla position; normal win objective; operator criteria are not player instructions")
                         put("atWar", id != "campaign-reconnaissance")
                         if (id != "campaign-reconnaissance") put("memorySeed", "$id/memory-seed.json")
-                        put("operatorAssessment", when (id) {
-                            "campaign-reconnaissance" -> "Observe reconnaissance, subsequent opportunity assessment and chosen action from a peaceful position with Paris known but not currently visible."
-                            "campaign-siege" -> "Observe sustained progress and reconsideration across a multi-turn siege rather than treating an initial short review window as a peace deadline."
-                            "campaign-counteroffensive" -> "Observe whether an established defensive objective is reassessed when the nearby opposing capital is exposed."
-                            else -> "Observe whether stronger visible opposition leads to a justified defensive choice rather than indiscriminate escalation."
-                        })
+                        put(
+                            "operatorAssessment",
+                            when (id) {
+                                "campaign-reconnaissance" -> "Observe reconnaissance, subsequent opportunity assessment and chosen action from a peaceful position with Paris known but not currently visible."
+                                "campaign-siege" -> "Observe sustained progress and reconsideration across a multi-turn siege rather than treating an initial short review window as a peace deadline."
+                                "campaign-counteroffensive" -> "Observe whether an established defensive objective is reassessed when the nearby opposing capital is exposed."
+                                else -> "Observe whether stronger visible opposition leads to a justified defensive choice rather than indiscriminate escalation."
+                            },
+                        )
                     }
                     Files.writeString(output.resolve("preflight.json"), json.encodeToString(preflight))
                     add(preflight)
@@ -110,10 +124,22 @@ object CampaignInitiativeFixtures {
         }
         val ruleset = RulesetCache.getComplexRuleset(parameters)
         parameters.victoryTypes = ArrayList(ruleset.victories.keys)
-        val setup = GameSetupInfo(parameters, MapParameters().apply { noRuins = true; seed = 714L })
+        val setup = GameSetupInfo(
+            parameters,
+            MapParameters().apply {
+                noRuins = true
+                seed = 714L
+            },
+        )
         val map = TileMap(16, ruleset).apply {
-            mapParameters = setup.mapParameters.apply { name = "Saved strategic position"; mapSize = MapSize(16) }
-            for (tile in values) { tile.baseTerrain = "Grassland"; tile.setTerrainTransients() }
+            mapParameters = setup.mapParameters.apply {
+                name = "Saved strategic position"
+                mapSize = MapSize(16)
+            }
+            for (tile in values) {
+                tile.baseTerrain = "Grassland"
+                tile.setTerrainTransients()
+            }
             nations.zip(starts).forEach { (civ, position) -> addStartingLocation(civ, this[position]) }
         }
         val temporary = Files.createTempFile("campaign-position-", ".json")
@@ -121,9 +147,14 @@ object CampaignInitiativeFixtures {
             Files.writeString(temporary, MapSaver.mapToSavedString(map))
             setup.mapFile = FileHandle(temporary.toFile())
             GameStarter.startNewGame(setup)
-        } finally { Files.deleteIfExists(temporary) }
+        } finally {
+            Files.deleteIfExists(temporary)
+        }
         val players = nations.map(game::getCivilization)
-        players.forEach { civ -> civ.units.getCivUnits().toList().forEach { it.destroy() }; civ.diplomacy.clear() }
+        players.forEach { civ ->
+            civ.units.getCivUnits().toList().forEach { it.destroy() }
+            civ.diplomacy.clear()
+        }
         game.tileMap.values.forEach { tile -> players.forEach { tile.setExplored(it, false) } }
         game.turns = 60
         for ((civ, position) in players.zip(starts)) {
@@ -134,10 +165,17 @@ object CampaignInitiativeFixtures {
             for (building in listOf("Monument", "Granary")) city.cityConstructions.addBuilding(building)
             city.cityConstructions.constructionQueue = arrayListOf("Library")
             for ((index, tile) in city.getTiles().filterNot { it.isCityCenter() }.withIndex()) {
-                if (index < 3) { tile.setTerrainFeatures(arrayListOf("Hill")); tile.setImprovement("Mine", civ) }
-                else tile.setImprovement("Farm", civ)
+                if (index < 3) {
+                    tile.setTerrainFeatures(arrayListOf("Hill"))
+                    tile.setImprovement("Mine", civ)
+                } else {
+                    tile.setImprovement("Farm", civ)
+                }
                 if (index < 2) tile.setTileResource(if (index == 0) "Gold" else "Silver")
-                if (index == 2) { tile.setTileResource("Iron"); tile.resourceAmount = 6 }
+                if (index == 2) {
+                    tile.setTileResource("Iron")
+                    tile.resourceAmount = 6
+                }
             }
             city.reassignPopulation(resetLocked = true)
             civ.addGold(300 - civ.gold)
@@ -148,15 +186,27 @@ object CampaignInitiativeFixtures {
         greece.diplomacyFunctions.makeCivilizationsMeet(france)
         val recon = id == "campaign-reconnaissance"
         val control = id.endsWith("control")
-        val army = if (recon) listOf(
-            "Hoplite" to HexCoord(-5, -1), "Hoplite" to HexCoord(-5, -2),
-            "Archer" to HexCoord(-5, 0), "Archer" to HexCoord(-6, -1), "Archer" to HexCoord(-6, -2),
-            "Catapult" to HexCoord(-6, 0), "Scout" to HexCoord(-4, 0),
-        ) else listOf(
-            "Hoplite" to HexCoord(-3, 0), "Hoplite" to HexCoord(-3, -1),
-            "Archer" to HexCoord(-3, -2), "Archer" to HexCoord(-4, -1), "Archer" to HexCoord(-4, 0),
-            "Catapult" to HexCoord(-4, -2), "Scout" to HexCoord(-2, 0),
-        )
+        val army = if (recon) {
+            listOf(
+                "Hoplite" to HexCoord(-5, -1),
+                "Hoplite" to HexCoord(-5, -2),
+                "Archer" to HexCoord(-5, 0),
+                "Archer" to HexCoord(-6, -1),
+                "Archer" to HexCoord(-6, -2),
+                "Catapult" to HexCoord(-6, 0),
+                "Scout" to HexCoord(-4, 0),
+            )
+        } else {
+            listOf(
+                "Hoplite" to HexCoord(-3, 0),
+                "Hoplite" to HexCoord(-3, -1),
+                "Archer" to HexCoord(-3, -2),
+                "Archer" to HexCoord(-4, -1),
+                "Archer" to HexCoord(-4, 0),
+                "Catapult" to HexCoord(-4, -2),
+                "Scout" to HexCoord(-2, 0),
+            )
+        }
         army.forEach { (name, position) ->
             // A healthy walled city needs a sustained siege force, not only an Archer screen.
             val actualName = if (id == "campaign-siege" && position == HexCoord(-4, -1)) "Catapult" else name
@@ -164,8 +214,13 @@ object CampaignInitiativeFixtures {
         }
         place(game, greece, "Worker", HexCoord(-8, 1))
         // Keep the relevant approach ordinary open terrain. Other cities retain their native workable improvements.
-        for (x in -6..1) for (y in -3..1) game.tileMap[HexCoord(x, y)].apply {
-            setTerrainFeatures(emptyList()); setTerrainTransients()
+        for (x in -6..1) {
+            for (y in -3..1) {
+                game.tileMap[HexCoord(x, y)].apply {
+                    setTerrainFeatures(emptyList())
+                    setTerrainTransients()
+                }
+            }
         }
         if (id == "campaign-siege" || control) {
             france.getCapital()!!.apply {
@@ -179,7 +234,10 @@ object CampaignInitiativeFixtures {
             france.tech.addTechnology("Iron Working", false)
             france.tech.addTechnology("Metal Casting", false)
             france.tech.addTechnology("Steel", false)
-            game.tileMap[HexCoord(0, 0)].apply { setTerrainFeatures(arrayListOf("Hill")); setTerrainTransients() }
+            game.tileMap[HexCoord(0, 0)].apply {
+                setTerrainFeatures(arrayListOf("Hill"))
+                setTerrainTransients()
+            }
             for (position in listOf(HexCoord(0, 0), HexCoord(-1, 0), HexCoord(-1, -1))) place(game, france, "Longswordsman", position)
             place(game, france, "Archer", HexCoord(0, 1))
         }
@@ -195,10 +253,16 @@ object CampaignInitiativeFixtures {
             game.turns = 60
         }
         players.forEach { civ ->
-            civ.popupAlerts.clear(); civ.notifications.clear()
+            civ.popupAlerts.clear()
+            civ.notifications.clear()
             civ.units.getCivUnits().forEach { it.updateVisibleTiles(updateCivViewableTiles = false) }
-            civ.cities.forEach { it.reassignPopulation(resetLocked = true); it.cityStats.update() }
-            civ.cache.updateCivResources(); civ.cache.updateViewableTiles(); civ.updateStatsForNextTurn()
+            civ.cities.forEach {
+                it.reassignPopulation(resetLocked = true)
+                it.cityStats.update()
+            }
+            civ.cache.updateCivResources()
+            civ.cache.updateViewableTiles()
+            civ.updateStatsForNextTurn()
         }
         // A previously explored capital location is permitted knowledge; its current garrison/health remain fogged.
         if (recon) game.tileMap[HexCoord(0, 0)].setExplored(greece, true)
@@ -215,8 +279,9 @@ object CampaignInitiativeFixtures {
         check(turn.map.units.filter { it.military }.all { it.health == 100 })
         check(turn.economy!!.goldenAge.turnsRemaining == 0)
         val paris = turn.map.tiles.single { it.cityName == "Paris" }
-        if (id == "campaign-reconnaissance") check(!paris.visible && france.declareWar.available)
-        else {
+        if (id == "campaign-reconnaissance") {
+            check(!paris.visible && france.declareWar.available)
+        } else {
             check(paris.visible && paris.cityHealth == paris.cityMaxHealth)
             check(paris.cityMaxHealth == if (id == "campaign-siege" || id.endsWith("control")) 250 else 200)
         }
@@ -228,34 +293,54 @@ object CampaignInitiativeFixtures {
         put("civilization", "Greece")
         put("origin", "Operator-authored prior intentions for a constructed existing-war position; not a replay of historical agent decisions")
         put("records", buildJsonArray {})
-        put("wars", buildJsonArray { add(buildJsonObject {
-            put("opponent", "France")
-            put("startedTurn", 50)
-            put("reason", "France declared war; Greece established its current military objective before this position.")
-            put("goals", buildJsonArray { add(buildJsonObject {
-                put("outcome", if (siege) "Capture Paris" else "Defend Athens and remove French forces threatening our territory")
-                put("priority", 1)
-                put("completion", if (siege) "Greece holds Paris" else "Athens is secure and no invading French force threatens Greek territory")
-                put("acceptableCosts", "Manageable unit losses; preserve an effective army and the ability to defend Athens")
-                put("reconsiderWhen", if (siege) "Reassess progress on turn 62, or earlier if the opposing force or our losses change feasibility" else "The immediate threat is removed or the battlefield changes")
-            }) })
-        }) })
-        put("operations", buildJsonArray { add(buildJsonObject {
-            put("id", if (siege) "paris-campaign" else "athens-defense")
-            put("opponents", buildJsonArray { add(kotlinx.serialization.json.JsonPrimitive("France")) })
-            put("plan", if (siege) "Bring the army into useful positions against Paris; assess the initial approach after two turns" else "Secure the approaches to Athens against the French attack")
-            put("progress", "The army is assembled on the western approach to France; use current observations to assess the remaining objective")
-            put("reconsiderWhen", if (siege) "Review on turn 62 after the initial approach, or when combat materially changes the position" else "The immediate threat to Athens changes or the defense objective is complete")
-            put("reviewTurn", if (siege) 62 else 60)
-            put("sources", buildJsonArray {})
-        }) })
+        put(
+            "wars",
+            buildJsonArray {
+                add(
+                    buildJsonObject {
+                        put("opponent", "France")
+                        put("startedTurn", 50)
+                        put("reason", "France declared war; Greece established its current military objective before this position.")
+                        put(
+                            "goals",
+                            buildJsonArray {
+                                add(
+                                    buildJsonObject {
+                                        put("outcome", if (siege) "Capture Paris" else "Defend Athens and remove French forces threatening our territory")
+                                        put("priority", 1)
+                                        put("completion", if (siege) "Greece holds Paris" else "Athens is secure and no invading French force threatens Greek territory")
+                                        put("acceptableCosts", "Manageable unit losses; preserve an effective army and the ability to defend Athens")
+                                        put("reconsiderWhen", if (siege) "Reassess progress on turn 62, or earlier if the opposing force or our losses change feasibility" else "The immediate threat is removed or the battlefield changes")
+                                    },
+                                )
+                            },
+                        )
+                    },
+                )
+            },
+        )
+        put(
+            "operations",
+            buildJsonArray {
+                add(
+                    buildJsonObject {
+                        put("id", if (siege) "paris-campaign" else "athens-defense")
+                        put("opponents", buildJsonArray { add(kotlinx.serialization.json.JsonPrimitive("France")) })
+                        put("plan", if (siege) "Bring the army into useful positions against Paris; assess the initial approach after two turns" else "Secure the approaches to Athens against the French attack")
+                        put("progress", "The army is assembled on the western approach to France; use current observations to assess the remaining objective")
+                        put("reconsiderWhen", if (siege) "Review on turn 62 after the initial approach, or when combat materially changes the position" else "The immediate threat to Athens changes or the defense objective is complete")
+                        put("reviewTurn", if (siege) 62 else 60)
+                        put("sources", buildJsonArray {})
+                    },
+                )
+            },
+        )
     }
 
-    private fun place(game: GameInfo, civ: Civilization, name: String, position: HexCoord) =
-        checkNotNull(game.tileMap.placeUnitNearTile(position, name, civ)).also {
-            check(it.currentTile.position == position) { "Cannot place $name at $position" }
-            it.currentMovement = it.getMaxMovement().toFloat()
-        }
+    private fun place(game: GameInfo, civ: Civilization, name: String, position: HexCoord) = checkNotNull(game.tileMap.placeUnitNearTile(position, name, civ)).also {
+        check(it.currentTile.position == position) { "Cannot place $name at $position" }
+        it.currentMovement = it.getMaxMovement().toFloat()
+    }
 
     private fun sha256(value: String) = MessageDigest.getInstance("SHA-256").digest(value.toByteArray()).joinToString("") { "%02x".format(it) }
 }

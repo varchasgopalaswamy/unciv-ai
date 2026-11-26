@@ -16,8 +16,8 @@ from civ_agent.social_context import social_context
 from civ_agent.startup_context import prepare_startup, startup_prompt
 from civ_agent.state_updates import apply_overview_update
 from civ_agent.tactical_review import tactical_review
+from tests.domain_fixtures import Host
 from tests.test_construction_estimates import estimate
-from tests.test_proposal_gateway import Host
 from tests.test_tactical_review import reviewed
 
 

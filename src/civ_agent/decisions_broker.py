@@ -7,23 +7,43 @@ import json
 import os
 import re
 import time
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
 import aiohttp
 from aiohttp import web
+from filelock import AsyncFileLock
 
 from civ_agent.advisory_answers import failed_answers
-from civ_agent.decisions_backends import BACKENDS, DEFAULT_BACKEND
-from civ_agent.decisions_ledger import RATE_VERSION, DecisionsLedger
+from civ_agent.decisions_backends import BACKENDS, DEFAULT_BACKEND, DecisionBackend
+from civ_agent.decisions_ledger import (
+    RATE_VERSION,
+    DecisionsLedger,
+    NativeAuxiliaryTaskUnavailable,
+    NativeBrokerEpochFenced,
+    fingerprint,
+)
 from civ_agent.decisions_policy import routing_thresholds
 from civ_agent.decisions_tasks import TASK_VERSION, parse_answers, request_body, request_id, request_metadata
 from civ_agent.diplomacy_decisions import MODEL, POLICY_VERSION, DecisionsClient, fallback
+from civ_agent.diplomacy_decisions import request_body as routing_body
+from civ_agent.native_broker_contracts import CloseNativeBrokerEpoch, NativeBrokerEpochClosed, NativeBrokerScope
+from civ_agent.orchestration.contracts import NativeAuxiliaryTask, Scope
+from civ_agent.orchestration.provider_contracts import ProviderError
+from civ_agent.orchestration.routing_contracts import (
+    ROUTING_VERSION,
+    RoutingSubmission,
+    routing_metadata,
+    routing_request_id,
+    routing_submission,
+    validate_routing_reply,
+)
 from civ_agent.protocol import JsonObject
-from civ_agent.providers import ProviderError, read_api_key
-from civ_agent.tls import private_directory, write_private_json
+from civ_agent.provider_credentials import read_api_key
+from civ_agent.tls import private_directory, regular_file, write_private_json
 
-BROKER_PROTOCOL_VERSION = 4
+BROKER_PROTOCOL_VERSION = 6
 _PROVIDER_ERROR_KINDS = {
     "authentication",
     "access_denied",
@@ -137,8 +157,29 @@ class DecisionsBroker:
         self.clients = {}
         self.ledger = DecisionsLedger(self.root)
         self.locks = {}
+        self.epoch_locks = {}
 
-    def _client(self, backend=DEFAULT_BACKEND):
+    def _legacy_admission(self, principal):
+        if self.ledger.native_owner(principal) is not None:
+            raise web.HTTPForbidden(text="Native classifier scope required")
+
+    @asynccontextmanager
+    async def _provider_admission(self, principal, scope: NativeBrokerScope | None):
+        if scope is None:
+            yield
+            return
+        key = (principal, scope.epoch)
+        directory = private_directory(self.root / "native-epoch-locks")
+        path = directory / (fingerprint([principal, scope.model_dump(mode="json")]) + ".lock")
+        if path.exists() or path.is_symlink():
+            regular_file(path, private=True)
+        async with (
+            self.epoch_locks.setdefault(key, asyncio.Lock()),
+            AsyncFileLock(path, mode=0o600, run_in_executor=False, fallback_to_soft=False),
+        ):
+            yield
+
+    def _client(self, backend: DecisionBackend = DEFAULT_BACKEND):
         if self.client is not None:
             return self.client
         if backend not in self.clients:
@@ -182,6 +223,7 @@ class DecisionsBroker:
 
     async def classify(self, request):
         digest = self._authenticate(request)
+        self._legacy_admission(digest)
         try:
             body = await request.json()
         except (ValueError, UnicodeError):
@@ -195,6 +237,7 @@ class DecisionsBroker:
             raise web.HTTPBadRequest()
         # Identity comes from the broker credential, never a player-supplied name.
         async with self.locks.setdefault(digest, asyncio.Lock()):
+            self._legacy_admission(digest)
             try:
                 policy = self.ledger.settings(digest)
             except ValueError:
@@ -211,7 +254,15 @@ class DecisionsBroker:
             )
 
     async def batch(self, request):
+        return await self._batch(request)
+
+    async def native_batch(self, request):
+        return await self._batch(request, native=True)
+
+    async def _batch(self, request, *, native=False):
         principal = self._authenticate(request)
+        if not native:
+            self._legacy_admission(principal)
         try:
             settings = self.ledger.settings(principal)
         except ValueError:
@@ -220,8 +271,16 @@ class DecisionsBroker:
             raise web.HTTPForbidden()
         try:
             envelope = await request.json()
-            if not isinstance(envelope, dict) or set(envelope) != {"requestId", "evidence"}:
+            if not isinstance(envelope, dict) or set(envelope) != (
+                {"scope", "task", "requestId", "evidence"} if native else {"requestId", "evidence"}
+            ):
                 raise ValueError("Invalid envelope")
+            scope = NativeBrokerScope.model_validate(envelope["scope"]) if native else None
+            task = NativeAuxiliaryTask.model_validate(envelope["task"]) if native else None
+            if task is not None and task.kind not in {"effort_selection", "military_triage"}:
+                raise ValueError("Invalid advisory task")
+            if scope is not None:
+                self.ledger.check_native_scope(principal, scope)
             evidence = envelope["evidence"]
             if not isinstance(evidence, dict) or evidence.get("player") != self.ledger.player(principal):
                 raise ValueError("Invalid player perspective")
@@ -239,12 +298,34 @@ class DecisionsBroker:
             **failed_answers(body, threshold, "completion_unknown"),
             "replayEvidence": json.loads(body["input"]),
         }
-        async with self.locks.setdefault(principal, asyncio.Lock()):
-            cached = self.ledger.reserve(
-                principal, envelope["requestId"], metadata["inputHash"], body, pending_result=pending
-            )
+        async with self.locks.setdefault(principal, asyncio.Lock()), self._provider_admission(principal, scope):
+            try:
+                cached = self.ledger.reserve(
+                    principal,
+                    envelope["requestId"],
+                    metadata["inputHash"],
+                    body,
+                    pending_result=pending,
+                    native_scope=scope,
+                    native_task=task,
+                )
+            except NativeBrokerEpochFenced:
+                return web.json_response(
+                    self._reply(principal, {**metadata, **failed_answers(body, threshold, "source_epoch_closed")})
+                )
+            except NativeAuxiliaryTaskUnavailable as error:
+                return web.json_response(
+                    self._reply(principal, {**metadata, **failed_answers(body, threshold, error.reason)})
+                )
             if cached is not None:
                 return web.json_response(self._reply(principal, cached))
+            if scope is not None:
+                try:
+                    self.ledger.native_dispatch_open(principal, scope)
+                except NativeBrokerEpochFenced:
+                    result = {**metadata, **failed_answers(body, threshold, "source_epoch_closed")}
+                    self.ledger.complete(principal, envelope["requestId"], result)
+                    return web.json_response(self._reply(principal, result))
             # No provider retries. A cancelled/unknown call retains its reservation.
             raw = await self._client(settings.decisions_backend).evaluate(
                 body, timeout=settings.decisions_timeout_seconds
@@ -265,6 +346,139 @@ class DecisionsBroker:
             self.ledger.complete(principal, envelope["requestId"], result)
             return web.json_response(self._reply(principal, result))
 
+    async def route(self, request):
+        return await self._route(request)
+
+    async def native_route(self, request):
+        return await self._route(request, native=True)
+
+    async def _route(self, request, *, native=False):
+        principal = self._authenticate(request)
+        if not native:
+            self._legacy_admission(principal)
+        try:
+            settings = self.ledger.settings(principal)
+        except ValueError:
+            raise web.HTTPForbidden() from None
+        if not settings.decisions_enabled:
+            raise web.HTTPForbidden()
+        try:
+            supplied = await request.json()
+            scope = None
+            task = None
+            if native:
+                if not isinstance(supplied, dict) or set(supplied) != {"scope", "task", "submission"}:
+                    raise ValueError("Invalid envelope")
+                scope = NativeBrokerScope.model_validate(supplied["scope"])
+                task = NativeAuxiliaryTask.model_validate(supplied["task"])
+                self.ledger.check_native_scope(principal, scope)
+                supplied = supplied["submission"]
+            submission = RoutingSubmission.model_validate(supplied)
+            if task is not None and task.kind != submission.direction + "_routing":
+                raise ValueError("Invalid routing task")
+            if submission.bundle.get("player") != self.ledger.player(
+                principal
+            ) or submission.requestId != routing_request_id(
+                submission.operationId, submission.direction, submission.bundle, settings.decisions_backend
+            ):
+                raise ValueError("Invalid routing perspective or identity")
+            body = routing_body(submission.direction, submission.bundle, backend=settings.decisions_backend)
+            metadata = routing_metadata(submission, settings)
+        except (ValueError, TypeError, KeyError, UnicodeError):
+            raise web.HTTPBadRequest() from None
+        pending = {
+            **metadata,
+            **fallback(submission.direction, "completion_unknown"),
+            "usage": {},
+            "replayEvidence": submission.bundle,
+        }
+        async with self.locks.setdefault(principal, asyncio.Lock()), self._provider_admission(principal, scope):
+            try:
+                cached = self.ledger.routing_reserve(
+                    principal,
+                    submission.operationId,
+                    submission.requestId,
+                    body,
+                    pending,
+                    native_scope=scope,
+                    native_task=task,
+                )
+            except NativeBrokerEpochFenced:
+                return web.json_response(
+                    self._routing_reply(principal, {**pending, **fallback(submission.direction, "source_epoch_closed")})
+                )
+            except NativeAuxiliaryTaskUnavailable as error:
+                return web.json_response(
+                    self._routing_reply(principal, {**pending, **fallback(submission.direction, error.reason)})
+                )
+            except ValueError:
+                raise web.HTTPConflict(text="Routing immutable operation conflict") from None
+            if cached is not None:
+                return web.json_response(self._routing_reply(principal, cached))
+            if scope is not None:
+                try:
+                    self.ledger.native_dispatch_open(principal, scope)
+                except NativeBrokerEpochFenced:
+                    result = {**pending, **fallback(submission.direction, "source_epoch_closed")}
+                    self.ledger.routing_complete(principal, submission.requestId, result)
+                    return web.json_response(self._routing_reply(principal, result))
+            raw = await self._client(settings.decisions_backend).classify(
+                submission.direction,
+                submission.bundle,
+                timeout=settings.decisions_timeout_seconds,
+                thresholds=metadata["thresholds"],
+                policy_version=settings.decisions_routing_policy,
+            )
+            if any(
+                key in raw and raw[key] != metadata[key]
+                for key in ("model", "policyVersion", "inputHash", "promptHash", "contextSchemaVersion")
+            ):
+                result = {**metadata, **fallback(submission.direction, "malformed_broker_output")}
+            else:
+                result = validate_routing_reply(submission, {**raw, **metadata}, settings)
+            # Usage settles the one recorded attempt even if its answers fail
+            # validation. No caller can resubmit it under a new operation body.
+            result = {**result, "usage": raw.get("usage", {}), "replayEvidence": submission.bundle}
+            self.ledger.routing_complete(principal, submission.requestId, result)
+            return web.json_response(self._routing_reply(principal, result))
+
+    def _routing_reply(self, principal, result):
+        if result.get("fallback") == "not_submitted":
+            return {**result, "version": ROUTING_VERSION, "routingAccounting": self.ledger.routing_status(principal)}
+        try:
+            submission = RoutingSubmission(
+                requestId=result["requestId"],
+                operationId=result["operationId"],
+                direction=result["direction"],
+                bundle=result["replayEvidence"],
+            )
+            metadata = routing_metadata(submission, self.ledger.settings(principal))
+            if any(result.get(key) != value for key, value in metadata.items()):
+                raise ValueError("Routing receipt binding conflict")
+        except (ValueError, TypeError, KeyError):
+            raise web.HTTPConflict(text="Incompatible routing receipt") from None
+        return {
+            **{
+                key: value
+                for key, value in result.items()
+                if key not in {"pending", "replayEvidence", "nativeScope", "nativeTask"}
+            },
+            "routingAccounting": self.ledger.routing_status(principal),
+        }
+
+    async def lookup_route(self, request):
+        principal = self._authenticate(request)
+        identifier = request.match_info["request_id"]
+        if re.fullmatch(r"[a-f0-9]{64}", identifier) is None:
+            raise web.HTTPBadRequest()
+        try:
+            settings = self.ledger.settings(principal)
+        except ValueError:
+            raise web.HTTPForbidden() from None
+        if not settings.decisions_enabled:
+            raise web.HTTPForbidden()
+        return web.json_response(self._routing_reply(principal, self.ledger.routing_lookup(principal, identifier)))
+
     def _reply(self, principal, result):
         if result.get("fallback") != "not_submitted" and (
             result.get("policyVersion") != TASK_VERSION
@@ -273,7 +487,7 @@ class DecisionsBroker:
         ):
             raise web.HTTPConflict(text="Incompatible Decisions receipt; its reservation remains retained")
         return {
-            **{k: v for k, v in result.items() if k not in {"replayEvidence", "pending"}},
+            **{k: v for k, v in result.items() if k not in {"replayEvidence", "pending", "nativeScope", "nativeTask"}},
             "accounting": self.ledger.status(principal),
         }
 
@@ -288,12 +502,32 @@ class DecisionsBroker:
             raise web.HTTPForbidden() from None
         return web.json_response(self._reply(principal, self.ledger.lookup(principal, identifier)))
 
+    async def close_native_epoch(self, request):
+        principal = self._authenticate(request)
+        try:
+            command = CloseNativeBrokerEpoch.model_validate(await request.json())
+        except (ValueError, TypeError, UnicodeError):
+            raise web.HTTPBadRequest() from None
+        try:
+            # Fence immediately, without waiting for the accepted provider lock.
+            self.ledger.close_native_epoch(principal, command)
+        except ValueError:
+            raise web.HTTPConflict(text="Native classifier epoch owner conflict") from None
+        async with self._provider_admission(principal, command.scope):
+            result = self.ledger.native_epoch_status(principal, command)
+        return web.json_response(result.model_dump(mode="json"))
+
     def application(self):
         app = web.Application(client_max_size=256 * 1024)
         app.router.add_get("/health", self.health)
         app.router.add_post("/classify", self.classify)
         app.router.add_post("/batch", self.batch)
         app.router.add_get("/batch/{request_id}", self.lookup)
+        app.router.add_post("/routing", self.route)
+        app.router.add_get("/routing/{request_id}", self.lookup_route)
+        app.router.add_post("/native/batch", self.native_batch)
+        app.router.add_post("/native/routing", self.native_route)
+        app.router.add_post("/native/epochs/close", self.close_native_epoch)
         return app
 
 
@@ -388,17 +622,23 @@ class RoutingClient:
         except (OSError, ValueError, aiohttp.ClientError):
             return fallback(direction, "broker_unavailable")
 
-    async def batch(self, evidence, *, timeout=120) -> JsonObject:
+    async def batch(
+        self, evidence, *, timeout=120, scope: Scope | None = None, task: NativeAuxiliaryTask | None = None
+    ) -> JsonObject:
         stable_id = request_id(evidence, model=BACKENDS[self.backend].model)
+        envelope = {"requestId": stable_id, "evidence": evidence}
+        if scope is not None:
+            envelope["scope"] = NativeBrokerScope.from_scope(scope).model_dump(mode="json")
+            envelope["task"] = task.model_dump(mode="json") if task is not None else None
         try:
             async with aiohttp.ClientSession(
                 connector=aiohttp.UnixConnector(path=self.socket_path),
                 timeout=aiohttp.ClientTimeout(total=timeout + 1),
             ) as session:
                 async with session.post(
-                    "http://localhost/batch",
+                    "http://localhost/native/batch" if scope is not None else "http://localhost/batch",
                     headers={"Authorization": "Bearer " + self._token()},
-                    json={"requestId": stable_id, "evidence": evidence},
+                    json=envelope,
                     allow_redirects=False,
                 ) as response:
                     response.raise_for_status()
@@ -434,6 +674,77 @@ class RoutingClient:
             return result
         except (TimeoutError, OSError, ValueError, aiohttp.ClientError):
             return {"answers": [], "fallback": "broker_unavailable", "requestId": identifier}
+
+    async def route(
+        self,
+        operation_id,
+        direction,
+        bundle,
+        *,
+        timeout=120,
+        scope: Scope | None = None,
+        task: NativeAuxiliaryTask | None = None,
+    ) -> JsonObject:
+        submission = routing_submission(operation_id, direction, bundle, self.backend)
+        payload = submission.model_dump(mode="json")
+        if scope is not None:
+            payload = {
+                "scope": NativeBrokerScope.from_scope(scope).model_dump(mode="json"),
+                "task": task.model_dump(mode="json") if task is not None else None,
+                "submission": payload,
+            }
+        return await self._routing_exchange(
+            "/native/routing" if scope is not None else "/routing",
+            submission.requestId,
+            timeout=timeout + 1,
+            payload=payload,
+        )
+
+    async def close_epoch(self, command: CloseNativeBrokerEpoch, *, timeout=120) -> NativeBrokerEpochClosed:
+        command = CloseNativeBrokerEpoch.model_validate_json(command.model_dump_json())
+        async with aiohttp.ClientSession(
+            connector=aiohttp.UnixConnector(path=self.socket_path), timeout=aiohttp.ClientTimeout(total=timeout)
+        ) as session:
+            async with session.post(
+                "http://localhost/native/epochs/close",
+                headers={"Authorization": "Bearer " + self._token()},
+                json=command.model_dump(mode="json"),
+                allow_redirects=False,
+            ) as response:
+                response.raise_for_status()
+                result = NativeBrokerEpochClosed.model_validate(await response.json())
+        if result.scope != command.scope or result.owner_sha256 != fingerprint(command.owner.model_dump(mode="json")):
+            raise ValueError("Native classifier close response conflict")
+        return result
+
+    async def lookup_route(self, identifier, *, timeout=5) -> JsonObject:
+        if not isinstance(identifier, str) or re.fullmatch(r"[a-f0-9]{64}", identifier) is None:
+            raise ValueError("Invalid routing request ID")
+        return await self._routing_exchange("/routing/" + identifier, identifier, timeout=timeout)
+
+    async def _routing_exchange(self, path, identifier, *, timeout, payload=None) -> JsonObject:
+        try:
+            async with aiohttp.ClientSession(
+                connector=aiohttp.UnixConnector(path=self.socket_path), timeout=aiohttp.ClientTimeout(total=timeout)
+            ) as session:
+                async with session.request(
+                    "POST" if payload is not None else "GET",
+                    "http://localhost" + path,
+                    headers={"Authorization": "Bearer " + self._token()},
+                    json=payload,
+                    allow_redirects=False,
+                ) as response:
+                    response.raise_for_status()
+                    result = await response.json()
+            if (
+                not isinstance(result, dict)
+                or result.get("version") != ROUTING_VERSION
+                or result.get("requestId") != identifier
+            ):
+                raise ValueError("Invalid routing broker reply")
+            return result
+        except (TimeoutError, OSError, ValueError, aiohttp.ClientError):
+            return {"version": ROUTING_VERSION, "requestId": identifier, "fallback": "broker_unavailable"}
 
 
 def main():

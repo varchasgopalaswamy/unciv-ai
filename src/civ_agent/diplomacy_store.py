@@ -12,54 +12,9 @@ from civ_agent.conversation_context import audience, conversation_context
 from civ_agent.decisions_ledger import canonical
 from civ_agent.diplomacy_decisions import BATCH_SECONDS, POLICY_VERSION, request_body
 from civ_agent.memory_store import RecordStore, encode
+from civ_agent.routing_policy import build_routing_bundle, routing_timing, tuple_thread
 
 EVENTS_KEY = "routing:events"
-
-
-def build_routing_bundle(
-    player,
-    thread,
-    pending,
-    context,
-    *,
-    current_turn=None,
-    queued_drafts=(),
-    player_objectives=(),
-    timing=None,
-):
-    """Build the same exact-audience input for production and frozen replays."""
-    thread = tuple_thread(thread)
-    pending = [message for message in pending if audience(message, player) == thread]
-    pending_ids = {message["message"] for message in pending if message.get("message")}
-    history = [
-        {**item, "messages": [message for message in item["messages"] if message.get("message") not in pending_ids]}
-        for item in context["threads"]
-        if audience(item, player) == thread
-    ]
-    return {
-        "schemaVersion": 2,
-        "player": player,
-        "direction": "incoming" if pending else "outgoing",
-        "currentTurn": current_turn,
-        "audience": thread,
-        "pending": pending,
-        "recentExchanges": history,
-        "historyCoverage": "bounded_exact_audience_excerpt",
-        "hasEarlierMessages": any(item.get("hasEarlierMessages", False) for item in history),
-        "evidenceSemantics": (
-            "New messages await attention. The earlier conversation may be incomplete, and does not prove "
-            "anyone has read a message or answered a question. Messages and the player's objectives are "
-            "their own claims and assessments."
-        ),
-        "timing": {"maxBatchSeconds": BATCH_SECONDS, **(timing or {})},
-        "queuedDrafts": list(queued_drafts),
-        "playerObjectives": [
-            objective
-            for objective in player_objectives
-            if objective.get("subjects") and set(objective["subjects"]) <= set(thread[1])
-        ],
-        "pendingProposals": [],
-    }
 
 
 def event_states(memory, db):
@@ -141,7 +96,7 @@ class DiplomacyStore:
                 and not states.get(str(row["id"]), {}).get("attempted")
             ]
 
-    def bundle(self, thread, pending, *, exclude_delivery=None):
+    def bundle(self, thread, pending, *, exclude_delivery=None, epoch=None):
         thread = tuple_thread(thread)
         with self.memory.transaction() as db:
             pending = [message for message in pending if audience(message, self.memory.civilization) == thread]
@@ -158,11 +113,7 @@ class DiplomacyStore:
                 for record in RecordStore(db).all(categories={"strategy", "note"}).values()
                 if record["body"].get("subjects") and set(record["body"]["subjects"]) <= set(thread[1])
             ]
-            all_drafts = [
-                record["body"]
-                for record in RecordStore(db).all(categories={"delivery"}).values()
-                if tuple_thread(record["body"]["thread"]) == thread
-            ]
+            all_drafts = [draft for draft in self._drafts(db, epoch=epoch) if tuple_thread(draft["thread"]) == thread]
             if pending:
                 pending_ids = {message["message"] for message in pending if message.get("message")}
                 states = event_states(self.memory, db)
@@ -204,17 +155,7 @@ class DiplomacyStore:
             )
 
     def _timing(self, states, *, received, complete=True):
-        # Report only durable timestamps; absence is unknown, never a fresh
-        # thirty-second allowance. Coalesced work retains its oldest deadline.
-        if not states or not complete or any(received not in state for state in states):
-            return {}
-        now = self.clock()
-        oldest = min(state[received] for state in states)
-        deadline = min([oldest + BATCH_SECONDS, *(state["deadline"] for state in states if "deadline" in state)])
-        return {
-            "oldestPendingAgeSeconds": max(0, now - oldest),
-            "remainingBatchSeconds": max(0, deadline - now),
-        }
+        return routing_timing(states, now=self.clock(), received=received, complete=complete)
 
     def route(self, epoch, ids, decision, fingerprint):
         with self.memory.transaction() as db:
@@ -250,7 +191,7 @@ class DiplomacyStore:
                 },
             )
 
-    def draft(self, job, call_id, payload, thread):
+    def draft(self, job, call_id, payload, thread, *, epoch=None):
         id = "delivery-" + hashlib.sha256((job.id + ":" + call_id).encode()).hexdigest()[:24]
         with self.memory.transaction() as db:
             self.memory._validate(db, job.id)
@@ -261,9 +202,9 @@ class DiplomacyStore:
                     raise StateConflict("CALL_CONFLICT")
                 return existing["body"]
             deadlines = [
-                r["body"]["deadline"]
-                for r in store.all(categories={"delivery"}).values()
-                if tuple_thread(r["body"]["thread"]) == thread and r["body"]["status"] in {"classifying", "queued"}
+                draft["deadline"]
+                for draft in self._drafts(db, epoch=epoch)
+                if tuple_thread(draft["thread"]) == thread and draft["status"] in {"classifying", "queued"}
             ]
             now = self.clock()
             value = {
@@ -279,12 +220,45 @@ class DiplomacyStore:
             store.write(id, "delivery", value)
             return value
 
-    def drafts(self):
-        with self.memory.transaction() as db:
-            return [r["body"] for r in RecordStore(db).all(categories={"delivery"}).values()]
+    def _drafts(self, db, *, epoch=None):
+        drafts = [record["body"] for record in RecordStore(db).all(categories={"delivery"}).values()]
+        if epoch is None:
+            return drafts  # Legacy callers and historical readers retain their original view.
+        from pydantic import ValidationError
 
-    def get(self, id):
-        return next((row for row in self.drafts() if row["deliveryId"] == id), None)
+        from civ_agent.orchestration.delivery_contracts import OutgoingDraft
+        from civ_agent.orchestration.store import JournalConflict
+
+        if self.memory._meta(db, "epoch") != epoch:
+            raise StateConflict("STALE_EPOCH")
+        owner = self.memory._meta(db, "nativeGatewayOwner")
+        if not isinstance(owner, dict):
+            raise JournalConflict("OUTGOING_OWNER_REQUIRED")
+        selected = []
+        for draft in drafts:
+            try:
+                request = OutgoingDraft.model_validate(self.memory._meta(db, "nativeOutgoing:" + draft["deliveryId"]))
+                if request.delivery_id != draft["deliveryId"] or draft["payload"]["epoch"] != request.scope.epoch:
+                    raise JournalConflict("OUTGOING_DRAFT_CONFLICT")
+            except (ValidationError, KeyError, TypeError):
+                raise JournalConflict("OUTGOING_DRAFT_CONFLICT") from None
+            # A restored historical draft stays exact authored intent. Its old
+            # queue status, override and deadline cannot arm a target-epoch send.
+            if request.scope.epoch != epoch:
+                continue
+            if (request.scope.game, request.scope.player) != (owner.get("game"), owner.get("player")):
+                raise JournalConflict("COORDINATOR_OWNER_CONFLICT")
+            if draft.get("owner") != self.memory.civilization:
+                raise JournalConflict("OUTGOING_DRAFT_CONFLICT")
+            selected.append(draft)
+        return selected
+
+    def drafts(self, *, epoch=None):
+        with self.memory.transaction() as db:
+            return self._drafts(db, epoch=epoch)
+
+    def get(self, id, *, epoch=None):
+        return next((row for row in self.drafts(epoch=epoch) if row["deliveryId"] == id), None)
 
     def update(self, epoch, id, *, only_status=None, **changes):
         with self.memory.transaction() as db:
@@ -351,6 +325,116 @@ class DiplomacyStore:
             )
             return dict(row)
 
+    def begin_native_delivery(self, epoch, id, job, payload, admission=None):
+        """Admit one exact send with its code-owned local task identity."""
+        from civ_agent.orchestration.delivery_contracts import DeliveryAdmission
+
+        admission = DeliveryAdmission.model_validate(admission).model_dump(mode="json")
+        with self.memory.transaction() as db:
+            self._check(db, epoch)
+            self.memory._check_run_failure(db)
+            store = RecordStore(db)
+            draft = store.all(keys=[id])[id]["body"]
+            identifier = "r" + hashlib.sha256((epoch + ":" + id).encode()).hexdigest()[:24]
+            expected = {**draft["payload"], "epoch": epoch, "requestId": identifier}
+            if job != "dispatch-" + identifier or payload != expected:
+                raise StateConflict("OUTGOING_NATIVE_BINDING_CONFLICT")
+            if draft["status"] == "sending" and draft.get("admission") != admission:
+                raise StateConflict("OUTGOING_ADMISSION_CONFLICT")
+            row = db.execute(select(tables.jobs).where(tables.jobs.c.id == job)).mappings().one_or_none()
+            if row is None:
+                self.memory._start_job(
+                    db, job, "delivery", {}, None, {"epoch": epoch, "cursor": 0, "records": {}, "contextIds": []}
+                )
+            elif row["epoch"] != epoch or row["purpose"] != "delivery" or row["status"] == "COMPLETED":
+                raise StateConflict("OUTGOING_DELIVERY_JOB_CONFLICT")
+            elif row["status"] == "INTERRUPTED":
+                db.execute(tables.jobs.update().where(tables.jobs.c.id == job).values(status="RUNNING"))
+            store.write(
+                id,
+                "delivery",
+                {
+                    **draft,
+                    "status": "sending",
+                    "requestId": identifier,
+                    "admission": admission,
+                },
+            )
+
+    def resume_native_delivery(self, epoch, id, job, payload):
+        """Resume domain attribution only, without a source role or local outbox."""
+        with self.memory.transaction() as db:
+            self._check(db, epoch)
+            draft = RecordStore(db).all(keys=[id])[id]["body"]
+            identifier = "r" + hashlib.sha256((epoch + ":" + id).encode()).hexdigest()[:24]
+            row = db.execute(select(tables.jobs).where(tables.jobs.c.id == job)).mappings().one_or_none()
+            if (
+                job != "dispatch-" + identifier
+                or draft.get("requestId") != identifier
+                or payload != {**draft["payload"], "epoch": epoch, "requestId": identifier}
+                or row is None
+                or row["epoch"] != epoch
+                or row["purpose"] != "delivery"
+            ):
+                raise StateConflict("OUTGOING_DELIVERY_JOB_CONFLICT")
+            if row["status"] == "INTERRUPTED":
+                db.execute(tables.jobs.update().where(tables.jobs.c.id == job).values(status="RUNNING"))
+
+    def apply_native_delivery(self, epoch, id, job, payload, receipt):
+        with self.memory.transaction() as db:
+            self._check(db, epoch)
+            store = RecordStore(db)
+            draft = store.all(keys=[id])[id]["body"]
+            native = {
+                "job": job,
+                "operationId": payload["requestId"],
+                "requestSha256": hashlib.sha256(encode(["player_communication", payload]).encode()).hexdigest(),
+                "receiptSha256": hashlib.sha256(encode(receipt).encode()).hexdigest(),
+            }
+            if draft.get("native") is not None:
+                if draft["native"] != native:
+                    raise StateConflict("OUTGOING_NATIVE_OUTCOME_CONFLICT")
+                return draft
+            now = self.clock()
+            value = {
+                **draft,
+                "status": "failed" if "error" in receipt else "sent",
+                "native": native,
+                "deliveredAt": now,
+                "queueDelaySeconds": now - draft["createdAt"],
+            }
+            if "error" in receipt:
+                value["error"] = receipt["error"]
+            else:
+                value["message"] = receipt["message"]
+            store.write(id, "delivery", value)
+            return value
+
+    def finish_native_delivery(self, epoch, id):
+        with self.memory.transaction() as db:
+            self._check(db, epoch)
+            store = RecordStore(db)
+            draft = store.all(keys=[id])[id]["body"]
+            proof = draft.get("native")
+            identifier = "r" + hashlib.sha256((epoch + ":" + id).encode()).hexdigest()[:24]
+            if (
+                not proof
+                or draft["status"] not in {"sent", "failed"}
+                or proof["operationId"] != identifier
+                or proof["job"] != "dispatch-" + identifier
+            ):
+                raise StateConflict("OUTGOING_NATIVE_COMPLETION_REQUIRED")
+            outcome = store.all(keys=["native:" + identifier], project=False).get("native:" + identifier)
+            marker = outcome["body"].get("native", {}) if outcome else {}
+            if any(marker.get(key) != proof[key] for key in ("operationId", "requestSha256", "receiptSha256")):
+                raise StateConflict("OUTGOING_NATIVE_OUTCOME_CONFLICT")
+            row = db.execute(select(tables.jobs).where(tables.jobs.c.id == proof["job"])).mappings().one_or_none()
+            if row is None or row["epoch"] != epoch or row["purpose"] != "delivery":
+                raise StateConflict("OUTGOING_DELIVERY_JOB_CONFLICT")
+            if row["status"] == "INTERRUPTED":
+                db.execute(tables.jobs.update().where(tables.jobs.c.id == proof["job"]).values(status="RUNNING"))
+        self.memory.finish_job(proof["job"], True)
+
     def settle(self, id, request, receipt):
         # receipt() is idempotent. A crash between these transactions is repaired
         # from the stored host receipt, without another send or model activation.
@@ -383,11 +467,12 @@ class DiplomacyStore:
         self.memory.finish_job(request["job"], True)
 
 
-def tuple_thread(thread):
-    return thread[0], tuple(thread[1])
-
-
 def delivery_status(draft):
+    receipt = draft.get("receipt")
+    if "native" in draft:
+        receipt = (
+            {"error": draft["error"]} if "error" in draft else {"message": draft["message"], "nativeOutcome": None}
+        )
     return {
         "deliveryId": draft["deliveryId"],
         "disposition": "queued" if draft["status"] == "classifying" else draft["status"],
@@ -395,5 +480,5 @@ def delivery_status(draft):
         "deadline": draft["deadline"],
         "text": draft["payload"]["text"],
         "audience": draft["thread"],
-        **({"receipt": draft["receipt"]} if "receipt" in draft else {}),
+        **({"receipt": receipt} if receipt is not None else {}),
     }

@@ -14,7 +14,15 @@ import com.unciv.view.ForeignCivView
 import kotlinx.serialization.json.JsonObject
 import java.util.UUID
 
-internal data class DesktopTradeDraft(val epoch: String, val proposal: String?, val version: Int?, val trade: Trade)
+internal data class DesktopTradeState(
+    val epoch: String,
+    val proposal: String?,
+    val version: Int?,
+    val draft: Trade?,
+    val notice: String,
+)
+
+private const val REVIEW_TRADE_TERMS = "Review the current offer before deciding."
 
 /** Supplies shared proposal/consent actions to Unciv's ordinary trade table. */
 internal class DesktopTradeController(
@@ -22,7 +30,7 @@ internal class DesktopTradeController(
     viewer: CivView,
     partnerView: ForeignCivView,
     val screen: DiplomacyScreen,
-    private var savedDraft: DesktopTradeDraft? = null,
+    private var savedState: DesktopTradeState? = null,
 ) : TradeTableController {
     val partner = partnerView.getCiv().civID
     private val epoch = session.epoch
@@ -36,6 +44,7 @@ internal class DesktopTradeController(
     private var editing = true
     private var initialized = false
     private var notice = ""
+    private var acceptance: ConfirmPopup? = null
 
     init {
         refresh()
@@ -84,6 +93,7 @@ internal class DesktopTradeController(
             val reference = pending?.text("proposal") ?: proposal?.text("proposal")
             val next = reference?.let { request("trade_read", "proposal" to it)["trade"] as JsonObject }
             if (!initialized || identity(next) != identity(proposal) || next?.text("status") != proposal?.text("status")) {
+                dismissAcceptance()
                 proposal = next
                 editing = next == null
                 resetTerms()
@@ -93,13 +103,14 @@ internal class DesktopTradeController(
                 offers.clear()
                 options.array(side).filterIsInstance<JsonObject>().mapTo(offers, items::native)
             }
-            savedDraft?.let { saved ->
-                if (saved.epoch == epoch && saved.proposal == proposal?.text("proposal") && saved.version == proposal?.number("version")) {
-                    tradeView.setStagedTrade(TradeOperations.copy(saved.trade))
+            savedState?.takeIf { it.epoch == epoch }?.let { saved ->
+                notice = saved.notice
+                if (saved.draft != null && saved.proposal == proposal?.text("proposal") && saved.version == proposal?.number("version")) {
+                    tradeView.setStagedTrade(TradeOperations.copy(saved.draft))
                     editing = true
                 }
             }
-            savedDraft = null
+            savedState = null
             initialized = true
             communicationAvailable = canCommunicate
         }
@@ -123,7 +134,19 @@ internal class DesktopTradeController(
         )
     }
 
-    fun draft(): DesktopTradeDraft? = if (!editing) null else DesktopTradeDraft(epoch, proposal?.text("proposal"), proposal?.number("version"), staged())
+    private fun dismissAcceptance() {
+        acceptance?.takeIf { it.stage != null }?.let {
+            it.close()
+            notice = REVIEW_TRADE_TERMS
+        }
+        acceptance = null
+    }
+
+    fun stateForReload(): DesktopTradeState {
+        dismissAcceptance()
+        return DesktopTradeState(epoch, proposal?.text("proposal"), proposal?.number("version"), if (editing) staged() else null, notice)
+    }
+
     private fun staged() = TradeOperations.draft(tradeView.ourStagedOffers(), tradeView.theirStagedOffers())
 
     override fun draftChanged() {
@@ -190,7 +213,9 @@ internal class DesktopTradeController(
                     val warnings = current.array("yourWarDeclarations").filterIsInstance<JsonObject>().flatMap { it.array("confirmation") }.map { (it as kotlinx.serialization.json.JsonPrimitive).content } +
                         current.array("socialAdvisories").filterIsInstance<JsonObject>().mapNotNull { it.text("terms") }
                     val description = if (current["friendship"] is JsonObject) "Declaration of Friendship · ${(current["friendship"] as JsonObject).number("duration")} turns" else terms(items.nativeProposal(current, session.viewingCivilization))
-                    ConfirmPopup(screen, (listOf("Accept these exact terms?", description) + warnings).joinToString("\n"), "Accept") { decide(current, "accept") }.open()
+                    acceptance = ConfirmPopup(screen, (listOf("Accept these exact terms?", description) + warnings).joinToString("\n"), "Confirm acceptance") {
+                        decide(current, "accept")
+                    }.also { it.open() }
                 }
             }
             if (current.flag("declineAvailable")) action("Decline") { decide(current, "decline") }

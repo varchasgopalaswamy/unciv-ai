@@ -11,6 +11,8 @@ class NavalIntegrationTest {
 
     @Test fun `naval combat economy and work boat consumption have native HTTPS outcomes`() = run("naval")
 
+    @Test fun `Samurai water improvements retain the builder and replay after restart`() = run("samurai")
+
     @Test fun `distant path queries protect unexplored terrain and unseen units`() = run("privacy")
 
     @Test fun `destination and work boat commands recover across interrupted checkpoint writes`() = run("recovery")

@@ -23,6 +23,7 @@ enum class TurnCommandKind {
     ADOPT_POLICY,
     DISMISS_POLICY_PICKER,
     QUEUE_CONSTRUCTION,
+    START_CONSTRUCTION,
     CHOOSE_FREE_GREAT_PERSON,
     RENAME_CITY,
     ACKNOWLEDGE_ALERT,
@@ -119,6 +120,7 @@ data class TurnCity(
     val constructionChoice: ConstructionChoice? = null,
     val productionConversions: Map<String, ProductionConversion> = emptyMap(),
     val constructionEstimates: Map<String, ConstructionEstimate> = emptyMap(),
+    val constructionQueueRevision: String? = null,
 )
 
 @Serializable
@@ -206,6 +208,7 @@ data class TurnCommandReceipt(
     val turn: Int,
     val isYourTurn: Boolean,
     val actionSummary: String,
+    val construction: ConstructionOutcome? = null,
     @EncodeDefault(EncodeDefault.Mode.NEVER) val error: String? = null,
     val feedback: AlertContent? = null,
     val combat: CombatOutcome? = null,
@@ -219,6 +222,9 @@ data class TurnCommandReceipt(
     val mission: MissionOutcome? = null,
     val dismissedNotifications: List<PlayerNotification> = emptyList(),
 )
+
+@Serializable
+data class ConstructionOutcome(val city: String, val before: List<String>, val after: List<String>)
 
 object PlayerTurnJson {
     val json = Json { encodeDefaults = true }
@@ -236,6 +242,7 @@ internal fun TurnCommandRequest.detached(): TurnCommandRequest = copy(
 )
 
 internal fun TurnCommandReceipt.detached(): TurnCommandReceipt = copy(
+    construction = construction?.copy(before = Collections.unmodifiableList(construction.before.toList()), after = Collections.unmodifiableList(construction.after.toList())),
     movement = movement?.copy(orderBefore = movement.orderBefore?.detached(), orderAfter = movement.orderAfter?.detached()),
     dismissedNotifications = Collections.unmodifiableList(dismissedNotifications.map { it.detached() }),
     greatPerson = greatPerson?.detached(),

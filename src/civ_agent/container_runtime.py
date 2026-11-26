@@ -1,6 +1,7 @@
 """Entrypoints inside disposable containers; all authoritative state is bind-mounted."""
 
 import argparse
+import asyncio
 import hashlib
 import json
 import os
@@ -12,18 +13,18 @@ import sys
 import time
 from pathlib import Path
 
+from civ_agent.container_identity import require_local_runtime
 from civ_agent.game_config import ResolvedGameConfig
 from civ_agent.tls import (
     ensure_host_tls,
-    ensure_server_certificate,
     private_directory,
     write_private,
     write_private_json,
 )
-from civ_agent.turn_archive import civilization_directory_name
 
 ROOT = Path("/match")
 ASSETS = Path("/opt/unciv/engine/android/assets")
+PROVENANCE = Path("/opt/unciv/provenance.json")
 
 
 def native(arguments, assets=ASSETS):
@@ -54,24 +55,6 @@ def prepare(config):
         write_private_json(operator, {"token": secrets.token_urlsafe(32)})
     tls, ca = ensure_host_tls(ROOT, "0.0.0.0", "game")
     write_private_json(ROOT / "endpoints.json", {"hostUrl": "https://game:8765", "caFile": str(ca)})
-    for index, player in enumerate(config.agent_players):
-        name = civilization_directory_name(player.civilization)
-        directory = private_directory(ROOT / "agent-services" / name)
-        security = private_directory(directory / "security")
-        material = ensure_server_certificate(ROOT, f"p{index}", [f"p{index}", "localhost", "127.0.0.1"])
-        for key, target in (("cert_file", "cert.pem"), ("key_file", "key.pem"), ("ca_file", "ca.pem")):
-            write_private(security / target, material[key].read_bytes())
-        if not (directory / "token.json").exists():
-            write_private_json(directory / "token.json", {"token": secrets.token_urlsafe(32)})
-        write_private_json(
-            directory / "container-settings.json",
-            {
-                "civilization": player.civilization,
-                "player": player.name,
-                "hostname": f"p{index}",
-                "settings": config.settings(player),
-            },
-        )
     return tls
 
 
@@ -94,6 +77,52 @@ def wait_for(predicate, process, timeout):
         if time.monotonic() > deadline:
             raise TimeoutError("Service startup timed out")
         time.sleep(0.2)
+
+
+async def run_with_native_host(controller, process):
+    """An unexpectedly exited JVM must fail its owning container, not orphan it."""
+
+    async def monitor():
+        while process.poll() is None:
+            await asyncio.sleep(0.2)
+        raise RuntimeError(f"NATIVE_HOST_PROCESS_EXITED:{process.returncode}")
+
+    running = asyncio.create_task(controller.run() if hasattr(controller, "run") else controller)
+    watching = asyncio.create_task(monitor())
+    try:
+        done, _ = await asyncio.wait({running, watching}, return_when=asyncio.FIRST_COMPLETED)
+        if watching in done:
+            watching.result()
+        return await running
+    finally:
+        for task in (running, watching):
+            if not task.done() and not task.cancelling():
+                task.cancel()
+        await asyncio.gather(running, watching, return_exceptions=True)
+
+
+async def run_interruptible_controller(controller, process):
+    """One signal owner cancels and joins the async controller before JVM cleanup."""
+    loop = asyncio.get_running_loop()
+    owner = asyncio.current_task()
+    if owner is None:
+        raise RuntimeError("LOCAL_CONTROLLER_TASK_REQUIRED")
+
+    def interrupted():
+        if not owner.done() and not owner.cancelling():
+            owner.cancel()
+
+    signals = (signal.SIGINT, signal.SIGTERM)
+    for sig in signals:
+        loop.add_signal_handler(sig, interrupted)
+    try:
+        return await run_with_native_host(controller, process)
+    finally:
+        for sig in signals:
+            loop.remove_signal_handler(sig)
+            # The synchronous wrapper now owns child cleanup. A second signal
+            # must not interrupt its stop/join or asyncio's remaining teardown.
+            signal.signal(sig, signal.SIG_IGN)
 
 
 def desktop(config, processes, logs):
@@ -149,14 +178,21 @@ def desktop(config, processes, logs):
 
 
 def controller():
-    from civ_agent import scheduler
-    from civ_agent.monitoring import path_for, read_record
+    from civ_agent.runtime.controller import run_controller
 
     config = ResolvedGameConfig.model_validate_json((ROOT / "resolved.json").read_text())
     manifest = json.loads((ROOT / "container.json").read_text())
-    provenance = json.loads(Path("/opt/unciv/provenance.json").read_text())
+    require_local_runtime(manifest)
+    resume_requested = manifest.get("launchResumeRequested")
+    if type(resume_requested) is not bool:
+        raise ValueError("LOCAL_LAUNCH_INTENT_REQUIRED")
+    provenance = json.loads(PROVENANCE.read_text())
     os.environ["UNCIV_HOST_REVISION"] = provenance["source"]["revision"]
     os.environ["UNCIV_ENGINE_REVISION"] = provenance["engine"]["revision"]
+    if engine_hash := provenance.get("engineHash"):
+        os.environ["UNCIV_ENGINE_HASH"] = engine_hash
+    if image_id := manifest.get("images", {}).get("desktop" if config.human else "runtime"):
+        os.environ["UNCIV_RUNTIME_IMAGE"] = image_id
     processes, logs = [], []
     original_handlers = {}
 
@@ -201,6 +237,8 @@ def controller():
             arguments += ["--new-game", "--checkpoint", str(ROOT / "exploration.json"), *config.engine_arguments()]
         if config.human:
             arguments += ["--human", config.human]
+        if config.runtime.record_replay:
+            arguments += ["--record-replay"]
         log = (ROOT / "host.log").open("a")
         logs.append(log)
         offset = log.tell()
@@ -213,30 +251,33 @@ def controller():
                 process,
                 config.limits.startup_timeout,
             )
+        host_ca = Path(json.loads((ROOT / "endpoints.json").read_text())["caFile"])
         write_private_json(ROOT / "runtime.json", {"phase": "host_ready", "launch": manifest["launch"]})
         wait_for(lambda: (ROOT / "control/start.json").exists(), process, config.limits.startup_timeout)
-        args = scheduler.parser().parse_args(["--state-dir", str(ROOT)])
-        args.action = "resume" if read_record(path_for(ROOT), "state", "run") else "start"
-        # Per-seat service settings own the model choice, including opening reviews.
-        args.model = args.reasoning_effort = None
-        for key, value in config.limits.model_dump().items():
-            if key != "startup_timeout":
-                setattr(args, key, value)
-        write_private_json(ROOT / "runtime.json", {"phase": "running", "launch": manifest["launch"]})
-        code = scheduler.run(args)
-        state = read_record(path_for(ROOT), "state", "run") or {}
+        if json.loads((ROOT / "control/start.json").read_text()).get("launch") != manifest["launch"]:
+            raise ValueError("LOCAL_LAUNCH_CONTROL_CONFLICT")
+        state = asyncio.run(
+            run_interruptible_controller(
+                run_controller(ROOT, resume=resume_requested, host_url="https://game:8765", host_ca=host_ca),
+                process,
+            )
+        )
+        runner_status = {"FINISHED": "complete", "PAUSED": "paused", "FAILED": "failed", "STOPPED": "stopped"}.get(
+            state.mode, "failed"
+        )
+        if state.mode == "STOPPED" and (
+            (state.reason or "").startswith(("MAX_", "BUDGET"))
+            or state.reason in {"MODEL_INVOCATION_LIMIT", "MODEL_REQUEST_LIMIT", "TURN_TIMEOUT"}
+        ):
+            runner_status = "budget_exhausted"
         write_private_json(
             ROOT / "runtime.json",
-            {
-                "phase": "stopped",
-                "launch": manifest["launch"],
-                "exit_code": code,
-                "runner_status": state.get("status"),
-                "reason": state.get("reason") or (f"Scheduler exited {code}; inspect controller log" if code else None),
-            },
+            {"phase": "stopped", "launch": manifest["launch"], "runner_status": runner_status, "reason": state.reason},
         )
-        return code
-    except KeyboardInterrupt:
+        # A handled game failure is a terminal result for the supervisor. A
+        # process retry would erase its original diagnostic without fixing it.
+        return 0
+    except (KeyboardInterrupt, asyncio.CancelledError):
         return 130
     finally:
         # A second stop request must not interrupt flushing/child cleanup.
@@ -250,59 +291,15 @@ def controller():
             signal.signal(sig, handler)
 
 
-def agent(civilization):
-    from civ_agent.commands import agent_server
-
-    name = civilization_directory_name(civilization)
-    directory = ROOT / "agent-services" / name
-    launch = json.loads((directory / "container-settings.json").read_text())
-    if launch["civilization"] != civilization:
-        raise ValueError("Agent identity differs from its private configuration")
-    security = directory / "security"
-    arguments = [
-        civilization,
-        "--state-dir",
-        str(ROOT),
-        "--port",
-        "8766",
-        "--listen-host",
-        "0.0.0.0",
-        "--public-host",
-        launch["hostname"],
-        "--mcp-url",
-        "https://game:8765",
-        "--mcp-ca-file",
-        str(security / "ca.pem"),
-        "--cert-file",
-        str(security / "cert.pem"),
-        "--key-file",
-        str(security / "key.pem"),
-        "--ca-file",
-        str(security / "ca.pem"),
-    ]
-    for key, value in launch["settings"].items():
-        if isinstance(value, bool):
-            if value:
-                arguments.append("--" + key.replace("_", "-"))
-        else:
-            arguments += [
-                "--" + key.replace("_", "-"),
-                json.dumps(value) if isinstance(value, (dict, list)) else str(value),
-            ]
-    return agent_server.run(agent_server.parser().parse_args(arguments))
-
-
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("role", choices=("controller", "agent", "auth", "decisions", "watch", "validate"))
+    parser.add_argument("role", choices=("controller", "auth", "decisions", "watch", "validate"))
     parser.add_argument("arguments", nargs=argparse.REMAINDER)
     args = parser.parse_args(argv)
     os.umask(0o077)
     Path(os.environ.get("HOME", "/tmp/home")).mkdir(parents=True, exist_ok=True)
     if args.role == "controller":
         return controller()
-    if args.role == "agent":
-        return agent(*args.arguments)
     if args.role == "decisions":
         from civ_agent.decisions_broker import main as decisions_main
 

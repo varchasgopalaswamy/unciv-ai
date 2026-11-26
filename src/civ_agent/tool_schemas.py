@@ -6,7 +6,7 @@ from pydantic import BaseModel, Field, RootModel, field_validator, model_validat
 
 from civ_agent.delivery_options import DeliveryOptions
 from civ_agent.economy_completion import WorkerSkip
-from civ_agent.economy_roles import CityOverride, EconomyRequest, FinishRole, RequestDisposition
+from civ_agent.economy_roles import ChoiceEscalation, CityOverride, EconomyRequest, FinishRole, RequestDisposition
 from civ_agent.game_commands import Position
 from civ_agent.inspection_bundle import InspectionBundle
 from civ_agent.memory_records import (
@@ -51,6 +51,7 @@ class MilitaryFinishRole(SpecialistFinishRole):
 
 class EconomyFinishRole(SpecialistFinishRole):
     workerSkips: list[WorkerSkip] = Field(default_factory=list, max_length=500)
+    escalateChoices: ChoiceEscalation = ""
 
 
 class EconomyWait(BoundaryModel):

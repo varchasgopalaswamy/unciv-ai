@@ -2,53 +2,113 @@
 
 import math
 from collections import defaultdict
+from collections.abc import Collection
+from typing import Annotated, Literal, NotRequired, TypedDict
+
+from pydantic import BeforeValidator, ConfigDict, Field, TypeAdapter, ValidationError, with_config
 
 from civ_agent.protocol import JsonObject
 
 STATUSES = {"accepted", "low_confidence", "refusal", "malformed", "missing"}
-UNAVAILABLE = {"budget_exhausted", "completion_unknown", "timeout", "service_failure", "circuit_open", "malformed"}
+UNAVAILABLE = {
+    "budget_exhausted",
+    "completion_unknown",
+    "timeout",
+    "service_failure",
+    "circuit_open",
+    "malformed",
+    "source_epoch_closed",
+    "task_allowance_exhausted",
+    "task_attribution_unavailable",
+}
+
+
+def _json_number(value):
+    # Strict floats also accept Decimal and objects with __float__. This owned
+    # JSON boundary accepts the original int/float primitives only.
+    if type(value) not in (int, float):
+        raise ValueError("Invalid probability")
+    return value
+
+
+type Probability = Annotated[int | float, BeforeValidator(_json_number), Field(ge=0, le=1, allow_inf_nan=False)]
+
+_ANSWER_CONFIG = ConfigDict(strict=True, extra="ignore", hide_input_in_errors=True)
+
+
+@with_config(_ANSWER_CONFIG)
+class ProbabilityRow(TypedDict):
+    value: str
+    probability: Probability
+
+
+@with_config(_ANSWER_CONFIG)
+class ChoiceAnswer(TypedDict):
+    name: str
+    type: Literal["choice"]
+    choice: str
+    confidence: Probability
+    probability: NotRequired[Probability]
+    providerConfidence: NotRequired[Probability]
+    probabilities: NotRequired[list[ProbabilityRow]]
+
+
+@with_config(_ANSWER_CONFIG)
+class RefusalAnswer(TypedDict):
+    name: str
+    type: Literal["refusal"]
+
+
+_PROBABILITY = TypeAdapter(Probability, config=ConfigDict(strict=True))
+_VECTOR = TypeAdapter(list[ProbabilityRow])
+_ANSWER = TypeAdapter(Annotated[ChoiceAnswer | RefusalAnswer, Field(discriminator="type")])
 
 
 def probability(value):
-    return type(value) in (int, float) and math.isfinite(value) and 0 <= value <= 1
+    try:
+        _PROBABILITY.validate_python(value)
+    except ValidationError:
+        return False
+    return True
+
+
+def _complete_vector(
+    choices: Collection[str], values: list[ProbabilityRow], tolerance: float, *, relative_tolerance: float = 0
+) -> bool:
+    return (
+        len(values) == len(choices)
+        and len({row["value"] for row in values}) == len(choices)
+        and {row["value"] for row in values} == set(choices)
+        and math.isclose(sum(row["probability"] for row in values), 1, rel_tol=relative_tolerance, abs_tol=tolerance)
+    )
+
+
+def choice_probabilities(choices: Collection[str], value: object, *, tolerance: float) -> list[JsonObject] | None:
+    """Validate an independent distribution, retaining the supplied order."""
+    try:
+        values = _VECTOR.validate_python(value, strict=True)
+    except ValidationError:
+        return None
+    return [dict(row) for row in values] if _complete_vector(choices, values, tolerance) else None
 
 
 def typed_answer(question, answer):
     """Retain only the API's typed fields, never refusal/provider prose."""
-    name = question["name"]
-    if not isinstance(answer, dict) or answer.get("name") != name:
+    try:
+        parsed = _ANSWER.validate_python(answer)
+    except ValidationError:
         return None
-    if answer.get("type") == "refusal":
-        return {"name": name, "type": "refusal"}
+    if parsed["name"] != question["name"]:
+        return None
+    raw: JsonObject = dict(parsed)
+    if parsed["type"] == "refusal":
+        return raw
     choices = [c["value"] for c in question["choices"]]
-    if (
-        answer.get("type") != "choice"
-        or not isinstance(answer.get("choice"), str)
-        or answer["choice"] not in choices
-        or not probability(answer.get("confidence"))
-    ):
+    if parsed["choice"] not in choices:
         return None
-    raw = {k: answer[k] for k in ("name", "type", "choice", "confidence")}
-    for field in ("probability", "providerConfidence"):
-        if field in answer:
-            if not probability(answer[field]):
-                return None
-            raw[field] = answer[field]
-    if "probabilities" in answer:
-        values = answer["probabilities"]
-        if (
-            not isinstance(values, list)
-            or len(values) != len(choices)
-            or any(
-                not isinstance(v, dict)
-                or not isinstance(v.get("value"), str)
-                or v["value"] not in choices
-                or not probability(v.get("probability"))
-                for v in values
-            )
-            or len({v["value"] for v in values}) != len(choices)
-            or not math.isclose(sum(v["probability"] for v in values), 1, abs_tol=0.01)
-        ):
+    if "probabilities" in parsed:
+        values = parsed["probabilities"]
+        if not _complete_vector(choices, values, 0.01, relative_tolerance=1e-9):
             return None
         lookup = {v["value"]: v["probability"] for v in values}
         raw["probabilities"] = [{"value": c, "probability": lookup[c]} for c in choices]

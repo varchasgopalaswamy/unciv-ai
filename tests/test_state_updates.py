@@ -11,9 +11,8 @@ from civ_agent.civilization_state import CivilizationState, StateConflict
 from civ_agent.proposal_gateway import ProposalGateway
 from civ_agent.service_io import ServiceIO
 from civ_agent.state_updates import apply_overview_update, overview_update, stamp
+from tests.domain_fixtures import Host, create, strategy
 from tests.memory_helpers import stored_records
-from tests.test_proposal_gateway import Host
-from tests.test_structured_memory import create, strategy
 
 
 def stamped(value, revision="r1", epoch="g1"):

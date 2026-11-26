@@ -16,7 +16,7 @@ internal fun productionPolicy(player: Civilization): ProductionPolicy {
 internal fun productionAllowed(player: Civilization, name: String) = name !in productionPolicy(player).blockedConversions
 
 /** Remove blocked legacy/automated entries, preserving work on ordinary items.
- * Runs at the player session boundary and before turn advancement, so automation
+ * Runs at startup and explicit mutation boundaries, including turn advancement, so automation
  * cannot collect conversion yields between API calls. Native AI seats are untouched.
  */
 internal fun enforceProductionPolicy(player: Civilization): Boolean {

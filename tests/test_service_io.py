@@ -1,4 +1,6 @@
 import asyncio
+import subprocess
+import sys
 import tempfile
 import threading
 import unittest
@@ -8,6 +10,43 @@ from civ_agent.service_io import ServiceIO
 
 
 class ServiceIOTests(unittest.IsolatedAsyncioTestCase):
+    async def test_worker_cancelled_error_does_not_spin_the_event_loop(self):
+        # A subprocess bounds the regression: repeatedly awaiting an already
+        # failed future otherwise spins without yielding to asyncio's timers.
+        result = await asyncio.to_thread(
+            subprocess.run,
+            [
+                sys.executable,
+                "-c",
+                """
+import asyncio
+from civ_agent.service_io import ServiceIO
+
+def cancelled():
+    raise asyncio.CancelledError()
+
+async def main():
+    io = ServiceIO()
+    try:
+        try:
+            await io.call(cancelled)
+        except asyncio.CancelledError:
+            pass
+        else:
+            raise AssertionError('Expected cancellation')
+        assert await io.call(lambda: 'still usable') == 'still usable'
+    finally:
+        await io.close()
+
+asyncio.run(main())
+""",
+            ],
+            timeout=5,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     async def test_cancellation_and_shutdown_wait_for_the_accepted_write(self):
         worker = ServiceIO()
         entered, release = threading.Event(), threading.Event()

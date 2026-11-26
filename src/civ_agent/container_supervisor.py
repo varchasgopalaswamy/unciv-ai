@@ -7,23 +7,26 @@ import contextlib
 import csv
 import hashlib
 import json
-import logging
 import os
 import secrets
 import signal
-import sqlite3
 import subprocess
+import sys
 import threading
 import time
+from datetime import datetime
 from pathlib import Path
 
-from sqlalchemy.exc import OperationalError
-
+from civ_agent.container_identity import deployment_identity, require_local_runtime
 from civ_agent.container_support import (
+    LABEL,
+    SERVICE_LABEL,
     ContainerError,
+    ContainerService,
     auth_name,
     base_arguments,
     cleanup,
+    command,
     create_network,
     firewall,
     identity,
@@ -32,85 +35,146 @@ from civ_agent.container_support import (
     mount,
     podman,
     read_json,
-    stop_containers,
+    start_container_service,
+    stop_container_service,
+    unit_state,
+    verify_container_service,
+    verify_container_unit,
+    wait_unit_collected,
 )
 from civ_agent.game_config import ContainerResources, ResolvedGameConfig
-from civ_agent.model_status import RECOVERABLE_MODEL_FAILURES
-from civ_agent.monitoring import path_for, read_record
 from civ_agent.protocol import JsonObject
-from civ_agent.providers import read_api_key
-from civ_agent.tls import private_directory, write_private_json
-from civ_agent.turn_archive import civilization_directory_name
-
-QUOTA_RETRY_SECONDS = 300
-logger = logging.getLogger(__name__)
+from civ_agent.provider_credentials import read_api_key
+from civ_agent.tls import private_directory, regular_file, write_private_json
 
 
-def recoverable_model_failure(root: Path) -> str | None:
-    """Return a machine-classified transient failure, never infer it from prose."""
-    path = path_for(root)
-    if not path.exists():
-        return None
-    state = read_record(path, "state", "run") or {}
-    quota = state.get("quotaFailure") or {}
-    if (
-        state.get("status") == "paused"
-        and quota.get("reason") == "usageLimitExceeded"
-        and quota.get("epoch") == state.get("epoch")
-    ):
-        return "usageLimitExceeded"
-    flight = state.get("inFlight") or {}
-    model = flight.get("modelStatus") or {}
-    request = flight.get("requestFailure") or {}
-    reason = model.get("reason")
-    if request.get("reason") == "usageLimitExceeded":
-        reason = "usageLimitExceeded"
-    if (
-        state.get("status") == "paused"
-        and flight.get("agentPhase") == "FAILED"
-        and (model.get("state") == "failed" or request.get("reason") == "usageLimitExceeded")
-        and reason in RECOVERABLE_MODEL_FAILURES | {"usageLimitExceeded"}
-    ):
-        return reason
-    return None
+def require_local_tracing_network():
+    """A fixed name alone does not prove this optional worker interface is private."""
+    from civ_agent.orchestration.worker_configuration import LOCAL_TRACING_NETWORK
+
+    result = podman("network", "inspect", LOCAL_TRACING_NETWORK, check=False)
+    try:
+        records = json.loads(result.stdout) if result.returncode == 0 else []
+        network = records[0] if len(records) == 1 else {}
+        valid = network.get("name") == LOCAL_TRACING_NETWORK and network.get("internal") is True
+    except (TypeError, ValueError, KeyError):
+        valid = False
+    if not valid:
+        raise ContainerError("Local tracing requires the internal civ-local-telemetry network")
+
+
+def _broker_manifest(root):
+    saved = read_json(root / "container.json", {"format": 1, "services": {}})
+    if saved.get("format") != 1 or not isinstance(saved.get("services", {}), dict):
+        raise ContainerError("Invalid broker process-owner manifest")
+    saved.setdefault("services", {})
+    return saved
+
+
+def _broker_process(root, image, name, arguments, entry, *, restart):
+    """The shared broker's existing systemd unit is its only restart owner."""
+    saved = _broker_manifest(root)
+    raw = saved["services"].get(name)
+    current = inspected(name)
+    if restart and current is None and raw is not None:
+        service = ContainerService.load(raw)
+        if service.name != name or service.owner != "auth" or service.unit != name + ".service":
+            raise ContainerError("Refusing to replace an unowned missing broker")
+        # An explicit image change is supported, but both old and requested
+        # images must be pinned descriptors before retiring any authority.
+        ContainerService.load({**service.record(), "image": image})
+
+        def require_absent():
+            for target in (service.cid, service.name):
+                if podman("container", "exists", target, check=False).returncode != 1:
+                    raise ContainerError("Missing broker container absence could not be confirmed")
+
+        require_absent()
+        state = verify_container_unit(service, required=False)
+        if state.get("LoadState") != "not-found":
+            command(["systemctl", "--user", "stop", service.unit], timeout=110)
+            wait_unit_collected(service.unit, reset_failed=True)
+        require_absent()
+        saved = _broker_manifest(root)
+        if saved["services"].get(name) != raw:
+            raise ContainerError("Broker process-owner descriptor changed during explicit restart")
+        saved["services"].pop(name)
+        write_private_json(root / "container.json", saved)
+        raw = None
+    if restart and current is not None:
+        if raw is not None:
+            stop_container_service(ContainerService.load(raw), collect=True)
+        else:
+            # Explicit auth restart may replace a pre-systemd broker, but never
+            # silently adopt one on a normal game launch.
+            if (
+                current.get("Name", "").lstrip("/") != name
+                or current.get("Config", {}).get("Labels", {}).get(LABEL) != "auth"
+                or not any(
+                    Path(item["Source"]).resolve() == root.resolve() and item["Destination"] == "/auth"
+                    for item in current.get("Mounts", [])
+                )
+            ):
+                raise ContainerError("Refusing to replace an unowned broker")
+            podman("stop", "--time", "90", current["Id"], timeout=100)
+        podman("rm", current["Id"])
+        saved["services"].pop(name, None)
+        write_private_json(root / "container.json", saved)
+        raw, current = None, None
+    if raw is None and current is not None:
+        raise ContainerError("Existing broker has no verified systemd owner; explicit auth restart required")
+    if raw is not None:
+        service = ContainerService.load(raw)
+        if (
+            service.name != name
+            or service.owner != "auth"
+            or service.image.removeprefix("sha256:") != image.removeprefix("sha256:")
+        ):
+            raise ContainerError("Broker image or owner changed; explicit auth restart required")
+        start_container_service(service)
+        return service
+    (root / ("ready.json" if entry == "auth" else "decisions-ready.json")).unlink(missing_ok=True)
+    unit = name + ".service"
+    podman(*arguments, "--label", SERVICE_LABEL + "=" + unit, image, entry)
+    current = inspected(name)
+    if current is None:
+        raise ContainerError("Created broker could not be inspected")
+    service = ContainerService.load({"name": name, "cid": current["Id"], "image": image, "owner": "auth", "unit": unit})
+    saved["services"][name] = service.record()
+    write_private_json(root / "container.json", saved)
+    start_container_service(service, create=True)
+    return service
+
+
+def _await_broker(service, ready, message):
+    deadline = time.monotonic() + 30
+    while True:
+        current, state = verify_container_service(service)
+        if current["State"]["Running"] and ready.exists():
+            started = datetime.fromisoformat(current["State"]["StartedAt"]).timestamp()
+            if ready.stat().st_mtime >= started:
+                return
+        if state.get("ActiveState") not in {"active", "activating"} or time.monotonic() > deadline:
+            raise ContainerError(message)
+        time.sleep(0.2)
 
 
 def ensure_auth(root, image, *, restart=False):
     private_directory(root)
     private_directory(root / "ipc")
-    if not (root / "codex/auth.json").is_file():
+    if not (root / "openai-subscription.json").is_file():
         raise ContainerError("Run civ-agent auth login before launching games")
     with locked(root / ".launch.lock", wait=True):
         name = auth_name(root)
-        current = inspected(name)
-        if restart and current:
-            if current["State"]["Running"]:
-                podman("stop", "--time", "90", name, timeout=100)
-            podman("rm", name)
-            current = None
-        if not current or not current["State"]["Running"]:
-            if current:
-                podman("rm", name)
-            (root / "ready.json").unlink(missing_ok=True)
-            arguments = base_arguments(name, game_id="auth", resources=ContainerResources(memory_mib=512, cpus=0.5))
-            podman(
-                *arguments,
-                "--network=pasta:-4",
-                *mount(root, "/auth", writable=True),
-                "--env",
-                "HOME=/auth",
-                "--env",
-                "CODEX_HOME=/auth/codex",
-                image,
-                "auth",
-            )
-            podman("start", name)
-        deadline = time.monotonic() + 30
-        while not (root / "ready.json").exists():
-            current = inspected(name)
-            if not current or not current["State"]["Running"] or time.monotonic() > deadline:
-                raise ContainerError("Benchmark login manager failed; run civ-agent auth status")
-            time.sleep(0.2)
+        arguments = [
+            *base_arguments(name, game_id="auth", resources=ContainerResources(memory_mib=512, cpus=0.5)),
+            "--network=pasta:-4",
+            *mount(root, "/auth", writable=True),
+            "--env",
+            "HOME=/auth",
+        ]
+        service = _broker_process(root, image, name, arguments, "auth", restart=restart)
+        _await_broker(service, root / "ready.json", "Login manager restart allowance exhausted or startup timed out")
     return name
 
 
@@ -126,7 +190,12 @@ def stop_auth(root):
             if exists.returncode != 1:
                 raise ContainerError(f"Could not inspect login manager {name}")
         elif current["State"]["Running"]:
-            podman("stop", "--time", "90", name, timeout=100)
+            raw = _broker_manifest(root)["services"].get(name)
+            if raw is None:
+                raise ContainerError(
+                    "Login manager has no verified systemd owner; stop it explicitly before replacement"
+                )
+            stop_container_service(ContainerService.load(raw))
             current = inspected(name)
             if current is None or current["State"]["Running"]:
                 raise ContainerError(f"Could not confirm login manager {name} stopped")
@@ -136,6 +205,18 @@ def stop_auth(root):
 
 def agent_auth_arguments(auth_root, name, provider):
     """Only the selected credential is mounted; keys never appear in Podman argv/env."""
+    if provider == "google-cloud":
+        from civ_agent.google_cloud_auth import (
+            CONFIG_NAME,
+            CONTAINER_CONFIG,
+            CONTAINER_CREDENTIALS,
+            CREDENTIALS_NAME,
+        )
+
+        return [
+            *mount(auth_root / CONFIG_NAME, str(CONTAINER_CONFIG)),
+            *mount(auth_root / CREDENTIALS_NAME, str(CONTAINER_CREDENTIALS)),
+        ]
     if provider == "openrouter":
         return [
             *mount(auth_root / "openrouter.key", "/run/secrets/openrouter.key"),
@@ -255,39 +336,18 @@ def ensure_decisions(root, image, *, restart=False):
     private_directory(root / "decisions-ipc")
     with locked(root / ".decisions-launch.lock", wait=True):
         name = auth_name(root) + "-decisions"
-        current = inspected(name)
-        if restart and current:
-            if current["State"]["Running"]:
-                podman("stop", "--time", "90", name, timeout=100)
-            podman("rm", name)
-            current = None
-        if current and current["State"]["Running"] and current.get("Image") != image:
-            # Game-only fixes need not interrupt other games sharing a broker.
-            # Both the selected image and authenticated running service must
-            # match this launcher's complete version contract.
-            _check_decisions_image(image)
-        if not current or not current["State"]["Running"]:
-            if current:
-                podman("rm", name)
-            (root / "decisions-ready.json").unlink(missing_ok=True)
-            arguments = base_arguments(name, game_id="auth", resources=ContainerResources(memory_mib=512, cpus=0.5))
-            endpoint = os.environ.get("CIV_JEV_ENDPOINT", "http://169.254.1.3:8091/v1/systemone")
-            podman(
-                *arguments,
-                "--network=pasta:-4,--map-host-loopback,169.254.1.3",
-                "--env",
-                "CIV_JEV_ENDPOINT=" + endpoint,
-                *mount(root, "/auth", writable=True),
-                image,
-                "decisions",
-            )
-            podman("start", name)
-        deadline = time.monotonic() + 30
-        while not (root / "decisions-ready.json").exists():
-            current = inspected(name)
-            if not current or not current["State"]["Running"] or time.monotonic() > deadline:
-                raise ContainerError("Decisions broker failed to start")
-            time.sleep(0.2)
+        endpoint = os.environ.get("CIV_JEV_ENDPOINT", "http://169.254.1.3:8091/v1/systemone")
+        arguments = [
+            *base_arguments(name, game_id="auth", resources=ContainerResources(memory_mib=512, cpus=0.5)),
+            "--network=pasta:-4,--map-host-loopback,169.254.1.3",
+            "--env",
+            "CIV_JEV_ENDPOINT=" + endpoint,
+            *mount(root, "/auth", writable=True),
+        ]
+        service = _broker_process(root, image, name, arguments, "decisions", restart=restart)
+        _await_broker(
+            service, root / "decisions-ready.json", "Decisions broker restart allowance exhausted or startup timed out"
+        )
         # The ready file is not evidence that the player socket is reachable or
         # speaks this protocol. Authenticate with a trusted operator credential.
         authorize_agent(root, "operator", "health", root / "operator", decisions=True)
@@ -308,7 +368,7 @@ def ensure_decisions(root, image, *, restart=False):
 def restart_brokers(root, image):
     """Recreate configured shared services without replacing their durable state."""
     name = auth_name(root)
-    auth = (root / "codex/auth.json").is_file()
+    auth = (root / "openai-subscription.json").is_file()
     decisions = (
         (root / "decisions-clients.json").is_file()
         or (root / "decisions.key").is_file()
@@ -317,7 +377,7 @@ def restart_brokers(root, image):
     # Check both services before interrupting either one. A missing credential
     # must not silently skip a previously configured, still-running broker.
     if not auth and inspected(name):
-        raise ContainerError("Login credentials missing; restore AUTH_DIR/codex/auth.json before restarting")
+        raise ContainerError("Login credentials missing; restore AUTH_DIR/openai-subscription.json before restarting")
     if not auth and not decisions:
         raise ContainerError("No auth or Decisions credentials configured in this auth directory")
     luna_configured = (root / "decisions.key").exists()
@@ -383,7 +443,9 @@ def decisions_arguments(auth_root, name, *, backend="jev"):
     ]
 
 
-def authorize_agent(auth_root, game_id, seat, directory, *, decisions=False, settings=None, player=None):
+def authorize_agent(
+    auth_root, game_id, seat, directory, *, decisions=False, settings=None, player=None, native_player=None
+):
     path = directory / ("decisions-client.json" if decisions else "auth-client.json")
     if not path.exists():
         write_private_json(path, {"token": secrets.token_urlsafe(32)})
@@ -395,7 +457,9 @@ def authorize_agent(auth_root, game_id, seat, directory, *, decisions=False, set
         if decisions and settings is not None:
             from civ_agent.decisions_ledger import DecisionsLedger
 
-            DecisionsLedger(auth_root).register(f"{game_id}-{seat}", game_id, player or str(seat), settings)
+            DecisionsLedger(auth_root).register(
+                f"{game_id}-{seat}", game_id, player or str(seat), settings, native_player=native_player
+            )
         write_private_json(registry, clients)
 
 
@@ -427,13 +491,14 @@ def validate_setup(config, image):
 
 
 class GameRun:
-    def __init__(self, root, stop_event=None):
+    def __init__(self, root, stop_event=None, *, rejoin=False):
         self.root = Path(root)
         self.stop_event = stop_event or threading.Event()
         self.config = ResolvedGameConfig.model_validate(read_json(root / "resolved.json"))
         self.record = identity(root)
         self.game_id = self.record["id"]
-        self.prefix = "civ-" + self.game_id
+        self.deployment_id = require_local_runtime(self.record).id
+        self.prefix = "civ-" + self.deployment_id
         self.names = []
         self.log_processes = []
         self.log_files = []
@@ -443,12 +508,15 @@ class GameRun:
             raise ContainerError("The provider credential directory must be outside the match directory")
         self.controller = self.prefix + "-host"
         self.native_failure = None
+        self.rejoin = rejoin
+        self.services: list[ContainerService] = []
 
     def status(self, status, **extra):
         write_private_json(
             self.root / "container-status.json",
             {
                 "id": self.game_id,
+                "deployment_id": self.deployment_id,
                 "status": status,
                 "updated_at": time.time(),
                 **extra,
@@ -456,14 +524,27 @@ class GameRun:
         )
 
     def start(self, arguments, name, image, *entry):
-        podman(*arguments, image, *entry)
+        unit = name + "-" + self.record["launch"] + ".service"
+        podman(*arguments, "--label", SERVICE_LABEL + "=" + unit, image, *entry)
+        current = inspected(name)
+        if current is None:
+            raise ContainerError("Created container could not be inspected")
+        service = ContainerService.load(
+            {"name": name, "cid": current["Id"], "image": image, "owner": self.deployment_id, "unit": unit}
+        )
+        self.services.append(service)
+        self.record["services"] = [entry.record() for entry in self.services]
+        write_private_json(self.root / "container.json", self.record)
         self.names.append(name)
-        podman("start", name)
+        log_path = self.follow_log(name)
+        start_container_service(service, create=True, log_path=log_path)
+
+    def follow_log(self, name):
         path = self.launch_dir / (name + ".log")
-        log = path.open("a")
-        self.log_files.append(log)
+        path.touch(mode=0o600, exist_ok=True)
+        regular_file(path, private=True)
         self.log_paths[name] = path
-        self.log_processes.append(subprocess.Popen(["podman", "logs", "--follow", name], stdout=log, stderr=log))
+        return path
 
     def await_ready(self, predicate):
         deadline = time.monotonic() + self.config.limits.startup_timeout
@@ -478,17 +559,92 @@ class GameRun:
     def check_services(self):
         if not self.names:
             return []
-        records = json.loads(podman("container", "inspect", *self.names).stdout)
-        for record in records:
-            if not record["State"]["Running"]:
-                self.native_failure = {"container": record["Name"], "state": record["State"]}
-                raise ContainerError(
-                    f"{record['Name']} exited: {record['State'].get('ExitCode')}; "
-                    f"OOM killed: {record['State'].get('OOMKilled', False)}"
-                )
+        records = []
+        stopped = []
+        for service in self.services:
+            record, state = verify_container_service(service)
+            records.append(record)
+            if state.get("ActiveState") not in {"active", "activating"}:
+                stopped.append((record, state))
+        terminal = self.current_runtime(records) if stopped else None
+        if stopped and (
+            terminal is None
+            or terminal.get("runner_status") not in {"complete", "budget_exhausted", "paused", "stopped", "failed"}
+        ):
+            record, state = stopped[0]
+            self.native_failure = {"container": record["Name"], "state": record["State"], "unit": state}
+            raise ContainerError(
+                f"{record['Name']} exited: {record['State'].get('ExitCode')}; "
+                f"OOM killed: {record['State'].get('OOMKilled', False)}; restart allowance exhausted or service stopped"
+            )
         return records
 
+    def reattach(self):
+        """Process replacement observes the same physical launch; never setup/resume."""
+        raw = self.record.get("services")
+        launch = self.record.get("launch")
+        if not isinstance(raw, list) or not raw or not isinstance(launch, str) or len(launch) != 12:
+            raise ContainerError("Supervisor replacement requires an existing owned launch")
+        self.launch_dir = self.root / "launches" / launch
+        if not self.launch_dir.is_dir():
+            raise ContainerError("Supervisor replacement lost its original launch directory")
+        self.services = [ContainerService.load(value) for value in raw]
+        if len({entry.cid for entry in self.services}) != len(self.services) or len(
+            {entry.unit for entry in self.services}
+        ) != len(self.services):
+            raise ContainerError("Ambiguous supervisor process ownership")
+        for service in self.services:
+            if service.owner != self.deployment_id or service.unit != service.name + "-" + launch + ".service":
+                raise ContainerError("Supervisor replacement owner or launch changed")
+            self.names.append(service.name)
+        if self.record.get("servicesReady") is not True:
+            raise ContainerError(
+                "Supervisor startup was interrupted before all services were ready; explicit resume required"
+            )
+        for service in self.services:
+            current, state = verify_container_service(service, unit_required=False)
+            terminal = self.current_runtime([current])
+            if state.get("ActiveState") not in {"active", "activating"} and terminal is None:
+                raise ContainerError("Owned container service stopped or exhausted its restart allowance")
+            self.follow_log(service.name)
+
+    def current_runtime(self, records):
+        """Reject a previous container process's retained terminal projection."""
+        try:
+            with (self.root / "runtime.json").open("rb") as stream:
+                runtime = json.load(stream)
+                written_at = os.fstat(stream.fileno()).st_mtime
+        except FileNotFoundError:
+            return None
+        if runtime.get("phase") != "stopped" or runtime.get("launch") != self.record.get("launch"):
+            return None
+        controller = next((value for value in records if value.get("Name", "").lstrip("/") == self.controller), None)
+        if controller is None:
+            controller = next((inspected(value.cid) for value in self.services if value.name == self.controller), None)
+        if controller is None:
+            return None
+        service = next(value for value in self.services if value.name == self.controller)
+        if unit_state(service.unit).get("ActiveState") == "activating":
+            return None
+        try:
+            started = datetime.fromisoformat(controller["State"]["StartedAt"]).timestamp()
+        except (KeyError, TypeError, ValueError):
+            raise ContainerError("Controller process start time could not be verified") from None
+        if written_at < started:
+            return None
+        return runtime
+
     def setup(self):
+        from ipaddress import ip_network
+
+        from civ_agent.player_paths import PlayerPaths
+
+        require_local_runtime(self.record)
+        resume = self.record.get("launchResumeRequested", False)
+        if type(resume) is not bool:
+            raise ContainerError("Explicit launch intent is missing")
+        if self.config.runtime.tracing is not None and self.config.runtime.tracing.local:
+            require_local_tracing_network()
         validate_routing_credentials(self.config, self.auth_root)
         if self.config.agents.decisions_enabled:
             from civ_agent.decisions_ledger import DecisionsLedger
@@ -497,9 +653,14 @@ class GameRun:
             if self.record.get("decisionsAuthority", authority) != authority:
                 raise ContainerError("Decisions accounting authority differs from this game's pinned ledger")
             self.record["decisionsAuthority"] = authority
-        cleanup(self.game_id)
-        self.record["launch"] = secrets.token_hex(6)
-        self.record["launchStartedAtMs"] = int(time.time() * 1000)
+        cleanup(self.deployment_id)
+        self.record.update(
+            launch=secrets.token_hex(6),
+            services=[],
+            servicesReady=False,
+            launchStartedAtMs=int(time.time() * 1000),
+            launchResumeRequested=resume,
+        )
         write_private_json(self.root / "container.json", self.record)
         self.launch_dir = private_directory(self.root / "launches" / self.record["launch"])
         private_directory(self.root / "control")
@@ -510,38 +671,28 @@ class GameRun:
         if self.config.agents.decisions_enabled:
             self.record["routingPreflight"] = ensure_decisions(self.auth_root, self.record["images"]["runtime"])
             write_private_json(self.root / "container.json", self.record)
-        if "openai" in providers:
+        if not self.config.runtime.scripted_models and "openai" in providers:
             ensure_auth(self.auth_root, self.record["images"]["runtime"])
-        if "openrouter" in providers:
+        if not self.config.runtime.scripted_models and "openrouter" in providers:
             key = self.auth_root / "openrouter.key"
             if not key.is_file():
                 raise ContainerError(
                     "Run civ-agent auth login --provider openrouter before launching OpenRouter players"
                 )
             read_api_key(key)
-        self.control_net = self.prefix + "-control"
-        control = create_network(self.control_net, "cc" + self.game_id, internal=True)
-        # A dedicated interface carries the browser; it never listens on player networks.
-        from ipaddress import ip_network
+        if not self.config.runtime.scripted_models and "google-cloud" in providers:
+            from civ_agent.google_cloud_auth import CONFIG_NAME, saved_config
 
-        control_ip = str(ip_network(control["subnets"][0]["subnet"])[2])
-        networks, bridges = [], []
+            if not (self.auth_root / CONFIG_NAME).is_file():
+                raise ContainerError(
+                    "Run civ-agent auth login --provider google-cloud --project PROJECT_ID before launching Gemini players"
+                )
+            saved_config(self.auth_root)
         for index, player in enumerate(self.config.agent_players):
-            network = f"{self.prefix}-p{index}"
-            bridge = f"ca{self.game_id[:8]}{index}"
-            create_network(network, bridge)
-            networks.append(network)
-            bridges.append(bridge)
-            name = civilization_directory_name(player.civilization)
-            directory = private_directory(self.root / "agent-services" / name)
-            private_directory(self.root / "agents" / name)
-            codex_home = private_directory(self.root / "codex" / name)
-            # No personal home configuration, skills, login cache or history is imported.
-            from civ_agent.tls import write_private
-
-            write_private(codex_home / "config.toml", b'cli_auth_credentials_store = "ephemeral"\n')
-            if "openai" in player_providers(self.config, player):
-                authorize_agent(self.auth_root, self.game_id, index, directory)
+            paths = PlayerPaths(self.root, index, player.civilization)
+            paths.prepare()
+            if not self.config.runtime.scripted_models and "openai" in player_providers(self.config, player):
+                authorize_agent(self.auth_root, self.game_id, index, paths.security)
             if self.config.agents.decisions_enabled:
                 from civ_agent.decisions_policy import decisions_values
 
@@ -549,23 +700,47 @@ class GameRun:
                     self.auth_root,
                     self.game_id,
                     index,
-                    directory,
+                    paths.coordinator_security,
                     decisions=True,
                     settings=decisions_values(self.config.agents),
                     player=player.civilization,
+                    native_player=paths.player,
                 )
-        firewall(self.game_id, bridges)
+        self.control_net = self.prefix + "-control"
+        control = create_network(self.control_net, "cc" + self.deployment_id, internal=True)
+        control_ip = str(ip_network(control["subnets"][0]["subnet"])[-2])
+        provider_net = self.prefix + "-provider"
+        provider_bridge = "ca" + self.deployment_id
+        create_network(provider_net, provider_bridge)
+        firewall(self.deployment_id, [provider_bridge])
         resources = self.config.resources.desktop if self.config.human else self.config.resources.controller
-        args = base_arguments(self.controller, game_id=self.game_id, resources=resources)
+        args = base_arguments(self.controller, game_id=self.deployment_id, resources=resources)
         args += [
             "--network",
             f"{self.control_net}:ip={control_ip},alias=game",
+            "--network",
+            provider_net,
             "--sysctl",
             "net.ipv4.ip_forward=0",
             *mount(self.root, "/match", writable=True),
         ]
-        for network in networks:
-            args += ["--network", f"{network}:alias=game"]
+        if not self.config.runtime.scripted_models:
+            if "openai" in providers:
+                args += mount(self.auth_root / "ipc", "/auth-ipc")
+            if "openrouter" in providers:
+                args += mount(self.auth_root / "openrouter.key", "/run/secrets/openrouter.key")
+            if "google-cloud" in providers:
+                args += agent_auth_arguments(self.auth_root, self.controller, "google-cloud")
+        if self.config.agents.decisions_enabled:
+            args += mount(self.auth_root / "decisions-ipc", "/advisory-ipc")
+        if self.config.runtime.tracing is not None:
+            from civ_agent.orchestration.worker_configuration import LOCAL_TRACING_NETWORK, TRACING_TOKEN_PATH
+
+            if self.config.runtime.tracing.local:
+                args += ["--network", LOCAL_TRACING_NETWORK]
+            elif self.config.runtime.tracing.token_file is not None:
+                regular_file(self.config.runtime.tracing.token_file, private=True)
+                args += mount(self.config.runtime.tracing.token_file, str(TRACING_TOKEN_PATH))
         if self.config.human:
             args += [
                 "--publish",
@@ -582,35 +757,27 @@ class GameRun:
                 self.root / "browser.json",
                 {"url": f"http://127.0.0.1:{port}/vnc.html?resize=scale", "password_file": "desktop/password.txt"},
             )
-        for index, (player, network) in enumerate(zip(self.config.agent_players, networks, strict=True)):
-            name = civilization_directory_name(player.civilization)
-            container = f"{self.prefix}-p{index}"
-            args = base_arguments(container, game_id=self.game_id, resources=self.config.resources.agent)
-            args += ["--network", f"{network}:alias=p{index}"]
-            for folder in ("agent-services", "agents", "codex"):
-                args += mount(self.root / folder / name, f"/match/{folder}/{name}", writable=True)
-            for provider in sorted(player_providers(self.config, player)):
-                args += agent_auth_arguments(self.auth_root, name, provider)
-            if self.config.agents.decisions_enabled:
-                args += decisions_arguments(self.auth_root, name, backend=self.config.agents.decisions_backend)
-            args += [
-                "--env",
-                f"HOME=/match/codex/{name}",
-                "--env",
-                f"CODEX_HOME=/match/codex/{name}",
-            ]
-            self.start(args, container, self.record["images"]["runtime"], "agent", player.civilization)
-        for container in self.names[1:]:
-            with self.log_paths[container].open() as log:
-                self.await_ready(lambda: any(line.startswith("AGENT-READY:") for line in log.readlines()))
         write_private_json(self.root / "control/start.json", {"launch": self.record["launch"]})
+        self.record["servicesReady"] = True
+        write_private_json(self.root / "container.json", self.record)
 
     def stop(self):
+        errors = []
         if self.controller in self.names:
             write_private_json(self.root / "control/request.json", {"action": "stop"})
-            # Scheduler first: it cancels/quiesces model work and flushes accounting.
-            podman("stop", "--time", "90", self.controller, timeout=100, check=False)
-        stop_containers([name for name in self.names if name != self.controller])
+            # The controller fences active roles and saves its paused state before exiting.
+            service = next(value for value in self.services if value.name == self.controller)
+            try:
+                stop_container_service(service)
+            except (OSError, RuntimeError, subprocess.SubprocessError) as error:
+                errors.append(error)
+        for service in reversed(self.services):
+            if service.name == self.controller:
+                continue
+            try:
+                stop_container_service(service)
+            except (OSError, RuntimeError, subprocess.SubprocessError) as error:
+                errors.append(error)
         for process in self.log_processes:
             with contextlib.suppress(subprocess.TimeoutExpired):
                 process.wait(timeout=3)
@@ -619,19 +786,26 @@ class GameRun:
                 process.wait()
         for log in self.log_files:
             log.close()
+        if errors:
+            raise ContainerError("Container service shutdown failed") from ExceptionGroup("Shutdown failures", errors)
 
     def run_once(self):
         status, error = "failed", None
         self.names, self.log_processes, self.log_files, self.log_paths = [], [], [], {}
+        self.services = []
         self.native_failure = None
         self.status("starting")
         try:
-            self.setup()
+            if self.rejoin:
+                self.reattach()
+            else:
+                self.setup()
             self.status("running", browser=read_json(self.root / "browser.json"))
             sampled = 0.0
             while not self.stop_event.wait(1):
-                runtime = read_json(self.root / "runtime.json", {})
-                if runtime.get("phase") == "stopped":
+                records = self.check_services()
+                runtime = self.current_runtime(records)
+                if runtime is not None:
                     status = {
                         "complete": "completed",
                         "budget_exhausted": "budget_exhausted",
@@ -640,7 +814,6 @@ class GameRun:
                     }.get(runtime.get("runner_status"), "failed")
                     error = runtime.get("reason")
                     break
-                self.check_services()
                 if time.monotonic() - sampled > 10:
                     result = podman("stats", "--no-stream", "--format", "json", *self.names, check=False)
                     if result.returncode == 0:
@@ -671,110 +844,23 @@ class GameRun:
 
     def run(self):
         with locked(self.root / ".supervisor.lock"):
-            retries = 0
-            quota_retries = 0
-            while True:
-                status = self.run_once()
-                if self.stop_event.is_set():
-                    return status
-                reason = recoverable_model_failure(self.root) if status == "paused" else None
-                if reason is None:
-                    return status
-                if reason == "usageLimitExceeded":
-                    quota_retries += 1
-                    state = read_record(path_for(self.root), "state", "run") or {}
-                    flight = state.get("inFlight") or {}
-                    quota = state.get("quotaFailure") or {}
-                    self.status(
-                        "retrying",
-                        reason="Model quota exhausted; retrying every five minutes until available.",
-                        recovery={
-                            "reason": reason,
-                            "civilization": quota.get("civilization", flight.get("civilization")),
-                            "purpose": quota.get("purpose", "gameplay"),
-                            "attempt": quota_retries,
-                            "retryDelaySeconds": QUOTA_RETRY_SECONDS,
-                            "nextRetryAt": time.time() + QUOTA_RETRY_SECONDS,
-                        },
-                    )
-                    if self.stop_event.wait(QUOTA_RETRY_SECONDS):
-                        self.status("paused", reason="Operator stopped automatic quota recovery.")
-                        return "paused"
-                    continue
-                if retries >= self.config.limits.model_capacity_retries:
-                    self.status(
-                        "paused",
-                        reason=f"Model capacity remained unavailable after {retries} automatic retries.",
-                        recovery={"reason": reason, "attempts": retries, "exhausted": True},
-                    )
-                    return status
-                retries += 1
-                delay = self.config.limits.model_capacity_retry_delay
-                self.status(
-                    "retrying",
-                    reason=f"Model capacity is unavailable; retrying in {delay} seconds.",
-                    recovery={
-                        "reason": reason,
-                        "attempt": retries,
-                        "maximum": self.config.limits.model_capacity_retries,
-                    },
-                )
-                if self.stop_event.wait(delay):
-                    self.status("paused", reason="Operator stopped automatic model-capacity recovery.")
-                    return "paused"
+            return self.run_once()
 
 
 BATCH_SUMMARY_INTERVAL = 10.0
 
 
-def _previous_batch_results(root):
-    """Best-effort fallback from derived output, including summaries predating freshness fields."""
-    try:
-        summary = read_json(root / "results.json", {})
-    except (OSError, ValueError):
-        return {}
-    if not isinstance(summary, dict) or not isinstance(summary.get("runs", []), list):
-        return {}
-    return {
-        row["id"]: {"result_updated_at": summary.get("updated_at"), **row}
-        for row in summary.get("runs", [])
-        if isinstance(row, dict) and isinstance(row.get("id"), str)
-    }
-
-
 def batch_summary(root, manifest):
+    from civ_agent.operator_state import is_local, projection
+
     rows = []
-    previous = None
     for run in manifest["runs"]:
         directory = root / "games" / run["id"]
         saved = read_json(directory / "resolved.json")
         if saved is None:
             raise ContainerError(f"Saved configuration is missing for game {run['id']}")
         config = ResolvedGameConfig.model_validate(saved)
-        path = path_for(directory)
-        result_stale = False
-        try:
-            available = path.exists()
-            result = read_record(path, "state", "result") if available else None
-            result_updated_at = time.time() if result is not None else None
-        except OperationalError as error:
-            # SQLite's extended codes retain the primary code in the low byte.
-            # Only transient read contention is optional; do not hide other database failures.
-            if getattr(error.orig, "sqlite_errorcode", 0) & 0xFF not in {sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED}:
-                raise
-            if previous is None:
-                previous = _previous_batch_results(root)
-            cached = previous.get(run["id"], {})
-            result = cached.get("result")
-            result_updated_at = cached.get("result_updated_at")
-            result_stale = True
-            if not cached.get("result_stale"):
-                logger.warning(
-                    "Game %s monitoring database is busy: %s. Retaining the last result; "
-                    "retrying at the next summary refresh. Gameplay continues.",
-                    run["id"],
-                    path,
-                )
+        observed = projection(directory)
         rows.append(
             {
                 **{k: v for k, v in run.items() if k != "config"},
@@ -783,9 +869,14 @@ def batch_summary(root, manifest):
                 "starting_position_seed": config.game.starting_position_seed,
                 "assignment_seed": config.game.assignment_seed,
                 "players": config.player_records(),
-                "result": result,
-                "result_stale": result_stale,
-                "result_updated_at": result_updated_at,
+                "runtime_status": observed.status.model_dump(mode="json") if observed.status is not None else None,
+                "runtime_result": observed.completion.model_dump(mode="json")
+                if observed.completion is not None
+                else None,
+                "read_only_archive": not is_local(directory),
+                "result": observed.result.model_dump(mode="json") if observed.result is not None else None,
+                "result_stale": False,
+                "result_updated_at": observed.result_updated_at,
                 "resources": config.resources.model_dump(),
                 "resource_usage": read_json(directory / "resources.json"),
                 "failure": read_json(directory / "container-status.json", {}).get("reason"),
@@ -821,7 +912,7 @@ def batch_summary(root, manifest):
             )
 
 
-def run_batch(root, stop_event):
+def run_batch(root, stop_event, *, rejoin=False):
     with locked(root / ".supervisor.lock"):
         manifest = read_json(root / "batch.json")
         if not isinstance(manifest, dict) or manifest.get("format") != 2:
@@ -843,13 +934,25 @@ def run_batch(root, stop_event):
                             write_private_json(root / "batch.json", manifest)
                             batch_summary(root, manifest)
                             last_summary = time.monotonic()
-                    queued = [r for r in manifest["runs"] if r["status"] == "pending"]
+                    active_ids = {run["id"] for run in active.values()}
+                    queued = [
+                        r
+                        for r in manifest["runs"]
+                        if r["id"] not in active_ids
+                        and (r["status"] == "pending" or (rejoin and r["status"] == "running"))
+                    ]
                     started = False
                     if not stop_event.is_set():
                         for run in queued[: manifest["parallel"] - len(active)]:
+                            returning = rejoin and run["status"] == "running"
                             run["status"] = "running"
                             write_private_json(root / "batch.json", manifest)
-                            active[pool.submit(GameRun(root / "games" / run["id"], stop_event).run)] = run
+                            game = (
+                                GameRun(root / "games" / run["id"], stop_event, rejoin=True)
+                                if returning
+                                else GameRun(root / "games" / run["id"], stop_event)
+                            )
+                            active[pool.submit(game.run)] = run
                             started = True
                     if started or time.monotonic() - last_summary >= BATCH_SUMMARY_INTERVAL:
                         batch_summary(root, manifest)
@@ -871,11 +974,35 @@ def main():
     stop_event = threading.Event()
     for sig in (signal.SIGINT, signal.SIGTERM):
         signal.signal(sig, lambda *_: stop_event.set())
-    if args.role == "game":
-        GameRun(args.state_dir, stop_event).run()
-    else:
-        run_batch(args.state_dir, stop_event)
+    try:
+        record = identity(args.state_dir)
+        unit = os.environ.get("CIV_SUPERVISOR_UNIT")
+        rejoin = False
+        if unit is not None:
+            expected = "civ-" + args.role + "-" + deployment_identity(record).id
+            if unit != expected or record.get("supervision") != {
+                "backend": "systemd-existing-cid-v1",
+                "unit": expected,
+            }:
+                raise ContainerError("Supervisor process owner does not match this deployment")
+            state = unit_state(unit)
+            rejoin = int(state.get("NRestarts", "0")) > 0
+        if rejoin and read_json(args.state_dir / "control/request.json", {}).get("action") == "stop":
+            stop_event.set()
+        if args.role == "game":
+            result = GameRun(args.state_dir, stop_event, rejoin=rejoin).run()
+            return 78 if result == "failed" else 0
+        run_batch(args.state_dir, stop_event, rejoin=rejoin)
+        return 78 if any(run["status"] == "failed" for run in read_json(args.state_dir / "batch.json")["runs"]) else 0
+    except ContainerError as error:
+        print("Supervisor refused continuation: " + str(error), file=sys.stderr)
+        return 78
+    except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
+        # A handled configuration/ownership/integrity failure is a permanent
+        # exit. An abrupt supervisor death remains systemd's bounded retry.
+        print("Supervisor configuration or I/O failed: " + type(error).__name__, file=sys.stderr)
+        return 78
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

@@ -129,21 +129,6 @@ class CertificateTests(unittest.TestCase):
         self.assertEqual((config, ca), tls.ensure_host_tls(self.root))
         self.assertEqual(before, path.read_bytes())
 
-    def test_codex_trust_keeps_existing_custom_ca_and_adds_game_ca_without_printable_secrets(self):
-        workspace = self.root / "codex workspace"
-        environment = {"UNCIV_PLAYER_TOKEN": "A" * 43, "CODEX_CA_CERTIFICATE": str(self.material["ca_file"])}
-        before = environment.copy()
-        updated = tls.codex_trust_environment(self.material["ca_file"], environment, workspace)
-        bundle = Path(updated["CODEX_CA_CERTIFICATE"])
-        self.assertEqual(before, environment)
-        self.assertEqual(environment["UNCIV_PLAYER_TOKEN"], updated["UNCIV_PLAYER_TOKEN"])
-        self.assertNotIn("A" * 43, bundle.read_text())
-        self.assertEqual(0o600, stat.S_IMODE(bundle.stat().st_mode))
-        context = ssl.create_default_context(cafile=str(bundle))
-        self.assertGreater(len(context.get_ca_certs()), 1)
-        with tls_listener(self.material) as port:
-            tls.verify_https_connection(f"https://localhost:{port}/mcp", bundle)
-
     def test_invalid_validity_and_server_purpose_are_rejected_without_replacement(self):
         cert = x509.load_pem_x509_certificate(self.material["cert_file"].read_bytes())
         key = serialization.load_pem_private_key((self.root / "tls/ca/key.pem").read_bytes(), password=None)

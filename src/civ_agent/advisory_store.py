@@ -3,6 +3,7 @@
 import copy
 import json
 import re
+import time
 
 from sqlalchemy import select
 
@@ -15,6 +16,10 @@ from civ_agent.memory_records import public_record
 from civ_agent.memory_snapshots import dump_snapshot, load_snapshot
 from civ_agent.memory_store import RecordStore, expired_at, select_context
 from civ_agent.protocol import JsonObject
+from civ_agent.telemetry import classifier_metadata
+
+DELIVERY_CATEGORY = "advisory_delivery"
+DELIVERY_VERSION = 1
 
 
 def material_facts(view):
@@ -256,11 +261,67 @@ class AdvisoryStore:
         with self.memory.transaction() as db:
             return self.memory._meta(db, "advisories", {})
 
-    def save(self, **values):
+    def save(self, *, expected_epoch=None, **values):
         with self.memory.transaction() as db:
+            if expected_epoch is not None and self.memory._meta(db, "epoch") != expected_epoch:
+                return False
             state = self.memory._meta(db, "advisories", {})
             state.update(copy.deepcopy(values))
             self.memory._set(db, "advisories", state)
+            if "reviewDelivery" in values:
+                self._record_delivery(db, "review", state.get("reviewDeliveryTurn"), values["reviewDelivery"])
+            return True
+
+    def save_attempt(self, epoch, identifier, result):
+        """Merge one scoped completion without overwriting concurrent attempts."""
+        with self.memory.transaction() as db:
+            if self.memory._meta(db, "epoch") != epoch:
+                return False
+            state = self.memory._meta(db, "advisories", {})
+            state.setdefault("attempts", {})[identifier] = copy.deepcopy(result)
+            if "accounting" in result:
+                state["accounting"] = copy.deepcopy(result["accounting"])
+            if result.get("brokerReconciliation"):
+                state.setdefault("reconciliations", {})[identifier] = 1
+            self.memory._set(db, "advisories", state)
+            return True
+
+    def _record_delivery(self, db, source, identity, rows, *, job=None):
+        """Publish sanitized exposure with its domain commit, using existing ancestry."""
+        owner = self.memory._meta(db, "nativeGatewayOwner")
+        if owner is None:
+            return  # Native coordinators alone publish this scoped projection.
+        from civ_agent.orchestration.contracts import Scope
+
+        if set(owner) != {"version", "game", "player"} or owner["version"] != 1:
+            raise ValueError("ADVISORY_DELIVERY_OWNER_CONFLICT")
+        if source == "review" and (type(identity) is not int or identity < 0):
+            raise ValueError("ADVISORY_DELIVERY_REVIEW_TURN_REQUIRED")
+        scope = Scope(
+            game=owner["game"],
+            player=owner["player"],
+            epoch=self.memory._meta(db, "epoch"),
+            activation=fingerprint(["advisory-delivery", source, identity]),
+        )
+        selected = classifier_metadata("advisory_delivery", {"deliveryResults": rows})["deliveryResults"]
+        selected.sort(key=lambda row: (row["requestId"] or "", row["name"], row["status"]))
+        key = "advisory-delivery:" + scope.activation
+        store = RecordStore(db)
+        prior = store.all(categories={DELIVERY_CATEGORY}, keys=[key], project=False).get(key)
+        if not selected and prior is None:
+            return
+        event = {
+            "version": DELIVERY_VERSION,
+            "scope": scope.model_dump(mode="json"),
+            "source": source,
+            "policyVersion": TASK_VERSION,
+            "deliveryResults": selected,
+        }
+        if prior is not None and {key: value for key, value in prior["body"].items() if key != "atMs"} == event:
+            return
+        # This is when the coordinator observed the exposure, not a provider
+        # completion timestamp. Failed commits retain neither update nor event.
+        store.write(key, DELIVERY_CATEGORY, {**event, "atMs": time.time_ns() // 1_000_000}, job)
 
     def freeze(self, job, topics, settings) -> JsonObject:
         """Current reachable sources only; classifier/notices never become news."""
@@ -512,6 +573,7 @@ class AdvisoryStore:
             db.execute(
                 tables.jobs.update().where(tables.jobs.c.id == job.id).values(snapshot=dump_snapshot(db, snapshot))
             )
+            self._record_delivery(db, "role", job.id, rows, job=job.id)
 
     def sources_current(self, sources):
         with self.memory.transaction() as db:

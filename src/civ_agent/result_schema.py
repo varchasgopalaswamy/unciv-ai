@@ -74,12 +74,19 @@ class DiplomaticCandidate(BoundaryModel):
     name: Text
 
 
+class CityStateVoteTiming(BoundaryModel):
+    window: Literal["BEFORE_LAST_TURN", "LAST_TURN", "CLOSED"]
+    lastInfluenceTurn: NonnegativeInt | None
+    guidance: Text
+
+
 class DiplomaticBallot(BoundaryModel):
     turnsUntilNextVote: int | None
     hasVoted: bool
     votedFor: Text | None
     canVote: bool
     candidates: list[DiplomaticCandidate]
+    cityStateVoteTiming: CityStateVoteTiming | None = None
 
 
 class DiplomaticVoteRow(BoundaryModel):

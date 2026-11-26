@@ -244,5 +244,3 @@ against a 12-HP Brute, uncertain survivors, confirmed results after loss of visi
 exact receipt replay, advisory legal
 attacks, exhausted movement before attack/founding, friendly stacking, future-route
 uncertainty, read-only previews and unchanged answers when a hidden enemy is added.
-The [saved positions](../scenarios/Strategic-positions.md) separately evaluate model
-choices and their outcomes over several turns.

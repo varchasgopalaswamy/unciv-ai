@@ -1,19 +1,18 @@
 import asyncio
-import copy
 
 import pytest
 from jsonschema import Draft202012Validator
 from pydantic import ValidationError
 
-from civ_agent.agent_results import PlayerResultStore, ResultError, validate_result
 from civ_agent.civilization_state import CivilizationState
 from civ_agent.game_commands import command_arguments, command_schema
 from civ_agent.observations import overview, required_detail
 from civ_agent.proposal_gateway import ProposalGateway
 from civ_agent.protocol import JsonObject
+from civ_agent.result_schema import DiplomaticBallot
+from civ_agent.role_view import role_overview
 from civ_agent.service_io import ServiceIO
-from tests.test_agent_results import result_payload
-from tests.test_proposal_gateway import Host
+from tests.domain_fixtures import Host
 from tests.test_tactical_review import reviewed
 
 
@@ -68,12 +67,22 @@ def test_overview_preserves_whole_election_and_discovers_assembly():
             "votedFor": None,
             "canVote": True,
             "candidates": [{"civilizationId": "Greece", "name": "Greece"}],
+            "cityStateVoteTiming": {
+                "window": "CLOSED",
+                "lastInfluenceTurn": None,
+                "guidance": "Your opportunity to influence the scheduled votes has passed.",
+            },
         },
         "votingResults": results(),
     }
     view["map"]["units"][0]["spaceshipAssembly"] = {"available": True, "consumesUnit": True}
     shown = overview(view)
     assert shown["victory"] == view["victory"]
+    assert role_overview(shown, "main")["victory"] == view["victory"]
+    ballot = view["victory"]["ballot"]
+    assert DiplomaticBallot.model_validate(ballot).model_dump() == ballot
+    older_ballot = {key: value for key, value in ballot.items() if key != "cityStateVoteTiming"}
+    assert DiplomaticBallot.model_validate(older_ballot).cityStateVoteTiming is None
     assert shown["units"][0]["canAssembleSpaceshipPart"]
 
 
@@ -108,21 +117,3 @@ def test_gateway_assembles_without_part_details_and_forwards_vote(tmp_path):
             await io.close()
 
     asyncio.run(run())
-
-
-def test_final_election_results_survive_delivery_and_reject_extra_engine_fields(tmp_path):
-    payload: JsonObject = result_payload()
-    payload["victory"] = {"ballot": None, "votingResults": results()}
-    validate_result(payload)
-    store = PlayerResultStore(tmp_path / "private", tmp_path / "workspace", "Rome")
-    first = store.receive(payload)
-    assert store.receive(payload) == first
-    assert store.load() == payload
-    for target in ("votingResults", "rows"):
-        invalid = copy.deepcopy(payload)
-        body = invalid["victory"]["votingResults"]
-        if target == "rows":
-            body = body["rows"][0]
-        body["rawHiddenBallots"] = {"France": "Greece"}
-        with pytest.raises(ResultError):
-            validate_result(invalid)

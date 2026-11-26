@@ -9,11 +9,8 @@ from pydantic import ValidationError
 
 from civ_agent.decision_contracts import DecisionContract
 from civ_agent.economy_completion import worker_completion
-from civ_agent.economy_schedule import EconomySchedule
-from civ_agent.structured_decisions import DecisionLoop
 from civ_agent.tool_schemas import EconomyFinishRole
-from tests.test_economy_optimization import managed
-from tests.test_economy_roles import run_async
+from tests.domain_fixtures import managed, run_async
 
 
 def worker(handle="worker1", **changes):
@@ -82,53 +79,6 @@ def test_worker_skip_contract_is_strict_and_economy_only():
         wire["decision"]["arguments"]["workerSkips"] = arguments["workerSkips"]
         with pytest.raises(SchemaError):
             other.parse(json.dumps(wire))
-
-
-@pytest.mark.parametrize("worker_only", [False, True])
-@run_async
-async def test_empty_finish_is_rejected_without_stamping_review_then_explicit_skips_finish_and_replay(
-    tmp_path, worker_only
-):
-    async with managed(tmp_path) as m:
-        install_workers(m)
-        if worker_only:
-            m.host.view["cities"][1]["development"]["unassignedPopulation"] = 0
-            m.roles.economy_status["cities"] = []
-            m.economy.city_scope = []
-        overview = await m.gateway.call(
-            m.economy, "player_turn", {"cities": [] if worker_only else ["city2"]}, "targeted-review"
-        )
-        assert overview["roleCompletion"]["idleWorkers"] == ["worker1", "worker2"]
-        assert "arguments" not in overview["roleCompletion"]
-        before = copy.deepcopy(schedule_snapshot(m))
-        record = {}
-        contract = DecisionContract("economy", await m.gateway.tools(m.economy))
-        loop = DecisionLoop(m.gateway, m.economy, contract, record)
-        await loop.begin(overview)
-        rejected = await loop.complete(contract.encode({"kind": "finish", "arguments": {}}))
-        receipt = rejected["receipts"][0]
-        assert receipt["result"]["error"] == "ECONOMY_WORKER_SKIPS_REQUIRED"
-        assert not m.roles.ready["economy"] and not m.economy.role_finished.is_set()
-        assert schedule_snapshot(m) == before
-        assert not m.host.executed
-
-        await loop.begin(rejected)
-        accepted = await loop.complete(
-            contract.encode({"kind": "finish", "arguments": {"workerSkips": [skip("worker1", "worker2")]}})
-        )
-        assert accepted["receipts"][0]["result"].get("roleFinished"), accepted
-        assert m.roles.ready["economy"] and m.roles.economy_completions == 1
-        assert schedule_snapshot(m)["workerReviewTurn"] == 0
-        assert not m.host.executed  # Authored skips do not issue native orders.
-        replay = DecisionLoop(m.gateway, m.economy, contract, record)
-        recovered = await replay.begin({"resumed": True})
-        assert json.loads(recovered["toolOutput"]["output"])["recoveredDecision"] == accepted
-        assert m.roles.economy_completions == 1
-        current = await m.host.tool("player_turn", {})
-        assert not EconomySchedule(m.memory, 5).assess(current, 0, [])["reasons"]
-        assert any(
-            "Worker needs orders" in reason for reason in EconomySchedule(m.memory, 5).assess(current, 1, [])["reasons"]
-        )
 
 
 @pytest.mark.parametrize("targets", [("worker1",), ("worker1", "worker1", "worker2"), ("worker1", "worker2", "unit1")])

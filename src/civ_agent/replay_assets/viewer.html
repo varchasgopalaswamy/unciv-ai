@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src 'sha256-@CSS_HASH@'; script-src 'sha256-@JS_HASH@'; base-uri 'none'; form-action 'none'">
+  <title>Game replay</title>
+  <style>@CSS@</style>
+</head>
+<body>
+  <main class="viewer">
+    <header>
+      <div>
+        <h1 id="replay-title">Game replay</h1>
+        <p id="position" aria-live="polite"></p>
+        <p id="replay-source" hidden></p>
+      </div>
+      <div class="viewer-settings">
+        <label class="perspective">
+          Civilization <canvas id="civ-emblem" width="56" height="56" aria-hidden="true" hidden></canvas>
+          <select id="civilization"></select>
+        </label>
+        <label class="text-size">
+          Text size
+          <select id="text-size">
+            <option value="100">100%</option>
+            <option value="115">115%</option>
+            <option value="130">130%</option>
+            <option value="150">150%</option>
+          </select>
+        </label>
+      </div>
+    </header>
+    <section id="victory" aria-label="Game result" aria-live="polite" hidden>
+      <canvas id="winner-emblem" width="64" height="64" aria-hidden="true"></canvas>
+      <div><h2 id="winner-name"></h2><p id="victory-detail"></p></div>
+    </section>
+    <div class="content">
+      <section class="board" aria-label="Game map">
+        <div class="map-view">
+          <canvas id="map" aria-label="Explored map from the selected civilization's perspective"></canvas>
+          <div class="map-tools" aria-label="Map zoom">
+            <button id="zoom-out" aria-label="Zoom out" title="Zoom out">−</button>
+            <button id="zoom-in" aria-label="Zoom in" title="Zoom in">+</button>
+            <button id="zoom-fit" aria-label="Fit map" title="Fit map">Fit</button>
+          </div>
+          <canvas id="minimap" width="164" height="122" tabindex="0" aria-label="Minimap. Click or use arrow keys to move the map."></canvas>
+          <aside id="tile-inspector" aria-label="Tile details" hidden></aside>
+        </div>
+        <p id="map-caption"></p>
+      </section>
+      <aside class="notebook" aria-label="Replay notes">
+        <div class="tabs" aria-label="Note type">
+          <button data-panel="decisions" aria-pressed="true">Decisions</button>
+          <button data-panel="reviews" aria-pressed="false" hidden>Reviews</button>
+          <button data-panel="highlights" aria-pressed="false" hidden>Highlights</button>
+          <button data-panel="diplomacy" aria-pressed="false">Diplomacy</button>
+          <button data-panel="relations" aria-pressed="false" hidden>Relations</button>
+          <button data-panel="research" aria-pressed="false">Research</button>
+          <button data-panel="culture" aria-pressed="false">Policies</button>
+          <button data-panel="statistics" aria-pressed="false" hidden>Statistics</button>
+        </div>
+        <div id="notes" class="notes" tabindex="0"></div>
+      </aside>
+    </div>
+    <section class="timeline" aria-label="Replay timeline">
+      <div class="transport" aria-label="Playback controls">
+        <button id="first" aria-label="First event" title="First event">«</button>
+        <button id="previous" aria-label="Previous event" title="Previous event (←)">‹</button>
+        <button id="play" aria-label="Play" title="Play or pause (Space)">▶</button>
+        <button id="next" aria-label="Next event" title="Next event (→)">›</button>
+        <button id="last" aria-label="Last event" title="Last event">»</button>
+      </div>
+      <input id="seek" type="range" min="0" value="0" step="1" aria-label="Replay position">
+      <label class="jump">Jump to <select id="turn" aria-label="Jump to turn"></select></label>
+    </section>
+    <details id="art-credits" hidden>
+      <summary>Unciv artwork credits</summary>
+      <p>HexaRealm by The Bucketeer (GeneralWadaling), <a href="https://creativecommons.org/licenses/by-sa/3.0/">CC BY-SA 3.0</a>. Fantasy Hex by CuddlyClover and contributors and AbsoluteUnits by letstalkaboutdune and contributors, <a href="https://creativecommons.org/licenses/by/4.0/">CC BY 4.0</a>. See <a href="https://github.com/yairm210/Unciv/blob/master/docs/Credits.md">Unciv’s credits</a> for individual icons and additional artwork.</p>
+    </details>
+    <noscript>This replay requires JavaScript to draw the map and navigate the timeline.</noscript>
+  </main>
+  <dialog id="tree-dialog" aria-labelledby="tree-title">
+    <header><h2 id="tree-title"></h2><button id="close-tree">Close</button></header>
+    <div id="tree-content"></div>
+  </dialog>
+  <script id="replay-data" type="application/json">@PAYLOAD@</script>
+  <script id="art-data" type="application/json">@ART@</script>
+  <script>@JS@</script>
+</body>
+</html>

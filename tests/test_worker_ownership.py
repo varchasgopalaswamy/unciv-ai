@@ -9,8 +9,7 @@ from civ_agent.role_view import label_commands, role_overview
 from civ_agent.service_io import ServiceIO
 from civ_agent.startup_context import decision_queries
 from civ_agent.unit_ownership import unit_owner
-from tests.test_economy_optimization import managed
-from tests.test_economy_roles import run_async
+from tests.domain_fixtures import managed, run_async
 from tests.test_military_roles import position, store
 
 

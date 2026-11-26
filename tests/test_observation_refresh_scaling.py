@@ -8,9 +8,8 @@ from civ_agent import civilization_state
 from civ_agent.civilization_state import CivilizationState
 from civ_agent.observations import DetailQuery, detail_fingerprint, detail_scope, overview, project_detail
 from civ_agent.protocol import JsonObject
+from tests.domain_fixtures import Host, create, strategy
 from tests.memory_helpers import stored_records
-from tests.test_proposal_gateway import Host
-from tests.test_structured_memory import create, strategy
 
 
 def test_past_map_queries_stay_historical_while_current_assumptions_refresh(tmp_path, monkeypatch):

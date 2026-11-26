@@ -2,8 +2,6 @@
 
 Use the [full-game launcher](../guides/Full-vanilla-run.md) to record an unattended
 run, and the [dashboard](../guides/Match-dashboard.md) to inspect current metrics.
-This is the accounting contract; historical measurements are in the
-[archive](../archive/README.md).
 
 ## Storage and accounting
 

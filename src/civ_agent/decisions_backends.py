@@ -1,4 +1,4 @@
-"""Provider wire formats for the common, probability-based Decisions contract."""
+"""Backend policy and independent answers for the common Decisions contract."""
 
 from dataclasses import dataclass
 from typing import Literal
@@ -34,23 +34,6 @@ BACKENDS = {
         "decisions-local-free-v1",
     ),
 }
-
-
-def provider_request(body, backend) -> JsonObject:
-    if backend == "luna":
-        return body
-    return {
-        "model": body["model"],
-        "state": body["input"],
-        "questions": {
-            q["name"]: {
-                "type": "choice",
-                "instructions": q["instructions"],
-                "criteria": {c["value"]: c["description"] for c in q["choices"]},
-            }
-            for q in body["questions"]
-        },
-    }
 
 
 def provider_answers(body, response, backend) -> list[JsonObject]:

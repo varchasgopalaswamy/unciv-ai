@@ -5,6 +5,7 @@ import pytest
 
 from civ_agent import container_supervisor as supervisor
 from civ_agent.commands.game import initialize
+from civ_agent.decisions_broker import BROKER_PROTOCOL_VERSION
 from civ_agent.game_config import GameConfig
 from civ_agent.tls import private_directory, write_private
 
@@ -48,13 +49,15 @@ def test_key_permissions_and_independent_client_credentials(tmp_path):
         {
             "status": "incompatible",
             "reason": "broker_version_mismatch",
-            "versionMismatches": {"protocolVersion": {"expected": 3, "actual": 2}},
+            "versionMismatches": {"protocolVersion": {"expected": BROKER_PROTOCOL_VERSION, "actual": 2}},
         },
         {"status": "unavailable", "reason": "broker_access_denied"},
     ],
 )
 def test_ready_file_requires_authenticated_compatible_socket_preflight(tmp_path, monkeypatch, health):
     monkeypatch.setattr(supervisor, "inspected", lambda _: {"Image": "image", "State": {"Running": True}})
+    monkeypatch.setattr(supervisor, "_broker_process", lambda *args, **kwargs: object())
+    monkeypatch.setattr(supervisor, "_await_broker", lambda *args, **kwargs: None)
     write_private(tmp_path / "decisions-ready.json", b'{"ready":true}\n')
     monkeypatch.setattr(supervisor, "podman", Mock(side_effect=AssertionError("Already running")))
 
@@ -76,6 +79,6 @@ def test_ready_file_requires_authenticated_compatible_socket_preflight(tmp_path,
         with pytest.raises(supervisor.ContainerError, match=health["reason"]) as error:
             supervisor.ensure_decisions(tmp_path, "image")
         if health["status"] == "incompatible":
-            assert "protocolVersion expected 4, found 2" in str(error.value)
+            assert f"protocolVersion expected {BROKER_PROTOCOL_VERSION}, found 2" in str(error.value)
             assert "civ-agent image build" in str(error.value)
         assert not (tmp_path / "decisions-preflight.json").exists()

@@ -1,6 +1,7 @@
 """Container setup, immutable images and the dedicated benchmark login."""
 
 import argparse
+import asyncio
 import getpass
 import json
 import os
@@ -14,14 +15,12 @@ from civ_agent.container_support import (
     ContainerError,
     auth_name,
     command,
-    host_environment,
     inspected,
     locked,
-    mount,
     preflight,
     resolve_image,
 )
-from civ_agent.providers import PROVIDERS, read_api_key, valid_api_key
+from civ_agent.provider_credentials import PROVIDERS, read_api_key, valid_api_key
 from civ_agent.tls import private_directory, write_private
 
 
@@ -31,7 +30,6 @@ def parser(*, add_help=True, group="runtime", action="setup"):
     if group == "image":
         result.add_argument("--repo-dir", type=Path)
         result.add_argument("--unciv-dir")
-        result.add_argument("--codex", default="codex")
         result.add_argument("--tag", default="localhost/civ-agent")
     if group == "auth":
         if action == "restart":
@@ -41,10 +39,13 @@ def parser(*, add_help=True, group="runtime", action="setup"):
         if action not in {"restart", "stop"}:
             result.add_argument("--provider", choices=PROVIDERS, default="openai")
         result.add_argument("--auth-dir", type=Path, default=DEFAULT_AUTH)
-        if action != "stop":
+        if action == "restart":
             result.add_argument("--image", default="localhost/civ-agent:runtime")
         if action == "login":
             result.add_argument("--key-file", type=Path, help="Import an owner-only OpenRouter API key file")
+            result.add_argument("--project", help="Google Cloud project charged for Gemini requests")
+            result.add_argument("--location", default="global", help="Google Cloud model location (default: global)")
+            result.add_argument("--credentials-file", type=Path, help="Import a Google Cloud ADC JSON file")
     return result
 
 
@@ -54,7 +55,7 @@ def run(args):
         if args.runtime_group == "image":
             print(
                 json.dumps(
-                    build_images(repo_dir=args.repo_dir, unciv_dir=args.unciv_dir, codex=args.codex, tag=args.tag),
+                    build_images(repo_dir=args.repo_dir, unciv_dir=args.unciv_dir, tag=args.tag),
                     indent=2,
                 )
             )
@@ -77,6 +78,26 @@ def run(args):
             image = resolve_image(args.image)
             print(json.dumps(restart_brokers(root, image), indent=2))
             return 0
+        if args.provider == "google-cloud":
+            from civ_agent.google_cloud_auth import CONFIG_NAME, import_login, saved_config
+
+            if args.action == "status":
+                status = {"provider": "google-cloud", "auth_directory": str(root), "login_present": False}
+                if (root / CONFIG_NAME).is_file():
+                    config = saved_config(root)
+                    status.update(login_present=True, project=config.project, location=config.location)
+                print(json.dumps(status, indent=2))
+                return 0
+            if args.key_file is not None:
+                raise ValueError("Google Cloud login uses ADC; supply --credentials-file instead of --key-file")
+            project = args.project or os.environ.get("GOOGLE_CLOUD_PROJECT")
+            if not project:
+                raise ValueError("Select the credited Google Cloud project with --project PROJECT_ID")
+            config = import_login(root, project=project, location=args.location, credentials_file=args.credentials_file)
+            print(f"Google Cloud login saved for {config.project} ({config.location}).")
+            return 0
+        if getattr(args, "credentials_file", None) is not None or getattr(args, "project", None) is not None:
+            raise ValueError("--credentials-file and --project require --provider google-cloud")
         if args.provider == "openrouter":
             path = root / "openrouter.key"
             if args.action == "status":
@@ -102,7 +123,7 @@ def run(args):
                 json.dumps(
                     {
                         "auth_directory": str(root),
-                        "login_present": (root / "codex/auth.json").is_file(),
+                        "login_present": (root / "openai-subscription.json").is_file(),
                         "manager_running": bool((inspected(auth_name(root)) or {}).get("State", {}).get("Running")),
                     },
                     indent=2,
@@ -110,40 +131,16 @@ def run(args):
             )
             return 0
         private_directory(root)
-        private_directory(root / "codex")
         with locked(root / ".launch.lock"):
             if (inspected(auth_name(root)) or {}).get("State", {}).get("Running"):
                 raise ContainerError(
                     "Run civ-agent auth stop before changing its account; active games use this session"
                 )
-            image = resolve_image(args.image)
-            return subprocess.call(
-                [
-                    "podman",
-                    "run",
-                    "--rm",
-                    "-it",
-                    "--userns=keep-id",
-                    "--cap-drop=ALL",
-                    "--security-opt=no-new-privileges",
-                    "--read-only",
-                    "--tmpfs",
-                    "/tmp:rw,size=64m,mode=1777",
-                    *mount(root / "codex", "/auth", writable=True),
-                    "--env",
-                    "CODEX_HOME=/auth",
-                    "--env",
-                    "HOME=/tmp",
-                    "--entrypoint",
-                    "/usr/local/bin/codex",
-                    image,
-                    "-c",
-                    'cli_auth_credentials_store="file"',
-                    "login",
-                    "--device-auth",
-                ],
-                env=host_environment(),
-            )
+            from civ_agent.subscription_auth import login
+
+            asyncio.run(login(root))
+            print("Subscription login saved.")
+            return 0
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
         print(str(error), file=sys.stderr)
         return 2

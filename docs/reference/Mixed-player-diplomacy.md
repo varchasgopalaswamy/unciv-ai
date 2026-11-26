@@ -47,7 +47,7 @@ modifiers, native promises and their durations, and each owned alert's
 options under `native.availableDemandsToSend`, with a `type`, `recipient`,
 availability and unavailable reasons. These are actions the reader may send;
 they are not received requests or promises. Native stock dialogue is omitted
-from the model view; see the [flavor text audit](../archive/reports/Model-flavor-text-audit.md).
+from the model view.
 War-producing responses carry `declaresWar`, native warnings
 and any applicable nonblocking social peace advice. Native consequences remain
 Unciv's: a rejection described as “You'll pay for this!” need not declare war.

@@ -7,8 +7,8 @@ import subprocess
 import sys
 import time
 
+from civ_agent.civilization_paths import civilization_directory_name
 from civ_agent.cli import main
-from civ_agent.turn_archive import civilization_directory_name
 
 
 def match_arguments(*args: str) -> list[str]:

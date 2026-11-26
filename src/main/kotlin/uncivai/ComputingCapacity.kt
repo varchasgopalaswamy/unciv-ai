@@ -50,13 +50,15 @@ internal fun invocationCapacityAvailable(
     invocations: Long,
     maximum: Long,
     militaryRequired: Boolean = false,
+    claimedPartners: Set<Pair<String, String>>? = null,
 ): Boolean {
+    if (maximum == 0L) return true
     val reserved = jobs.flatMap { (id, job) ->
         if (job.expires <= now || job.purpose != "gameplay") {
             emptyList()
         } else {
             partners(job.militaryPartnerRequired).filter { role ->
-                jobs.values.none { it.parentJob == id && it.purpose == role }
+                claimedPartners?.contains(id to role)?.not() ?: jobs.values.none { it.parentJob == id && it.purpose == role }
             }.map { id to it }
         }
     }

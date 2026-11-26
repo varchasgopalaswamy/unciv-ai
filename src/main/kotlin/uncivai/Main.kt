@@ -52,7 +52,7 @@ private fun launchHost(options: CliOptions) {
                 )
             }
         } else if (options.resumeCheckpoint != null) {
-            HeadlessRuntime.loadCheckpoint(options.resumeCheckpoint, options.dataDirectory, expectedMap)
+            HeadlessRuntime.loadCheckpoint(CheckpointStore(options.resumeCheckpoint, recordReplay = options.recordReplay), options.dataDirectory, expectedMap)
         } else {
             HeadlessRuntime.load(checkNotNull(options.saveFile), options.dataDirectory)
         }
@@ -89,7 +89,7 @@ private fun launchHost(options: CliOptions) {
                 }
                 if (changed) runtime.executor.commitCheckpoint()
             }
-            options.checkpoint?.let { runtime.executor.enableCheckpoints(it) }
+            options.checkpoint?.let { runtime.executor.enableCheckpoints(it, options.recordReplay) }
             println("Scenario: ${runtime.game.tileMap.mapParameters.name.ifEmpty { "Ordinary game" }}")
             println("Rules: ${runtime.game.gameParameters}; map seed: ${runtime.game.tileMap.mapParameters.seed}")
             if (players == null) {

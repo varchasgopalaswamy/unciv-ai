@@ -11,7 +11,7 @@ from civ_agent.observations import overview, required_detail
 from civ_agent.proposal_gateway import ProposalGateway
 from civ_agent.service_io import ServiceIO
 from civ_agent.state_updates import apply_overview_update
-from tests.test_proposal_gateway import Host
+from tests.domain_fixtures import Host
 from tests.test_tactical_review import reviewed
 
 

@@ -145,6 +145,7 @@ def progress_context(history: list[JsonObject], actions: list[JsonObject]) -> Js
             "SET_UNIT_DESTINATION",
             "MOVE_UNIT",
             "QUEUE_CONSTRUCTION",
+            "START_CONSTRUCTION",
             "MOVE_CONSTRUCTION",
         }:
             continue

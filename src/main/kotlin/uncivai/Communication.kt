@@ -29,8 +29,9 @@ internal data class CommunicationState(
     val requests: MutableMap<String, CommunicationReceipt> = mutableMapOf(),
     val acceptedVersions: MutableMap<String, Int> = mutableMapOf(),
     val jobs: MutableMap<String, CommunicationJob> = mutableMapOf(),
+    val retiredJobs: MutableMap<String, RetiredJob> = mutableMapOf(),
     var invocations: Long = 0,
-    var maxInvocations: Long = 1000,
+    var maxInvocations: Long = 0,
     var maxConcurrent: Int = 4,
     var maxPerCivilization: Int = 4,
     var restorePending: Boolean = false,
@@ -65,11 +66,44 @@ internal fun shortCommunicationId(prefix: String, random: SecureRandom, occupied
     prefix + random.nextInt(60_466_176).toString(36).padStart(5, '0')
 }.first { !occupied(it) }
 
+@Serializable
+internal data class RetiredJob(val civilization: String, val epoch: String)
+
 internal class Communication(private val runtime: GameExecutor) {
     internal val trades = EngineTrades(runtime)
     internal val agreements = AgreementLifecycle(runtime)
     private val random = SecureRandom()
     private val state get() = runtime.communicationState
+
+    private var indexedState: CommunicationState? = null
+    private var indexedJobCount = -1
+    private val activeJobs = mutableMapOf<String, CommunicationJob>()
+    private val claimedPartners = mutableSetOf<Pair<String, String>>()
+
+    internal fun indexJob(id: String) {
+        val job = state.jobs[id] ?: return
+        if (job.expires > 0) activeJobs[id] = job else activeJobs.remove(id)
+        job.parentJob?.let { claimedPartners.add(it to job.purpose) }
+        indexedJobCount = state.jobs.size
+    }
+
+    private fun liveJobs(now: Long): Map<String, CommunicationJob> {
+        if (indexedState !== state || indexedJobCount != state.jobs.size) {
+            activeJobs.clear()
+            claimedPartners.clear()
+            indexedState = state
+            state.jobs.keys.forEach(::indexJob)
+            indexedJobCount = state.jobs.size
+        }
+        // Refresh only outstanding identities. Historical jobs and accounting
+        // remain durable without entering recurring capacity scans.
+        activeJobs.keys.toList().forEach { id ->
+            val job = state.jobs.getValue(id)
+            if (job.expires <= now) activeJobs.remove(id) else activeJobs[id] = job
+        }
+        claimedPartners.removeIf { it.first !in activeJobs }
+        return activeJobs
+    }
 
     /** Serialized with normal mutations; the stored receipt also fences late arrivals. */
     internal fun resolveRequest(civilization: String, arguments: JsonObject): JsonObject = runtime.accessGame { game ->
@@ -104,7 +138,9 @@ internal class Communication(private val runtime: GameExecutor) {
     internal fun emit(audience: List<String>, kind: String, body: JsonObject, wakes: Set<String> = emptySet()) {
         for (recipient in audience) {
             val stream = state.streams.getOrPut(recipient) { mutableListOf() }
-            stream.add(CommunicationEvent(stream.size + 1, kind, body, recipient in wakes))
+            val delivered = CommunicationEvent(stream.size + 1, kind, body, recipient in wakes)
+            stream.add(delivered)
+            runtime.recordReplayDiplomacy(recipient, delivered)
         }
         runtime.telemetry.communicationChanged()
     }
@@ -172,8 +208,9 @@ internal class Communication(private val runtime: GameExecutor) {
                 )
             }
             request.expectedRevision?.let { expected ->
-                if (uncivai.player.TurnSession(runtime, civilization).snapshot().revision != expected)
+                if (uncivai.player.TurnSession(runtime, civilization).snapshot().revision != expected) {
                     throw PlayerSessionException(PlayerSessionFailure.STALE_REVISION)
+                }
             }
             val beforeSettlement = if (request.op == "trade_decide" && request.decision == "accept") settlementState() else null
             val response = when (request.op) {
@@ -261,47 +298,154 @@ internal class Communication(private val runtime: GameExecutor) {
                     if (beforeSettlement != null && response["outcome"] is JsonObject) TradeSettlementAudit(beforeSettlement, settlementState()) else null,
                 ),
             )
+            runtime.enforceProductionPolicies()
+            runtime.recordReplayInput(civilization, "communication") { obj("request" to arguments, "receipt" to response) }
             runtime.commitCheckpoint()
             response
         }
     }
 
+    /** Trusted recovery renews the old lease without allocating work or refunding usage. */
+    internal fun recoverJobLease(civilization: String, id: String): Boolean {
+        expireDescendants(System.currentTimeMillis())
+        val prior = state.jobs[id] ?: throw OperatorFailure("JOB_UNAVAILABLE")
+        if (prior.civilization != civilization) throw OperatorFailure("JOB_IDENTITY_CONFLICT")
+        // Explicitly released work and every job fenced by rewind stay released.
+        if (prior.expires <= 0L) return false
+        val historicalReview = prior.purpose == "review" && prior.parentJob?.let { parent ->
+            state.jobs[parent]?.let { it.civilization == civilization && it.purpose == "gameplay" && it.epoch == prior.epoch }
+        } == true
+        if (prior.epoch != runtime.epoch && !historicalReview) throw OperatorFailure("JOB_EPOCH_CONFLICT")
+        val now = System.currentTimeMillis()
+        if (prior.purpose in setOf("economy", "military")) {
+            val parent = prior.parentJob?.let { state.jobs[it] } ?: throw OperatorFailure("JOB_PARENT_UNAVAILABLE")
+            if (!liveAuthority(parent, now) || parent.civilization != civilization || parent.purpose != "gameplay") return false
+        }
+        if (prior.expires <= now || prior.computing) {
+            // A normal same-ID claim must reacquire computing capacity afterwards.
+            state.jobs[id] = prior.copy(expires = now + 90000, computing = false)
+            indexedState = null
+            runtime.telemetry.changed(id)
+            runtime.commitAccounting()
+        }
+        return true
+    }
+
+    internal fun retireJob(civilization: String, id: String) {
+        if (runtime.accessGame { game -> game.civilizations.none { it.civID == civilization && it.isHuman() && it.isMajorCiv() } }) throw OperatorFailure("JOB_IDENTITY_CONFLICT")
+        val prior = state.jobs[id]
+        if (prior != null) {
+            if (prior.civilization != civilization || prior.epoch != runtime.epoch) throw OperatorFailure("JOB_IDENTITY_CONFLICT")
+            state.jobs[id] = prior.copy(expires = 0, computing = false)
+            runtime.telemetry.changed(id)
+            fenceChildren(id)
+        } else {
+            val retired = RetiredJob(civilization, runtime.epoch)
+            if (state.retiredJobs[id]?.let { it != retired } == true) throw OperatorFailure("JOB_IDENTITY_CONFLICT")
+            state.retiredJobs[id] = retired
+            runtime.telemetry.retired(id)
+        }
+        runtime.commitAccounting()
+    }
+
+    private fun fenceChildren(parentId: String) {
+        liveJobs(System.currentTimeMillis()).filterValues { it.parentJob == parentId && it.purpose in setOf("economy", "military") }.forEach { (id, child) ->
+            state.jobs[id] = child.copy(expires = 0, computing = false)
+            runtime.telemetry.changed(id)
+        }
+    }
+
+    private fun expireDescendants(now: Long) {
+        liveJobs(now).filterValues { it.purpose in setOf("economy", "military") }.forEach { (id, child) ->
+            val parent = child.parentJob?.let { state.jobs[it] }
+            if (parent == null || parent.expires <= now || parent.epoch != child.epoch || parent.civilization != child.civilization) {
+                val expiry = minOf(child.expires, parent?.expires ?: 0)
+                if (child.computing || child.expires != expiry) {
+                    state.jobs[id] = child.copy(expires = expiry, computing = false)
+                    runtime.telemetry.changed(id)
+                }
+            }
+        }
+    }
+
+    private fun liveAuthority(job: CommunicationJob, now: Long): Boolean {
+        if (job.expires <= now || job.epoch != runtime.epoch) return false
+        if (job.purpose !in setOf("economy", "military")) return true
+        val parent = job.parentJob?.let { state.jobs[it] } ?: return false
+        return parent.civilization == job.civilization && parent.purpose == "gameplay" && parent.epoch == job.epoch && parent.expires > now
+    }
+
     private fun job(civilization: String, request: CommunicationRequest): JsonObject {
         val id = checkNotNull(request.job)
         val now = System.currentTimeMillis()
+        expireDescendants(now)
         // Military also plans and controls combat units during peace. Reserve
         // its partner capacity before main/economy can occupy the other slots.
         val militaryRequired = true
-        state.jobs.replaceAll { _, job ->
-            if (job.civilization == civilization && job.purpose == "gameplay") job.copy(militaryPartnerRequired = militaryRequired) else job
+        liveJobs(now).filterValues { it.civilization == civilization && it.purpose == "gameplay" && it.militaryPartnerRequired != militaryRequired }.forEach { (id, job) ->
+            state.jobs[id] = job.copy(militaryPartnerRequired = militaryRequired)
+            runtime.telemetry.changed(id)
         }
         val prior = state.jobs[id]
+        if (id in state.retiredJobs) return obj("granted" to false, "reason" to "JOB_RETIRED")
         if (prior != null && prior.civilization != civilization) fail()
         if (request.op == "job_claim" && prior == null) {
             val purpose = checkNotNull(request.purpose)
             val parent = request.parentJob?.let { state.jobs[it] ?: fail() }
-            val openingReview = purpose == "review" && parent == null
+            val review = request.review
+            val independentReview = purpose == "review" && review != null
+            val openingReview = purpose == "review" && parent == null && review == null
+            if (review != null) {
+                if (!independentReview || parent != null || !review.cycleId.matches(Regex("[a-f0-9]{64}")) ||
+                    review.sourceTurn < 0 || review.targetTurn < 0 ||
+                    !((review.sourceTurn == 0 && review.targetTurn == 0) || review.targetTurn.toLong() == review.sourceTurn.toLong() + 1L)
+                ) {
+                    fail()
+                }
+                val currentTurn = runtime.accessGame { it.turns }
+                if (currentTurn < review.sourceTurn || currentTurn > review.targetTurn) fail()
+                if (state.jobs.values.any { job ->
+                        job.review?.cycleId == review.cycleId &&
+                            (job.review != review || job.civilization != civilization || job.epoch != runtime.epoch)
+                    }
+                ) {
+                    fail()
+                }
+            }
             if (purpose in setOf("economy", "military") && (parent == null || parent.expires <= now || parent.epoch != runtime.epoch)) fail()
             if (parent != null && (purpose !in setOf("review", "economy", "military") || parent.civilization != civilization || parent.purpose != "gameplay")) fail()
             if (openingReview && runtime.accessGame { it.turns != 0 }) fail()
-            val phaseAllowsJob = if (purpose == "review") runtime.communicationPaused && runtime.isPaused() else !runtime.communicationPaused
-            if (!invocationCapacityAvailable(state.jobs, purpose, request.parentJob, now, state.invocations, state.maxInvocations, militaryRequired))
+            val phaseAllowsJob = if (purpose == "review") independentReview || (runtime.communicationPaused && runtime.isPaused()) else !runtime.communicationPaused
+            if (!invocationCapacityAvailable(liveJobs(now), purpose, request.parentJob, now, state.invocations, state.maxInvocations, militaryRequired, claimedPartners)) {
                 return obj("granted" to false, "reason" to "MODEL_INVOCATION_LIMIT")
+            }
             if ((purpose == "gameplay" && (state.maxConcurrent < 2 || state.maxPerCivilization < 2)) ||
-                ((purpose == "military" || purpose == "gameplay" && militaryRequired) && (state.maxConcurrent < 3 || state.maxPerCivilization < 3)))
+                ((purpose == "military" || (purpose == "gameplay" && militaryRequired)) && (state.maxConcurrent < 3 || state.maxPerCivilization < 3))
+            ) {
                 return obj("granted" to false, "reason" to "ROLE_CAPACITY_TOO_SMALL")
-            if (!phaseAllowsJob || !computingCapacityAvailable(state.jobs, id, civilization, purpose, request.parentJob, now, state.maxConcurrent, state.maxPerCivilization, militaryRequired) ||
+            }
+            if (!phaseAllowsJob || !computingCapacityAvailable(liveJobs(now), id, civilization, purpose, request.parentJob, now, state.maxConcurrent, state.maxPerCivilization, militaryRequired) ||
                 (purpose == "review" && runtime.accessGame(::gameFinished))
             ) {
                 return obj("granted" to false)
             }
-            state.jobs[id] = runtime.accessGame { game -> CommunicationJob(civilization, purpose, now + 90000, epoch = parent?.epoch ?: runtime.epoch, handoff = if (openingReview) null else parent?.handoff ?: runtime.handoff, gameTurn = parent?.gameTurn ?: game.turns, claimedAtMs = now, parentJob = request.parentJob, militaryPartnerRequired = purpose == "gameplay" && militaryRequired) }
+            state.jobs[id] = runtime.accessGame { game -> CommunicationJob(civilization, purpose, now + 90000, epoch = parent?.epoch ?: runtime.epoch, handoff = if (openingReview || independentReview) null else parent?.handoff ?: runtime.handoff, gameTurn = review?.sourceTurn ?: parent?.gameTurn ?: game.turns, claimedAtMs = now, parentJob = request.parentJob, militaryPartnerRequired = purpose == "gameplay" && militaryRequired, review = review) }
             state.invocations++
         } else if (prior != null) {
-            if (request.op !in setOf("job_release", "job_report") && prior.expires <= now) return obj("granted" to false)
-            if (request.op == "job_claim" && prior.purpose != request.purpose) fail()
-            if (request.op == "job_claim" && !prior.computing && !computingCapacityAvailable(state.jobs, id, civilization, prior.purpose, prior.parentJob, now, state.maxConcurrent, state.maxPerCivilization, militaryRequired))
+            if (request.op !in setOf("job_release", "job_report") && !liveAuthority(prior, now)) return obj("granted" to false, "reason" to "JOB_AUTHORITY_LOST")
+            if (request.op == "job_claim" && (prior.purpose != request.purpose || prior.parentJob != request.parentJob)) fail()
+            if (request.op == "job_claim" && (runtime.communicationPaused && prior.purpose != "review")) return obj("granted" to false)
+            if (request.op == "job_claim" && prior.review != request.review) fail()
+            if ((request.op == "job_claim" || (request.op == "job_heartbeat" && prior.computing)) && !computingCapacityAvailable(liveJobs(now) - id, id, civilization, prior.purpose, prior.parentJob, now, state.maxConcurrent, state.maxPerCivilization, militaryRequired)) {
                 return obj("granted" to false)
+            }
+            // Release is authority, independent of telemetry ordering.
+            if (request.op == "job_release") {
+                state.jobs[id] = prior.copy(expires = 0, computing = false)
+                runtime.telemetry.changed(id)
+                fenceChildren(id)
+                runtime.commitAccounting()
+            }
             val report = request.telemetry
             val oldReport = prior.telemetry
             if (report != null && oldReport != null && report.sequence < oldReport.sequence) return obj("granted" to true)
@@ -315,7 +459,7 @@ internal class Communication(private val runtime: GameExecutor) {
                 if (oldReport != null && (report.elapsedMs < oldReport.elapsedMs || report.roleWaitMs < oldReport.roleWaitMs || report.modelRequests < oldReport.modelRequests || (oldReport.usageComplete && !report.usageComplete) || oldReport.apiCalls.any { (name, count) -> (report.apiCalls[name]?.calls ?: 0) < count.calls })) fail()
             }
             state.jobs[id] = prior.copy(
-                expires = if (request.op == "job_release") {
+                expires = if (request.op == "job_release" || prior.expires <= 0L) {
                     0
                 } else if (request.op == "job_report") {
                     prior.expires
@@ -328,8 +472,8 @@ internal class Communication(private val runtime: GameExecutor) {
                 computing = when {
                     request.op == "job_release" -> false
                     request.op == "job_claim" -> true
-                    report != null -> computingJobPhase(report.phase)
-                    else -> prior.computing
+                    report != null -> prior.computing && liveAuthority(prior, now) && computingJobPhase(report.phase)
+                    else -> prior.computing && liveAuthority(prior, now)
                 },
             )
         } else {

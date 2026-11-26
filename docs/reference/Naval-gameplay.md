@@ -45,12 +45,6 @@ Movement, pathfinding, formations, history and overlay regression adds 186 passi
 cases and six pre-existing skips. The full Python suite passes 442 tests and 90
 subtests; formatting, Ruff and Pyrefly checks pass.
 
-The rendered desktop exercise completed in
-`/tmp/unciv-naval-desktop-20260920-4`; all 11 screenshots were inspected. It uses
-a silent audio driver for this environment. The [live exercise](../archive/reports/Naval-live-results.md)
-completed four rounds and twelve handoffs, with all 27 artifact checks passing.
-All 22 model jobs used `gpt-5.6-luna`, medium reasoning. Services are stopped.
-
 Scoped acceptance is complete. Engine commits `ddbb694c9` (destination orders)
 and `b89aea260` (naval operations) are merged and published on
 `experimental-changes`. The host records
@@ -136,10 +130,16 @@ Formation and destination state survive native saves. Normal visibility and
 obstacle handling still apply. An escort can be defeated; pairing is not a
 safety assessment, and a nearby military unit does not prevent civilian capture.
 
-Work Boats advertise `unit.waterImprovement`. `CREATE_WATER_IMPROVEMENT` takes
-`target` and `selection=waterImprovement.name`; it consumes the builder through
-the native operation. `receipt.waterImprovement` records the improvement, unit
-consumption and relevant available-resource totals. Bonus resources have no
+Work Boats and eligible Samurai advertise `unit.waterImprovement` at their current
+tile. `CREATE_WATER_IMPROVEMENT` takes `target` and
+`selection=waterImprovement.name`. Work Boats are consumed; Samurai use their
+native instant Fishing Boats action, spending one movement and retaining the
+unit. Military owns this action for Samurai; Main retains ownership for Work Boats
+and units assigned to escort duty. Read `consumesUnit` on the offer. The desktop and API revalidate the same
+native operation, including tile, technology, movement and ownership requirements.
+`receipt.waterImprovement` records the improvement, actual unit consumption,
+displayed movement before/after and relevant available-resource totals. Exact request replay
+returns the same receipt without spending movement again. Bonus resources have no
 empire stockpile. Existing `ATTACK`, `UPGRADE_UNIT`, `PILLAGE`, `DISBAND_UNIT`,
 orders and promotions also accept ordinary ships, with native requirements.
 Vanilla's ranged ships cannot capture a coastal city by bombardment alone.

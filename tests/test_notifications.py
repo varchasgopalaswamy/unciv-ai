@@ -10,7 +10,7 @@ from civ_agent.game_commands import command_arguments, command_schema
 from civ_agent.observations import TurnOverview
 from civ_agent.proposal_gateway import ProposalGateway
 from civ_agent.service_io import ServiceIO
-from tests.test_proposal_gateway import Host
+from tests.domain_fixtures import Host
 
 
 def notice(handle, text):

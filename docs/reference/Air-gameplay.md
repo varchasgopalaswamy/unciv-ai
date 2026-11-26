@@ -115,14 +115,6 @@ the same native effects to desktop and HTTPS callers. Carrier destruction,
 full-base upgrades, affordability, promotions, invalid targets, hidden-state pairs
 and checkpoint failure recovery have separate automated checks.
 
-The [live exercise](../archive/reports/Air-live-results.md) completed three rounds and nine handoffs
-with all 30 artifact checks passing. All 15 model jobs used Luna with medium
-reasoning. The planned restart preserved transport, units and receipts; subsequent
-carrier combat, nuclear launch and rebasing succeeded. All services are stopped.
-Scoped acceptance is complete. Engine commit
-`f2408cde26543e404ea2844b18c1e648fa97691d` is merged and published on
-`experimental-changes`; the host records that exact dependency revision.
-
 ## Reproduce acceptance
 
 These commands use the recorded engine checkout for both code and assets:

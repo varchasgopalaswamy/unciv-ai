@@ -9,7 +9,7 @@ from civ_agent.proposal_gateway import ProposalGateway
 from civ_agent.schemas import StartRequest, start_error, validate
 from civ_agent.service_io import ServiceIO
 from civ_agent.tool_schemas import TOOL_MODELS
-from tests.test_proposal_gateway import Host
+from tests.domain_fixtures import Host
 
 
 @pytest.mark.parametrize(

@@ -30,38 +30,53 @@ unrelated skill/plugin, app and collaboration instructions. Actual job directori
 credentials, sandbox settings, approval policy, visibility checks and fresh
 conversations remain configured. See [agent context](Agent-context.md).
 
-## Cache support and validation
+## Current local runner
+
+The Pydantic AI runner assembles stable instructions and role-scoped tool schemas,
+then supplies prepared observations as user input. For nonlegacy policies,
+`ProviderCaching` fingerprints
+the SDK-prepared instructions, tools, output contract and thinking setting. Its
+body cache key is bounded by verified account, provider, endpoint and actual model.
+Changing effort therefore changes our prepared key; changing user observations
+does not. Provider reuse is measured separately from those fingerprints.
+
+Subscription requests use an independent stable `session-id` by default,
+scoped to verified account/provider/endpoint/serving model. There is no feature
+toggle; legacy execution policies also receive stable affinity. Retention, body
+cache keys and history keep their existing behavior. `thread-id`
+and `x-client-request-id` come from the current request's logical conversation,
+including its first request. Explicit headers win regardless of case. Unknown
+accounts cannot share affinity across runs.
+
+`tests/test_execution_policy_cache.py` checks account/model/endpoint isolation,
+caller overrides and actual first/subsequent HTTP headers using `MockTransport`.
+It also verifies that the default runner applies affinity to legacy jobs without
+rewriting history or changing their body cache key.
+
+## Historical client evidence
 
 Stable ordering makes a reusable prefix possible; it does not guarantee a cache
 hit. The September 21 probe of Codex 0.155.1 found no supported explicit
 cache-breakpoint setting in its app-server schema; injected breakpoint fields
 were dropped. The implementation preserves the client's existing caching mode.
-Recheck this capability when changing the client version. The
-[recorded probe and live comparison](../archive/reports/Prompt-caching.md)
-retain the version-specific evidence and its limits.
+Recheck this capability when changing the client version.
 
-The opt-in capture test uses separate processes/workspaces and a local canned
-model endpoint. It checks stable tool/developer content before changing user
-data, omission of local file text, and unchanged model/sandbox settings. It does
-not contact a paid model or measure cache hits:
-
-```sh
-CIV_TEST_NATIVE_CODEX="$(command -v codex)" .venv/bin/pytest -q -s tests/test_prompt_cache_native.py
-```
+The historical capture test used separate processes/workspaces and a local canned
+model endpoint. It checked stable tool/developer content before changing user
+data, omission of local file text, and unchanged model/sandbox settings. That old
+test is no longer present; use the current runner tests above.
 
 ## Measurement
 
-Histories retain the exact service-supplied developer/user text and their roles.
-Activation `startup` metadata includes `layoutVersion`, `instructionsSha256`,
-`instructionCharacters`, `userCharacters` and `totalPromptCharacters`. The
-existing `characters` field measures prepared definitions/reads plus selected
-memory and the optional strategy reference, excluding workflow instructions.
-These are character counts, not tokenizer measurements or proof of a cache hit.
+Native SDK histories retain request instructions, tool definitions, messages and
+responses. Cache metadata records full/reusable prepared-prefix fingerprints and
+byte counts, verified account scope, requested retention and reported usage.
+These sizes describe exposure; they are not tokenizer measurements or cache hits.
 
-For a matched live comparison, retain the opening checkpoint, roster, model,
-reasoning effort and turn limit. `tests/compare_vanilla_live.py` reports first-
-and later-request usage separately, including uncached input and reported cache
-writes; missing write counts remain `null`. Compare absolute input, uncached
-input, request counts and elapsed time. Fewer reads and different decisions can
-reduce usage independently of cache reuse. See [telemetry](../reference/Telemetry.md)
-for token categories and overlapping time measurements.
+Compare opening and subsequent requests separately, and match actual selected
+effort. Retain instructions, schemas, observed usage, request counts and elapsed
+time when investigating reuse. Use provider input/output/cache-read counts for totals; tool replies are future
+input and reasoning is already included in output. Missing cache-write counts
+and subscription dollar savings remain unknown. Fewer reads, different decisions
+or extra repair requests can change totals independently of caching. See
+[telemetry](../reference/Telemetry.md) for token categories and overlapping times.

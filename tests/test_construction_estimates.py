@@ -12,7 +12,7 @@ from civ_agent.protocol import JsonObject
 from civ_agent.service_io import ServiceIO
 from civ_agent.startup_context import prepare_startup
 from civ_agent.state_updates import changed_details, overview_update, stamp
-from tests.test_agent_service import StartupHost
+from tests.domain_fixtures import StartupHost
 
 
 def estimate(science="3", *, turns=5, slots=None):

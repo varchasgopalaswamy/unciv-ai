@@ -6,7 +6,7 @@ from unittest.mock import patch
 import pytest
 
 from civ_agent.civilization_state import CivilizationState, StateConflict
-from tests.test_structured_memory import create, current, setup
+from tests.domain_fixtures import create, current, setup
 
 
 def test_communication_appends_contributions_at_the_next_writer_boundary(tmp_path):

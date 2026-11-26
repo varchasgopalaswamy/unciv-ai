@@ -82,7 +82,9 @@ INVESTMENT_GUIDANCE = (
 PLANNING_GUIDANCE = (
     "Keep useful plans in your notebook, with expected results, supporting evidence and when to reconsider. "
     "Compare those expectations with what actually happens; change course when needed. "
-    "Keep strategy records concise: at most 3 decisions, each with 1–3 expectedObservations and at most 8 subjects. "
+    "Keep strategy records concise within the 8,000-character document limit. Each decision has "
+    "1–3 expectedObservations and at most 8 subjects. Revise existing IDs when updating a choice; "
+    "replace a different choice only when you intend to stop tracking it. "
     "Each decision's objective, investment and reconsiderWhen accepts at most 400 characters; "
     "strategy reasons, uncertainties and reconsiderWhen each accept at most 5 entries. " + INVESTMENT_GUIDANCE
 )
@@ -92,6 +94,19 @@ RECOVERY_GUIDANCE = (
     "Follow recovery reads, reconsider against fresh observations and submit a new call if still useful. "
     "Never repeat confirmed actions. Reconcile uncertain execution before retrying. If repeated changes "
     "prevent useful action, report what remains unresolved."
+)
+
+GAMEPLAY_DECISION_GUIDANCE = (
+    "Contact other players when it helps; you need not wait for a message. Consider the adviser's diplomatic "
+    "suggestions and decide whether to act, wait or reject them. Note useful follow-up conditions. "
+    "Mark messages handled after considering them and completing any response or action you think necessary.\n\n"
+    "Use the information already supplied. Read more only when it could change your decision; request "
+    "relevant cities, units or options rather than inspecting everything. Read warnings, terms and required "
+    "previews before acting. Build-time estimates start now and may leave out waiting or research.\n\n"
+    "Group independent inspections and actions where useful. Check each action's result before continuing, "
+    "and pause when that result could change your next choice.\n\n"
+    "Complete your role once you have made your choices and resolved required decisions. Only the host advances "
+    "the native turn. Stop if the game has ended, is unavailable or needs a decision you cannot make. "
 )
 
 GAMEPLAY_WORKFLOW = (
@@ -110,17 +125,8 @@ GAMEPLAY_WORKFLOW = (
     + "\n\n"
     + DIPLOMACY_GUIDANCE
     + "\n\n"
-    "Contact other players when it helps; you need not wait for a message. Consider the adviser's diplomatic "
-    "suggestions and decide whether to act, wait or reject them. Note useful follow-up conditions. "
-    "Mark messages handled after considering them and completing any response or action you think necessary.\n\n"
-    "Use the information already supplied. Read more only when it could change your decision; request "
-    "relevant cities, units or options rather than inspecting everything. Read warnings, terms and required "
-    "previews before acting. Build-time estimates start now and may leave out waiting or research.\n\n"
-    "Group independent inspections and actions where useful. Check each action's result before continuing, "
-    "and pause when that result could change your next choice.\n\n"
-    "Complete your role once you have made your choices and resolved required decisions. Only the host advances "
-    "the native turn. Stop if the game has ended, is unavailable or needs a decision you cannot make. "
-    "No closing summary is needed."
+    + GAMEPLAY_DECISION_GUIDANCE
+    + "No closing summary is needed."
 )
 
 GAMEPLAY_INSTRUCTIONS = GAMEPLAY_WORKFLOW
@@ -149,14 +155,19 @@ COMMUNICATION_INSTRUCTIONS = (
 )
 
 
-ECONOMY_INSTRUCTIONS = (
+ECONOMY_ROLE_MISSION = (
     "Your current role is economy. Manage all our cities to support our civilization's chosen strategy. "
     "Scenario tasks for main or military belong to those roles. You own citizen focus, growth, "
     "worked tiles and locks, specialists, construction queues, purchases, building sales and shared city tiles. "
     "You also own ordinary unescorted workers: connect resources, improve useful tiles and plan travel using native worker and movement options. Main owns research, policies, other civilians and empire strategy; military controls combat units in peace and war. Main owns both members of an escort assignment. Request protection through role_message(to=gameplay); Main uses escort_assignment for the handoff and releases it when protection is no longer needed. "
     "Read economic requests and respect explicit city overrides. Both roles may spend uncommitted gold; "
     "the engine protects funds and resources committed to published trades. Check failures and reconsider. "
-    "Keep one city_plan memory per city explaining the current focus, growth, citizens/specialists, construction "
+)
+
+
+ECONOMY_INSTRUCTIONS = (
+    ECONOMY_ROLE_MISSION
+    + "Keep one city_plan memory per city explaining the current focus, growth, citizens/specialists, construction "
     "and significant purchases, expected benefits and reconsideration conditions. Set city_plan.city to the "
     "exact city handle (for example city2), without the city's display name. Mark unexplained inherited "
     "choices as inherited; never invent a reason or record a failed command as a completed change. "
@@ -185,34 +196,64 @@ ECONOMY_INSTRUCTIONS = (
 )
 
 
+MAIN_ROLE_MISSION = (
+    "Your scenario role is Main (gameplay). A military manager controls combat units, scouts and city bombardment "
+    "in peace and war; you retain other civilians and both members of each escort assignment, declarations, nuclear"
+    " strikes, capture disposition and peace authority. Use escort_assignment to assign or release escort duty; you"
+    " move both escort and civilian. Assigning a worker escort transfers that worker from Economy to you; release "
+    "returns it to Economy. Before declaring war, and when an existing war lacks goals, supply initial war_goals "
+    "with opponent, nonempty goals and a reason. Discuss revisions with military using war_goals; you break ties "
+    "with a reason. Read goal proposals and role messages before subsequent actions. Send role_message(to=military)"
+    " to request reconnaissance, staging, readiness or opportunity assessment; it wakes military when needed. An "
+    "economy manager owns city economics, city_plan records and unescorted workers and wakes on worker decisions, "
+    "economic events or periodic reviews. Send economy_request for new production or spending priorities: urgent "
+    "wakes it now, routine joins an active pass or waits for the next scheduled review. Check fresh city queues and"
+    " economyCoordination request dispositions before sending another urgent request. ECONOMY_CONTEXT_CHANGED "
+    "returns the refresh for reconsideration; submit a new call only if the request is still needed. Avoid "
+    "repeating unchanged requests. Use city_override for an emergency before changing its city controls or plan. "
+)
+
+
+MILITARY_ROLE_MISSION = (
+    "You control combat units, scouts and city bombardment in peace and war. "
+    "Economy controls unescorted workers. Main controls other civilians and both members of each escort assignment. Main retains declarations, nuclear strikes, capture disposition and peace authority. "
+    "Support main's chosen strategy. Follow accepted war goals. Use war_goals to read, propose, respond and finalize revisions after discussion. Main breaks disagreements. "
+    "economyCoordination.militarySchedule identifies fullReview, atWar, reasons and nextReviewTurn. "
+    "During full reviews assess opportunities, readiness, upgrades and surplus units. Compare acting with continuing our current policy over the same horizon, including the cost of waiting. "
+    "During targeted passes resolve the triggering threat, request or movement event; persistent native destination orders can continue between passes. "
+    "In peace, scout, stage forces and manage readiness using available commands; propose campaigns to main instead of waiting for an attack or victory-project announcement. "
+    "During war, reassess offensive opportunities as combat changes the position. Propose worthwhile extensions of accepted goals through war_goals and notify main with role_message; do not wait for main to request a counteroffensive or a larger campaign. "
+    "Defend immediately if initial goals are pending. Keep military_operation records explaining deployments, expected results, progress and reconsideration. "
+    "Peacetime operations can have an empty opponents list. Set reviewTurn only for a concrete decision deadline; keeping a sound plan needs no rewrite. "
+    "Distinguish confirmed events from assessments and unseen threats. Use native previews and assess avoidable losses. "
+)
+
+MILITARY_RECOMMENDATION_GUIDANCE = (
+    "Compare observed progress with accepted objectives and revise military_operation when its assessment changes. "
+    "Read war_goals after coordination notifications and before subsequent actions. Use economy_request for supplies and role_message for private discussion. "
+    "Send main a role_message when a planning result changes strategic choices, proposes a campaign or needs main's action; saving an operation alone does not request main's attention. "
+    "Give a clear recommendation: attack now with the assessed force and timing, take a specified preparation action with a decision deadline, or decline for a concrete reason. Include the decisive evidence and likely losses instead of handing main an unresolved list of possibilities. "
+    "Inspect militaryReadiness.visibleForeignCities and visibleForeignUnits during planning, including peaceful neighbors; assess concrete opportunities using map_region when useful. "
+)
+
+
 def job_instructions(purpose):
     workflow = {
         "gameplay": GAMEPLAY_INSTRUCTIONS
-        + "\n\nYour scenario role is Main (gameplay). A military manager controls combat units, scouts and city bombardment in peace and war; you retain other civilians and both members of each escort assignment, declarations, nuclear strikes, capture disposition and peace authority. Use escort_assignment to assign or release escort duty; you move both escort and civilian. Assigning a worker escort transfers that worker from Economy to you; release returns it to Economy. Before declaring war, and when an existing war lacks goals, supply initial war_goals with opponent, nonempty goals and a reason. Discuss revisions with military using war_goals; you break ties with a reason. Read goal proposals and role messages before subsequent actions. Send role_message(to=military) to request reconnaissance, staging, readiness or opportunity assessment; it wakes military when needed. An economy manager owns city economics, city_plan records and unescorted workers and wakes on worker decisions, economic events or periodic reviews. Send economy_request for new production or spending priorities: urgent wakes it now, routine joins an active pass or waits for the next scheduled review. Check fresh city queues and economyCoordination request dispositions before sending another urgent request. ECONOMY_CONTEXT_CHANGED returns the refresh for reconsideration; submit a new call only if the request is still needed. Avoid repeating unchanged requests. Use city_override for an emergency before changing its city controls or plan. If a remaining decision depends on economy, use the wait decision alone with the request IDs, or omit IDs to await its current pass, then stop until resumed. Do not poll player_turn while waiting. When your decisions are complete, use the finish decision; it suspends inference while the host waits for other roles, and only the host advances the game turn.",
+        + "\n\n"
+        + MAIN_ROLE_MISSION
+        + "If a remaining decision depends on economy, use the wait decision alone with the request IDs, or omit IDs to await its current pass, then stop until resumed. Do not poll player_turn while waiting. When your decisions are complete, use the finish decision; it suspends inference while the host waits for other roles, and only the host advances the game turn.",
         "military": (
-            "You control combat units, scouts and city bombardment in peace and war. "
-            "Economy controls unescorted workers. Main controls other civilians and both members of each escort assignment. Main retains declarations, nuclear strikes, capture disposition and peace authority. "
-            "Support main's chosen strategy. Follow accepted war goals. Use war_goals to read, propose, respond and finalize revisions after discussion. Main breaks disagreements. "
-            "economyCoordination.militarySchedule identifies fullReview, atWar, reasons and nextReviewTurn. "
-            "During full reviews assess opportunities, readiness, upgrades and surplus units. Compare acting with continuing our current policy over the same horizon, including the cost of waiting. "
-            "During targeted passes resolve the triggering threat, request or movement event; persistent native destination orders can continue between passes. "
-            "In peace, scout, stage forces and manage readiness using available commands; propose campaigns to main instead of waiting for an attack or victory-project announcement. "
-            "During war, reassess offensive opportunities as combat changes the position. Propose worthwhile extensions of accepted goals through war_goals and notify main with role_message; do not wait for main to request a counteroffensive or a larger campaign. "
-            "Defend immediately if initial goals are pending. Keep military_operation records explaining deployments, expected results, progress and reconsideration. "
-            "Peacetime operations can have an empty opponents list. Set reviewTurn only for a concrete decision deadline; keeping a sound plan needs no rewrite. "
-            "Distinguish confirmed events from assessments and unseen threats. Use native previews and assess avoidable losses. "
-            "Before the finish decision, obtain a current military completion review when militaryCompletion.remainingTargets is nonzero. "
+            MILITARY_ROLE_MISSION
+            + "Before the finish decision, obtain a current military completion review when militaryCompletion.remainingTargets is nonzero. "
             "Add reviewAfter=true to your last chosen player_command to receive it with the action result; otherwise use military_review, "
             "which can share an inspect decision with independent inspections. A delivered militaryCompletion already counts as the review; "
             "read again only after its facts change or to obtain remaining pages. Deliberately resolve each exposed unit or unused native "
             "attack/capture/bombardment opportunity by acting or holding for a reason. Submit reasoned holds for every "
             "remaining target in finish.arguments.decisions. The host binds the delivered review. Group targets sharing a reason. Risk acceptance is valid; the check never "
-            "requires retreat or an attack. Compare observed progress with accepted objectives and revise military_operation when its assessment changes. "
-            "Read war_goals after coordination notifications and before subsequent actions. Use economy_request for supplies and role_message for private discussion. "
-            "Send main a role_message when a planning result changes strategic choices, proposes a campaign or needs main's action; saving an operation alone does not request main's attention. "
-            "Give a clear recommendation: attack now with the assessed force and timing, take a specified preparation action with a decision deadline, or decline for a concrete reason. Include the decisive evidence and likely losses instead of handing main an unresolved list of possibilities. "
-            "Inspect militaryReadiness.visibleForeignCities and visibleForeignUnits during planning, including peaceful neighbors; assess concrete opportunities using map_region when useful. "
-            "Current facts supersede notes. Use the finish decision when done; only the host advances the turn. "
+            "requires retreat or an attack. "
+            + MILITARY_RECOMMENDATION_GUIDANCE
+            + "Current facts supersede notes. Use the finish decision when done; only the host advances the turn. "
         )
         + EVIDENCE_GUIDANCE
         + "\n\n"

@@ -5,7 +5,6 @@ import copy
 import hashlib
 import json
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import aiohttp
@@ -13,28 +12,15 @@ import pytest
 from pydantic import ValidationError
 
 from civ_agent.advisory_answers import parse_answers
-from civ_agent.advisory_runtime import AdvisoryRuntime
-from civ_agent.commands import agent_server
+from civ_agent.commands import game
 from civ_agent.decisions_broker import DecisionsBroker
 from civ_agent.decisions_policy import DecisionsSettings, decisions_values
 from civ_agent.decisions_tasks import acceptance_threshold, request_body, request_id, request_metadata
-from civ_agent.effort_decisions import (
-    EFFORT_LEVELS,
-    VERSION,
-    base_settings,
-    brief,
-    choose,
-    question,
-    select_effort,
-    supported_levels,
-)
+from civ_agent.effort_decisions import EFFORT_LEVELS, VERSION, brief, choose, question
 from civ_agent.game_config import load_config
 from civ_agent.protocol import JsonObject
-from civ_agent.startup_context import prepare_startup
 from civ_agent.tls import write_private_json
-from tests.test_agent_service import AgentServiceTestCase
 from tests.test_decisions_broker import server
-from tests.test_economy_optimization import managed
 
 
 def settings(**values):
@@ -132,9 +118,8 @@ def test_configuration_cli_and_example_defaults_are_independent_of_effort_choice
             settings(**values)
     with pytest.raises(ValidationError):
         DecisionsSettings(decisions_effort_enabled=True)
-    args = agent_server.parser().parse_args(
+    args = game.parser().parse_args(
         [
-            "Rome",
             "--decisions-enabled",
             "--decisions-effort-enabled",
             "--decisions-effort-levels",
@@ -174,122 +159,6 @@ def test_fixed_question_permissions_context_and_request_binding():
 
 
 @pytest.mark.parametrize(
-    "mode,expected",
-    [
-        ("success", "low"),
-        ("ambiguous", "medium"),
-        ("refusal", "medium"),
-        ("timeout", "medium"),
-        ("malformed", "medium"),
-        ("changed", "medium"),
-    ],
-)
-def test_startup_choice_falls_back_and_replays_without_reclassifying(tmp_path, mode, expected):
-    async def run():
-        async with managed(tmp_path) as m:
-            prepared = await prepare_startup(m.gateway, m.main)
-            policy = settings()
-            callback = (lambda: setattr(m.main, "role_refresh_required", True)) if mode == "changed" else None
-            client = Classifier(policy, mode, callback)
-            m.gateway.advisories = AdvisoryRuntime(m.gateway, client, policy)
-            service = SimpleNamespace(
-                gateway=m.gateway, decisions_settings=policy, civilization="Rome", _save=AsyncMock()
-            )
-            base = {"provider": "openai", "model": "gpt-6-luna", "reasoningEffort": "medium"}
-            record = {"settings": base}
-            selected = await select_effort(service, record, m.main, prepared, base, Models())
-            assert selected["reasoningEffort"] == expected and record["settings"] == base
-            assert len(client.calls) == 1
-            assert (await select_effort(service, record, m.main, prepared, base, Models())) == selected
-            assert len(client.calls) == 1
-            record["effectiveSettings"] = selected
-            assert base_settings(record) == base
-            assert len(service._save.await_args_list) == 1
-            assert "effortSelection" not in prepared and not m.host.executed
-
-    asyncio.run(run())
-
-
-class AdaptiveEffortServiceTests(AgentServiceTestCase):
-    async def test_native_threads_use_selection_without_changing_next_turn_or_role_defaults(self):
-        await self.service.close()
-        self.service = self.make_service(
-            model="gpt-6-luna", reasoning_effort="medium", economy_model={"reasoning_effort": "high"}
-        )
-        self.service.decisions_settings = policy = settings()
-        client = Classifier(policy)
-        client.refuse_economy = True
-        runtime = AdvisoryRuntime(self.service.gateway, client, policy)
-        runtime.startup = AsyncMock()
-        runtime.finish_delivery = AsyncMock()
-        self.service.gateway.advisories = runtime
-        await self.service.start(self.payload())
-        first = await self.terminal()
-        self.assertEqual("COMPLETED", first["phase"])
-        self.assertEqual("medium", first["settings"]["reasoningEffort"])
-        self.assertEqual("low", first["effectiveSettings"]["reasoningEffort"])
-        self.assertEqual("medium", first["configuredSettings"]["reasoningEffort"])
-        assert self.service.match is not None
-        self.assertEqual("medium", self.service.match["effectiveSettings"]["reasoningEffort"])
-        economies = [r for r in self.service.records.values() if r.get("purpose") == "economy"]
-        self.assertTrue(economies)
-        self.assertTrue(all(r["effectiveSettings"]["reasoningEffort"] == "high" for r in economies))
-        first_turn = next(p for method, p in self.factory.calls if method == "turn/start")
-        self.assertEqual("low", first_turn["effort"])
-        await self.service.finalize(
-            dict(activationId=first["activationId"], epoch="epoch-one", gameTurn=0, committedHandoff=1)
-        )
-        client.mode = "ambiguous"
-        self.factory.calls.clear()
-        await self.service.start(self.payload("next-turn", gameTurn=1, handoff=2))
-        second = await self.terminal()
-        self.assertEqual("COMPLETED", second["phase"])
-        self.assertEqual("medium", second["settings"]["reasoningEffort"])
-        self.assertEqual("medium", second["effectiveSettings"]["reasoningEffort"])
-        self.assertEqual(first["configuredSettings"], second["configuredSettings"])
-        second_turn = next(p for method, p in self.factory.calls if method == "turn/start")
-        self.assertEqual("medium", second_turn["effort"])
-
-
-def test_supported_levels_and_provider_scope_preserve_operator_and_role_defaults(tmp_path):
-    async def run():
-        async with managed(tmp_path) as m:
-            prepared = await prepare_startup(m.gateway, m.main)
-            policy = settings(decisions_effort_levels=["low", "medium", "high"])
-            client = Classifier(policy)
-            m.gateway.advisories = AdvisoryRuntime(m.gateway, client, policy)
-            service = SimpleNamespace(
-                gateway=m.gateway, decisions_settings=policy, civilization="Rome", _save=AsyncMock()
-            )
-            base = {"provider": "openai", "model": "gpt-6-luna", "reasoningEffort": "high"}
-            # One remaining supported choice is not a meaningful classification.
-            record = {"settings": base}
-            assert await select_effort(service, record, m.main, prepared, base, Models(["high", "max"])) == base
-            assert record["effortSelection"]["reason"] == "insufficient_supported_levels" and not client.calls
-            for provider in ("openrouter",):
-                external = {**base, "provider": provider}
-                assert (
-                    await select_effort(service, {"settings": external}, m.main, prepared, external, Models())
-                    == external
-                )
-                assert not client.calls
-            service.decisions_settings = DecisionsSettings()
-            process = Models()
-            assert await select_effort(service, {"settings": base}, m.main, prepared, base, process) == base
-            assert not process.calls
-            service.decisions_settings = policy
-            record = {"settings": base}
-            chosen = await select_effort(
-                service, record, m.main, prepared, base, Models(["none", "low", "medium", "max"])
-            )
-            assert chosen["reasoningEffort"] == "low"
-            assert client.calls[0]["effortSelection"]["levels"] == ["low", "medium"]
-            assert record["effortSelection"]["levels"] == ["low", "medium"]
-
-    asyncio.run(run())
-
-
-@pytest.mark.parametrize(
     "probabilities,expected",
     [
         ({"low": 0.60, "medium": 0.25, "high": 0.15, "xhigh": 0, "max": 0}, "selected"),
@@ -304,24 +173,6 @@ def test_winning_probability_and_runner_up_margin_are_independent(probabilities,
     selected = choose(result, "main_effort", list(EFFORT_LEVELS), settings())
     assert selected["reason"] == expected
     assert selected["candidate"] == "low"
-
-
-def test_model_catalogue_pagination_and_unusable_metadata():
-    async def run():
-        models = Models()
-        page = await models.request("model/list", {})
-        process = SimpleNamespace(request=AsyncMock(side_effect=[{"data": [], "nextCursor": "next-page"}, page]))
-        assert await supported_levels(process, "gpt-6-luna") == set(EFFORT_LEVELS)
-        assert process.request.await_args_list[-1].args[1]["cursor"] == "next-page"
-        for malformed in (
-            None,
-            {"data": [None]},
-            {"data": [{"model": "gpt-6-luna", "supportedReasoningEfforts": [None]}]},
-        ):
-            process = SimpleNamespace(request=AsyncMock(return_value=malformed))
-            assert await supported_levels(process, "gpt-6-luna") == set()
-
-    asyncio.run(run())
 
 
 def test_brief_preserves_complete_authored_plans_or_reports_omission():
@@ -392,13 +243,6 @@ def test_old_classifier_evidence_cannot_reuse_current_receipts():
     explicit["effortSelection"]["version"] = "reasoning-effort-v1"
     with pytest.raises(ValidationError):
         request_id(explicit)
-
-
-def test_already_selected_historical_activation_keeps_effort_without_new_classification():
-    record = {"effortSelection": {"version": "reasoning-effort-v1", "selectedEffort": "xhigh"}}
-    service = SimpleNamespace(decisions_settings=settings())
-    chosen = asyncio.run(select_effort(service, record, SimpleNamespace(purpose="economy"), None, {}, Models()))
-    assert chosen == {"reasoningEffort": "xhigh"}
 
 
 def test_broker_effort_threshold_is_scoped_and_receipts_deduplicate(tmp_path):

@@ -1,6 +1,7 @@
 package uncivai
 
-import org.junit.Assert.*
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ComputingCapacityTest {
@@ -17,8 +18,7 @@ class ComputingCapacityTest {
 
     private val main = CommunicationJob("Rome", "gameplay", 100)
     private val economy = CommunicationJob("Rome", "economy", 100, parentJob = "main")
-    private fun available(jobs: Map<String, CommunicationJob>, id: String, purpose: String, parent: String? = null, global: Int = 2, perCiv: Int = 2) =
-        computingCapacityAvailable(jobs, id, "Rome", purpose, parent, 1, global, perCiv)
+    private fun available(jobs: Map<String, CommunicationJob>, id: String, purpose: String, parent: String? = null, global: Int = 2, perCiv: Int = 2) = computingCapacityAvailable(jobs, id, "Rome", purpose, parent, 1, global, perCiv)
 
     @Test fun `main reserves its partner against both global and civilization limits`() {
         assertFalse(available(emptyMap(), "main", "gameplay", global = 1))
@@ -32,8 +32,10 @@ class ComputingCapacityTest {
     @Test fun `suspended roles free capacity and cannot resume over either limit`() {
         val jobs = mapOf("main" to main.copy(computing = false), "economy" to economy.copy(computing = false))
         assertTrue(available(jobs, "chat", "communication"))
-        val full = jobs + mapOf("chat" to CommunicationJob("Rome", "communication", 100),
-            "other" to CommunicationJob("Greece", "communication", 100))
+        val full = jobs + mapOf(
+            "chat" to CommunicationJob("Rome", "communication", 100),
+            "other" to CommunicationJob("Greece", "communication", 100),
+        )
         assertFalse(available(full, "main", "gameplay"))
         assertFalse(available(full, "economy", "economy", "main"))
         assertFalse(available(full - "other", "main", "gameplay", global = 4, perCiv = 1))
@@ -54,6 +56,14 @@ class ComputingCapacityTest {
         assertFalse(invocationCapacityAvailable(mapOf("main" to main, "economy" to economy.copy(expires = 0)), "economy", "main", 1, 2, 2))
     }
 
+    @Test fun `zero lifetime invocation limit allows work after arbitrary prior usage`() {
+        val jobs = mapOf("main" to main.copy(militaryPartnerRequired = true))
+        for (used in listOf(0L, 1000L, 10000L, 1000000L)) {
+            assertTrue(invocationCapacityAvailable(jobs, "communication", null, 1, used, 0))
+            assertTrue(invocationCapacityAvailable(jobs, "military", "main", 1, used, 0, true))
+        }
+    }
+
     @Test fun `military partner reserves three roles before the partner starts`() {
         assertFalse(computingCapacityAvailable(emptyMap(), "main", "Rome", "gameplay", null, 1, 2, 4, true))
         assertTrue(computingCapacityAvailable(emptyMap(), "main", "Rome", "gameplay", null, 1, 3, 3, true))
@@ -66,9 +76,11 @@ class ComputingCapacityTest {
     }
 
     @Test fun `suspended war roles leave room for sequential consultations`() {
-        val jobs = mapOf("main" to main.copy(computing = false, militaryPartnerRequired = true),
+        val jobs = mapOf(
+            "main" to main.copy(computing = false, militaryPartnerRequired = true),
             "economy" to economy.copy(computing = false),
-            "military" to CommunicationJob("Rome", "military", 100, parentJob = "main", computing = false))
+            "military" to CommunicationJob("Rome", "military", 100, parentJob = "main", computing = false),
+        )
         assertTrue(computingCapacityAvailable(jobs, "consult", "Rome", "consultation", null, 1, 1, 1))
     }
 }

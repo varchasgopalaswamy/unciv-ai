@@ -13,6 +13,8 @@ class VictoryDecisionsIntegrationTest {
 
     @Test fun `failed election then winning election completes through HTTPS and restart`() = run("elections")
 
+    @Test fun `city-state influence closes before the early player's ballot`() = run("city-state-vote-timing")
+
     @Test fun `ballots and results preserve visibility and unsupported requirements`() = run("privacy")
 
     @Test fun `victory choices recover before and after checkpoint replacement`() = run("recovery")

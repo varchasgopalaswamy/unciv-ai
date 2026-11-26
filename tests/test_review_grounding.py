@@ -154,7 +154,7 @@ def test_exact_source_archive_and_compact_adopted_evidence_survive_checkpoint(tm
 
     from civ_agent import memory_schema as tables
     from civ_agent.review_store import ReviewStore
-    from tests.test_structured_memory import setup
+    from tests.domain_fixtures import setup
 
     memory = setup(tmp_path)
     store = ReviewStore(memory)

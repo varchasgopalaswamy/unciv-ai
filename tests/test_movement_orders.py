@@ -10,7 +10,7 @@ from civ_agent.observations import DetailQuery, detail_scope, overview, required
 from civ_agent.proposal_gateway import ProposalGateway
 from civ_agent.protocol import JsonObject
 from civ_agent.service_io import ServiceIO
-from tests.test_proposal_gateway import Host
+from tests.domain_fixtures import Host
 
 
 @pytest.mark.parametrize("kind", ["MOVE_UNIT", "SET_UNIT_DESTINATION"])
@@ -196,6 +196,32 @@ def test_overview_exposes_destination_progress_and_work_boat_offer():
     shown = overview(host.view)["units"][0]
     assert shown["movementOrder"] == host.view["map"]["units"][0]["movementOrder"]
     assert shown["canCreateWaterImprovement"]
+
+
+@pytest.mark.parametrize("available", [True, False])
+def test_samurai_work_details_expose_nonconsuming_water_improvement(available):
+    from civ_agent.observations import project_detail
+
+    host = MovementHost()
+    unit = host.view["map"]["units"][0]
+    unit.update(
+        name="Samurai", waterImprovement={"name": "Fishing Boats", "available": available, "consumesUnit": False}
+    )
+    host.view["phase"] = "ACTIVE"
+    assert overview(host.view)["units"][0].get("canCreateWaterImprovement", False) is available
+    query = DetailQuery(tool="unit_details", arguments={"target": unit["handle"], "sections": ["work"]})
+    data = project_detail(host.view, query)["data"]
+    offer = data["entity"]["waterImprovement"]
+    assert offer["consumesUnit"] is False
+    assert ("command" in offer) is available
+    if available:
+        assert offer["command"] == {
+            "kind": "CREATE_WATER_IMPROVEMENT",
+            "target": unit["handle"],
+            "selection": "Fishing Boats",
+        }
+    assert data["workScope"]["kind"] == "CURRENT_TILE"
+    assert "command" not in unit["waterImprovement"]
 
 
 @pytest.mark.parametrize("status", ["BLOCKED", "UNKNOWN"])

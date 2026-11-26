@@ -578,7 +578,11 @@ def test_resume_existing_batch_preserves_game_state_and_pinned_images(saved_batc
     assert resumed["format"] == 2 and resumed["parallel"] == manifest["parallel"]
     assert [run["id"] for run in resumed["runs"]] == [run["id"] for run in manifest["runs"]]
     assert all(run["status"] == "pending" for run in resumed["runs"])
-    assert all(path.read_bytes() == content for path, content in original.items())
+    for path, content in original.items():
+        if path.name == "container.json":
+            assert json.loads(path.read_bytes()) == {**json.loads(content), "launchResumeRequested": True}
+        else:
+            assert path.read_bytes() == content
     batch_runtime.images.assert_not_called()
     batch_runtime.validation.assert_not_called()
     batch_runtime.background.assert_called_once_with(root, "batch")
@@ -615,6 +619,12 @@ def test_batch_resume_priority_only_changes_selected_games(saved_batch, batch_ru
         if retry and second_status == "failed":
             expected[1] = flag == "--fast"
     assert [json.loads(path.read_text())["agents"]["fast"] for path in paths] == expected
-    assert all(path.read_bytes() == original for path, original in {**originals, **checkpoints}.items())
+    selected = {"g0001", *(["g0002"] if retry and second_status == "failed" else [])}
+    for path, content in originals.items():
+        if path.parent.name in selected:
+            assert json.loads(path.read_bytes()) == {**json.loads(content), "launchResumeRequested": True}
+        else:
+            assert path.read_bytes() == content
+    assert all(path.read_bytes() == content for path, content in checkpoints.items())
     batch_runtime.images.assert_not_called()
     batch_runtime.background.assert_called_once_with(root, "batch")

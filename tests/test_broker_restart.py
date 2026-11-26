@@ -12,6 +12,7 @@ import pytest
 from civ_agent import cli
 from civ_agent import container_supervisor as supervisor
 from civ_agent.commands import runtime
+from civ_agent.container_support import LABEL, SERVICE_LABEL, ContainerService
 from civ_agent.decisions_broker import version_contract
 from civ_agent.tls import private_directory, write_private, write_private_json
 
@@ -28,9 +29,26 @@ class FakePodman:
         self.probe_returncode = 0
         self.probe_timeout = False
 
-    def existing(self, role, *, running=True, image="old-image"):
+    def existing(
+        self, role, *, running=True, image="sha256:1111111111111111111111111111111111111111111111111111111111111111"
+    ):
         name = supervisor.auth_name(self.root) + ("-decisions" if role == "decisions" else "")
-        self.containers[name] = {"Image": image, "State": {"Running": running}}
+        cid = hashlib.sha256(name.encode()).hexdigest()
+        self.containers[name] = {
+            "Id": cid,
+            "Name": name,
+            "Image": image,
+            "State": {"Running": running, "StartedAt": "1970-01-01T00:00:00Z"},
+            "Config": {"Labels": {LABEL: "auth", SERVICE_LABEL: name + ".service"}},
+            "Mounts": [{"Source": str(self.root), "Destination": "/auth"}],
+        }
+        saved: dict = (
+            json.loads((self.root / "container.json").read_bytes())
+            if (self.root / "container.json").exists()
+            else {"format": 1, "services": {}}
+        )
+        saved["services"][name] = ContainerService(name, cid, image, "auth", name + ".service").record()
+        write_private_json(self.root / "container.json", saved)
         write_private(self.ready(role), b'{"old":true}\n')
         return name
 
@@ -38,7 +56,9 @@ class FakePodman:
         return self.root / ("decisions-ready.json" if role == "decisions" else "ready.json")
 
     def inspected(self, name):
-        return deepcopy(self.containers.get(name))
+        return deepcopy(
+            next((value for key, value in self.containers.items() if key == name or value.get("Id") == name), None)
+        )
 
     @contextmanager
     def locked(self, path, *, wait=False):
@@ -83,7 +103,14 @@ class FakePodman:
                 stderr="secret image stderr",
             )
         if action in {"stop", "rm", "start"}:
-            name = arguments[-1]
+            name = next(
+                (
+                    key
+                    for key, value in self.containers.items()
+                    if key == arguments[-1] or value.get("Id") == arguments[-1]
+                ),
+                arguments[-1],
+            )
             role = "decisions" if name.endswith("-decisions") else "auth"
             lock = ".decisions-launch.lock" if role == "decisions" else ".launch.lock"
             assert lock in self.held_locks
@@ -104,7 +131,17 @@ class FakePodman:
             name = arguments[arguments.index("--name") + 1]
             image, role = arguments[-2:]
             assert not self.ready(role).exists(), "stale ready files must be cleared before starting"
-            self.containers[name] = {"Image": image, "State": {"Running": False}}
+            labels = dict(
+                arguments[index + 1].split("=", 1) for index, value in enumerate(arguments[:-1]) if value == "--label"
+            )
+            self.containers[name] = {
+                "Id": hashlib.sha256((name + image).encode()).hexdigest(),
+                "Name": name,
+                "Image": image,
+                "State": {"Running": False, "StartedAt": "1970-01-01T00:00:00Z"},
+                "Config": {"Labels": labels},
+                "Mounts": [{"Source": str(self.root), "Destination": "/auth"}],
+            }
         else:
             raise AssertionError(f"Unexpected Podman command: {arguments}")
         return subprocess.CompletedProcess(arguments, 0, stdout="", stderr="")
@@ -117,13 +154,38 @@ def fake_runtime(tmp_path, monkeypatch):
     monkeypatch.setattr(supervisor, "podman", fake)
     monkeypatch.setattr(supervisor, "inspected", fake.inspected)
     monkeypatch.setattr(supervisor, "locked", fake.locked)
+
+    def start(service, *, create=False):
+        current = fake.inspected(service.cid)
+        assert current is not None and current["Image"] == service.image
+        if not create:
+            if not current["State"]["Running"]:
+                raise supervisor.ContainerError("Owned container service stopped or exhausted its restart allowance")
+            return
+        fake("start", service.cid)
+
+    def stop(service, *, collect=False):
+        current = fake.inspected(service.cid)
+        assert current is not None
+        if current["State"]["Running"]:
+            fake("stop", "--time", "90", service.cid, timeout=100)
+
+    monkeypatch.setattr(supervisor, "start_container_service", start)
+    monkeypatch.setattr(supervisor, "stop_container_service", stop)
+
+    def verified(service):
+        current = fake.inspected(service.cid)
+        assert current is not None
+        return current, {"ActiveState": "active" if current["State"]["Running"] else "inactive"}
+
+    monkeypatch.setattr(supervisor, "verify_container_service", verified)
     monkeypatch.setattr(supervisor, "routing_broker_health", lambda *_, **__: {"status": "ready"})
     return fake
 
 
 def configure(root, *roles):
     if "auth" in roles:
-        write_private(root / "codex/auth.json", b'{"tokens":{"refresh_token":"synthetic-login"}}\n')
+        write_private(root / "openai-subscription.json", b'{"refresh_token":"synthetic-login"}\n')
     if "decisions" in roles:
         write_private(root / "decisions.key", b"synthetic-decisions-key\n")
 
@@ -135,7 +197,7 @@ def test_cli_stop_preserves_credentials_and_other_services_then_auth_can_start_a
     decisions = fake.existing("decisions")
     write_private_json(fake.root / "clients.json", {"game-seat": "existing-client"})
     write_private(fake.root / "decisions.sqlite3", b"durable-ledger")
-    files = ["codex/auth.json", "decisions.key", "clients.json", "decisions.sqlite3", "decisions-ready.json"]
+    files = ["openai-subscription.json", "decisions.key", "clients.json", "decisions.sqlite3", "decisions-ready.json"]
     before = {f: (fake.root / f).read_bytes() for f in files}
     resolve = Mock(side_effect=AssertionError("Stopping must not resolve an image"))
     monkeypatch.setattr(runtime, "resolve_image", resolve)
@@ -148,7 +210,9 @@ def test_cli_stop_preserves_credentials_and_other_services_then_auth_can_start_a
     assert {f: (fake.root / f).read_bytes() for f in files} == before
     assert [args[0] for args, _ in fake.calls] == ["stop"]
     resolve.assert_not_called()
-    supervisor.ensure_auth(fake.root, "old-image")
+    supervisor.ensure_auth(
+        fake.root, "sha256:1111111111111111111111111111111111111111111111111111111111111111", restart=True
+    )
     assert fake.containers[name]["State"]["Running"]
     assert {f: (fake.root / f).read_bytes() for f in files} == before
 
@@ -212,21 +276,26 @@ def test_restart_recreates_existing_container_with_selected_image(fake_runtime, 
     configure(fake.root, role)
     name = fake.existing(role, running=running)
     ensure = supervisor.ensure_auth if role == "auth" else supervisor.ensure_decisions
-    ensure(fake.root, "new-image", restart=True)
+    ensure(fake.root, "sha256:2222222222222222222222222222222222222222222222222222222222222222", restart=True)
     commands = [args[0] for args, _ in fake.calls]
     assert commands == (["stop"] if running else []) + ["rm", "create", "start"]
-    assert fake.containers[name] == {"Image": "new-image", "State": {"Running": True}}
+    assert (
+        fake.containers[name]["Image"] == "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+        and fake.containers[name]["State"]["Running"]
+    )
 
 
-def test_default_ensure_preserves_compatible_running_brokers_on_image_change(fake_runtime):
+def test_default_ensure_refuses_to_adopt_another_image_without_explicit_restart(fake_runtime):
     fake = fake_runtime
     configure(fake.root, "auth", "decisions")
     fake.existing("auth")
     fake.existing("decisions")
-    supervisor.ensure_auth(fake.root, "new-image")
-    report = supervisor.ensure_decisions(fake.root, "new-image")
-    assert report["image"] == "old-image" and report["requestedImage"] == "new-image"
-    assert [args[0] for args, _ in fake.calls] == ["run"]
+    original = {path: path.read_bytes() for path in fake.root.rglob("*") if path.is_file()}
+    for ensure in (supervisor.ensure_auth, supervisor.ensure_decisions):
+        with pytest.raises(supervisor.ContainerError, match="image or owner changed"):
+            ensure(fake.root, "sha256:2222222222222222222222222222222222222222222222222222222222222222")
+    assert not fake.calls
+    assert all(path.read_bytes() == value for path, value in original.items())
 
 
 def test_different_game_image_still_requires_matching_broker_protocol(fake_runtime):
@@ -235,8 +304,8 @@ def test_different_game_image_still_requires_matching_broker_protocol(fake_runti
     name = fake.existing("decisions")
     fake.image_contract["protocolVersion"] -= 1
     with pytest.raises(supervisor.ContainerError, match="incompatible"):
-        supervisor.ensure_decisions(fake.root, "new-image")
-    assert fake.containers[name]["Image"] == "old-image"
+        supervisor._check_decisions_image("sha256:2222222222222222222222222222222222222222222222222222222222222222")
+    assert fake.containers[name]["Image"] == "sha256:1111111111111111111111111111111111111111111111111111111111111111"
     assert [args[0] for args, _ in fake.calls] == ["run"]
 
 
@@ -248,7 +317,7 @@ def test_failed_stop_does_not_remove_or_recreate_container(fake_runtime, role):
     fake.fail_stop = True
     ensure = supervisor.ensure_auth if role == "auth" else supervisor.ensure_decisions
     with pytest.raises(supervisor.ContainerError, match="stop failed"):
-        ensure(fake.root, "new-image", restart=True)
+        ensure(fake.root, "sha256:2222222222222222222222222222222222222222222222222222222222222222", restart=True)
     assert [args[0] for args, _ in fake.calls] == ["stop"]
     assert fake.containers[name]["State"]["Running"]
     assert fake.ready(role).exists()
@@ -258,15 +327,20 @@ def test_failed_stop_does_not_remove_or_recreate_container(fake_runtime, role):
 def test_restart_starts_configured_roles_and_skips_unconfigured_roles(fake_runtime, roles):
     fake = fake_runtime
     configure(fake.root, *roles)
-    report = supervisor.restart_brokers(fake.root, "new-image")
+    report = supervisor.restart_brokers(
+        fake.root, "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+    )
     assert report["auth_directory"] == str(fake.root)
-    assert report["image"] == "new-image"
+    assert report["image"] == "sha256:2222222222222222222222222222222222222222222222222222222222222222"
     for role in ("auth", "decisions"):
         if role in roles:
             name = supervisor.auth_name(fake.root) + ("-decisions" if role == "decisions" else "")
             assert report[role]["status"] == "ready"
             assert report[role]["container"] == name
-            assert fake.containers[name]["Image"] == "new-image"
+            assert (
+                fake.containers[name]["Image"]
+                == "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+            )
         else:
             assert report[role] == {"status": "not_configured"}
     if "decisions" in roles:
@@ -289,7 +363,7 @@ def test_invalid_decisions_key_preserves_both_running_services(fake_runtime, inv
     else:
         key.chmod(0o644)
     with pytest.raises((ValueError, supervisor.ContainerError)):
-        supervisor.restart_brokers(fake.root, "new-image")
+        supervisor.restart_brokers(fake.root, "sha256:2222222222222222222222222222222222222222222222222222222222222222")
     assert fake.calls == []
     assert all(row["State"]["Running"] for row in fake.containers.values())
 
@@ -300,7 +374,7 @@ def test_missing_auth_credential_for_existing_service_preserves_both(fake_runtim
     fake.existing("auth")
     fake.existing("decisions")
     with pytest.raises((ValueError, supervisor.ContainerError)):
-        supervisor.restart_brokers(fake.root, "new-image")
+        supervisor.restart_brokers(fake.root, "sha256:2222222222222222222222222222222222222222222222222222222222222222")
     assert fake.calls == []
 
 
@@ -309,7 +383,9 @@ def test_jev_broker_restarts_without_an_openai_key(fake_runtime):
     configure(fake.root, "auth")
     fake.existing("auth")
     fake.existing("decisions")
-    result = supervisor.restart_brokers(fake.root, "new-image")
+    result = supervisor.restart_brokers(
+        fake.root, "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+    )
     assert result["decisions"]["status"] == "ready"
     assert not (fake.root / "decisions.key").exists()
     created = [args for args, _ in fake.calls if args[0] == "create" and args[-1] == "decisions"]
@@ -329,13 +405,15 @@ def test_registered_luna_account_requires_its_key_before_restarting_any_service(
     ledger.register("paid", "game", "Rome", DecisionsSettings(decisions_backend="luna").model_dump())
     ledger.engine.dispose()
     with pytest.raises(ValueError):
-        supervisor.restart_brokers(fake.root, "new-image")
+        supervisor.restart_brokers(fake.root, "sha256:2222222222222222222222222222222222222222222222222222222222222222")
     assert fake.calls == []
 
 
 def test_no_configured_services_fails_without_mutating_containers(fake_runtime):
     with pytest.raises((ValueError, supervisor.ContainerError)):
-        supervisor.restart_brokers(fake_runtime.root, "new-image")
+        supervisor.restart_brokers(
+            fake_runtime.root, "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+        )
     assert fake_runtime.calls == []
 
 
@@ -349,7 +427,7 @@ def test_invalid_ipc_permissions_preserve_both_running_services(fake_runtime, di
     path.mkdir()
     path.chmod(0o755)
     with pytest.raises(ValueError, match="owner-only directory"):
-        supervisor.restart_brokers(fake.root, "new-image")
+        supervisor.restart_brokers(fake.root, "sha256:2222222222222222222222222222222222222222222222222222222222222222")
     assert fake.calls == []
     assert all(row["State"]["Running"] for row in fake.containers.values())
 
@@ -371,7 +449,7 @@ def test_cli_resolves_image_once_restarts_both_and_preserves_authority_files(fak
     write_private(fake.root / "decisions.sqlite3", b"opaque-durable-ledger\x00\xff")
     write_private(fake.root / "decisions-authority.json", b'{"authority":"unchanged"}\n')
     files = [
-        "codex/auth.json",
+        "openai-subscription.json",
         "decisions.key",
         "clients.json",
         "decisions-clients.json",
@@ -380,14 +458,17 @@ def test_cli_resolves_image_once_restarts_both_and_preserves_authority_files(fak
         "decisions-authority.json",
     ]
     before = {name: (fake.root / name).read_bytes() for name in files}
-    resolve = Mock(return_value="sha256:new-immutable-image")
+    resolve = Mock(return_value="sha256:3333333333333333333333333333333333333333333333333333333333333333")
     monkeypatch.setattr(runtime, "resolve_image", resolve)
     assert cli.main(["auth", "restart", "--auth-dir", str(fake.root), "--image", "local:test-runtime"]) == 0
     resolve.assert_called_once_with("local:test-runtime")
     report = json.loads(capsys.readouterr().out)
-    assert report["image"] == "sha256:new-immutable-image"
+    assert report["image"] == "sha256:3333333333333333333333333333333333333333333333333333333333333333"
     assert report["auth"]["status"] == report["decisions"]["status"] == "ready"
-    assert all(row["Image"] == "sha256:new-immutable-image" for row in fake.containers.values())
+    assert all(
+        row["Image"] == "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+        for row in fake.containers.values()
+    )
     assert {name: (fake.root / name).read_bytes() for name in files} == before
 
 
@@ -426,7 +507,7 @@ def test_stale_selected_image_is_rejected_before_stopping_either_running_service
     before = deepcopy(fake.containers)
     files = {path: path.read_bytes() for path in fake.root.rglob("*") if path.is_file()}
     with pytest.raises(supervisor.ContainerError) as error:
-        supervisor.restart_brokers(fake.root, "old-image")
+        supervisor.restart_brokers(fake.root, "sha256:1111111111111111111111111111111111111111111111111111111111111111")
     message = str(error.value)
     assert f"{field} expected {version_contract()[field]}, found {old_value}" in message
     assert "civ-agent image build" in message
@@ -451,7 +532,7 @@ def test_image_probe_failures_are_bounded_and_sanitized_before_restart(fake_runt
     else:
         fake.image_contract["classifierModel"] = {"secret": "private image body"}
     with pytest.raises(supervisor.ContainerError) as error:
-        supervisor.restart_brokers(fake.root, "new-image")
+        supervisor.restart_brokers(fake.root, "sha256:2222222222222222222222222222222222222222222222222222222222222222")
     message = str(error.value)
     assert "civ-agent image build" in message
     assert "private" not in message and "secret" not in message

@@ -10,9 +10,9 @@ from civ_agent.observations import TurnOverview, overview
 from civ_agent.state_updates import apply_overview_update, overview_update, stamp
 from civ_agent.tactical_review import tactical_review
 from civ_agent.turn_changes import turn_basis, turn_changes
+from tests.domain_fixtures import create, current, setup, strategy
 from tests.test_state_updates import MOVE, session
 from tests.test_state_updates import inspect as inspect_unit
-from tests.test_structured_memory import create, current, setup, strategy
 from tests.test_tactical_review import reviewed
 
 

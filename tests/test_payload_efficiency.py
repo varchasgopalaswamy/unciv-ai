@@ -20,7 +20,7 @@ from civ_agent.protocol import JsonObject
 from civ_agent.startup_context import decision_queries, prepare_startup
 from civ_agent.state_updates import apply_overview_update, overview_update, stamp
 from civ_agent.tool_schemas import tool_model
-from tests.test_economy_optimization import managed
+from tests.domain_fixtures import managed
 
 
 @pytest.mark.parametrize(

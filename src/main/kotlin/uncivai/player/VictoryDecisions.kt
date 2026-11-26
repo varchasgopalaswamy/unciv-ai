@@ -14,7 +14,20 @@ data class SpaceshipAssembly(val title: String, val available: Boolean, val unav
 data class DiplomaticCandidate(val civilizationId: String, val name: String)
 
 @Serializable
-data class DiplomaticBallot(val turnsUntilNextVote: Int?, val hasVoted: Boolean, val votedFor: String?, val canVote: Boolean, val candidates: List<DiplomaticCandidate>)
+enum class CityStateVoteWindow { BEFORE_LAST_TURN, LAST_TURN, CLOSED }
+
+@Serializable
+data class CityStateVoteTiming(val window: CityStateVoteWindow, val lastInfluenceTurn: Int?, val guidance: String)
+
+@Serializable
+data class DiplomaticBallot(
+    val turnsUntilNextVote: Int?,
+    val hasVoted: Boolean,
+    val votedFor: String?,
+    val canVote: Boolean,
+    val candidates: List<DiplomaticCandidate>,
+    val cityStateVoteTiming: CityStateVoteTiming? = null,
+)
 
 @Serializable
 data class DiplomaticVoteRow(val civilizationId: String, val name: String, val votes: Int, val votesReceived: Int?, val choice: String, val votedFor: String?)
@@ -32,6 +45,41 @@ internal fun observeSpaceshipAssembly(player: Civilization, unit: MapUnit, activ
     SpaceshipAssembly(it.title.tr(), active && it.available, frozen(it.reasons.map { reason -> reason.tr() }))
 }
 
+/** Project the current schedule for known city-states without reading their ballots. */
+private fun observeCityStateVoteTiming(player: Civilization): CityStateVoteTiming? {
+    val game = player.gameInfo
+    if (gameHasResult(game)) return null
+    val order = game.civilizations
+    val current = order.indexOf(game.currentPlayerCiv)
+    val viewer = order.indexOf(player)
+    val cityStateCountdowns = order.withIndex().mapNotNull { (seat, civ) ->
+        if (civ.isCityState && civ.isAI() && !civ.isDefeated() && player.knows(civ)) {
+            civ.getTurnsTillNextDiplomaticVote()?.let { seat to it }
+        } else null
+    }
+    if (cityStateCountdowns.isEmpty()) return null
+
+    // Countdown ticks at the start of each city-state's turn. At zero the AI
+    // votes for its current ally during that activation, before the next handoff.
+    val deadline = cityStateCountdowns.mapNotNull { (seat, countdown) ->
+        if (countdown <= 0) return@mapNotNull null
+        val voteTurn = game.turns + countdown - if (seat > current) 1 else 0
+        if (viewer < seat) voteTurn else voteTurn - 1
+    }.minOrNull()
+    val nextViewerTurn = game.turns + if (viewer < current) 1 else 0
+    val window = when {
+        deadline == null || deadline < nextViewerTurn -> CityStateVoteWindow.CLOSED
+        deadline == nextViewerTurn -> CityStateVoteWindow.LAST_TURN
+        else -> CityStateVoteWindow.BEFORE_LAST_TURN
+    }
+    val guidance = when (window) {
+        CityStateVoteWindow.CLOSED -> "Your window to influence the earliest scheduled votes of known city-states has passed. Gifts can still change current alliances."
+        CityStateVoteWindow.LAST_TURN -> "Turn $deadline is your last turn to influence the earliest pending votes of known city-states. They vote for their ally on their own turns, and intervening players can still change alliances."
+        CityStateVoteWindow.BEFORE_LAST_TURN -> "Act by turn $deadline to influence the earliest pending votes of known city-states. They vote for their ally on their own turns, which can precede your ballot."
+    }
+    return CityStateVoteTiming(window, deadline?.takeIf { it >= 0 }, guidance)
+}
+
 /** Ballots are private until the native results flag is due. Never serialize the raw vote map
  * or the desktop's winner text: either can contain identities the viewer has not met.
  */
@@ -45,6 +93,7 @@ internal fun observeVictoryDecisions(player: Civilization, active: Boolean): Vic
             game.diplomaticVictoryVotesCast[player.civID],
             active && operations.canVote(),
             frozen(if (player.mayVoteForDiplomaticVictory()) operations.voteCandidates().map { DiplomaticCandidate(it.civilizationId, it.name) } else emptyList()),
+            observeCityStateVoteTiming(player),
         )
     } else {
         null

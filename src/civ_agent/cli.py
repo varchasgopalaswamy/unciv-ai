@@ -1,13 +1,11 @@
-"""The single command-line interface for local and remote gameplay services."""
+"""Native Pydantic AI players and local game services."""
 
 import argparse
 from collections.abc import Sequence
 from importlib.metadata import version
 
-from civ_agent import match_watch, scheduler
+from civ_agent import match_watch
 from civ_agent.commands import (
-    agent,
-    agent_server,
     batch,
     chat,
     failures,
@@ -17,6 +15,7 @@ from civ_agent.commands import (
     inspect,
     manager_test,
     profile,
+    replay,
     runtime,
     trade,
     verify_agreement_scenario,
@@ -31,7 +30,7 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--version", action="version", version=f"%(prog)s {version('civ-agent')}")
     groups = result.add_subparsers(dest="command", required=True)
 
-    games = groups.add_parser("game", help="Launch a complete local game").add_subparsers(required=True)
+    games = groups.add_parser("game", help="Launch and control a native game").add_subparsers(required=True)
     for action in ("start", "resume", "stop", "status", "remove"):
         command = games.add_parser(action, parents=[game.parser(add_help=False, action=action)])
         command.set_defaults(handler=game.run)
@@ -43,7 +42,7 @@ def parser() -> argparse.ArgumentParser:
     )
     manager_tests.set_defaults(handler=manager_test.run)
 
-    batches = groups.add_parser("batch", help="Run isolated benchmark games from TOML").add_subparsers(required=True)
+    batches = groups.add_parser("batch", help="Run isolated native games from TOML").add_subparsers(required=True)
     for action in ("generate", "start", "resume", "stop", "status"):
         command = batches.add_parser(action, parents=[batch.parser(add_help=False, action=action)])
         command.set_defaults(handler=batch.run)
@@ -69,21 +68,9 @@ def parser() -> argparse.ArgumentParser:
     )
     view.set_defaults(handler=inspect.run)
 
-    agents = groups.add_parser("agent", help="Open an interactive player session").add_subparsers(required=True)
-    interactive = agents.add_parser(
-        "start", parents=[agent.parser(add_help=False)], help="Launch Codex as one civilization"
-    )
-    interactive.set_defaults(handler=agent.run)
-
-    servers = groups.add_parser("agent-server", help="Serve scheduled turns for one player over HTTPS").add_subparsers(
+    matches = groups.add_parser("match", help="Inspect native games and verify domain scenarios").add_subparsers(
         required=True
     )
-    service = servers.add_parser(
-        "start", parents=[agent_server.parser(add_help=False)], help="Start a civilization's HTTPS service"
-    )
-    service.set_defaults(handler=agent_server.run)
-
-    matches = groups.add_parser("match", help="Schedule turns and control a match").add_subparsers(required=True)
     watch = matches.add_parser(
         "watch", parents=[match_watch.parser(add_help=False)], help="Open a live terminal dashboard for a saved match"
     )
@@ -96,17 +83,6 @@ def parser() -> argparse.ArgumentParser:
         "failures", parents=[failures.parser(add_help=False)], help="Group tool failures and inspect exact receipts"
     )
     failed_tools.set_defaults(handler=failures.run)
-    descriptions = {
-        "start": "Start automatic turn scheduling",
-        "resume": "Resume scheduling and recover an interrupted turn",
-        "status": "Inspect the host and persisted scheduler state",
-        "pause": "Pause host mutations and agent work",
-        "stop": "Stop scheduling and pause the match",
-        "manual": "Return the host to manual player control",
-    }
-    for action, description in descriptions.items():
-        command = matches.add_parser(action, parents=[scheduler.parser(add_help=False)], help=description)
-        command.set_defaults(handler=scheduler.run, action=action)
     verify_managers = matches.add_parser(
         "verify-manager-scenario",
         parents=[verify_manager_scenario.parser(add_help=False)],
@@ -137,9 +113,13 @@ def parser() -> argparse.ArgumentParser:
 
     histories = groups.add_parser("history", help="Export recorded player conversations").add_subparsers(required=True)
     export = histories.add_parser(
-        "export", parents=[history.parser(add_help=False)], help="Export recorded conversations and telemetry on demand"
+        "export", parents=[history.parser(add_help=False)], help="Export native SDK histories and authored stores"
     )
     export.set_defaults(handler=history.run)
+    replay_command = groups.add_parser(
+        "replay", parents=[replay.parser(add_help=False)], help="Verify or export a recorded game replay"
+    )
+    replay_command.set_defaults(handler=replay.run)
     messages = groups.add_parser("chat", help="Public/private messages and social commitments").add_subparsers(
         required=True
     )

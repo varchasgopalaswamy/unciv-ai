@@ -25,14 +25,14 @@ class ServiceIO:
             started = time.monotonic()
             cancelled = False
             try:
-                while True:
+                while not future.done():
                     try:
-                        result = await asyncio.shield(future)
-                        break
+                        await asyncio.shield(future)
                     except asyncio.CancelledError:
                         # Even repeated interrupts must finish an accepted append
                         # before terminal flush, another writer, or shutdown.
                         cancelled = True
+                result = future.result()
             finally:
                 finished = time.monotonic()
                 if self.slow_callback is not None and finished - queued >= 1:

@@ -18,7 +18,10 @@ class MilitaryReviewRead(BoundaryModel):
 
 
 class MilitaryDisposition(BoundaryModel):
-    targets: list[Annotated[str, Field(min_length=1, max_length=128)]] = Field(min_length=1)
+    targets: list[Annotated[str, Field(min_length=1, max_length=128)]] = Field(
+        min_length=1,
+        description="Handles listed in the current military_review items. Cover each review target exactly once; exclude other units and cities.",
+    )
     reason: str = Field(
         min_length=1,
         max_length=500,
@@ -123,7 +126,7 @@ def completion_review(view, state, saved=None) -> JsonObject:
             "active": len(operations),
             "read": {"tool": "war_goals", "arguments": {"section": "operations", "status": "active"}},
         },
-        "instruction": "Resolve these exposures or opportunities with native actions, or include reasoned hold decisions for every remaining target in finish.arguments.decisions. The host binds this delivered review. Group targets when the reason is shared. Compare observed progress with accepted objectives and update military_operation only when its assessment or plan changes.",
+        "instruction": "Resolve these exposures or opportunities with native actions, or include reasoned hold decisions for exactly the targets listed in these review items in finish.arguments.decisions, each once. Discuss other units or cities in your summary. The host binds this delivered review. Group targets when the reason is shared. Compare observed progress with accepted objectives and update military_operation only when its assessment or plan changes.",
         "limits": "Visible proximity is not enemy reach; unseen threats remain unknown. A hold may deliberately accept risk. Counts do not establish an operation's success, and lost/reassigned units do not establish combat losses.",
     }
 

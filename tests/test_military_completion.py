@@ -8,8 +8,7 @@ from pydantic import ValidationError
 from civ_agent.military_completion import completion_problem, completion_review, review_page
 from civ_agent.military_schedule import MilitarySchedule
 from civ_agent.tool_schemas import tool_model
-from tests.test_economy_optimization import managed
-from tests.test_economy_roles import run_async
+from tests.domain_fixtures import managed, run_async
 from tests.test_military_schedule import fixture
 
 
@@ -119,3 +118,35 @@ async def test_gateway_checks_fresh_sibling_facts_accepts_risk_and_replays_finis
         m.roles.resume("military", "New request after completion")
         assert await m.gateway.call(job, "finish_role", arguments, "finish") == finished
         assert not m.roles.ready["military"]
+
+
+@pytest.mark.parametrize("change", ["unrelated", "military", "coordination"])
+@run_async
+async def test_active_attention_preserves_completion_basis_without_granting_fresh_read(tmp_path, change):
+    async with managed(tmp_path) as m:
+        m.host.view["map"]["units"][0]["nearbyHostiles"] = [{"distance": 1}]
+        m.host.view["diplomacy"] = {"knownCivilizations": [], "cityStates": []}
+        job = await m.gateway.open("military", "military", "g1", m.host, {}, 0)
+        m.roles.register(job)
+        m.roles.military_schedule = MilitarySchedule(m.memory)
+        m.roles.resume("military", "Initial review")
+        await m.gateway.call(job, "player_turn", {}, "start")
+        check = await m.gateway.call(job, "military_review", {}, "check")
+        if change == "coordination":
+            m.roles.war_state.setdefault("messages", []).append({"to": "military", "text": "Changed request"})
+        m.roles.resume("military", "Another coordination message during the same pass")
+        assert (m.roles.military_observation is None) is (change == "coordination")
+        m.gateway.invalidate_role_observation(job)
+        m.host.revision = "sibling-action"
+        if change == "military":
+            m.host.view["map"]["units"][0]["health"] = 77
+        else:
+            m.host.view.setdefault("economy", {})["treasury"] = 200
+        result = await m.gateway.call(
+            job, "finish_role", {"militaryReview": hold(check["militaryCompletion"])}, "finish"
+        )
+        assert bool(result.get("roleFinished")) is (change == "unrelated")
+        assert m.roles.ready["military"] is (change == "unrelated")
+        if change != "unrelated":
+            assert result["error"] in {"MILITARY_COMPLETION_REVIEW_REQUIRED", "MILITARY_OBSERVATION_CHANGED"}
+        assert job.observation is None and job.role_refresh_required

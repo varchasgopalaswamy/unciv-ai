@@ -8,8 +8,7 @@ from jsonschema import Draft202012Validator
 from civ_agent.civilization_state import CivilizationState, StateConflict
 from civ_agent.proposal_gateway import ProposalGateway
 from civ_agent.service_io import ServiceIO
-from tests.test_proposal_gateway import Host
-from tests.test_structured_memory import create, current, setup, strategy
+from tests.domain_fixtures import Host, create, current, setup, strategy
 
 
 def agreement():

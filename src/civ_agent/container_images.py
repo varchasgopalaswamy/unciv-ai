@@ -9,6 +9,7 @@ from pathlib import Path
 
 from civ_agent.checkout import repository_root
 from civ_agent.container_support import ContainerError, command, host_environment, podman
+from civ_agent.orchestration.contracts import digest
 
 
 def source_revision(root):
@@ -18,29 +19,20 @@ def source_revision(root):
     }
 
 
-def build_images(*, repo_dir=None, unciv_dir=None, codex="codex", tag="localhost/civ-agent"):
+def build_images(*, repo_dir=None, unciv_dir=None, tag="localhost/civ-agent"):
     root = repository_root(repo_dir)
     engine = Path(unciv_dir).expanduser() if unciv_dir else root / "vendor/Unciv"
     if not engine.is_absolute():
         engine = root / engine
     engine = engine.resolve()
+    uv = shutil.which("uv")
+    if not uv:
+        raise ContainerError("Install uv before building runtime images")
     subprocess.run(
         ["./gradlew", f"-PuncivDir={engine}", "installDist", "prepareDesktopAssets", "--console=plain"],
         cwd=root,
         check=True,
     )
-    executable = shutil.which(codex)
-    uv = shutil.which("uv")
-    if not executable or not uv:
-        raise ContainerError("Install Codex and uv before building runtime images")
-    executable = Path(executable).resolve()
-    with executable.open("rb") as stream:
-        is_elf = stream.read(4) == b"\x7fELF"
-    if not is_elf:
-        raise ContainerError("--codex must select the standalone Linux Codex binary")
-    code_host = executable.with_name("codex-code-mode-host")
-    if not code_host.is_file():
-        raise ContainerError("The standalone Codex release must include its codex-code-mode-host companion")
 
     def checksum(path):
         with path.open("rb") as stream:
@@ -49,17 +41,13 @@ def build_images(*, repo_dir=None, unciv_dir=None, codex="codex", tag="localhost
     provenance = {
         "source": source_revision(root),
         "engine": source_revision(engine),
-        "codex": command([str(executable), "--version"]).stdout.strip(),
-        "codexSha256": checksum(executable),
-        "codeModeHostSha256": checksum(code_host),
+        "runtime": "pydantic-local-v1",
         "uv": command([uv, "--version"]).stdout.strip(),
     }
     # A curated context excludes credentials, games, unrelated files and the host venv.
     with tempfile.TemporaryDirectory(prefix="civ-image-") as temporary:
         context = Path(temporary)
         shutil.copy2(root / "containers/Containerfile", context / "Containerfile")
-        shutil.copy2(executable, context / "codex")
-        shutil.copy2(code_host, context / "codex-code-mode-host")
         shutil.copy2(uv, context / "uv")
         shutil.copytree(root / "build/install/unciv-ai/lib", context / "lib")
         shutil.copytree(root / "build/desktop-engine", context / "engine")
@@ -71,7 +59,19 @@ def build_images(*, repo_dir=None, unciv_dir=None, codex="codex", tag="localhost
             root / "src/civ_agent", app / "src/civ_agent", ignore=shutil.ignore_patterns("__pycache__", "*.pyc")
         )
         # Strategy context is a package-relative document in the existing service.
-        shutil.copytree(root / "docs", app / "docs", ignore=shutil.ignore_patterns("archive"))
+        shutil.copytree(
+            root / "docs", app / "docs", ignore=shutil.ignore_patterns("archive", "handoffs", "plans", "results")
+        )
+        hashes = {
+            str(path.relative_to(context)): checksum(path) for path in sorted(context.rglob("*")) if path.is_file()
+        }
+        provenance.update(
+            uvSha256=hashes["uv"],
+            lockSha256=hashes["app/uv.lock"],
+            sourceHash=digest({name: value for name, value in hashes.items() if name.startswith("app/")}),
+            engineHash=digest({name: value for name, value in hashes.items() if name.startswith(("lib/", "engine/"))}),
+            contentHash=digest(hashes),
+        )
         (context / "provenance.json").write_text(json.dumps(provenance, indent=2) + "\n")
         for target in ("runtime", "desktop"):
             subprocess.run(

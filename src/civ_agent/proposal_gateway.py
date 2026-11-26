@@ -32,10 +32,13 @@ from civ_agent.coordination_updates import (
 from civ_agent.coordination_updates import (
     snapshot as coordination_snapshot,
 )
+from civ_agent.decisions_ledger import fingerprint
 from civ_agent.delivery_options import content_arguments, full_delivery
 from civ_agent.diplomacy_tools import argument_error, commitment_problem, unavailable
+from civ_agent.execution_windows import ExecutionWindowScheduler, native_effect_started, record_invalidation
 from civ_agent.feedback_view import compact_feedback
 from civ_agent.game_commands import add_combat_commands, command_arguments, command_error, command_kinds, command_schema
+from civ_agent.host_effects import HOST_EFFECT_TOOLS, PreparedHostEffect, host_request_id
 from civ_agent.inspection_bundle import run_bundle
 from civ_agent.mcp_results import RESULT_FORMAT_HEADER, STRUCTURED_RESULT_FORMAT, canonical_tool_result
 from civ_agent.memory_delivery import apply_memory_delivery, memory_response
@@ -216,6 +219,7 @@ class ProposalGateway:
         self.calls_in_flight = 0
         self.dispatch = asyncio.Lock()
         self.role_dispatch = asyncio.Lock()
+        self.execution_windows: ExecutionWindowScheduler | None = None
         self.wars = WarStore(memory)
         self.peace_reviews: Any = None
         self.consultation_hold = asyncio.Event()
@@ -234,22 +238,58 @@ class ProposalGateway:
             self.failed.set()
 
     @asynccontextmanager
-    async def admit(self, *, review=False):
+    async def admit(self, *, review=False, settlement_epoch=None):
         """Drain accepted calls before capture; later calls wait without model retries."""
-        await self._wait_for_admission(review=review)
+        await self._wait_for_admission(review=review, settlement_epoch=settlement_epoch)
         self.calls_in_flight += 1
         try:
             yield
         finally:
             self.calls_in_flight -= 1
 
-    async def _wait_for_admission(self, *, review=False):
+    async def _wait_for_admission(self, *, review=False, settlement_epoch=None):
         # MCP initialization and tool calls must use the same barrier rule.
         # Reviewers have frozen inputs and may connect during the quiet phase.
+        if self.retiring_epoch():
+            if settlement_epoch is not None and self.retiring_epoch(settlement_epoch):
+                return
+            raise StateConflict("SOURCE_EPOCH_RETIRED")
         while not self.checkpoint_released.is_set() and not (review and self.reviewing):
             await self.checkpoint_released.wait()
+            if self.retiring_epoch():
+                if settlement_epoch is not None and self.retiring_epoch(settlement_epoch):
+                    return
+                raise StateConflict("SOURCE_EPOCH_RETIRED")
+
+    def retiring_epoch(self, epoch=None):
+        with self.memory.transaction() as db:
+            current = self.memory._meta(db, "epoch")
+            retired = self.memory._meta(db, "nativeGatewayRetirement")
+            return retired is not None and retired["epoch"] == (epoch if epoch is not None else current)
+
+    def retire_source_epoch(self, epoch, owner_sha256):
+        """Permanent source admission fence; accepted receipts may still settle."""
+        with self.memory.transaction() as db:
+            if self.memory._meta(db, "epoch") != epoch:
+                raise StateConflict("DECISION_CONTEXT_EXPIRED")
+            previous = self.memory._meta(db, "nativeGatewayRetirement")
+            value = {"epoch": epoch, "ownerSha256": owner_sha256}
+            if previous is not None and previous != value:
+                raise StateConflict("SOURCE_RETIREMENT_CONFLICT")
+            self.memory._set(db, "nativeGatewayRetirement", value)
+        windows = getattr(self, "execution_windows", None)
+        if windows is not None:
+            windows.interrupt("source_epoch_retired")
+        if self.advisories is not None:
+            self.advisories.suspend()
+        # Wake checkpoint waiters so the permanent rejection above can settle
+        # their original calls instead of waiting for an inadmissible release.
+        self.checkpoint_released.set()
 
     def request_checkpoint(self):
+        windows = getattr(self, "execution_windows", None)
+        if windows is not None:
+            windows.suspend("checkpoint_requested")
         if self.routing is not None:
             self.routing.suspend()
         self.checkpoint_requested = True
@@ -259,7 +299,13 @@ class ProposalGateway:
 
     def release_checkpoint(self):
         self.checkpoint_requested = False
+        resume_advisories = getattr(self.advisories, "resume", None)
+        if callable(resume_advisories):
+            resume_advisories()
         self.checkpoint_released.set()
+        windows = getattr(self, "execution_windows", None)
+        if windows is not None:
+            windows.resume()
 
     async def resume_run(self):
         if self.jobs:
@@ -371,9 +417,22 @@ class ProposalGateway:
         if job.gameplay_fenced and not ended_allowed:
             raise StateConflict("TURN_ENDED: finish this conversation")
 
+    async def verify_identity(self, job: JobAccess):
+        if not job.verified:
+            identity = await job.connection.tool("player_communication", {"op": "state", "epoch": job.epoch})
+            if identity.get("civilization") != self.memory.civilization or identity.get("epoch") != job.epoch:
+                raise StateConflict("PLAYER_CREDENTIAL_MISMATCH")
+            job.verified = True
+
     async def tools(self, job: JobAccess):
         async with self.admit(review=job.review_inputs is not None):
-            return await self._tools(job)
+            tools = await self._tools(job)
+            if self.memory.authored_enabled:
+                tools = [
+                    tool for tool in tools if tool["name"] not in {"memory_read", "memory_search", "memory_update"}
+                ]
+                job.catalogue = copy.deepcopy(tools)
+            return tools
 
     async def _tools(self, job: JobAccess):
         self.check(job, ended_allowed=True)
@@ -436,6 +495,8 @@ class ProposalGateway:
                     entry["description"] = (
                         "Read the current position, decisions, alerts and review; details expose options/consequences, "
                         "and chat_read supplies social promises. Use returned stateUpdate before requesting another overview.\n"
+                        "In victory.ballot, turnsUntilNextVote measures your own ballot. Read cityStateVoteTiming for "
+                        "your last turn to influence the earliest pending votes of known city-states. "
                         "stateUpdate: full replaces the overview; delta requires matching baseStateId, applies set and "
                         "top-level removed, then collections (upsert replaces rows by key, removed deletes rows, order "
                         "sets order). Unmentioned sections/rows remain; fields absent from that replacement are removed. "
@@ -1239,6 +1300,17 @@ class ProposalGateway:
             async with self.role_dispatch if self.role_coordinator is not None else nullcontext():
                 if (
                     self.role_coordinator is not None
+                    and name == "player_turn"
+                    and job.purpose in {"gameplay", "economy", "military"}
+                    and "error" not in result
+                    and job.observation is not None
+                ):
+                    # Another player's peace can change diplomacy without one
+                    # of this role's actions. Reduce the fresh accepted view
+                    # before a later finish checks the cached war episodes.
+                    await self.role_coordinator.synchronize_war(job.observation)
+                if (
+                    self.role_coordinator is not None
                     and self.role_coordinator.economy_schedule is not None
                     and job.purpose == "economy"
                     and name == "player_command"
@@ -1248,6 +1320,7 @@ class ProposalGateway:
 
                     if arguments.get("kind") in CITY_COMMANDS and arguments.get("target"):
                         self.role_coordinator.extend_economy_scope([arguments["target"]])
+                effect_revision = result.get("revision")
                 result = await self.update_after_action(job, name, arguments, call_id, result)
                 if (
                     self.role_coordinator is not None
@@ -1258,7 +1331,19 @@ class ProposalGateway:
                         await self.role_coordinator.after_action(job, arguments, result)
                     for sibling in self.role_coordinator.jobs.values():
                         if sibling is not job:
-                            self.invalidate_role_observation(sibling)
+                            self.invalidate_role_observation(
+                                sibling,
+                                provenance={
+                                    "epoch": job.epoch,
+                                    "role": job.purpose,
+                                    "tool": name,
+                                    "operationId": host_request_id(job.id, call_id),
+                                    "fromRevision": advice_revision,
+                                    "toRevision": effect_revision,
+                                }
+                                if name == "player_command"
+                                else None,
+                            )
                             if name in {"city_override", "escort_assignment"}:
                                 # Ownership labels are outside native detail projections.
                                 sibling.pending_invalidated.extend(
@@ -1308,9 +1393,102 @@ class ProposalGateway:
         job.role_refresh_required = False
         job.resume_delta_available = False
 
+    async def apply_host_effect(
+        self,
+        job: JobAccess,
+        prepared: PreparedHostEffect,
+        call_id: str,
+        raw_receipt: JsonObject,
+        *,
+        replayed: bool = False,
+    ) -> JsonObject:
+        """Apply a confirmed host result without another effect or response journal.
+
+        The native durable operation retains the exact host receipt. Domain
+        reducers may run again after a lost acknowledgement; their effect key
+        comes from the frozen request, never from a fresh dispatch.
+        """
+        self.check(job, ended_allowed=True)
+        name, arguments = prepared.name, copy.deepcopy(prepared.arguments)
+        result = copy.deepcopy(raw_receipt)
+        if prepared.result is not None or prepared.payload is None:
+            raise ValueError("HOST_EFFECT_NOT_PREPARED")
+        if self.native_advice_enabled and name == "player_command":
+            await self.io.call(
+                experiment_metrics.action_match,
+                self.memory,
+                job,
+                call_id,
+                arguments,
+                result,
+                prepared.payload.get("revision"),
+            )
+        if (
+            name in {"trade_offer", "trade_decide", "friendship_offer"}
+            and "error" not in result
+            and result.get("trade")
+        ):
+            for proposal in (
+                arguments.get("proposalId"),
+                arguments.get("counterofferTo"),
+                result["trade"].get("proposal"),
+            ):
+                if proposal:
+                    job.trades.pop(proposal, None)
+        if (
+            (
+                prepared.transport == "player_command"
+                or name == "trade_decide"
+                and result.get("outcome")
+                or result.get("nativeOutcome")
+            )
+            and "error" not in result
+            and job.purpose != "gameplay"
+        ):
+            self.invalidate_role_observation(job)
+        coordinator = self.role_coordinator
+        if (
+            coordinator is not None
+            and coordinator.economy_schedule is not None
+            and job.purpose == "economy"
+            and name == "player_command"
+            and "error" not in result
+        ):
+            from civ_agent.economy_roles import CITY_COMMANDS
+
+            if arguments.get("kind") in CITY_COMMANDS and arguments.get("target"):
+                coordinator.extend_economy_scope([arguments["target"]])
+        result = await self.update_after_action(job, name, arguments, call_id, result, record_call=False)
+        if coordinator is not None and self.changes_game(name, result) and "error" not in result:
+            await coordinator.after_action(job, arguments, result, effect_id=prepared.payload["requestId"])
+            for sibling in coordinator.jobs.values():
+                if sibling is not job:
+                    self.invalidate_role_observation(
+                        sibling,
+                        provenance={
+                            "epoch": job.epoch,
+                            "role": job.purpose,
+                            "tool": name,
+                            "operationId": prepared.payload["requestId"],
+                            "fromRevision": prepared.payload.get("revision"),
+                            "toRevision": raw_receipt.get("revision"),
+                        }
+                        if prepared.transport == "player_command"
+                        else None,
+                    )
+        if coordinator is not None and job.purpose in {"gameplay", "economy", "military"}:
+            if "economyCoordination" not in result and "coordinationUpdate" not in result:
+                result = {**result, **self.coordination_delivery(job)}
+            await coordinator.save()
+        result = compact_response(result, full=full_delivery(arguments), share=job.compact_overviews)
+        self.accept_coordination(job, result)
+        self.accept_payloads(job, name, arguments, result, replayed=replayed)
+        return result
+
     @staticmethod
-    def invalidate_role_observation(job: JobAccess) -> None:
+    def invalidate_role_observation(job: JobAccess, *, provenance=None) -> None:
         """Fence decisions, retaining delivered facts for selective revalidation."""
+        record_invalidation(job, provenance)
         if job.observation is not None:
             job.prior_role_observation = job.observation
         job.role_refresh_required = job.prior_role_observation is not None
@@ -1357,6 +1535,7 @@ class ProposalGateway:
         receipt: JsonObject | None = None,
         *,
         force_full: bool = False,
+        record_call: bool = True,
     ) -> JsonObject:
         """Register only the reconstructed overview; detail contents stay opt-in."""
         self.check(job)
@@ -1462,6 +1641,7 @@ class ProposalGateway:
                 arguments,
                 respond,
                 not call_id.removeprefix("review:").startswith("startup:"),
+                record_call=record_call,
             )
         except BaseException:
             # A cancelled I/O await may still have committed the response. Replay
@@ -1483,6 +1663,7 @@ class ProposalGateway:
             }
         if self.role_coordinator is not None and job.purpose == "military":
             self.role_coordinator.military_observation = copy.deepcopy(value)
+            self.role_coordinator.military_observation_state = fingerprint(self.role_coordinator.war_state)
         self.accept_coordination(job, result)
         expanded = expand_response(result)
         job.delivered_overview = (
@@ -1576,6 +1757,8 @@ class ProposalGateway:
         arguments: JsonObject,
         call_id: str,
         result: JsonObject,
+        *,
+        record_call: bool = True,
     ) -> JsonObject:
         if "error" in result or result.get("roleFinished"):
             return result
@@ -1608,9 +1791,9 @@ class ProposalGateway:
             self.check(job)
             return {**result, "stateUpdate": refresh_required()}
         except StateConflict as error:
-            return await self.failed_update(job, call_id, result, error)
+            return await self.failed_update(job, call_id, result, error, record_call=record_call)
         except (ValueError, KeyError, TypeError) as error:
-            return await self.failed_update(job, call_id, result, error)
+            return await self.failed_update(job, call_id, result, error, record_call=record_call)
         try:
             self.check(job)
             # Do not spend a confirmed command's response waiting for a new
@@ -1657,14 +1840,14 @@ class ProposalGateway:
                         "newlyExploredTiles": len(after_tiles - before_tiles),
                     },
                 }
-            return await self.deliver_turn(job, value, name, arguments, call_id, result)
+            return await self.deliver_turn(job, value, name, arguments, call_id, result, record_call=record_call)
         except (OSError, ValueError, KeyError, TypeError, SQLAlchemyError) as error:
-            return await self.failed_update(job, call_id, result, error)
+            return await self.failed_update(job, call_id, result, error, record_call=record_call)
 
-    async def failed_update(self, job, call_id, result, error):
+    async def failed_update(self, job, call_id, result, error, *, record_call=True):
         self.forget_observation(job)
         self.check(job)  # Paused/expired jobs must stop, retaining the raw receipt.
-        if isinstance(error, StateConflict) and str(error) == "HOST_UNAVAILABLE":
+        if not record_call or isinstance(error, StateConflict) and str(error) == "HOST_UNAVAILABLE":
             # Both the player overview and its communication context require
             # host reads. A dropped read must preserve the confirmed action.
             return {**result, "stateUpdate": refresh_required()}
@@ -1691,6 +1874,9 @@ class ProposalGateway:
     async def wait_for_gameplay(self, job: JobAccess) -> bool:
         """Long-poll in code, outside dispatch and the memory actor. Chat jobs remain runnable."""
         waited = job.negotiation_pending.is_set()
+        # Consume only the notification already observed, before any await.
+        # A later suspension must remain pending for the next refresh boundary.
+        job.negotiation_pending.clear()
         job.wait_started = time.monotonic()
         try:
             while True:
@@ -1720,6 +1906,12 @@ class ProposalGateway:
                     # overview delta the model might not have received.
                     self.suspend_negotiation(job)
                 waited = True
+        except BaseException:
+            # No refresh was delivered when polling failed or was cancelled.
+            # Retain that obligation without clearing a newer notification.
+            if waited:
+                job.negotiation_pending.set()
+            raise
         finally:
             job.completed_wait += time.monotonic() - job.wait_started
             job.wait_started = None
@@ -1822,7 +2014,11 @@ class ProposalGateway:
             include_context=arguments.get("includeContext", False),
             include_history=arguments.get("includeHistory", False),
         )
-        recent = await self.io.call(self.memory.snapshot, job.purpose)
+        recent = await self.io.call(
+            self.memory.snapshot,
+            job.purpose,
+            event_ids=job.memory.get("communicationEventIds") if job.purpose == "communication" else None,
+        )
         events = recent["events"]
         await self.io.call(
             self.memory.refresh_memory,
@@ -1868,13 +2064,49 @@ class ProposalGateway:
         startup: bool = False,
         host_handoff: bool = False,
     ) -> JsonObject:
+        result = await self._call_or_prepare(job, name, arguments, call_id, startup=startup, host_handoff=host_handoff)
+        assert isinstance(result, dict)
+        return result
+
+    async def prepare_host_effect(
+        self,
+        job: JobAccess,
+        name: str,
+        arguments: JsonObject,
+        call_id: str,
+        *,
+        host_handoff: bool = False,
+    ) -> PreparedHostEffect:
+        """Validate/freeze one native envelope without a send or local receipt journal."""
+        if name not in HOST_EFFECT_TOOLS:
+            return PreparedHostEffect(
+                name=name,
+                arguments=copy.deepcopy(arguments),
+                result={"error": "HOST_EFFECT_NOT_SUPPORTED", "applied": False},
+            )
+        result = await self._call_or_prepare(
+            job, name, arguments, call_id, host_handoff=host_handoff, prepare_only=True
+        )
+        if isinstance(result, PreparedHostEffect):
+            return result
+        return PreparedHostEffect(name=name, arguments=copy.deepcopy(arguments), result=copy.deepcopy(result))
+
+    async def _call_or_prepare(
+        self,
+        job: JobAccess,
+        name: str,
+        arguments: JsonObject,
+        call_id: str,
+        *,
+        startup: bool = False,
+        host_handoff: bool = False,
+        prepare_only: bool = False,
+    ) -> JsonObject | PreparedHostEffect:
         self.check(job)
+        if self.memory.authored_enabled and name in {"memory_read", "memory_search", "memory_update"}:
+            return {"error": "TOOL_NOT_PERMITTED", "applied": False}
         arguments = copy.deepcopy(arguments)
-        if not job.verified:
-            identity = await job.connection.tool("player_communication", {"op": "state", "epoch": job.epoch})
-            if identity.get("civilization") != self.memory.civilization or identity.get("epoch") != job.epoch:
-                raise StateConflict("PLAYER_CREDENTIAL_MISMATCH")
-            job.verified = True
+        await self.verify_identity(job)
         if BOOKKEEPING & arguments.keys():
             return {
                 "error": "INVALID_TOOL_ARGUMENTS",
@@ -1902,6 +2134,7 @@ class ProposalGateway:
                 arguments = command_arguments(arguments)
             except ValidationError as error:
                 return command_error(arguments, error)
+        canonical_arguments = copy.deepcopy(arguments)
         coordinator = self.role_coordinator
         if name == "player_command" and arguments.pop("reviewAfter", False):
             if coordinator is None or job.purpose != "military":
@@ -1978,6 +2211,12 @@ class ProposalGateway:
             and not host_handoff
         ):
             if arguments["kind"] == "END_TURN":
+                if prepare_only:
+                    return {
+                        "error": "ROLE_FINISH_REQUIRED",
+                        "applied": False,
+                        "instruction": "Finish this role; the coordinator owns the native end-turn handoff.",
+                    }
                 # Older model integrations may still send END_TURN: it finishes only their role.
                 return await coordinator.tool(
                     job,
@@ -2429,6 +2668,23 @@ class ProposalGateway:
             )
             if problem:
                 return problem
+        if prepare_only:
+            async with self.dispatch:
+                self.check(job)
+                ordinary_chat = name == "chat_send" and not arguments.get("nativeAction")
+                if ordinary_chat:
+                    update = await self.conversation_update(job, arguments)
+                    if update:
+                        return update
+                return PreparedHostEffect(
+                    name=name,
+                    arguments=canonical_arguments,
+                    transport=transport,
+                    payload={**copy.deepcopy(payload), "requestId": host_request_id(job.id, call_id)},
+                    intent=copy.deepcopy(intent),
+                    initiative_decisions=copy.deepcopy(initiative_decisions),
+                    routed=ordinary_chat and self.routing is not None,
+                )
         if name == "chat_send" and not arguments.get("nativeAction") and self.routing is not None:
             return await self.routing.send(job, payload, call_id, immediate=delivery == "immediate")
         # State validation and persistence are short. Network execution is
@@ -2450,6 +2706,7 @@ class ProposalGateway:
             self.check(job)
             self.in_flight += 1
             try:
+                native_effect_started()
                 value = await job.connection.tool(transport, json.loads(request["payload"]))
                 await self.io.call(self.memory.receipt, request["id"], value)
             except (OSError, ValueError, TimeoutError, aiohttp.ClientError):

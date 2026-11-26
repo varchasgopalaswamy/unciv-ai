@@ -1,0 +1,32 @@
+# Authenticate first:
+# civ-agent auth login --provider google-cloud --project YOUR_PROJECT_ID
+
+[game]
+master_seed = 42
+civilizations = ["Rome", "Greece", "France", "Egypt"]
+map_type = "Pangaea"
+map_size = "Small"
+city_states = 2
+
+[agents]
+provider = "google-cloud"
+model = "gemini-3.8-flash"
+reasoning_effort = "medium"
+
+[[players]]
+name = "Gemini Flash"
+
+[[players]]
+name = "Gemini Argon"
+model = "gemini-4-argon"
+
+[[players]]
+name = "Gemini Flash-Lite"
+model = "gemini-3.5-flash-lite"
+
+[[players]]
+name = "Unciv"
+controller = "built_in_ai"
+
+[limits]
+max_turns = 40

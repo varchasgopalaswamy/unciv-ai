@@ -101,6 +101,8 @@ def working_context(context: JsonObject, role: str) -> JsonObject:
         "militaryAtWar": context.get("militaryAtWar", False),
         "requests": [],
         "cityOverrides": {},
+        "intentHandoffs": [],
+        "omittedIntentHandoffs": 0,
         "warState": {"episodes": {}, "drafts": {}, "escorts": {}, "operations": {}, "messages": []},
         "history": {
             "tool": "war_goals",
@@ -153,6 +155,21 @@ def working_context(context: JsonObject, role: str) -> JsonObject:
             used += cost
             result["history"]["omitted"][name] -= 1
     result["history"]["omitted"] = {k: v for k, v in result["history"]["omitted"].items() if v}
+    # This advisory attempt index is not a WarStore history collection. Do not
+    # advertise a war_goals history read for omitted private gateway attempts.
+    attempts = context.get("intentHandoffs", []) if role != "communication" else []
+    used = 0
+    for row in attempts:
+        size = len(encoded(row))
+        if used + size > 1800:
+            result["omittedIntentHandoffs"] += 1
+            continue
+        result["intentHandoffs"].append(copy.deepcopy(row))
+        if len(encoded(result)) > limit:
+            result["intentHandoffs"].pop()
+            result["omittedIntentHandoffs"] += 1
+            continue
+        used += size
     return result
 
 

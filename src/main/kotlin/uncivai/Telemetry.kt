@@ -10,7 +10,7 @@ import java.util.UUID
 
 /** Transport instrumentation is deliberately absent from the public player capability interface. */
 internal interface PlayerApiAccounting {
-    fun beginApiCall(tool: String, arguments: JsonObject?): String?
+    fun beginApiCall(tool: String, arguments: JsonObject?, origin: String? = null): String?
     fun finishApiCall(id: String, outcome: String)
 }
 
@@ -144,7 +144,14 @@ internal class Telemetry(private val runtime: GameExecutor) {
 
     private fun key() = "${runtime.epoch}/${runtime.handoff}"
 
+    private val dirtyRetirements = mutableSetOf<String>()
+
+    fun retired(id: String) {
+        dirtyRetirements.add(id)
+    }
+
     fun changed(jobId: String) {
+        runtime.communication.indexJob(jobId)
         updateUsage(jobId)
         invocationsSnapshot = runtime.communicationState.invocations
         monitoringDirty = true
@@ -159,7 +166,7 @@ internal class Telemetry(private val runtime: GameExecutor) {
     }
 
     private fun belongsToTurn(job: CommunicationJob, turn: TurnMetrics): Boolean = job.purpose in setOf("gameplay", "economy", "military", "consultation", "review") && job.epoch == turn.epoch && job.civilization == turn.civilization &&
-        (job.handoff == turn.handoff || (job.purpose == "review" && job.handoff == null && job.gameTurn == 0 && turn.gameTurn == 0))
+        (job.handoff == turn.handoff || (job.isOpeningReview() && turn.gameTurn == 0))
 
     fun beginTurn(game: GameInfo, activationId: String) {
         monitoringDirty = true
@@ -231,7 +238,7 @@ internal class Telemetry(private val runtime: GameExecutor) {
         }
     }
 
-    fun startCall(civilization: String, tool: String, arguments: JsonObject?): String? = runtime.accessOperatorGame { game ->
+    fun startCall(civilization: String, tool: String, arguments: JsonObject?, origin: String? = null): String? = runtime.accessOperatorGame { game ->
         // A halted game's in-memory mutation may differ from disk. Never checkpoint it for diagnostics.
         if (runtime.mutationFailure != null) return@accessOperatorGame null
         val args = if (tool == "player_communication") arguments?.get("request") as? JsonObject else arguments
@@ -239,6 +246,7 @@ internal class Telemetry(private val runtime: GameExecutor) {
         if (tool == "player_communication" && field("op") in setOf("job_claim", "job_report", "job_release", "job_heartbeat")) monitoringDirty = true
         val names = buildList {
             add("tool:$tool")
+            add("origin:" + (origin?.takeIf { it in setOf("background_poll", "agent", "coordinator") } ?: "unclassified"))
             if (tool == "player_command") field("kind")?.let { add("command:$it") }
             if (tool == "player_communication") field("op")?.let { add("communication:$it") }
         }
@@ -305,6 +313,8 @@ internal class Telemetry(private val runtime: GameExecutor) {
     /** Freeze only changed records while holding the executor; the writer consumes immutable JSON. */
     fun accountingBatch(game: GameInfo, includeGame: Boolean): AccountingBatch? {
         val rows = mutableListOf<AccountingRow>()
+        dirtyRetirements.forEach { id -> rows.add(AccountingRow("retiredJobs", id, runtime.communicationState.retiredJobs.getValue(id).recordJson())) }
+        dirtyRetirements.clear()
         val metadata = runtime.communicationState.accountingMetadata().recordJson()
         if (metadata != lastMetadata) rows.add(AccountingRow("meta", "accounting", metadata))
         dirtyJobs.forEach { id -> runtime.communicationState.jobs[id]?.let { rows.add(AccountingRow("jobs", id, it.recordJson())) } }

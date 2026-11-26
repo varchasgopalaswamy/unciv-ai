@@ -5,9 +5,6 @@ agreements, use them as evidence for private plans, and reconsider those plans
 after native expiry or resource interruption. Agents negotiate the new trade's
 price. The engine controls its duration and effects.
 
-**Status:** scripted native checks and the September 18, 2026 live exercise passed.
-The agents completed all three rounds, the planned restart and sourced plan
-reviews. See the [live results and evidence](../archive/reports/Agreement-lifecycle-live-results.md).
 See the [implemented agreement contract](../reference/Agreement-lifecycle.md).
 
 ## Milestones

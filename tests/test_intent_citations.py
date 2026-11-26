@@ -8,10 +8,8 @@ from civ_agent.game_commands import command_arguments, command_schema
 from civ_agent.memory_history import action_record
 from civ_agent.memory_records import Intent
 from civ_agent.startup_context import prepare_startup
+from tests.domain_fixtures import create, managed, run_async, setup
 from tests.memory_helpers import stored_records
-from tests.test_economy_optimization import managed
-from tests.test_economy_roles import run_async
-from tests.test_structured_memory import create, setup
 
 
 @pytest.mark.parametrize(

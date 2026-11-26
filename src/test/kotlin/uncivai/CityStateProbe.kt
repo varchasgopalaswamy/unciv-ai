@@ -76,10 +76,14 @@ object CityStateProbe {
             runtime.executor.enableCheckpoints(checkpoint)
             val session = PlayerHost(runtime).bindPlayer("Austria")
             val before = session.turn()
+            val transferredCities = minor.cities.size
+            val treasuryBefore = austria.gold
             married = command(before, target = minor.civID, selection = "diplomaticMarriage")
             val receipt = session.execute(married)
             check(receipt.cityState!!.eliminated && receipt.cityState.influenceAfter == null)
-            check(receipt.cityState.gainedCities.size == 1 && receipt.cityState.goldChange < 0)
+            check(receipt.cityState.gainedCities.size == transferredCities && receipt.cityState.goldChange == austria.gold - treasuryBefore && receipt.cityState.goldChange < 0) {
+                "Marriage receipt ${receipt.cityState}; native cities=$transferredCities; treasury before=$treasuryBefore after=${austria.gold}"
+            }
             check(session.execute(married) == receipt)
             check(session.turn().diplomacy.cityStates.none { it.civilizationId == minor.civID })
             check(session.turn().alerts.single { it.kind == "DiplomaticMarriage" }.capture!!.options.any { it.name == "Annex" && it.available })

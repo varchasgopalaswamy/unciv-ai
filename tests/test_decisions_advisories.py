@@ -14,10 +14,8 @@ from civ_agent import memory_schema as tables
 from civ_agent.advisory_answers import failed_answers
 from civ_agent.advisory_runtime import AdvisoryRuntime
 from civ_agent.advisory_store import material_facts
-from civ_agent.agent_service import AgentService
 from civ_agent.civilization_state import CivilizationState
-from civ_agent.commands import agent_server, game
-from civ_agent.decisions_broker import RoutingClient
+from civ_agent.commands import game
 from civ_agent.decisions_ledger import fingerprint
 from civ_agent.decisions_policy import DecisionsSettings, decisions_values
 from civ_agent.decisions_tasks import parse_answers, request_body, request_id, request_metadata
@@ -28,8 +26,8 @@ from civ_agent.proposal_gateway import ProposalGateway
 from civ_agent.review_store import ReviewStore
 from civ_agent.service_io import ServiceIO
 from civ_agent.startup_context import prepare_startup, startup_prompt
+from tests.domain_fixtures import StartupHost
 from tests.memory_helpers import stored_records
-from tests.test_agent_service import StartupHost
 
 
 class AdvisoryHost(StartupHost):
@@ -72,7 +70,7 @@ class Classifier:
     def __init__(self, settings):
         self.settings, self.calls, self.mode = settings, [], "success"
 
-    async def batch(self, evidence, *, timeout):
+    async def batch(self, evidence, *, timeout, scope=None, task=None):
         self.calls.append(copy.deepcopy(evidence))
         if self.mode == "timeout":
             raise TimeoutError()
@@ -202,22 +200,12 @@ def test_classifier_owner_cancellation_still_stops_the_job(tmp_path):
     asyncio.run(run())
 
 
-def test_defaults_validation_retired_flags_and_service_container_arguments(tmp_path, capsys):
+def test_defaults_validation_retired_flags_and_native_game_arguments(tmp_path, capsys):
     config_file = tmp_path / "game.toml"
     config_file.write_text("[agents]\ndecisions_enabled = true\nadditional_decisions_budget_usd = 0.02\n")
     config = load_config(config_file).resolved()
+    assert decisions_values(config.agents)["additional_decisions_budget_usd"] == 0.02
     assert decisions_values(GameConfig().agents) == DecisionsSettings().model_dump()
-    settings = config.settings(config.agent_players[0])
-    arguments = ["Rome"]
-    for key, value in settings.items():
-        if isinstance(value, bool):
-            if value:
-                arguments.append("--" + key.replace("_", "-"))
-        else:
-            arguments.extend(
-                ["--" + key.replace("_", "-"), json.dumps(value) if isinstance(value, (dict, list)) else str(value)]
-            )
-    assert decisions_values(agent_server.parser().parse_args(arguments)) == decisions_values(config.agents)
     overridden = game.resolve_options(
         game.parser().parse_args(
             ["--additional-decisions-budget-usd", "0", "--decisions-enabled", "--memory-context-chars", "4000"]
@@ -230,50 +218,12 @@ def test_defaults_validation_retired_flags_and_service_container_arguments(tmp_p
             GameConfig(agents={"additional_decisions_budget_usd": value})
     with pytest.raises(ValidationError, match="Extra inputs"):
         GameConfig(agents={"diplomacy_routing_enabled": False})
-    for parser, args in ((game.parser(), []), (agent_server.parser(), ["Rome"])):
-        with pytest.raises(SystemExit):
-            parser.parse_args([*args, "--diplomacy-routing-enabled"])
-        assert "unrecognized arguments" in capsys.readouterr().err
+    with pytest.raises(SystemExit):
+        game.parser().parse_args(["--diplomacy-routing-enabled"])
+    assert "unrecognized arguments" in capsys.readouterr().err
     for retired in ("decisions_native_candidate_limit", "decisions_gameplay_group_limit"):
         with pytest.raises(ValidationError):
             GameConfig(agents={retired: 4})
-
-
-@pytest.mark.parametrize("decisions_enabled", [False, True])
-@pytest.mark.parametrize("native_enabled", [False, True])
-def test_service_enables_native_and_decisions_independently(tmp_path, monkeypatch, native_enabled, decisions_enabled):
-    def broker():
-        assert decisions_enabled  # Disabled operation needs neither a key nor a broker.
-        return RoutingClient(tmp_path / "broker.sock", tmp_path / "token.json")
-
-    monkeypatch.setattr(RoutingClient, "from_environment", broker)
-
-    async def run():
-        service = AgentService(
-            "Rome",
-            tmp_path / "workspace",
-            tmp_path / "service",
-            "S" * 43,
-            "https://localhost:8765/mcp",
-            None,
-            native_advice_enabled=native_enabled,
-            decisions_enabled=decisions_enabled,
-        )
-        try:
-            assert service.native_advice_enabled == native_enabled
-            assert service.gateway.native_advice_enabled == native_enabled
-            assert (service.gateway.advisories is not None) == decisions_enabled
-            assert (service.gateway.routing is not None) == decisions_enabled
-            service.chat.epoch = "g1"
-            service.gateway.request_checkpoint()
-            triage = await service.review_triage(
-                {"epoch": "g1", "gameTurn": 4, "scheduledSoon": False, "nextReviewTurn": 10}
-            )
-            assert not triage["earlyReview"] and triage["reason"] == ("barrier" if decisions_enabled else "disabled")
-        finally:
-            await service.close()
-
-    asyncio.run(run())
 
 
 def test_native_suggestions_are_delivered_directly_without_paid_gameplay_classification(tmp_path):
@@ -525,7 +475,7 @@ def test_early_review_rejects_stale_recorded_evidence(tmp_path):
                 )
             original = classifier.batch
 
-            async def changed(evidence, *, timeout):
+            async def changed(evidence, *, timeout, scope=None, task=None):
                 result = await original(evidence, timeout=timeout)
                 with memory.transaction() as db:
                     RecordStore(db).write("observation:overview", "observation", {"turn": 10, "cities": []})

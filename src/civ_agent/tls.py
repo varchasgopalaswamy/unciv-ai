@@ -353,8 +353,8 @@ def validate_host_tls_config(path):
 def client_ssl_context(ca_file=None):
     context = ssl.create_default_context()
     # Some Linux builds retain OpenSSL's old cafile path while distributing the
-    # actual system bundle elsewhere. Loading it also makes lazy capath roots
-    # available when exporting a combined PEM bundle for Codex.
+    # actual system bundle elsewhere. Load that bundle alongside the private CA
+    # so native HTTPS clients retain ordinary public trust.
     if not context.get_ca_certs():
         for bundle in ("/etc/ssl/certs/ca-certificates.crt", "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem"):
             if Path(bundle).is_file():
@@ -363,6 +363,15 @@ def client_ssl_context(ca_file=None):
     if ca_file is not None:
         regular_file(ca_file)
         context.load_verify_locations(cafile=str(ca_file))
+    return context
+
+
+def server_ssl_context(cert_file, key_file):
+    regular_file(cert_file)
+    regular_file(key_file, private=True)
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
+    context.load_cert_chain(cert_file, key_file)
     return context
 
 
@@ -392,20 +401,3 @@ def endpoint_configuration(state_dir, url=None, ca_file=None, port=None):
         ca = Path(ca).expanduser().resolve()
         regular_file(ca)
     return selected_url.removesuffix("/mcp"), ca
-
-
-def codex_trust_environment(ca_file, environment, workspace):
-    """Keep public/existing custom trust while adding the game's private CA for Codex HTTPS."""
-    result = environment.copy()
-    if ca_file is None:
-        return result
-    context = client_ssl_context(ca_file)
-    existing = environment.get("CODEX_CA_CERTIFICATE") or environment.get("SSL_CERT_FILE")
-    if existing:
-        context.load_verify_locations(cafile=str(regular_file(existing)))
-    certificates = sorted(ssl.DER_cert_to_PEM_cert(cert) for cert in context.get_ca_certs(binary_form=True))
-    bundle = Path(workspace) / ".tls-ca-bundle.pem"
-    write_private(bundle, "".join(certificates).encode())
-    result["CODEX_CA_CERTIFICATE"] = str(bundle)
-    result["SSL_CERT_FILE"] = str(bundle)
-    return result

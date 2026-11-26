@@ -1,26 +1,35 @@
-"""Read an operator's saved match records without contacting or changing the game."""
+"""Read-only operator dashboard over published native game and SDK stores."""
 
 import datetime as dt
-import hashlib
 import json
+import sqlite3
+import time
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 
+from civ_agent.container_support import ContainerError
 from civ_agent.diplomacy_view import DiplomaticEvent
-from civ_agent.monitoring import path_for, read_database, record_key, records
+from civ_agent.game_config import ResolvedGameConfig
+from civ_agent.monitoring import path_for, read_database, records
+from civ_agent.operator_state import is_local
+from civ_agent.operator_state import projection as native_projection
+from civ_agent.operator_state import publication_basis as epoch_publication_basis
+from civ_agent.operator_state import published_game as published_managed_epoch
+from civ_agent.orchestration.contracts import Scope
+from civ_agent.orchestration.job_contracts import HostUsage, JobTelemetry
+from civ_agent.orchestration.native_experiments import native_experiment_players
+from civ_agent.orchestration.native_watch import operator_tasks, sdk_lines, task_metadata
+from civ_agent.player_paths import PlayerPaths as ManagedPlayerPaths
 from civ_agent.protocol import JsonObject
-from civ_agent.runner_history import HistoryError, LiveOutput
+from civ_agent.runtime.state import ControllerState
 from civ_agent.strategy_view import StrategyReader, StrategyView
-from civ_agent.terminal_output import visible_text
 from civ_agent.tls import regular_file
-from civ_agent.turn_archive import civilization_directory_name
 
-MAX_EVENT_BATCH = 1000
-MAX_MESSAGE_CHARS = 16000
 MAX_ACTIVITY = 600
+SPECIALIST_ROLES = ("economy", "military")
 
 
 @dataclass(frozen=True)
@@ -37,89 +46,11 @@ class Activity:
 
     @property
     def sort_key(self):
-        # Communications have no wall-clock timestamp. Order them by publication
-        # within their game turn so new messages appear at the live end of the feed.
         try:
             timestamp = dt.datetime.fromisoformat(self.time).timestamp()
         except ValueError:
             timestamp = self.published_at
         return self.turn, timestamp, self.key
-
-
-class ActivityOutput:
-    """Use the existing console's event interpretation and streaming deduplication."""
-
-    def __init__(self, identity: str, civilization: str, turn: int):
-        self.identity, self.civilization, self.turn = identity, civilization, turn
-        self.entries: list[Activity] = []
-        self.time = ""
-        self.verbose = False
-        self.open_key = None
-        self.count = 0
-
-    def finish_line(self, owner=None):
-        self.open_key = None
-
-    def line(self, label, value, *, civilization=None):
-        self.open_key = None
-        text = visible_text(value)
-        if len(text) > MAX_MESSAGE_CHARS:
-            text = text[:MAX_MESSAGE_CHARS] + "\n… Full text is in the saved history."
-        self.entries.append(
-            Activity(
-                f"{self.identity}:{self.count:08d}",
-                self.civilization,
-                self.turn,
-                self.time,
-                label,
-                text,
-                self.verbose and label not in {"Error", "History"},
-            )
-        )
-
-        self.count += 1
-        self.entries = self.entries[-MAX_ACTIVITY:]
-
-    def stream(self, owner, item, civilization, label, value, *, final=False):
-        key = (owner, item)
-        if value:
-            if self.open_key == key and self.entries:
-                entry = self.entries[-1]
-                self.entries[-1] = replace(entry, text=(entry.text + visible_text(value))[:MAX_MESSAGE_CHARS])
-            else:
-                self.line(label, value)
-            self.open_key = key
-        if final:
-            self.finish_line()
-
-
-def consume_activity(output, decoder, event):
-    event = decoder.chunks.expand(event)
-    if event is None:
-        return
-    data = event.get("data", {})
-    if not isinstance(data, dict) or not isinstance(event.get("kind"), str):
-        raise ValueError("Invalid history event")
-    output.time = str(event.get("time", ""))
-    output.verbose = event["kind"] in {
-        "tool_call",
-        "tool_result",
-        "tool_output",
-        "reasoning_summary",
-        "reasoning_summary_delta",
-    } or (event["kind"] in {"developer_message", "user_message"} and data.get("source") == "service_startup")
-    decoder.consume(event)
-
-
-def activities(path: Path, source: JsonObject, lines: list[JsonObject]) -> tuple[Activity, ...]:
-    output = ActivityOutput(str(path), source["civilization"], source["gameTurn"])
-    decoder = LiveOutput(source["civilization"], verbose=True, renderer=output, history_path=path)
-    for event in lines:
-        consume_activity(output, decoder, event)
-    return tuple(output.entries[-MAX_ACTIVITY:])
-
-
-SPECIALIST_ROLES = ("economy", "military")
 
 
 @dataclass(frozen=True)
@@ -142,165 +73,12 @@ class SpecialistView:
                     if due is not None
                     else "Sleeping · waiting for first city"
                 )
-            if phase == "finished" and (self.job or {}).get("gameTurn") == turn:
-                failed = ((self.job or {}).get("telemetry") or {}).get("phase") in {"FAILED", "INTERRUPTED"}
-                if not failed:
-                    return f"Finished T{turn} · next review T{due}"
             if phase == "running" and (self.job or {}).get("gameTurn") != turn:
                 return f"Starting T{turn}"
         if self.job is None:
             return "No job yet"
         phase = (self.job.get("telemetry") or {}).get("phase") or "Waiting for telemetry"
-        state = (self.job.get("modelStatus") or {}).get("state")
-        if phase in {"STARTING", "RUNNING"} and state in {"waiting", "retrying"}:
-            phase = "Model " + state
-        return f"{visible_text(phase).replace('_', ' ').capitalize()} T{self.job['gameTurn']}"
-
-
-class SpecialistReader:
-    """Tail existing, redacted service histories without constructing their writers."""
-
-    def __init__(self, root):
-        self.root = root
-        self.epoch = None
-        self.previous = {}
-        self.cache = {}
-
-    def read(self, civilizations, epoch, jobs):
-        if self.epoch != epoch:
-            self.epoch, self.previous, self.cache = epoch, {}, {}
-        result = []
-        used = set()
-        for civilization in civilizations:
-            for role in SPECIALIST_ROLES:
-                key = (civilization, role)
-                matching = [
-                    job
-                    for job in jobs
-                    if job.get("epoch") == epoch
-                    and job.get("civilization") == civilization
-                    and job.get("purpose") == role
-                ]
-                job = max(matching, key=lambda j: (j["gameTurn"], j["claimedAtMs"]), default=None)
-                view = SpecialistView(civilization, role, job)
-                if job is not None:
-                    used.add(job["id"])
-                    try:
-                        view = self.player(view)
-                        self.previous[key] = view
-                    except (OSError, ValueError, TypeError, KeyError, HistoryError) as error:
-                        previous = self.previous.get(key)
-                        if previous and previous.job and previous.job["id"] == job["id"]:
-                            view = previous
-                        view = replace(view, error=f"Cannot read {role} activity ({type(error).__name__}); retrying.")
-                if role == "economy":
-                    path = (
-                        self.root / "agent-services" / civilization_directory_name(civilization) / "economy-status.json"
-                    )
-                    try:
-                        if path.is_file():
-                            regular_file(path, private=True)
-                            schedule = json.loads(path.read_text())
-                            if (
-                                not isinstance(schedule, dict)
-                                or schedule.get("phase") not in {"sleeping", "running", "finished"}
-                                or (
-                                    schedule.get("nextReviewTurn") is not None
-                                    and type(schedule["nextReviewTurn"]) is not int
-                                )
-                                or not isinstance(schedule.get("reasons", []), list)
-                                or any(not isinstance(reason, str) for reason in schedule.get("reasons", []))
-                            ):
-                                raise ValueError("Invalid economy schedule")
-                            latest = max(
-                                (
-                                    j["gameTurn"]
-                                    for j in jobs
-                                    if j.get("epoch") == epoch and j.get("civilization") == civilization
-                                ),
-                                default=-1,
-                            )
-                            if (
-                                schedule.get("epoch") == epoch
-                                and type(schedule.get("gameTurn")) is int
-                                and schedule["gameTurn"] >= latest
-                            ):
-                                view = replace(view, schedule=schedule)
-                    except (OSError, ValueError, TypeError, KeyError):
-                        view = replace(view, error="Cannot read economy schedule; retrying.")
-                result.append(view)
-        self.cache = {key: value for key, value in self.cache.items() if key in used}
-        return tuple(result)
-
-    def player(self, view):
-        assert view.job is not None
-        job = dict(view.job)
-        base = self.root / "agent-services" / civilization_directory_name(view.civilization)
-        digest = hashlib.sha256(job["id"].encode()).hexdigest()
-        record_path = base / "activations" / (digest + ".json")
-        if record_path.is_file():
-            regular_file(record_path, private=True)
-            record = json.loads(record_path.read_text())
-            if any(
-                record.get(field) != value
-                for field, value in (
-                    ("epoch", self.epoch),
-                    ("civilization", view.civilization),
-                    ("purpose", view.role),
-                    ("activationId", job["id"]),
-                )
-            ):
-                raise ValueError("Specialist records belong to another job, player or timeline")
-            telemetry = dict(job.get("telemetry") or {})
-            telemetry.update(record.get("effectiveSettings", record.get("settings", {})))
-            phase = record["phase"]
-            if phase not in {"COMPLETED", "FAILED", "INTERRUPTED"}:
-                phase = {
-                    "finished": "ROLE_FINISHED",
-                    "waiting_negotiation": "WAITING_NEGOTIATION",
-                    "waiting_economy": "WAITING_ROLE",
-                }.get(record.get("roleState"), phase)
-            if telemetry.get("phase") not in {"COMPLETED", "FAILED", "INTERRUPTED"}:
-                telemetry["phase"] = phase
-            if record.get("usageComplete"):
-                telemetry["usageComplete"] = True
-            usage = dict(job.get("usage") or {})
-            for key, value in record.get("usage", {}).items():
-                usage[key] = max(usage.get(key, 0), value)
-            job.update(telemetry=telemetry, usage=usage)
-            job["configuredSettings"] = record.get("settings", {})
-            job["modelStatus"] = record.get("modelStatus")
-            job["error"] = record.get("error")
-        view = replace(view, job=job)
-        path = base / "history" / digest / "events.jsonl"
-        if not path.is_file():
-            raise FileNotFoundError("Local specialist history is unavailable")
-        regular_file(path, private=True)
-        stat = path.stat()
-        identity = (stat.st_dev, stat.st_ino)
-        cached = self.cache.get(job["id"])
-        if cached is None or cached[0] != identity or stat.st_size < cached[1]:
-            output = ActivityOutput(job["id"], view.civilization, job["gameTurn"])
-            cached = (identity, 0, 0, output, LiveOutput(view.civilization, verbose=True, renderer=output))
-        self.cache[job["id"]] = cached
-        _, offset, cursor, output, decoder = cached
-        with path.open("rb") as stream:
-            stream.seek(offset)
-            for _ in range(MAX_EVENT_BATCH):
-                line = stream.readline(64 * 1024 + 1)
-                if len(line) > 64 * 1024 and not line.endswith(b"\n"):
-                    raise HistoryError("Specialist history event exceeds the size limit")
-                if not line or not line.endswith(b"\n"):
-                    break  # Retry an append in progress on the next poll.
-                event = json.loads(line)
-                if not isinstance(event, dict) or not isinstance(event.get("data"), dict):
-                    raise ValueError("Invalid specialist history event")
-                if event.get("sequence") != cursor:
-                    raise HistoryError("Specialist history sequence has a gap")
-                consume_activity(output, decoder, event)
-                offset, cursor = stream.tell(), cursor + 1
-                self.cache[job["id"]] = (identity, offset, cursor, output, decoder)
-        return replace(view, activity=tuple(output.entries))
+        return f"{phase.replace('_', ' ').capitalize()} T{self.job['gameTurn']}"
 
 
 @dataclass(frozen=True)
@@ -317,22 +95,23 @@ class WatchSnapshot:
     strategies: tuple[StrategyView, ...] = ()
     specialists: tuple[SpecialistView, ...] = ()
     container_status: JsonObject | None = None
+    diagnostics: tuple[JsonObject, ...] = ()
 
     @property
     def epoch(self):
         return self.run.get("epoch") or self.result.get("epoch")
 
     @property
-    def players(self) -> list[str]:
-        names = list(self.run.get("sessions", {}))
-        for row in self.result.get("scores", []):
-            if isinstance(row, dict) and isinstance(row.get("civilization"), str) and row["civilization"] not in names:
-                names.append(row["civilization"])
-        for record in self.turns:
-            name = record["turn"]["civilization"]
-            if name not in names:
-                names.append(name)
-        return names
+    def players(self):
+        return list(
+            dict.fromkeys(
+                [
+                    *self.run.get("sessions", {}),
+                    *(row["civilization"] for row in self.result.get("scores", [])),
+                    *(record["turn"]["civilization"] for record in self.turns),
+                ]
+            )
+        )
 
     def latest_turn(self, civilization=None):
         return next(
@@ -340,242 +119,420 @@ class WatchSnapshot:
         )
 
     def player_model(self, civilization):
-        settings = self.run.get("sessions", {}).get(civilization, {}).get("effectiveSettings") or {}
-        if settings.get("model"):
-            return settings["model"]
-        # Opening reviews can report the model before the first gameplay session.
-        review = next((view for view in self.strategies if view.civilization == civilization), None)
-        return ((review.job or {}).get("telemetry") or {}).get("model") if review else None
+        return (self.run.get("sessions", {}).get(civilization, {}).get("configuredSettings") or {}).get("model")
+
+
+def _settings(selection):
+    return {"provider": selection.provider, "model": selection.model, "reasoningEffort": selection.reasoning_effort}
+
+
+def _sessions(request):
+    return {
+        seat.civilization: {"configuredSettings": _settings(seat.session.get_selection("gameplay"))}
+        for seat in request.seats
+    }
+
+
+def request_counts(jobs):
+    """Count recorded model requests by purpose; a held Main job is counted once."""
+    totals = {"gameplay": 0, "review": 0, "communication": 0}
+    players = {}
+    seen = set()
+    missing = 0
+    for job in jobs:
+        if job["id"] in seen:
+            continue
+        seen.add(job["id"])
+        count = (job.get("telemetry") or {}).get("modelRequests")
+        if type(count) is not int:
+            missing += 1
+            continue
+        group = (
+            "review"
+            if job["purpose"] == "review"
+            else "communication"
+            if job["purpose"] in {"communication", "consultation"}
+            else "gameplay"
+        )
+        totals[group] += count
+        row = players.setdefault(job["civilization"], {"gameplay": 0, "review": 0, "communication": 0})
+        row[group] += count
+    return {**totals, "players": players, "missingJobs": missing}
+
+
+def native_host_rows(root, epoch, match_id, names, *, cache=None):
+    turns, jobs, diplomacy, negotiation, updated = [], [], [], None, None
+    if match_id is None or not path_for(root).exists():
+        return (), (), (), None, None
+    with read_database(path_for(root)) as db:
+        query = select(records).where(
+            records.c.epoch == epoch, records.c.collection.in_(["turns", "jobs", "diplomacy", "state"])
+        )
+        if cache is None:
+            rows = db.execute(query.order_by(records.c.revision)).mappings()
+        else:
+            if cache.get("epoch") != epoch:
+                cache.clear()
+                cache.update(epoch=epoch, revision=0, rows={})
+            changed = db.execute(
+                query.where(records.c.revision > cache["revision"]).order_by(records.c.revision.desc()).limit(512)
+            ).mappings()
+            for row in changed:
+                cache["rows"][(row["collection"], row["key"])] = dict(row)
+                cache["revision"] = max(cache["revision"], row["revision"])
+            kept = sorted(cache["rows"].values(), key=lambda row: row["revision"])[-512:]
+            cache["rows"] = {(row["collection"], row["key"]): row for row in kept}
+            rows = kept
+        for row in rows:
+            if row["collection"] == "state" and row["key"] != "diplomacy":
+                continue
+            value = json.loads(row["payload"])
+            if not isinstance(value, dict):
+                raise ValueError("NATIVE_WATCH_HOST_ROW")
+            updated = max(updated or 0, row["updated_ms"] / 1000)
+            if row["collection"] in {"turns", "jobs"}:
+                if value.get("schemaVersion") != 1 or value.get("matchId") != match_id:
+                    raise ValueError("NATIVE_WATCH_HOST_SCOPE")
+                body = value["turn"] if row["collection"] == "turns" else value["job"]
+                if body["epoch"] != epoch or body["civilization"] not in names:
+                    raise ValueError("NATIVE_WATCH_HOST_OWNER")
+                if row["collection"] == "turns":
+                    if type(body["handoff"]) is not int or type(body["gameTurn"]) is not int:
+                        raise ValueError("NATIVE_WATCH_TURN")
+                    usage = value.get("usage")
+                    if usage is not None:
+                        HostUsage.model_validate({key: usage[key] for key in HostUsage.model_fields})
+                    turns.append(value)
+                else:
+                    job = {"id": value["jobId"], **body}
+                    if job.get("usage") is not None:
+                        if (
+                            not isinstance(job["usage"], dict)
+                            or not HostUsage.model_fields.keys() <= job["usage"].keys()
+                        ):
+                            raise ValueError("NATIVE_WATCH_USAGE_INCOMPLETE")
+                        job["usage"] = HostUsage.model_validate(job["usage"]).model_dump(mode="json")
+                    if job.get("telemetry") is not None:
+                        job["telemetry"] = JobTelemetry.model_validate(job["telemetry"]).model_dump(mode="json")
+                    jobs.append(job)
+            elif row["collection"] == "diplomacy":
+                event = DiplomaticEvent.from_record(value, row["revision"], row["updated_ms"] / 1000)
+                if event.epoch != epoch:
+                    raise ValueError("NATIVE_WATCH_DIPLOMACY_SCOPE")
+                diplomacy.append(event)
+            elif value.get("epoch") == epoch:
+                negotiation = value.get("activeNegotiation")
+    return (
+        tuple(sorted(turns, key=lambda value: value["turn"]["handoff"])),
+        tuple(jobs),
+        tuple(diplomacy),
+        negotiation,
+        updated,
+    )
 
 
 class WatchReader:
-    def __init__(self, root: Path):
+    def __init__(self, root: Path, *, owner=False, include_history=True):
         self.root = root
-        self.path = path_for(root)
-        self.identity = None
-        self.revision = 0
-        self.documents = {}
-        self.turns = {}
-        self.streams = {}
-        self.diplomacy = {}
-        self.observed_jobs = {}
-        self.strategy_reader = StrategyReader(root)
-        self.specialist_reader = SpecialistReader(root)
-        self.cache = {}
-        self.errors = []
-        self.updated_at = None
+        self.owner = owner
+        self.include_history = include_history
+        self.host_cache = {} if not include_history else None
         self.previous = WatchSnapshot({}, {}, (), (), (), None)
-
-    def history(self, db, epoch, civilization, turn, activation):
-        key = record_key(epoch, civilization, activation)
-        source = self.streams.get(key)
-        if source is None:
-            return ()
-        if source != dict(epoch=epoch, civilization=civilization, gameTurn=turn, activationId=activation):
-            self.errors.append("History belongs to another turn or player; skipped")
-            return ()
-        if key not in self.cache:
-            output = ActivityOutput(key, civilization, turn)
-            self.cache[key] = (output, LiveOutput(civilization, verbose=True, renderer=output), 0)
-        output, decoder, cursor = self.cache[key]
-        values = db.execute(
-            select(records.c.payload, records.c.updated_ms)
-            .where(
-                records.c.collection == "events",
-                records.c.epoch == epoch,
-                records.c.civilization == civilization,
-                records.c.activation == activation,
-                records.c.sequence >= cursor,
-            )
-            .order_by(records.c.sequence)
-            .limit(MAX_EVENT_BATCH)
-        )
-        for value, updated_ms in values:
-            event = json.loads(value)
-            if event.get("sequence") != cursor:
-                raise HistoryError("History event sequence has a gap")
-            if not isinstance(event.get("data"), dict):
-                raise ValueError("Invalid history event")
-            consume_activity(output, decoder, event)
-            self.updated_at = max(self.updated_at or 0, updated_ms / 1000)
-            cursor += 1
-            self.cache[key] = (output, decoder, cursor)
-        return tuple(output.entries)
+        self.strategy_reader = StrategyReader(root)
 
     def read(self, selected: tuple[str, int] | None = None) -> WatchSnapshot:
-        self.errors = []
+        if not self.owner:
+            from pydantic import TypeAdapter
+
+            from civ_agent.operator_views import ViewGeneration, passive_root
+
+            try:
+                pointer = self.root / "operator-views/current.json"
+                if selected is not None and pointer.exists():
+                    with passive_root(self.root) as captured:
+                        self.previous = WatchReader(captured, owner=True).read(selected)
+                    return self.previous
+                if pointer.exists():
+                    generation = ViewGeneration.model_validate_json(pointer.read_bytes())
+                    current = published_managed_epoch(self.root)
+                    if (generation.game, generation.epoch) != (current.authority.game, current.authority.epoch):
+                        raise ValueError("OPERATOR_VIEW_EPOCH_CONFLICT")
+                    path = self.root / "operator-views" / generation.generation / "view.json"
+                    view = TypeAdapter(WatchSnapshot).validate_json(path.read_bytes())
+                    stale = time.time() - generation.captured_at > 10
+                    availability = self.root / "operator-views/availability.json"
+                    if availability.exists():
+                        error = json.loads(availability.read_bytes())
+                        stale = stale or (
+                            error.get("epoch") == generation.epoch and error.get("time", 0) > generation.captured_at
+                        )
+                    self.previous = replace(
+                        view, errors=(*view.errors, "Operator view is stale") if stale else view.errors
+                    )
+                else:
+                    with passive_root(self.root) as captured:
+                        reader = WatchReader(captured, owner=True)
+                        reader.previous = self.previous
+                        self.previous = reader.read(selected)
+                return self.previous
+            except (OSError, ValueError, sqlite3.Error, SQLAlchemyError) as error:
+                return replace(self.previous, errors=(type(error).__name__,))
+        run: JsonObject
         try:
-            stat = self.path.stat()
-            identity = (stat.st_dev, stat.st_ino)
-            if self.identity != identity:
-                self.identity = identity
-                self.revision = 0
-                self.updated_at = None
-                self.documents, self.turns, self.streams, self.cache = {}, {}, {}, {}
-                self.diplomacy = {}
-                self.observed_jobs = {}
+            local = is_local(self.root)
+            expected = ("controller.json",) if local else ("game.json", "current-epoch.json")
+            if not any((self.root / "native-runtime" / name).exists() for name in expected):
+                self.previous = WatchSnapshot({}, {}, (), (), (), None)
+                return self.previous
+            request = published_managed_epoch(self.root)
+            basis = epoch_publication_basis(self.root)
+            if self.previous.epoch != request.authority.epoch:
+                self.previous = WatchSnapshot(
+                    {"epoch": request.authority.epoch, "sessions": _sessions(request)}, {}, (), (), (), None
+                )
                 self.strategy_reader = StrategyReader(self.root)
-                self.specialist_reader = SpecialistReader(self.root)
-            with read_database(self.path) as db:
-                snapshot = self._read(db, selected)
-            # Opening reviews precede gameplay sessions. Include the native
-            # agent roster so a civ waiting for its first review stays visible.
-            agents = dict.fromkeys(snapshot.run.get("sessions", {}))
-            agents.update(
-                (row["civilization"], None)
-                for row in snapshot.result.get("scores", [])
-                if row.get("controller") == "AGENT"
+            projection = native_projection(self.root)
+            status, host = projection.status, projection.result
+            names = {seat.civilization for seat in request.seats}
+            if host is not None:
+                names.update(row.civilization for row in host.scores)
+            turns, jobs, diplomacy, negotiation, updated = native_host_rows(
+                self.root,
+                request.authority.epoch,
+                host.matchId if host else None,
+                names,
+                **({"cache": self.host_cache} if self.host_cache is not None else {}),
             )
-            jobs = [{"id": value["jobId"], **value["job"]} for value in self.observed_jobs.values()]
+            run = {
+                "epoch": request.authority.epoch,
+                "sessions": _sessions(request),
+                "status": status.mode.lower() if status else "pending",
+                "reason": status.reason if status else None,
+            }
+            if status is not None:
+                run["runtimeStatus"] = status.model_dump(mode="json")
+                run["readOnlyArchive"] = not local
+                if projection.completion is not None:
+                    run["status"] = "completed"
+                run["inFlight"] = {
+                    "civilization": status.active_civilization,
+                    "gameTurn": status.turn,
+                    "handoff": status.handoff,
+                    "controller": status.active_controller,
+                    "agentPhase": status.phase,
+                }
+                if isinstance(status, ControllerState):
+                    run["inFlight"]["phaseStartedAt"] = status.phase_started_at.isoformat()
+            entries, specialists, review_lines, errors = [], [], {}, []
+            for index, seat in enumerate(request.seats):
+                paths = ManagedPlayerPaths(self.root, index, seat.civilization)
+                if paths.player != seat.session.player or seat.session.game != request.authority.game:
+                    raise ValueError("NATIVE_WATCH_PLAYER_SCOPE")
+                scope = Scope(
+                    game=request.authority.game, player=paths.player, epoch=request.authority.epoch, activation="watch"
+                )
+                if self.include_history:
+                    tasks, schedule = task_metadata(paths.coordinator / "notebook/memory.sqlite3", scope)
+                    tasks = operator_tasks(paths.coordinator / "notebook/memory.sqlite3", scope, jobs)
+                else:
+                    tasks, schedule = {}, None
+                for task in tasks.values():
+                    if task.purpose == "review":
+                        for job in jobs:
+                            if job["id"] == task.host_job:
+                                job["reviewTurn"] = task.turn
+                wanted = {}
+                for role in ("economy", "military", "review"):
+                    latest_turn = max((task.turn for task in tasks.values() if task.purpose == role), default=-1)
+                    wanted.update(
+                        (key, task) for key, task in tasks.items() if task.purpose == role and task.turn == latest_turn
+                    )
+                wanted.update(
+                    (key, task)
+                    for key, task in tasks.items()
+                    if task.purpose in {"gameplay", "communication", "consultation"}
+                    and (
+                        (seat.civilization, task.turn) == selected
+                        if selected is not None
+                        else task.turn >= (status.turn if status else 0) - 1
+                    )
+                )
+                try:
+                    lines = sdk_lines(paths, scope, wanted) if self.include_history else ()
+                except (OSError, ValueError, TypeError, sqlite3.Error, SQLAlchemyError):
+                    lines = ()
+                    errors.append(f"Native SDK history unavailable for {seat.civilization}; retrying.")
+                activity = tuple(
+                    Activity(
+                        line.key,
+                        seat.civilization,
+                        line.turn,
+                        line.time,
+                        line.label,
+                        line.text,
+                        line.verbose,
+                        published_at=line.published_at,
+                    )
+                    for line in lines
+                )
+                purpose = {line.key: line.purpose for line in lines}
+                review_lines[seat.civilization] = tuple(entry for entry in activity if purpose[entry.key] == "review")
+                for role in SPECIALIST_ROLES:
+                    matching = [
+                        job for job in jobs if job["civilization"] == seat.civilization and job["purpose"] == role
+                    ]
+                    latest = max(
+                        matching, key=lambda job: (job.get("gameTurn") or 0, job.get("claimedAtMs") or 0), default=None
+                    )
+                    if (
+                        isinstance(status, ControllerState)
+                        and status.active_attempt is not None
+                        and status.active_civilization == seat.civilization
+                    ):
+                        current_role = next(
+                            (r for r in reversed(status.active_attempt.roles) if r.purpose == role), None
+                        )
+                        if current_role is not None:
+                            latest = {
+                                **(latest or {}),
+                                "gameTurn": status.turn,
+                                "telemetry": {
+                                    **((latest or {}).get("telemetry") or {}),
+                                    "phase": current_role.phase,
+                                    "model": current_role.model,
+                                    "modelRequests": current_role.model_requests,
+                                    "contextUsage": getattr(current_role, "context_usage", None),
+                                    "phaseStartedAt": current_role.phase_started_at.isoformat(),
+                                    "phaseElapsedMs": phase_elapsed_ms(current_role.phase_started_at.isoformat()),
+                                },
+                            }
+                    if latest:
+                        latest = {**latest, "configuredSettings": _settings(seat.session.get_selection(role))}
+                    specialists.append(
+                        SpecialistView(
+                            seat.civilization,
+                            role,
+                            latest,
+                            tuple(entry for entry in activity if purpose[entry.key] == role),
+                            schedule=schedule if role == "economy" else None,
+                        )
+                    )
+                for entry in activity:
+                    if purpose[entry.key] in {"gameplay", "communication", "consultation"} and (
+                        selected == (entry.civilization, entry.turn)
+                        if selected is not None
+                        else entry.turn >= (status.turn if status else 0) - 1
+                    ):
+                        entries.append(entry)
+                flight = run.get("inFlight") or {}
+                if flight.get("civilization") == seat.civilization:
+                    current = [
+                        task
+                        for task in tasks.values()
+                        if task.purpose == "gameplay" and task.turn == flight["gameTurn"]
+                    ]
+                    latest = current[-1] if current else None
+                    if latest is not None:
+                        flight.update(activationId=latest.scope.activation, effectiveSettings=latest.settings)
+                        admitted = next((job for job in jobs if job["id"] == latest.host_job), None)
+                        if not local and admitted and admitted.get("telemetry"):
+                            flight["agentPhase"] = admitted["telemetry"]["phase"]
+                    for failure in getattr(status, "model_failures", ()) if status is not None else ():
+                        if (failure.scope.game, failure.scope.epoch) != (
+                            scope.game,
+                            scope.epoch,
+                        ) or failure.scope.player not in {s.session.player for s in request.seats}:
+                            raise ValueError("NATIVE_WATCH_MODEL_FAILURE_SCOPE")
+                        if failure.scope.player == paths.player:
+                            flight["modelStatus"] = {
+                                "state": "retrying" if failure.retry_mode == "automatic" else "failed",
+                                "message": f"{failure.category.replace('_', ' ')} · {failure.retry_mode} recovery",
+                            }
+            for event in diplomacy:
+                if (
+                    event.visible
+                    and event.turn is not None
+                    and (selected is None or selected[0] in event.participants and selected[1] == event.turn)
+                ):
+                    entries.append(
+                        Activity(
+                            f"diplomacy:{event.order:012d}",
+                            event.author,
+                            event.turn,
+                            "",
+                            "Diplomacy",
+                            event.headline + (" Reason: " + event.body["failure"] if event.body.get("failure") else ""),
+                            participants=event.participants,
+                            published_at=event.published_at,
+                        )
+                    )
+            run["requestCounts"] = request_counts(jobs)
+            if not self.include_history:
+                run["requestCountsScope"] = "bounded_recent_dashboard_jobs"
+            if isinstance(status, ControllerState) and status.mode == "RUNNING" and status.active_attempt is not None:
+                run["inFlight"]["activeRoles"] = [r.model_dump(mode="json") for r in status.active_attempt.roles]
+            entries.sort(key=lambda entry: entry.sort_key)
             strategies = self.strategy_reader.read(
-                agents, snapshot.epoch, [job for job in jobs if job["purpose"] == "review"]
+                [seat.civilization for seat in request.seats],
+                request.authority.epoch,
+                [job for job in jobs if job["purpose"] == "review"],
+                histories=review_lines,
             )
-            specialists = self.specialist_reader.read(agents, snapshot.epoch, jobs)
-            container = self.root / "container-status.json"
-            container_status = None
-            if container.is_file():
-                regular_file(container, private=True)
-                container_status = json.loads(container.read_text())
-                if not isinstance(container_status, dict):
-                    raise ValueError("Expected container status object")
-            self.previous = replace(
-                snapshot, strategies=strategies, specialists=specialists, container_status=container_status
+            diagnostics = ()
+            if (self.root / "resolved.json").exists():
+                config = ResolvedGameConfig.model_validate_json(
+                    regular_file(self.root / "resolved.json", private=True).read_bytes()
+                )
+                manifest = (
+                    json.loads(regular_file(self.root / "container.json", private=True).read_bytes())
+                    if (self.root / "container.json").exists()
+                    else {"id": request.authority.game}
+                )
+                if not local:
+                    diagnostics = tuple(native_experiment_players(self.root, config, manifest, now=time.time()))
+            if epoch_publication_basis(self.root) != basis:
+                raise ValueError("NATIVE_WATCH_PUBLICATION_CHANGED")
+            container = (
+                json.loads(regular_file(self.root / "container-status.json", private=True).read_bytes())
+                if (self.root / "container-status.json").exists()
+                else None
+            )
+            self.previous = WatchSnapshot(
+                run,
+                host.model_dump(mode="json") if host else {},
+                turns,
+                tuple(entries[-MAX_ACTIVITY:]),
+                tuple(errors),
+                max(
+                    [
+                        value
+                        for value in [
+                            updated,
+                            projection.result_updated_at,
+                            (self.root / "native-runtime/status.json").stat().st_mtime if status is not None else None,
+                        ]
+                        if value is not None
+                    ],
+                    default=None,
+                ),
+                diplomacy,
+                negotiation,
+                host is not None,
+                strategies,
+                tuple(specialists),
+                container,
+                diagnostics,
             )
             return self.previous
-        except FileNotFoundError:
-            return WatchSnapshot({}, {}, (), (), (), None)
-        except (OSError, ValueError, TypeError, KeyError, HistoryError, SQLAlchemyError) as error:
-            return replace(
-                self.previous, errors=(f"Monitoring database: {type(error).__name__}; showing last readable records",)
-            )
-
-    def _read(self, db, selected):
-        changes = db.execute(
-            select(records)
-            .where(
-                or_(
-                    records.c.collection.in_(["state", "turns", "streams", "diplomacy"]),
-                    and_(
-                        records.c.collection == "jobs",
-                        func.json_extract(records.c.payload, "$.job.purpose").in_(["review", *SPECIALIST_ROLES]),
-                    ),
-                ),
-                records.c.revision > self.revision,
-            )
-            .order_by(records.c.revision)
-        ).mappings()
-        for row in changes:
-            collection = {
-                "state": self.documents,
-                "turns": self.turns,
-                "streams": self.streams,
-                "diplomacy": self.diplomacy,
-                "jobs": self.observed_jobs,
-            }[row["collection"]]
-            value = json.loads(row["payload"])
-            if not isinstance(value, dict):
-                raise ValueError("Expected an object")
-            collection[row["key"]] = (
-                DiplomaticEvent.from_record(value, row["revision"], row["updated_ms"] / 1000)
-                if row["collection"] == "diplomacy"
-                else value
-            )
-            self.revision = row["revision"]
-            self.updated_at = max(self.updated_at or 0, row["updated_ms"] / 1000)
-        run = self.documents.get("run", {})
-        result = self.documents.get("result", {})
-        epoch = run.get("epoch") or result.get("epoch")
-        if result and result.get("epoch") != epoch:
-            self.errors.append("Telemetry belongs to another epoch; waiting for current records")
-            result = {}
-        turns = {}
-        for record in self.turns.values():
-            turn = record.get("turn")
-            if not isinstance(turn, dict) or turn.get("epoch") != epoch:
-                continue
-            if (
-                type(turn.get("handoff")) is not int
-                or type(turn.get("gameTurn")) is not int
-                or not isinstance(turn.get("civilization"), str)
-            ):
-                self.errors.append("Malformed turn telemetry; skipped")
-                continue
-            turns[turn["handoff"]] = record  # Later revisions replace accounting for an existing turn.
-        ordered = tuple(turns[key] for key in sorted(turns))
-        wanted: dict[tuple[str, int], list[str]] = {}
-        counts: dict[str, int] = {}
-        for record in reversed(ordered):
-            turn = record["turn"]
-            identity = (turn["civilization"], turn["gameTurn"])
-            if identity == selected or (selected is None and counts.get(identity[0], 0) < 2):
-                wanted.setdefault(identity, []).extend(record.get("jobs", []))
-                counts[identity[0]] = counts.get(identity[0], 0) + 1
-        flights = [run.get("inFlight"), *run.get("pendingFinalizations", [])]
-        for flight in flights:
-            if not isinstance(flight, dict) or type(flight.get("gameTurn")) is not int:
-                continue
-            name, activation = flight.get("civilization"), flight.get("activationId")
-            if not isinstance(name, str) or not isinstance(activation, str):
-                continue
-            identity = (name, flight["gameTurn"])
-            if selected is None or identity == selected:
-                wanted.setdefault(identity, []).append(activation)
-        entries = []
-        if isinstance(epoch, str):
-            for (civilization, turn), attempts in wanted.items():
-                for activation in dict.fromkeys(a for a in attempts if isinstance(a, str)):
-                    entries.extend(self.history(db, epoch, civilization, turn, activation))
-        used = {
-            record_key(epoch, civilization, activation)
-            for (civilization, _), attempts in wanted.items()
-            for activation in attempts
-        }
-        self.cache = {key: value for key, value in self.cache.items() if key in used}
-        diplomacy = tuple(e for e in self.diplomacy.values() if e.epoch == epoch)
-        latest_turn = max((r["turn"]["gameTurn"] for r in ordered), default=0)
-        if type((run.get("inFlight") or {}).get("gameTurn")) is int:
-            latest_turn = max(latest_turn, run["inFlight"]["gameTurn"])
-        for event in diplomacy:
-            if not event.visible or event.turn is None:
-                continue
-            if selected is not None:
-                if selected[0] not in event.participants or event.turn != selected[1]:
-                    continue
-            elif event.turn < latest_turn - 1:
-                continue
-            if event.kind == "trade" and event.body.get("status") == "SUPERSEDED":
-                continue
-            text = event.headline
-            if event.body.get("failure"):
-                text += " Reason: " + event.body["failure"]
-            text = text[:300] + ("… (Diplomacy tab has the full text)" if len(text) > 300 else "")
-            label = "Social promise" if event.kind in {"offer", "consent"} else "Diplomacy"
-            entries.append(
-                Activity(
-                    f"diplomacy:{event.order:012d}",
-                    event.author,
-                    event.turn,
-                    "",
-                    label,
-                    text,
-                    participants=event.participants,
-                    published_at=event.published_at,
-                )
-            )
-        entries.sort(key=lambda entry: entry.sort_key)
-        diplomatic_state = self.documents.get("diplomacy", {})
-        available = diplomatic_state.get("epoch") == epoch and epoch is not None
-        return WatchSnapshot(
-            run,
-            result,
-            ordered,
-            tuple(entries[-MAX_ACTIVITY:]),
-            tuple(dict.fromkeys(self.errors)),
-            self.updated_at,
-            diplomacy,
-            diplomatic_state.get("activeNegotiation") if available else None,
-            available,
-        )
+        except (OSError, ValueError, TypeError, KeyError, sqlite3.Error, SQLAlchemyError, ContainerError) as error:
+            # A bad authority cannot authorize displaying a prior player's or
+            # discarded epoch's history. Same-epoch storage locks retain metrics.
+            try:
+                current = published_managed_epoch(self.root).authority.epoch
+            except (OSError, ValueError):
+                current = None
+            prior = self.previous if self.previous.epoch == current else WatchSnapshot({}, {}, (), (), (), None)
+            return replace(prior, errors=(f"Native records unavailable ({type(error).__name__}); retrying.",))
 
 
 def event_time(value: str) -> str:
@@ -583,3 +540,16 @@ def event_time(value: str) -> str:
         return dt.datetime.fromisoformat(value).astimezone().strftime("%H:%M:%S")
     except ValueError:
         return "--:--:--"
+
+
+def phase_elapsed_ms(started: str | None, *, now: float | None = None) -> int | None:
+    """Elapsed time from an explicit phase transition, independent of publication age."""
+    if not started:
+        return None
+    try:
+        stamp = dt.datetime.fromisoformat(started)
+        if stamp.tzinfo is None:
+            return None
+        return max(0, int(((time.time() if now is None else now) - stamp.timestamp()) * 1000))
+    except (ValueError, OverflowError):
+        return None

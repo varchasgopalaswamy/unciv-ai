@@ -15,6 +15,7 @@ from pathlib import Path
 
 from civ_agent.benchmark import input_plans
 from civ_agent.commands.game import initialize, stop_game
+from civ_agent.container_identity import require_local_runtime
 from civ_agent.container_support import (
     DEFAULT_AUTH,
     ContainerError,
@@ -133,7 +134,7 @@ def _preview(resolved: list[ResolvedInput], parallel: int) -> dict:
             {
                 "id": item.input.name,
                 "filename": item.input.path.name,
-                "config": item.config.model_dump(),
+                "config": item.config.model_dump(mode="json"),
             }
             for item in resolved
         ],
@@ -298,6 +299,8 @@ def _resume(args) -> int:
     root = args.state_dir.expanduser().resolve()
     manifest = _load_manifest(root)
     parallel = _validate_parallel(args.parallel if args.parallel is not None else manifest["parallel"])
+    for row in manifest["runs"]:
+        require_local_runtime(read_json(root / "games" / row["id"] / "container.json", {}))
     preflight()
     with locked(root / ".launch.lock"), locked(root / ".supervisor.lock"):
         manifest = _load_manifest(root)
@@ -317,14 +320,15 @@ def _resume(args) -> int:
             if args.fast is not None:
                 config = configs[run["id"]]
                 config.agents.fast = args.fast
-                write_private_json(game_root / "resolved.json", config.model_dump())
+                write_private_json(game_root / "resolved.json", config.model_dump(mode="json"))
+            record = identity(game_root)
+            record["launchResumeRequested"] = True
             if image is not None or desktop_image is not None:
-                record = identity(game_root)
                 if image is not None:
                     record["images"]["runtime"] = image
                 if desktop_image is not None:
                     record["images"]["desktop"] = desktop_image
-                write_private_json(game_root / "container.json", record)
+            write_private_json(game_root / "container.json", record)
         write_private_json(root / "batch.json", manifest)
     unit = launch_background(root, "batch")
     print(f"Started: {unit}\nGames: {len(manifest['runs'])}\nConcurrent games: {manifest['parallel']}\nState: {root}")

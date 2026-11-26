@@ -1,23 +1,10 @@
 # Enacted agreement lifecycle
 
-This sprint makes a player's enacted trade rows and bilateral relationship
-agreements identifiable after settlement and records when they end. Agents can
+The player API identifies enacted trades and bilateral agreements after
+settlement and records when they end. Agents can
 inspect remaining commitments, notice lost income or access, and review their
 plans. The native engine remains responsible for the underlying economic and
 diplomatic effects.
-
-**Status:** implemented against engine
-`0bad73285ffa306334b89bcecbe395dc3b3b0bda`, with no engine changes. Python validation
-passed on September 18, 2026: 398 tests and 90 subtests, followed by 39 focused
-verifier tests after the final receipt-check refinement; Ruff lint and format checks
-over 123 files; Pyrefly with zero errors and six existing warnings. JVM regression
-coverage and the scoped desktop comparison also passed. The full JVM run passed
-75 of 76 tests; its sole failure was an old assertion expecting 18 communication
-operations instead of 20. After correcting that test, the focused MCP rerun and
-Gradle checks passed. Eight targeted JVM checks also passed for the scenario
-follow-up. The [live model exercise](../archive/reports/Agreement-lifecycle-live-results.md) passed all
-12 verification checks, with three completed rounds, a restart and sourced plan
-reviews after native endings.
 
 ## Native authority and cancellation
 
@@ -179,8 +166,7 @@ lifecycle probe and Python regressions:
 | Native source inventory | Completed | Pinned sources and cancellation constraints documented above. |
 | Implementation | Implemented | Player API, durable records, events and private-memory integration; no engine changes. |
 | Python regression | Passed, September 18, 2026 | 398 tests and 90 subtests, then 39 focused verifier tests after the final receipt refinement; Ruff lint/format checks; Pyrefly with zero errors and six existing warnings. |
-| JVM regression | Passed across full run and corrected MCP rerun, September 18, 2026 | All 76 tests exercised; the sole initial failure was the stale schema assertion described above. Lifecycle coverage includes player-bound reads; owner-local countdowns; duplicate rows; scheduled expiry; immediate-only completion; resource interruption with preserved peace; war and defensive-pact bundle removal; retained relationship flags; actual effects; hidden-world equivalence; restart, exact retries, interrupted writes and rollback. |
-| Live model exercise | Passed, September 18, 2026 | Rome/Greece negotiated Iron for GPT, both observed native interruption and revised their sourced plans; Rome/France observed normal expiry. Three completed rounds, with two after the planned restart. All 12 verifier checks passed; [evidence and scope](../archive/reports/Agreement-lifecycle-live-results.md). |
+| JVM regression | Automated | Player-bound reads, countdowns, expiry, interruption, restart, exact retries, and rollback. |
 | Visual desktop acceptance | Scoped comparison passed, September 18, 2026 | Ten inspected native screenshots, current rows and owner-local durations, expiration notices, resource cut-short and peace remnant, absence of direct cancellation controls; details below. |
 
 Automated checks establish the exercised contract; live and graphical results are

@@ -11,7 +11,8 @@ from mcp.types import CONNECTION_CLOSED, REQUEST_TIMEOUT
 
 from civ_agent.civilization_state import StateConflict
 from civ_agent.diagnostics import Diagnostics
-from civ_agent.host_connection import HostConnection
+from civ_agent.host_connection import HostConnection, api_origin
+from civ_agent.protocol import JsonObject
 from civ_agent.tls import ensure_server_certificate
 
 
@@ -22,7 +23,7 @@ def material(tmp_path_factory):
 
 @asynccontextmanager
 async def endpoint(material, call):
-    requests = []
+    requests: list[JsonObject] = []
 
     async def handle(request):
         assert request.headers["Authorization"] == "Bearer " + "P" * 43
@@ -132,6 +133,27 @@ def test_json_and_multiline_sse_share_one_session_and_close_from_another_task(ma
             assert requests[-1]["method"] == "DELETE"
             with pytest.raises(StateConflict, match="HOST_CONNECTION_CLOSED"):
                 await host.tool("read", {})
+
+    asyncio.run(run())
+
+
+def test_origin_is_code_owned_mcp_metadata_and_context_isolated_on_shared_connection(material):
+    async def run():
+        async def call(_request, body):
+            assert body["params"]["arguments"] == {"requestId": "stable-native-id"}
+            return result(body, {"ok": True})
+
+        async with endpoint(material, call) as (url, requests):
+            async with HostConnection(url, "P" * 43, material["ca_file"]) as host:
+
+                async def invoke(origin):
+                    with api_origin(origin):
+                        return await host.tool("read", {"requestId": "stable-native-id"})
+
+                await asyncio.gather(invoke("agent"), invoke("background_poll"))
+                await host.tool("read", {"requestId": "stable-native-id"})
+        origins = [row["params"]["_meta"]["civAgentOrigin"] for row in requests if row["method"] == "tools/call"]
+        assert sorted(origins) == ["agent", "background_poll", "coordinator"]
 
     asyncio.run(run())
 

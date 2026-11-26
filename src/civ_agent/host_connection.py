@@ -5,6 +5,7 @@ import json
 import logging
 import time
 import uuid
+from contextlib import contextmanager
 from contextvars import ContextVar
 from pathlib import Path
 
@@ -12,7 +13,7 @@ import httpx2
 from mcp.client import Client
 from mcp.client.streamable_http import streamable_http_client
 from mcp.shared.exceptions import MCPError
-from mcp.types import CONNECTION_CLOSED, REQUEST_TIMEOUT, TextContent
+from mcp.types import CONNECTION_CLOSED, REQUEST_TIMEOUT, RequestParamsMeta, TextContent
 
 from civ_agent.civilization_state import StateConflict
 from civ_agent.diagnostics import Diagnostics
@@ -20,6 +21,19 @@ from civ_agent.protocol import JsonObject
 from civ_agent.tls import client_ssl_context, https_url
 
 _active_connection: ContextVar["HostConnection | None"] = ContextVar("host_diagnostics", default=None)
+_api_origin: ContextVar[str] = ContextVar("host_api_origin", default="coordinator")
+
+
+@contextmanager
+def api_origin(origin: str):
+    """Code-owned call classification; it is never a model tool argument."""
+    if origin not in {"agent", "background_poll", "coordinator"}:
+        raise ValueError("INVALID_API_ORIGIN")
+    token = _api_origin.set(origin)
+    try:
+        yield
+    finally:
+        _api_origin.reset(token)
 
 
 def _failure_code(error: Exception) -> str:
@@ -252,7 +266,8 @@ class HostConnection:
                 # application request IDs and reconciliation of uncertain receipts.
                 wire_arguments = {"request": arguments} if name == "player_communication" else arguments
                 stage = "call_tool"
-                result = await client.session.call_tool(name, wire_arguments)
+                request_meta: RequestParamsMeta = {"civAgentOrigin": _api_origin.get()}
+                result = await client.session.call_tool(name, wire_arguments, meta=request_meta)
                 stage = "decode_result"
                 value = result.structured_content
                 if value is None:

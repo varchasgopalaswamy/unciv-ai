@@ -168,15 +168,17 @@ internal class HostAccountingStore(val path: Path) : AutoCloseable {
         val saved = Json.decodeFromJsonElement<AccountingMetadata>(meta)
         val telemetry = saved.telemetry
         val jobs = mutableMapOf<String, CommunicationJob>()
+        val retired = mutableMapOf<String, RetiredJob>()
         for (row in rows) {
             when (row.collection) {
                 "jobs" -> jobs[row.key] = Json.decodeFromJsonElement(row.payload!!)
+                "retiredJobs" -> retired[row.key] = Json.decodeFromJsonElement(row.payload!!)
                 "turns" -> telemetry.turns[row.key] = Json.decodeFromJsonElement(row.payload!!)
                 "windows" -> telemetry.windows[row.key] = Json.decodeFromJsonElement(row.payload!!)
                 "pending" -> telemetry.pendingCalls[row.key] = Json.decodeFromJsonElement(row.payload!!)
             }
         }
-        return core.copy(telemetry = telemetry, jobs = jobs, invocations = saved.invocations, maxInvocations = saved.maxInvocations, maxConcurrent = saved.maxConcurrent, maxPerCivilization = saved.maxPerCivilization)
+        return core.copy(telemetry = telemetry, jobs = jobs, retiredJobs = retired, invocations = saved.invocations, maxInvocations = saved.maxInvocations, maxConcurrent = saved.maxConcurrent, maxPerCivilization = saved.maxPerCivilization)
     }
 
     override fun close() {
