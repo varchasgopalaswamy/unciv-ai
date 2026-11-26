@@ -99,6 +99,8 @@ Failure or cancellation joins all local work before cleanup. Native effects alre
 are reconciled through their receipts; cancelling a Python task cannot undo them.
 Communication and delivery admission are held across handoff and recovery.
 The final native completion check remains the authority for ending a turn.
+If a native job renewal loses its reply, the controller retries the same job ID
+within the lease window. A denial or invalid reply stops the affected work.
 
 Review cycles freeze permitted evidence before a handoff and start only after
 the native host confirms that handoff. A definite rejection discards the unused

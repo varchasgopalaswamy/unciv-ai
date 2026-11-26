@@ -81,10 +81,12 @@ def usage_series(state_dir: Path, included, first_turn: int, last_turn: int):
             usage = json.loads(raw_usage)
             if not isinstance(usage, dict):
                 continue
-            cached, total_input, output = (
-                usage.get(field) for field in ("cached_input_tokens", "input_tokens", "output_tokens")
-            )
-            if any(type(count) is not int or count < 0 for count in (cached, total_input, output)):
+            cached = usage.get("cached_input_tokens")
+            total_input = usage.get("input_tokens")
+            output = usage.get("output_tokens")
+            if type(cached) is not int or type(total_input) is not int or type(output) is not int:
+                continue
+            if min(cached, total_input, output) < 0:
                 continue
             if cached > total_input or not (total_input or output):
                 continue

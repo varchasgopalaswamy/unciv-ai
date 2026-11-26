@@ -9,7 +9,9 @@ import uncivai.player.PlayerSessionFailure
 import uncivai.player.TurnCommandKind
 import uncivai.player.TurnCommandReceipt
 import uncivai.player.TurnCommandRequest
+import java.io.ByteArrayOutputStream
 import java.io.IOException
+import java.io.PrintStream
 import java.nio.file.Files
 import java.nio.file.Path
 
@@ -88,10 +90,24 @@ object CheckpointProbe {
                 "Committed or pending",
             )
             armed = true
-            val failure = runCatching { session.execute(request) }.exceptionOrNull()
+            val diagnostics = ByteArrayOutputStream()
+            val previousError = System.err
+            val failure = try {
+                System.setErr(PrintStream(diagnostics))
+                val result = runCatching { session.execute(request) }.exceptionOrNull()
+                // A secondary failure must preserve and report only the original cause.
+                runCatching { runtime.haltAfterMutation(IllegalStateException("secondary failure")) }
+                result
+            } finally {
+                System.setErr(previousError)
+            }
             check(failure is PlayerSessionException && failure.reason == PlayerSessionFailure.GAME_HALTED)
             check(runtime.mutationFailure === injected)
             check(failure.cause == null)
+            check("injected persistence failure" !in failure.message.orEmpty())
+            val logged = diagnostics.toString(Charsets.UTF_8)
+            check(logged.split("java.io.IOException: injected persistence failure").size == 2)
+            check("CheckpointProbe" in logged && "secondary failure" !in logged)
             check(runCatching { runtime.executor.resume() }.isFailure) { "Resume cleared an uncertain mutation" }
         }
         HeadlessRuntime.loadCheckpoint(checkpoint, root.resolve("restored")).use { runtime ->

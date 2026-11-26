@@ -453,7 +453,13 @@ class GameExecutor internal constructor(
     }
 
     internal fun haltAfterMutation(failure: Throwable): Nothing = synchronized(lifecycleLock) {
-        if (mutationFailure == null) mutationFailure = failure
+        if (mutationFailure == null) {
+            mutationFailure = failure
+            // Player errors deliberately omit this cause. Preserve it in the trusted
+            // host log before shutdown discards the halted runtime's memory.
+            System.err.println("Game halted after a mutation; restore a checkpoint before resuming.")
+            failure.printStackTrace(System.err)
+        }
         communicationChanges.invalidate()
         throw RuntimeHaltedException()
     }

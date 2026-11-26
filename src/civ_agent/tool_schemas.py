@@ -14,6 +14,7 @@ from civ_agent.memory_records import (
     HistoryReadResult,
     Intent,
     MemoryContributions,
+    MemoryPage,
     MemoryRead,
     MemoryReadResult,
     MemorySearch,
@@ -337,6 +338,7 @@ TOOL_MODELS: dict[str, type[BaseModel]] = {
     "commitment_offer": CommitmentOffer,
     "commitment_decide": CommitmentDecision,
     "memory_read": MemoryRead,
+    "memory_page": MemoryPage,
     "memory_search": MemorySearch,
     "memory_update": MemoryUpdate,
 }

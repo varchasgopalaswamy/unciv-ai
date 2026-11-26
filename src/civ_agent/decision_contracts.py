@@ -55,6 +55,7 @@ READS = frozenset(
         "mission_preview",
         "player_inspect",
         "memory_read",
+        "memory_page",
         "memory_search",
         "history_read",
         "chat_read",

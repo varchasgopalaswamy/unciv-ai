@@ -17,6 +17,7 @@ from pydantic_ai.usage import RunUsage
 from pydantic_ai_harness.compaction import ContextUsageEvent
 from pydantic_ai_harness.step_persistence import SqliteStepStore
 
+from civ_agent.civilization_state import StateConflict
 from civ_agent.diagnostics import exception_details
 from civ_agent.host_connection import api_origin
 from civ_agent.orchestration.authored_memory import AuthoredMemoryRequest, AuthoredMemoryService
@@ -65,6 +66,10 @@ from civ_agent.step_store_notifications import CommittedStepStore
 from civ_agent.strategic_review import REVIEW_READ_TOOLS, StrategicAdvice
 from civ_agent.tls import regular_file
 
+JOB_HEARTBEAT_INTERVAL = 20
+JOB_HEARTBEAT_RETRY_INTERVAL = 5
+JOB_LEASE_RENEWAL_WINDOW = 80  # Leave a margin within the host's 90-second job lease.
+
 
 class LocalGateway:
     def __init__(self, root, database: Path):
@@ -111,6 +116,7 @@ class Permit:
     job: NativeJob
     model: str
     started: int = field(default_factory=lambda: int(time.time() * 1000))
+    lease_started: float = field(default_factory=time.monotonic)
     sequence: int = 0
     requests: int = 0
     sdk_requests: int = 0
@@ -424,13 +430,34 @@ class LocalPlayer:
 
     async def _heartbeats(self):
         while True:
-            await asyncio.sleep(20)
-            for permit in list(self.permits.values()):
-                async with permit.lock:
-                    if permit.admitted and not permit.released and not permit.releasing:
-                        result = await self.admission.heartbeat(permit.job)
-                        if not result.granted:
-                            raise RuntimeError("LOCAL_JOB_LEASE_LOST")
+            await asyncio.sleep(JOB_HEARTBEAT_RETRY_INTERVAL)
+            async with asyncio.TaskGroup() as renewals:
+                for permit in list(self.permits.values()):
+                    renewals.create_task(self._renew_permit(permit))
+
+    async def _renew_permit(self, permit: Permit) -> None:
+        async with permit.lock:
+            if not permit.admitted or permit.released or permit.releasing:
+                return
+            started = time.monotonic()
+            if started < permit.lease_started + JOB_HEARTBEAT_INTERVAL:
+                return
+            deadline = permit.lease_started + JOB_LEASE_RENEWAL_WINDOW
+            if started >= deadline:
+                raise RuntimeError("LOCAL_JOB_LEASE_LOST")
+            try:
+                async with asyncio.timeout(min(30, deadline - started)):
+                    result = await self.admission.heartbeat(permit.job)
+            except (StateConflict, TimeoutError) as error:
+                if isinstance(error, StateConflict) and str(error) != "HOST_UNAVAILABLE":
+                    raise
+                # An uncertain reply can be retried with the same native job ID.
+                if time.monotonic() < deadline:
+                    return
+                raise RuntimeError("LOCAL_JOB_LEASE_LOST") from error
+            if not result.granted:
+                raise RuntimeError("LOCAL_JOB_LEASE_LOST")
+            permit.lease_started = started
 
     async def _publish_permit(self, permit, phase, release=False):
         await self.state.role(
@@ -522,8 +549,10 @@ class LocalPlayer:
                 admitted_before_claim = permit.admitted
                 while True:
                     permit.lifecycle = PermitState.CLAIM_UNCERTAIN
+                    started = time.monotonic()
                     grant = await self.admission.claim(permit.job)
                     if grant.granted:
+                        permit.lease_started = started
                         permit.lifecycle = PermitState.COMPUTING
                         await self._report_locked(permit, "RUNNING")
                         return

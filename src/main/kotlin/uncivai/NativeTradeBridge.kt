@@ -73,7 +73,7 @@ internal class NativeTradeBridge(private val runtime: GameExecutor, private val 
         }
         // All rejection checks precede removing a prior request or publishing replacement terms.
         if (previous != null) {
-            removeRequest(previous, release = false)
+            removeRequest(previous, retainCommitmentFor = actor)
             trades.replace(previous.copy(status = "SUPERSEDED"), actor)
         }
         if (friendship) {
@@ -122,9 +122,10 @@ internal class NativeTradeBridge(private val runtime: GameExecutor, private val 
         return obj("trade" to view(final, actor), "outcome" to final.outcome?.recordJson())
     }
 
-    private fun removeRequest(proposal: EngineTradeProposal, release: Boolean = true) {
+    private fun removeRequest(proposal: EngineTradeProposal, retainCommitmentFor: String? = null) {
         for (civilization in proposal.participants().map(trades::player)) {
-            if (release) civilization.releaseTradeCommitment(proposal.nativeRequestId ?: proposal.proposal)
+            // The replacement author already reserved the replacement. Release the prior author's hold.
+            if (civilization.civID != retainCommitmentFor) civilization.releaseTradeCommitment(proposal.nativeRequestId ?: proposal.proposal)
             civilization.tradeRequests.removeAll { it.requestId == proposal.nativeRequestId }
             civilization.popupAlerts.removeAll { it.requestId == proposal.nativeRequestId }
             civilization.cache.updateCivResources()

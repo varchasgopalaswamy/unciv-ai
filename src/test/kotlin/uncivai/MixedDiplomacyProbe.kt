@@ -8,6 +8,7 @@ import com.unciv.logic.civilization.diplomacy.DiplomacyFlags
 import com.unciv.logic.trade.Trade
 import com.unciv.logic.trade.TradeOffer
 import com.unciv.logic.trade.TradeOfferType
+import com.unciv.logic.trade.TradeOperations
 import com.unciv.logic.trade.TradeRequest
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.boolean
@@ -405,14 +406,40 @@ object MixedDiplomacyProbe {
         check(counter["acceptAvailable"]!!.jsonPrimitive.boolean) { counter.toString() }
         check(decide(counter, "decline")["trade"]!!.jsonObject["status"]!!.jsonPrimitive.content == "DECLINED")
 
-        // An agent counter replaces exactly the imported version; stale consent cannot enact it.
-        runtime.executor.accessGame { rome.tradeRequests.add(TradeRequest(china.civID, Trade().apply { theirOffers.add(TradeOffer("Gold", TradeOfferType.Gold, 3, runtime.game.speed)) })) }
-        val original = read(incoming())
-        val replacement = send("trade_offer", "partner" to "China", "proposal" to original["proposal"], "version" to original["version"], "give" to listOf(gold(2)), "receive" to emptyList<JsonObject>())["trade"]!!.jsonObject
-        check(rome.tradeRequests.isEmpty())
-        check(decide(original, "accept")["error"] != null)
-        check(decide(replacement, "withdraw")["trade"]!!.jsonObject["status"]!!.jsonPrimitive.content == "WITHDRAWN")
-        check(china.tradeRequests.isEmpty())
+        // A native counteroffer transfers the reservation to its new author.
+        // Invalid replacements keep the original request and its exact backing.
+        for (outcome in listOf("withdraw", "enact")) {
+            val request = TradeRequest(china.civID, Trade().apply { theirOffers.add(TradeOffer("Gold", TradeOfferType.Gold, 3, runtime.game.speed)) })
+            runtime.executor.accessGame { check(TradeOperations.enqueue(rome, request)) }
+            val original = read(incoming())
+            val hold = china.tradeCommitments.single { it.id == request.requestId }
+            check(hold.gold == 3)
+            val rejected = send("trade_offer", "partner" to "China", "proposal" to original["proposal"], "version" to original["version"], "give" to listOf(gold(rome.gold + 1)), "receive" to emptyList<JsonObject>())
+            check(rejected["error"] != null && rome.tradeRequests.single() === request)
+            check(china.tradeCommitments.single { it.id == request.requestId } === hold)
+            val beforeGold = rome.gold to china.gold
+            val replacement = send("trade_offer", "partner" to "China", "proposal" to original["proposal"], "version" to original["version"], "give" to listOf(gold(2)), "receive" to emptyList<JsonObject>())["trade"]!!.jsonObject
+            check(rome.tradeRequests.isEmpty())
+            check(china.tradeCommitments.none { it.id == request.requestId })
+            check(rome.tradeCommitments.single { it.id == request.requestId }.gold == 2)
+            check(decide(original, "accept")["error"] != null)
+            // Revising our own pending offer must keep its replacement hold.
+            val revised = send("trade_offer", "partner" to "China", "proposal" to replacement["proposal"], "version" to replacement["version"], "give" to listOf(gold(4)), "receive" to emptyList<JsonObject>())["trade"]!!.jsonObject
+            check(rome.tradeCommitments.single { it.id == request.requestId }.gold == 4)
+            if (outcome == "withdraw") {
+                check(decide(revised, "withdraw")["trade"]!!.jsonObject["status"]!!.jsonPrimitive.content == "WITHDRAWN")
+                check(rome.gold == beforeGold.first && china.gold == beforeGold.second)
+            } else {
+                native()
+                check(read(revised)["status"]!!.jsonPrimitive.content == "ENACTED")
+                check(rome.gold == beforeGold.first - 4 && china.gold == beforeGold.second + 4)
+                native()
+                check(rome.gold == beforeGold.first - 4 && china.gold == beforeGold.second + 4)
+            }
+            check(china.tradeRequests.isEmpty())
+            check(rome.tradeCommitments.none { it.id == request.requestId })
+            check(runtime.executor.mutationFailure == null)
+        }
 
         // Unavailable finances invalidate at native processing; absence is never called acceptance.
         val invalid = send("trade_offer", "partner" to "China", "give" to listOf(gold(20)), "receive" to emptyList<JsonObject>())["trade"]!!.jsonObject

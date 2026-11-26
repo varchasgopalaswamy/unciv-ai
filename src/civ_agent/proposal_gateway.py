@@ -42,6 +42,7 @@ from civ_agent.host_effects import HOST_EFFECT_TOOLS, PreparedHostEffect, host_r
 from civ_agent.inspection_bundle import run_bundle
 from civ_agent.mcp_results import RESULT_FORMAT_HEADER, STRUCTURED_RESULT_FORMAT, canonical_tool_result
 from civ_agent.memory_delivery import apply_memory_delivery, memory_response
+from civ_agent.memory_pages import bounded_records, memory_page
 from civ_agent.memory_records import (
     Intent,
     MemoryReadResult,
@@ -100,6 +101,7 @@ READ_TOOLS = {
     "victory_progress",
 }
 COMMUNICATION_READ_TOOLS = {"player_turn", "player_result", "victory_progress"}
+NOTEBOOK_TOOLS = {"memory_read", "memory_search", "memory_page", "memory_update"}
 
 
 def public_result(value: Any) -> Any:
@@ -428,9 +430,7 @@ class ProposalGateway:
         async with self.admit(review=job.review_inputs is not None):
             tools = await self._tools(job)
             if self.memory.authored_enabled:
-                tools = [
-                    tool for tool in tools if tool["name"] not in {"memory_read", "memory_search", "memory_update"}
-                ]
+                tools = [tool for tool in tools if tool["name"] not in NOTEBOOK_TOOLS]
                 job.catalogue = copy.deepcopy(tools)
             return tools
 
@@ -612,6 +612,7 @@ class ProposalGateway:
                             "native_advice",
                             "memory_read",
                             "memory_search",
+                            "memory_page",
                             "trade_options",
                             "trade_prepare",
                             "trade_read",
@@ -860,12 +861,18 @@ class ProposalGateway:
             "memory_read",
             "Read private records by ID; use includeRetired for archived entries. Observations record earlier "
             "facts; statements and notes contain assessments. After your turn ends, information is limited to "
-            "that completed turn.",
+            "that completed turn. Use memory_page to read references returned in recordPages.",
         )
         add(
             "memory_search",
             "Search private records by type, subject, state or text, 20 per page. Results are active by default; "
-            "history=true includes earlier versions as historical evidence. Use nextOffset for another page.",
+            "history=true includes earlier versions as historical evidence. Use nextOffset for another search page "
+            "or memory_page for a recordPages reference.",
+        )
+        add(
+            "memory_page",
+            "Read a delivered notebook record by id and version. Follow the returned JSON Pointer paths and nextOffset. "
+            "Use current game tools for live facts.",
         )
         add(
             "memory_update",
@@ -2103,7 +2110,7 @@ class ProposalGateway:
         prepare_only: bool = False,
     ) -> JsonObject | PreparedHostEffect:
         self.check(job)
-        if self.memory.authored_enabled and name in {"memory_read", "memory_search", "memory_update"}:
+        if self.memory.authored_enabled and name in NOTEBOOK_TOOLS:
             return {"error": "TOOL_NOT_PERMITTED", "applied": False}
         arguments = copy.deepcopy(arguments)
         await self.verify_identity(job)
@@ -2443,6 +2450,35 @@ class ProposalGateway:
             )
             job.seen_messages.update(event["body"]["message"] for event in page["events"] if event["kind"] == "message")
             return public_result(page)
+        if name == "memory_page":
+            source = arguments["id"]
+            try:
+                version, record = await self.io.call(self.memory.delivered_memory_record, job.id, source)
+                if arguments.get("version") not in (None, version):
+                    return {
+                        "error": "MEMORY_PAGE_VERSION_CHANGED",
+                        "id": source,
+                        "version": version,
+                        "applied": False,
+                        "recoverable": True,
+                        "instruction": "Read or search for the notebook record again before paging.",
+                    }
+                return memory_page(
+                    public_result(record),
+                    id=source,
+                    version=version,
+                    path=arguments.get("path", ""),
+                    offset=arguments.get("offset", 0),
+                )
+            except ValueError as error:
+                if str(error) not in {"SOURCE_NOT_DELIVERED", "INVALID_MEMORY_PATH"}:
+                    raise
+                return {
+                    "error": str(error),
+                    "applied": False,
+                    "recoverable": True,
+                    "instruction": "Use a delivered recordPages reference and the JSON Pointer from a page.",
+                }
         if name == "memory_read":
             chosen = await self.io.call(
                 self.memory.refresh_memory,
@@ -2452,9 +2488,12 @@ class ProposalGateway:
                 startup=startup,
             )
             RecordStore.deliver(job.memory, chosen)
+            versions = {key: record["version"] for key, record in chosen.items()}
             result = memory_response(
-                public_result({"records": [public_record(key, record) for key, record in chosen.items()]}),
-                {key: record["version"] for key, record in chosen.items()},
+                bounded_records(
+                    public_result({"records": [public_record(key, record) for key, record in chosen.items()]}), versions
+                ),
+                versions,
                 job.memory_read_pending if job.coordination_preparing else job.memory_read_seen,
                 job.coordination_scope,
                 job.payload_sequence + 1,
@@ -2470,14 +2509,17 @@ class ProposalGateway:
                     [r["id"] for r in result["records"]],
                 )
                 job.memory["records"].update(chosen)
+                versions = {key: record["version"] for key, record in chosen.items()}
                 result = memory_response(
-                    public_result(result),
-                    {key: record["version"] for key, record in chosen.items()},
+                    bounded_records(public_result(result), versions),
+                    versions,
                     job.memory_read_pending if job.coordination_preparing else job.memory_read_seen,
                     job.coordination_scope,
                     job.payload_sequence + 1,
                     full=startup or full_delivery(arguments),
                 )
+            else:
+                result = bounded_records(public_result(result), {})
             return public_result(MemorySearchResult.model_validate(result).model_dump(exclude_unset=True))
         if name == "memory_update":
             owners = None

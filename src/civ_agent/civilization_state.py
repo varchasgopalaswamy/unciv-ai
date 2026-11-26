@@ -1859,6 +1859,42 @@ class CivilizationState:
             )
             return {key: snapshot["records"][key] for key in keys if key in snapshot.get("delivered", {})}
 
+    def delivered_memory_record(self, job: str, source: str) -> tuple[int, JsonObject]:
+        """Resolve only a notebook record version already delivered to this job."""
+        categories = MEMORY_TYPES | {"contribution", "decision", "observation", "statement"}
+        with self.transaction() as db:
+            self._validate(db, job)
+            snapshot = load_snapshot(
+                db, db.execute(select(tables.jobs.c.snapshot).where(tables.jobs.c.id == job)).scalar_one()
+            )
+            historical = snapshot.get("historicalEvidence", {}).get(source)
+            if historical is not None:
+                if historical["category"] not in categories:
+                    raise StateConflict("SOURCE_NOT_DELIVERED")
+                row = (
+                    db.execute(
+                        select(tables.records).where(
+                            tables.records.c.key == historical["key"],
+                            tables.records.c.version == historical["version"],
+                        )
+                    )
+                    .mappings()
+                    .one()
+                )
+                key = row["key"]
+                record = {"category": row["category"], "version": row["version"], "body": json.loads(row["body"])}
+            else:
+                key = source
+                record = snapshot["records"].get(key)
+                if record is None or snapshot.get("delivered", {}).get(key) != record["version"]:
+                    raise StateConflict("SOURCE_NOT_DELIVERED")
+            if record["category"] not in categories:
+                raise StateConflict("SOURCE_NOT_DELIVERED")
+            value = public_record(key, record)
+            if historical is not None:
+                value.update(evidence=source, historical=True)
+            return record["version"], value
+
     def refresh_memory(self, job, keys, cursor=None, include_retired=False, startup=False, routing_ids=()):
         with self.transaction() as db:
             self._validate(db, job)

@@ -163,6 +163,10 @@ filters by type, subject, text and active/retired/all state, with pagination.
 `history: true` exposes reachable revisions, excluding rollback's discarded future.
 Notes use optional `relatedMemory` for a historical memory ID, never prose.
 
+Large records appear as `recordPages` references. Within the same job, pass the
+reference ID and any supplied version to `memory_page`. Use the returned JSON
+Pointer paths and offsets to read nested values or continue a page.
+
 Each accepted edit returns its version and full public record. Unread or
 mismatched entries return `MEMORY_CONFLICT` with a narrow recovery read. Other
 valid edits in the batch commit. Notebook conflicts do not halt the match.

@@ -88,6 +88,7 @@ def test_first_review_renews_only_after_admission_and_close_joins_heartbeat(monk
         ticks: asyncio.Queue[None] = asyncio.Queue()
         allow_claim, renewed = asyncio.Event(), asyncio.Event()
         sleep = asyncio.sleep
+        clock = SimpleNamespace(now=0)
 
         async def tick(_delay):
             await ticks.get()
@@ -101,6 +102,7 @@ def test_first_review_renews_only_after_admission_and_close_joins_heartbeat(monk
             return SimpleNamespace(granted=True)
 
         monkeypatch.setattr(module.asyncio, "sleep", tick)
+        monkeypatch.setattr(module, "time", SimpleNamespace(monotonic=lambda: clock.now, time=lambda: 0))
         player.admission = SimpleNamespace(
             claim=claim,
             report=AsyncMock(return_value=SimpleNamespace(granted=True)),
@@ -118,8 +120,9 @@ def test_first_review_renews_only_after_admission_and_close_joins_heartbeat(monk
         allow_claim.set()
         await computing
         assert queued.admitted and queued.computing and player.parent is None
+        clock.now = module.JOB_HEARTBEAT_INTERVAL
         ticks.put_nowait(None)
-        await renewed.wait()
+        await asyncio.wait_for(renewed.wait(), timeout=5)
         player.admission.heartbeat.assert_awaited_once_with(queued.job)
         heartbeat_task = player._heartbeat_task
         await player.close()

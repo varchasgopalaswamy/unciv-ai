@@ -355,6 +355,13 @@ class MemoryRead(DeliveryOptions):
     includeRetired: bool = False
 
 
+class MemoryPage(BoundaryModel):
+    id: Source
+    version: NonnegativeInt | None = None
+    path: str = Field(default="", max_length=4096, description="JSON Pointer from the preceding page.")
+    offset: NonnegativeInt = 0
+
+
 class MemorySearch(DeliveryOptions):
     type: (
         Literal[
@@ -564,6 +571,7 @@ ReadRecord = Annotated[
 class MemoryReadResult(BoundaryModel):
     records: Annotated[list[ReadRecord], Field(max_length=20)]
     memoryDelivery: MemoryDelivery | None = None
+    recordPages: list[JsonObject] = Field(default_factory=list, exclude_if=lambda value: not value)
 
 
 class MemorySearchResult(MemoryReadResult):
