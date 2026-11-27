@@ -21,6 +21,45 @@ The last command prints a URL. Open it and sign in with the OpenAI subscription
 the AI players will use. For setup help or other model providers, see the
 [full-game guide](docs/guides/Full-vanilla-run.md).
 
+## Set up Decisions
+
+Both map presets use Jev by default. Set up Jev or Luna before starting a game.
+
+### Jev with a local server
+
+We’ve tested Jev with Winnow-12B. Any server that implements the same System One
+API can be used if it accepts `Winnow-12B` as the model name and serves
+`/v1/systemone` without an API key.
+
+Install Winnow’s Linux/NVIDIA prerequisites, then run its setup and server in a
+separate terminal. [Winnow installation guide](https://github.com/EldanRing/winnow-inference/blob/main/docs/INSTALL.md)
+
+```sh
+git clone https://github.com/EldanRing/winnow-inference.git
+cd winnow-inference
+python3 scripts/winnow.py setup --model q8
+python3 scripts/winnow.py serve --model q8
+```
+
+Leave the server running while you play. The game expects it at
+`http://127.0.0.1:8091/v1/systemone` on the host. For a different address, set
+`CIV_JEV_ENDPOINT` in the systemd user environment to the full URL as seen from
+the broker container.
+
+### Luna with the OpenAI API
+
+Luna uses an OpenAI Platform API key and separate API billing. Save the key on
+one line in a private file, then install it with mode `600`. [OpenAI Decisions guide](https://developers.openai.com/api/docs/guides/decisions)
+
+```sh
+auth_dir="$HOME/.local/state/unciv-host/auth"
+mkdir -p "$auth_dir"
+install -m 600 /path/to/openai-api-key.txt "$auth_dir/decisions.key"
+```
+
+Add `--decisions-backend luna` to `game start` below. If you use a custom
+`--auth-dir`, put `decisions.key` there.
+
 ## Start playing
 
 Pick [Balanced Pangaea](examples/pangaea.toml) or
@@ -36,6 +75,9 @@ game_dir="$HOME/.local/state/unciv-host/$map_name"
 
 The game starts in the background. When `game status` shows a `browser.url`,
 open it and enter the password from `desktop/password.txt` in your game directory.
+
+`game status` also shows the Decisions broker’s health. The upstream status
+stays `unchecked` until the broker makes its first classification request.
 
 To start another match, use a different `game_dir`. You can copy either preset,
 edit the settings, and pass your file to `--config`.
