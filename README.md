@@ -23,6 +23,9 @@ the AI players will use. For setup help or other model providers, see the
 
 ## Set up Decisions
 
+We use a decision model to figure out what effort setting needs to be used for a 
+given turn. If this is disabled, the default will always be used.
+
 Both map presets use Jev by default. Set up Jev or Luna before starting a game.
 
 ### Jev with a local server
