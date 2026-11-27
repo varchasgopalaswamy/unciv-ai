@@ -253,7 +253,7 @@ def test_catalog_rejects_unsupported_requests_before_creating_any_client(tmp_pat
     asyncio.run(run())
 
 
-@pytest.mark.parametrize("model", ["gpt-6-luna", "gpt-6-sol", "gpt-6.2-astra", "gpt-6.2-sol"])
+@pytest.mark.parametrize("model", ["gpt-6-luna", "gpt-6-sol", "gpt-6.1-terra", "gpt-6.2-astra", "gpt-6.2-sol"])
 def test_subscription_defaults_keep_medium_and_context_without_fetching_tokens(model):
     class Broker:
         async def fetch(self, **_):

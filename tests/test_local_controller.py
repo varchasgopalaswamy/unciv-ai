@@ -2,6 +2,7 @@
 
 import asyncio
 import copy
+import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -166,6 +167,41 @@ def seed(root, requested, *, authorization=None):
         ),
     )
     return store
+
+
+def test_desktop_progress_projects_only_current_ai_turn_stages(tmp_path):
+    async def run():
+        store = seed(tmp_path, config())
+        state = store.current
+        state.active_civilization, state.active_controller = "Rome", "AGENT"
+        try:
+            for phase, stage in (
+                ("PREPARING", "PREPARING"),
+                ("WAITING_REVIEW", "REVIEWING"),
+                ("ROLE_WORK", "PLAYING"),
+                ("MAIN_FOLLOWUP", "PLAYING"),
+                ("HANDOFF", "FINISHING"),
+            ):
+                await store.phase(phase)
+                assert json.loads(store.desktop_progress_path.read_text()) == {
+                    "epoch": "g1",
+                    "turn": 0,
+                    "handoff": 0,
+                    "stage": stage,
+                }
+            await store.phase("ROLE_WORK")
+            await store.role(RoleStatus(purpose="gameplay", job="main", phase="WAITING_FOR_MODEL", model="private"))
+            await store.role(RoleStatus(purpose="communication", job="dm", phase="INFERENCE", model="private"))
+            assert json.loads(store.desktop_progress_path.read_text())["stage"] == "WAITING_FOR_MODEL"
+            await store.role(RoleStatus(purpose="economy", job="economy", phase="INFERENCE", model="private"))
+            assert json.loads(store.desktop_progress_path.read_text())["stage"] == "PLAYING"
+            state.handoff += 1
+            await store.save()
+            assert not store.desktop_progress_path.exists()
+        finally:
+            await store.close()
+
+    asyncio.run(run())
 
 
 def test_shutdown_publishes_terminal_state_before_closing_histories(tmp_path):

@@ -3,7 +3,7 @@
 import json
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, Mock, call
 
 import pytest
 
@@ -12,7 +12,7 @@ from civ_agent import container_supervisor as supervisor
 from civ_agent.commands import batch, game
 from civ_agent.container_identity import LOCAL_RUNTIME, require_local_runtime
 from civ_agent.container_support import identity
-from civ_agent.game_config import GameConfig
+from civ_agent.game_config import GameConfig, Player
 from civ_agent.operator_state import local_state, projection, published_game
 from civ_agent.orchestration.managed_player import NativePlayerSession, NativePlayerSettings
 from civ_agent.runtime.state import AttemptRecord, ControllerState, RoleStatus
@@ -118,6 +118,52 @@ def test_launch_starts_only_controller_and_preserves_explicit_intent(local_game,
     )
 
 
+def test_human_launch_waits_for_the_localhost_port_and_browser(local_game, monkeypatch):
+    root, config, record = local_game
+    config.players[0] = Player(name=config.players[0].name, controller="human")
+    record["images"]["desktop"] = "sha256:" + "b" * 64
+    write_private_json(root / "container.json", record)
+    write_private_json(root / "resolved.json", config.model_dump())
+    run = supervisor.GameRun(root)
+    monkeypatch.setattr(supervisor, "cleanup", Mock())
+    monkeypatch.setattr(supervisor, "firewall", Mock())
+    monkeypatch.setattr(supervisor, "create_network", Mock(return_value={"subnets": [{"subnet": "10.42.0.0/24"}]}))
+    browser_check = Mock(side_effect=[False, True])
+    port = Mock(
+        side_effect=[
+            SimpleNamespace(returncode=125, stdout=""),
+            SimpleNamespace(returncode=0, stdout=""),
+            SimpleNamespace(returncode=0, stdout="127.0.0.1:0\n"),
+            SimpleNamespace(returncode=0, stdout="127.0.0.1:42753\n"),
+            SimpleNamespace(returncode=0, stdout="127.0.0.1:42753\n"),
+        ]
+    )
+    monkeypatch.setattr(supervisor, "browser_ready", browser_check)
+    monkeypatch.setattr(supervisor, "podman", port)
+    monkeypatch.setattr(supervisor.time, "sleep", Mock())
+
+    started = []
+
+    def start(arguments, name, image, *entry):
+        started.append((arguments, name, image, entry))
+        if name == run.controller:
+            write_private_json(root / "runtime.json", {"phase": "host_ready", "launch": run.record["launch"]})
+
+    monkeypatch.setattr(run, "start", start)
+    run.setup()
+
+    controller, browser = started
+    assert "--publish" not in controller[0] and "CIV_BROWSER_BIND=10.42.0.254" in controller[0]
+    args, name, image, entry = browser
+    assert args.count("--network") == 1 and args[args.index("--network") + 1] == run.control_net
+    assert args[args.index("--publish") + 1] == "127.0.0.1::6080"
+    assert "--volume" not in args and image == controller[2] == record["images"]["desktop"]
+    assert entry[0] == "-c" and entry[-1] == "10.42.0.254"
+    assert port.call_args_list == [call("port", name, "6080/tcp", check=False)] * 5
+    assert browser_check.call_args_list == [call(42753)] * 2
+    assert read_json(root / "browser.json")["url"] == "http://127.0.0.1:42753/vnc.html?resize=scale"
+
+
 def test_old_deployment_cannot_launch_or_resume_before_effects(local_game, monkeypatch):
     root, _, record = local_game
     record.update(format=1, runtime="pydantic-temporal-v1")
@@ -131,6 +177,22 @@ def test_old_deployment_cannot_launch_or_resume_before_effects(local_game, monke
     with pytest.raises(ValueError, match="read-only archive"):
         game.resume_configuration(root, game.parser(action="resume").parse_args([]))
     assert all(path.read_bytes() == value for path, value in before.items())
+    forbidden.assert_not_called()
+
+
+def test_missing_subscription_precedes_decisions_broker_and_setup_effects(local_game, monkeypatch):
+    root, _, record = local_game
+    record["auth_root"] = str(root.parent / (root.name + "-auth"))
+    write_private_json(root / "container.json", record)
+    config = GameConfig(agents={"decisions_enabled": True, "decisions_backend": "jev"}).resolved()
+    write_private_json(root / "resolved.json", config.model_dump())
+    forbidden = Mock(side_effect=AssertionError("A missing login must be reported before starting services"))
+    monkeypatch.setattr(supervisor, "ensure_decisions", forbidden)
+    monkeypatch.setattr(supervisor, "cleanup", forbidden)
+    with pytest.raises(supervisor.ContainerError, match="auth login"):
+        supervisor.GameRun(root).setup()
+    assert read_json(root / "container.json") == record
+    assert not (root / "launches").exists()
     forbidden.assert_not_called()
 
 

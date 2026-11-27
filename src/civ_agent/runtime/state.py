@@ -101,11 +101,44 @@ class ControllerState(LocalRecord):
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
+def desktop_turn_progress(state):
+    """Publish only coarse progress for the current AI turn."""
+    attempt = state["active_attempt"]
+    if (
+        state["mode"] != "RUNNING"
+        or state["active_controller"] != "AGENT"
+        or attempt is None
+        or any(attempt[key] != state[key] for key in ("epoch", "turn", "handoff"))
+        or attempt["civilization"] != state["active_civilization"]
+    ):
+        return None
+    stage = {
+        "PREPARING": "PREPARING",
+        "WAITING_REVIEW": "REVIEWING",
+        "ROLE_WORK": "PLAYING",
+        "MAIN_FOLLOWUP": "PLAYING",
+        "HANDOFF": "FINISHING",
+    }.get(state["phase"])
+    if stage == "PLAYING":
+        phases = {
+            role["phase"]
+            for role in attempt["roles"]
+            if role["purpose"] in {"gameplay", "economy", "military"}
+            and role["phase"] not in {"ROLE_FINISHED", "COMPLETED", "FAILED", "INTERRUPTED", "WAITING_ROLE"}
+        }
+        if phases == {"WAITING_FOR_MODEL"}:
+            stage = "WAITING_FOR_MODEL"
+    if stage is None:
+        return None
+    return {"epoch": state["epoch"], "turn": state["turn"], "handoff": state["handoff"], "stage": stage}
+
+
 class ControllerStore:
     def __init__(self, root: Path):
         self.root = private_directory(root / "native-runtime")
         self.path = self.root / "controller.json"
         self.status_path = self.root / "status.json"
+        self.desktop_progress_path = self.root / "desktop-progress.json"
         self.lock = FileLock(self.root / "controller.lock", timeout=0)
         self.state: ControllerState | None = None
         self._write_lock = asyncio.Lock()
@@ -152,6 +185,11 @@ class ControllerStore:
             write_private_json(directory / (attempt["id"] + ".json"), attempt)
         write_private_json(self.path, value)
         self._status(value)
+        progress = desktop_turn_progress(value)
+        if progress is None:
+            self.desktop_progress_path.unlink(missing_ok=True)
+        else:
+            write_private_json(self.desktop_progress_path, progress)
 
     async def close(self):
         await self.io.close()

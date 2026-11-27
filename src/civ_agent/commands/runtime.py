@@ -1,7 +1,6 @@
 """Container setup, immutable images and the dedicated benchmark login."""
 
 import argparse
-import asyncio
 import getpass
 import json
 import os
@@ -12,11 +11,9 @@ from pathlib import Path
 from civ_agent.container_images import build_images
 from civ_agent.container_support import (
     DEFAULT_AUTH,
-    ContainerError,
     auth_name,
     command,
     inspected,
-    locked,
     preflight,
     resolve_image,
 )
@@ -130,17 +127,11 @@ def run(args):
                 )
             )
             return 0
-        private_directory(root)
-        with locked(root / ".launch.lock"):
-            if (inspected(auth_name(root)) or {}).get("State", {}).get("Running"):
-                raise ContainerError(
-                    "Run civ-agent auth stop before changing its account; active games use this session"
-                )
-            from civ_agent.subscription_auth import login
+        from civ_agent.container_supervisor import login_subscription
 
-            asyncio.run(login(root))
-            print("Subscription login saved.")
-            return 0
+        login_subscription(root)
+        print("Subscription login saved.")
+        return 0
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
         print(str(error), file=sys.stderr)
         return 2

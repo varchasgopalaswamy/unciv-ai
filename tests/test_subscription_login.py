@@ -3,6 +3,7 @@
 import json
 from unittest.mock import Mock
 
+from civ_agent import container_supervisor
 from civ_agent.commands import runtime
 from civ_agent.tls import write_private_json
 
@@ -19,6 +20,7 @@ def test_native_login_runs_on_host_and_status_uses_its_private_file(tmp_path, mo
 
     monkeypatch.setattr(subscription_auth, "login", login)
     monkeypatch.setattr(runtime, "inspected", lambda *_: None)
+    monkeypatch.setattr(container_supervisor, "inspected", lambda *_: None)
     forbidden = Mock(side_effect=AssertionError("Native login must not resolve an image or run a process"))
     monkeypatch.setattr(runtime, "resolve_image", forbidden)
     monkeypatch.setattr(runtime.subprocess, "call", forbidden)
@@ -39,7 +41,7 @@ def test_native_login_fences_account_change_while_manager_runs(tmp_path, monkeyp
 
     login = Mock(side_effect=AssertionError("Active credentials must remain untouched"))
     monkeypatch.setattr(subscription_auth, "login", login)
-    monkeypatch.setattr(runtime, "inspected", lambda *_: {"State": {"Running": True}})
+    monkeypatch.setattr(container_supervisor, "inspected", lambda *_: {"State": {"Running": True}})
     existing = {"synthetic": "private-existing-credential"}
     write_private_json(tmp_path / "openai-subscription.json", existing)
     args = runtime.parser(group="auth", action="login").parse_args(["--auth-dir", str(tmp_path)])

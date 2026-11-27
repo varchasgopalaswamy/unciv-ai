@@ -10,12 +10,13 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from civ_agent.container_identity import deployment_identity, require_local_runtime
-from civ_agent.container_supervisor import validate_routing_credentials, validate_setup
+from civ_agent.container_supervisor import ensure_launch_credentials, validate_routing_credentials, validate_setup
 from civ_agent.container_support import (
     DEFAULT_AUTH,
     ContainerError,
     LockBusy,
     cleanup,
+    cli_command,
     command,
     identity,
     launch_background,
@@ -27,7 +28,7 @@ from civ_agent.container_support import (
 from civ_agent.game_config import ResolvedGameConfig, load_config
 from civ_agent.player_settings import add_settings_arguments, setting_argument
 from civ_agent.provider_credentials import PROVIDERS
-from civ_agent.tls import private_directory, write_private, write_private_json
+from civ_agent.tls import private_directory, regular_file, write_private, write_private_json
 
 DEFAULT_STATE = Path.home() / ".local/state/unciv-host/vanilla-full"
 
@@ -176,11 +177,16 @@ def resolve_options(args):
     return load_config(getattr(args, "config", None), overrides, player_overrides=player_overrides).resolved()
 
 
+def require_new_game(root):
+    if (root / "resolved.json").exists() or (root / "exploration.json").exists():
+        resume = cli_command("game", "resume", "--state-dir", root)
+        raise ContainerError(f"A saved game exists. Use {resume} or choose a new --state-dir.")
+
+
 def initialize(root, config, auth_root, *, original=None, images=None, validation=None):
     if auth_root.resolve().is_relative_to(root.resolve()):
         raise ContainerError("The provider credential directory must be outside the match directory")
-    if (root / "resolved.json").exists() or (root / "exploration.json").exists():
-        raise ContainerError("A saved game exists; use game resume or a new --state-dir")
+    require_new_game(root)
     validate_routing_credentials(config, auth_root)
     images = images or {
         "runtime": resolve_image(config.runtime.image),
@@ -222,6 +228,14 @@ def initialize(root, config, auth_root, *, original=None, images=None, validatio
     return record
 
 
+def resume_auth_root(config, record, override):
+    saved = Path(record["auth_root"]).resolve()
+    selected = override.expanduser().resolve() if override is not None else saved
+    if config.agents.decisions_enabled and selected != saved:
+        raise ValueError("Cannot change auth directory: this game's Decisions accounting authority is pinned")
+    return selected
+
+
 def resume_configuration(root, args):
     from civ_agent.orchestration.managed_host import validate_limit_increase
 
@@ -241,10 +255,7 @@ def resume_configuration(root, args):
     if getattr(args, "record_replay", False):
         config.runtime.record_replay = True
     if args.auth_dir is not None:
-        selected_auth = args.auth_dir.expanduser().resolve()
-        if config.agents.decisions_enabled and selected_auth != Path(record["auth_root"]).resolve():
-            raise ValueError("Cannot change auth directory: this game's Decisions accounting authority is pinned")
-        record["auth_root"] = str(selected_auth)
+        record["auth_root"] = str(resume_auth_root(config, record, args.auth_dir))
     for key, option in (("runtime", "image"), ("desktop", "desktop_image")):
         if getattr(args, option) is not None:
             record["images"][key] = resolve_image(getattr(args, option))
@@ -292,6 +303,31 @@ def stop_game(root, *, role="game"):
                     cleanup(physical)
                     break
                 time.sleep(0.2)
+
+
+def show_startup(root, previous, timeout):
+    """Report this launch's first result while the game runs under systemd."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        status = read_json(root / "container-status.json", {})
+        if status != previous and status.get("status") not in {None, "starting"}:
+            if status["status"] == "failed":
+                raise ContainerError(status.get("reason") or "The game supervisor failed during startup")
+            print(f"Game {status['status']}.")
+            if status["status"] == "running" and (browser := status.get("browser")):
+                print(f"Play: {browser['url']}")
+                path = root / "desktop/password.txt"
+                try:
+                    password = regular_file(path, private=True).read_text().strip()
+                except (OSError, ValueError):
+                    password = ""
+                if len(password) == 8 and password.isascii() and password.isalnum():
+                    print(f"Password: {password}")
+                else:
+                    print(f"Password file: {path}")
+            return
+        time.sleep(0.25)
+    print("Startup is continuing in the background.")
 
 
 def run(args):
@@ -356,23 +392,34 @@ def run(args):
                     )
                 )
                 return 0
-        if args.action == "resume":
-            require_local_runtime(read_json(root / "container.json", {}))
+            require_new_game(root)
+            auth_root = (args.auth_dir or DEFAULT_AUTH).expanduser().resolve()
+        else:
+            record = read_json(root / "container.json", {})
+            require_local_runtime(record)
+            config = ResolvedGameConfig.model_validate(read_json(root / "resolved.json"))
+            auth_root = resume_auth_root(config, record, args.auth_dir)
+        if auth_root.is_relative_to(root):
+            raise ContainerError("The provider credential directory must be outside the match directory")
         preflight()
+        interactive = sys.stdin.isatty() and sys.stdout.isatty()
+        ensure_launch_credentials(config, auth_root, interactive=interactive)
         private_directory(root)
         with locked(root / ".launch.lock"):
             with locked(root / ".supervisor.lock"):
                 if args.action == "start":
                     assert config is not None
-                    initialize(
-                        root, config, (args.auth_dir or DEFAULT_AUTH).expanduser().resolve(), original=args.config
-                    )
+                    initialize(root, config, auth_root, original=args.config)
                 else:
-                    resume_configuration(root, args)
+                    config = resume_configuration(root, args)
+                previous = read_json(root / "container-status.json", {}) if interactive else None
             unit = launch_background(root, "game")
-        print(f"Started: {unit}\nState: {root}\nLogs: {root / 'supervisor.log'}")
-        print(f"Dashboard: civ-agent match watch --state-dir {root}")
-        print(f"Status and browser address: civ-agent game status --state-dir {root}")
+        print(f"Starting: {unit}\nState: {root}\nLogs: {root / 'supervisor.log'}")
+        print(f"Dashboard: {cli_command('match', 'watch', '--state-dir', root)}")
+        print(f"Status: {cli_command('game', 'status', '--state-dir', root)}", flush=True)
+        if interactive:
+            timeout = config.limits.startup_timeout
+            show_startup(root, previous, timeout if config.human else min(30, timeout))
         return 0
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
         print(f"Cannot {args.action} game: {error}", file=sys.stderr)

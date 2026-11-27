@@ -28,6 +28,7 @@ class FakePodman:
         self.probe_output = None
         self.probe_returncode = 0
         self.probe_timeout = False
+        self.auth_mount_links = 1
 
     def existing(
         self, role, *, running=True, image="sha256:1111111111111111111111111111111111111111111111111111111111111111"
@@ -40,7 +41,7 @@ class FakePodman:
             "Image": image,
             "State": {"Running": running, "StartedAt": "1970-01-01T00:00:00Z"},
             "Config": {"Labels": {LABEL: "auth", SERVICE_LABEL: name + ".service"}},
-            "Mounts": [{"Source": str(self.root), "Destination": "/auth"}],
+            "Mounts": [{"Type": "bind", "Source": str(self.root), "Destination": "/auth"}],
         }
         saved: dict = (
             json.loads((self.root / "container.json").read_bytes())
@@ -73,6 +74,12 @@ class FakePodman:
     def __call__(self, *arguments, **options):
         self.calls.append((arguments, options))
         action = arguments[0]
+        if action == "exec":
+            current = self.inspected(arguments[1])
+            assert current is not None and current["State"]["Running"]
+            assert arguments[2:] == ("stat", "-Lc", "%h", "/auth")
+            assert options == {"check": False, "timeout": 10}
+            return subprocess.CompletedProcess(arguments, 0, str(self.auth_mount_links))
         if action == "container":
             assert arguments[1] == "exists"
             assert options == {"check": False}
@@ -140,7 +147,7 @@ class FakePodman:
                 "Image": image,
                 "State": {"Running": False, "StartedAt": "1970-01-01T00:00:00Z"},
                 "Config": {"Labels": labels},
-                "Mounts": [{"Source": str(self.root), "Destination": "/auth"}],
+                "Mounts": [{"Type": "bind", "Source": str(self.root), "Destination": "/auth"}],
             }
         else:
             raise AssertionError(f"Unexpected Podman command: {arguments}")
@@ -173,7 +180,7 @@ def fake_runtime(tmp_path, monkeypatch):
     monkeypatch.setattr(supervisor, "start_container_service", start)
     monkeypatch.setattr(supervisor, "stop_container_service", stop)
 
-    def verified(service):
+    def verified(service, *, unit_required=True):
         current = fake.inspected(service.cid)
         assert current is not None
         return current, {"ActiveState": "active" if current["State"]["Running"] else "inactive"}
@@ -210,11 +217,86 @@ def test_cli_stop_preserves_credentials_and_other_services_then_auth_can_start_a
     assert {f: (fake.root / f).read_bytes() for f in files} == before
     assert [args[0] for args, _ in fake.calls] == ["stop"]
     resolve.assert_not_called()
-    supervisor.ensure_auth(
-        fake.root, "sha256:1111111111111111111111111111111111111111111111111111111111111111", restart=True
-    )
+    supervisor.ensure_auth(fake.root, "sha256:1111111111111111111111111111111111111111111111111111111111111111")
     assert fake.containers[name]["State"]["Running"]
     assert {f: (fake.root / f).read_bytes() for f in files} == before
+
+
+@pytest.mark.parametrize("role", ["auth", "decisions"])
+@pytest.mark.parametrize("mount_links", [0, 2])
+def test_launch_recovers_only_a_broker_bound_to_a_deleted_directory(fake_runtime, role, mount_links):
+    fake = fake_runtime
+    configure(fake.root, role)
+    name = fake.existing(role)
+    cid = fake.containers[name]["Id"]
+    (fake.root / "container.json").unlink()
+    fake.auth_mount_links = mount_links
+    ensure = supervisor.ensure_auth if role == "auth" else supervisor.ensure_decisions
+    image = "sha256:" + "2" * 64
+    if mount_links:
+        with pytest.raises(supervisor.ContainerError, match="auth restart"):
+            ensure(fake.root, image)
+        assert fake.containers[name]["Id"] == cid and fake.containers[name]["State"]["Running"]
+        assert not (fake.root / "container.json").exists()
+        assert [args[0] for args, _ in fake.calls] == ["exec"]
+    else:
+        ensure(fake.root, image)
+        record = json.loads((fake.root / "container.json").read_text())["services"][name]
+        assert cid != record["cid"] == fake.containers[name]["Id"]
+        assert [args[0] for args, _ in fake.calls] == ["exec", "stop", "rm", "create", "start"]
+
+
+@pytest.mark.parametrize("running", [False, True])
+def test_only_stopped_legacy_broker_is_automatically_replaced(fake_runtime, monkeypatch, running):
+    fake = fake_runtime
+    configure(fake.root, "auth")
+    name = fake.existing("auth", running=running)
+    del fake.containers[name]["Config"]["Labels"][SERVICE_LABEL]
+    (fake.root / "container.json").unlink()
+    monkeypatch.setattr(supervisor, "unit_state", lambda _: {"LoadState": "not-found"})
+    image = "sha256:" + "2" * 64
+    if running:
+        with pytest.raises(supervisor.ContainerError, match="auth restart"):
+            supervisor.ensure_auth(fake.root, image)
+        assert not fake.calls
+    else:
+        supervisor.ensure_auth(fake.root, image)
+        assert [args[0] for args, _ in fake.calls] == ["rm", "create", "start"]
+
+
+def test_unrelated_container_is_never_probed_or_removed(fake_runtime):
+    fake = fake_runtime
+    configure(fake.root, "auth")
+    name = fake.existing("auth")
+    fake.containers[name]["Mounts"][0]["Source"] = str(fake.root.parent / "other")
+    (fake.root / "container.json").unlink()
+    with pytest.raises(supervisor.ContainerError, match="unowned broker"):
+        supervisor.ensure_auth(fake.root, "sha256:" + "2" * 64)
+    assert not fake.calls
+
+
+def test_first_sign_in_recovers_deleted_login_mount_without_touching_current_login(fake_runtime, monkeypatch):
+    from civ_agent import subscription_auth
+
+    fake = fake_runtime
+    name = fake.existing("auth")
+    (fake.root / "container.json").unlink()
+
+    async def login(root):
+        assert ".launch.lock" in fake.held_locks
+        write_private_json(root / "openai-subscription.json", {"login": "test"})
+
+    monkeypatch.setattr(subscription_auth, "login", login)
+    with pytest.raises(supervisor.ContainerError, match="auth stop"):
+        supervisor.login_subscription(fake.root, only_if_missing=True)
+    assert fake.containers[name]["State"]["Running"]
+
+    fake.auth_mount_links = 0
+    supervisor.login_subscription(fake.root, only_if_missing=True)
+    assert name not in fake.containers
+    assert (fake.root / "openai-subscription.json").exists()
+    monkeypatch.setattr(subscription_auth, "login", Mock(side_effect=AssertionError("Login was already saved")))
+    supervisor.login_subscription(fake.root, only_if_missing=True)
 
 
 @pytest.mark.parametrize("present", [False, True])

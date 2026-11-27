@@ -39,6 +39,9 @@ cannot use the user manager. The option applies only to image builds; game
 containers retain their normal systemd supervision and resource limits.
 
 `runtime setup` enables systemd user lingering so games survive logout.
+`game start` and `game resume` in a terminal guide you through a missing
+OpenAI login and continue once you sign in. Use the separate `auth login`
+command above when preparing an unattended launch.
 `auth login` prints a browser login URL using Pydantic AI's native subscription
 login flow. Finish sign-in in that browser; the callback returns to
 `http://localhost:1455/auth/callback`. When running the command over SSH, forward
@@ -50,9 +53,11 @@ The renewable login lives in
 it through Authlib and gives the controller only access tokens. `auth status` reports
 whether the login exists and the manager is running. Use `--auth-dir`
 consistently to select another durable login. Changing the account requires
-stopping the manager and affected games first. Existing auth directories need a
-native login before starting this version's manager; no running manager or saved
-credentials are changed automatically.
+stopping the manager and affected games first. To start a fresh match, choose
+a new game state directory and keep this shared auth directory. A launcher can
+replace a stopped legacy broker or a verified service still attached to a
+deleted auth directory. If a live broker is attached to an existing directory
+and its ownership record is missing, the launcher reports the recovery command.
 
 Stop the shared login manager with:
 
@@ -409,13 +414,15 @@ concurrency for actual machine capacity and the shared account's usage limits.
 .venv/bin/civ-agent game status --state-dir ~/.local/state/unciv-host/human-game
 ```
 
-Once startup finishes, open the `browser.url` printed by `game status`. Enter the
-password from `STATE_DIR/desktop/password.txt`. The browser streams the native
-Unciv window through noVNC; it is not a separate game implementation. Browser
+When the game is ready, `game start` and `game resume` print the play URL and
+password in the terminal. You can also find the link under `browser.url` in
+`game status` and the password in `STATE_DIR/desktop/password.txt`. The browser
+streams the native Unciv window through noVNC. Browser
 ports bind to **localhost only**. `browser_port = 0` allocates a free port for each
 game; `--port` overrides it. Internal game/agent ports are never published.
 
-The human plays first and sees only their civilization's view. Native city, unit,
+The human plays first and sees only their civilization's view. While an AI player
+takes a turn, the waiting message shows its general progress. Native city, unit,
 research and diplomacy controls apply. **Chat** provides public/private messages
 and nonbinding promises. **Trade** uses native controls and the shared negotiation
 service. Human negotiations have no response deadline. Messages sent during

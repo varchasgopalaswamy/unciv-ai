@@ -216,6 +216,7 @@ def controller():
                 shutil.copytree(ASSETS.parents[1], staging)
                 staging.rename(engine)
             assets = engine / "android/assets"
+            (ROOT / "native-runtime" / "desktop-progress.json").unlink(missing_ok=True)
             desktop(config, processes, logs)
         arguments = [
             "--data-dir",

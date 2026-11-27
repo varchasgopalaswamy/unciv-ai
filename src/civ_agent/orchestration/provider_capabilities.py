@@ -58,7 +58,12 @@ def provider_base_url(selection: ModelSelection) -> str:
 
 
 def provider_model(selection: ModelSelection, client: AsyncOpenAI, *, profile: ModelProfile | None = None) -> Model:
-    if selection.provider == "openai" and selection.model in {"gpt-6.2-astra", "gpt-6.2-sol"}:
+    if selection.provider == "openai" and selection.model == "gpt-6.1-terra":
+        # The SDK describes Terra's reasoning settings but its bundled catalog
+        # lacks the model window. An already frozen contract takes precedence.
+        # https://developers.openai.com/api/docs/models/gpt-6.1-terra
+        profile = merge_profile(ModelProfile(context_window=1_050_000), profile)
+    elif selection.provider == "openai" and selection.model in {"gpt-6.2-astra", "gpt-6.2-sol"}:
         # The pinned SDK predates these IDs. Use its public profile extension
         # without changing the requested model or subscription endpoint dialect.
         # https://developers.openai.com/api/docs/guides/latest-model

@@ -15,6 +15,7 @@ import sys
 import threading
 import time
 from datetime import datetime
+from http.client import HTTPConnection, HTTPException
 from pathlib import Path
 
 from civ_agent.container_identity import deployment_identity, require_local_runtime
@@ -26,6 +27,7 @@ from civ_agent.container_support import (
     auth_name,
     base_arguments,
     cleanup,
+    cli_command,
     command,
     create_network,
     firewall,
@@ -71,67 +73,107 @@ def _broker_manifest(root):
     return saved
 
 
+def _registered_broker(name, raw, current):
+    service = ContainerService.load(raw)
+    if (
+        service.name != name
+        or service.owner != "auth"
+        or service.unit != name + ".service"
+        or (current is not None and current["Id"] != service.cid)
+    ):
+        raise ContainerError(f"Saved ownership for broker {name} does not match its container or systemd unit")
+    return service
+
+
+def _remove_unregistered_broker(root, name, current, *, restart):
+    """Retire an abandoned broker, or a live one on explicit operator restart."""
+    labels = current.get("Config", {}).get("Labels") or {}
+    if (
+        current.get("Name", "").lstrip("/") != name
+        or labels.get(LABEL) != "auth"
+        or not any(
+            item.get("Type") == "bind"
+            and item.get("Destination") == "/auth"
+            and item.get("Source")
+            and Path(item["Source"]).resolve() == root.resolve()
+            for item in current.get("Mounts", [])
+        )
+    ):
+        raise ContainerError(f"Refusing to replace an unowned broker {name}")
+
+    cid = current["Id"]
+    unit = name + ".service"
+    running = current["State"]["Running"]
+    action = "stop" if name == auth_name(root) and not (root / "openai-subscription.json").is_file() else "restart"
+    recovery_command = cli_command("auth", action, "--auth-dir", root)
+    recovery = f"Broker {name} has no ownership record in {root}. Run {recovery_command}."
+    if SERVICE_LABEL in labels:
+        if labels[SERVICE_LABEL] != unit:
+            raise ContainerError(f"Unexpected systemd owner for broker {name}")
+        service = ContainerService.load(dict(name=name, cid=cid, owner="auth", image=current["Image"], unit=unit))
+        if not restart:
+            _, state = verify_container_service(service, unit_required=running)
+            if running:
+                # The source path in Podman inspect survives deletion. Only a
+                # zero-link directory inside the verified container proves its
+                # bind mount was deleted. A moved directory can still serve games.
+                result = podman("exec", cid, "stat", "-Lc", "%h", "/auth", check=False, timeout=10)
+                if result.returncode or result.stdout.strip() != "0":
+                    raise ContainerError(recovery)
+            elif state.get("LoadState") != "not-found":
+                raise ContainerError(recovery)
+        stop_container_service(service, collect=True)
+    else:
+        # A legacy container may predate systemd ownership. A normal game
+        # launch may discard only a stopped one, using non-forced removal.
+        if unit_state(unit).get("LoadState") != "not-found" or (running and not restart):
+            raise ContainerError(recovery)
+        if running:
+            podman("stop", "--time", "90", cid, timeout=100)
+    podman("rm", cid)
+
+
 def _broker_process(root, image, name, arguments, entry, *, restart):
     """The shared broker's existing systemd unit is its only restart owner."""
     saved = _broker_manifest(root)
     raw = saved["services"].get(name)
     current = inspected(name)
-    if restart and current is None and raw is not None:
-        service = ContainerService.load(raw)
-        if service.name != name or service.owner != "auth" or service.unit != name + ".service":
-            raise ContainerError("Refusing to replace an unowned missing broker")
+    service = _registered_broker(name, raw, current) if raw is not None else None
+    if restart and current is None and service is not None:
         # An explicit image change is supported, but both old and requested
         # images must be pinned descriptors before retiring any authority.
         ContainerService.load({**service.record(), "image": image})
 
-        def require_absent():
-            for target in (service.cid, service.name):
+        def require_absent(missing: ContainerService):
+            for target in (missing.cid, missing.name):
                 if podman("container", "exists", target, check=False).returncode != 1:
                     raise ContainerError("Missing broker container absence could not be confirmed")
 
-        require_absent()
+        require_absent(service)
         state = verify_container_unit(service, required=False)
         if state.get("LoadState") != "not-found":
             command(["systemctl", "--user", "stop", service.unit], timeout=110)
             wait_unit_collected(service.unit, reset_failed=True)
-        require_absent()
+        require_absent(service)
         saved = _broker_manifest(root)
         if saved["services"].get(name) != raw:
             raise ContainerError("Broker process-owner descriptor changed during explicit restart")
         saved["services"].pop(name)
         write_private_json(root / "container.json", saved)
-        raw = None
-    if restart and current is not None:
-        if raw is not None:
-            stop_container_service(ContainerService.load(raw), collect=True)
-        else:
-            # Explicit auth restart may replace a pre-systemd broker, but never
-            # silently adopt one on a normal game launch.
-            if (
-                current.get("Name", "").lstrip("/") != name
-                or current.get("Config", {}).get("Labels", {}).get(LABEL) != "auth"
-                or not any(
-                    Path(item["Source"]).resolve() == root.resolve() and item["Destination"] == "/auth"
-                    for item in current.get("Mounts", [])
-                )
-            ):
-                raise ContainerError("Refusing to replace an unowned broker")
-            podman("stop", "--time", "90", current["Id"], timeout=100)
+        service = None
+    if current is not None and service is None:
+        _remove_unregistered_broker(root, name, current, restart=restart)
+    elif restart and current is not None:
+        assert service is not None
+        stop_container_service(service, collect=True)
         podman("rm", current["Id"])
         saved["services"].pop(name, None)
         write_private_json(root / "container.json", saved)
-        raw, current = None, None
-    if raw is None and current is not None:
-        raise ContainerError("Existing broker has no verified systemd owner; explicit auth restart required")
-    if raw is not None:
-        service = ContainerService.load(raw)
-        if (
-            service.name != name
-            or service.owner != "auth"
-            or service.image.removeprefix("sha256:") != image.removeprefix("sha256:")
-        ):
+        service = None
+    if service is not None:
+        if service.image.removeprefix("sha256:") != image.removeprefix("sha256:"):
             raise ContainerError("Broker image or owner changed; explicit auth restart required")
-        start_container_service(service)
+        start_container_service(service, create=current is not None and current["State"]["Running"] is False)
         return service
     (root / ("ready.json" if entry == "auth" else "decisions-ready.json")).unlink(missing_ok=True)
     unit = name + ".service"
@@ -173,9 +215,31 @@ def ensure_auth(root, image, *, restart=False):
             "--env",
             "HOME=/auth",
         ]
-        service = _broker_process(root, image, name, arguments, "auth", restart=restart)
+        with locked(root / ".broker-manifest.lock", wait=True):
+            service = _broker_process(root, image, name, arguments, "auth", restart=restart)
         _await_broker(service, root / "ready.json", "Login manager restart allowance exhausted or startup timed out")
     return name
+
+
+def login_subscription(root, *, only_if_missing=False):
+    from civ_agent.subscription_auth import login
+
+    private_directory(root)
+    with locked(root / ".launch.lock", wait=only_if_missing):
+        if only_if_missing and (root / "openai-subscription.json").is_file():
+            return
+        name = auth_name(root)
+        current = inspected(name)
+        if current is not None and current["State"]["Running"]:
+            with locked(root / ".broker-manifest.lock", wait=True):
+                labels = current.get("Config", {}).get("Labels") or {}
+                if name in _broker_manifest(root)["services"] or SERVICE_LABEL not in labels:
+                    stop = cli_command("auth", "stop", "--auth-dir", root)
+                    raise ContainerError(f"Run {stop} before changing the login used by active games")
+                _remove_unregistered_broker(root, name, current, restart=False)
+        if only_if_missing:
+            print("Sign in to the OpenAI subscription for these players. Open the URL below.", flush=True)
+        asyncio.run(login(root))
 
 
 def stop_auth(root):
@@ -189,16 +253,16 @@ def stop_auth(root):
             exists = podman("container", "exists", name, check=False)
             if exists.returncode != 1:
                 raise ContainerError(f"Could not inspect login manager {name}")
-        elif current["State"]["Running"]:
-            raw = _broker_manifest(root)["services"].get(name)
-            if raw is None:
-                raise ContainerError(
-                    "Login manager has no verified systemd owner; stop it explicitly before replacement"
-                )
-            stop_container_service(ContainerService.load(raw))
-            current = inspected(name)
-            if current is None or current["State"]["Running"]:
-                raise ContainerError(f"Could not confirm login manager {name} stopped")
+        else:
+            with locked(root / ".broker-manifest.lock", wait=True):
+                raw = _broker_manifest(root)["services"].get(name)
+                if raw is None and current["State"]["Running"]:
+                    _remove_unregistered_broker(root, name, current, restart=True)
+                elif raw is not None:
+                    stop_container_service(_registered_broker(name, raw, current), collect=True)
+                    current = inspected(name)
+                    if current is None or current["State"]["Running"]:
+                        raise ContainerError(f"Could not confirm login manager {name} stopped")
         (root / "ready.json").unlink(missing_ok=True)
     return {"auth_directory": str(root), "container": name, "manager_running": False}
 
@@ -236,6 +300,37 @@ def player_providers(config, player):
     """Provision credentials for the configured main and subordinate models."""
     settings = config.settings(player)
     return {settings["provider"], settings["economy_model"]["provider"], settings["military_model"]["provider"]}
+
+
+def ensure_launch_credentials(config, root, *, interactive=False):
+    validate_routing_credentials(config, root)
+    providers = set().union(*(player_providers(config, p) for p in config.agent_players))
+    if config.runtime.scripted_models:
+        return providers
+    if "openrouter" in providers:
+        key = root / "openrouter.key"
+        if not key.is_file():
+            command = cli_command("auth", "login", "--provider", "openrouter", "--auth-dir", root)
+            raise ContainerError(f"Run {command} before launching games")
+        read_api_key(key)
+    if "google-cloud" in providers:
+        from civ_agent.google_cloud_auth import CONFIG_NAME, saved_config
+
+        if not (root / CONFIG_NAME).is_file():
+            command = cli_command(
+                "auth", "login", "--provider", "google-cloud", "--project", "PROJECT_ID", "--auth-dir", root
+            )
+            raise ContainerError(f"Run {command} before launching games")
+        saved_config(root)
+    if "openai" in providers:
+        credential = root / "openai-subscription.json"
+        if not credential.is_file() and interactive:
+            login_subscription(root, only_if_missing=True)
+        if not credential.is_file():
+            command = cli_command("auth", "login", "--auth-dir", root)
+            raise ContainerError(f"No OpenAI subscription login in {root}. Run {command} and retry.")
+        regular_file(credential, private=True)
+    return providers
 
 
 def validate_routing_credentials(config, auth_root):
@@ -344,7 +439,8 @@ def ensure_decisions(root, image, *, restart=False):
             "CIV_JEV_ENDPOINT=" + endpoint,
             *mount(root, "/auth", writable=True),
         ]
-        service = _broker_process(root, image, name, arguments, "decisions", restart=restart)
+        with locked(root / ".broker-manifest.lock", wait=True):
+            service = _broker_process(root, image, name, arguments, "decisions", restart=restart)
         _await_broker(
             service, root / "decisions-ready.json", "Decisions broker restart allowance exhausted or startup timed out"
         )
@@ -490,6 +586,17 @@ def validate_setup(config, image):
     return json.loads(lines[0])
 
 
+def browser_ready(port):
+    connection = HTTPConnection("127.0.0.1", port, timeout=1)
+    try:
+        connection.request("HEAD", "/vnc.html")
+        return connection.getresponse().status == 200
+    except (OSError, HTTPException):
+        return False
+    finally:
+        connection.close()
+
+
 class GameRun:
     def __init__(self, root, stop_event=None, *, rejoin=False):
         self.root = Path(root)
@@ -548,9 +655,12 @@ class GameRun:
 
     def await_ready(self, predicate):
         deadline = time.monotonic() + self.config.limits.startup_timeout
-        while not predicate():
+        while True:
             if self.stop_event.is_set():
                 raise InterruptedError("Operator requested stop")
+            ready = predicate()
+            if ready:
+                return ready
             self.check_services()
             if time.monotonic() > deadline:
                 raise ContainerError("Container startup timed out; inspect launch logs")
@@ -634,6 +744,50 @@ class GameRun:
             return None
         return runtime
 
+    def start_browser(self, image, control_ip):
+        # Podman can forward to the provider interface on a multi-network
+        # container. Publish from a separate container on the control bridge.
+        name = self.prefix + "-browser"
+        arguments = base_arguments(
+            name, game_id=self.deployment_id, resources=ContainerResources(memory_mib=128, cpus=0.5, pids=32)
+        )
+        # Carry the relay with the launcher so older pinned desktop images work on resume.
+        program = Path(__file__).with_name("browser_proxy.py").read_text(encoding="utf-8")
+        self.start(
+            [
+                *arguments,
+                "--network",
+                self.control_net,
+                "--publish",
+                f"127.0.0.1:{self.config.runtime.browser_port or ''}:6080",
+                "--entrypoint",
+                "/opt/app/.venv/bin/python",
+            ],
+            name,
+            image,
+            "-c",
+            program,
+            control_ip,
+        )
+
+        def ready_port():
+            # systemd starts the Podman command before Podman publishes the port.
+            result = podman("port", name, "6080/tcp", check=False)
+            address = result.stdout.strip()
+            if result.returncode or not address:
+                return None
+            host, _, value = address.partition(":")
+            if host != "127.0.0.1" or not value.isascii() or not value.isdecimal() or not 0 <= int(value) < 65536:
+                raise ContainerError("Could not verify the published localhost browser port")
+            port = int(value)
+            return port if port and browser_ready(port) else None
+
+        port = self.await_ready(ready_port)
+        write_private_json(
+            self.root / "browser.json",
+            {"url": f"http://127.0.0.1:{port}/vnc.html?resize=scale", "password_file": "desktop/password.txt"},
+        )
+
     def setup(self):
         from ipaddress import ip_network
 
@@ -645,7 +799,7 @@ class GameRun:
             raise ContainerError("Explicit launch intent is missing")
         if self.config.runtime.tracing is not None and self.config.runtime.tracing.local:
             require_local_tracing_network()
-        validate_routing_credentials(self.config, self.auth_root)
+        providers = ensure_launch_credentials(self.config, self.auth_root)
         if self.config.agents.decisions_enabled:
             from civ_agent.decisions_ledger import DecisionsLedger
 
@@ -666,28 +820,13 @@ class GameRun:
         private_directory(self.root / "control")
         for name in ("start.json", "request.json"):
             (self.root / "control" / name).unlink(missing_ok=True)
-        (self.root / "runtime.json").unlink(missing_ok=True)
-        providers = set().union(*(player_providers(self.config, p) for p in self.config.agent_players))
+        for name in ("runtime.json", "browser.json"):
+            (self.root / name).unlink(missing_ok=True)
         if self.config.agents.decisions_enabled:
             self.record["routingPreflight"] = ensure_decisions(self.auth_root, self.record["images"]["runtime"])
             write_private_json(self.root / "container.json", self.record)
         if not self.config.runtime.scripted_models and "openai" in providers:
             ensure_auth(self.auth_root, self.record["images"]["runtime"])
-        if not self.config.runtime.scripted_models and "openrouter" in providers:
-            key = self.auth_root / "openrouter.key"
-            if not key.is_file():
-                raise ContainerError(
-                    "Run civ-agent auth login --provider openrouter before launching OpenRouter players"
-                )
-            read_api_key(key)
-        if not self.config.runtime.scripted_models and "google-cloud" in providers:
-            from civ_agent.google_cloud_auth import CONFIG_NAME, saved_config
-
-            if not (self.auth_root / CONFIG_NAME).is_file():
-                raise ContainerError(
-                    "Run civ-agent auth login --provider google-cloud --project PROJECT_ID before launching Gemini players"
-                )
-            saved_config(self.auth_root)
         for index, player in enumerate(self.config.agent_players):
             paths = PlayerPaths(self.root, index, player.civilization)
             paths.prepare()
@@ -742,21 +881,12 @@ class GameRun:
                 regular_file(self.config.runtime.tracing.token_file, private=True)
                 args += mount(self.config.runtime.tracing.token_file, str(TRACING_TOKEN_PATH))
         if self.config.human:
-            args += [
-                "--publish",
-                f"127.0.0.1:{self.config.runtime.browser_port or ''}:6080",
-                "--env",
-                f"CIV_BROWSER_BIND={control_ip}",
-            ]
+            args += ["--env", f"CIV_BROWSER_BIND={control_ip}"]
         image = self.record["images"]["desktop" if self.config.human else "runtime"]
         self.start(args, self.controller, image, "controller")
         self.await_ready(lambda: read_json(self.root / "runtime.json", {}).get("phase") == "host_ready")
         if self.config.human:
-            port = podman("port", self.controller, "6080/tcp").stdout.strip().rsplit(":", 1)[1]
-            write_private_json(
-                self.root / "browser.json",
-                {"url": f"http://127.0.0.1:{port}/vnc.html?resize=scale", "password_file": "desktop/password.txt"},
-            )
+            self.start_browser(image, control_ip)
         write_private_json(self.root / "control/start.json", {"launch": self.record["launch"]})
         self.record["servicesReady"] = True
         write_private_json(self.root / "container.json", self.record)

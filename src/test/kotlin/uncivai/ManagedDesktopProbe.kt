@@ -394,6 +394,19 @@ object ManagedDesktopProbe {
         check(status().handoff == 1L)
         val roman = checkNotNull(activate().playerToken)
         waitFor { onGl { app.screen is WorldScreen && !world.isPlayersTurn } }
+        val progressPath = Files.createDirectories(output.resolve("native-runtime")).resolve("desktop-progress.json")
+        val romanTurn = status()
+        fun showProgress(stage: String) {
+            val value = obj("epoch" to romanTurn.epoch, "turn" to romanTurn.turn, "handoff" to romanTurn.handoff, "stage" to stage)
+            Files.writeString(progressPath, value.toString())
+        }
+        fun waitingLabelContains(text: String) = onGl {
+            actors().filterIsInstance<Label>().any { "Waiting for other players" in it.text && text in it.text }
+        }
+        showProgress("PREPARING")
+        waitFor { waitingLabelContains("The AI is preparing its turn.") }
+        showProgress("PLAYING")
+        waitFor { waitingLabelContains("The AI is making decisions and taking actions.") }
         check(onGl { world.selectedGameView.civView.getCiv().civID == "France" })
         check(!onGl { session.nativeAction { com.unciv.logic.civilization.PlayerOperations(game.getCivilization("France")).trySetResearchQueue(listOf("Pottery")) } })
         val offered = communication("Rome", "trade_offer", "partner" to "France", "give" to listOf(obj("type" to "Gold", "name" to "Gold", "amount" to 25, "duration" to -1)), "receive" to emptyList<String>())
@@ -425,6 +438,7 @@ object ManagedDesktopProbe {
         finish(greek)
         check(status().handoff == 3L && status().activeCivilization == "France" && status().turn == 1)
         onGl {
+            check("The AI is making decisions" !in session.message())
             check(chatMessage() === activeComposer && activeComposer.stage.keyboardFocus === activeComposer)
             check(activeComposer.cursorPosition == 4)
             checkNotNull(Gdx.input.inputProcessor).keyTyped('!')

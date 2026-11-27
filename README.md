@@ -14,11 +14,12 @@ git submodule update --init --recursive
 uv sync --locked
 .venv/bin/civ-agent image build
 .venv/bin/civ-agent runtime setup
-.venv/bin/civ-agent auth login
 ```
 
-The last command prints a URL. Open it and sign in with the OpenAI subscription
-the AI players will use. For setup help or other model providers, see the
+The first time you start a game in a terminal, Civ-agent prints a sign-in URL.
+Open it and sign in with the OpenAI subscription the players will use. The launch
+then continues. For unattended launches, run `.venv/bin/civ-agent auth login`
+once before starting the game. For other model providers, see the
 [full-game guide](docs/guides/Full-vanilla-run.md).
 
 ## Start playing
@@ -31,13 +32,15 @@ at random and take the first turn.
 map_name=pangaea # or two-continents
 game_dir="$HOME/.local/state/unciv-host/$map_name"
 .venv/bin/civ-agent game start --config "examples/$map_name.toml" --state-dir "$game_dir"
-.venv/bin/civ-agent game status --state-dir "$game_dir"
 ```
 
-The game starts in the background. When `game status` shows a `browser.url`,
-open it and enter the password from `desktop/password.txt` in your game directory.
+The game runs in the background. When it is ready, open the play URL printed in
+the terminal and enter the password shown below it. You can look up the URL
+under `browser.url` in `.venv/bin/civ-agent game status --state-dir "$game_dir"`
+and the password in `desktop/password.txt` in your game directory.
 
-To start another match, use a different `game_dir`. You can copy either preset,
+To start another match, use a different `game_dir`. The sibling `auth` directory
+holds the shared login for all matches. You can copy either preset,
 edit the settings, and pass your file to `--config`.
 
 ## Stop and resume

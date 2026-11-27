@@ -9,6 +9,7 @@ import re
 import shlex
 import stat
 import subprocess
+import sys
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -30,6 +31,11 @@ class ContainerError(RuntimeError):
 
 class LockBusy(ContainerError):
     pass
+
+
+def cli_command(*arguments):
+    executable = Path(sys.executable).with_name("civ-agent")
+    return shlex.join([str(executable) if executable.is_file() else "civ-agent", *map(str, arguments)])
 
 
 @dataclass(frozen=True)
@@ -159,13 +165,15 @@ def verify_container_unit(service: ContainerService, *, required=True):
 
 
 def start_container_service(service: ContainerService, *, create=False, log_path: Path | None = None):
-    _, state = verify_container_service(service, unit_required=not create)
+    current, state = verify_container_service(service, unit_required=not create)
     if state.get("LoadState") != "not-found":
         # Observation/rejoin never restarts a stopped/failed unit or resets its
         # allowance. Only the already installed systemd policy owns retries.
         if state.get("ActiveState") not in {"active", "activating"}:
             raise ContainerError("Owned container service stopped or exhausted its restart allowance")
         return
+    if current["State"]["Running"]:
+        raise ContainerError("Owned running container lost its systemd owner")
     require_restart_systemd()
     output = []
     if log_path is not None:
@@ -482,8 +490,6 @@ def auth_name(root):
 
 
 def launch_background(root, role):
-    import sys
-
     from civ_agent.container_identity import deployment_identity
 
     unit = "civ-" + role + "-" + deployment_identity(identity(root)).id

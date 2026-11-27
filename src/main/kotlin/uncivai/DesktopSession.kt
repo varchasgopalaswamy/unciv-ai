@@ -4,6 +4,7 @@ import com.badlogic.gdx.Gdx
 import com.badlogic.gdx.InputProcessor
 import com.badlogic.gdx.scenes.scene2d.ui.Label
 import com.badlogic.gdx.scenes.scene2d.ui.Table
+import com.badlogic.gdx.utils.Timer
 import com.unciv.UncivGame
 import com.unciv.json.json
 import com.unciv.logic.GameInfo
@@ -80,6 +81,12 @@ internal class DesktopSession(
     internal var tradePanel: DesktopTradeController? = null
     private var tradeStateToRestore: DesktopTradeState? = null
     private val host = PlayerHost(executor)
+    private val turnProgress = DesktopTurnProgress(runnerDirectory.parent.resolve("native-runtime/desktop-progress.json"))
+    private val refreshProgress = object : Timer.Task() {
+        override fun run() {
+            Gdx.graphics.requestRendering()
+        }
+    }
 
     private class UiWork(val generation: Long) : AbstractCoroutineContextElement(Key) {
         companion object Key : CoroutineContext.Key<UiWork>
@@ -323,7 +330,10 @@ internal class DesktopSession(
         executor.communicationPaused -> "Gameplay and communication are paused."
         executor.communicationState.trades.activeProposal != null -> negotiationMessage()
         canChangeState(game) -> "Your turn · $viewingCivilization"
-        else -> "Waiting for other players… You can inspect your map and use Chat."
+        else -> {
+            val progress = turnProgress.message(executor.epoch, game.turns, executor.handoff)
+            listOfNotNull("Waiting for other players…", progress, "You can inspect your map and use Chat.").joinToString(" ")
+        }
     }
 
     private fun negotiationMessage(): String {
@@ -337,6 +347,13 @@ internal class DesktopSession(
 
     internal fun tick() {
         if (closed) return
+        // AI progress can change without any native action requesting a frame.
+        if (!closing && executor.mutationFailure == null &&
+            game.currentPlayer != viewingCivilization && game.currentPlayerCiv.isHuman()) {
+            if (!refreshProgress.isScheduled) Timer.schedule(refreshProgress, 0.25f, 0.25f)
+        } else {
+            refreshProgress.cancel()
+        }
         if (closing && ::operator.isInitialized && operator.handle(OperatorRequest("status")).status.leaseId == null) {
             Gdx.app.exit()
             return
@@ -424,6 +441,7 @@ internal class DesktopSession(
     override fun close() {
         if (closed) return
         closed = true
+        refreshProgress.cancel()
         dispatch.close()
         executor.close()
     }

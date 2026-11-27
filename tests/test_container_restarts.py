@@ -81,6 +81,7 @@ class ProcessOwner:
 def test_existing_cid_systemd_plan_has_one_bounded_restart_owner(monkeypatch, tmp_path):
     fake = ProcessOwner(monkeypatch)
     fake.state = {"LoadState": "not-found"}
+    fake.container["State"]["Running"] = False
     support.start_container_service(fake.service, create=True, log_path=tmp_path / "private%worker.log")
     plan = next(args for args in fake.calls if args[0] == "systemd-run")
     assert plan[-5:] == ["/usr/bin/podman", "start", "--attach", "--sig-proxy=false", CID]
@@ -175,6 +176,7 @@ def test_explicit_broker_replacement_waits_for_exact_old_unit_before_removal(mon
 def test_unsupported_systemd_does_not_silently_drop_restart_bounds(monkeypatch):
     fake = ProcessOwner(monkeypatch)
     fake.state = {"LoadState": "not-found"}
+    fake.container["State"]["Running"] = False
     original = fake.command
 
     def command(args, **kwargs):

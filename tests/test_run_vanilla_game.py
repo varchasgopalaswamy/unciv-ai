@@ -302,16 +302,88 @@ def test_supervisor_lock_prevents_second_owner(tmp_path):
                 pytest.fail("Two supervisors acquired one game")
 
 
-def test_launch_is_detached_and_never_runs_scheduler_on_host(tmp_path, monkeypatch):
+def test_missing_login_leaves_start_retryable_and_authenticated_launch_detaches(tmp_path, monkeypatch, capsys):
+    from civ_agent.tls import write_private_json
+
     monkeypatch.setattr(game, "preflight", lambda: None)
     monkeypatch.setattr(game, "resolve_image", lambda _: "fixed-image")
     monkeypatch.setattr(game, "validate_setup", lambda *_: {"maxTurns": 330})
     background = Mock(return_value="test.service")
     monkeypatch.setattr(game, "launch_background", background)
-    assert cli.main(["game", "start", "--state-dir", str(tmp_path / "match"), "--map-seed", "4"]) == 0
+    auth = tmp_path / "auth with spaces"
+    command = ["game", "start", "--state-dir", str(tmp_path / "match"), "--auth-dir", str(auth), "--map-seed", "4"]
+    assert cli.main(command) == 2
+    assert f"civ-agent auth login --auth-dir '{auth}'" in capsys.readouterr().err
+    assert not auth.exists() and not (tmp_path / "match").exists()
+    background.assert_not_called()
+    write_private_json(auth / "openai-subscription.json", {"login": "test"})
+    assert cli.main(command) == 0
     background.assert_called_once_with(tmp_path / "match", "game")
     saved = json.loads((tmp_path / "match/resolved.json").read_text())
     assert saved["game"]["map_seed"] == 4 and saved["limits"]["max_turns"] == 331
+
+
+@pytest.mark.parametrize("action", ["start", "resume"])
+def test_interactive_game_completes_login_and_displays_browser_password(tmp_path, monkeypatch, action, capsys):
+    from civ_agent import container_supervisor
+    from civ_agent.tls import write_private, write_private_json
+
+    root, auth = tmp_path / "match", tmp_path / "custom auth"
+    if action == "resume":
+        game.initialize(root, GameConfig().resolved(), auth, images={"runtime": "image"}, validation={"maxTurns": 40})
+    monkeypatch.setattr(game.sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(game.sys.stdout, "isatty", lambda: True)
+    monkeypatch.setattr(game, "preflight", lambda: None)
+    monkeypatch.setattr(game, "resolve_image", lambda _: "image")
+    monkeypatch.setattr(game, "validate_setup", lambda *_: {"maxTurns": 40})
+    calls = []
+
+    def login(directory, *, only_if_missing):
+        assert only_if_missing and directory == auth
+        assert root.exists() == (action == "resume")
+        calls.append("login")
+        write_private_json(auth / "openai-subscription.json", {"login": "test"})
+
+    monkeypatch.setattr(container_supervisor, "login_subscription", login)
+
+    def launch(*_):
+        calls.append("launch")
+        write_private(root / "desktop/password.txt", b"VncPass1\n")
+        write_private_json(
+            root / "container-status.json",
+            {
+                "status": "running",
+                "updated_at": len(calls),
+                "browser": {"url": "http://127.0.0.1:42753/vnc.html", "password_file": "desktop/password.txt"},
+            },
+        )
+        return "test.service"
+
+    monkeypatch.setattr(game, "launch_background", launch)
+    arguments = ["--auth-dir", str(auth)] if action == "start" else []
+    assert game.run(options(root, *arguments, action=action)) == 0
+    assert calls == ["login", "launch"]
+    assert "Play: http://127.0.0.1:42753/vnc.html\nPassword: VncPass1\n" in capsys.readouterr().out
+    assert game.run(options(root, action="resume")) == 0
+    assert calls == ["login", "launch", "launch"]
+    assert "Password: VncPass1\n" in capsys.readouterr().out
+    monkeypatch.setattr(game.sys.stdout, "isatty", lambda: False)
+    assert game.run(options(root, action="resume")) == 0
+    assert "VncPass1" not in capsys.readouterr().out
+
+
+def test_terminal_reports_new_failure_instead_of_previous_browser(tmp_path, monkeypatch, capsys):
+    from civ_agent.tls import write_private_json
+
+    path = tmp_path / "container-status.json"
+    previous = {"status": "running", "browser": {"url": "old browser"}}
+    write_private_json(path, previous)
+    monkeypatch.setattr(
+        game.time, "sleep", lambda _: write_private_json(path, {"status": "failed", "reason": "broker unavailable"})
+    )
+    with pytest.raises(ContainerError, match="broker unavailable"):
+        game.show_startup(tmp_path, previous, 5)
+    assert "old browser" not in capsys.readouterr().out
 
 
 def test_interrupted_batch_initialization_resumes_frozen_queue(tmp_path, monkeypatch):
