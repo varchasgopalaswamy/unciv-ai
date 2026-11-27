@@ -127,7 +127,7 @@ def test_configuration_cli_and_example_defaults_are_independent_of_effort_choice
         ]
     )
     assert decisions_values(args)["decisions_effort_levels"] == ["low", "medium", "high"]
-    for name in ("benchmark.toml", "benchmark-luna.toml", "benchmark-luna-terra.toml"):
+    for name in ("pangaea.toml", "two-continents.toml"):
         config = load_config(Path("examples") / name)
         assert config.agents.reasoning_effort == "medium" and config.agents.decisions_effort_enabled
         assert not any("default" in key for key in config.agents.model_dump() if key.startswith("decisions_effort"))

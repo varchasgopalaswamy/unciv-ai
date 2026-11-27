@@ -98,7 +98,7 @@ Do not issue a player credential to the built-in AI. The mixed launcher creates
 agent grants for Rome/Greece and human grants for France/Egypt.
 
 One local human can use native desktop controls and the integrated Chat/Trades/
-Promises/Agreements panel via `game start --config examples/human-game.toml`.
+Promises/Agreements panel via `game start --config examples/pangaea.toml`.
 Shared human–agent negotiations have no response deadline, preserve exact consent,
 and suspend gameplay inference while waiting. Trade and Negotiate Peace open
 Unciv’s native four-column trade table. Chat → Trades opens that same table and

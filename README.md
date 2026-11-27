@@ -1,7 +1,6 @@
 # unciv-ai
 
-Play Unciv in your browser against AI opponents. In the example below, you play
-France and take the first turn.
+Play Unciv against LLM opponents.
 
 ## First-time setup
 
@@ -24,24 +23,25 @@ the AI players will use. For setup help or other model providers, see the
 
 ## Start playing
 
+Pick [Balanced Pangaea](examples/pangaea.toml) or
+[Two Continents](examples/two-continents.toml). You’ll be assigned a civilization
+at random and take the first turn.
+
 ```sh
-.venv/bin/civ-agent game start --config examples/human-game.toml \
-  --state-dir ~/.local/state/unciv-host/human-game
-.venv/bin/civ-agent game status --state-dir ~/.local/state/unciv-host/human-game
+map_name=pangaea # or two-continents
+game_dir="$HOME/.local/state/unciv-host/$map_name"
+.venv/bin/civ-agent game start --config "examples/$map_name.toml" --state-dir "$game_dir"
+.venv/bin/civ-agent game status --state-dir "$game_dir"
 ```
 
 The game starts in the background. When `game status` shows a `browser.url`,
-open it and enter the password from
-`~/.local/state/unciv-host/human-game/desktop/password.txt`.
+open it and enter the password from `desktop/password.txt` in your game directory.
 
-Use a fresh `--state-dir` for each new game. You can copy the example to change
-the map, difficulty, or opponents, then pass your file to `--config`.
-[Human game configuration](examples/human-game.toml)
+To start another match, use a different `game_dir`. You can copy either preset,
+edit the settings, and pass your file to `--config`.
 
 ## Stop and resume
 
 Closing the browser leaves the game running. Run `.venv/bin/civ-agent game stop`
 to save and stop the game, then `.venv/bin/civ-agent game resume` when you’re ready
 to continue. Pass the original `--state-dir` to both commands.
-
-[More game guides](docs/README.md)

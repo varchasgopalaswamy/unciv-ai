@@ -27,15 +27,16 @@ launcher freezes actual settings and provider capabilities before model admissio
 For native human play alongside agents:
 
 ```sh
-uv run civ-agent game start --config examples/human-game.toml --state-dir /path/to/human-game
+uv run civ-agent game start --config examples/pangaea.toml --state-dir /path/to/human-game
 ```
 
-The launcher starts the browser-accessible native game window. Human chat and
-trade commands use that player's scoped native API credentials:
+The launcher starts the browser-accessible native game window. For chat and
+trade, use the civilization assigned to you. These commands use France as an
+example.
 
 ```sh
-uv run civ-agent chat inbox Rome --state-dir /path/to/human-game
-uv run civ-agent trade list Rome --state-dir /path/to/human-game
+uv run civ-agent chat inbox France --state-dir /path/to/human-game
+uv run civ-agent trade list France --state-dir /path/to/human-game
 ```
 
 The host owns gameplay legality, visibility and confirmed request receipts. Player

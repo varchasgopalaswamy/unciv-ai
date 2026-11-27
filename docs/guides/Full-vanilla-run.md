@@ -229,14 +229,13 @@ additional controls for engine randomness, clock inputs and desktop actions.
 
 ## Configure with TOML
 
-Start from [the human example](../../examples/human-game.toml),
-[the eight-player example](../../examples/eight-player-game.toml), or
-[the benchmark example](../../examples/benchmark.toml):
+Start from [Balanced Pangaea](../../examples/pangaea.toml) or
+[Two Continents](../../examples/two-continents.toml).
 
 ```sh
-.venv/bin/civ-agent game start --config examples/human-game.toml \
+.venv/bin/civ-agent game start --config examples/pangaea.toml \
   --state-dir ~/.local/state/unciv-host/human-game
-.venv/bin/civ-agent game start --config examples/human-game.toml --dry-run
+.venv/bin/civ-agent game start --config examples/pangaea.toml --dry-run
 ```
 
 `--dry-run` validates configuration through the packaged native engine without
@@ -405,7 +404,7 @@ concurrency for actual machine capacity and the shared account's usage limits.
 ## Play a civilization yourself
 
 ```sh
-.venv/bin/civ-agent game start --config examples/human-game.toml \
+.venv/bin/civ-agent game start --config examples/pangaea.toml \
   --state-dir ~/.local/state/unciv-host/human-game
 .venv/bin/civ-agent game status --state-dir ~/.local/state/unciv-host/human-game
 ```
@@ -484,22 +483,18 @@ Lingering covers logout without adding automatic boot-time relaunch. See
 ## Benchmark batches
 
 For fixed openings screened for comparable starting conditions, use
-[Pangaea](../../examples/balanced-maps/pangaea.toml) or
-[Two Continents](../../examples/balanced-maps/two-continents.toml). Each uses a
-Medium map at Quick speed, twelve city-states, one built-in AI, four
-`gpt-6-luna` players and one `gpt-6.1-terra` player. Both pin the map and starting-position seeds while leaving
-player assignments randomized. The accompanying
-[assessment](../../examples/balanced-maps/assessment.json) records per-civilization
-opening metrics from the original Standard-speed screening, natural-wonder
-access and the remaining differences. The current templates use Quick speed.
-These are heuristically comparable starts, not a guarantee of equal winning chances.
+[Balanced Pangaea](../../examples/pangaea.toml) or
+[Two Continents](../../examples/two-continents.toml). Each uses a Medium map at
+Quick speed, twelve city-states, one human, one built-in AI, three `gpt-6-luna`
+players, and one `gpt-6.1-terra` player. Both pin the map and starting-position
+seeds and assign civilizations at random.
 
 Use an ordinary single-game TOML as the template. Batch size and concurrency are
 command options, not a second configuration format. Generate twenty reusable
 single-game inputs without Podman, model authentication or inference:
 
 ```sh
-.venv/bin/civ-agent batch generate --config examples/benchmark.toml \
+.venv/bin/civ-agent batch generate --config examples/pangaea.toml \
   --games 20 --batch-seed 42 \
   --output ~/.local/state/unciv-host/benchmark-inputs
 .venv/bin/civ-agent batch start --state-dir ~/.local/state/unciv-host/benchmark \
@@ -551,9 +546,8 @@ queued or interrupted games. All games in a batch select the same runtime/deskto
 image pair.
 
 `--parallel` bounds simultaneous games (default one). Concurrent human games need
-`runtime.browser_port = 0`. The eight-player example has a human seat; change it
-to an agent for unattended benchmarking. The benchmark and mixed-provider examples
-limit play to three turns; omit `limits.max_turns` for full games.
+`runtime.browser_port = 0`. For unattended benchmarking, copy a preset and change
+the human seat to `controller = "agent"` before generating inputs.
 
 ```sh
 .venv/bin/civ-agent batch status --state-dir ~/.local/state/unciv-host/benchmark
