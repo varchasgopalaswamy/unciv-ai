@@ -7,7 +7,7 @@ Play Unciv against LLM opponents.
 You’ll need Linux with rootless Podman, Netavark, nftables, cgroup v2, and a
 systemd user session. Install JDK 21+, Python 3.12+, and `uv`.
 
-Run the setup commands from the repository root.
+Run the setup commands from the repository root. Setup can take a while!
 
 ```sh
 git submodule update --init --recursive
