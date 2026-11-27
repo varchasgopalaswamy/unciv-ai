@@ -45,3 +45,17 @@ edit the settings, and pass your file to `--config`.
 Closing the browser leaves the game running. Run `.venv/bin/civ-agent game stop`
 to save and stop the game, then `.venv/bin/civ-agent game resume` when you’re ready
 to continue. Pass the original `--state-dir` to both commands.
+
+## Unciv credits
+
+Unciv was created by Yair Morgenstern (`yairm210`) and is developed by the Unciv
+community. [Original Unciv project](https://github.com/yairm210/Unciv)
+
+This project runs a modified Unciv engine. Unciv’s source code is licensed under
+the Mozilla Public License 2.0 except where otherwise noted. Unciv’s art, icons,
+and other media have their own credits and license terms.
+[Engine fork](https://github.com/varchasgopalaswamy/unciv-ai-fork) ·
+[Unciv license](https://github.com/yairm210/Unciv/blob/master/LICENSE) ·
+[Media credits and licenses](https://yairm210.github.io/Unciv/Credits/)
+
+The host code is licensed under GPLv3. [Host license](LICENSE)
